@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Optional, TypeVar
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -14,15 +14,15 @@ from .series import T, Series
 S = TypeVar("S")
 
 
-class Operator(ABC, Generic[T, S]):
+class Operator(Generic[S, T], ABC):
     """Abstract base for operators that compute derived time series.
 
     Subclass ``Operator`` and override :meth:`compute` to define custom
     computation logic.  An ``Operator`` encapsulates:
 
-    * **state** – a mutable object of type *S* carried across invocations.
     * **inputs** – zero or more :class:`Series` whose data feeds into the
       computation.
+    * **state** – a mutable object of type *S* carried across invocations.
     * **output** – a :class:`Series[T]` that stores the computed values.
 
     Calling :meth:`update` at a given timestamp slices every input series
@@ -31,32 +31,27 @@ class Operator(ABC, Generic[T, S]):
     to :attr:`output`; if it returns ``None``, no output entry is written.
 
     This cleanly separates *data* (:class:`Series`) from *computation*
-    (:class:`Operator`).  The output is a plain :class:`Series` and can be
+    (:class:`Operator`).  The output is a fixed :class:`Series` and can be
     used anywhere a :class:`Series` is expected, including as input to
     other operators.
 
     Parameters
     ----------
-    state
-        Mutable internal state carried across invocations.
     inputs
         Input series whose data feeds into the operator.
+    state
+        Mutable internal state carried across invocations.
     dtype
         NumPy dtype for the output value buffer (e.g. ``np.float64``).
     shape
         Shape of each output value element.  Defaults to ``()`` for scalars.
 
-    Invariants
-    ----------
-    * All invariants of :class:`Series` (strict timestamp monotonicity,
-      immutability of stored entries) are preserved on :attr:`output`.
-
     Example
     -------
     >>> import numpy as np
-    >>> class MovingAverage(Operator[np.float64, None]):
+    >>> class MovingAverage(Operator[None, np.float64]):
     ...     def __init__(self, window: int, prices: Series[np.float64]) -> None:
-    ...         super().__init__(None, [prices], np.float64)
+    ...         super().__init__([prices], None, np.float64)
     ...         self._window = window
     ...
     ...     def compute(self, timestamp, prices):
@@ -72,24 +67,24 @@ class Operator(ABC, Generic[T, S]):
     [10.0, 15.0, 25.0]
     """
 
-    __slots__ = ("_state", "_inputs", "_output")
+    __slots__ = ("_inputs", "_state", "_output")
 
     def __init__(
         self,
-        state: S,
         inputs: list[Series[Any]],
-        dtype: type[T] | np.dtype[T],
+        state: S,
+        dtype: np.dtype[T],
         shape: tuple[int, ...] = (),
     ) -> None:
-        self._state = state
         self._inputs: list[Series[Any]] = list(inputs)
+        self._state = state
         self._output: Series[T] = Series(dtype, shape)
 
     # -- Virtual method ------------------------------------------------------
 
     @abstractmethod
-    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> ArrayLike | None:
-        """Compute the output value at *timestamp*.
+    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
+        """Computes the output value at *timestamp*.
 
         Subclasses **must** override this method.  It receives the
         timestamp and the input series sliced up to that timestamp
@@ -105,7 +100,7 @@ class Operator(ABC, Generic[T, S]):
 
         Returns
         -------
-        ArrayLike | None
+        Optional[ArrayLike]
             The output value, compatible with :func:`numpy.asarray`, or
             ``None`` to skip appending an output entry.
         """
@@ -114,7 +109,7 @@ class Operator(ABC, Generic[T, S]):
     # -- Core update mechanism -----------------------------------------------
 
     def update(self, timestamp: np.datetime64) -> None:
-        """Compute and conditionally append the output value at *timestamp*.
+        """Computes and conditionally appends the output value at *timestamp*.
 
         Each input series is sliced up to *timestamp* via
         :meth:`Series.to`, then :meth:`compute` is called with the
@@ -134,16 +129,16 @@ class Operator(ABC, Generic[T, S]):
     # -- Accessors -----------------------------------------------------------
 
     @property
-    def output(self) -> Series[T]:
-        """The output series containing computed values."""
-        return self._output
+    def inputs(self) -> list[Series[Any]]:
+        """The input series list (read-only)."""
+        return self._inputs
 
     @property
     def state(self) -> S:
-        """The current (mutable) internal state of the operator."""
+        """The current internal state of the operator (read-only)."""
         return self._state
 
     @property
-    def inputs(self) -> list[Series[Any]]:
-        """The input series list (read-only copy)."""
-        return list(self._inputs)
+    def output(self) -> Series[T]:
+        """The output series containing computed values (read-only)."""
+        return self._output

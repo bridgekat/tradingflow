@@ -8,7 +8,7 @@ This file is kept short and concise. It provides initial context for all agentic
 
 ## File Structure
 
-- In the [Python source directory](src/), every folder is a module, which must contain an `__init__.py` file as its entry point.
+- In the [Python source directory](src/), every folder is a module, which must contain an `__init__.py` file as its entry point. Do not put too much code in module entry points; implementations should go into separate files.
 
 ## Documentation
 

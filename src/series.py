@@ -44,62 +44,31 @@ class Series(Generic[T]):
       :meth:`append` enforces this.
     * Once stored, entries are never modified or removed.
     * All elements have the same shape and dtype.
-    * Internal buffers are always allocated (never empty).
 
     Element access
     --------------
         * ``s[i]`` – the *i*-th ``(timestamp, value)`` pair (supports negative
             indexing).
-    * ``s[i:j]`` – slice by integer range, returning a new :class:`Series`.
+        * ``s[i:j]`` – slice by integer range, returning a read-only view
+            :class:`Series` without copying buffers.
     * ``s.at(ts)`` – as-of lookup: latest value at or before *ts*.
     * ``s.to(ts)`` – sub-series up to and including *ts*.
     * ``s.between(lo, hi)`` – sub-series with timestamps in ``[lo, hi]``.
 
     Properties
     ----------
-    * :attr:`timestamps` – read-only 1-D ``NDArray[np.datetime64]`` view.
+    * :attr:`shape` – element shape of each stored value.
+    * :attr:`index` – read-only 1-D ``NDArray[np.datetime64]`` view.
     * :attr:`values` – read-only (N+1)-D ``NDArray[T]`` view.
     * :attr:`last` – most recent ``(timestamp, value)`` pair, or ``None``.
     """
 
-    __slots__ = ("_ts", "_arr", "_length")
+    __slots__ = ("_index", "_values", "_length")
 
-    def __init__(
-        self,
-        dtype: type[T] | np.dtype[T],
-        shape: tuple[int, ...] = (),
-    ) -> None:
-        self._ts: NDArray[np.datetime64] = np.empty(_INITIAL_CAPACITY, dtype=np.dtype("datetime64[ns]"))
-        self._arr: NDArray[T] = np.empty((_INITIAL_CAPACITY, *shape), dtype=dtype)
+    def __init__(self, dtype: np.dtype[T], shape: tuple[int, ...] = ()) -> None:
+        self._index: NDArray[np.datetime64] = np.empty(_INITIAL_CAPACITY, dtype=np.dtype("datetime64[ns]"))
+        self._values: NDArray[T] = np.empty((_INITIAL_CAPACITY, *shape), dtype=dtype)
         self._length: int = 0
-
-    # -- Internal helpers ----------------------------------------------------
-
-    @staticmethod
-    def _from_raw(ts: NDArray[np.datetime64], vals: NDArray[T], length: int) -> Series[T]:
-        """Wraps pre-allocated buffers (caller transfers ownership)."""
-        obj = object.__new__(Series)
-        obj._ts = ts
-        obj._arr = vals
-        obj._length = length
-        return obj
-
-    def _empty_like(self) -> Series[T]:
-        """Return an empty :class:`Series` with the same value dtype and element shape."""
-        return Series(self._arr.dtype, self._arr.shape[1:])
-
-    def _grow(self) -> None:
-        """Doubles the capacity of internal buffers."""
-        new_cap = len(self._ts) * 2
-        elem_shape = self._arr.shape[1:]
-
-        new_ts: NDArray[np.datetime64] = np.empty(new_cap, dtype=self._ts.dtype)
-        new_ts[: self._length] = self._ts[: self._length]
-        self._ts = new_ts
-
-        new_vals: NDArray[T] = np.empty((new_cap, *elem_shape), dtype=self._arr.dtype)
-        new_vals[: self._length] = self._arr[: self._length]
-        self._arr = new_vals
 
     # -- Size & truthiness ---------------------------------------------------
 
@@ -113,7 +82,7 @@ class Series(Generic[T]):
 
     def __iter__(self) -> Iterator[tuple[np.datetime64, T]]:
         for i in range(self._length):
-            yield (self._ts[i], self._arr[i])
+            yield self._index[i], self._values[i]
 
     # -- Element access ------------------------------------------------------
 
@@ -128,26 +97,28 @@ class Series(Generic[T]):
                 key += self._length
             if not 0 <= key < self._length:
                 raise IndexError("Series index out of range")
-            return (self._ts[key], self._arr[key])
-
+            return self._index[key], self._values[key]
         else:
-            ts_slice = self._ts[: self._length][key].copy()
-            val_slice = self._arr[: self._length][key].copy()
-            return Series._from_raw(ts_slice, val_slice, len(ts_slice))
+            return self._readonly_slice(key)
 
     # -- Properties ----------------------------------------------------------
 
     @property
-    def timestamps(self) -> NDArray[np.datetime64]:
-        """Timestamps as a read-only 1-D ``NDArray[np.datetime64]``."""
-        view = self._ts[: self._length]
+    def shape(self) -> tuple[int, ...]:
+        """Element shape of each stored value."""
+        return self._values.shape[1:]
+
+    @property
+    def index(self) -> NDArray[np.datetime64]:
+        """Timestamp index as a read-only 1-D ``NDArray[np.datetime64]``."""
+        view = self._index[: self._length]
         view.flags.writeable = False
         return view
 
     @property
     def values(self) -> NDArray[T]:
         """Values as a read-only ``NDArray[T]``."""
-        view = self._arr[: self._length]
+        view = self._values[: self._length]
         view.flags.writeable = False
         return view
 
@@ -156,12 +127,12 @@ class Series(Generic[T]):
         """Most recent ``(timestamp, value)`` pair, or ``None`` if empty."""
         if self._length == 0:
             return None
-        return (self._ts[self._length - 1], self._arr[self._length - 1])
+        return self._index[self._length - 1], self._values[self._length - 1]
 
     # -- Timestamp-based access ----------------------------------------------
 
     def at(self, timestamp: np.datetime64) -> Optional[T]:
-        """Return the latest value at or before *timestamp* (as-of lookup).
+        """Returns the latest value at or before *timestamp* (as-of lookup).
 
         Returns ``None`` if no entry exists at or before *timestamp*.
         For scalar elements the return is a NumPy scalar; for N-D elements
@@ -169,35 +140,35 @@ class Series(Generic[T]):
         """
         if self._length == 0:
             return None
-        i = np.searchsorted(self._ts[: self._length], timestamp, side="right") - 1
+        i = np.searchsorted(self._index[: self._length], timestamp, side="right") - 1
         if i < 0:
             return None
-        return self._arr[i]
+        return self._values[i]
 
     def to(self, timestamp: np.datetime64) -> Series[T]:
-        """Return a sub-series with timestamps at or before *timestamp*."""
+        """Returns a read-only view with timestamps at or before *timestamp*."""
         if self._length == 0:
-            return self._empty_like()
-        r = np.searchsorted(self._ts[: self._length], timestamp, side="right")
+            return self._readonly_empty()
+        r = np.searchsorted(self._index[: self._length], timestamp, side="right")
         if r == 0:
-            return self._empty_like()
-        return Series._from_raw(self._ts[:r].copy(), self._arr[:r].copy(), int(r))
+            return self._readonly_empty()
+        return self._readonly_slice(slice(None, int(r)))
 
     def between(self, start: np.datetime64, end: np.datetime64) -> Series[T]:
-        """Return a sub-series with timestamps in ``[start, end]``."""
+        """Returns a read-only view with timestamps in ``[start, end]``."""
         if self._length == 0:
-            return self._empty_like()
-        ts = self._ts[: self._length]
+            return self._readonly_empty()
+        ts = self._index[: self._length]
         l = np.searchsorted(ts, start, side="left")
         r = np.searchsorted(ts, end, side="right")
         if l >= r:
-            return self._empty_like()
-        return Series._from_raw(self._ts[l:r].copy(), self._arr[l:r].copy(), int(r - l))
+            return self._readonly_empty()
+        return self._readonly_slice(slice(int(l), int(r)))
 
     # -- Mutation ------------------------------------------------------------
 
     def append(self, timestamp: np.datetime64, value: ArrayLike) -> None:
-        """Append a ``(timestamp, value)`` pair.
+        """Appends a ``(timestamp, value)`` pair.
 
         The value must have the same element shape and a dtype compatible
         with the value buffer (dtype casting follows NumPy assignment rules).
@@ -209,22 +180,22 @@ class Series(Generic[T]):
 
         # Monotonicity check.
         if self._length > 0:
-            if timestamp <= self._ts[self._length - 1]:
+            if timestamp <= self._index[self._length - 1]:
                 raise ValueError(
-                    f"timestamp {timestamp!r} is not greater than the last " f"timestamp {self._ts[self._length - 1]!r}"
+                    f"timestamp {timestamp!r} is not greater than the last "
+                    f"timestamp {self._index[self._length - 1]!r}"
                 )
 
         # Shape check.
-        expected_shape = self._arr.shape[1:]
-        if arr.shape != expected_shape:
-            raise ValueError(f"value shape {arr.shape} does not match the expected " f"shape {expected_shape}")
+        if arr.shape != self.shape:
+            raise ValueError(f"value shape {arr.shape} does not match the expected " f"shape {self.shape}")
 
         # Grow if at capacity.
-        if self._length >= len(self._ts):
+        if self._length >= len(self._index):
             self._grow()
 
-        self._ts[self._length] = timestamp
-        self._arr[self._length] = arr
+        self._index[self._length] = timestamp
+        self._values[self._length] = arr
         self._length += 1
 
     # -- Representation ------------------------------------------------------
@@ -232,11 +203,44 @@ class Series(Generic[T]):
     def __repr__(self) -> str:
         if self._length == 0:
             return "Series(empty)"
-        elem_shape = self._arr.shape[1:]
-        shape_str = f", shape={elem_shape}" if elem_shape else ""
+        shape_str = f", shape={self.shape}" if self.shape else ""
         return (
             f"Series(length={self._length}, "
-            f"first={self._ts[0]!r}, "
-            f"last={self._ts[self._length - 1]!r}"
+            f"first={self._index[0]!r}, "
+            f"last={self._index[self._length - 1]!r}"
             f"{shape_str})"
         )
+
+    # -- Internal helpers ----------------------------------------------------
+
+    def _readonly_empty(self) -> Series[T]:
+        """Returns an empty :class:`Series` with the same value dtype and element shape."""
+        obj = object.__new__(Series)
+        obj._index = np.empty(0, dtype=self._index.dtype)
+        obj._values = np.empty((0, *self.shape), dtype=self._values.dtype)
+        obj._length = 0
+        return obj
+
+    def _readonly_slice(self, key: slice) -> Series[T]:
+        """Returns a read-only sliced :class:`Series` view without copying."""
+        index = self._index[: self._length][key]
+        index.flags.writeable = False
+        values = self._values[: self._length][key]
+        values.flags.writeable = False
+        obj = object.__new__(Series)
+        obj._index = index
+        obj._values = values
+        obj._length = len(index)
+        return obj
+
+    def _grow(self) -> None:
+        """Doubles the capacity of internal buffers."""
+        new_cap = len(self._index) * 2
+
+        new_index: NDArray[np.datetime64] = np.empty(new_cap, dtype=self._index.dtype)
+        new_index[: self._length] = self._index[: self._length]
+        self._index = new_index
+
+        new_values: NDArray[T] = np.empty((new_cap, *self.shape), dtype=self._values.dtype)
+        new_values[: self._length] = self._values[: self._length]
+        self._values = new_values
