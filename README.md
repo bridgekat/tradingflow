@@ -3,7 +3,7 @@
 # Features
 
 - **Composable modules:** almost everything is a time series or a time series operator.
-- **Agent-friendly codebase:** we maintain code-documentation consistency and a hierarchy of documented modules to facilitate AI code exploration and generation. Instruct AI agents to start every task by reading [AGENTS.md](AGENTS.md).
+- **Agent-friendly codebase:** we maintain code-documentation consistency and a hierarchy of documented modules to facilitate AI code exploration and generation. When using AI coding agents (Claude Code, Codex, OpenCode, etc.), start every session by instructing the agent to read [AGENTS.md](AGENTS.md) and then describe your tasks.
 
 # Core Concepts
 
@@ -44,11 +44,11 @@ Examples include:
 
 ## Scenarios
 
-A scenario is a collection of source and derived series along with their dependencies, which must be acyclic.
+A [scenario](src/scenario.py) is a collection of source and derived series along with their dependencies, which must be acyclic.
 
 ## Events
 
-An event is an update to zero or more source series at a specific timestamp. Events are generated with strictly increasing timestamps. Each event triggers incremental updates to all affected derived series in the scenario.
+An [event](src/event.py) is an update to zero or more source series at a specific timestamp. Events are generated with strictly increasing timestamps. Each event triggers incremental updates to all affected derived series in the scenario.
 
 ## Storage Policies (TODO)
 

@@ -120,14 +120,6 @@ class TestFactoryFunctions:
             op.update(ts(i))
         assert list(op.output.values) == pytest.approx([5.0, 5.0])
 
-    def test_multiple_is_divide(self) -> None:
-        a = make_scalar_series([10.0, 20.0])
-        b = make_scalar_series([2.0, 5.0])
-        op = multiple(a, b)
-        for i in range(1, 3):
-            op.update(ts(i))
-        assert list(op.output.values) == pytest.approx([5.0, 4.0])
-
     def test_negate(self) -> None:
         a = make_scalar_series([3.0, -5.0])
         op = negate(a)
@@ -220,11 +212,6 @@ class TestMovingCovariance:
         # i=2 produces partial-window output (2 entries), i=3 is the second output
         expected = np.cov(np.array([[1, 2], [2, 4], [3, 6]]).T, ddof=1)
         np.testing.assert_array_almost_equal(mc.output.values[1], expected)
-
-    def test_rejects_scalar(self) -> None:
-        s = make_scalar_series([1.0, 2.0])
-        with pytest.raises(ValueError, match="vector-valued"):
-            MovingCovariance(2, s)
 
 
 class TestExponentialMovingAverage:

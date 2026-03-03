@@ -32,8 +32,10 @@ class Operator[Inputs: tuple[Series[Any, Any], ...], Shape: AnyShape, T: np.gene
     :attr:`output`; if it returns ``None``, no output entry is written.
 
     This cleanly separates *data* (:class:`Series`) from *computation*
-    (:class:`Operator`).  The output series can be used anywhere a
-    :class:`Series` is expected, including as input to other operators.
+    (:class:`Operator`).  The :attr:`output` series is created once at
+    construction time and remains the same object for the lifetime of
+    the operator, so it is safe to pass it as input to other operators
+    or to use object identity for dependency-graph traversal.
 
     Parameters (``__init__``)
     -------------------------

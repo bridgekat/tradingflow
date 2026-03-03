@@ -13,10 +13,10 @@ ExponentialMovingAverage – Exponential moving average (EMA).
 MovingVariance    – Rolling sample variance.
 MovingCovariance  – Rolling sample covariance matrix (vector input → matrix output).
 Momentum          – Difference between latest and lagged value.
-BollingerBand     – Rolling mean ± *k* × std.
+BollingerBand     – Rolling mean ± k times rolling standard deviation.
 """
 
-from .bollinger_bands import BollingerBand
+from .bollinger_band import BollingerBand
 from .exponential_moving_average import ExponentialMovingAverage
 from .momentum import Momentum
 from .moving_average import MovingAverage

@@ -1,42 +1,37 @@
-"""TradingFlow – a lightweight library for quantitative investment research.
+"""TradingFlow core package.
 
-This top-level package provides the core time series primitives and
-re-exports them for convenient access.
+This top-level package exposes the core abstractions used across the library:
 
 Type aliases
 ------------
 AnyShape
-    ``tuple[int, ...]`` – element shape of a series value.
+    ``tuple[int, ...]``; shape of one series element.
 Array[Shape, T]
-    ``np.ndarray[Shape, np.dtype[T]]`` – shaped NumPy array.
+    ``np.ndarray[Shape, np.dtype[T]]``.
 
-Classes
--------
+Core classes
+------------
 Series[Shape, T]
-    A NumPy-backed time series of ``(timestamp, value)`` pairs with strictly
-    increasing ``np.datetime64[ns]`` timestamps.  Scalars are stored as
-    0-dimensional arrays (shape ``()``) to keep the API uniform.  Supports
-    integer indexing, slicing, as-of timestamp lookup (:meth:`~Series.at`),
-    time-range queries (:meth:`~Series.between`), and as-of slicing
-    (:meth:`~Series.to`).
-
+    NumPy-backed time series with strictly increasing timestamps.
 Operator[Inputs, Shape, T, State]
-    Abstract base for operators that compute derived time series.
-    Subclass and override :meth:`~Operator.compute` to define custom
-    logic.  Each call to :meth:`~Operator.update` slices all inputs up
-    to the given timestamp, passes them to :meth:`~Operator.compute`,
-    and appends the result to an internal :attr:`~Operator.output`
-    :class:`Series` when the result is not ``None``.
-
-See README.md and AGENTS.md for project overview and contributor guidance.
+    Base class for derived-series computations.
+Event
+    Timestamped mapping of source-series updates.
+Scenario
+    Event-driven runtime that dispatches updates through an acyclic
+    source/operator dependency graph.
 """
 
+from .event import Event
 from .operator import Operator
+from .scenario import Scenario
 from .series import AnyShape, Array, Series
 
 __all__ = [
     "AnyShape",
     "Array",
+    "Event",
     "Operator",
+    "Scenario",
     "Series",
 ]

@@ -12,7 +12,7 @@ This file is kept short and concise. It provides initial context for all agentic
 
 ## Documentation
 
-- Write and maintain module-level docstrings in all module entry points. A module-level docstring should be a comprehensive summary of the module's functionalities, structure and public API, stating important invariants when there is any.
+- Write and maintain module-level docstrings in all module entry points. A module-level docstring should be a comprehensive summary of the module's functionalities, structure and public API, stating important invariants when there is any, so that another person/agent with little prior knowledge can skip reading implementation files most of the time.
 - Write and maintain class-level docstrings for public classes when appropriate.
 - Write and maintain function-level docstrings for public functions when appropriate.
 - Keep docstrings concise and accurate to current code. When there is an inconsistency, update either the docstring or the code to resolve it.
@@ -20,7 +20,7 @@ This file is kept short and concise. It provides initial context for all agentic
 ## Exploration
 
 - Read module entry points first, starting from [the root](src/__init__.py).
-- Read implementation files for details that are not obvious from module entry points, or when there appears to be an inconsistency.
+- Read implementation files only for details that are not obvious from module entry points, or when there appears to be an inconsistency.
 - For the given task, existing code with similar functionalities may be read for reference before implementation.
 
 ## Code Style
