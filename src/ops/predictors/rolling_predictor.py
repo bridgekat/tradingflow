@@ -1,58 +1,61 @@
-"""Rolling predictor base class."""
+"""Abstract rolling predictor base class.
+
+Provides :class:`RollingPredictor`, an :class:`Operator` subclass that
+automatically retrains a model every *retrain_every* steps on a window
+of the most recent *train_window* observations.  Subclasses implement
+:meth:`_fit` (training) and :meth:`_predict` (inference).
+"""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, override
 
 import numpy as np
 from numpy.typing import ArrayLike
 
 from ... import Operator, Series
-from ...series import T
 
 
-class RollingPredictor(Operator[dict[str, Any], T], ABC):
-    """Abstract base for prediction models with rolling retraining."""
+class RollingPredictor(Operator, ABC):
+    """Abstract base for predictors that retrain on a rolling window.
 
-    __slots__ = ("_train_window", "_retrain_every", "_update_count")
+    Subclasses must implement :meth:`_fit` and :meth:`_predict`.
+    The predictor retrains every *retrain_every* calls to :meth:`update`.
+    """
+
+    __slots__ = ("_train_window", "_retrain_every", "_steps_since_retrain")
+
+    _train_window: int
+    _retrain_every: int
+    _steps_since_retrain: int
 
     def __init__(
         self,
         train_window: int,
         retrain_every: int,
-        inputs: list[Series[Any]],
-        state: dict[str, Any],
-        dtype: np.dtype[T],
-        shape: tuple[int, ...] = (),
+        inputs: tuple,
+        shape: tuple[int, ...],
+        dtype: np.dtype,
+        state: Any,
     ) -> None:
-        super().__init__(inputs, state, dtype, shape)
+        super().__init__(inputs, shape, dtype, state)
         self._train_window = train_window
         self._retrain_every = retrain_every
-        self._update_count = 0
-
-    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
-        if not all(inputs):
-            return None
-        self._update_count += 1
-        if self._update_count == 1 or self._update_count % self._retrain_every == 0:
-            self._fit(timestamp, *inputs)
-        return self._predict(timestamp, *inputs)
+        self._steps_since_retrain = 0
 
     @abstractmethod
-    def _fit(self, timestamp: np.datetime64, *inputs: Series[Any]) -> None:
-        """Retrain the model on the current rolling window of data."""
+    def _fit(self, timestamp: np.datetime64, inputs: tuple) -> None:
+        """Train the model on the input data."""
 
     @abstractmethod
-    def _predict(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
-        """Produce a prediction using the currently fitted model."""
+    def _predict(self, timestamp: np.datetime64, inputs: tuple) -> ArrayLike | None:
+        """Generate a prediction from the current model."""
 
-    @property
-    def train_window(self) -> int:
-        """Number of entries used for training."""
-        return self._train_window
-
-    @property
-    def retrain_every(self) -> int:
-        """Retraining frequency (in number of updates)."""
-        return self._retrain_every
+    @override
+    def compute(self, timestamp: np.datetime64, inputs: tuple, state: Any) -> ArrayLike | None:
+        self._steps_since_retrain += 1
+        if self._steps_since_retrain >= self._retrain_every:
+            self._fit(timestamp, inputs)
+            self._steps_since_retrain = 0
+        return self._predict(timestamp, inputs)

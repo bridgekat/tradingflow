@@ -1,6 +1,6 @@
 # Instructions for AI contributors
 
-This file is kept short and concise. It provides initial context for all agentic operations.
+This file is kept short and concise. It provides initial context for all agentic tasks.
 
 ## Overview
 
@@ -19,13 +19,13 @@ This file is kept short and concise. It provides initial context for all agentic
 
 ## Exploration
 
-- Read module entry points first.
+- Read module entry points first, starting from [the root](src/__init__.py).
 - Read implementation files for details that are not obvious from module entry points, or when there appears to be an inconsistency.
 - For the given task, existing code with similar functionalities may be read for reference before implementation.
 
 ## Code Style
 
-- Always add Python type annotations.
+- Add Python 3.12+ type annotations except for overly complex types or overloads.
 
 ## Scope
 

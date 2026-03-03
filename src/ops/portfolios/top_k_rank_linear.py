@@ -1,50 +1,52 @@
-"""Top-K rank-linear portfolio operator."""
+"""Top-K rank-linear portfolio construction.
+
+Provides :class:`TopKRankLinear`, an :class:`Operator` that selects the
+top *k* assets and assigns weights proportional to their rank among the
+selected assets.  *k* may be an integer or a float fraction of the
+universe size.
+"""
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import override
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import ArrayLike
 
 from ... import Operator, Series
 
 
-class TopKRankLinear(Operator[None, np.float64]):
-    """Select top-K assets with rank-proportional (linear) weighting."""
+class TopKRankLinear(Operator[tuple[Series], tuple[int], np.float64, None]):
+    """Selects the top *k* assets and assigns rank-proportional weights.
+
+    The highest-predicted asset receives the largest weight; weights are
+    normalised to sum to 1.
+    """
 
     __slots__ = ("_k",)
 
-    def __init__(
-        self,
-        predictions: Series[Any],
-        k: int | float,
-    ) -> None:
-        if len(predictions.shape) != 1:
-            raise ValueError(
-                "TopKRankLinear requires a vector-valued predictions "
-                f"series (shape (n,)), got shape {predictions.shape}"
-            )
+    _k: int | float
+
+    def __init__(self, predictions: Series, k: int | float) -> None:
         n = predictions.shape[0]
-        super().__init__([predictions], None, np.dtype(np.float64), (n,))
+        super().__init__((predictions,), (n,), np.dtype(np.float64), None)
         self._k = k
 
-    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
-        preds = inputs[0]
+    @override
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series], state: None) -> ArrayLike | None:
+        (preds,) = inputs
         if not preds:
             return None
-        values: NDArray[Any] = preds.values[-1]
+        values = preds.values[-1]
         n = len(values)
-
-        if isinstance(self._k, float) and self._k <= 1.0:
-            k = max(1, int(np.ceil(self._k * n)))
+        if isinstance(self._k, float):
+            k = max(1, int(self._k * n))
         else:
-            k = int(self._k)
-        k = min(k, n)
-
-        indices = np.argsort(values)[::-1][:k]
+            k = self._k
+        sorted_indices = np.argsort(values)
+        top_indices = sorted_indices[-k:]
         weights = np.zeros(n, dtype=np.float64)
-        rank_weights = np.arange(k, 0, -1, dtype=np.float64)
-        rank_weights /= rank_weights.sum()
-        weights[indices] = rank_weights
+        for rank, idx in enumerate(top_indices, start=1):
+            weights[idx] = rank
+        weights /= weights.sum()
         return weights

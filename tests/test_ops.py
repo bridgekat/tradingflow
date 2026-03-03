@@ -1,14 +1,16 @@
 """Tests for the ops module and all sub-modules."""
 
 from __future__ import annotations
+from typing import Any
 
 import numpy as np
 import pytest
 
 from src import Series
+from src.operator import Operator
 from src.ops import Apply, add, subtract, multiply, divide, multiple, negate
 from src.ops.filters import (
-    BollingerBands,
+    BollingerBand,
     ExponentialMovingAverage,
     Momentum,
     MovingAverage,
@@ -26,31 +28,30 @@ from src.ops.simulators import TradingSimulator
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def ts(i: int) -> np.datetime64:
     """Create a nanosecond timestamp from an integer."""
     return np.datetime64(i, "ns")
 
 
-def make_scalar_series(values: list[float]) -> Series[np.float64]:
+def make_scalar_series(values: list[float]) -> Series[tuple[()], np.float64]:
     """Create a scalar float64 series from a list."""
-    s: Series[np.float64] = Series(np.dtype(np.float64))
+    s = Series((), np.dtype(np.float64))
     for i, v in enumerate(values, start=1):
-        s.append(ts(i), v)
+        s.append(ts(i), np.array(v, dtype=np.float64))
     return s
 
 
-def make_vector_series(
-    values: list[list[float]],
-) -> Series[np.float64]:
+def make_vector_series(values: list[list[float]]) -> Series[tuple[int], np.float64]:
     """Create a vector float64 series from a list of lists."""
     n = len(values[0])
-    s: Series[np.float64] = Series(np.dtype(np.float64), shape=(n,))
+    s = Series((n,), np.dtype(np.float64))
     for i, v in enumerate(values, start=1):
-        s.append(ts(i), v)
+        s.append(ts(i), np.array(v, dtype=np.float64))
     return s
 
 
-def update_all(operators: list, timestamp: np.datetime64) -> None:
+def update_all(operators: list[Operator[Any, Any, Any, Any]], timestamp: np.datetime64) -> None:
     """Update all operators at the given timestamp."""
     for op in operators:
         op.update(timestamp)
@@ -65,29 +66,25 @@ class TestApply:
     def test_basic(self) -> None:
         a = make_scalar_series([10.0, 20.0, 30.0])
         b = make_scalar_series([2.0, 4.0, 5.0])
-        op = Apply([a, b], lambda x, y: x + y, np.dtype(np.float64))
+        op = Apply((a, b), (), np.dtype(np.float64), lambda args: args[0] + args[1])
         for i in range(1, 4):
             op.update(ts(i))
         assert list(op.output.values) == pytest.approx([12.0, 24.0, 35.0])
 
     def test_skips_when_input_empty(self) -> None:
-        a: Series[np.float64] = Series(np.dtype(np.float64))
+        a = Series((), np.dtype(np.float64))
         b = make_scalar_series([1.0])
-        op = Apply([a, b], lambda x, y: x + y, np.dtype(np.float64))
+        op = Apply((a, b), (), np.dtype(np.float64), lambda args: args[0] + args[1])
         op.update(ts(1))
         assert len(op.output) == 0
 
     def test_vector_elements(self) -> None:
         a = make_vector_series([[1.0, 2.0], [3.0, 4.0]])
         b = make_vector_series([[10.0, 20.0], [30.0, 40.0]])
-        op = Apply(
-            [a, b], lambda x, y: x + y, np.dtype(np.float64), shape=(2,)
-        )
+        op = Apply((a, b), (2,), np.dtype(np.float64), lambda args: args[0] + args[1])
         for i in range(1, 3):
             op.update(ts(i))
-        np.testing.assert_array_almost_equal(
-            op.output.values, [[11.0, 22.0], [33.0, 44.0]]
-        )
+        np.testing.assert_array_almost_equal(op.output.values, [[11.0, 22.0], [33.0, 44.0]])
 
 
 class TestFactoryFunctions:
@@ -144,9 +141,7 @@ class TestFactoryFunctions:
         op = divide(a, b)
         for i in range(1, 3):
             op.update(ts(i))
-        np.testing.assert_array_almost_equal(
-            op.output.values, [[5.0, 5.0], [6.0, 5.0]]
-        )
+        np.testing.assert_array_almost_equal(op.output.values, [[5.0, 5.0], [6.0, 5.0]])
 
 
 # ===========================================================================
@@ -164,10 +159,10 @@ class TestMovingAverage:
         assert list(ma.output.values) == pytest.approx([10.0, 15.0, 20.0, 30.0])
 
     def test_time_window(self) -> None:
-        s: Series[np.float64] = Series(np.dtype(np.float64))
+        s = Series((), np.dtype(np.float64))
         # Timestamps 10, 20, 30, 40 ns
         for i in range(1, 5):
-            s.append(np.datetime64(i * 10, "ns"), float(i * 10))
+            s.append(np.datetime64(i * 10, "ns"), np.array(float(i * 10), dtype=np.float64))
         window = np.timedelta64(25, "ns")
         ma = MovingAverage(window, s)
         for i in range(1, 5):
@@ -217,9 +212,7 @@ class TestMovingVariance:
 
 class TestMovingCovariance:
     def test_basic(self) -> None:
-        s = make_vector_series(
-            [[1.0, 2.0], [2.0, 4.0], [3.0, 6.0], [4.0, 8.0]]
-        )
+        s = make_vector_series([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0], [4.0, 8.0]])
         mc = MovingCovariance(3, s)
         for i in range(1, 5):
             mc.update(ts(i))
@@ -250,9 +243,7 @@ class TestExponentialMovingAverage:
         ema = ExponentialMovingAverage(0.5, s)
         for i in range(1, 3):
             ema.update(ts(i))
-        np.testing.assert_array_almost_equal(
-            ema.output.values, [[10.0, 20.0], [20.0, 30.0]]
-        )
+        np.testing.assert_array_almost_equal(ema.output.values, [[10.0, 20.0], [20.0, 30.0]])
 
 
 class TestWeightedMovingAverage:
@@ -285,30 +276,31 @@ class TestMomentum:
         assert list(mom.output.values) == pytest.approx([5.0, -1.0])
 
 
-class TestBollingerBands:
+class TestBollingerBand:
     def test_basic(self) -> None:
         s = make_scalar_series([10.0, 12.0, 11.0, 13.0])
-        bb = BollingerBands(3, s, num_std=2.0)
+        bb_upper = BollingerBand(3, s, num_std=2.0)
+        bb_lower = BollingerBand(3, s, num_std=-2.0)
+        bb_mean = BollingerBand(3, s, num_std=0.0)
         for i in range(1, 5):
-            bb.update(ts(i))
+            bb_upper.update(ts(i))
+            bb_lower.update(ts(i))
+            bb_mean.update(ts(i))
         # Need >= 2 entries; first output at i=2
-        assert len(bb.output) == 3  # i=2,3,4
+        assert len(bb_upper.output) == 3  # i=2,3,4
 
         # At i=4: window=[12,11,13], mean=12, std=1.0
         vals = np.array([12.0, 11.0, 13.0])
         mean = vals.mean()
         std = vals.std(ddof=1)
-        expected_lower = mean - 2.0 * std
-        expected_upper = mean + 2.0 * std
-        last = bb.output.values[-1]
-        assert float(last[0]) == pytest.approx(expected_lower)
-        assert float(last[1]) == pytest.approx(mean)
-        assert float(last[2]) == pytest.approx(expected_upper)
+        assert float(bb_upper.output.values[-1]) == pytest.approx(mean + 2.0 * std)
+        assert float(bb_lower.output.values[-1]) == pytest.approx(mean - 2.0 * std)
+        assert float(bb_mean.output.values[-1]) == pytest.approx(mean)
 
     def test_output_shape(self) -> None:
         s = make_vector_series([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-        bb = BollingerBands(2, s)
-        assert bb.output.shape == (3, 2)
+        bb = BollingerBand(2, s)
+        assert bb.output.shape == (2,)
 
 
 # ===========================================================================
@@ -319,18 +311,16 @@ class TestBollingerBands:
 class TestRollingLinearRegression:
     def test_simple_linear(self) -> None:
         """Test on y = 2*x + 1 with scalar features."""
-        features: Series[np.float64] = Series(np.dtype(np.float64), shape=(1,))
-        targets: Series[np.float64] = Series(np.dtype(np.float64))
+        features = Series((1,), np.dtype(np.float64))
+        targets = Series((), np.dtype(np.float64))
 
-        reg = RollingLinearRegression(
-            features, targets, train_window=10, retrain_every=1
-        )
+        reg = RollingLinearRegression(features, targets, train_window=10, retrain_every=1)
 
         for i in range(1, 11):
             x = float(i)
             y = 2.0 * x + 1.0
-            features.append(ts(i), [x])
-            targets.append(ts(i), y)
+            features.append(ts(i), np.array([x], dtype=np.float64))
+            targets.append(ts(i), np.array(y, dtype=np.float64))
             reg.update(ts(i))
 
         # After enough data, predictions should be close to 2*x + 1.
@@ -339,15 +329,13 @@ class TestRollingLinearRegression:
         assert last_pred == pytest.approx(2.0 * last_x + 1.0, abs=0.1)
 
     def test_no_prediction_before_fit(self) -> None:
-        features: Series[np.float64] = Series(np.dtype(np.float64), shape=(1,))
-        targets: Series[np.float64] = Series(np.dtype(np.float64))
+        features = Series((1,), np.dtype(np.float64))
+        targets = Series((), np.dtype(np.float64))
 
-        reg = RollingLinearRegression(
-            features, targets, train_window=5, retrain_every=1
-        )
+        reg = RollingLinearRegression(features, targets, train_window=5, retrain_every=1)
         # Only 1 data point -> can't fit (need >= 2)
-        features.append(ts(1), [1.0])
-        targets.append(ts(1), 3.0)
+        features.append(ts(1), np.array([1.0], dtype=np.float64))
+        targets.append(ts(1), np.array(3.0, dtype=np.float64))
         reg.update(ts(1))
         assert len(reg.output) == 0
 
@@ -394,9 +382,7 @@ class TestTopKRankLinear:
 class TestMeanVarianceOptimization:
     def test_not_implemented(self) -> None:
         preds = make_vector_series([[0.1, 0.2]])
-        covs: Series[np.float64] = Series(
-            np.dtype(np.float64), shape=(2, 2)
-        )
+        covs = Series((2, 2), np.dtype(np.float64))
         with pytest.raises(NotImplementedError):
             MeanVarianceOptimization(preds, covs)
 
@@ -408,17 +394,13 @@ class TestMeanVarianceOptimization:
 
 class TestTradingSimulator:
     def test_no_commission(self) -> None:
-        prices: Series[np.float64] = Series(np.dtype(np.float64), shape=(2,))
-        positions: Series[np.float64] = Series(
-            np.dtype(np.float64), shape=(2,)
-        )
-        sim = TradingSimulator(
-            prices, positions, initial_cash=1000.0
-        )
+        prices = Series((2,), np.dtype(np.float64))
+        positions = Series((2,), np.dtype(np.float64))
+        sim = TradingSimulator(prices, positions, initial_cash=1000.0)
 
         # Day 1: buy 10 of asset A at 50, 5 of asset B at 100
-        prices.append(ts(1), [50.0, 100.0])
-        positions.append(ts(1), [10.0, 5.0])
+        prices.append(ts(1), np.array([50.0, 100.0], dtype=np.float64))
+        positions.append(ts(1), np.array([10.0, 5.0], dtype=np.float64))
         sim.update(ts(1))
         # Cost: 10*50 + 5*100 = 1000
         # Cash: 1000 - 1000 = 0
@@ -426,18 +408,16 @@ class TestTradingSimulator:
         assert float(sim.output.values[-1]) == pytest.approx(1000.0)
 
         # Day 2: prices go up, hold same positions
-        prices.append(ts(2), [55.0, 110.0])
-        positions.append(ts(2), [10.0, 5.0])
+        prices.append(ts(2), np.array([55.0, 110.0], dtype=np.float64))
+        positions.append(ts(2), np.array([10.0, 5.0], dtype=np.float64))
         sim.update(ts(2))
         # No trades -> no cost
         # MV: 0 + 10*55 + 5*110 = 1100
         assert float(sim.output.values[-1]) == pytest.approx(1100.0)
 
     def test_with_commission(self) -> None:
-        prices: Series[np.float64] = Series(np.dtype(np.float64), shape=(2,))
-        positions: Series[np.float64] = Series(
-            np.dtype(np.float64), shape=(2,)
-        )
+        prices = Series((2,), np.dtype(np.float64))
+        positions = Series((2,), np.dtype(np.float64))
         sim = TradingSimulator(
             prices,
             positions,
@@ -446,8 +426,8 @@ class TestTradingSimulator:
             initial_cash=10000.0,
         )
 
-        prices.append(ts(1), [100.0, 200.0])
-        positions.append(ts(1), [10.0, 5.0])
+        prices.append(ts(1), np.array([100.0, 200.0], dtype=np.float64))
+        positions.append(ts(1), np.array([10.0, 5.0], dtype=np.float64))
         sim.update(ts(1))
         # Trade cost: 10*100 + 5*200 = 2000
         # Commission per asset: max(0.01*1000, 1) = 10, max(0.01*1000, 1) = 10
@@ -457,10 +437,8 @@ class TestTradingSimulator:
         assert float(sim.output.values[-1]) == pytest.approx(9980.0)
 
     def test_min_charge(self) -> None:
-        prices: Series[np.float64] = Series(np.dtype(np.float64), shape=(1,))
-        positions: Series[np.float64] = Series(
-            np.dtype(np.float64), shape=(1,)
-        )
+        prices = Series((1,), np.dtype(np.float64))
+        positions = Series((1,), np.dtype(np.float64))
         sim = TradingSimulator(
             prices,
             positions,
@@ -471,8 +449,8 @@ class TestTradingSimulator:
 
         # Buy 1 share at 10 -> trade value = 10
         # Commission: max(0.001*10, 5) = max(0.01, 5) = 5
-        prices.append(ts(1), [10.0])
-        positions.append(ts(1), [1.0])
+        prices.append(ts(1), np.array([10.0], dtype=np.float64))
+        positions.append(ts(1), np.array([1.0], dtype=np.float64))
         sim.update(ts(1))
         # Cash: 1000 - 10 - 5 = 985
         # MV: 985 + 10 = 995
@@ -498,7 +476,7 @@ class TestAverageReturn:
 
     def test_no_signal_no_output(self) -> None:
         mv = make_scalar_series([100.0, 110.0])
-        signal: Series[np.float64] = Series(np.dtype(np.float64))
+        signal = Series((), np.dtype(np.float64))
         ar = AverageReturn(mv, signal)
         ar.update(ts(1))
         ar.update(ts(2))
@@ -508,13 +486,13 @@ class TestAverageReturn:
 class TestSharpeRatio:
     def test_basic(self) -> None:
         # Construct a series with known returns
-        mv: Series[np.float64] = Series(np.dtype(np.float64))
-        signal: Series[np.float64] = Series(np.dtype(np.float64))
+        mv = Series((), np.dtype(np.float64))
+        signal = Series((), np.dtype(np.float64))
 
         values = [100.0, 110.0, 121.0, 108.9]  # returns: 0.1, 0.1, -0.1
         for i, v in enumerate(values, start=1):
-            mv.append(ts(i), v)
-            signal.append(ts(i), 1.0)
+            mv.append(ts(i), np.array(v, dtype=np.float64))
+            signal.append(ts(i), np.array(1.0, dtype=np.float64))
 
         sr = SharpeRatio(mv, signal, periods_per_year=252)
         for i in range(1, 5):
@@ -522,8 +500,6 @@ class TestSharpeRatio:
 
         # Need >= 2 returns -> first output at i=4 (3 signal ticks with returns)
         returns = np.array([0.1, 0.1, -0.1])
-        expected = (
-            returns.mean() / returns.std(ddof=1) * np.sqrt(252)
-        )
+        expected = returns.mean() / returns.std(ddof=1) * np.sqrt(252)
         assert len(sr.output) == 1
         assert float(sr.output.values[-1]) == pytest.approx(expected, rel=1e-6)

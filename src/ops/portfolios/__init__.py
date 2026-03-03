@@ -1,7 +1,13 @@
 """Portfolio construction methods.
 
-This module is the public entry point for portfolio operators and re-
-exports implementations from dedicated files.
+All portfolio operators take a vector-valued prediction series and
+produce a weight vector of the same length (summing to 1).
+
+Classes
+-------
+TopK              – Equal-weight allocation to the top *k* assets.
+TopKRankLinear    – Rank-proportional allocation to the top *k* assets.
+MeanVarianceOptimization – Mean-variance optimisation (not yet implemented).
 """
 
 from .mean_variance_optimization import MeanVarianceOptimization

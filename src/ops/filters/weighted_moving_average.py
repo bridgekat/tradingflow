@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import override
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -11,21 +11,23 @@ from ... import Series
 from .rolling import Rolling
 
 
-class WeightedMovingAverage(Rolling):
-    """Linearly weighted moving average for count-based windows.
+class WeightedMovingAverage[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
+    """Linearly weighted moving average (WMA).
 
-    Produces ``float64`` output regardless of input dtype.
+    Only supports count-based (``int``) windows.  Weights increase linearly
+    so the most recent value has the highest weight.
     """
 
     __slots__ = ()
 
-    def __init__(self, window: int, series: Series[Any]) -> None:
-        if isinstance(window, np.timedelta64):
-            raise TypeError("WeightedMovingAverage requires an integer window, " f"got {type(window).__name__}")
-        super().__init__(int(window), [series], series.shape)
+    def __init__(self, window: int, series: Series[Shape, T]) -> None:
+        if not isinstance(window, int):
+            raise TypeError(f"WeightedMovingAverage requires an integer window, got {type(window).__name__}")
+        super().__init__(window, series)
 
-    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
-        series = inputs[0]
+    @override
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> ArrayLike | None:
+        (series,) = inputs
         if not series:
             return None
         vals = self._get_window(series, timestamp)
@@ -33,8 +35,4 @@ class WeightedMovingAverage(Rolling):
         if n == 0:
             return None
         weights = np.arange(1, n + 1, dtype=np.float64)
-        weights /= weights.sum()
-        if vals.ndim > 1:
-            shape = (n,) + (1,) * (vals.ndim - 1)
-            weights = weights.reshape(shape)
-        return (vals * weights).sum(axis=0)
+        return np.average(vals, axis=0, weights=weights)

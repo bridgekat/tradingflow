@@ -1,66 +1,85 @@
-"""Trading simulator operator."""
+"""Trading simulator.
+
+Provides :class:`TradingSimulator`, an :class:`Operator` that takes a
+price series and a position series, tracks cash and holdings, and outputs
+the total market value (scalar float64) at each timestamp.  Supports
+proportional commission with an optional per-asset minimum charge.
+"""
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, override
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import ArrayLike
 
 from ... import Operator, Series
 
 
-class TradingSimulator(Operator[dict[str, Any], np.float64]):
-    """Simulates portfolio trading with configurable commissions."""
+class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, dict]):
+    """Simulates portfolio trading with optional commission.
+
+    Tracks cash, positions and computes the total market value
+    (cash + holdings) at each timestamp.
+
+    Parameters
+    ----------
+    prices
+        Vector series of asset prices.
+    positions
+        Vector series of desired position sizes.
+    commission_rate
+        Proportional commission rate applied to the absolute trade value
+        of each asset.
+    min_charge
+        Minimum commission charged per asset when a trade occurs.
+    initial_cash
+        Starting cash balance.
+    """
 
     __slots__ = ("_commission_rate", "_min_charge")
 
+    _commission_rate: float
+    _min_charge: float
+
     def __init__(
         self,
-        prices: Series[Any],
-        positions: Series[Any],
+        prices: Series,
+        positions: Series,
         commission_rate: float = 0.0,
         min_charge: float = 0.0,
         initial_cash: float = 0.0,
     ) -> None:
-        if len(prices.shape) != 1 or prices.shape != positions.shape:
-            raise ValueError(
-                "prices and positions must be 1-D series with the same "
-                f"shape; got prices.shape={prices.shape}, "
-                f"positions.shape={positions.shape}"
-            )
-        state: dict[str, Any] = {
-            "prev_positions": np.zeros(prices.shape[0], dtype=np.float64),
-            "cash": float(initial_cash),
-        }
-        super().__init__([prices, positions], state, np.dtype(np.float64))
+        state: dict[str, Any] = {"cash": initial_cash, "prev_positions": None}
+        super().__init__((prices, positions), (), np.dtype(np.float64), state)
         self._commission_rate = commission_rate
         self._min_charge = min_charge
 
-    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
-        price_series, position_series = inputs[0], inputs[1]
-        if not price_series or not position_series:
+    @override
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict) -> ArrayLike | None:
+        prices, positions = inputs
+        if not prices or not positions:
             return None
+        current_prices = prices.values[-1]
+        current_positions = positions.values[-1]
 
-        prices: NDArray[np.float64] = np.asarray(price_series.values[-1], dtype=np.float64)
-        new_positions: NDArray[np.float64] = np.asarray(position_series.values[-1], dtype=np.float64)
-        prev_positions: NDArray[np.float64] = self._state["prev_positions"]
+        if state["prev_positions"] is None:
+            trades = current_positions
+        else:
+            trades = current_positions - state["prev_positions"]
 
-        trades = new_positions - prev_positions
-        trade_values = np.abs(trades * prices)
+        trade_cost = float(np.sum(trades * current_prices))
+        trade_values = np.abs(trades * current_prices)
 
-        traded_mask = trades != 0.0
-        commissions = np.where(
-            traded_mask,
-            np.maximum(self._commission_rate * trade_values, self._min_charge),
-            0.0,
-        )
-        total_commission = float(commissions.sum())
+        if self._commission_rate > 0 or self._min_charge > 0:
+            commissions = np.maximum(self._commission_rate * trade_values, self._min_charge)
+            commissions = np.where(np.abs(trades) > 0, commissions, 0.0)
+            total_commission = float(np.sum(commissions))
+        else:
+            total_commission = 0.0
 
-        trade_cost = float((trades * prices).sum())
+        state["cash"] -= trade_cost + total_commission
+        state["prev_positions"] = current_positions.copy()
 
-        self._state["cash"] -= trade_cost + total_commission
-        self._state["prev_positions"] = new_positions.copy()
-
-        market_value = self._state["cash"] + float((new_positions * prices).sum())
+        market_value = state["cash"] + float(np.sum(current_positions * current_prices))
         return market_value

@@ -1,46 +1,47 @@
-"""Rolling window base class for filter operators."""
+"""Rolling window base class for filter operators.
+
+Provides :class:`Rolling`, an abstract :class:`Operator` subclass that
+manages a rolling window specification (count or time-based) and exposes
+:meth:`_get_window` for concrete filters to extract the relevant slice
+of input values.
+"""
 
 from __future__ import annotations
 
 from abc import ABC
-from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
 
-from ... import Operator, Series
+from ... import Array, Operator, Series
 
 
-class Rolling(Operator[None, np.float64], ABC):
+class Rolling[Shape: tuple[int, ...], T: np.generic](Operator[tuple[Series[Shape, T]], Shape, T, None], ABC):
     """Abstract base for rolling window operators.
 
     Accepts either a count-based window (``int``, last *N* elements) or a
     time-based window (``np.timedelta64``, elements within a time span).
     Subclasses use :meth:`_get_window` inside their :meth:`compute`
     implementation to extract the relevant portion of an input series.
-
-    All rolling filters produce ``float64`` output regardless of input dtype.
     """
 
     __slots__ = ("_window",)
 
-    def __init__(
-        self,
-        window: int | np.timedelta64,
-        inputs: list[Series[Any]],
-        shape: tuple[int, ...] = (),
-    ) -> None:
-        super().__init__(inputs, None, np.dtype(np.float64), shape)
-        self._window: int | np.timedelta64 = window
+    _window: int | np.timedelta64
 
-    @property
-    def window(self) -> int | np.timedelta64:
-        """The rolling window size."""
-        return self._window
+    def __init__(self, window: int | np.timedelta64, series: Series[Shape, T]) -> None:
+        super().__init__((series,), series.shape, series.dtype, None)
+        self._window = window
+        if isinstance(window, int):
+            if window <= 0:
+                raise ValueError("Window size must be a positive integer.")
+        else:
+            if window <= np.timedelta64(0):
+                raise ValueError("Window size must be a positive time delta.")
 
-    def _get_window(self, series: Series[Any], timestamp: np.datetime64) -> NDArray[Any]:
+    def _get_window(self, series: Series[Shape, T], timestamp: np.datetime64) -> Array[tuple[int, *Shape], T]:
         """Extract values within the rolling window from *series*."""
-        if isinstance(self._window, np.timedelta64):
+        if isinstance(self._window, int):
+            return series.values[-self._window :]
+        else:
             start = timestamp - self._window
-            return series.between(start, timestamp).values
-        return series.values[-int(self._window) :]
+            return series.between(start, timestamp, left_inclusive=False, right_inclusive=True).values

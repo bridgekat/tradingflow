@@ -2,14 +2,20 @@
 
 # Features
 
-- **Unified data model:** almost everything is a time series or a time series operator.
+- **Composable modules:** almost everything is a time series or a time series operator.
 - **Agent-friendly codebase:** we maintain code-documentation consistency and a hierarchy of documented modules to facilitate AI code exploration and generation. Instruct AI agents to start every task by reading [AGENTS.md](AGENTS.md).
 
 # Core Concepts
 
 ## Time Series
 
-A [time series](src/series.py) is a sequence of uniformly typed values indexed by strictly increasing `np.datetime64` timestamps.
+A [time series](src/series.py) is a sequence of uniformly typed elements indexed by strictly increasing `np.datetime64` timestamps, supporting integer indexing, slicing, timestamp lookups, and amortized O(1) appends.
+
+### Data Formats
+
+An element in a time series can be a scalar, vector, matrix or higher-dimensional array with a fixed [`numpy.dtype`](https://numpy.org/doc/stable/reference/arrays.dtypes.html) and shape. Elements in a time series are internally stored in a single [`numpy.ndarray`](https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html).
+
+This design is simple but not as flexible as Pandas-style data frames, which can contain columns of different types. To support such data, multiple time series must be created for different types.
 
 ### Source Series
 
@@ -17,14 +23,14 @@ A source series is simply a time series of raw market data.
 
 Examples include:
 
-- **Order flows**
-- **Snapshot prices**
-- **Financial reports**
-- **Order execution status**
+- **Order flows** (TODO)
+- **Snapshot prices** (TODO)
+- **Financial reports** (TODO)
+- **Order execution status** (TODO)
 
 ### Derived Series
 
-A derived series is a time series computed from zero or more time series by a [fixed algorithm](src/operator.py), either in real-time or periodically. The input series interface assumes "as-of" queries, ensuring causality of computation (i.e. the output value at a given timestamp only depends on input values from the past and present, not the future).
+A derived series is a time series computed from zero or more time series by an [operator](src/operator.py). An operator is defined by its compute function, which generates the current value given all input series *up to the current timestamp*, preventing accidental use of future information.
 
 Examples include:
 
@@ -42,14 +48,14 @@ A scenario is a collection of source and derived series along with their depende
 
 ## Events
 
-An event is an update to zero or more source series at a specific timestamp. Events are processed in timestamp order. Each event triggers incremental updates to all affected derived series in the scenario.
+An event is an update to zero or more source series at a specific timestamp. Events are generated with strictly increasing timestamps. Each event triggers incremental updates to all affected derived series in the scenario.
 
 ## Storage Policies (TODO)
 
-Based on the scenario demand, a (source or derived) series may admit one of the following storage policies:
+Based on the scenario demand, a time series may admit one of the following storage policies:
 
 - **Last:** only the most recent value is stored. Only available if historical values are never accessed.
 - **Window:** all values are stored but oldest entries are eventually removed. Only available if all accesses are within a fixed time window.
 - **Full:** all values are stored.
 
-All series are immutable: a value cannot be modified once it is generated.
+All time series are immutable: a value cannot be modified once it is generated.

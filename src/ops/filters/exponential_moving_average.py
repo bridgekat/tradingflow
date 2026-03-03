@@ -2,32 +2,44 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, override
 
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ... import Operator, Series
+from ... import Array, Operator, Series
 
 
-class ExponentialMovingAverage(Operator[None, np.float64]):
+class ExponentialMovingAverage[Shape: tuple[int, ...], T: np.floating](
+    Operator[tuple[Series[Shape, T]], Shape, T, Array[Any, Any] | None]
+):
     """Exponential moving average (EMA).
 
-    Produces ``float64`` output regardless of input dtype.
+    Unlike :class:`Rolling`-based filters, EMA extends :class:`Operator`
+    directly because it uses exponential weighting rather than a fixed
+    window.  The previous EMA value is carried in the operator *state*
+    (``None`` before the first observation, then an ``ndarray``).
     """
 
     __slots__ = ("_alpha",)
 
-    def __init__(self, alpha: float, series: Series[Any]) -> None:
-        super().__init__([series], None, np.dtype(np.float64), series.shape)
+    _alpha: float
+
+    def __init__(self, alpha: float, series: Series[Shape, T]) -> None:
+        super().__init__((series,), series.shape, series.dtype, None)
         self._alpha = alpha
 
-    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
-        series = inputs[0]
+    @override
+    def compute(
+        self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: Array[Any, Any] | None
+    ) -> ArrayLike | None:
+        (series,) = inputs
         if not series:
             return None
-        latest = series.values[-1]
-        if self.output:
-            prev = self.output.values[-1]
-            return self._alpha * latest + (1.0 - self._alpha) * prev
-        return latest
+        latest = series.values[-1, ...]
+        if state is not None:
+            result = self._alpha * latest + (1.0 - self._alpha) * state
+        else:
+            result = latest
+        self._state = result
+        return result

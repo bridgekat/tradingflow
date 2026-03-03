@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import override
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -11,25 +11,29 @@ from ... import Series
 from .rolling import Rolling
 
 
-class MovingVariance(Rolling):
-    """Rolling sample variance.
+class MovingVariance[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
+    """Rolling sample variance (``ddof=1`` by default).
 
-    Produces ``float64`` output regardless of input dtype.
+    Output shape matches the input element shape.  Requires more than
+    *ddof* observations in the window to produce output.
     """
 
     __slots__ = ("_ddof",)
 
+    _ddof: int
+
     def __init__(
         self,
         window: int | np.timedelta64,
-        series: Series[Any],
+        series: Series[Shape, T],
         ddof: int = 1,
     ) -> None:
-        super().__init__(window, [series], series.shape)
+        super().__init__(window, series)
         self._ddof = ddof
 
-    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
-        series = inputs[0]
+    @override
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> ArrayLike | None:
+        (series,) = inputs
         if not series:
             return None
         vals = self._get_window(series, timestamp)

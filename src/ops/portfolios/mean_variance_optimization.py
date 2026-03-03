@@ -1,27 +1,16 @@
-"""Mean-variance optimization portfolio operator."""
+"""Mean-variance optimisation portfolio construction (placeholder)."""
 
 from __future__ import annotations
 
-from typing import Any, Optional
-
-import numpy as np
-from numpy.typing import ArrayLike
-
-from ... import Operator, Series
+from ... import Series
 
 
-class MeanVarianceOptimization(Operator[None, np.float64]):
-    """Mean-variance portfolio optimization placeholder."""
+class MeanVarianceOptimization:
+    """Mean-variance portfolio optimisation.
 
-    __slots__ = ("_risk_aversion",)
+    .. note:: Not yet implemented.  Instantiation raises
+       :class:`NotImplementedError`.
+    """
 
-    def __init__(
-        self,
-        predictions: Series[Any],
-        covariances: Series[Any],
-        risk_aversion: float = 1.0,
-    ) -> None:
-        raise NotImplementedError("MeanVarianceOptimization is not yet implemented")
-
-    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
-        raise NotImplementedError
+    def __init__(self, predictions: Series, covariances: Series) -> None:
+        raise NotImplementedError("MeanVarianceOptimization is not yet implemented.")

@@ -1,7 +1,10 @@
 """Trading simulators.
 
-This module is the public entry point for simulator operators and re-exports
-implementations from dedicated files.
+Classes
+-------
+TradingSimulator – Tracks cash; positions and computes total market
+                   value (cash + holdings) with optional proportional
+                   commission and minimum charge.
 """
 
 from .trading_simulator import TradingSimulator

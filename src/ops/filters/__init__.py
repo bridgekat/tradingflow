@@ -1,11 +1,22 @@
-"""Common technical indicators implemented as signal filters.
+"""Rolling statistical filters and technical indicators.
 
-This module is the public entry point for filter operators.  Concrete
-implementations live in dedicated files within this package and are re-
-exported here.
+All filters extend :class:`Rolling` (or :class:`Operator` directly when
+the output shape differs from the input) and accept either a count-based
+(``int``) or time-based (``np.timedelta64``) window.
+
+Classes
+-------
+Rolling           – Abstract base providing :meth:`_get_window`.
+MovingAverage     – Simple moving average (SMA).
+WeightedMovingAverage – Linearly weighted moving average (WMA, int window only).
+ExponentialMovingAverage – Exponential moving average (EMA).
+MovingVariance    – Rolling sample variance.
+MovingCovariance  – Rolling sample covariance matrix (vector input → matrix output).
+Momentum          – Difference between latest and lagged value.
+BollingerBand     – Rolling mean ± *k* × std.
 """
 
-from .bollinger_bands import BollingerBands
+from .bollinger_bands import BollingerBand
 from .exponential_moving_average import ExponentialMovingAverage
 from .momentum import Momentum
 from .moving_average import MovingAverage
@@ -16,7 +27,7 @@ from .weighted_moving_average import WeightedMovingAverage
 
 
 __all__ = [
-    "BollingerBands",
+    "BollingerBand",
     "ExponentialMovingAverage",
     "Momentum",
     "MovingAverage",

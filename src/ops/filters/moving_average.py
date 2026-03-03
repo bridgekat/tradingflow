@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import override
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -11,19 +11,17 @@ from ... import Series
 from .rolling import Rolling
 
 
-class MovingAverage(Rolling):
-    """Simple moving average (SMA).
-
-    Produces ``float64`` output regardless of input dtype.
-    """
+class MovingAverage[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
+    """Simple moving average (SMA)."""
 
     __slots__ = ()
 
-    def __init__(self, window: int | np.timedelta64, series: Series[Any]) -> None:
-        super().__init__(window, [series], series.shape)
+    def __init__(self, window: int | np.timedelta64, series: Series[Shape, T]) -> None:
+        super().__init__(window, series)
 
-    def compute(self, timestamp: np.datetime64, *inputs: Series[Any]) -> Optional[ArrayLike]:
-        series = inputs[0]
+    @override
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> ArrayLike | None:
+        (series,) = inputs
         if not series:
             return None
         vals = self._get_window(series, timestamp)

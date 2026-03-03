@@ -1,21 +1,26 @@
 """TradingFlow – a lightweight library for quantitative investment research.
 
-This top-level package provides the core time series primitives.
+This top-level package provides the core time series primitives and
+re-exports them for convenient access.
+
+Type aliases
+------------
+AnyShape
+    ``tuple[int, ...]`` – element shape of a series value.
+Array[Shape, T]
+    ``np.ndarray[Shape, np.dtype[T]]`` – shaped NumPy array.
 
 Classes
 -------
-Series[T]
+Series[Shape, T]
     A NumPy-backed time series of ``(timestamp, value)`` pairs with strictly
-    increasing ``np.datetime64[ns]`` timestamps.  Timestamps are stored in a
-    1-D ``NDArray[np.datetime64]`` and values in an ``NDArray[T]`` where *T*
-    is a ``np.generic`` subtype and each element may be N-dimensional.  All
-    elements share the same shape and dtype.  Internal buffers are always
-    allocated at construction time with pre-determined dtypes
-    (``dtype``, ``shape``).  Supports integer indexing, slicing,
-    as-of timestamp lookup (:meth:`~Series.at`), time-range queries
-    (:meth:`~Series.between`), and as-of slicing (:meth:`~Series.to`).
+    increasing ``np.datetime64[ns]`` timestamps.  Scalars are stored as
+    0-dimensional arrays (shape ``()``) to keep the API uniform.  Supports
+    integer indexing, slicing, as-of timestamp lookup (:meth:`~Series.at`),
+    time-range queries (:meth:`~Series.between`), and as-of slicing
+    (:meth:`~Series.to`).
 
-Operator[S, T]
+Operator[Inputs, Shape, T, State]
     Abstract base for operators that compute derived time series.
     Subclass and override :meth:`~Operator.compute` to define custom
     logic.  Each call to :meth:`~Operator.update` slices all inputs up
@@ -27,9 +32,11 @@ See README.md and AGENTS.md for project overview and contributor guidance.
 """
 
 from .operator import Operator
-from .series import Series
+from .series import AnyShape, Array, Series
 
 __all__ = [
+    "AnyShape",
+    "Array",
     "Operator",
     "Series",
 ]
