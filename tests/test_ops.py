@@ -8,7 +8,7 @@ import pytest
 
 from src import Series
 from src.operator import Operator
-from src.ops import Apply, add, subtract, multiply, divide, multiple, negate
+from src.ops import Apply, add, divide, multiply, negate, select, subtract
 from src.ops.filters import (
     BollingerBand,
     ExponentialMovingAverage,
@@ -134,6 +134,20 @@ class TestFactoryFunctions:
         for i in range(1, 3):
             op.update(ts(i))
         np.testing.assert_array_almost_equal(op.output.values, [[5.0, 5.0], [6.0, 5.0]])
+
+
+class TestSelect:
+    def test_selects_requested_indices(self) -> None:
+        series = make_vector_series([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        op = select(series, (2, 0))
+        op.update(ts(1))
+        op.update(ts(2))
+        np.testing.assert_array_almost_equal(op.output.values, [[3.0, 1.0], [6.0, 4.0]])
+
+    def test_rejects_out_of_bounds_index(self) -> None:
+        series = make_vector_series([[1.0, 2.0]])
+        with pytest.raises(ValueError, match="out of bounds"):
+            select(series, (2,))
 
 
 # ===========================================================================

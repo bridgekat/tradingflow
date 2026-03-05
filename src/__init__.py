@@ -13,25 +13,37 @@ Core classes
 ------------
 Series[Shape, T]
     NumPy-backed time series with strictly increasing timestamps.
+Source[Shape, T]
+    Data-source abstraction that owns one source series.
+eastmoney
+    Namespace package for EastMoney-specific source adapters.
 Operator[Inputs, Shape, T, State]
     Base class for derived-series computations.
-Event
-    Timestamped mapping of source-series updates.
 Scenario
-    Event-driven runtime that dispatches updates through an acyclic
-    source/operator dependency graph.
+    Async runtime that reads source streams and updates an acyclic
+    source/operator dependency graph incrementally.
 """
 
-from .event import Event
 from .operator import Operator
 from .scenario import Scenario
 from .series import AnyShape, Array, Series
+from .source import Source
+from .sources import (
+    ArrayBundleSource,
+    AsyncCallableSource,
+    CSVSource,
+    eastmoney,
+)
 
 __all__ = [
     "AnyShape",
     "Array",
-    "Event",
+    "ArrayBundleSource",
+    "AsyncCallableSource",
+    "CSVSource",
     "Operator",
     "Scenario",
     "Series",
+    "Source",
+    "eastmoney",
 ]

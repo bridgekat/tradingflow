@@ -11,8 +11,6 @@ Factory functions
 -----------------
 add, subtract, negate, multiply, divide
     Element-wise arithmetic operators that return :class:`Apply` instances.
-multiple
-    Backward-compatible alias for :func:`divide`.
 """
 
 from __future__ import annotations
@@ -117,8 +115,3 @@ def multiply[Shape: _AnyShape, T: np.number](a: Series[Shape, T], b: Series[Shap
 def divide[Shape: _AnyShape, T: np.floating](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
     """Element-wise division: ``a / b`` with floating point inputs."""
     return Apply((a, b), a.shape, a.dtype, _divide)
-
-
-def multiple[Shape: _AnyShape, T: np.floating](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
-    """Backward-compatible alias for :func:`divide`."""
-    return divide(a, b)
