@@ -1,161 +1,97 @@
-"""Base abstractions for source-series data ingestion.
-
-This module defines the source-side protocol consumed by
-:class:`src.scenario.Scenario`.
-
-Public API
-----------
-Source[Shape, T]
-    Abstract base class for one source bound to one source series.
-SourceItem[Shape, T]
-    One streamed data item carrying a value and optional payload timestamp.
-TimestampMode
-    Source timestamp semantics, either ``"payload"`` or ``"ingest"``.
-
-Invariants
-----------
-* One source owns exactly one source series.
-* Source-level timestamp monotonicity is enforced strictly.
-* Values are validated against the bound series shape and dtype before append.
-"""
+"""Core interface for data sources which generate values into time series."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .series import AnyShape, Array, Series
-
-type TimestampMode = Literal["payload", "ingest"]
-
-
-@dataclass(slots=True, frozen=True)
-class SourceItem[Shape: AnyShape, T: np.generic]:
-    """One streamed data item.
-
-    Parameters
-    ----------
-    value
-        The value to append to the bound source series.
-    timestamp
-        Optional payload timestamp. Required for payload-timestamp sources;
-        ignored for ingest-timestamp sources.
-    """
-
-    value: ArrayLike
-    timestamp: np.datetime64 | None = None
+from .series import AnyShape
 
 
 class Source[Shape: AnyShape, T: np.generic](ABC):
-    """Abstract base class for one source bound to one source series.
+    """Abstract base class for sources that produce data into a time series.
 
-    Subclasses implement :meth:`stream` and yield :class:`SourceItem`
-    instances. The runtime validates value dtype/shape and timestamp
-    monotonicity before appending into :attr:`series`.
+    A source declares the element *shape* and *dtype* of the values it will
+    emit.  :class:`~src.scenario.Scenario` creates the target
+    :class:`~src.series.Series` when the source is registered via
+    :meth:`~src.scenario.Scenario.add_source`.
+
+    Subclasses implement :meth:`subscribe` to return a ``(historical, live)``
+    async-iterator pair.  The historical iterator must yield
+    ``(timestamp, value)`` pairs in strictly increasing timestamp order.
+    The live iterator must yield raw values, which will be stamped at ingest
+    time by :class:`~src.scenario.Scenario`.  The two iterators must cover
+    complementary, non-overlapping segments of the same time series, split
+    at some instant during the execution of :meth:`subscribe`.
+
+    Parameters
+    ----------
+    shape
+        Shape of each emitted value element.  Use ``()`` for scalars.
+    dtype
+        NumPy dtype for the emitted values (e.g. ``np.float64``).
+    name
+        Optional human-readable name used in diagnostics and error messages;
+        defaults to the class name.
     """
 
-    __slots__ = ("_series", "_name", "_timestamp_mode", "_last_timestamp")
+    __slots__ = ("_shape", "_dtype", "_name")
 
-    _series: Series[Shape, T]
+    _shape: Shape
+    _dtype: np.dtype[T]
     _name: str
-    _timestamp_mode: TimestampMode
-    _last_timestamp: np.datetime64 | None
 
     def __init__(
         self,
-        series: Series[Shape, T],
+        shape: Shape,
+        dtype: type[T] | np.dtype[T],
         *,
         name: str | None = None,
-        timestamp_mode: TimestampMode,
     ) -> None:
-        self._series = series
+        self._shape = shape
+        self._dtype = np.dtype(dtype)
         self._name = name or type(self).__name__
-        self._timestamp_mode = timestamp_mode
-        self._last_timestamp = series.index[-1] if len(series) > 0 else None
 
     @abstractmethod
-    async def stream(self) -> AsyncIterator[SourceItem[Shape, T]]:
-        """Returns an async stream of source items."""
+    def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, ArrayLike]], AsyncIterator[ArrayLike]]:
+        """Returns a ``(historical, live)`` async-iterator pair."""
         raise NotImplementedError
 
     @property
-    def series(self) -> Series[Shape, T]:
-        """The source series owned by this source."""
-        return self._series
+    def shape(self) -> Shape:
+        """Element shape of each emitted value."""
+        return self._shape
+
+    @property
+    def dtype(self) -> np.dtype[T]:
+        """NumPy dtype of emitted values."""
+        return self._dtype
 
     @property
     def name(self) -> str:
-        """Human-readable source name."""
+        """Human-readable name for debugging."""
         return self._name
 
-    @property
-    def timestamp_mode(self) -> TimestampMode:
-        """Timestamp semantics of this source."""
-        return self._timestamp_mode
 
-    @property
-    def last_timestamp(self) -> np.datetime64 | None:
-        """Last committed timestamp emitted by this source."""
-        return self._last_timestamp
+async def empty_historical_gen() -> AsyncIterator[tuple[np.datetime64, Any]]:
+    """Immediately-exhausting historical async generator.
 
-    def normalize_item(
-        self,
-        item: SourceItem[Shape, T],
-        *,
-        ingest_timestamp: np.datetime64 | None = None,
-    ) -> tuple[np.datetime64, Array[Shape, T]]:
-        """Validates and normalizes one streamed item."""
-        timestamp = self._resolve_timestamp(item.timestamp, ingest_timestamp=ingest_timestamp)
-        value = np.asarray(item.value, dtype=self._series.dtype)
-        if value.shape != self._series.shape:
-            raise ValueError(
-                f"Source '{self._name}' emitted value shape {value.shape}, " f"expected {self._series.shape}"
-            )
-        return timestamp, cast(Array[Shape, T], value)
-
-    def commit_timestamp(self, timestamp: np.datetime64) -> None:
-        """Commits a timestamp after successful append."""
-        if self._last_timestamp is not None and timestamp <= self._last_timestamp:
-            raise ValueError(
-                f"Source '{self._name}' emitted non-increasing timestamp {timestamp!r}; "
-                f"last timestamp is {self._last_timestamp!r}"
-            )
-        self._last_timestamp = timestamp
-
-    def _resolve_timestamp(
-        self,
-        payload_timestamp: np.datetime64 | None,
-        *,
-        ingest_timestamp: np.datetime64 | None,
-    ) -> np.datetime64:
-        if self._timestamp_mode == "payload":
-            if payload_timestamp is None:
-                raise ValueError(f"Source '{self._name}' requires payload timestamps.")
-            timestamp = _to_datetime64_ns(payload_timestamp)
-        else:
-            if ingest_timestamp is None:
-                raise ValueError(f"Source '{self._name}' requires ingest timestamps from the runtime.")
-            timestamp = _to_datetime64_ns(ingest_timestamp)
-            if self._last_timestamp is not None and timestamp <= self._last_timestamp:
-                timestamp = cast(np.datetime64, self._last_timestamp + np.timedelta64(1, "ns"))
-
-        if self._last_timestamp is not None and timestamp <= self._last_timestamp:
-            raise ValueError(
-                f"Source '{self._name}' emitted non-increasing timestamp {timestamp!r}; "
-                f"last timestamp is {self._last_timestamp!r}"
-            )
-        return timestamp
+    Returns an async generator that yields nothing.  Intended for use in
+    :meth:`Source.subscribe` implementations of purely-live sources.
+    """
+    return
+    yield  # Required to make this an async generator
 
 
-def _to_datetime64_ns(value: np.datetime64 | Any) -> np.datetime64:
-    """Coerces a timestamp-like value to ``datetime64[ns]``."""
-    try:
-        timestamp = np.datetime64(value)
-    except Exception as exc:  # pragma: no cover - exact NumPy error type varies.
-        raise ValueError(f"Could not parse timestamp value {value!r}.") from exc
-    return cast(np.datetime64, timestamp.astype("datetime64[ns]"))
+async def empty_live_gen() -> AsyncIterator[Any]:
+    """Immediately-exhausting live async generator.
+
+    Returns an async generator that yields nothing.  Intended for use in
+    :meth:`Source.subscribe` implementations of purely-historical sources.
+    """
+    return
+    yield  # Required to make this an async generator

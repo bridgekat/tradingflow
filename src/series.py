@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import cast, overload, override
+from typing import cast, overload
 
 import numpy as np
 
@@ -70,8 +70,6 @@ class Series[Shape: AnyShape, T: np.generic]:
     _values: Array[tuple[int, *Shape], T]
     _length: int
 
-    # -- Creation ------------------------------------------------------------
-
     def __init__(
         self,
         shape: Shape,
@@ -90,21 +88,15 @@ class Series[Shape: AnyShape, T: np.generic]:
             self._values = cast("Array[tuple[int, *Shape], T]", np.empty((_INITIAL_CAPACITY, *shape), dtype=dtype))
             self._length = 0
 
-    # -- Size & truthiness ---------------------------------------------------
-
     def __len__(self) -> int:
         return self._length
 
     def __bool__(self) -> bool:
         return self._length > 0
 
-    # -- Iteration -----------------------------------------------------------
-
     def __iter__(self) -> Iterator[tuple[np.datetime64, Array[Shape, T]]]:
         for i in range(self._length):
             yield self._index[i], self._value(i)
-
-    # -- Element access ------------------------------------------------------
 
     @overload
     def __getitem__(self, key: int) -> Array[Shape, T]: ...
@@ -120,8 +112,6 @@ class Series[Shape: AnyShape, T: np.generic]:
             return self._value(key)
         else:
             return self._readonly_slice(key)
-
-    # -- Properties ----------------------------------------------------------
 
     @property
     def shape(self) -> Shape:
@@ -156,8 +146,6 @@ class Series[Shape: AnyShape, T: np.generic]:
         if self._length == 0:
             return None
         return self._value(self._length - 1)
-
-    # -- Timestamp-based access ----------------------------------------------
 
     def at(self, timestamp: np.datetime64) -> Array[Shape, T] | None:
         """Returns the latest value at or before *timestamp* (as-of lookup).
@@ -194,8 +182,6 @@ class Series[Shape: AnyShape, T: np.generic]:
             return self._readonly_empty()
         return self._readonly_slice(slice(int(l), int(r)))
 
-    # -- Mutation ------------------------------------------------------------
-
     def append(self, timestamp: np.datetime64, value: Array[Shape, T]) -> None:
         """Appends a ``(timestamp, value)`` pair.
 
@@ -225,22 +211,6 @@ class Series[Shape: AnyShape, T: np.generic]:
         self._index[self._length] = timestamp
         self._values[self._length] = value
         self._length += 1
-
-    # -- Representation ------------------------------------------------------
-
-    @override
-    def __repr__(self) -> str:
-        if self._length == 0:
-            return "Series(empty)"
-        shape_str = f", shape={self.shape}" if self.shape else ""
-        return (
-            f"Series(length={self._length}, "
-            f"first={self._index[0]!r}, "
-            f"last={self._index[self._length - 1]!r}"
-            f"{shape_str})"
-        )
-
-    # -- Internal helpers ----------------------------------------------------
 
     def _value(self, index: int | np.intp) -> Array[Shape, T]:
         """Returns the value at *index* as an array with the correct shape."""

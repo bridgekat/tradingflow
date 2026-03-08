@@ -1,295 +1,436 @@
 """Scenario runtime for source-driven series/operator execution.
 
-This module defines :class:`Scenario`, which owns a directed acyclic graph
-of source series and derived-series operators, and drives the graph from
-asynchronous source streams.
+This module defines :class:`Scenario`, a specification of sources and
+operators that form a directed acyclic graph of time series, and
+:class:`_ScenarioState`, the per-run mutable state created fresh for
+every :meth:`Scenario.run` invocation.
+
+Point-of-coherency queue (POCQ)
+-------------------------------
+Each source exposes a ``(historical, live)`` iterator pair via
+:meth:`~src.source.Source.subscribe`.  The runtime converts all incoming items
+into ``(timestamp, series, value)`` events and accumulates them in the POCQ.
+
+* **Historical constraint** – before advancing the POCQ, every active
+  historical iterator must have a pending event ready.  This prevents an
+  in-flight historical iterator from later producing a timestamp smaller than
+  one already committed.
+* **Live iterators** are exempt from this constraint: their timestamps are
+  wall-clock instants and are therefore always >= any historical timestamp
+  and any existing live timestamp.
+* The POCQ accumulates events sharing the same timestamp.  When an event with
+  a strictly larger timestamp arrives, all queued events are flushed
+  (appended to their series and propagated to downstream operators), and the
+  new event starts a fresh queue.
+* After all iterators are exhausted, any remaining queued events are flushed.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import heapq
 import time
-from collections import deque
-from collections.abc import AsyncIterator, Iterable
-from typing import Any, cast
+from collections.abc import AsyncIterator
+from typing import Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from .operator import Operator
 from .series import Array, Series
-from .sources import Source, SourceItem
-
+from .source import Source
 
 type _AnySeries = Series[Any, Any]
 type _AnySource = Source[Any, Any]
 type _AnyOperator = Operator[Any, Any, Any, Any]
 type _AnyArray = Array[Any, Any]
+type _AnyEvent = tuple[np.datetime64, _SourceState, _AnyArray]
 
 
 class Scenario:
-    """Async execution context for source and derived series.
+    """A directed acyclic graph of sources and operators.
 
-    Key responsibilities:
-
-    * Register source :class:`~src.sources.Source` objects and
-      :class:`~src.operator.Operator` objects.
-    * Freeze and validate dependencies before the first run.
-    * Read source streams and append updates into source series.
-    * Coalesce same-timestamp updates and propagate them to affected
-      downstream operators in topological order.
-
-    Parameters
-    ----------
-    sources
-        Source objects that can append to source series.
-    operators
-        Operators that derive series from sources and/or other operators.
-
-    Invariants
-    ----------
-    * Each source owns exactly one source series.
-    * The operator dependency graph must be acyclic.
-    * After the first run starts, graph structure is frozen.
-    * Committed runtime timestamps are strictly increasing.
+    Sources and operators are registered via :meth:`add_source` and
+    :meth:`add_operator`, each returning the output :class:`~src.series.Series`
+    that will be written to during :meth:`run`.
     """
 
     __slots__ = (
         "_sources",
         "_operators",
-        "_frozen",
-        "_last_timestamp",
-        "_topological_operators",
-        "_source_consumers",
-        "_downstream",
     )
 
-    _sources: set[_AnySource]
-    _operators: list[_AnyOperator]
-    _frozen: bool
-    _last_timestamp: np.datetime64 | None
-    _topological_operators: tuple[_AnyOperator, ...]
-    _source_consumers: dict[_AnySource, tuple[_AnyOperator, ...]]
-    _downstream: dict[_AnyOperator, tuple[_AnyOperator, ...]]
+    _sources: list[tuple[_AnySource, _AnySeries]]
+    _operators: list[tuple[_AnyOperator, _AnySeries]]
 
-    def __init__(
-        self,
-        sources: Iterable[_AnySource] = (),
-        operators: Iterable[_AnyOperator] = (),
-    ) -> None:
-        self._sources = set()
+    def __init__(self) -> None:
+        self._sources = []
         self._operators = []
-        self._frozen = False
-        self._last_timestamp = None
-        self._topological_operators = ()
-        self._source_consumers = {}
-        self._downstream = {}
 
-        for source in sources:
-            self.add_source(source)
-        for operator in operators:
-            self.add_operator(operator)
+    @property
+    def sources(self) -> list[tuple[_AnySource, _AnySeries]]:
+        """Registered sources in insertion order."""
+        return self._sources
 
-    def add_source(self, source: _AnySource) -> None:
-        """Registers a source before the scenario is frozen."""
-        if self._frozen:
-            raise RuntimeError("Scenario is frozen and no longer accepts new sources.")
-        if not isinstance(source, Source):
-            raise TypeError("source must be a Source instance.")
-        if source in self._sources:
-            return
-        for existing in self._sources:
-            if existing.series is source.series:
-                raise ValueError("Two sources cannot own the same source series.")
-        self._sources.add(source)
+    @property
+    def operators(self) -> list[tuple[_AnyOperator, _AnySeries]]:
+        """Registered operators in insertion order."""
+        return self._operators
 
-    def add_operator(self, operator: _AnyOperator) -> None:
-        """Registers an operator before the scenario is frozen."""
-        if self._frozen:
-            raise RuntimeError("Scenario is frozen and no longer accepts new operators.")
-        if not isinstance(operator, Operator):
-            raise TypeError("operator must be an Operator instance.")
-        if operator not in self._operators:
-            self._operators.append(operator)
+    def add_source(self, source: _AnySource) -> _AnySeries:
+        """Register a source and return its output series."""
+        series = Series(source.shape, source.dtype)
+        self._sources.append((source, series))
+        return series
+
+    def add_operator(self, operator: _AnyOperator) -> _AnySeries:
+        """Register an operator and return its output series."""
+        series = Series(operator.shape, operator.dtype)
+        self._operators.append((operator, series))
+        return series
 
     async def run(self) -> None:
-        """Consumes all source streams and updates affected operators."""
-        if not self._frozen:
-            self._freeze_graph()
+        """Consume all source streams and propagate to operators.
 
-        iterators: dict[_AnySource, AsyncIterator[SourceItem[Any, Any]]] = {}
-        active_sources: set[_AnySource] = set(self._sources)
-        tasks: dict[_AnySource, asyncio.Task[SourceItem[Any, Any]]] = {}
-        pending: dict[_AnySource, tuple[np.datetime64, _AnyArray]] = {}
+        Writes to the series returned by :meth:`add_source` and
+        :meth:`add_operator`.
+        """
+        state = _ScenarioState(self)
+        await state.run()
 
-        for source in self._sources:
-            iterator = source.stream()
-            iterators[source] = iterator.__aiter__()
-            tasks[source] = asyncio.create_task(anext(iterators[source]))
+
+@dataclasses.dataclass(slots=True)
+class _SourceState:
+    """Per-source mutable state for one :meth:`Scenario.run` invocation.
+
+    If both ``hist_task`` and ``pending_hist`` are ``None``, it means that
+    the historical iterator is exhausted.  Similarly for the live iterator.
+    """
+
+    source: _AnySource
+    series: _AnySeries
+    hist_iter: AsyncIterator[tuple[np.datetime64, ArrayLike]]
+    live_iter: AsyncIterator[ArrayLike]
+    hist_task: asyncio.Task[Any] | None
+    live_task: asyncio.Task[Any] | None
+    pending_hist: tuple[np.datetime64, _AnyArray] | None
+    pending_live: tuple[np.datetime64, _AnyArray] | None
+    last_time: np.datetime64 | None  # last timestamp pushed into the POCQ
+
+
+@dataclasses.dataclass(slots=True)
+class _OperatorState:
+    """Per-operator mutable state for one :meth:`Scenario.run` invocation."""
+
+    operator: _AnyOperator
+    series: _AnySeries
+    state: Any
+
+
+class _ScenarioState:
+    """Per-run mutable state created at the start of :meth:`Scenario.run`.
+
+    Owns operator computation states, frozen graph topology, and POCQ
+    bookkeeping.
+    """
+
+    __slots__ = (
+        "_edges",
+        "_topo_order",
+        "_sources",
+        "_operators",
+        "_queue",
+    )
+
+    # Keyed by output series (always unique per node, even if same source/operator object
+    # is registered multiple times).
+    _edges: dict[_AnySeries, list[_AnySeries]]
+    _topo_order: dict[_AnySeries, int]
+    _sources: dict[_AnySeries, _SourceState]
+    _operators: dict[_AnySeries, _OperatorState]
+    _queue: list[_AnyEvent]
+
+    def __init__(self, scenario: Scenario) -> None:
+        # Map: output series → list of downstream operator output series.
+        self._edges = {}
+        for _, series in scenario.sources:
+            self._edges[series] = []
+        for _, series in scenario.operators:
+            self._edges[series] = []
+
+        for operator, series in scenario.operators:
+            for input in operator.inputs:
+                if input not in self._edges:
+                    raise ValueError("Operator input series must come from a registered source or operator output.")
+                self._edges[input].append(series)
+
+        # DFS topological sort with cycle detection.
+        flags: dict[_AnySeries, bool] = {}
+        exits: list[_AnySeries] = []
+
+        def _dfs(s: _AnySeries) -> None:
+            if s in flags:
+                if flags[s]:
+                    raise ValueError("Scenario operator dependency graph must be acyclic.")
+                return
+            flags[s] = True
+            for child in self._edges[s]:
+                _dfs(child)
+            flags[s] = False
+            exits.append(s)
+
+        for _, series in scenario.operators:
+            _dfs(series)
+
+        topo = list(reversed(exits))
+        self._topo_order = {s: i for i, s in enumerate(topo)}
+
+        # Initialize source states (keyed by output series so the same source object
+        # registered multiple times gets independent iterators and state).
+        self._sources = {}
+        for source, series in scenario.sources:
+            hist_iter, live_iter = source.subscribe()
+            st = _SourceState(
+                source=source,
+                series=series,
+                hist_iter=hist_iter.__aiter__(),
+                live_iter=live_iter.__aiter__(),
+                hist_task=None,
+                live_task=None,
+                pending_hist=None,
+                pending_live=None,
+                last_time=None,
+            )
+            st.hist_task = asyncio.create_task(_anext(st.hist_iter))
+            st.live_task = asyncio.create_task(_anext(st.live_iter))
+            self._sources[series] = st
+
+        # Initialize operator states (keyed by output series for the same reason).
+        self._operators = {}
+        for operator, series in scenario.operators:
+            st = _OperatorState(
+                operator,
+                series,
+                operator.init_state(),
+            )
+            self._operators[series] = st
+
+        # Initialize POCQ.
+        self._queue = []
+
+    # -------------------------------------------------------------------------
+    # Main run loop
+    # -------------------------------------------------------------------------
+
+    async def run(self) -> None:
+        """Drives the POCQ until exhaustion."""
 
         try:
-            while active_sources or pending:
-                timestamp = self._next_ready_timestamp(pending, active_sources)
-                if timestamp is None:
-                    if not tasks:
+            while True:
+                next_event = self._next_ready_event()
+                if next_event is None:
+                    if not await self._wait_for_events():
                         break
-                    await self._collect_next_items(tasks, pending, active_sources)
-                    continue
-                self._apply_timestamp_batch(timestamp, pending, tasks, iterators, active_sources)
-        except BaseException:
-            for task in tasks.values():
+                else:
+                    self._advance_queue(next_event)
+
+            if self._queue:
+                self._flush_queue()
+
+        except Exception:
+            tasks = [t for s in self._sources.values() for t in (s.hist_task, s.live_task) if t is not None]
+            for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks.values(), return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
             raise
 
-    async def _collect_next_items(
-        self,
-        tasks: dict[_AnySource, asyncio.Task[SourceItem[Any, Any]]],
-        pending: dict[_AnySource, tuple[np.datetime64, _AnyArray]],
-        active_sources: set[_AnySource],
-    ) -> None:
-        """Waits until at least one source yields or exhausts."""
-        if not tasks:
-            return
+    # -------------------------------------------------------------------------
+    # POCQ helpers
+    # -------------------------------------------------------------------------
 
-        done, _ = await asyncio.wait(tuple(tasks.values()), return_when=asyncio.FIRST_COMPLETED)
-        source_by_task = {task: source for source, task in tasks.items()}
+    def _next_ready_event(self) -> _AnyEvent | None:
+        """Takes the pending event with minimum timestamp, or ``None``
+        if blocked.
+
+        The historical constraint requires every source with an active
+        historical iterator to have a pending event before any timestamp
+        can be committed.
+        """
+        if any(s.hist_task is not None for s in self._sources.values()):
+            return None
+
+        min_element: tuple[np.datetime64, _SourceState, bool] | None = None
+
+        for st in self._sources.values():
+            if st.pending_hist is not None:
+                time, _ = st.pending_hist
+                if min_element is None or time < min_element[0]:
+                    min_element = time, st, True
+
+            if st.pending_live is not None:
+                time, _ = st.pending_live
+                if min_element is None or time < min_element[0]:
+                    min_element = time, st, False
+
+        if min_element is None:
+            return None
+
+        _, st, is_hist = min_element
+
+        # Take the event out of the source state.
+        if is_hist:
+            assert st.pending_hist is not None
+            time, value = st.pending_hist
+            st.last_time = time
+            st.hist_task = asyncio.create_task(_anext(st.hist_iter))
+            st.pending_hist = None
+        else:
+            assert st.pending_live is not None
+            time, value = st.pending_live
+            st.last_time = time
+            st.live_task = asyncio.create_task(_anext(st.live_iter))
+            st.pending_live = None
+
+        # Return the event.
+        return time, st, value
+
+    async def _wait_for_events(self) -> bool:
+        """Wait for at least one source iterator to yield or exhaust."""
+
+        tasks: dict[asyncio.Task[Any], tuple[_SourceState, bool]] = {}
+        for st in self._sources.values():
+            if st.hist_task is not None:
+                tasks[st.hist_task] = (st, True)
+            if st.live_task is not None:
+                tasks[st.live_task] = (st, False)
+
+        if not tasks:
+            return False
+
+        done, _ = await asyncio.wait(tasks.keys(), return_when=asyncio.FIRST_COMPLETED)
 
         for task in done:
-            source = source_by_task[task]
-            del tasks[source]
-            try:
-                item = task.result()
-            except StopAsyncIteration:
-                active_sources.discard(source)
-                continue
+            st, is_hist = tasks[task]
 
-            ingest_timestamp = self._runtime_timestamp() if source.timestamp_mode == "ingest" else None
-            timestamp, value = source.normalize_item(item, ingest_timestamp=ingest_timestamp)
-            pending[source] = (timestamp, cast(_AnyArray, value))
-
-    def _next_ready_timestamp(
-        self,
-        pending: dict[_AnySource, tuple[np.datetime64, _AnyArray]],
-        active_sources: set[_AnySource],
-    ) -> np.datetime64 | None:
-        """Returns the next timestamp eligible for commit, if any."""
-        if not pending:
-            return None
-
-        active_payload = {source for source in active_sources if source.timestamp_mode == "payload"}
-        if active_payload and not active_payload.issubset(pending):
-            return None
-
-        return min(timestamp for timestamp, _ in pending.values())
-
-    def _apply_timestamp_batch(
-        self,
-        timestamp: np.datetime64,
-        pending: dict[_AnySource, tuple[np.datetime64, _AnyArray]],
-        tasks: dict[_AnySource, asyncio.Task[SourceItem[Any, Any]]],
-        iterators: dict[_AnySource, AsyncIterator[SourceItem[Any, Any]]],
-        active_sources: set[_AnySource],
-    ) -> None:
-        """Appends all pending source updates at one timestamp and propagates."""
-        if self._last_timestamp is not None and timestamp <= self._last_timestamp:
-            raise ValueError(
-                f"Scenario received non-increasing timestamp {timestamp!r}; "
-                f"last committed timestamp is {self._last_timestamp!r}."
-            )
-
-        affected: set[_AnyOperator] = set()
-        consumed_sources: list[_AnySource] = []
-
-        for source, (source_timestamp, value) in tuple(pending.items()):
-            if source_timestamp != timestamp:
-                continue
-            source.series.append(timestamp, value)
-            source.commit_timestamp(timestamp)
-            affected.update(self._source_consumers.get(source, ()))
-            consumed_sources.append(source)
-            del pending[source]
-
-        for source in consumed_sources:
-            if source in active_sources:
-                tasks[source] = asyncio.create_task(anext(iterators[source]))
-
-        if affected:
-            stack = list(affected)
-            while stack:
-                operator = stack.pop()
-                for child in self._downstream.get(operator, ()):
-                    if child in affected:
-                        continue
-                    affected.add(child)
-                    stack.append(child)
-
-            for operator in self._topological_operators:
-                if operator in affected:
-                    operator.update(timestamp)
-
-        self._last_timestamp = timestamp
-
-    def _freeze_graph(self) -> None:
-        """Builds dependency structures and validates acyclicity."""
-        outputs_to_producers: dict[_AnySeries, _AnyOperator] = {}
-        for operator in self._operators:
-            outputs_to_producers[cast(_AnySeries, operator.output)] = operator
-
-        source_by_series: dict[_AnySeries, _AnySource] = {}
-        for source in self._sources:
-            series_any = cast(_AnySeries, source.series)
-            if series_any in source_by_series:
-                raise ValueError("Two sources cannot own the same source series.")
-            source_by_series[series_any] = source
-
-        source_consumers_sets: dict[_AnySource, set[_AnyOperator]] = {source: set() for source in self._sources}
-        downstream_sets: dict[_AnyOperator, set[_AnyOperator]] = {operator: set() for operator in self._operators}
-        indegree: dict[_AnyOperator, int] = {operator: 0 for operator in self._operators}
-        registration_index = {operator: i for i, operator in enumerate(self._operators)}
-
-        for consumer in self._operators:
-            for input_series in consumer.inputs:
-                input_series_any = cast(_AnySeries, input_series)
-                source = source_by_series.get(input_series_any)
-                if source is not None:
-                    source_consumers_sets[source].add(consumer)
+            if is_hist:
+                st.hist_task = None
+                try:
+                    raw_time, raw_val = task.result()
+                except StopAsyncIteration:
                     continue
+                time = _coerce_timestamp(raw_time)
+            else:
+                st.live_task = None
+                try:
+                    raw_val = task.result()
+                except StopAsyncIteration:
+                    continue
+                time = _runtime_timestamp()
 
-                producer = outputs_to_producers.get(input_series_any)
-                if producer is None:
-                    raise ValueError("Operator input series must come from a registered source or operator output.")
+            if st.last_time is not None and time < st.last_time:
+                raise ValueError(
+                    f"Source '{st.source.name}' emitted timestamp {time!r} which is less than "
+                    f"last committed timestamp {st.last_time!r}."
+                )
 
-                if consumer not in downstream_sets[producer]:
-                    downstream_sets[producer].add(consumer)
-                    indegree[consumer] += 1
+            value = np.asarray(raw_val, dtype=st.series.dtype)
+            if value.shape != st.series.shape:
+                raise ValueError(
+                    f"Source '{st.source.name}' emitted value shape {value.shape}, " f"expected {st.series.shape}."
+                )
 
-        zero_indegree = deque(operator for operator in self._operators if indegree[operator] == 0)
-        topological_order: list[_AnyOperator] = []
-        while zero_indegree:
-            operator = zero_indegree.popleft()
-            topological_order.append(operator)
+            if is_hist:
+                st.pending_hist = (time, value)
+            else:
+                st.pending_live = (time, value)
 
-            children = sorted(downstream_sets[operator], key=registration_index.__getitem__)
-            for child in children:
-                indegree[child] -= 1
-                if indegree[child] == 0:
-                    zero_indegree.append(child)
+        return True
 
-        if len(topological_order) != len(self._operators):
-            raise ValueError("Scenario operator dependency graph must be acyclic.")
+    def _advance_queue(self, next_event: _AnyEvent) -> None:
+        """Push pending event into the POCQ, flushing first if needed."""
+        time, _, _ = next_event
+        if self._queue:
+            prev_time, _, _ = self._queue[-1]
+            if prev_time < time:
+                self._flush_queue()
 
-        self._topological_operators = tuple(topological_order)
-        self._source_consumers = {
-            source: tuple(sorted(consumers, key=registration_index.__getitem__))
-            for source, consumers in source_consumers_sets.items()
-        }
-        self._downstream = {
-            operator: tuple(sorted(children, key=registration_index.__getitem__))
-            for operator, children in downstream_sets.items()
-        }
-        self._frozen = True
+        self._queue.append(next_event)
 
-    @staticmethod
-    def _runtime_timestamp() -> np.datetime64:
-        """Returns the current runtime timestamp in nanoseconds."""
-        return np.datetime64(time.time_ns(), "ns")
+    def _flush_queue(self) -> None:
+        """Append POCQ events to their series and propagate to downstream operators.
+
+        Downstream operators are processed in topological order via a min-heap
+        keyed by each operator's topological order.
+        """
+
+        # Updated sources.
+        updated: set[_AnySeries] = set()
+        # Affected operators.
+        affected: dict[_AnySeries, np.datetime64] = {}
+        # Heap entries: (topo_order, series_id, op_series). Topo indices are
+        # unique so ties never occur.
+        heap: list[tuple[int, _AnySeries]] = []
+
+        def _touch(child: _AnySeries, t: np.datetime64) -> None:
+            if child in affected:
+                affected[child] = max(affected[child], t)
+            else:
+                affected[child] = t
+                heapq.heappush(heap, (self._topo_order[child], child))
+
+        for time, st, value in reversed(self._queue):
+            # When there are multiple events for the same source series, only the
+            # most recent one (the last one in the queue) is relevant.
+            if st.series in updated:
+                continue
+            updated.add(st.series)
+
+            # POCQ guarantees that flushes have strictly increasing timestamps.
+            st.series.append(time, value)
+            for child in self._edges[st.series]:
+                _touch(child, time)
+
+        while heap:
+            _, op_series = heapq.heappop(heap)
+            time = affected.pop(op_series)
+            st = self._operators[op_series]
+            raw_value, st.state = st.operator.compute(time, st.operator.inputs, st.state)
+
+            # Returning None suppresses the output entry and halts propagation
+            # to operators that are exclusively downstream of this one.
+            if raw_value is None:
+                continue
+
+            value = np.asarray(raw_value, dtype=st.series.dtype)
+            if value.shape != st.series.shape:
+                raise ValueError(
+                    f"Operator {type(st.operator).__name__!r} returned value shape "
+                    f"{value.shape}, expected {st.series.shape}."
+                )
+
+            # POCQ guarantees that flushes have strictly increasing timestamps.
+            st.series.append(time, value)
+            for child in self._edges[op_series]:
+                _touch(child, time)
+
+        self._queue.clear()
+
+
+def _runtime_timestamp() -> np.datetime64:
+    """Return the current wall-clock time as ``datetime64[ns]``."""
+    return np.datetime64(time.time_ns(), "ns")
+
+
+def _coerce_timestamp(value: np.datetime64) -> np.datetime64:
+    """Coerce a timestamp-like value to ``datetime64[ns]``."""
+    try:
+        timestamp = np.datetime64(value)
+    except Exception as exc:  # pragma: no cover
+        raise ValueError(f"Could not parse timestamp value {value!r}.") from exc
+    return timestamp.astype("datetime64[ns]")
+
+
+async def _anext[T](it: AsyncIterator[T]) -> T:
+    """Wrapper for anext that produces a coroutine."""
+    return await it.__anext__()

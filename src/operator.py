@@ -1,18 +1,18 @@
-"""Operator base class that computes derived time series from input series."""
+"""Core interface for computations which generate values into time series."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .series import AnyShape, Array, Series
+from .series import AnyShape, Series
 
 
 class Operator[Inputs: tuple[Series[Any, Any], ...], Shape: AnyShape, T: np.generic, State](ABC):
-    """Abstract base for operators that compute derived time series.
+    """Abstract base class for operators that compute derived time series.
 
     ``Operator[Inputs, Shape, T, State]`` is parameterised by four type
     variables:
@@ -23,60 +23,66 @@ class Operator[Inputs: tuple[Series[Any, Any], ...], Shape: AnyShape, T: np.gene
     * **State** – the type of the mutable state object carried across
       invocations.
 
-    Subclass ``Operator`` and override :meth:`compute` to define custom
-    computation logic.  Calling :meth:`update` at a given timestamp
-    slices every input series up to that timestamp (via
-    :meth:`Series.to`) and passes the slices, together with the
-    current *state*, to :meth:`compute`.  If :meth:`compute` returns a
-    value, it is converted to an ``ndarray`` and appended to
-    :attr:`output`; if it returns ``None``, no output entry is written.
+    An ``Operator`` is a pure **specification**: it declares its inputs,
+    output shape/dtype, initial state, and computation logic, but holds no
+    mutable runtime state itself.  :class:`~src.scenario.Scenario` owns the
+    output :class:`~src.series.Series` and the current state, and calls
+    :meth:`compute` at each timestamp.
 
-    This cleanly separates *data* (:class:`Series`) from *computation*
-    (:class:`Operator`).  The :attr:`output` series is created once at
-    construction time and remains the same object for the lifetime of
-    the operator, so it is safe to pass it as input to other operators
-    or to use object identity for dependency-graph traversal.
+    Subclass ``Operator`` and override :meth:`init_state` and :meth:`compute`
+    to define custom computation logic.
 
-    Parameters (``__init__``)
-    -------------------------
+    Parameters
+    ----------
     inputs
         Tuple of input series whose data feeds into the operator.
     shape
         Shape of each output value element.  Use ``()`` for scalars.
     dtype
         NumPy dtype for the output value buffer (e.g. ``np.float64``).
-    state
-        Initial mutable state carried across invocations.
+    name
+        Optional human-readable name used in diagnostics and error messages;
+        defaults to the class name.
     """
 
-    __slots__: tuple[str, ...] = ("_inputs", "_output", "_state")
+    __slots__: tuple[str, ...] = ("_inputs", "_shape", "_dtype", "_name")
 
     _inputs: Inputs
-    _output: Series[Shape, T]
-    _state: State
+    _shape: Shape
+    _dtype: np.dtype[T]
+    _name: str
 
-    # -- Creation ------------------------------------------------------------
-
-    def __init__(self, inputs: Inputs, shape: Shape, dtype: type[T] | np.dtype[T], state: State) -> None:
+    def __init__(
+        self,
+        inputs: Inputs,
+        shape: Shape,
+        dtype: type[T] | np.dtype[T],
+        *,
+        name: str | None = None,
+    ) -> None:
         self._inputs = inputs
-        self._output = Series(shape, dtype)
-        self._state = state
-
-    # -- Virtual method ------------------------------------------------------
+        self._shape = shape
+        self._dtype = np.dtype(dtype)
+        self._name = name or type(self).__name__
 
     @abstractmethod
-    def compute(self, timestamp: np.datetime64, inputs: Inputs, state: State) -> ArrayLike | None:
-        """Computes the output value at *timestamp*.
+    def init_state(self) -> State:
+        """Returns the initial computation state for this operator.
 
-        Subclasses **must** override this method.  It receives the
-        timestamp and the input series sliced up to that timestamp
-        (as-of semantics).  Returning ``None`` indicates there is no
-        output for this timestamp.
+        Called once by :class:`~src.scenario.Scenario` when the operator is
+        registered.  The returned value is passed as *state* to :meth:`compute`
+        on the first invocation, and updated state is used on subsequent calls.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def compute(self, timestamp: np.datetime64, inputs: Inputs, state: State) -> tuple[ArrayLike | None, State]:
+        """Computes the next output value from inputs and hidden state.
 
         Parameters
         ----------
         timestamp
-            The ``np.datetime64[ns]`` timestamp being computed.
+            The current timestamp.
         inputs
             One :class:`Series` per input, each sliced up to *timestamp*.
         state
@@ -84,36 +90,11 @@ class Operator[Inputs: tuple[Series[Any, Any], ...], Shape: AnyShape, T: np.gene
 
         Returns
         -------
-        ArrayLike | None
-            The output value, compatible with :func:`numpy.asarray`, or
-            ``None`` to skip appending an output entry.
+        tuple[ArrayLike | None, State]
+            A ``(value, new_state)`` pair.  Return ``None`` as the value to
+            skip appending an output entry for this timestamp.
         """
-        raise NotImplementedError(f"{type(self).__name__} must override compute()")
-
-    # -- Core update mechanism -----------------------------------------------
-
-    def update(self, timestamp: np.datetime64) -> None:
-        """Computes and conditionally appends the output value at *timestamp*.
-
-        Each input series is sliced up to *timestamp* via
-        :meth:`Series.to`, then :meth:`compute` is called with the
-        timestamp and the sliced inputs.
-
-        If :meth:`compute` returns ``None``, nothing is appended.
-
-        Raises :class:`ValueError` if appending a non-``None`` value at
-        *timestamp* violates the strict monotonicity invariant of the
-        output series.
-        """
-        slices = cast(Inputs, tuple(input.to(timestamp) for input in self._inputs))
-        value = self.compute(timestamp, slices, self._state)
-        if value is not None:
-            arr = np.asarray(value, dtype=self._output.dtype)
-            if arr.shape != self._output.shape:
-                raise ValueError(f"Output value shape {arr.shape} does not match expected shape {self._output.shape}")
-            self._output.append(timestamp, cast(Array[Shape, T], arr))
-
-    # -- Accessors -----------------------------------------------------------
+        raise NotImplementedError
 
     @property
     def inputs(self) -> Inputs:
@@ -121,11 +102,16 @@ class Operator[Inputs: tuple[Series[Any, Any], ...], Shape: AnyShape, T: np.gene
         return self._inputs
 
     @property
-    def output(self) -> Series[Shape, T]:
-        """The output series containing computed values (read-only)."""
-        return self._output
+    def shape(self) -> Shape:
+        """The element shape of the output series."""
+        return self._shape
 
     @property
-    def state(self) -> State:
-        """The current internal state of the operator (read-only)."""
-        return self._state
+    def dtype(self) -> np.dtype[T]:
+        """The NumPy dtype of the output series."""
+        return self._dtype
+
+    @property
+    def name(self) -> str:
+        """Human-readable name for debugging."""
+        return self._name

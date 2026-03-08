@@ -21,20 +21,23 @@ class AverageReturn(Operator[tuple[Series, Series], tuple[()], np.float64, dict]
     __slots__ = ()
 
     def __init__(self, market_values: Series, signal: Series) -> None:
-        state = {"prev_mv": None, "sum_returns": 0.0, "count": 0}
-        super().__init__((market_values, signal), (), np.dtype(np.float64), state)
+        super().__init__((market_values, signal), (), np.dtype(np.float64))
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict) -> ArrayLike | None:
+    def init_state(self) -> dict:
+        return {"prev_mv": None, "sum_returns": 0.0, "count": 0}
+
+    @override
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict) -> tuple[ArrayLike | None, dict]:
         mv, signal = inputs
         if not signal or not mv:
-            return None
+            return None, state
         if state["prev_mv"] is None:
             state["prev_mv"] = float(mv.values[-1])
-            return None
+            return None, state
         current_mv = float(mv.values[-1])
         ret = (current_mv - state["prev_mv"]) / state["prev_mv"]
         state["prev_mv"] = current_mv
         state["sum_returns"] += ret
         state["count"] += 1
-        return state["sum_returns"] / state["count"]
+        return state["sum_returns"] / state["count"], state

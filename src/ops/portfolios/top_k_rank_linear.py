@@ -29,14 +29,18 @@ class TopKRankLinear(Operator[tuple[Series], tuple[int], np.float64, None]):
 
     def __init__(self, predictions: Series, k: int | float) -> None:
         n = predictions.shape[0]
-        super().__init__((predictions,), (n,), np.dtype(np.float64), None)
+        super().__init__((predictions,), (n,), np.dtype(np.float64))
         self._k = k
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series], state: None) -> ArrayLike | None:
+    def init_state(self) -> None:
+        return None
+
+    @override
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series], state: None) -> tuple[ArrayLike | None, None]:
         (preds,) = inputs
         if not preds:
-            return None
+            return None, None
         values = preds.values[-1]
         n = len(values)
         if isinstance(self._k, float):
@@ -49,4 +53,4 @@ class TopKRankLinear(Operator[tuple[Series], tuple[int], np.float64, None]):
         for rank, idx in enumerate(top_indices, start=1):
             weights[idx] = rank
         weights /= weights.sum()
-        return weights
+        return weights, None

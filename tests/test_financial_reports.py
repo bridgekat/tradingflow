@@ -12,7 +12,6 @@ import pytest
 from src import (
     ArrayBundleSource,
     Scenario,
-    Series,
 )
 from src.ops import add, select
 from src.sources.eastmoney.history import (
@@ -227,46 +226,47 @@ class TestFinancialReportSource:
             ],
         )
         source = FinancialReportCSVSource(path=csv_path, kind="balance_sheet")
-        scenario = Scenario(sources=(source,))
+        scenario = Scenario()
+        series = scenario.add_source(source)
         asyncio.run(scenario.run())
 
-        assert len(source.series) == 1
-        assert source.series.index[0] == ts_iso("2022-03-20 00:00:00")
+        assert len(series) == 1
+        assert series.index[0] == ts_iso("2022-03-20 00:00:00")
         assert source.diagnostics.revision_dropped_rows == 1
 
     def test_scenario_integration_with_select_fields_and_coalesce(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "financial_reports" / "balance_raw_sample.csv"
         balance_source = FinancialReportCSVSource(path=fixture, kind="balance_sheet")
-
-        other_series = Series((1,), np.dtype(np.float64))
         other_source = ArrayBundleSource.from_arrays(
             timestamps=np.array([ts_iso("2022-03-20 00:00:00")]),
             values=np.array([[1.0]], dtype=np.float64),
-            series=other_series,
         )
 
-        assets_idx = balance_source.schema.field_index["balance_sheet.assets"]
-        selector = select(balance_source.series, (assets_idx,))
-        sum_op = add(selector.output, other_series)
+        scenario = Scenario()
+        balance_series = scenario.add_source(balance_source)
+        other_series = scenario.add_source(other_source)
 
-        scenario = Scenario(sources=(balance_source, other_source), operators=(selector, sum_op))
+        assets_idx = balance_source.schema.field_index["balance_sheet.assets"]
+        selector_series = scenario.add_operator(select(balance_series, (assets_idx,)))
+        sum_series = scenario.add_operator(add(selector_series, other_series))
         asyncio.run(scenario.run())
 
-        assert len(selector.output) == 1
-        assert len(sum_op.output) == 1
-        assert sum_op.output.index[0] == ts_iso("2022-03-20 00:00:00")
-        assert float(sum_op.output.values[0][0]) == pytest.approx(101.0)
+        assert len(selector_series) == 1
+        assert len(sum_series) == 1
+        assert sum_series.index[0] == ts_iso("2022-03-20 00:00:00")
+        assert float(sum_series.values[0][0]) == pytest.approx(101.0)
 
 
 class TestGoldenFixtures:
     def test_balance_fixture_expected_values(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "financial_reports" / "balance_raw_sample.csv"
         source = FinancialReportCSVSource(path=fixture, kind="balance_sheet")
-        scenario = Scenario(sources=(source,))
+        scenario = Scenario()
+        series = scenario.add_source(source)
         asyncio.run(scenario.run())
 
         i = source.schema.field_index
-        row = source.series.values[0]
+        row = series.values[0]
         assert float(row[i["balance_sheet.assets"]]) == pytest.approx(100.0)
         assert float(row[i["balance_sheet.liab"]]) == pytest.approx(-60.0)
         assert float(row[i["balance_sheet.equity"]]) == pytest.approx(-40.0)
@@ -277,11 +277,12 @@ class TestGoldenFixtures:
     def test_income_fixture_expected_values(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "financial_reports" / "income_raw_sample.csv"
         source = FinancialReportCSVSource(path=fixture, kind="income_statement")
-        scenario = Scenario(sources=(source,))
+        scenario = Scenario()
+        series = scenario.add_source(source)
         asyncio.run(scenario.run())
 
         i = source.schema.field_index
-        row = source.series.values[0]
+        row = series.values[0]
         assert float(row[i["income_statement.profit"]]) == pytest.approx(64.0)
         assert float(row[i["income_statement.profit.operating.income"]]) == pytest.approx(200.0)
         assert float(row[i["income_statement.profit.operating.expenses"]]) == pytest.approx(-120.0)

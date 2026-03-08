@@ -34,18 +34,20 @@ class RollingLinearRegression(RollingPredictor):
         train_window: int = 10,
         retrain_every: int = 1,
     ) -> None:
-        state: dict[str, Any] = {"coefficients": None}
         super().__init__(
             train_window,
             retrain_every,
             (features, targets),
             (),
             np.dtype(np.float64),
-            state,
         )
 
     @override
-    def _fit(self, timestamp: np.datetime64, inputs: tuple[Series, Series]) -> None:
+    def init_state(self) -> dict[str, Any]:
+        return {"steps_since_retrain": 0, "coefficients": None}
+
+    @override
+    def _fit(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict[str, Any]) -> None:
         features, targets = inputs
         if len(features) < 2 or len(targets) < 2:
             return
@@ -54,13 +56,13 @@ class RollingLinearRegression(RollingPredictor):
         y = targets.values[-n:]
         X_bias = np.column_stack([X, np.ones(len(X))])
         coeffs, _, _, _ = np.linalg.lstsq(X_bias, y, rcond=None)
-        self._state["coefficients"] = coeffs
+        state["coefficients"] = coeffs
 
     @override
-    def _predict(self, timestamp: np.datetime64, inputs: tuple[Series, Series]) -> ArrayLike | None:
+    def _predict(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict[str, Any]) -> ArrayLike | None:
         features, targets = inputs
-        if self._state["coefficients"] is None or not features:
+        if state["coefficients"] is None or not features:
             return None
         x = features.values[-1]
         X_bias = np.append(x, 1.0)
-        return float(X_bias @ self._state["coefficients"])
+        return float(X_bias @ state["coefficients"])

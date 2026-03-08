@@ -27,14 +27,15 @@ class TestDailyMarketSnapshotCSVSource:
         )
 
         source = DailyMarketSnapshotCSVSource(path)
-        scenario = Scenario(sources=(source,))
+        scenario = Scenario()
+        series = scenario.add_source(source)
         asyncio.run(scenario.run())
 
-        assert len(source.series) == 1
-        assert source.series.index[0] == dt("2022-01-03")
+        assert len(series) == 1
+        assert series.index[0] == dt("2022-01-03")
         assert list(source.schema.field_ids) == ["open", "close", "high", "low", "amount", "volume"]
         np.testing.assert_array_almost_equal(
-            source.series.values[0],
+            series.values[0],
             np.array([10.0, 11.0, 12.0, 9.0, 1000.0, 500.0], dtype=np.float64),
         )
 
@@ -46,7 +47,8 @@ class TestDailyMarketSnapshotCSVSource:
         )
 
         source = DailyMarketSnapshotCSVSource(path, strict_row_checks=True)
-        scenario = Scenario(sources=(source,))
+        scenario = Scenario()
+        scenario.add_source(source)
         with pytest.raises(ValueError, match="sanity checks"):
             asyncio.run(scenario.run())
 
@@ -60,21 +62,23 @@ class TestDailyMarketSnapshotCSVSource:
         )
 
         source = DailyMarketSnapshotCSVSource(path, strict_row_checks=False)
-        scenario = Scenario(sources=(source,))
+        scenario = Scenario()
+        series = scenario.add_source(source)
         asyncio.run(scenario.run())
 
-        assert len(source.series) == 1
+        assert len(series) == 1
         assert source.diagnostics.dropped_rows == 1
         assert source.diagnostics.total_rows == 2
         assert source.diagnostics.emitted_rows == 1
-        assert source.series.index[0] == dt("2022-01-04")
+        assert series.index[0] == dt("2022-01-04")
 
     def test_missing_required_columns_rejected(self, tmp_path: Path) -> None:
         path = tmp_path / "missing_cols.csv"
         path.write_text("date,open,close,high,low,volume\n2022-01-03,10,11,12,9,5\n", encoding="utf-8")
 
         source = DailyMarketSnapshotCSVSource(path)
-        scenario = Scenario(sources=(source,))
+        scenario = Scenario()
+        scenario.add_source(source)
         with pytest.raises(ValueError, match="missing required columns"):
             asyncio.run(scenario.run())
 
@@ -88,14 +92,15 @@ class TestDailyMarketSnapshotCSVSource:
         )
 
         source = DailyMarketSnapshotCSVSource(path)
+        scenario = Scenario()
+        series = scenario.add_source(source)
         close_index = source.schema.field_index["close"]
-        close_selector = select(source.series, (close_index,))
+        close_output = scenario.add_operator(select(series, (close_index,)))
 
-        scenario = Scenario(sources=(source,), operators=(close_selector,))
         asyncio.run(scenario.run())
 
-        assert len(close_selector.output) == 2
+        assert len(close_output) == 2
         np.testing.assert_array_almost_equal(
-            close_selector.output.values,
+            close_output.values,
             np.array([[11.0], [13.0]], dtype=np.float64),
         )

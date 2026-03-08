@@ -19,6 +19,14 @@ class ExponentialMovingAverage[Shape: tuple[int, ...], T: np.floating](
     directly because it uses exponential weighting rather than a fixed
     window.  The previous EMA value is carried in the operator *state*
     (``None`` before the first observation, then an ``ndarray``).
+
+    Parameters
+    ----------
+    alpha
+        Smoothing factor in ``(0, 1]``.  Larger values weight recent
+        observations more heavily.
+    series
+        Input series to operate on.
     """
 
     __slots__ = ("_alpha",)
@@ -26,20 +34,23 @@ class ExponentialMovingAverage[Shape: tuple[int, ...], T: np.floating](
     _alpha: float
 
     def __init__(self, alpha: float, series: Series[Shape, T]) -> None:
-        super().__init__((series,), series.shape, series.dtype, None)
+        super().__init__((series,), series.shape, series.dtype)
         self._alpha = alpha
+
+    @override
+    def init_state(self) -> Array[Any, Any] | None:
+        return None
 
     @override
     def compute(
         self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: Array[Any, Any] | None
-    ) -> ArrayLike | None:
+    ) -> tuple[ArrayLike | None, Array[Any, Any] | None]:
         (series,) = inputs
         if not series:
-            return None
+            return None, state
         latest = series.values[-1, ...]
         if state is not None:
             result = self._alpha * latest + (1.0 - self._alpha) * state
         else:
             result = latest
-        self._state = result
-        return result
+        return result, result

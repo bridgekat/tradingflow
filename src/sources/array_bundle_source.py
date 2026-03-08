@@ -1,4 +1,4 @@
-"""Array-bundle payload-timestamp source."""
+"""Array-bundle historical source."""
 
 from __future__ import annotations
 
@@ -10,12 +10,28 @@ from typing import Any, cast
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ..series import AnyShape, Array, Series
-from ..source import Source, SourceItem
+from ..series import AnyShape, Array
+from ..source import Source, empty_live_gen
 
 
 class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
-    """Source backed by ``(timestamps, values)`` array bundles."""
+    """Historical source backed by ``(timestamps, values)`` array bundles.
+
+    The element shape and dtype are inferred from *values*.
+
+    Parameters
+    ----------
+    timestamps
+        1-D array-like of ``datetime64``-compatible timestamps.
+    values
+        Array-like of values; first dimension must match *timestamps* and
+        trailing dimensions determine the emitted element shape.
+    dtype
+        Optional NumPy dtype to cast *values* to.  Defaults to the natural
+        dtype of the *values* array.
+    name
+        Optional source name; defaults to the class name.
+    """
 
     __slots__ = ("_timestamps", "_values")
 
@@ -26,13 +42,14 @@ class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
         self,
         timestamps: ArrayLike,
         values: ArrayLike,
-        series: Series[Shape, T],
         *,
+        dtype: type[T] | np.dtype[T] | None = None,
         name: str | None = None,
     ) -> None:
-        super().__init__(series, name=name, timestamp_mode="payload")
         ts = np.asarray(timestamps, dtype="datetime64[ns]")
-        vals = np.asarray(values, dtype=series.dtype)
+        raw = np.asarray(values)
+        dt: np.dtype[T] = np.dtype(dtype) if dtype is not None else cast("np.dtype[T]", raw.dtype)
+        vals = raw.astype(dt)
 
         if ts.ndim != 1:
             raise ValueError(f"timestamps must be 1-dimensional, got ndim={ts.ndim}")
@@ -40,9 +57,9 @@ class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
             raise ValueError(f"values must have at least 1 dimension, got ndim={vals.ndim}")
         if len(ts) != len(vals):
             raise ValueError(f"timestamps length {len(ts)} does not match values length {len(vals)}")
-        if vals.shape[1:] != series.shape:
-            raise ValueError(f"values shape tail {vals.shape[1:]} does not match series shape {series.shape}")
 
+        shape = cast(Shape, vals.shape[1:])
+        super().__init__(shape, dt, name=name)
         self._timestamps = cast(Array[tuple[int], np.datetime64], ts)
         self._values = cast("Array[tuple[int, *Shape], T]", vals)
 
@@ -51,19 +68,19 @@ class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
         cls,
         timestamps: ArrayLike,
         values: ArrayLike,
-        series: Series[Shape, T],
         *,
+        dtype: type[T] | np.dtype[T] | None = None,
         name: str | None = None,
     ) -> ArrayBundleSource[Shape, T]:
         """Constructs from in-memory arrays."""
-        return cls(timestamps=timestamps, values=values, series=series, name=name)
+        return cls(timestamps=timestamps, values=values, dtype=dtype, name=name)
 
     @classmethod
     def from_pickle(
         cls,
         path: str | Path,
-        series: Series[Shape, T],
         *,
+        dtype: type[T] | np.dtype[T] | None = None,
         timestamps_key: str = "timestamps",
         values_key: str = "values",
         name: str | None = None,
@@ -80,10 +97,14 @@ class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
         return cls(
             timestamps=cast(Any, payload[timestamps_key]),
             values=cast(Any, payload[values_key]),
-            series=series,
+            dtype=dtype,
             name=name,
         )
 
-    async def stream(self) -> AsyncIterator[SourceItem[Shape, T]]:
+    def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
+        """Returns a ``(historical, live)`` iterator pair; the live iterator is empty."""
+        return self._historical_gen(), empty_live_gen()
+
+    async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:
         for i in range(len(self._timestamps)):
-            yield SourceItem(value=self._values[i], timestamp=self._timestamps[i])
+            yield self._timestamps[i], self._values[i]

@@ -20,15 +20,29 @@ from ... import Operator, Series
 class RollingPredictor(Operator, ABC):
     """Abstract base for predictors that retrain on a rolling window.
 
-    Subclasses must implement :meth:`_fit` and :meth:`_predict`.
-    The predictor retrains every *retrain_every* calls to :meth:`update`.
+    Subclasses must implement :meth:`_fit`, :meth:`_predict`, and
+    :meth:`init_state`.  The predictor retrains every *retrain_every*
+    steps, tracking the step count in the state dict under the key
+    ``"steps_since_retrain"``.
+
+    Parameters
+    ----------
+    train_window
+        Number of most-recent observations used for training.
+    retrain_every
+        Number of update steps between successive retraining calls.
+    inputs
+        Tuple of input series passed to :meth:`_fit` and :meth:`_predict`.
+    shape
+        Element shape of the output series.
+    dtype
+        NumPy dtype for the output series.
     """
 
-    __slots__ = ("_train_window", "_retrain_every", "_steps_since_retrain")
+    __slots__ = ("_train_window", "_retrain_every")
 
     _train_window: int
     _retrain_every: int
-    _steps_since_retrain: int
 
     def __init__(
         self,
@@ -37,25 +51,23 @@ class RollingPredictor(Operator, ABC):
         inputs: tuple,
         shape: tuple[int, ...],
         dtype: np.dtype,
-        state: Any,
     ) -> None:
-        super().__init__(inputs, shape, dtype, state)
+        super().__init__(inputs, shape, dtype)
         self._train_window = train_window
         self._retrain_every = retrain_every
-        self._steps_since_retrain = 0
 
     @abstractmethod
-    def _fit(self, timestamp: np.datetime64, inputs: tuple) -> None:
-        """Train the model on the input data."""
+    def _fit(self, timestamp: np.datetime64, inputs: tuple, state: Any) -> None:
+        """Train the model on the input data, storing results in *state*."""
 
     @abstractmethod
-    def _predict(self, timestamp: np.datetime64, inputs: tuple) -> ArrayLike | None:
-        """Generate a prediction from the current model."""
+    def _predict(self, timestamp: np.datetime64, inputs: tuple, state: Any) -> ArrayLike | None:
+        """Generate a prediction from the current model in *state*."""
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple, state: Any) -> ArrayLike | None:
-        self._steps_since_retrain += 1
-        if self._steps_since_retrain >= self._retrain_every:
-            self._fit(timestamp, inputs)
-            self._steps_since_retrain = 0
-        return self._predict(timestamp, inputs)
+    def compute(self, timestamp: np.datetime64, inputs: tuple, state: Any) -> tuple[ArrayLike | None, Any]:
+        state["steps_since_retrain"] += 1
+        if state["steps_since_retrain"] >= self._retrain_every:
+            self._fit(timestamp, inputs, state)
+            state["steps_since_retrain"] = 0
+        return self._predict(timestamp, inputs, state), state

@@ -11,32 +11,26 @@
 
 A [time series](src/series.py) is a sequence of uniformly typed elements indexed by strictly increasing `np.datetime64` timestamps, supporting integer indexing, slicing, timestamp lookups, and amortized O(1) appends.
 
-### Data Formats
+An element in a time series can be a scalar, vector, matrix or higher-dimensional array with a fixed [`numpy.dtype`](https://numpy.org/doc/stable/reference/arrays.dtypes.html) and shape. Elements in a time series are internally stored in a single [`numpy.ndarray`](https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html). This design is simple but not as flexible as Pandas-style data frames, which can contain columns of different types. To support such data, multiple time series must be created for different types.
 
-An element in a time series can be a scalar, vector, matrix or higher-dimensional array with a fixed [`numpy.dtype`](https://numpy.org/doc/stable/reference/arrays.dtypes.html) and shape. Elements in a time series are internally stored in a single [`numpy.ndarray`](https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html).
+## Sources
 
-This design is simple but not as flexible as Pandas-style data frames, which can contain columns of different types. To support such data, multiple time series must be created for different types.
+A [source](src/source.py) is used to generate values into a time series via asynchronous inputs from external data sources. A source must implement its `subscribe()` method, which returns two asynchronous iterators: one for historical `(timestamp, value)` tuples and one for live `value` updates. They should generate two complementary, non-overlapping segments of the same time series, split at some instant during the execution of `subscribe()`.
 
-### Source Series
+Sources are typically raw market data or pre-computed factors. Examples include:
 
-A source series is simply a time series of raw market data.
+- **Order flows** (e.g. transactions containing instrument name, price, quantity, etc.)
+- **Snapshot prices** (e.g. arrays of all instrument prices updated at the end of each trading day)
+- **Financial reports** (e.g. arrays of all balance sheet fields updated when a new financial report is released)
 
-Examples include:
+## Operators
 
-- **Order flows** (TODO)
-- **Snapshot prices** (TODO)
-- **Financial reports** (TODO)
-- **Order execution status** (TODO)
+An [operator](src/operator.py) is used to generate values into a time series via computations on other time series. An operator must implement its `compute()` method, which takes the current timestamp, a tuple of input time series and an optional mutable hidden state, and returns the updated output value. The `compute()` method is called to generate a new element from input time series when any of them is updated.
 
-### Derived Series
+Operators are the reusable building blocks of trading strategies. Examples include:
 
-A derived series is a time series computed from zero or more time series by an [operator](src/operator.py). An operator is defined by its compute function, which generates the current value given all input series *up to the current timestamp*, preventing accidental use of future information.
-
-Examples include:
-
-- **Summarized market data** (e.g. arrays of all instrument prices updated at fixed intervals)
 - **Formulaic factors** (e.g. 20-day moving average of instrument prices)
-- **Model states and forecasts** (e.g. from a regression model predicting future instrument returns, periodically retrained on historical data)
+- **Model predictions** (e.g. from a regression model predicting future instrument returns, periodically retrained on historical data)
 - **Target positions** (e.g. periodically recomputed by mean-variance portfolio optimization on some forecasted returns and covariances)
 - **Actual positions** (e.g. calculated from order execution history)
 - **Trading signals** (e.g. differences between target and actual positions)
@@ -44,106 +38,7 @@ Examples include:
 
 ## Scenarios
 
-A [scenario](src/scenario.py) is a collection of source and derived series along with their dependencies, which must be acyclic.
-
-## Sources and Runtime
-
-Each [source](src/source.py) owns exactly one source series and emits values through an async stream.  
-`Scenario.run()` consumes all source streams, appends updates, coalesces updates at identical timestamps, and incrementally updates affected downstream operators.
-
-### CSV Source Example
-
-```python
-import asyncio
-import numpy as np
-from src import CSVSource, Scenario, Series
-
-prices = Series((), np.dtype(np.float64))
-source = CSVSource(
-    "prices.csv",
-    prices,
-    timestamp_col="ts",
-    value_cols=("close",),
-)
-
-scenario = Scenario(sources=(source,))
-asyncio.run(scenario.run())
-```
-
-### Array Bundle / Pickle Source Example
-
-```python
-import asyncio
-import numpy as np
-from src import ArrayBundleSource, Scenario, Series
-
-returns = Series((), np.dtype(np.float64))
-source = ArrayBundleSource.from_pickle("returns.pkl", returns)
-
-scenario = Scenario(sources=(source,))
-asyncio.run(scenario.run())
-```
-
-### Realtime Async Source Example
-
-```python
-import asyncio
-import numpy as np
-from src import AsyncCallableSource, Scenario, Series
-
-ticks = Series((), np.dtype(np.float64))
-
-async def tick_stream():
-    for value in (1.0, 2.0, 3.0):
-        yield value
-
-source = AsyncCallableSource(ticks, tick_stream)
-scenario = Scenario(sources=(source,))
-asyncio.run(scenario.run())
-```
-
-### Financial Report Source Example
-
-```python
-import asyncio
-from src import Scenario
-from src.ops import select_fields
-from src.sources.eastmoney.history import FinancialReportCSVSource
-
-income_source = FinancialReportCSVSource(
-    "000001_income_statement_raw.csv",
-    kind="income_statement",
-)
-
-# Pick canonical fields by vector index (for example, net profit).
-profit_idx = income_source.schema.field_index["income_statement.profit"]
-profit_series = select_fields(income_source.series, (profit_idx,))
-
-scenario = Scenario(
-    sources=(income_source,),
-    operators=(profit_series,),
-)
-asyncio.run(scenario.run())
-```
-
-### Daily Market Snapshot Source Example
-
-```python
-import asyncio
-from src import Scenario
-from src.ops import select_fields
-from src.sources.eastmoney.history import DailyMarketSnapshotCSVSource
-
-price_source = DailyMarketSnapshotCSVSource("000001_daily_price_raw.csv")
-close_idx = price_source.schema.field_index["close"]
-close_series = select_fields(price_source.series, (close_idx,))
-
-scenario = Scenario(
-    sources=(price_source,),
-    operators=(close_series,),
-)
-asyncio.run(scenario.run())
-```
+A [scenario](src/scenario.py) is a collection of time series, each associated with either a source or an operator along with its input time series. Time series dependencies must be acyclic. It provides a `run()` method which consumes all source streams, coalesces source events (which are only required to have non-decreasing timestamps) so that update timestamps are strictly increasing, and for each event updates all affected downstream time series.
 
 ## Storage Policies (TODO)
 

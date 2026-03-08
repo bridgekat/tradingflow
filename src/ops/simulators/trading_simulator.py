@@ -37,10 +37,11 @@ class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, di
         Starting cash balance.
     """
 
-    __slots__ = ("_commission_rate", "_min_charge")
+    __slots__ = ("_commission_rate", "_min_charge", "_initial_cash")
 
     _commission_rate: float
     _min_charge: float
+    _initial_cash: float
 
     def __init__(
         self,
@@ -50,16 +51,20 @@ class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, di
         min_charge: float = 0.0,
         initial_cash: float = 0.0,
     ) -> None:
-        state: dict[str, Any] = {"cash": initial_cash, "prev_positions": None}
-        super().__init__((prices, positions), (), np.dtype(np.float64), state)
+        super().__init__((prices, positions), (), np.dtype(np.float64))
         self._commission_rate = commission_rate
         self._min_charge = min_charge
+        self._initial_cash = initial_cash
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict) -> ArrayLike | None:
+    def init_state(self) -> dict[str, Any]:
+        return {"cash": self._initial_cash, "prev_positions": None}
+
+    @override
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict) -> tuple[ArrayLike | None, dict]:
         prices, positions = inputs
         if not prices or not positions:
-            return None
+            return None, state
         current_prices = prices.values[-1]
         current_positions = positions.values[-1]
 
@@ -82,4 +87,4 @@ class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, di
         state["prev_positions"] = current_positions.copy()
 
         market_value = state["cash"] + float(np.sum(current_positions * current_prices))
-        return market_value
+        return market_value, state

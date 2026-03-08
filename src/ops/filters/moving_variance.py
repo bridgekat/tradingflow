@@ -12,10 +12,20 @@ from .rolling import Rolling
 
 
 class MovingVariance[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
-    """Rolling sample variance (``ddof=1`` by default).
+    """Rolling sample variance.
 
     Output shape matches the input element shape.  Requires more than
     *ddof* observations in the window to produce output.
+
+    Parameters
+    ----------
+    window
+        Rolling window specification (count or time-based; see :class:`Rolling`).
+    series
+        Input series to operate on.
+    ddof
+        Delta degrees of freedom for variance calculation (default ``1`` for
+        sample variance).
     """
 
     __slots__ = ("_ddof",)
@@ -32,11 +42,11 @@ class MovingVariance[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
         self._ddof = ddof
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> ArrayLike | None:
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> tuple[ArrayLike | None, None]:
         (series,) = inputs
         if not series:
-            return None
+            return None, None
         vals = self._get_window(series, timestamp)
         if len(vals) <= self._ddof:
-            return None
-        return vals.var(axis=0, ddof=self._ddof)
+            return None, None
+        return vals.var(axis=0, ddof=self._ddof), None

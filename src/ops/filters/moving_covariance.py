@@ -21,6 +21,18 @@ class MovingCovariance[T: np.floating](Operator[tuple[Series[tuple[int], T]], tu
     Unlike other rolling filters, the output shape ``(n, n)`` differs from
     the input element shape ``(n,)``, so this class extends :class:`Operator`
     directly rather than :class:`Rolling`.
+
+    Parameters
+    ----------
+    window
+        Rolling window specification: an ``int`` selects the last *N*
+        elements; a ``np.timedelta64`` selects elements within that time
+        span before the current timestamp.
+    series
+        Input vector series of element shape ``(n,)``.
+    ddof
+        Delta degrees of freedom for covariance calculation (default ``1``
+        for sample covariance).
     """
 
     __slots__ = ("_window", "_ddof")
@@ -39,7 +51,7 @@ class MovingCovariance[T: np.floating](Operator[tuple[Series[tuple[int], T]], tu
                 "MovingCovariance requires a vector-valued series " f"(element shape (n,)), got shape {series.shape}"
             )
         n = series.shape[0]
-        super().__init__((series,), (n, n), series.dtype, None)
+        super().__init__((series,), (n, n), series.dtype)
         self._window = window
         self._ddof = ddof
         if isinstance(window, int):
@@ -57,12 +69,15 @@ class MovingCovariance[T: np.floating](Operator[tuple[Series[tuple[int], T]], tu
             start = timestamp - self._window
             return series.between(start, timestamp, left_inclusive=False, right_inclusive=True).values
 
+    def init_state(self) -> None:
+        return None
+
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[tuple[int], T]], state: None) -> ArrayLike | None:
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[tuple[int], T]], state: None) -> tuple[ArrayLike | None, None]:
         (series,) = inputs
         if not series:
-            return None
+            return None, None
         vals = self._get_window(series, timestamp)
         if len(vals) <= self._ddof:
-            return None
-        return np.cov(vals.T, ddof=self._ddof)
+            return None, None
+        return np.cov(vals.T, ddof=self._ddof), None

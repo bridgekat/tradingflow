@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 
-from .....series import Series
-from .....source import Source, SourceItem
+from .....source import Source, empty_live_gen
 from .normalizer import FinancialReportDiagnostics, FinancialReportRow, normalize_financial_report_rows
 from .rules import FinancialReportMappingProfile, default_mapping_profile
 from .schema import FinancialReportKind, FinancialReportSchema, default_schema
 
 
 class FinancialReportCSVSource(Source[tuple[int], np.float64]):
-    """Payload-timestamp source for raw financial report CSV files.
+    """Historical source for raw financial report CSV files.
 
     The source reads one raw report CSV, normalizes rows into a canonical
     fixed-order vector using the provided schema and mapping profile, then
@@ -59,8 +59,7 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
     ) -> None:
         schema_resolved = schema or default_schema(kind)
         shape = cast(tuple[int], (len(schema_resolved.field_ids),))
-        series = Series(shape, np.dtype(np.float64))
-        super().__init__(series, name=name, timestamp_mode="payload")
+        super().__init__(shape, np.dtype(np.float64), name=name)
         self._path = Path(path)
         self._kind = kind
         self._schema = schema_resolved
@@ -81,7 +80,11 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
         """Latest normalization diagnostics."""
         return self._diagnostics
 
-    async def stream(self):
+    def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
+        """Returns a ``(historical, live)`` iterator pair; the live iterator is empty."""
+        return self._historical_gen(), empty_live_gen()
+
+    async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:
         if self._normalized_rows is None:
             rows = self._read_rows()
             normalized_rows, diagnostics = normalize_financial_report_rows(
@@ -97,7 +100,7 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
             self._diagnostics = diagnostics
 
         for row in self._normalized_rows:
-            yield SourceItem(value=row.values, timestamp=row.relevance_date)
+            yield row.relevance_date, row.values
 
     def _read_rows(self) -> list[dict[str, str]]:
         with self._path.open("r", encoding="utf-8", newline="") as file:

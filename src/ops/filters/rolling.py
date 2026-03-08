@@ -22,6 +22,15 @@ class Rolling[Shape: tuple[int, ...], T: np.generic](Operator[tuple[Series[Shape
     time-based window (``np.timedelta64``, elements within a time span).
     Subclasses use :meth:`_get_window` inside their :meth:`compute`
     implementation to extract the relevant portion of an input series.
+
+    Parameters
+    ----------
+    window
+        Rolling window specification: an ``int`` selects the last *N*
+        elements; a ``np.timedelta64`` selects elements within that time
+        span before the current timestamp.
+    series
+        Input series to operate on.
     """
 
     __slots__ = ("_window",)
@@ -29,7 +38,7 @@ class Rolling[Shape: tuple[int, ...], T: np.generic](Operator[tuple[Series[Shape
     _window: int | np.timedelta64
 
     def __init__(self, window: int | np.timedelta64, series: Series[Shape, T]) -> None:
-        super().__init__((series,), series.shape, series.dtype, None)
+        super().__init__((series,), series.shape, series.dtype)
         self._window = window
         if isinstance(window, int):
             if window <= 0:
@@ -37,6 +46,9 @@ class Rolling[Shape: tuple[int, ...], T: np.generic](Operator[tuple[Series[Shape
         else:
             if window <= np.timedelta64(0):
                 raise ValueError("Window size must be a positive time delta.")
+
+    def init_state(self) -> None:
+        return None
 
     def _get_window(self, series: Series[Shape, T], timestamp: np.datetime64) -> Array[tuple[int, *Shape], T]:
         """Extract values within the rolling window from *series*."""

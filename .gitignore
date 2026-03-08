@@ -28,6 +28,7 @@ htmlcov/
 .ipynb_checkpoints/
 
 # IDE/editor files
+.claude/
 .vscode/
 .idea/
 *.swp

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
-from ....series import Series
-from ....source import Source, SourceItem
+from ....source import Source, empty_live_gen
 
 
 @dataclass(slots=True, frozen=True)
@@ -49,7 +50,7 @@ class DailyMarketSnapshotDiagnostics:
 
 
 class DailyMarketSnapshotCSVSource(Source[tuple[int], np.float64]):
-    """Payload-timestamp source for raw daily price market snapshots.
+    """Historical source for raw daily price market snapshots.
 
     Expected raw columns:
     ``date``, ``open``, ``close``, ``high``, ``low``, ``amount``, ``volume``.
@@ -83,8 +84,7 @@ class DailyMarketSnapshotCSVSource(Source[tuple[int], np.float64]):
         name: str | None = None,
     ) -> None:
         schema_resolved = schema or DEFAULT_DAILY_MARKET_SNAPSHOT_SCHEMA
-        series = Series((len(schema_resolved.field_ids),), np.dtype(np.float64))
-        super().__init__(series, name=name, timestamp_mode="payload")
+        super().__init__((len(schema_resolved.field_ids),), np.dtype(np.float64), name=name)
         self._path = Path(path)
         self._schema = schema_resolved
         self._volume_lot_size = volume_lot_size
@@ -103,7 +103,11 @@ class DailyMarketSnapshotCSVSource(Source[tuple[int], np.float64]):
         """Latest parsing diagnostics."""
         return self._diagnostics
 
-    async def stream(self):
+    def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
+        """Returns a ``(historical, live)`` iterator pair; the live iterator is empty."""
+        return self._historical_gen(), empty_live_gen()
+
+    async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:
         required_columns = {"date", "open", "close", "high", "low", "amount", "volume"}
 
         dropped_rows = 0
@@ -127,7 +131,7 @@ class DailyMarketSnapshotCSVSource(Source[tuple[int], np.float64]):
                         raise
                     continue
                 emitted_rows += 1
-                yield SourceItem(value=value, timestamp=timestamp)
+                yield timestamp, value
 
         self._diagnostics = DailyMarketSnapshotDiagnostics(
             dropped_rows=dropped_rows,

@@ -14,14 +14,16 @@ Core classes
 Series[Shape, T]
     NumPy-backed time series with strictly increasing timestamps.
 Source[Shape, T]
-    Data-source abstraction that owns one source series.
+    Abstract base for sources that feed data into a time series via a
+    ``(historical, live)`` async-iterator pair returned by ``subscribe()``.
 eastmoney
     Namespace package for EastMoney-specific source adapters.
 Operator[Inputs, Shape, T, State]
     Base class for derived-series computations.
 Scenario
-    Async runtime that reads source streams and updates an acyclic
-    source/operator dependency graph incrementally.
+    Async runtime that subscribes to source streams, accumulates events in the
+    point-of-coherency queue (POCQ), and updates an acyclic source/operator
+    dependency graph incrementally.
 """
 
 from .operator import Operator

@@ -20,11 +20,11 @@ class MovingAverage[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
         super().__init__(window, series)
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> ArrayLike | None:
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> tuple[ArrayLike | None, None]:
         (series,) = inputs
         if not series:
-            return None
+            return None, None
         vals = self._get_window(series, timestamp)
         if len(vals) == 0:
-            return None
-        return vals.mean(axis=0)
+            return None, None
+        return vals.mean(axis=0), None

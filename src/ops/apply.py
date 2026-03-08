@@ -1,17 +1,4 @@
-"""Generic n-ary apply operator and element-wise arithmetic helper factories.
-
-Classes
--------
-Apply[Shape, InT, OutT]
-    Stateless operator that applies a user-supplied function to the latest
-    values of one or more input series.  Skips output when any input is
-    empty.
-
-Factory functions
------------------
-add, subtract, negate, multiply, divide
-    Element-wise arithmetic operators that return :class:`Apply` instances.
-"""
+"""Generic n-ary apply operator and element-wise arithmetic helper factories."""
 
 from __future__ import annotations
 
@@ -35,7 +22,7 @@ class Apply[Shape: _AnyShape, InT: np.generic, OutT: np.generic](
 ):
     """Stateless operator that applies a function to the latest values of input series.
 
-    At each :meth:`update`, the latest value of every input is collected
+    At each update, the latest value of every input is collected
     into a list and passed to the user-supplied function.  If any input
     series is empty the output is skipped (``None``).
     """
@@ -51,8 +38,12 @@ class Apply[Shape: _AnyShape, InT: np.generic, OutT: np.generic](
         dtype: type[OutT] | np.dtype[OutT],
         fn: _ApplyFn[Shape, InT, OutT],
     ) -> None:
-        super().__init__(inputs, shape, dtype, None)
+        super().__init__(inputs, shape, dtype)
         self._fn = fn
+
+    @override
+    def init_state(self) -> None:
+        return None
 
     @override
     def compute(
@@ -60,11 +51,11 @@ class Apply[Shape: _AnyShape, InT: np.generic, OutT: np.generic](
         timestamp: np.datetime64,
         inputs: tuple[Series[Shape, InT], ...],
         state: None,
-    ) -> _Array[Shape, OutT] | None:
+    ) -> tuple[_Array[Shape, OutT] | None, None]:
         if not all(inputs):
-            return None
+            return None, None
         values: list[_Array[Shape, InT]] = [series.values[-1] for series in inputs]
-        return self._fn(values)
+        return self._fn(values), None
 
 
 def _add[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
