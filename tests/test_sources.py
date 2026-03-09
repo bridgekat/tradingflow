@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src import ArrayBundleSource, AsyncCallableSource, CSVSource, Scenario
+from tradingflow import ArrayBundleSource, AsyncCallableSource, CSVSource, Scenario
 
 
 def ts(i: int) -> np.datetime64:

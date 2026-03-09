@@ -9,12 +9,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src import (
+from tradingflow import (
     ArrayBundleSource,
     Scenario,
 )
-from src.ops import add, select
-from src.sources.eastmoney.history import (
+from tradingflow.ops import add, select
+from tradingflow.sources.eastmoney.history import (
     BALANCE_SHEET_MAPPING_PROFILE,
     BALANCE_SHEET_SCHEMA,
     INCOME_STATEMENT_MAPPING_PROFILE,

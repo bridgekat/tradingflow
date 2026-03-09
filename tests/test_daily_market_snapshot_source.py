@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src import Scenario
-from src.ops import select
-from src.sources.eastmoney.history import DailyMarketSnapshotCSVSource
+from tradingflow import Scenario
+from tradingflow.ops import select
+from tradingflow.sources.eastmoney.history import DailyMarketSnapshotCSVSource
 
 
 def dt(text: str) -> np.datetime64:

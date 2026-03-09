@@ -2,9 +2,10 @@
 
 Classes
 -------
-TradingSimulator – Tracks cash; positions and computes total market
+TradingSimulator – Tracks cash, positions and computes total market
                    value (cash + holdings) with optional proportional
-                   commission and minimum charge.
+                   commission, minimum charge, weight-based position
+                   sizing, and lot-size rounding.
 """
 
 from .trading_simulator import TradingSimulator

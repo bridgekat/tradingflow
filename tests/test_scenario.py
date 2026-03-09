@@ -7,8 +7,8 @@ import asyncio
 import numpy as np
 import pytest
 
-from src import ArrayBundleSource, AsyncCallableSource, Operator, Scenario
-from src.ops import add, multiply, negate
+from tradingflow import ArrayBundleSource, AsyncCallableSource, Operator, Scenario
+from tradingflow.ops import add, multiply, negate
 
 
 def ts(i: int) -> np.datetime64:

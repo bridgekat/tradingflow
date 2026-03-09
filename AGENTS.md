@@ -8,7 +8,7 @@ This file is kept short and concise. It provides initial context for all agentic
 
 ## File Structure
 
-- In the [Python source directory](src/), every folder is a module, which must contain an `__init__.py` file as its entry point. Do not put too much code in module entry points; implementations should go into separate files.
+- In the [Python source directory](src/tradingflow/), every folder is a module, which must contain an `__init__.py` file as its entry point. Do not put too much code in module entry points; implementations should go into separate files.
 
 ## Documentation
 
@@ -19,7 +19,7 @@ This file is kept short and concise. It provides initial context for all agentic
 
 ## Exploration
 
-- Read module entry points first, starting from [the root](src/__init__.py).
+- Read module entry points first, starting from [the root](src/tradingflow/__init__.py).
 - Read implementation files only for details that are not obvious from module entry points, or when there appears to be an inconsistency.
 - For the given task, existing code with similar functionalities may be read for reference before implementation.
 

@@ -7,16 +7,19 @@ Classes
 -------
 TopK              – Equal-weight allocation to the top *k* assets.
 TopKRankLinear    – Rank-proportional allocation to the top *k* assets.
+RandomTopK        – Random selection from the top percentile with equal weights.
 MeanVarianceOptimization – Mean-variance optimisation (not yet implemented).
 """
 
 from .mean_variance_optimization import MeanVarianceOptimization
+from .random_top_k import RandomTopK
 from .top_k import TopK
 from .top_k_rank_linear import TopKRankLinear
 
 
 __all__ = [
+    "MeanVarianceOptimization",
+    "RandomTopK",
     "TopK",
     "TopKRankLinear",
-    "MeanVarianceOptimization",
 ]

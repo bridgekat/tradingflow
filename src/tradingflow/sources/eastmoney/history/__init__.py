@@ -7,6 +7,8 @@ Public API
 ----------
 DailyMarketSnapshotCSVSource
     Raw daily price history adapter.
+EquityStructureCSVSource
+    Raw equity structure history adapter (total shares).
 FinancialReportCSVSource
     Raw balance/income statement history adapter.
 """
@@ -16,6 +18,10 @@ from .daily_market_snapshot import (
     DailyMarketSnapshotCSVSource,
     DailyMarketSnapshotDiagnostics,
     DailyMarketSnapshotSchema,
+)
+from .equity_structure import (
+    EquityStructureCSVSource,
+    EquityStructureDiagnostics,
 )
 from .financial_reports import (
     BALANCE_SHEET_MAPPING_PROFILE,
@@ -40,6 +46,8 @@ __all__ = [
     "DailyMarketSnapshotCSVSource",
     "DailyMarketSnapshotDiagnostics",
     "DailyMarketSnapshotSchema",
+    "EquityStructureCSVSource",
+    "EquityStructureDiagnostics",
     "FinancialReportCSVSource",
     "FinancialReportDiagnostics",
     "FinancialReportKind",

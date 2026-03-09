@@ -6,10 +6,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-from src import Series
-from src.operator import Operator
-from src.ops import Apply, add, divide, multiply, negate, select, subtract
-from src.ops.filters import (
+from tradingflow import Series
+from tradingflow.operator import Operator
+from tradingflow.ops import Apply, add, divide, multiply, negate, select, subtract
+from tradingflow.ops.filters import (
     BollingerBand,
     ExponentialMovingAverage,
     Momentum,
@@ -18,10 +18,10 @@ from src.ops.filters import (
     MovingVariance,
     WeightedMovingAverage,
 )
-from src.ops.metrics import AverageReturn, SharpeRatio
-from src.ops.portfolios import MeanVarianceOptimization, TopK, TopKRankLinear
-from src.ops.predictors import RollingLinearRegression
-from src.ops.simulators import TradingSimulator
+from tradingflow.ops.metrics import AverageReturn, SharpeRatio
+from tradingflow.ops.portfolios import MeanVarianceOptimization, TopK, TopKRankLinear
+from tradingflow.ops.predictors import RollingLinearRegression
+from tradingflow.ops.simulators import TradingSimulator
 
 
 # ---------------------------------------------------------------------------
