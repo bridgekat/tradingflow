@@ -13,7 +13,7 @@ from tradingflow import (
     ArrayBundleSource,
     Scenario,
 )
-from tradingflow.ops import add, select
+from tradingflow.operators import add, select
 from tradingflow.sources.eastmoney.history import (
     BALANCE_SHEET_MAPPING_PROFILE,
     BALANCE_SHEET_SCHEMA,

@@ -1,15 +1,17 @@
-"""Tests for the ops module and all sub-modules."""
+"""Tests for the operators module and all sub-modules."""
 
 from __future__ import annotations
 from typing import Any
 
+import asyncio
+
 import numpy as np
 import pytest
 
-from tradingflow import Series
+from tradingflow import ArrayBundleSource, Scenario, Series
 from tradingflow.operator import Operator
-from tradingflow.ops import Apply, add, divide, multiply, negate, select, subtract
-from tradingflow.ops.filters import (
+from tradingflow.operators import Apply, Concat, Filter, Stack, Where, add, divide, multiply, negate, select, subtract
+from tradingflow.operators.indicators import (
     BollingerBand,
     ExponentialMovingAverage,
     Momentum,
@@ -18,10 +20,10 @@ from tradingflow.ops.filters import (
     MovingVariance,
     WeightedMovingAverage,
 )
-from tradingflow.ops.metrics import AverageReturn, SharpeRatio
-from tradingflow.ops.portfolios import MeanVarianceOptimization, TopK, TopKRankLinear
-from tradingflow.ops.predictors import RollingLinearRegression
-from tradingflow.ops.simulators import TradingSimulator
+from tradingflow.operators.metrics import AverageReturn, SharpeRatio
+from tradingflow.operators.portfolios import MeanVarianceOptimization, TopK, TopKRankLinear
+from tradingflow.operators.predictors import RollingLinearRegression
+from tradingflow.operators.simulators import TradingSimulator
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +155,125 @@ class TestSelect:
         series = make_vector_series([[1.0, 2.0]])
         with pytest.raises(ValueError, match="out of bounds"):
             select(series, (2,))
+
+    def test_single_int_drops_axis(self) -> None:
+        """Select with int index drops the axis (like a[:, 2])."""
+        series = make_vector_series([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        op = select(series, 1)
+        assert op.shape == ()
+        output = run_op(op, [ts(1), ts(2)])
+        assert float(output[0]) == pytest.approx(2.0)
+        assert float(output[1]) == pytest.approx(5.0)
+
+    def test_matrix_select_column(self) -> None:
+        """Select a single column from a (N, K) matrix -> (N,)."""
+        s = Series((2, 3), np.dtype(np.float64))
+        s.append(ts(1), np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+        from tradingflow.operators import Select
+
+        op = Select(s, 1)  # last axis, single int -> drop axis
+        assert op.shape == (2,)
+        value, _ = op.compute(ts(1), (s,), op.init_state())
+        np.testing.assert_array_equal(value, [2.0, 5.0])
+
+    def test_matrix_select_columns(self) -> None:
+        """Select multiple columns from a (N, K) matrix -> (N, 2)."""
+        s = Series((2, 3), np.dtype(np.float64))
+        s.append(ts(1), np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+        from tradingflow.operators import Select
+
+        op = Select(s, (2, 0))  # last axis, tuple -> keep axis
+        assert op.shape == (2, 2)
+        value, _ = op.compute(ts(1), (s,), op.init_state())
+        np.testing.assert_array_equal(value, [[3.0, 1.0], [6.0, 4.0]])
+
+    def test_matrix_select_row(self) -> None:
+        """Select a row from a (N, K) matrix along axis=0 -> (K,)."""
+        s = Series((2, 3), np.dtype(np.float64))
+        s.append(ts(1), np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+        from tradingflow.operators import Select
+
+        op = Select(s, 0, axis=0)  # axis 0, single int -> drop axis
+        assert op.shape == (3,)
+        value, _ = op.compute(ts(1), (s,), op.init_state())
+        np.testing.assert_array_equal(value, [1.0, 2.0, 3.0])
+
+    def test_scalar_input_raises(self) -> None:
+        s = Series((), np.dtype(np.float64))
+        from tradingflow.operators import Select
+
+        with pytest.raises(ValueError, match="at least 1 dimension"):
+            Select(s, 0)
+
+
+class TestWhere:
+    def test_positive_where(self) -> None:
+        series = make_vector_series([[1.0, -2.0, 3.0], [-1.0, 5.0, 0.0]])
+        op = Where(series, fn=lambda x: x > 0)
+        assert op.shape == (3,)
+        output = run_op(op, [ts(1), ts(2)])
+        np.testing.assert_array_equal(output[0], [1.0, np.nan, 3.0])
+        np.testing.assert_array_equal(output[1], [np.nan, 5.0, np.nan])
+
+    def test_custom_fill(self) -> None:
+        series = make_vector_series([[1.0, -2.0]])
+        op = Where(series, fn=lambda x: x > 0, fill=0.0)
+        output = run_op(op, [ts(1)])
+        np.testing.assert_array_equal(output[0], [1.0, 0.0])
+
+    def test_scalar(self) -> None:
+        s = Series((), np.dtype(np.float64))
+        s.append(ts(1), np.array(-5.0))
+        s.append(ts(2), np.array(3.0))
+        op = Where(s, fn=lambda x: x > 0)
+        assert op.shape == ()
+        output = run_op(op, [ts(1), ts(2)])
+        assert np.isnan(float(output[0]))
+        assert float(output[1]) == pytest.approx(3.0)
+
+    def test_preserves_shape_and_dtype(self) -> None:
+        series = make_vector_series([[1.0, 2.0]])
+        op = Where(series, fn=lambda x: x > 0)
+        assert op.shape == series.shape
+        assert op.dtype == series.dtype
+
+    def test_empty_series_returns_none(self) -> None:
+        series = Series((3,), np.dtype(np.float64))
+        op = Where(series, fn=lambda x: x > 0)
+        value, state = op.compute(ts(1), (series,), op.init_state())
+        assert value is None
+
+
+class TestFilter:
+    def test_filter_drops_failing(self) -> None:
+        series = make_vector_series([[1.0, 2.0, 3.0], [-1.0, -2.0, -3.0]])
+        op = Filter(series, fn=lambda x: float(np.sum(x)) > 0)
+        assert op.shape == (3,)
+        output = run_op(op, [ts(1), ts(2)])
+        assert len(output) == 1
+        np.testing.assert_array_equal(output[0], [1.0, 2.0, 3.0])
+
+    def test_filter_scalar(self) -> None:
+        s = Series((), np.dtype(np.float64))
+        s.append(ts(1), np.array(-5.0))
+        s.append(ts(2), np.array(3.0))
+        op = Filter(s, fn=lambda x: float(x) > 0)
+        assert op.shape == ()
+        output = run_op(op, [ts(1), ts(2)])
+        assert len(output) == 1
+        assert float(output[0]) == pytest.approx(3.0)
+
+    def test_preserves_shape_and_dtype(self) -> None:
+        series = make_vector_series([[1.0, 2.0]])
+        op = Filter(series, fn=lambda x: True)
+        assert op.shape == series.shape
+        assert op.dtype == series.dtype
+
+    def test_empty_series_returns_none(self) -> None:
+        series = Series((3,), np.dtype(np.float64))
+        op = Filter(series, fn=lambda x: True)
+        value, state = op.compute(ts(1), (series,), op.init_state())
+        assert value is None
 
 
 # ===========================================================================
@@ -405,7 +526,7 @@ class TestTradingSimulator:
         prices.append(ts(1), np.array([50.0, 100.0], dtype=np.float64))
         positions.append(ts(1), np.array([10.0, 5.0], dtype=np.float64))
         slices = tuple(inp.to(ts(1)) for inp in sim.inputs)
-        value, state = sim.compute(ts(1), slices, state)
+        value, state = sim.compute(ts(1), slices, state)  # type: ignore
         if value is not None:
             output.append(ts(1), np.asarray(value, dtype=output.dtype))
         # Cost: 10*50 + 5*100 = 1000
@@ -417,7 +538,7 @@ class TestTradingSimulator:
         prices.append(ts(2), np.array([55.0, 110.0], dtype=np.float64))
         positions.append(ts(2), np.array([10.0, 5.0], dtype=np.float64))
         slices = tuple(inp.to(ts(2)) for inp in sim.inputs)
-        value, state = sim.compute(ts(2), slices, state)
+        value, state = sim.compute(ts(2), slices, state)  # type: ignore
         if value is not None:
             output.append(ts(2), np.asarray(value, dtype=output.dtype))
         # No trades -> no cost
@@ -441,7 +562,7 @@ class TestTradingSimulator:
         prices.append(ts(1), np.array([100.0, 200.0], dtype=np.float64))
         positions.append(ts(1), np.array([10.0, 5.0], dtype=np.float64))
         slices = tuple(inp.to(ts(1)) for inp in sim.inputs)
-        value, state = sim.compute(ts(1), slices, state)
+        value, state = sim.compute(ts(1), slices, state)  # type: ignore
         if value is not None:
             output.append(ts(1), np.asarray(value, dtype=output.dtype))
         # Trade cost: 10*100 + 5*200 = 2000
@@ -470,7 +591,7 @@ class TestTradingSimulator:
         prices.append(ts(1), np.array([10.0], dtype=np.float64))
         positions.append(ts(1), np.array([1.0], dtype=np.float64))
         slices = tuple(inp.to(ts(1)) for inp in sim.inputs)
-        value, state = sim.compute(ts(1), slices, state)
+        value, state = sim.compute(ts(1), slices, state)  # type: ignore
         if value is not None:
             output.append(ts(1), np.asarray(value, dtype=output.dtype))
         # Cash: 1000 - 10 - 5 = 985
@@ -521,3 +642,247 @@ class TestSharpeRatio:
         expected = returns.mean() / returns.std(ddof=1) * np.sqrt(252)
         assert len(output) == 1
         assert float(output.values[-1]) == pytest.approx(expected, rel=1e-6)
+
+
+# ===========================================================================
+# Concat (existing axis)
+# ===========================================================================
+
+
+class TestConcat:
+    def test_concat_vectors_axis0(self) -> None:
+        """Concat two (3,) vectors along axis=0 into (6,)."""
+        s1 = Series((3,), np.dtype(np.float64))
+        s2 = Series((3,), np.dtype(np.float64))
+        s1.append(ts(1), np.array([1.0, 2.0, 3.0]))
+        s2.append(ts(1), np.array([4.0, 5.0, 6.0]))
+
+        op = Concat([s1, s2])
+        assert op.shape == (6,)
+        value, _ = op.compute(ts(1), (s1, s2), op.init_state())
+        np.testing.assert_array_equal(value, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+
+    def test_concat_matrices_axis1(self) -> None:
+        """Concat two (2, 3) matrices along axis=1 into (2, 6)."""
+        s1 = Series((2, 3), np.dtype(np.float64))
+        s2 = Series((2, 3), np.dtype(np.float64))
+        s1.append(ts(1), np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+        s2.append(ts(1), np.array([[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]))
+
+        op = Concat([s1, s2], axis=1)
+        assert op.shape == (2, 6)
+        value, _ = op.compute(ts(1), (s1, s2), op.init_state())
+        expected = np.array([[1, 2, 3, 7, 8, 9], [4, 5, 6, 10, 11, 12]], dtype=np.float64)
+        np.testing.assert_array_equal(value, expected)
+
+    def test_concat_forward_fill(self) -> None:
+        """Missing input at timestamp uses forward-fill; fully missing uses NaN."""
+        s1 = Series((2,), np.dtype(np.float64))
+        s2 = Series((2,), np.dtype(np.float64))
+        s1.append(ts(1), np.array([1.0, 2.0]))
+        s1.append(ts(2), np.array([3.0, 4.0]))
+        s2.append(ts(1), np.array([5.0, 6.0]))
+
+        op = Concat([s1, s2])
+        value, _ = op.compute(ts(2), (s1, s2), op.init_state())
+        np.testing.assert_array_equal(value, [3.0, 4.0, 5.0, 6.0])  # s2 forward-filled
+
+    def test_concat_scalar_raises(self) -> None:
+        """Scalar series rejected by Concat (use Stack instead)."""
+        s1 = Series((), np.dtype(np.float64))
+        s2 = Series((), np.dtype(np.float64))
+        with pytest.raises(ValueError, match="out of bounds"):
+            Concat([s1, s2])
+
+    def test_concat_shape_mismatch_raises(self) -> None:
+        s1 = Series((2, 3), np.dtype(np.float64))
+        s2 = Series((3, 3), np.dtype(np.float64))
+        with pytest.raises(ValueError, match="non-concatenation axes"):
+            Concat([s1, s2], axis=1)
+
+    def test_concat_ndim_mismatch_raises(self) -> None:
+        s1 = Series((3,), np.dtype(np.float64))
+        s2 = Series((2, 3), np.dtype(np.float64))
+        with pytest.raises(ValueError, match="same number of dimensions"):
+            Concat([s1, s2])
+
+    def test_concat_axis_out_of_bounds_raises(self) -> None:
+        s1 = Series((3,), np.dtype(np.float64))
+        s2 = Series((3,), np.dtype(np.float64))
+        with pytest.raises(ValueError, match="out of bounds"):
+            Concat([s1, s2], axis=1)
+
+    def test_concat_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one"):
+            Concat([])
+
+    def test_concat_vectors_scenario(self) -> None:
+        """Concat (3,) vector sources in a Scenario."""
+        src_a = ArrayBundleSource.from_arrays(
+            timestamps=np.array([ts(1)]),
+            values=np.array([[1.0, 2.0, 3.0]]),
+            name="a",
+        )
+        src_b = ArrayBundleSource.from_arrays(
+            timestamps=np.array([ts(1)]),
+            values=np.array([[4.0, 5.0, 6.0]]),
+            name="b",
+        )
+
+        scenario = Scenario()
+        a = scenario.add_source(src_a)
+        b = scenario.add_source(src_b)
+        concat_s = scenario.add_operator(Concat([a, b]))
+        asyncio.run(scenario.run())
+
+        assert len(concat_s) == 1
+        np.testing.assert_array_equal(concat_s[0], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+
+
+# ===========================================================================
+# Stack (new axis)
+# ===========================================================================
+
+
+class TestStack:
+    def test_stack_scalars(self) -> None:
+        """Stack scalar series into (N,) vector."""
+        s1 = Series((), np.dtype(np.float64))
+        s2 = Series((), np.dtype(np.float64))
+        s1.append(ts(1), np.array(10.0))
+        s2.append(ts(1), np.array(20.0))
+
+        op = Stack([s1, s2])
+        assert op.shape == (2,)
+        value, _ = op.compute(ts(1), (s1, s2), op.init_state())
+        np.testing.assert_array_equal(value, [10.0, 20.0])
+
+    def test_stack_vectors_axis0(self) -> None:
+        """Stack (K,) vectors into (N, K) matrix along axis=0."""
+        s1 = Series((3,), np.dtype(np.float64))
+        s2 = Series((3,), np.dtype(np.float64))
+        s1.append(ts(1), np.array([1.0, 2.0, 3.0]))
+        s2.append(ts(1), np.array([4.0, 5.0, 6.0]))
+
+        op = Stack([s1, s2])
+        assert op.shape == (2, 3)
+        value, _ = op.compute(ts(1), (s1, s2), op.init_state())
+        expected = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        np.testing.assert_array_equal(value, expected)
+
+    def test_stack_vectors_axis1(self) -> None:
+        """Stack (K,) vectors into (K, N) matrix along axis=1."""
+        s1 = Series((3,), np.dtype(np.float64))
+        s2 = Series((3,), np.dtype(np.float64))
+        s1.append(ts(1), np.array([1.0, 2.0, 3.0]))
+        s2.append(ts(1), np.array([4.0, 5.0, 6.0]))
+
+        op = Stack([s1, s2], axis=1)
+        assert op.shape == (3, 2)
+        value, _ = op.compute(ts(1), (s1, s2), op.init_state())
+        expected = np.array([[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]])
+        np.testing.assert_array_equal(value, expected)
+
+    def test_stack_forward_fill(self) -> None:
+        """Stack uses as-of lookup for stale inputs."""
+        s1 = Series((), np.dtype(np.float64))
+        s2 = Series((), np.dtype(np.float64))
+        s1.append(ts(1), np.array(10.0))
+        s1.append(ts(2), np.array(11.0))
+        s2.append(ts(1), np.array(20.0))
+
+        op = Stack([s1, s2])
+        value, _ = op.compute(ts(2), (s1, s2), op.init_state())
+        np.testing.assert_array_equal(value, [11.0, 20.0])
+
+    def test_stack_missing_nan(self) -> None:
+        """Inputs with no data produce NaN."""
+        s1 = Series((), np.dtype(np.float64))
+        s2 = Series((), np.dtype(np.float64))
+        s1.append(ts(5), np.array(10.0))
+
+        op = Stack([s1, s2])
+        value, _ = op.compute(ts(3), (s1, s2), op.init_state())
+        assert isinstance(value, np.ndarray)
+        assert np.isnan(value[1])
+
+    def test_stack_shape_mismatch_raises(self) -> None:
+        s1 = Series((3,), np.dtype(np.float64))
+        s2 = Series((4,), np.dtype(np.float64))
+        with pytest.raises(ValueError, match="same shape"):
+            Stack([s1, s2])
+
+    def test_stack_axis_out_of_bounds_raises(self) -> None:
+        s1 = Series((), np.dtype(np.float64))
+        s2 = Series((), np.dtype(np.float64))
+        with pytest.raises(ValueError, match="out of bounds"):
+            Stack([s1, s2], axis=1)
+
+    def test_stack_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one"):
+            Stack([])
+
+    def test_stack_heterogeneous_frequencies_scenario(self) -> None:
+        """Stack assembles scalar sources with different schedules."""
+        src_a = ArrayBundleSource.from_arrays(
+            timestamps=np.array([ts(1), ts(2), ts(3)]),
+            values=np.array([1.0, 2.0, 3.0]),
+            name="a",
+        )
+        src_b = ArrayBundleSource.from_arrays(
+            timestamps=np.array([ts(1), ts(3)]),
+            values=np.array([10.0, 30.0]),
+            name="b",
+        )
+
+        scenario = Scenario()
+        a = scenario.add_source(src_a)
+        b = scenario.add_source(src_b)
+        stack_s = scenario.add_operator(Stack([a, b]))
+        asyncio.run(scenario.run())
+
+        assert len(stack_s) == 3
+        np.testing.assert_array_equal(stack_s[0], [1.0, 10.0])
+        np.testing.assert_array_equal(stack_s[1], [2.0, 10.0])  # b forward-filled
+        np.testing.assert_array_equal(stack_s[2], [3.0, 30.0])
+
+    def test_stack_many_sources_scenario(self) -> None:
+        """Stack works with many sources on different schedules."""
+        scenario = Scenario()
+        series_list = []
+        for i in range(5):
+            src = ArrayBundleSource.from_arrays(
+                timestamps=np.array([ts(i + 1), ts(i + 3)]),
+                values=np.array([float(i), float(i * 10)]),
+                name=f"s{i}",
+            )
+            series_list.append(scenario.add_source(src))
+
+        stack_s = scenario.add_operator(Stack(series_list))
+        asyncio.run(scenario.run())
+
+        assert len(stack_s) == 7
+
+    def test_stack_then_downstream_operator(self) -> None:
+        """Stack output feeds downstream operators."""
+        src_a = ArrayBundleSource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([3.0, 4.0]),
+            name="a",
+        )
+        src_b = ArrayBundleSource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([7.0, 6.0]),
+            name="b",
+        )
+
+        scenario = Scenario()
+        a = scenario.add_source(src_a)
+        b = scenario.add_source(src_b)
+        stack_s = scenario.add_operator(Stack([a, b]))
+        sum_s = scenario.add_operator(Apply((stack_s,), (), np.float64, lambda args: np.sum(args[0])))
+        asyncio.run(scenario.run())
+
+        assert len(sum_s) == 2
+        assert float(sum_s[0]) == pytest.approx(10.0)
+        assert float(sum_s[1]) == pytest.approx(10.0)

@@ -15,16 +15,22 @@ from .rules import FinancialReportMappingProfile, default_mapping_profile
 from .schema import FinancialReportKind, FinancialReportSchema, default_schema
 
 
-def _to_quarterly(rows: list[FinancialReportRow]) -> list[FinancialReportRow]:
-    """Convert cumulative-within-year income statement rows to quarterly values.
+def _annualize_ytd(rows: list[FinancialReportRow]) -> list[FinancialReportRow]:
+    """Reverse YTD accumulation and annualize to produce per-period rates.
 
-    Chinese income statements report cumulative figures within each fiscal year:
-    Q1 (Mar-31), H1 (Jun-30), 9M (Sep-30), Annual (Dec-31).  Quarterly value
-    is computed as ``current_cumulative - previous_cumulative`` within the same
-    fiscal year; the first period of each year is used as-is.
+    Many financial statements (e.g. Chinese income statements) report
+    cumulative figures within each fiscal year.  This function:
 
-    Rows are keyed by ``report_date`` (the period end), which determines the
-    fiscal year and quarter ordering.
+    1. Reverses the accumulation by differencing consecutive reports
+       within the same fiscal year.
+    2. Divides each period increment by the fraction of the year it
+       covers, producing an annualized rate.
+
+    The result is frequency-agnostic: quarterly, semi-annual, or
+    irregular reporting all work.  Averaging *N* consecutive annualized
+    values with :class:`MovingAverage(N, ...)` recovers the trailing-*N*
+    -period aggregate (e.g. ``MovingAverage(4)`` on annualized quarterly
+    data = TTM).
     """
     by_report_date: dict[np.datetime64, FinancialReportRow] = {}
     for row in rows:
@@ -32,8 +38,9 @@ def _to_quarterly(rows: list[FinancialReportRow]) -> list[FinancialReportRow]:
 
     sorted_dates = sorted(by_report_date.keys())
 
-    quarterly_rows: list[FinancialReportRow] = []
-    prev_in_year: dict[int, np.ndarray] = {}
+    result_rows: list[FinancialReportRow] = []
+    # (cumulative_values, report_date) per fiscal year
+    prev_in_year: dict[int, tuple[np.ndarray, np.datetime64]] = {}
 
     for rd in sorted_dates:
         row = by_report_date[rd]
@@ -44,28 +51,37 @@ def _to_quarterly(rows: list[FinancialReportRow]) -> list[FinancialReportRow]:
         nan_mask = np.isnan(cumulative)
         cumulative_clean = np.where(nan_mask, 0.0, cumulative)
 
+        year_start = np.datetime64(f"{year}-01-01")
+
         if month <= 3 or year not in prev_in_year:
-            quarterly_values = cumulative_clean.copy()
-            quarterly_values[nan_mask] = np.nan
+            increment = cumulative_clean.copy()
+            days = float((rd - year_start) / np.timedelta64(1, "D"))
         else:
-            prev = prev_in_year[year]
-            quarterly_values = cumulative_clean - prev
-            quarterly_values[nan_mask] = np.nan
+            prev_vals, prev_rd = prev_in_year[year]
+            increment = cumulative_clean - prev_vals
+            days = float((rd - prev_rd) / np.timedelta64(1, "D"))
 
-        prev_in_year[year] = cumulative_clean
+        fraction_of_year = days / 365.25
+        if fraction_of_year > 0:
+            annualized = increment / fraction_of_year
+        else:
+            annualized = increment
 
-        quarterly_rows.append(
+        annualized[nan_mask] = np.nan
+        prev_in_year[year] = (cumulative_clean, rd)
+
+        result_rows.append(
             FinancialReportRow(
                 report_date=row.report_date,
                 notice_date=row.notice_date,
                 relevance_date=row.relevance_date,
-                values=quarterly_values,
+                values=annualized,
                 error_flag=row.error_flag,
             )
         )
 
-    quarterly_rows.sort(key=lambda r: (r.relevance_date, r.notice_date, r.report_date))
-    return quarterly_rows
+    result_rows.sort(key=lambda r: (r.relevance_date, r.notice_date, r.report_date))
+    return result_rows
 
 
 class FinancialReportCSVSource(Source[tuple[int], np.float64]):
@@ -75,8 +91,8 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
     fixed-order vector using the provided schema and mapping profile, then
     emits updates at ``relevance_date = max(report_date, notice_date)``.
 
-    When ``quarterly=True`` and ``kind="income_statement"``, cumulative
-    within-year figures are differenced to produce single-quarter values.
+    When ``annualize=True`` and ``kind="income_statement"``, cumulative
+    within-year figures are reversed and annualized via :func:`_annualize_ytd`.
     """
 
     __slots__ = (
@@ -87,7 +103,7 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
         "_symbol",
         "_strict_unknown_columns",
         "_strict_equation_check",
-        "_quarterly",
+        "_annualize",
         "_diagnostics",
         "_normalized_rows",
     )
@@ -99,7 +115,7 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
     _symbol: str | None
     _strict_unknown_columns: bool
     _strict_equation_check: bool
-    _quarterly: bool
+    _annualize: bool
     _diagnostics: FinancialReportDiagnostics
     _normalized_rows: tuple[FinancialReportRow, ...] | None
 
@@ -113,7 +129,7 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
         symbol: str | None = None,
         strict_unknown_columns: bool = False,
         strict_equation_check: bool = False,
-        quarterly: bool = False,
+        annualize: bool = False,
         name: str | None = None,
     ) -> None:
         schema_resolved = schema or default_schema(kind)
@@ -126,7 +142,7 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
         self._symbol = symbol
         self._strict_unknown_columns = strict_unknown_columns
         self._strict_equation_check = strict_equation_check
-        self._quarterly = quarterly
+        self._annualize = annualize
         self._diagnostics = FinancialReportDiagnostics.empty()
         self._normalized_rows = None
 
@@ -156,8 +172,8 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
                 strict_unknown_columns=self._strict_unknown_columns,
                 strict_equation_check=self._strict_equation_check,
             )
-            if self._quarterly and self._kind == "income_statement":
-                normalized_rows = _to_quarterly(normalized_rows)
+            if self._annualize and self._kind == "income_statement":
+                normalized_rows = _annualize_ytd(normalized_rows)
             self._normalized_rows = tuple(normalized_rows)
             self._diagnostics = diagnostics
 

@@ -141,6 +141,9 @@ class _ScenarioState:
         "_sources",
         "_operators",
         "_queue",
+        "_num_hist_tasks",
+        "_pending_heap",
+        "_heap_counter",
     )
 
     # Keyed by output series (always unique per node, even if same source/operator object
@@ -150,6 +153,9 @@ class _ScenarioState:
     _sources: dict[_AnySeries, _SourceState]
     _operators: dict[_AnySeries, _OperatorState]
     _queue: list[_AnyEvent]
+    _num_hist_tasks: int
+    _pending_heap: list[tuple[np.datetime64, int, _SourceState, bool]]
+    _heap_counter: int
 
     def __init__(self, scenario: Scenario) -> None:
         # Map: output series → list of downstream operator output series.
@@ -218,6 +224,16 @@ class _ScenarioState:
 
         # Initialize POCQ.
         self._queue = []
+        # O(1) check for whether all historical iterators have resolved.
+        # Starts at len(sources) because every source begins with a hist_task.
+        self._num_hist_tasks = len(scenario.sources)
+        # Min-heap of pending events: (timestamp, tiebreaker, source_state, is_hist).
+        # The tiebreaker avoids comparing _SourceState and ensures FIFO among
+        # same-timestamp events.  Stale entries (where the corresponding
+        # pending_hist/pending_live has already been consumed) are detected and
+        # skipped on pop.
+        self._pending_heap = []
+        self._heap_counter = 0
 
     # -------------------------------------------------------------------------
     # Main run loop
@@ -255,45 +271,31 @@ class _ScenarioState:
 
         The historical constraint requires every source with an active
         historical iterator to have a pending event before any timestamp
-        can be committed.
+        can be committed.  Uses an O(1) counter instead of scanning all
+        sources, and a min-heap for O(log N) minimum lookup.
         """
-        if any(s.hist_task is not None for s in self._sources.values()):
+        if self._num_hist_tasks > 0:
             return None
 
-        min_element: tuple[np.datetime64, _SourceState, bool] | None = None
+        # Pop minimum from heap.
+        while self._pending_heap:
+            _, _, st, is_hist = heapq.heappop(self._pending_heap)
+            pending = st.pending_hist if is_hist else st.pending_live
+            assert pending is not None
 
-        for st in self._sources.values():
-            if st.pending_hist is not None:
-                time, _ = st.pending_hist
-                if min_element is None or time < min_element[0]:
-                    min_element = time, st, True
-
-            if st.pending_live is not None:
-                time, _ = st.pending_live
-                if min_element is None or time < min_element[0]:
-                    min_element = time, st, False
-
-        if min_element is None:
-            return None
-
-        _, st, is_hist = min_element
-
-        # Take the event out of the source state.
-        if is_hist:
-            assert st.pending_hist is not None
-            time, value = st.pending_hist
+            # Consume the event.
+            time, value = pending
             st.last_time = time
-            st.hist_task = asyncio.create_task(_anext(st.hist_iter))
-            st.pending_hist = None
-        else:
-            assert st.pending_live is not None
-            time, value = st.pending_live
-            st.last_time = time
-            st.live_task = asyncio.create_task(_anext(st.live_iter))
-            st.pending_live = None
+            if is_hist:
+                st.pending_hist = None
+                st.hist_task = asyncio.create_task(_anext(st.hist_iter))
+                self._num_hist_tasks += 1
+            else:
+                st.pending_live = None
+                st.live_task = asyncio.create_task(_anext(st.live_iter))
+            return time, st, value
 
-        # Return the event.
-        return time, st, value
+        return None
 
     async def _wait_for_events(self) -> bool:
         """Wait for at least one source iterator to yield or exhaust."""
@@ -315,6 +317,7 @@ class _ScenarioState:
 
             if is_hist:
                 st.hist_task = None
+                self._num_hist_tasks -= 1
                 try:
                     raw_time, raw_val = task.result()
                 except StopAsyncIteration:
@@ -344,6 +347,9 @@ class _ScenarioState:
                 st.pending_hist = (time, value)
             else:
                 st.pending_live = (time, value)
+
+            self._heap_counter += 1
+            heapq.heappush(self._pending_heap, (time, self._heap_counter, st, is_hist))
 
         return True
 

@@ -106,3 +106,21 @@ def multiply[Shape: _AnyShape, T: np.number](a: Series[Shape, T], b: Series[Shap
 def divide[Shape: _AnyShape, T: np.floating](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
     """Element-wise division: ``a / b`` with floating point inputs."""
     return Apply((a, b), a.shape, a.dtype, _divide)
+
+
+def map[Shape: _AnyShape, T: np.generic](
+    a: Series[Shape, T],
+    fn: Callable[[_Array[Shape, T]], _Array[Shape, T]],
+) -> Apply[Shape, T, T]:
+    """Unary element-wise transform: ``fn(a)``.
+
+    Convenience wrapper for :class:`Apply` with a single input.
+    The output series has the same shape and dtype as the input.
+
+    Examples
+    --------
+    ::
+
+        log_s = scenario.add_operator(map(positive_s, np.log))
+    """
+    return Apply((a,), a.shape, a.dtype, lambda args: fn(args[0]))

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from tradingflow import Scenario
-from tradingflow.ops import select
+from tradingflow.operators import select
 from tradingflow.sources.eastmoney.history import DailyMarketSnapshotCSVSource
 
 

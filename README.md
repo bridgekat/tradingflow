@@ -29,12 +29,11 @@ An [operator](src/tradingflow/operator.py) is used to generate values into a tim
 
 Operators are the reusable building blocks of trading strategies. Examples include:
 
-- **Formulaic factors** (e.g. 20-day moving average of instrument prices)
-- **Model predictions** (e.g. from a regression model predicting future instrument returns, periodically retrained on historical data)
-- **Target positions** (e.g. periodically recomputed by mean-variance portfolio optimization on some forecasted returns and covariances)
-- **Actual positions** (e.g. calculated from order execution history)
+- [**Technical indicators**](src/tradingflow/operators/indicators/) (e.g. 20-day moving average of instrument prices)
+- [**Model predictions**](src/tradingflow/operators/predictors/) (e.g. from a regression model predicting future instrument returns, periodically retrained on historical data)
+- [**Target positions**](src/tradingflow/operators/portfolios/) (e.g. periodically recomputed by mean-variance portfolio optimization on some forecasted returns and covariances)
 - **Trading signals** (e.g. differences between target and actual positions)
-- **Performance metrics** (e.g. cumulative returns calculated from past positions)
+- [**Performance metrics**](src/tradingflow/operators/metrics/) (e.g. cumulative returns calculated from past positions)
 
 ## Scenarios
 

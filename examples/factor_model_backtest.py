@@ -6,6 +6,10 @@ cross-sectional linear regression to predict 1-month returns, constructs
 portfolios from top-predicted stocks, and simulates portfolio value with
 transaction costs.  Results are plotted as a yield curve.
 
+Per-stock sources are registered directly in the Scenario.  The POCQ handles
+heterogeneous per-stock timestamps naturally; :class:`Stack` assembles
+cross-sectional vectors with forward-fill via ``Series.at()``.
+
 Usage::
 
     python examples/factor_model_backtest.py [--symbols SYM1,SYM2,...] [--data-dir PATH]
@@ -15,16 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import argparse
-import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# Resolve project root so imports work when running the script directly
-# ---------------------------------------------------------------------------
-
-from tradingflow import Series, Scenario, ArrayBundleSource
+from tradingflow import Scenario, Series
 from tradingflow.sources.eastmoney.history import (
     DailyMarketSnapshotCSVSource,
     EquityStructureCSVSource,
@@ -32,25 +32,22 @@ from tradingflow.sources.eastmoney.history import (
     INCOME_STATEMENT_SCHEMA,
     BALANCE_SHEET_SCHEMA,
 )
-from tradingflow.ops import Apply, divide
-from tradingflow.ops.filters import MovingAverage, MovingVariance
-from tradingflow.ops.predictors import CrossSectionalRegression
-from tradingflow.ops.portfolios import RandomTopK
-from tradingflow.ops.simulators import TradingSimulator
-from tradingflow.sources.eastmoney.history.financial_reports.schema import FinancialReportKind
+from tradingflow.operators import Select, Stack, divide, map, multiply
+from tradingflow.operators.indicators import MovingAverage, MovingVariance
+from tradingflow.operators.predictors import CrossSectionalRegression
+from tradingflow.operators.portfolios import RandomTopK
+from tradingflow.operators.simulators import TradingSimulator
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 DEFAULT_DATA_DIR = Path("data") / "a_shares_history_raw"
-BACKTEST_START = np.datetime64("2005-01-01", "ns")
-BACKTEST_END = np.datetime64("2024-12-31", "ns")
 COMMISSION_RATE = 0.001  # 0.1%
-INITIAL_CASH = 100_000.0
+INITIAL_CASH = 100000.0
 LOT_SIZE = 100
 RETRAIN_EVERY = 21  # ~1 month in trading days
 RETURN_HORIZON = 21
-TRAIN_SAMPLES = 100_000
+TRAIN_SAMPLES = 100000
 TOP_FRAC = 0.1
 SELECT_K = 20
 SEED = 42
@@ -65,7 +62,7 @@ IS_PROFIT_IDX = INCOME_STATEMENT_SCHEMA.field_index["income_statement.profit"]
 
 
 # ---------------------------------------------------------------------------
-# Data loading helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
 
@@ -95,167 +92,6 @@ def discover_symbols(data_dir: Path, symbols: list[str] | None = None) -> list[s
     return valid
 
 
-async def _drain_source(source) -> tuple[list[np.datetime64], list[np.ndarray]]:
-    """Iterate a historical-only source and collect timestamps + values."""
-    hist_iter, _ = source.subscribe()
-    timestamps: list[np.datetime64] = []
-    values: list[np.ndarray] = []
-    async for ts, val in hist_iter:
-        timestamps.append(ts)
-        values.append(np.asarray(val))
-    return timestamps, values
-
-
-async def load_daily_prices(
-    data_dir: Path,
-    symbols: list[str],
-) -> dict[str, tuple[list[np.datetime64], list[np.ndarray]]]:
-    """Load daily price data for each symbol using DailyMarketSnapshotCSVSource."""
-    result: dict[str, tuple[list[np.datetime64], list[np.ndarray]]] = {}
-    for sym in symbols:
-        path = data_dir / f"{sym}_daily_price_raw.csv"
-        source = DailyMarketSnapshotCSVSource(path, strict_row_checks=False, name=sym)
-        result[sym] = await _drain_source(source)
-    return result
-
-
-async def load_financial_data(
-    data_dir: Path,
-    symbols: list[str],
-    kind: FinancialReportKind,
-    quarterly: bool = False,
-) -> dict[str, tuple[list[np.datetime64], list[np.ndarray]]]:
-    """Load financial reports for each symbol."""
-    suffix = "_balance_sheet_raw.csv" if kind == "balance_sheet" else "_income_statement_raw.csv"
-    result: dict[str, tuple[list[np.datetime64], list[np.ndarray]]] = {}
-    for sym in symbols:
-        path = data_dir / f"{sym}{suffix}"
-        source = FinancialReportCSVSource(
-            path,
-            kind=kind,
-            quarterly=quarterly,
-            strict_equation_check=False,
-            name=sym,
-        )
-        result[sym] = await _drain_source(source)
-    return result
-
-
-async def load_equity_structure(
-    data_dir: Path,
-    symbols: list[str],
-) -> dict[str, tuple[list[np.datetime64], list[np.ndarray]]]:
-    """Load equity structure (total shares) for each symbol."""
-    result: dict[str, tuple[list[np.datetime64], list[np.ndarray]]] = {}
-    for sym in symbols:
-        path = data_dir / f"{sym}_equity_structure_raw.csv"
-        source = EquityStructureCSVSource(path, strict_row_checks=False, name=sym)
-        result[sym] = await _drain_source(source)
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Panel alignment
-# ---------------------------------------------------------------------------
-
-
-def _find_common_dates(
-    price_data: dict[str, tuple[list[np.datetime64], list[np.ndarray]]],
-    start: np.datetime64,
-    end: np.datetime64,
-) -> np.ndarray:
-    """Compute the union of all trading dates across stocks within [start, end]."""
-    all_dates: set[np.datetime64] = set()
-    for timestamps, _ in price_data.values():
-        for ts in timestamps:
-            if start <= ts <= end:
-                all_dates.add(ts)
-    return np.sort(np.array(list(all_dates), dtype="datetime64[ns]"))
-
-
-def align_scalar_panel(
-    stock_data: dict[str, tuple[list[np.datetime64], list[np.ndarray]]],
-    common_dates: np.ndarray,
-    symbols: list[str],
-    field_index: int | None = None,
-) -> np.ndarray:
-    """Align per-stock scalar time series onto common dates with forward-fill.
-
-    If *field_index* is not None, extract that index from vector-valued entries.
-    Returns shape ``(T, N)`` with NaN for missing data.
-    """
-    T = len(common_dates)
-    N = len(symbols)
-    panel = np.full((T, N), np.nan, dtype=np.float64)
-
-    for col, sym in enumerate(symbols):
-        if sym not in stock_data:
-            continue
-        timestamps, values = stock_data[sym]
-        if not timestamps:
-            continue
-
-        # Build lookup: for each common date, find latest value at or before it
-        ts_arr = np.array(timestamps, dtype="datetime64[ns]")
-        val_arr = np.array([(float(v[field_index]) if field_index is not None else float(v)) for v in values])
-
-        # Forward-fill via searchsorted
-        indices = np.searchsorted(ts_arr, common_dates, side="right") - 1
-        valid = indices >= 0
-        panel[valid, col] = val_arr[indices[valid]]
-
-    return panel
-
-
-def compute_ttm_panel(
-    quarterly_data: dict[str, tuple[list[np.datetime64], list[np.ndarray]]],
-    common_dates: np.ndarray,
-    symbols: list[str],
-    field_index: int,
-) -> np.ndarray:
-    """Compute trailing-twelve-month sum from quarterly data, aligned to daily dates.
-
-    For each stock, computes the rolling sum of the last 4 quarterly observations
-    and forward-fills onto common_dates.
-    """
-    T = len(common_dates)
-    N = len(symbols)
-    panel = np.full((T, N), np.nan, dtype=np.float64)
-
-    for col, sym in enumerate(symbols):
-        if sym not in quarterly_data:
-            continue
-        timestamps, values = quarterly_data[sym]
-        if len(timestamps) < 4:
-            continue
-
-        ts_arr = np.array(timestamps, dtype="datetime64[ns]")
-        val_arr = np.array([float(v[field_index]) for v in values])
-
-        # Replace NaN with 0 for rolling sum, track NaN positions
-        val_clean = np.where(np.isnan(val_arr), 0.0, val_arr)
-
-        # Compute rolling sum of last 4 quarters
-        ttm_ts: list[np.datetime64] = []
-        ttm_vals: list[float] = []
-        for i in range(3, len(val_clean)):
-            ttm_ts.append(ts_arr[i])
-            ttm_vals.append(float(np.sum(val_clean[i - 3 : i + 1])))
-
-        if not ttm_ts:
-            continue
-
-        ttm_ts_arr = np.array(ttm_ts, dtype="datetime64[ns]")
-        ttm_val_arr = np.array(ttm_vals)
-
-        # Forward-fill onto common dates
-        indices = np.searchsorted(ttm_ts_arr, common_dates, side="right") - 1
-        valid = indices >= 0
-        panel[valid, col] = ttm_val_arr[indices[valid]]
-
-    return panel
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -264,139 +100,117 @@ def compute_ttm_panel(
 async def run_backtest(
     data_dir: Path,
     symbols: list[str] | None = None,
-    max_symbols: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Run the full factor-model backtest and return (dates, portfolio_values)."""
 
     # 1. Discover symbols
     print("Discovering symbols...")
     all_symbols = discover_symbols(data_dir, symbols)
-    if max_symbols is not None:
-        all_symbols = all_symbols[:max_symbols]
     N = len(all_symbols)
     print(f"  Using {N} stocks")
     if N < SELECT_K:
         print(f"  Warning: fewer stocks ({N}) than SELECT_K ({SELECT_K})")
 
-    # 2. Load data
-    print("Loading daily prices...")
-    price_data = await load_daily_prices(data_dir, all_symbols)
-
-    print("Loading balance sheets...")
-    bs_data = await load_financial_data(data_dir, all_symbols, "balance_sheet")
-
-    print("Loading income statements (quarterly)...")
-    is_data = await load_financial_data(
-        data_dir,
-        all_symbols,
-        "income_statement",
-        quarterly=True,
-    )
-
-    print("Loading equity structure...")
-    eq_data = await load_equity_structure(data_dir, all_symbols)
-
-    # 3. Build common date grid
-    print("Aligning panel data...")
-    common_dates = _find_common_dates(price_data, BACKTEST_START, BACKTEST_END)
-    T = len(common_dates)
-    print(f"  {T} trading days from {common_dates[0]} to {common_dates[-1]}")
-
-    # 4. Build panels — shape (T, N)
-    close_panel = align_scalar_panel(price_data, common_dates, all_symbols, field_index=IDX_CLOSE)
-    amount_panel = align_scalar_panel(price_data, common_dates, all_symbols, field_index=IDX_AMOUNT)
-    total_shares_panel = align_scalar_panel(eq_data, common_dates, all_symbols)
-    equity_panel = align_scalar_panel(bs_data, common_dates, all_symbols, field_index=BS_EQUITY_IDX)
-    profit_ttm_panel = compute_ttm_panel(is_data, common_dates, all_symbols, field_index=IS_PROFIT_IDX)
-
-    # Derived panels
-    market_cap_panel = close_panel * total_shares_panel
-
-    print(f"  Panel shape: ({T}, {N})")
-    print(
-        f"  NaN rates: close={np.isnan(close_panel).mean():.1%}, "
-        f"mcap={np.isnan(market_cap_panel).mean():.1%}, "
-        f"equity={np.isnan(equity_panel).mean():.1%}, "
-        f"profit_ttm={np.isnan(profit_ttm_panel).mean():.1%}"
-    )
-
-    # 5. Build Scenario pipeline
-    print("Building scenario pipeline...")
+    # 2. Register per-stock sources
+    print("Registering per-stock sources...")
     scenario = Scenario()
 
-    close_s = scenario.add_source(ArrayBundleSource(common_dates, close_panel))
-    mcap_s = scenario.add_source(ArrayBundleSource(common_dates, market_cap_panel))
-    equity_s = scenario.add_source(ArrayBundleSource(common_dates, equity_panel))
-    profit_s = scenario.add_source(ArrayBundleSource(common_dates, profit_ttm_panel))
-    amount_s = scenario.add_source(ArrayBundleSource(common_dates, amount_panel))
+    price_series: list[Series[Any, Any]] = []
+    eq_series: list[Series[Any, Any]] = []
+    bs_series: list[Series[Any, Any]] = []
+    is_series: list[Series[Any, Any]] = []
+
+    for sym in all_symbols:
+        price_series.append(
+            scenario.add_source(
+                DailyMarketSnapshotCSVSource(
+                    data_dir / f"{sym}_daily_price_raw.csv",
+                    strict_row_checks=False,
+                    name=f"{sym}/price",
+                )
+            )
+        )
+        eq_series.append(
+            scenario.add_source(
+                EquityStructureCSVSource(
+                    data_dir / f"{sym}_equity_structure_raw.csv",
+                    strict_row_checks=False,
+                    name=f"{sym}/eq",
+                )
+            )
+        )
+        bs_series.append(
+            scenario.add_source(
+                FinancialReportCSVSource(
+                    data_dir / f"{sym}_balance_sheet_raw.csv",
+                    kind="balance_sheet",
+                    strict_equation_check=False,
+                    name=f"{sym}/bs",
+                )
+            )
+        )
+        is_series.append(
+            scenario.add_source(
+                FinancialReportCSVSource(
+                    data_dir / f"{sym}_income_statement_raw.csv",
+                    kind="income_statement",
+                    annualize=True,
+                    strict_equation_check=False,
+                    name=f"{sym}/is",
+                )
+            )
+        )
+
+    print(f"  {4 * N} sources registered")
+
+    # 3. Cross-sectional assembly via Stack
+    #    Stack assembles per-stock series into (N, ...) vectors/matrices.
+
+    # Daily prices: Stack (6,) vectors into (N, 6), then extract columns
+    price_matrix_s = scenario.add_operator(Stack(price_series))  # (N, 6)
+    close_s = scenario.add_operator(Select(price_matrix_s, IDX_CLOSE))  # (N,)
+    amount_s = scenario.add_operator(Select(price_matrix_s, IDX_AMOUNT))  # (N,)
+
+    # Equity structure: scalar sources -> Stack directly into (N,)
+    total_shares_s = scenario.add_operator(Stack(eq_series))  # (N,)
+
+    # Balance sheets: Stack (K,) vectors into (N, K), then extract equity column
+    bs_matrix_s = scenario.add_operator(Stack(bs_series))  # (N, K_bs)
+    equity_s = scenario.add_operator(Select(bs_matrix_s, BS_EQUITY_IDX))  # (N,)
+
+    # Income statements (annualized): per-stock field extraction + MA(4) for TTM, then Stack
+    profit_ttm_series: list[Series[Any, Any]] = []
+    for s in is_series:
+        profit_field_s = scenario.add_operator(Select(s, IS_PROFIT_IDX))  # ()
+        ttm_s = scenario.add_operator(MovingAverage(4, profit_field_s))
+        profit_ttm_series.append(ttm_s)
+    profit_s = scenario.add_operator(Stack(profit_ttm_series))  # (N,)
+
+    # 4. Derived cross-sectional series
+    mcap_s = scenario.add_operator(multiply(close_s, total_shares_s))
+
+    # 5. Factor pipeline
 
     # Factor 1: log(market cap)
-    log_mcap_s = scenario.add_operator(
-        Apply(
-            (mcap_s,),
-            (N,),
-            np.float64,
-            lambda args: np.log(np.where(args[0] > 0, args[0], np.nan)),
-        )
-    )
+    log_mcap_s = scenario.add_operator(map(mcap_s, np.log))
 
     # Factor 2: log(book-to-price) = log(equity / market_cap)
-    log_btp_s = scenario.add_operator(
-        Apply(
-            (equity_s, mcap_s),
-            (N,),
-            np.float64,
-            lambda args: np.log(
-                np.where(
-                    (args[0] > 0) & (args[1] > 0),
-                    args[0] / args[1],
-                    np.nan,
-                )
-            ),
-        )
-    )
+    btp_s = scenario.add_operator(divide(equity_s, mcap_s))
+    log_btp_s = scenario.add_operator(map(btp_s, np.log))
 
     # Factor 3: earnings-to-price = profit_ttm / market_cap
-    ep_s = scenario.add_operator(
-        Apply(
-            (profit_s, mcap_s),
-            (N,),
-            np.float64,
-            lambda args: np.where(args[1] > 0, args[0] / args[1], np.nan),
-        )
-    )
+    ep_s = scenario.add_operator(divide(profit_s, mcap_s))
 
     # Factor 4: monthly turnover = MA(21, amount / market_cap)
-    daily_turnover_s = scenario.add_operator(
-        Apply(
-            (amount_s, mcap_s),
-            (N,),
-            np.float64,
-            lambda args: np.where(args[1] > 0, args[0] / args[1], np.nan),
-        )
-    )
+    daily_turnover_s = scenario.add_operator(divide(amount_s, mcap_s))
     monthly_turnover_s = scenario.add_operator(MovingAverage(RETRAIN_EVERY, daily_turnover_s))
 
     # Factor 5: monthly volatility = sqrt(Var(21, close))
     monthly_var_s = scenario.add_operator(MovingVariance(RETRAIN_EVERY, close_s))
-    monthly_vol_s = scenario.add_operator(
-        Apply(
-            (monthly_var_s,),
-            (N,),
-            np.float64,
-            lambda args: np.sqrt(np.maximum(args[0], 0.0)),
-        )
-    )
+    monthly_vol_s = scenario.add_operator(map(monthly_var_s, lambda x: np.sqrt(np.maximum(x, 0.0))))
 
     # Stack factors into (N, 5) feature matrix
-    factors_s = scenario.add_operator(
-        Apply(
-            (log_mcap_s, log_btp_s, ep_s, monthly_turnover_s, monthly_vol_s),
-            (N, 5),
-            np.float64,
-            lambda args: np.column_stack(args),
-        )
-    )
+    factors_s = scenario.add_operator(Stack([log_mcap_s, log_btp_s, ep_s, monthly_turnover_s, monthly_vol_s], axis=1))
 
     # Cross-sectional regression
     train_window = max(1, TRAIN_SAMPLES // N) + RETURN_HORIZON
@@ -435,22 +249,13 @@ async def run_backtest(
 
     # 6. Run
     print("Running scenario...")
-
-    # Find the series that holds portfolio values
-    portfolio_series = portfolio_value_s
-
     await scenario.run()
 
-    # Extract results from the last registered operator's series
-    # The scenario.operators list contains (operator, series) pairs
-    op_series_list = list(scenario.operators)
-    portfolio_series = op_series_list[-1][1]  # last operator = TradingSimulator
+    result_dates = portfolio_value_s.index
+    result_values = portfolio_value_s.values
 
-    result_dates = portfolio_series.index[: len(portfolio_series)]
-    result_values = portfolio_series.values[: len(portfolio_series)]
-
-    print(f"  Portfolio series length: {len(portfolio_series)}")
-    if len(portfolio_series) > 0:
+    print(f"  Portfolio series length: {len(portfolio_value_s)}")
+    if len(portfolio_value_s) > 0:
         print(f"  Final portfolio value: {float(result_values[-1]):,.2f}")
 
     return result_dates, result_values
@@ -501,12 +306,6 @@ def main() -> None:
         help="Comma-separated list of stock symbols (e.g. 000001,000002)",
     )
     parser.add_argument(
-        "--max-symbols",
-        type=int,
-        default=None,
-        help="Maximum number of symbols to use",
-    )
-    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -520,7 +319,6 @@ def main() -> None:
         run_backtest(
             data_dir=args.data_dir,
             symbols=symbols,
-            max_symbols=args.max_symbols,
         )
     )
 

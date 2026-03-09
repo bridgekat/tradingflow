@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from tradingflow import ArrayBundleSource, AsyncCallableSource, Operator, Scenario
-from tradingflow.ops import add, multiply, negate
+from tradingflow.operators import add, multiply, negate
 
 
 def ts(i: int) -> np.datetime64:
