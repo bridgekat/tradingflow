@@ -14,6 +14,7 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+docs = ["zensical", "mkdocstrings-python"]
 viz = ["matplotlib", "streamlit[charts]"]
 
 [tool.setuptools.packages.find]
