@@ -68,7 +68,7 @@ class RandomTopK(Operator[tuple[Series], tuple[int], np.float64, np.random.Gener
         (preds,) = inputs
         if not preds:
             return None, state
-        values = preds.values[-1]
+        values = preds.last
         n = len(values)
 
         # Exclude NaN predictions

@@ -79,10 +79,9 @@ class Concat[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, No
         parts: list[np.ndarray] = []
 
         for series in inputs:
-            val = series.last
-            if val is None:
+            if not series:
                 parts.append(np.full(series.shape, np.nan, dtype=self.dtype))
             else:
-                parts.append(val)
+                parts.append(series.last)
 
         return np.concatenate(parts, axis=self._axis), None

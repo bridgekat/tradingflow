@@ -59,10 +59,12 @@ class RollingLinearRegression(RollingPredictor):
         state["coefficients"] = coeffs
 
     @override
-    def _predict(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict[str, Any]) -> ArrayLike | None:
+    def _predict(
+        self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict[str, Any]
+    ) -> ArrayLike | None:
         features, targets = inputs
         if state["coefficients"] is None or not features:
             return None
-        x = features.values[-1]
+        x = features.last
         X_bias = np.append(x, 1.0)
         return float(X_bias @ state["coefficients"])

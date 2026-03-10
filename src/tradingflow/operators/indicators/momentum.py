@@ -33,8 +33,10 @@ class Momentum[Shape: tuple[int, ...], T: np.floating](Operator[tuple[Series[Sha
         return None
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> tuple[ArrayLike | None, None]:
+    def compute(
+        self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None
+    ) -> tuple[ArrayLike | None, None]:
         (series,) = inputs
         if len(series) <= self._period:
             return None, None
-        return series.values[-1] - series.values[-self._period - 1], None
+        return series[-1] - series[-self._period - 1], None

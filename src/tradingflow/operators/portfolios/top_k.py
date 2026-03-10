@@ -40,7 +40,7 @@ class TopK(Operator[tuple[Series], tuple[int], np.float64, None]):
         (preds,) = inputs
         if not preds:
             return None, None
-        values = preds.values[-1]
+        values = preds.last
         n = len(values)
         if isinstance(self._k, float):
             k = max(1, int(self._k * n))

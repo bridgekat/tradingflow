@@ -12,7 +12,7 @@ cross-sectional vectors with forward-fill via ``Series.at()``.
 
 Usage::
 
-    python examples/factor_model_backtest.py [--symbols SYM1,SYM2,...] [--data-dir PATH]
+    python factor_model_backtest.py [--symbols SYM1,SYM2,...] [--data-dir PATH]
 """
 
 from __future__ import annotations

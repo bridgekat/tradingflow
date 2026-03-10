@@ -48,7 +48,7 @@ class ExponentialMovingAverage[Shape: tuple[int, ...], T: np.floating](
         (series,) = inputs
         if not series:
             return None, state
-        latest = series.values[-1, ...]
+        latest = series.last
         if state is not None:
             result = self._alpha * latest + (1.0 - self._alpha) * state
         else:

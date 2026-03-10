@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, cast, override
+from typing import Callable, override
 
 import numpy as np
 
@@ -54,18 +54,18 @@ class Apply[Shape: _AnyShape, InT: np.generic, OutT: np.generic](
     ) -> tuple[_Array[Shape, OutT] | None, None]:
         if not all(inputs):
             return None, None
-        values: list[_Array[Shape, InT]] = [series.values[-1] for series in inputs]
+        values: list[_Array[Shape, InT]] = [series.last for series in inputs]
         return self._fn(values), None
 
 
 def _add[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
     x, y = args
-    return cast(_Array[Shape, T], x + y)
+    return x + y  # type: ignore[return-value]
 
 
 def _subtract[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
     x, y = args
-    return cast(_Array[Shape, T], x - y)
+    return x - y  # type: ignore[return-value]
 
 
 def _negate[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
@@ -75,12 +75,12 @@ def _negate[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Ar
 
 def _multiply[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
     x, y = args
-    return cast(_Array[Shape, T], x * y)
+    return x * y  # type: ignore[return-value]
 
 
 def _divide[Shape: _AnyShape, T: np.floating](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
     x, y = args
-    return cast(_Array[Shape, T], x / y)
+    return x / y  # type: ignore[return-value]
 
 
 def add[Shape: _AnyShape, T: np.number](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:

@@ -76,21 +76,21 @@ class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, di
         return {"cash": self._initial_cash, "prev_positions": None}
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict) -> tuple[ArrayLike | None, dict]:
+    def compute(
+        self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict
+    ) -> tuple[ArrayLike | None, dict]:
         prices, positions = inputs
         if not prices or not positions:
             return None, state
-        current_prices = prices.values[-1]
-        current_positions = positions.values[-1]
+        current_prices = prices.last
+        current_positions = positions.last
 
         if self._weight_mode:
             # Convert weights to positions using current portfolio value
             if state["prev_positions"] is None:
                 market_value = self._initial_cash
             else:
-                market_value = state["cash"] + float(
-                    np.nansum(state["prev_positions"] * current_prices)
-                )
+                market_value = state["cash"] + float(np.nansum(state["prev_positions"] * current_prices))
             weights = current_positions
             safe_prices = np.where(current_prices > 0, current_prices, np.inf)
             raw_positions = market_value * weights / safe_prices

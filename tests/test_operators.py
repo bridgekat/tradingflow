@@ -323,7 +323,7 @@ class TestMovingVariance:
         assert len(output) == 7  # i=2..8
         # At i=4: window=[2,4,4,4], var=1.0
         expected_var_at_4 = np.var([2.0, 4.0, 4.0, 4.0], ddof=1)
-        assert float(output.values[2]) == pytest.approx(expected_var_at_4)
+        assert float(output[2]) == pytest.approx(expected_var_at_4)
 
     def test_vector(self) -> None:
         s = make_vector_series([[1.0, 10.0], [3.0, 20.0], [5.0, 30.0]])
@@ -333,8 +333,8 @@ class TestMovingVariance:
         # At i=3: [1,3,5] var=4, [10,20,30] var=100
         expected_2 = np.var([1.0, 3.0], ddof=1)
         expected_3 = np.var([1.0, 3.0, 5.0], ddof=1)
-        assert float(output.values[0][0]) == pytest.approx(expected_2)
-        assert float(output.values[1][0]) == pytest.approx(expected_3)
+        assert float(output[0][0]) == pytest.approx(expected_2)
+        assert float(output[1][0]) == pytest.approx(expected_3)
 
 
 class TestMovingCovariance:
@@ -345,7 +345,7 @@ class TestMovingCovariance:
         # Window=3, first full window at i=3: [[1,2],[2,4],[3,6]]
         # i=2 produces partial-window output (2 entries), i=3 is the second output
         expected = np.cov(np.array([[1, 2], [2, 4], [3, 6]]).T, ddof=1)
-        np.testing.assert_array_almost_equal(output.values[1], expected)
+        np.testing.assert_array_almost_equal(output[1], expected)
 
 
 class TestExponentialMovingAverage:
@@ -373,7 +373,7 @@ class TestWeightedMovingAverage:
         # At i=3: values=[1,2,3], weights=[1,2,3]/6
         # WMA = (1*1 + 2*2 + 3*3) / 6 = 14/6
         expected = (1 * 1 + 2 * 2 + 3 * 3) / 6.0
-        assert float(output.values[2]) == pytest.approx(expected)
+        assert float(output[2]) == pytest.approx(expected)
 
     def test_rejects_timedelta_window(self) -> None:
         s = make_scalar_series([1.0])
@@ -409,9 +409,9 @@ class TestBollingerBand:
         vals = np.array([12.0, 11.0, 13.0])
         mean = vals.mean()
         std = vals.std(ddof=1)
-        assert float(out_upper.values[-1]) == pytest.approx(mean + 2.0 * std)
-        assert float(out_lower.values[-1]) == pytest.approx(mean - 2.0 * std)
-        assert float(out_mean.values[-1]) == pytest.approx(mean)
+        assert float(out_upper[-1]) == pytest.approx(mean + 2.0 * std)
+        assert float(out_lower[-1]) == pytest.approx(mean - 2.0 * std)
+        assert float(out_mean[-1]) == pytest.approx(mean)
 
     def test_output_shape(self) -> None:
         s = make_vector_series([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
@@ -445,7 +445,7 @@ class TestRollingLinearRegression:
                 output.append(ts(i), np.asarray(value, dtype=output.dtype))
 
         # After enough data, predictions should be close to 2*x + 1.
-        last_pred = float(output.values[-1])
+        last_pred = float(output[-1])
         last_x = 10.0
         assert last_pred == pytest.approx(2.0 * last_x + 1.0, abs=0.1)
 
@@ -471,7 +471,7 @@ class TestTopK:
         preds = make_vector_series([[0.1, 0.5, 0.3, 0.2, 0.4]])
         op = TopK(preds, k=2)
         output = run_op(op, [ts(1)])
-        w = output.values[-1]
+        w = output[-1]
         # Top 2: indices 1 (0.5) and 4 (0.4)
         assert float(w[1]) == pytest.approx(0.5)
         assert float(w[4]) == pytest.approx(0.5)
@@ -481,7 +481,7 @@ class TestTopK:
         preds = make_vector_series([[0.1, 0.5, 0.3, 0.2]])
         op = TopK(preds, k=0.5)  # 50% of 4 = 2
         output = run_op(op, [ts(1)])
-        w = output.values[-1]
+        w = output[-1]
         nonzero = np.count_nonzero(w)
         assert nonzero == 2
         assert float(w.sum()) == pytest.approx(1.0)
@@ -492,7 +492,7 @@ class TestTopKRankLinear:
         preds = make_vector_series([[0.1, 0.5, 0.3]])
         op = TopKRankLinear(preds, k=2)
         output = run_op(op, [ts(1)])
-        w = output.values[-1]
+        w = output[-1]
         # Top 2: index 1 (rank 1, weight 2/3), index 2 (rank 2, weight 1/3)
         assert float(w[1]) == pytest.approx(2.0 / 3.0)
         assert float(w[2]) == pytest.approx(1.0 / 3.0)
@@ -532,7 +532,7 @@ class TestTradingSimulator:
         # Cost: 10*50 + 5*100 = 1000
         # Cash: 1000 - 1000 = 0
         # MV: 0 + 10*50 + 5*100 = 1000
-        assert float(output.values[-1]) == pytest.approx(1000.0)
+        assert float(output[-1]) == pytest.approx(1000.0)
 
         # Day 2: prices go up, hold same positions
         prices.append(ts(2), np.array([55.0, 110.0], dtype=np.float64))
@@ -543,7 +543,7 @@ class TestTradingSimulator:
             output.append(ts(2), np.asarray(value, dtype=output.dtype))
         # No trades -> no cost
         # MV: 0 + 10*55 + 5*110 = 1100
-        assert float(output.values[-1]) == pytest.approx(1100.0)
+        assert float(output[-1]) == pytest.approx(1100.0)
 
     def test_with_commission(self) -> None:
         prices = Series((2,), np.dtype(np.float64))
@@ -570,7 +570,7 @@ class TestTradingSimulator:
         # Total commission: 20
         # Cash: 10000 - 2000 - 20 = 7980
         # MV: 7980 + 10*100 + 5*200 = 7980 + 2000 = 9980
-        assert float(output.values[-1]) == pytest.approx(9980.0)
+        assert float(output[-1]) == pytest.approx(9980.0)
 
     def test_min_charge(self) -> None:
         prices = Series((1,), np.dtype(np.float64))
@@ -596,7 +596,7 @@ class TestTradingSimulator:
             output.append(ts(1), np.asarray(value, dtype=output.dtype))
         # Cash: 1000 - 10 - 5 = 985
         # MV: 985 + 10 = 995
-        assert float(output.values[-1]) == pytest.approx(995.0)
+        assert float(output[-1]) == pytest.approx(995.0)
 
 
 # ===========================================================================
@@ -613,7 +613,7 @@ class TestAverageReturn:
         # Returns: 10/100=0.1, 11/110=0.1
         # Average: 0.1
         assert len(output) == 2  # First signal records prev; output from 2nd
-        assert float(output.values[-1]) == pytest.approx(0.1)
+        assert float(output[-1]) == pytest.approx(0.1)
 
     def test_no_signal_no_output(self) -> None:
         mv = make_scalar_series([100.0, 110.0])
@@ -641,7 +641,7 @@ class TestSharpeRatio:
         returns = np.array([0.1, 0.1, -0.1])
         expected = returns.mean() / returns.std(ddof=1) * np.sqrt(252)
         assert len(output) == 1
-        assert float(output.values[-1]) == pytest.approx(expected, rel=1e-6)
+        assert float(output[-1]) == pytest.approx(expected, rel=1e-6)
 
 
 # ===========================================================================

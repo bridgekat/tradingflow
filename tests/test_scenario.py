@@ -363,7 +363,7 @@ class TestScenario:
                 return None
 
             def compute(self, timestamp: np.datetime64, inputs: object, state: None) -> tuple:
-                val = float(inputs[0].values[-1])  # type: ignore[index]
+                val = float(inputs[0][-1])  # type: ignore[index]
                 return (None, None) if val > 0 else (np.float64(val), None)
 
         source = ArrayBundleSource.from_arrays(

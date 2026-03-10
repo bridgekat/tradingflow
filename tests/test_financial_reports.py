@@ -254,7 +254,7 @@ class TestFinancialReportSource:
         assert len(selector_series) == 1
         assert len(sum_series) == 1
         assert sum_series.index[0] == ts_iso("2022-03-20 00:00:00")
-        assert float(sum_series.values[0][0]) == pytest.approx(101.0)
+        assert float(sum_series[0][0]) == pytest.approx(101.0)
 
 
 class TestGoldenFixtures:
@@ -266,7 +266,7 @@ class TestGoldenFixtures:
         asyncio.run(scenario.run())
 
         i = source.schema.field_index
-        row = series.values[0]
+        row = series[0]
         assert float(row[i["balance_sheet.assets"]]) == pytest.approx(100.0)
         assert float(row[i["balance_sheet.liab"]]) == pytest.approx(-60.0)
         assert float(row[i["balance_sheet.equity"]]) == pytest.approx(-40.0)
@@ -282,7 +282,7 @@ class TestGoldenFixtures:
         asyncio.run(scenario.run())
 
         i = source.schema.field_index
-        row = series.values[0]
+        row = series[0]
         assert float(row[i["income_statement.profit"]]) == pytest.approx(64.0)
         assert float(row[i["income_statement.profit.operating.income"]]) == pytest.approx(200.0)
         assert float(row[i["income_statement.profit.operating.expenses"]]) == pytest.approx(-120.0)

@@ -102,9 +102,9 @@ class CrossSectionalRegression(RollingPredictor):
             feat_idx = start_feat + i
             price_idx = start_price + i
 
-            X_row = features_series.values[feat_idx]  # (N, D)
-            p_now = prices_series.values[price_idx]  # (N,)
-            p_future = prices_series.values[price_idx + self._return_horizon]  # (N,)
+            X_row = features_series[feat_idx]  # (N, D)
+            p_now = prices_series[price_idx]  # (N,)
+            p_future = prices_series[price_idx + self._return_horizon]  # (N,)
 
             returns = p_future / p_now - 1.0  # (N,)
 

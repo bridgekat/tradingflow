@@ -73,7 +73,9 @@ class MovingCovariance[T: np.floating](Operator[tuple[Series[tuple[int], T]], tu
         return None
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[tuple[int], T]], state: None) -> tuple[ArrayLike | None, None]:
+    def compute(
+        self, timestamp: np.datetime64, inputs: tuple[Series[tuple[int], T]], state: None
+    ) -> tuple[ArrayLike | None, None]:
         (series,) = inputs
         if not series:
             return None, None

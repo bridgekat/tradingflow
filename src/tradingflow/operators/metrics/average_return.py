@@ -28,14 +28,16 @@ class AverageReturn(Operator[tuple[Series, Series], tuple[()], np.float64, dict]
         return {"prev_mv": None, "sum_returns": 0.0, "count": 0}
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict) -> tuple[ArrayLike | None, dict]:
+    def compute(
+        self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict
+    ) -> tuple[ArrayLike | None, dict]:
         mv, signal = inputs
         if not signal or not mv:
             return None, state
         if state["prev_mv"] is None:
-            state["prev_mv"] = float(mv.values[-1])
+            state["prev_mv"] = float(mv.last)
             return None, state
-        current_mv = float(mv.values[-1])
+        current_mv = float(mv.last)
         ret = (current_mv - state["prev_mv"]) / state["prev_mv"]
         state["prev_mv"] = current_mv
         state["sum_returns"] += ret

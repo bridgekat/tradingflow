@@ -35,7 +35,7 @@ class TestDailyMarketSnapshotCSVSource:
         assert series.index[0] == dt("2022-01-03")
         assert list(source.schema.field_ids) == ["open", "close", "high", "low", "amount", "volume"]
         np.testing.assert_array_almost_equal(
-            series.values[0],
+            series[0],
             np.array([10.0, 11.0, 12.0, 9.0, 1000.0, 500.0], dtype=np.float64),
         )
 

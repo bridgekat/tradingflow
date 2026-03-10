@@ -64,59 +64,63 @@ class Series[Shape: AnyShape, T: np.generic]:
     * :attr:`last` – most recent value as an ``ndarray``, or ``None``.
     """
 
-    __slots__: tuple[str, ...] = ("_index", "_values", "_length")
+    __slots__: tuple[str, ...] = ("_shape", "_length", "_index", "_values")
 
+    _shape: Shape
+    _length: np.intp
     _index: Array[tuple[int], np.datetime64]
     _values: Array[tuple[int, *Shape], T]
-    _length: int
 
     def __init__(
         self,
         shape: Shape,
         dtype: type[T] | np.dtype[T],
         *,
+        _length: np.intp = np.intp(0),
         _index: Array[tuple[int], np.datetime64] | None = None,
         _values: Array[tuple[int, *Shape], T] | None = None,
-        _length: int = 0,
     ) -> None:
         if _index is not None and _values is not None:
+            self._shape = cast(Shape, _values.shape[1:])
+            self._length = _length
             self._index = _index
             self._values = _values
-            self._length = _length
         else:
+            self._shape = shape
+            self._length = np.intp(0)
             self._index = np.empty(_INITIAL_CAPACITY, dtype=np.dtype("datetime64[ns]"))
-            self._values = cast("Array[tuple[int, *Shape], T]", np.empty((_INITIAL_CAPACITY, *shape), dtype=dtype))
-            self._length = 0
+            self._values = np.empty((_INITIAL_CAPACITY, *shape), dtype=dtype)  # type: ignore[assignment]
 
     def __len__(self) -> int:
-        return self._length
+        return int(self._length)
 
     def __bool__(self) -> bool:
-        return self._length > 0
+        return bool(self._length)
 
     def __iter__(self) -> Iterator[tuple[np.datetime64, Array[Shape, T]]]:
-        for i in range(self._length):
-            yield self._index[i], self._value(i)
+        for i in np.arange(self._length):
+            yield self._index[i], self._values[i, ...]  # type: ignore[return-value]
 
     @overload
     def __getitem__(self, key: int) -> Array[Shape, T]: ...
     @overload
-    def __getitem__(self, key: slice) -> Series[Shape, T]: ...
+    def __getitem__(self, key: slice[int, int, int]) -> Series[Shape, T]: ...
 
-    def __getitem__(self, key: int | slice) -> Array[Shape, T] | Series[Shape, T]:
+    def __getitem__(self, key: int | slice[int, int, int]) -> Array[Shape, T] | Series[Shape, T]:
         if isinstance(key, int):
-            if key < 0:
-                key += self._length
-            if not 0 <= key < self._length:
-                raise IndexError("Series index out of range")
-            return self._value(key)
+            i = np.intp(key)
+            if i < 0:
+                i += self._length
+            if not 0 <= i < self._length:
+                raise IndexError(f"index {key} is out of bounds for Series of length {self._length}")
+            return self._values[i, ...]  # type: ignore[return-value]
         else:
             return self._readonly_slice(key)
 
     @property
     def shape(self) -> Shape:
         """Element shape of each stored value."""
-        return cast(Shape, self._values.shape[1:])
+        return self._shape
 
     @property
     def dtype(self) -> np.dtype[T]:
@@ -138,14 +142,12 @@ class Series[Shape: AnyShape, T: np.generic]:
         return view
 
     @property
-    def last(self) -> Array[Shape, T] | None:
-        """Most recent value as an ``ndarray``, or ``None`` if empty.
+    def last(self) -> Array[Shape, T]:
+        """Most recent value as an ``ndarray``.
 
         For scalar series (shape ``()``), returns a 0-dimensional array.
         """
-        if self._length == 0:
-            return None
-        return self._value(self._length - 1)
+        return self._values[self._length - 1, ...]  # type: ignore[return-value]
 
     def at(self, timestamp: np.datetime64) -> Array[Shape, T] | None:
         """Returns the latest value at or before *timestamp* (as-of lookup).
@@ -158,7 +160,7 @@ class Series[Shape: AnyShape, T: np.generic]:
         i = np.searchsorted(self._index[: self._length], timestamp, side="right") - 1
         if i < 0:
             return None
-        return self._value(i)
+        return self._values[i, ...]  # type: ignore[return-value]
 
     def to(self, timestamp: np.datetime64, inclusive: bool = True) -> Series[Shape, T]:
         """Returns a read-only view with timestamps at or before *timestamp*."""
@@ -201,8 +203,8 @@ class Series[Shape: AnyShape, T: np.generic]:
                 )
 
         # Shape check.
-        if value.shape != self.shape:
-            raise ValueError(f"value shape {value.shape} does not match the expected " f"shape {self.shape}")
+        if value.shape != self._shape:
+            raise ValueError(f"value shape {value.shape} does not match the expected " f"shape {self._shape}")
 
         # Grow if at capacity.
         if self._length >= len(self._index):
@@ -212,15 +214,24 @@ class Series[Shape: AnyShape, T: np.generic]:
         self._values[self._length] = value
         self._length += 1
 
-    def _value(self, index: int | np.intp) -> Array[Shape, T]:
-        """Returns the value at *index* as an array with the correct shape."""
-        return cast(Array[Shape, T], self._values[index, ...])
+    def append_unchecked(self, timestamp: np.datetime64, value: Array[Shape, T]) -> None:
+        """Append without monotonicity or shape checks.
+
+        For internal use by callers that already guarantee ordering and shape
+        correctness (e.g. :class:`~tradingflow.scenario._ScenarioState`).
+        """
+        if self._length >= len(self._index):
+            self._grow()
+
+        self._index[self._length] = timestamp
+        self._values[self._length] = value
+        self._length += 1
 
     def _readonly_empty(self) -> Series[Shape, T]:
         """Returns an empty :class:`Series` with the same value dtype and element shape."""
         index = np.empty(0, dtype=self._index.dtype)
-        values = cast("Array[tuple[int, *Shape], T]", np.empty((0, *self.shape), dtype=self._values.dtype))
-        return Series(self.shape, self.dtype, _index=index, _values=values, _length=0)
+        values = np.empty((0, *self._shape), dtype=self._values.dtype)
+        return Series(self._shape, self.dtype, _index=index, _values=values, _length=0)  # type: ignore[arg-type]
 
     def _readonly_slice(self, key: slice) -> Series[Shape, T]:
         """Returns a read-only sliced :class:`Series` view without copying."""
@@ -228,7 +239,7 @@ class Series[Shape: AnyShape, T: np.generic]:
         index.flags.writeable = False
         values = self._values[: self._length][key]
         values.flags.writeable = False
-        return Series(self.shape, self.dtype, _index=index, _values=values, _length=len(index))
+        return Series(self._shape, self.dtype, _index=index, _values=values, _length=len(index))  # type: ignore[arg-type]
 
     def _grow(self) -> None:
         """Doubles the capacity of internal buffers."""
@@ -238,6 +249,6 @@ class Series[Shape: AnyShape, T: np.generic]:
         new_index[: self._length] = self._index[: self._length]
         self._index = new_index
 
-        new_values = np.empty((new_cap, *self.shape), dtype=self._values.dtype)
+        new_values = np.empty((new_cap, *self._shape), dtype=self._values.dtype)
         new_values[: self._length] = self._values[: self._length]
-        self._values = cast("Array[tuple[int, *Shape], T]", new_values)
+        self._values = new_values  # type: ignore[assignment]

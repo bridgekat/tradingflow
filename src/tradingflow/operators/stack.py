@@ -76,10 +76,9 @@ class Stack[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, Non
         parts: list[np.ndarray] = []
 
         for series in inputs:
-            val = series.last
-            if val is None:
+            if not series:
                 parts.append(np.full(series.shape, np.nan, dtype=self.dtype))
             else:
-                parts.append(val)
+                parts.append(series.last)
 
         return np.stack(parts, axis=self._axis), None

@@ -393,7 +393,7 @@ class _ScenarioState:
             updated.add(st.series)
 
             # POCQ guarantees that flushes have strictly increasing timestamps.
-            st.series.append(time, value)
+            st.series.append_unchecked(time, value)
             for child in self._edges[st.series]:
                 _touch(child, time)
 
@@ -416,7 +416,7 @@ class _ScenarioState:
                 )
 
             # POCQ guarantees that flushes have strictly increasing timestamps.
-            st.series.append(time, value)
+            st.series.append_unchecked(time, value)
             for child in self._edges[op_series]:
                 _touch(child, time)
 
