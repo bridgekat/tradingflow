@@ -1,0 +1,12 @@
+[package]
+name = "tradingflow-native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "tradingflow_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.25", features = ["extension-module"] }
+numpy = "0.25"
