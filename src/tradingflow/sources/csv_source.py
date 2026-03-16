@@ -24,7 +24,7 @@ class CSVSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
     path
         CSV file path.
     shape
-        Shape of each emitted value element.  Use ``()`` for scalars.
+        Shape of each emitted value element.  Use `()` for scalars.
     dtype
         NumPy dtype for the emitted values.
     timestamp_col
@@ -98,7 +98,7 @@ class CSVSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
                 )
 
     def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
-        """Returns a ``(historical, live)`` iterator pair; the live iterator is empty."""
+        """Returns a `(historical, live)` iterator pair; the live iterator is empty."""
         return self._historical_gen(), empty_live_gen()
 
     async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:

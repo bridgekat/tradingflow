@@ -24,7 +24,7 @@ class Apply[Shape: _AnyShape, InT: np.generic, OutT: np.generic](
 
     At each update, the latest value of every input is collected
     into a list and passed to the user-supplied function.  If any input
-    series is empty the output is skipped (``None``).
+    series is empty the output is skipped (`None`).
     """
 
     __slots__ = ("_fn",)
@@ -84,27 +84,27 @@ def _divide[Shape: _AnyShape, T: np.floating](args: list[_Array[Shape, T]]) -> _
 
 
 def add[Shape: _AnyShape, T: np.number](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
-    """Element-wise addition: ``a + b``."""
+    """Element-wise addition: `a + b`."""
     return Apply((a, b), a.shape, a.dtype, _add)
 
 
 def subtract[Shape: _AnyShape, T: np.number](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
-    """Element-wise subtraction: ``a - b``."""
+    """Element-wise subtraction: `a - b`."""
     return Apply((a, b), a.shape, a.dtype, _subtract)
 
 
 def negate[Shape: _AnyShape, T: np.number](a: Series[Shape, T]) -> Apply[Shape, T, T]:
-    """Element-wise negation: ``-a``."""
+    """Element-wise negation: `-a`."""
     return Apply((a,), a.shape, a.dtype, _negate)
 
 
 def multiply[Shape: _AnyShape, T: np.number](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
-    """Element-wise multiplication: ``a * b``."""
+    """Element-wise multiplication: `a * b`."""
     return Apply((a, b), a.shape, a.dtype, _multiply)
 
 
 def divide[Shape: _AnyShape, T: np.floating](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
-    """Element-wise division: ``a / b`` with floating point inputs."""
+    """Element-wise division: `a / b` with floating point inputs."""
     return Apply((a, b), a.shape, a.dtype, _divide)
 
 
@@ -112,9 +112,9 @@ def map[Shape: _AnyShape, T: np.generic](
     a: Series[Shape, T],
     fn: Callable[[_Array[Shape, T]], _Array[Shape, T]],
 ) -> Apply[Shape, T, T]:
-    """Unary element-wise transform: ``fn(a)``.
+    """Unary element-wise transform: `fn(a)`.
 
-    Convenience wrapper for :class:`Apply` with a single input.
+    Convenience wrapper for [`Apply`][tradingflow.operators.Apply] with a single input.
     The output series has the same shape and dtype as the input.
 
     Examples

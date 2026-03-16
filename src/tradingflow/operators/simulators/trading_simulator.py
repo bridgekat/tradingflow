@@ -1,6 +1,6 @@
 """Trading simulator.
 
-Provides :class:`TradingSimulator`, an :class:`Operator` that takes a
+Provides [`TradingSimulator`][tradingflow.operators.simulators.TradingSimulator], an [`Operator`][tradingflow.Operator] that takes a
 price series and a position/weight series, tracks cash and holdings, and
 outputs the total market value (scalar float64) at each timestamp.  Supports
 proportional commission with an optional per-asset minimum charge, lot-size
@@ -29,7 +29,7 @@ class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, di
         Vector series of asset prices.
     positions
         Vector series of desired position sizes, or portfolio weights
-        when ``weight_mode=True``.
+        when `weight_mode=True`.
     commission_rate
         Proportional commission rate applied to the absolute trade value
         of each asset.
@@ -38,12 +38,12 @@ class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, di
     initial_cash
         Starting cash balance.
     weight_mode
-        When ``True``, the *positions* input is interpreted as portfolio
+        When `True`, the *positions* input is interpreted as portfolio
         weights (summing to ~1).  Target positions are computed as
-        ``floor(market_value * weight / (price * lot_size)) * lot_size``.
+        `floor(market_value * weight / (price * lot_size)) * lot_size`.
     lot_size
         Minimum tradeable unit; positions are rounded down to multiples
-        of this value in weight mode.  Default ``1``.
+        of this value in weight mode.  Default `1`.
     """
 
     __slots__ = ("_commission_rate", "_min_charge", "_initial_cash", "_weight_mode", "_lot_size")

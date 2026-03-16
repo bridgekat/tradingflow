@@ -15,15 +15,15 @@ class ExponentialMovingAverage[Shape: tuple[int, ...], T: np.floating](
 ):
     """Exponential moving average (EMA).
 
-    Unlike :class:`Rolling`-based filters, EMA extends :class:`Operator`
+    Unlike [`Rolling`][tradingflow.operators.indicators.Rolling]-based filters, EMA extends [`Operator`][tradingflow.Operator]
     directly because it uses exponential weighting rather than a fixed
     window.  The previous EMA value is carried in the operator *state*
-    (``None`` before the first observation, then an ``ndarray``).
+    (`None` before the first observation, then an `ndarray`).
 
     Parameters
     ----------
     alpha
-        Smoothing factor in ``(0, 1]``.  Larger values weight recent
+        Smoothing factor in `(0, 1]`.  Larger values weight recent
         observations more heavily.
     series
         Input series to operate on.

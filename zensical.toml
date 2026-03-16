@@ -64,7 +64,10 @@ copyright = """
 # The path provided should be relative to the "docs_dir".
 #
 # Read more: https://zensical.org/docs/customization/#additional-javascript
-#extra_javascript = ["javascripts/extra.js"]
+extra_javascript = [
+    "mathjax.js",
+    "https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js",
+]
 
 # ----------------------------------------------------------------------------
 # Section for configuring theme options
@@ -313,9 +316,16 @@ paths = ["src"]
 [project.plugins.mkdocstrings.handlers.python.options]
 docstring_style = "numpy"
 inherited_members = true
+relative_crossrefs = true
 show_source = true
 show_root_heading = true
 show_root_full_path = false
 show_symbol_type_heading = true
 show_symbol_type_toc = true
 members_order = "source"
+
+# ----------------------------------------------------------------------------
+# See: https://zensical.org/docs/authoring/math
+# ----------------------------------------------------------------------------
+[project.markdown_extensions.pymdownx.arithmatex]
+generic = true

@@ -13,11 +13,11 @@ from ..series import AnyShape, Series
 
 
 class Where[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], Shape, T, None]):
-    """Element-wise conditional: keeps values where *fn* is ``True``.
+    """Element-wise conditional: keeps values where *fn* is `True`.
 
     At each timestamp the latest value is tested element-wise with *fn*.
-    Elements where *fn* returns ``False`` are replaced with *fill*
-    (default ``NaN``).  Equivalent to ``np.where(fn(x), x, fill)``.
+    Elements where *fn* returns `False` are replaced with *fill*
+    (default `NaN`).  Equivalent to `np.where(fn(x), x, fill)`.
 
     Parameters
     ----------
@@ -27,8 +27,8 @@ class Where[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], Sh
         Element-wise predicate.  Receives the latest value (an ndarray)
         and must return a boolean array broadcastable to the same shape.
     fill
-        Replacement value for elements where *fn* is ``False``.
-        Defaults to ``np.nan``.
+        Replacement value for elements where *fn* is `False`.
+        Defaults to `np.nan`.
 
     Examples
     --------

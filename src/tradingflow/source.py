@@ -15,25 +15,25 @@ from .series import AnyShape
 class Source[Shape: AnyShape, T: np.generic](ABC):
     """Abstract base class for sources that produce data into a time series.
 
-    A source declares the element *shape* and *dtype* of the values it will
-    emit.  :class:`~src.scenario.Scenario` creates the target
-    :class:`~src.series.Series` when the source is registered via
-    :meth:`~src.scenario.Scenario.add_source`.
+    A source declares the element `shape` and `dtype` of the values it will
+    emit.  [`Scenario`][tradingflow.Scenario] creates the target
+    [`Series`][tradingflow.Series] when the source is registered via
+    [`Scenario.add_source`][tradingflow.Scenario.add_source].
 
-    Subclasses implement :meth:`subscribe` to return a ``(historical, live)``
+    Subclasses implement [`subscribe`][.subscribe] to return a `(historical, live)`
     async-iterator pair.  The historical iterator must yield
-    ``(timestamp, value)`` pairs in strictly increasing timestamp order.
+    `(timestamp, value)` pairs in strictly increasing timestamp order.
     The live iterator must yield raw values, which will be stamped at ingest
-    time by :class:`~src.scenario.Scenario`.  The two iterators must cover
+    time by [`Scenario`][tradingflow.Scenario].  The two iterators must cover
     complementary, non-overlapping segments of the same time series, split
-    at some instant during the execution of :meth:`subscribe`.
+    at some instant during the execution of [`subscribe`][.subscribe].
 
     Parameters
     ----------
     shape
-        Shape of each emitted value element.  Use ``()`` for scalars.
+        Shape of each emitted value element.  Use `()` for scalars.
     dtype
-        NumPy dtype for the emitted values (e.g. ``np.float64``).
+        NumPy dtype for the emitted values (e.g. `np.float64`).
     name
         Optional human-readable name used in diagnostics and error messages;
         defaults to the class name.
@@ -58,7 +58,7 @@ class Source[Shape: AnyShape, T: np.generic](ABC):
 
     @abstractmethod
     def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, ArrayLike]], AsyncIterator[ArrayLike]]:
-        """Returns a ``(historical, live)`` async-iterator pair."""
+        """Returns a `(historical, live)` async-iterator pair."""
         raise NotImplementedError
 
     @property
@@ -81,7 +81,7 @@ async def empty_historical_gen() -> AsyncIterator[tuple[np.datetime64, Any]]:
     """Immediately-exhausting historical async generator.
 
     Returns an async generator that yields nothing.  Intended for use in
-    :meth:`Source.subscribe` implementations of purely-live sources.
+    [`Source.subscribe`][tradingflow.Source.subscribe] implementations of purely-live sources.
     """
     return
     yield  # Required to make this an async generator
@@ -91,7 +91,7 @@ async def empty_live_gen() -> AsyncIterator[Any]:
     """Immediately-exhausting live async generator.
 
     Returns an async generator that yields nothing.  Intended for use in
-    :meth:`Source.subscribe` implementations of purely-historical sources.
+    [`Source.subscribe`][tradingflow.Source.subscribe] implementations of purely-historical sources.
     """
     return
     yield  # Required to make this an async generator

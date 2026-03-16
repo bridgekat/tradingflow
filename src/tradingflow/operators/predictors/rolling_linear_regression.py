@@ -1,6 +1,6 @@
 """Rolling linear regression predictor.
 
-Provides :class:`RollingLinearRegression`, a :class:`RollingPredictor`
+Provides [`RollingLinearRegression`][tradingflow.operators.predictors.RollingLinearRegression], a [`RollingPredictor`][tradingflow.operators.predictors.RollingPredictor]
 that fits an OLS model with bias on vector features and scalar targets.
 The model is retrained on the last *train_window* aligned observations
 every *retrain_every* update steps.
@@ -21,7 +21,7 @@ class RollingLinearRegression(RollingPredictor):
     """OLS linear regression retrained on a rolling window.
 
     Features are a vector-valued series and targets a scalar series.
-    At each step the model predicts ``X @ coefficients`` for the latest
+    At each step the model predicts `X @ coefficients` for the latest
     feature vector.
     """
 

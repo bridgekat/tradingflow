@@ -1,12 +1,12 @@
 """Rolling statistical filters and technical indicators.
 
-All filters extend :class:`Rolling` (or :class:`Operator` directly when
+All filters extend [`Rolling`][tradingflow.operators.indicators.Rolling] (or [`Operator`][tradingflow.Operator] directly when
 the output shape differs from the input) and accept either a count-based
-(``int``) or time-based (``np.timedelta64``) window.
+(`int`) or time-based (`np.timedelta64`) window.
 
 Classes
 -------
-Rolling           – Abstract base providing :meth:`_get_window`.
+Rolling           – Abstract base providing [`_get_window`][tradingflow.operators.indicators.Rolling._get_window].
 MovingAverage     – Simple moving average (SMA).
 WeightedMovingAverage – Linearly weighted moving average (WMA, int window only).
 ExponentialMovingAverage – Exponential moving average (EMA).

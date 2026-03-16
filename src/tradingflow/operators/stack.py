@@ -14,27 +14,27 @@ from ..series import AnyShape, Series
 class Stack[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, None]):
     """Stacks N series along a new axis.
 
-    Mirrors :func:`numpy.stack`: all inputs must have the same shape,
+    Mirrors [`numpy.stack`][]: all inputs must have the same shape,
     and a new axis of size N is inserted at position *axis*.  Inputs
-    without data at or before the timestamp contribute ``NaN``.
+    without data at or before the timestamp contribute `NaN`.
 
     Parameters
     ----------
     inputs
         Input series to stack.  All must have the same shape and dtype.
     axis
-        Position of the new axis in the output.  Defaults to ``0``.
+        Position of the new axis in the output.  Defaults to `0`.
 
     Examples
     --------
-    Assemble N per-stock scalar series into a cross-sectional ``(N,)``
+    Assemble N per-stock scalar series into a cross-sectional `(N,)`
     vector::
 
         series_per_stock = [scenario.add_source(src) for src in stock_sources]
         panel = scenario.add_operator(Stack(series_per_stock))
         # panel shape: (N,)
 
-    Stack N ``(K,)`` vectors into an ``(N, K)`` matrix::
+    Stack N `(K,)` vectors into an `(N, K)` matrix::
 
         matrix = scenario.add_operator(Stack(vector_series_list))
     """

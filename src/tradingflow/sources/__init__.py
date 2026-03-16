@@ -1,22 +1,22 @@
 """Source adapters for ingesting raw data into source series.
 
-This package provides concrete :class:`~src.source.Source` implementations
-used by :class:`src.scenario.Scenario`.
+This package provides concrete [`Source`][tradingflow.Source] implementations
+used by [`Scenario`][tradingflow.Scenario].
 
 Public API
 ----------
 Source[Shape, T]
-    Abstract base class from :mod:`src.source`.  Subclass and implement
-    :meth:`~src.source.Source.subscribe` to define custom data sources.
+    Abstract base class from [`tradingflow.source`][].  Subclass and implement
+    [`Source.subscribe`][tradingflow.Source.subscribe] to define custom data sources.
 CSVSource
     Historical source adapter for CSV files with configurable column mapping.
 ArrayBundleSource
-    Historical source adapter for ``(timestamps, values)`` array bundles.
+    Historical source adapter for `(timestamps, values)` array bundles.
 AsyncCallableSource
     Live source adapter wrapping user-provided async iterables.
 eastmoney
     Namespace package grouping EastMoney-specific source adapters under
-    :mod:`src.sources.eastmoney.history`.
+    [`tradingflow.sources.eastmoney.history`][].
 
 Invariants
 ----------

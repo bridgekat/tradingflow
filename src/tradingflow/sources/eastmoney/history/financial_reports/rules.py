@@ -14,34 +14,34 @@ from .schema import FinancialReportKind
 class FinancialReportMappingProfile:
     """Normalization rules for mapping raw CSV columns to canonical field values.
 
-    Applied in order by :func:`normalize_financial_report_rows` before the
+    Applied in order by [`normalize_financial_report_rows`][tradingflow.sources.eastmoney.history.financial_reports.normalize_financial_report_rows] before the
     final projection step.
 
     Parameters
     ----------
     duplicate_items
-        Mapping ``{alias: canonical}``; when the canonical item is zero, its
+        Mapping `{alias: canonical}`; when the canonical item is zero, its
         value is replaced by the alias item value.
     net_items
-        Mapping ``{net: (positive, negative)}``; reconciles a net amount
+        Mapping `{net: (positive, negative)}`; reconciles a net amount
         against its positive and negative components.
     minus_items
         Raw items whose sign should be flipped (stored as expenses but
         reported as positive in the source).
     inclusion_items
-        Mapping ``{parent: (sub1, sub2, ...)}``; subtracts already-counted
+        Mapping `{parent: (sub1, sub2, ...)}`; subtracts already-counted
         sub-items from the parent to avoid double-counting.
     positive_map
-        Mapping ``{raw_name: canonical_field_id}``; adds the raw value to
+        Mapping `{raw_name: canonical_field_id}`; adds the raw value to
         the canonical vector field.
     negative_map
-        Mapping ``{raw_name: canonical_field_id}``; subtracts the raw value
+        Mapping `{raw_name: canonical_field_id}`; subtracts the raw value
         from the canonical vector field.
     metadata_columns
         Raw column names that carry metadata (dates, codes) and should not
         be treated as unknown numeric columns.
     fill_notice_delay
-        Timedelta added to ``report_date`` when ``notice_date`` is missing.
+        Timedelta added to `report_date` when `notice_date` is missing.
     """
 
     duplicate_items: dict[str, str]

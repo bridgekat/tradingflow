@@ -7,8 +7,8 @@ portfolios from top-predicted stocks, and simulates portfolio value with
 transaction costs.  Results are plotted as a yield curve.
 
 Per-stock sources are registered directly in the Scenario.  The POCQ handles
-heterogeneous per-stock timestamps naturally; :class:`Stack` assembles
-cross-sectional vectors with forward-fill via ``Series.at()``.
+heterogeneous per-stock timestamps naturally; [`Stack`][tradingflow.operators.Stack] assembles
+cross-sectional vectors with forward-fill via `Series.at()`.
 
 Usage::
 

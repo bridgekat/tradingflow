@@ -16,20 +16,20 @@ class Select[T: np.generic](Operator[tuple[Series[Any, T]], AnyShape, T, None]):
 
     Mirrors NumPy indexing conventions:
 
-    * **Single integer index** (``index: int``) – the selected axis is
-      removed from the output shape, like ``a[:, 2]``.
-    * **Tuple of indices** (``index: tuple[int, ...]``) – the selected
-      axis is kept with size ``len(index)``, like ``a[:, [2, 3]]``.
+    * **Single integer index** (`index: int`) – the selected axis is
+      removed from the output shape, like `a[:, 2]`.
+    * **Tuple of indices** (`index: tuple[int, ...]`) – the selected
+      axis is kept with size `len(index)`, like `a[:, [2, 3]]`.
 
     Parameters
     ----------
     series
         Input series of any dimensionality (>= 1).
     index
-        An ``int`` for single-index selection (drops the axis), or a
-        ``tuple[int, ...]`` for multi-index selection (keeps the axis).
+        An `int` for single-index selection (drops the axis), or a
+        `tuple[int, ...]` for multi-index selection (keeps the axis).
     axis
-        Axis along which to select.  Defaults to ``-1`` (last axis).
+        Axis along which to select.  Defaults to `-1` (last axis).
         Negative values count from the end.
     """
 
@@ -68,9 +68,7 @@ class Select[T: np.generic](Operator[tuple[Series[Any, T]], AnyShape, T, None]):
             for idx in index:
                 if not 0 <= idx < size:
                     raise ValueError(f"index {idx} is out of bounds for axis {resolved} size {size}.")
-            out_shape = tuple(
-                len(index) if i == resolved else d for i, d in enumerate(series.shape)
-            )
+            out_shape = tuple(len(index) if i == resolved else d for i, d in enumerate(series.shape))
             self._index = list(index)
 
         self._axis = resolved
@@ -102,5 +100,5 @@ def select[T: np.generic](
     *,
     axis: int = -1,
 ) -> Select[T]:
-    """Returns a :class:`Select` operator."""
+    """Returns a [`Select`][tradingflow.operators.Select] operator."""
     return Select(series, index, axis=axis)

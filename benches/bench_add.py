@@ -4,7 +4,7 @@ Run::
 
     python benches/bench_add.py
 
-Optional environment variable ``BENCH_N`` overrides the default series length.
+Optional environment variable `BENCH_N` overrides the default series length.
 """
 
 from __future__ import annotations

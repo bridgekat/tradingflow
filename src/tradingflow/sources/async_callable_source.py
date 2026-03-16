@@ -21,12 +21,12 @@ class AsyncCallableSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
     Parameters
     ----------
     shape
-        Shape of each emitted value element.  Use ``()`` for scalars.
+        Shape of each emitted value element.  Use `()` for scalars.
     dtype
         NumPy dtype for the emitted values.
     factory
-        Callable returning an ``AsyncIterable[ArrayLike]`` of raw values.
-        Called once per :meth:`subscribe` invocation.
+        Callable returning an `AsyncIterable[ArrayLike]` of raw values.
+        Called once per [`subscribe`][.subscribe] invocation.
     name
         Optional source name; defaults to the class name.
     """
@@ -47,7 +47,7 @@ class AsyncCallableSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
         self._factory = factory
 
     def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, ArrayLike]], AsyncIterator[ArrayLike]]:
-        """Returns a ``(historical, live)`` iterator pair; the historical iterator is empty."""
+        """Returns a `(historical, live)` iterator pair; the historical iterator is empty."""
         return empty_historical_gen(), self._live_gen()
 
     async def _live_gen(self) -> AsyncIterator[ArrayLike]:

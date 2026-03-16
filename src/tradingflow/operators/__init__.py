@@ -3,10 +3,10 @@
 This package contains all concrete operator implementations, organized into
 sub-packages by category:
 
-* **operators** (this entry point): :class:`Apply`, arithmetic factories
-  (:func:`add`, :func:`subtract`, :func:`multiply`, :func:`divide`,
-  :func:`negate`), :class:`Concat`, :class:`Filter`, :class:`Stack`,
-  :class:`Where`, and :class:`Select`.
+* **operators** (this entry point): [`Apply`][tradingflow.operators.Apply], arithmetic factories
+  ([`add`][tradingflow.operators.add], [`subtract`][tradingflow.operators.subtract], [`multiply`][tradingflow.operators.multiply], [`divide`][tradingflow.operators.divide],
+  [`negate`][tradingflow.operators.negate]), [`Concat`][tradingflow.operators.Concat], [`Filter`][tradingflow.operators.Filter], [`Stack`][tradingflow.operators.Stack],
+  [`Where`][tradingflow.operators.Where], and [`Select`][tradingflow.operators.Select].
 * **operators.filters**: Rolling statistical filters and technical indicators.
 * **operators.metrics**: Performance metrics (average return, Sharpe ratio).
 * **operators.portfolios**: Portfolio construction methods.
@@ -14,9 +14,9 @@ sub-packages by category:
 * **operators.signals**: Trading signal generators (placeholder).
 * **operators.simulators**: Trading simulators.
 
-:class:`Filter` drops entire elements when a scalar predicate returns
-``False``.  :class:`Where` replaces individual array elements with a fill
-value (element-wise conditional, analogous to ``np.where``).
+[`Filter`][tradingflow.operators.Filter] drops entire elements when a scalar predicate returns
+`False`.  [`Where`][tradingflow.operators.Where] replaces individual array elements with a fill
+value (element-wise conditional, analogous to `np.where`).
 """
 
 from .apply import Apply, add, divide, map, multiply, negate, subtract

@@ -20,11 +20,11 @@ class MovingVariance[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
     Parameters
     ----------
     window
-        Rolling window specification (count or time-based; see :class:`Rolling`).
+        Rolling window specification (count or time-based; see [`Rolling`][tradingflow.operators.indicators.Rolling]).
     series
         Input series to operate on.
     ddof
-        Delta degrees of freedom for variance calculation (default ``1`` for
+        Delta degrees of freedom for variance calculation (default `1` for
         sample variance).
     """
 
@@ -42,7 +42,9 @@ class MovingVariance[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
         self._ddof = ddof
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> tuple[ArrayLike | None, None]:
+    def compute(
+        self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None
+    ) -> tuple[ArrayLike | None, None]:
         (series,) = inputs
         if not series:
             return None, None

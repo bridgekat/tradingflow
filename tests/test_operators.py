@@ -8,7 +8,8 @@ import asyncio
 import numpy as np
 import pytest
 
-from tradingflow import ArrayBundleSource, Scenario, Series
+from tradingflow import Scenario, Series
+from tradingflow.sources import ArrayBundleSource
 from tradingflow.operator import Operator
 from tradingflow.operators import Apply, Concat, Filter, Stack, Where, add, divide, multiply, negate, select, subtract
 from tradingflow.operators.indicators import (

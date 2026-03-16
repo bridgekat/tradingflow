@@ -1,8 +1,8 @@
 """EastMoney history adapter for raw equity structure CSV files.
 
-Provides :class:`EquityStructureCSVSource`, a historical-only source that
-reads raw equity structure CSVs and emits ``TOTAL_SHARES`` (float64 scalar)
-at each ``END_DATE``.
+Provides [`EquityStructureCSVSource`][tradingflow.sources.eastmoney.history.EquityStructureCSVSource], a historical-only source that
+reads raw equity structure CSVs and emits `TOTAL_SHARES` (float64 scalar)
+at each `END_DATE`.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class EquityStructureDiagnostics:
 class EquityStructureCSVSource(Source[tuple[()], np.float64]):
     """Historical source for raw equity structure CSV files.
 
-    Expected raw columns: ``END_DATE``, ``TOTAL_SHARES``.
+    Expected raw columns: `END_DATE`, `TOTAL_SHARES`.
 
     Output is a scalar float64 representing the total number of shares
     at each equity change date.
@@ -65,7 +65,7 @@ class EquityStructureCSVSource(Source[tuple[()], np.float64]):
         return self._diagnostics
 
     def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
-        """Returns a ``(historical, live)`` iterator pair; the live iterator is empty."""
+        """Returns a `(historical, live)` iterator pair; the live iterator is empty."""
         return self._historical_gen(), empty_live_gen()
 
     async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:
@@ -82,9 +82,7 @@ class EquityStructureCSVSource(Source[tuple[()], np.float64]):
             fieldnames = set(reader.fieldnames or ())
             missing = sorted(required_columns - fieldnames)
             if missing:
-                raise ValueError(
-                    f"Equity structure source '{self.name}' is missing required columns: {missing}"
-                )
+                raise ValueError(f"Equity structure source '{self.name}' is missing required columns: {missing}")
 
             for row_index, row in enumerate(reader, start=2):
                 total_rows += 1

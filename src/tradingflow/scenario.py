@@ -1,15 +1,15 @@
 """Scenario runtime for source-driven series/operator execution.
 
-This module defines :class:`Scenario`, a specification of sources and
+This module defines [`Scenario`][tradingflow.Scenario], a specification of sources and
 operators that form a directed acyclic graph of time series, and
-:class:`_ScenarioState`, the per-run mutable state created fresh for
-every :meth:`Scenario.run` invocation.
+[`_ScenarioState`][tradingflow.scenario._ScenarioState], the per-run mutable state created fresh for
+every [`Scenario.run`][tradingflow.Scenario.run] invocation.
 
 Point-of-coherency queue (POCQ)
 -------------------------------
-Each source exposes a ``(historical, live)`` iterator pair via
-:meth:`~src.source.Source.subscribe`.  The runtime converts all incoming items
-into ``(timestamp, series, value)`` events and accumulates them in the POCQ.
+Each source exposes a `(historical, live)` iterator pair via
+[`Source.subscribe`][tradingflow.Source.subscribe].  The runtime converts all incoming items
+into `(timestamp, series, value)` events and accumulates them in the POCQ.
 
 * **Historical constraint** – before advancing the POCQ, every active
   historical iterator must have a pending event ready.  This prevents an
@@ -51,9 +51,9 @@ type _AnyEvent = tuple[np.datetime64, _SourceState, _AnyArray]
 class Scenario:
     """A directed acyclic graph of sources and operators.
 
-    Sources and operators are registered via :meth:`add_source` and
-    :meth:`add_operator`, each returning the output :class:`~src.series.Series`
-    that will be written to during :meth:`run`.
+    Sources and operators are registered via [`add_source`][.add_source] and
+    [`add_operator`][.add_operator], each returning the output [`Series`][tradingflow.Series]
+    that will be written to during [`run`][.run].
     """
 
     __slots__ = (
@@ -93,8 +93,8 @@ class Scenario:
     async def run(self) -> None:
         """Consume all source streams and propagate to operators.
 
-        Writes to the series returned by :meth:`add_source` and
-        :meth:`add_operator`.
+        Writes to the series returned by [`add_source`][..add_source] and
+        [`add_operator`][..add_operator].
         """
         state = _ScenarioState(self)
         await state.run()
@@ -102,9 +102,9 @@ class Scenario:
 
 @dataclasses.dataclass(slots=True)
 class _SourceState:
-    """Per-source mutable state for one :meth:`Scenario.run` invocation.
+    """Per-source mutable state for one [`Scenario.run`][tradingflow.Scenario.run] invocation.
 
-    If both ``hist_task`` and ``pending_hist`` are ``None``, it means that
+    If both `hist_task` and `pending_hist` are `None`, it means that
     the historical iterator is exhausted.  Similarly for the live iterator.
     """
 
@@ -121,7 +121,7 @@ class _SourceState:
 
 @dataclasses.dataclass(slots=True)
 class _OperatorState:
-    """Per-operator mutable state for one :meth:`Scenario.run` invocation."""
+    """Per-operator mutable state for one [`Scenario.run`][tradingflow.Scenario.run] invocation."""
 
     operator: _AnyOperator
     series: _AnySeries
@@ -129,7 +129,7 @@ class _OperatorState:
 
 
 class _ScenarioState:
-    """Per-run mutable state created at the start of :meth:`Scenario.run`.
+    """Per-run mutable state created at the start of [`Scenario.run`][tradingflow.Scenario.run].
 
     Owns operator computation states, frozen graph topology, and POCQ
     bookkeeping.
@@ -266,7 +266,7 @@ class _ScenarioState:
     # -------------------------------------------------------------------------
 
     def _next_ready_event(self) -> _AnyEvent | None:
-        """Takes the pending event with minimum timestamp, or ``None``
+        """Takes the pending event with minimum timestamp, or `None`
         if blocked.
 
         The historical constraint requires every source with an active
@@ -424,12 +424,12 @@ class _ScenarioState:
 
 
 def _runtime_timestamp() -> np.datetime64:
-    """Return the current wall-clock time as ``datetime64[ns]``."""
+    """Return the current wall-clock time as `datetime64[ns]`."""
     return np.datetime64(time.time_ns(), "ns")
 
 
 def _coerce_timestamp(value: np.datetime64) -> np.datetime64:
-    """Coerce a timestamp-like value to ``datetime64[ns]``."""
+    """Coerce a timestamp-like value to `datetime64[ns]`."""
     try:
         timestamp = np.datetime64(value)
     except Exception as exc:  # pragma: no cover

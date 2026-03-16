@@ -28,8 +28,8 @@ def _annualize_ytd(rows: list[FinancialReportRow]) -> list[FinancialReportRow]:
 
     The result is frequency-agnostic: quarterly, semi-annual, or
     irregular reporting all work.  Averaging *N* consecutive annualized
-    values with :class:`MovingAverage(N, ...)` recovers the trailing-*N*
-    -period aggregate (e.g. ``MovingAverage(4)`` on annualized quarterly
+    values with [`MovingAverage`][tradingflow.operators.indicators.MovingAverage]`(N, ...)` recovers the trailing-*N*
+    -period aggregate (e.g. `MovingAverage(4)` on annualized quarterly
     data = TTM).
     """
     by_report_date: dict[np.datetime64, FinancialReportRow] = {}
@@ -89,10 +89,10 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
 
     The source reads one raw report CSV, normalizes rows into a canonical
     fixed-order vector using the provided schema and mapping profile, then
-    emits updates at ``relevance_date = max(report_date, notice_date)``.
+    emits updates at `relevance_date = max(report_date, notice_date)`.
 
-    When ``annualize=True`` and ``kind="income_statement"``, cumulative
-    within-year figures are reversed and annualized via :func:`_annualize_ytd`.
+    When `annualize=True` and `kind="income_statement"`, cumulative
+    within-year figures are reversed and annualized via [`_annualize_ytd`][tradingflow.sources.eastmoney.history.financial_reports.source._annualize_ytd].
     """
 
     __slots__ = (
@@ -157,7 +157,7 @@ class FinancialReportCSVSource(Source[tuple[int], np.float64]):
         return self._diagnostics
 
     def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
-        """Returns a ``(historical, live)`` iterator pair; the live iterator is empty."""
+        """Returns a `(historical, live)` iterator pair; the live iterator is empty."""
         return self._historical_gen(), empty_live_gen()
 
     async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:

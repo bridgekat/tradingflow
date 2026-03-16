@@ -7,7 +7,8 @@ import asyncio
 import numpy as np
 import pytest
 
-from tradingflow import ArrayBundleSource, AsyncCallableSource, Operator, Scenario
+from tradingflow import Operator, Scenario
+from tradingflow.sources import ArrayBundleSource, AsyncCallableSource
 from tradingflow.operators import add, multiply, negate
 
 
@@ -22,9 +23,9 @@ class TestScenario:
 
         Graph: a, b, c → add(a, b) → multiply(sum, c) → negate(scaled)
 
-        * ``sum``    fires whenever a or b updates (t=1, t=2).
-        * ``scaled`` fires whenever sum or c updates (t=1, t=2, t=3).
-        * ``neg``    mirrors ``scaled`` exactly.
+        * `sum`    fires whenever a or b updates (t=1, t=2).
+        * `scaled` fires whenever sum or c updates (t=1, t=2, t=3).
+        * `neg`    mirrors `scaled` exactly.
 
         The key invariant under test is that operators with no new input at a
         given timestamp are skipped, and that carry-forward of the last known
@@ -67,8 +68,8 @@ class TestScenario:
         """Two sources emitting at the same timestamp produce a single operator output.
 
         The POCQ accumulates all events sharing a timestamp before flushing, so
-        ``add(a, b)`` sees the updated values of both ``a`` and ``b`` in a single
-        ``compute`` call rather than computing twice and appending a duplicate entry.
+        `add(a, b)` sees the updated values of both `a` and `b` in a single
+        `compute` call rather than computing twice and appending a duplicate entry.
         """
         source_a = ArrayBundleSource.from_arrays(
             timestamps=np.array([ts(1), ts(1)]),
@@ -92,7 +93,7 @@ class TestScenario:
         """A source that emits a timestamp smaller than one it already emitted raises.
 
         Historical iterators must produce non-decreasing timestamps.  The
-        runtime validates this on ingest and raises ``ValueError`` immediately,
+        runtime validates this on ingest and raises `ValueError` immediately,
         which causes the scenario to cancel all pending tasks and re-raise.
         """
         source = ArrayBundleSource.from_arrays(
@@ -131,9 +132,9 @@ class TestScenario:
     def test_output_timestamps_strictly_increasing(self) -> None:
         """Operator output timestamps are strictly increasing regardless of source interleaving.
 
-        Four random historical sources are chained with ``add`` operators.  After
-        ``run()``, every consecutive pair of timestamps in the final output series
-        must satisfy ``t[i] < t[i+1]``.  This guards against any POCQ flush
+        Four random historical sources are chained with `add` operators.  After
+        `run()`, every consecutive pair of timestamps in the final output series
+        must satisfy `t[i] < t[i+1]`.  This guards against any POCQ flush
         ordering bug that could allow an earlier timestamp to be appended after a
         later one.
         """
@@ -161,10 +162,10 @@ class TestScenario:
             )
 
     def test_two_random_sources_add_matches_simulation(self) -> None:
-        """``add(A, B)`` output matches a pure-Python reference simulation of the POCQ.
+        """`add(A, B)` output matches a pure-Python reference simulation of the POCQ.
 
         The reference model iterates the union of both sources' timestamps in order,
-        tracking the last known value for each source and emitting ``last_a + last_b``
+        tracking the last known value for each source and emitting `last_a + last_b`
         once both have been seen at least once.  The scenario result must agree
         exactly on both timestamps and values.
         """
@@ -215,7 +216,7 @@ class TestScenario:
         """Every timestamp fires an operator output once both inputs have been seen.
 
         Source A emits at odd nanoseconds [1, 3, 5, 7, 9] and source B at even
-        nanoseconds [2, 4, 6, 8, 10].  ``add(A, B)`` cannot fire at t=1 because B
+        nanoseconds [2, 4, 6, 8, 10].  `add(A, B)` cannot fire at t=1 because B
         has no value yet, but from t=2 onward every new event from either source
         triggers a recompute using the last known value of the other input.  The
         expected output therefore spans t=2..10 with carry-forward semantics verified
@@ -254,7 +255,7 @@ class TestScenario:
     def test_same_source_added_twice_creates_independent_nodes(self) -> None:
         """The same source object registered twice creates two fully independent graph nodes.
 
-        Each call to ``add_source`` allocates a fresh output series backed by its
+        Each call to `add_source` allocates a fresh output series backed by its
         own iterator pair and per-run state.  Both series must receive the complete
         data from the underlying source independently, and a downstream operator
         consuming both must see them as distinct inputs.
@@ -284,8 +285,8 @@ class TestScenario:
     def test_same_operator_added_twice_creates_independent_nodes(self) -> None:
         """The same operator object registered twice creates two fully independent output nodes.
 
-        Each call to ``add_operator`` allocates a fresh output series and a separate
-        computation state initialised via ``init_state()``.  Both output series must
+        Each call to `add_operator` allocates a fresh output series and a separate
+        computation state initialised via `init_state()`.  Both output series must
         be populated identically and independently; neither should be empty or missing
         entries because the other was registered.
         """
@@ -311,7 +312,7 @@ class TestScenario:
     def test_scenario_run_is_repeatable(self) -> None:
         """Building and running the same scenario twice yields bit-identical results.
 
-        ``Scenario.run()`` creates a fresh ``_ScenarioState`` per invocation, so
+        `Scenario.run()` creates a fresh `_ScenarioState` per invocation, so
         source iterators are reset and operator states are re-initialised each time.
         Two independent scenario builds from the same source objects must produce
         the same output timestamps and values, confirming that no mutable state
@@ -340,16 +341,16 @@ class TestScenario:
         assert vals1 == pytest.approx(vals2)
 
     def test_operator_returning_none_stops_downstream_propagation(self) -> None:
-        """An operator returning ``None`` suppresses its output and halts downstream propagation.
+        """An operator returning `None` suppresses its output and halts downstream propagation.
 
-        When ``compute`` returns ``(None, state)``, the scenario must not append
+        When `compute` returns `(None, state)`, the scenario must not append
         any entry to the operator's output series, and must not notify exclusively-
         downstream operators that an update occurred at that timestamp.
 
-        The test uses a custom ``_FilterPositive`` operator that passes through
-        non-positive values and returns ``None`` for positive ones, then chains it
-        with ``negate``.  At t=2 the source value is +2.0, so ``_FilterPositive``
-        returns ``None`` and ``negate`` must remain silent; at t=1 and t=3 both
+        The test uses a custom `_FilterPositive` operator that passes through
+        non-positive values and returns `None` for positive ones, then chains it
+        with `negate`.  At t=2 the source value is +2.0, so `_FilterPositive`
+        returns `None` and `negate` must remain silent; at t=1 and t=3 both
         operators fire normally.
         """
 

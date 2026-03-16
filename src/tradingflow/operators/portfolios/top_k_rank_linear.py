@@ -1,6 +1,6 @@
 """Top-K rank-linear portfolio construction.
 
-Provides :class:`TopKRankLinear`, an :class:`Operator` that selects the
+Provides [`TopKRankLinear`][tradingflow.operators.portfolios.TopKRankLinear], an [`Operator`][tradingflow.Operator] that selects the
 top *k* assets and assigns weights proportional to their rank among the
 selected assets.  *k* may be an integer or a float fraction of the
 universe size.

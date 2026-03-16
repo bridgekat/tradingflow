@@ -6,21 +6,21 @@ files into fixed-order float64 vectors ready for source emission.
 Public API
 ----------
 FinancialReportKind
-    Literal type alias: ``"balance_sheet"`` or ``"income_statement"``.
+    Literal type alias: `"balance_sheet"` or `"income_statement"`.
 FinancialReportSchema
     Canonical field ordering for one report kind; constructed via
-    :meth:`FinancialReportSchema.from_field_ids`.
+    [`FinancialReportSchema.from_field_ids`][tradingflow.sources.eastmoney.history.financial_reports.FinancialReportSchema.from_field_ids].
 BALANCE_SHEET_SCHEMA, INCOME_STATEMENT_SCHEMA
     Default canonical schemas for each report kind.
 default_schema
-    Returns the default :class:`FinancialReportSchema` for a given kind.
+    Returns the default [`FinancialReportSchema`][tradingflow.sources.eastmoney.history.financial_reports.FinancialReportSchema] for a given kind.
 FinancialReportMappingProfile
     Normalization rules (column aliases, net items, sign conventions) for one
     report kind.
 BALANCE_SHEET_MAPPING_PROFILE, INCOME_STATEMENT_MAPPING_PROFILE
     Default mapping profiles for each report kind.
 default_mapping_profile
-    Returns the default :class:`FinancialReportMappingProfile` for a given kind.
+    Returns the default [`FinancialReportMappingProfile`][tradingflow.sources.eastmoney.history.financial_reports.FinancialReportMappingProfile] for a given kind.
 FinancialReportRow
     One normalized report row (dates + float64 vector + error flag) ready for
     source emission.
@@ -29,7 +29,7 @@ FinancialReportDiagnostics
 normalize_financial_report_rows
     Converts a list of raw CSV row dicts into normalized rows and diagnostics.
 FinancialReportCSVSource
-    Payload-timestamp :class:`~src.source.Source` adapter for raw financial
+    Payload-timestamp [`Source`][tradingflow.Source] adapter for raw financial
     report CSV files.
 """
 

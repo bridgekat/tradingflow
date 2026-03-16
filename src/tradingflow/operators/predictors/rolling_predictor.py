@@ -1,9 +1,9 @@
 """Abstract rolling predictor base class.
 
-Provides :class:`RollingPredictor`, an :class:`Operator` subclass that
+Provides [`RollingPredictor`][tradingflow.operators.predictors.RollingPredictor], an [`Operator`][tradingflow.Operator] subclass that
 automatically retrains a model every *retrain_every* steps on a window
 of the most recent *train_window* observations.  Subclasses implement
-:meth:`_fit` (training) and :meth:`_predict` (inference).
+[`_fit`][tradingflow.operators.predictors.RollingPredictor._fit] (training) and [`_predict`][tradingflow.operators.predictors.RollingPredictor._predict] (inference).
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from ... import Operator, Series
 class RollingPredictor(Operator, ABC):
     """Abstract base for predictors that retrain on a rolling window.
 
-    Subclasses must implement :meth:`_fit`, :meth:`_predict`, and
-    :meth:`init_state`.  The predictor retrains every *retrain_every*
+    Subclasses must implement [`_fit`][._fit], [`_predict`][._predict], and
+    [`init_state`][.init_state].  The predictor retrains every *retrain_every*
     steps, tracking the step count in the state dict under the key
-    ``"steps_since_retrain"``.
+    `"steps_since_retrain"`.
 
     Parameters
     ----------
@@ -32,7 +32,7 @@ class RollingPredictor(Operator, ABC):
     retrain_every
         Number of update steps between successive retraining calls.
     inputs
-        Tuple of input series passed to :meth:`_fit` and :meth:`_predict`.
+        Tuple of input series passed to [`_fit`][._fit] and [`_predict`][._predict].
     shape
         Element shape of the output series.
     dtype

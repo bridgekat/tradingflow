@@ -1,8 +1,8 @@
 """Random top-K portfolio construction.
 
-Provides :class:`RandomTopK`, an :class:`Operator` that selects the top
+Provides [`RandomTopK`][tradingflow.operators.portfolios.RandomTopK], an [`Operator`][tradingflow.Operator] that selects the top
 *top_frac* fraction of assets by predicted value, then randomly picks
-*select_k* from that group and assigns each an equal weight of ``1/select_k``.
+*select_k* from that group and assigns each an equal weight of `1/select_k`.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from ... import Operator, Series
 class RandomTopK(Operator[tuple[Series], tuple[int], np.float64, np.random.Generator]):
     """Randomly selects *select_k* assets from the top *top_frac* percentile.
 
-    At each update, the top ``ceil(top_frac * N)`` assets by predicted value
+    At each update, the top `ceil(top_frac * N)` assets by predicted value
     are identified, then *select_k* of them are randomly chosen and assigned
     equal weights summing to 1.  Assets with NaN predictions are excluded
     from the candidate pool.
@@ -28,7 +28,7 @@ class RandomTopK(Operator[tuple[Series], tuple[int], np.float64, np.random.Gener
     predictions
         Vector series of predicted values for *N* assets.
     top_frac
-        Fraction of assets to consider (e.g. ``0.1`` for top 10%).
+        Fraction of assets to consider (e.g. `0.1` for top 10%).
     select_k
         Number of assets to randomly select from the top pool.
     seed

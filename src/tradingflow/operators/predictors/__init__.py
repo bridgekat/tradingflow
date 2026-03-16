@@ -3,7 +3,7 @@
 Classes
 -------
 RollingPredictor              – Abstract base class with periodic
-                                :meth:`_fit` / :meth:`_predict` hooks.
+                                [`_fit`][tradingflow.operators.predictors.RollingPredictor._fit] / [`_predict`][tradingflow.operators.predictors.RollingPredictor._predict] hooks.
 RollingLinearRegression       – OLS linear regression retrained on a rolling
                                 window of features and scalar targets.
 CrossSectionalRegression      – Cross-sectional OLS regression that fits

@@ -17,51 +17,33 @@ _INITIAL_CAPACITY = 16
 class Series[Shape: AnyShape, T: np.generic]:
     """A time series backed by NumPy arrays.
 
-    ``Series[Shape, T]`` stores ``(timestamp, value)`` pairs with strictly
-    increasing ``np.datetime64[ns]`` timestamps.  Both timestamps and
+    [`Series[Shape, T]`][.] stores `(timestamp, value)` pairs with strictly
+    increasing `np.datetime64[ns]` timestamps.  Both timestamps and
     values are stored in contiguous NumPy arrays:
 
-    * **Timestamps** are stored in a 1-dimensional ``ndarray`` with
+    * **Timestamps** are stored in a $1$-dimensional `ndarray` with
       nanosecond resolution.
-    * **Values** are stored in an (N+1)-dimensional ``ndarray`` where N is the
-      number of dimensions of each element.  All elements must share the
+    * **Values** are stored in an $(N+1)$-dimensional `ndarray` where $N$ is
+      the number of dimensions of each element.  All elements must share the
       same shape and underlying type.  Scalars are always packed in
-      0-dimensional arrays (shape ``()``) to keep the API uniform.
+      $0$-dimensional arrays (shape `()`) to keep the API uniform.
 
     Internal buffers are allocated at construction time with pre-determined
-    dtypes and use a doubling strategy for amortized O(1) appends.
+    dtypes and use a doubling strategy for amortized $O(1)$ appends.
 
     Parameters
     ----------
     shape
-        Shape of each value element.  Use ``()`` for scalar values.
+        Shape of each value element.  Use `()` for scalar values.
     dtype
-        NumPy dtype for the value buffer (e.g. ``np.float64``).
+        NumPy dtype for the value buffer (e.g. `np.float64`).
 
     Invariants
     ----------
-    * Timestamps are ``np.datetime64[ns]`` and strictly increasing;
-      :meth:`append` enforces this.
+    * Timestamps are `np.datetime64[ns]` and strictly increasing;
+      [`append`][.append] enforces this.
     * Once stored, entries are never modified or removed.
     * All elements have the same shape and underlying type.
-
-    Element access
-    --------------
-    * ``s[i]`` – the *i*-th value as an ``ndarray`` (supports negative
-      indexing).  Scalar series return a 0-dimensional array.
-    * ``s[i:j]`` – slice by integer range, returning a read-only view
-      :class:`Series` without copying buffers.
-    * ``s.at(ts)`` – as-of lookup: latest value at or before *ts*.
-    * ``s.to(ts)`` – sub-series up to and including *ts*.
-    * ``s.between(lo, hi)`` – sub-series with timestamps in ``[lo, hi]``.
-
-    Properties
-    ----------
-    * :attr:`shape` – element shape of each stored value.
-    * :attr:`dtype` – NumPy dtype of the value buffer.
-    * :attr:`index` – read-only 1-dimensional ``ndarray`` view of timestamps.
-    * :attr:`values` – read-only (N+1)-dimensional ``ndarray`` view of values.
-    * :attr:`last` – most recent value as an ``ndarray``, or ``None``.
     """
 
     __slots__: tuple[str, ...] = ("_shape", "_length", "_index", "_values")
@@ -129,31 +111,31 @@ class Series[Shape: AnyShape, T: np.generic]:
 
     @property
     def index(self) -> Array[tuple[int], np.datetime64]:
-        """Timestamp index as a read-only 1-D ``ndarray``."""
+        """Timestamp index as a read-only 1-D `ndarray`."""
         view = self._index[: self._length]
         view.flags.writeable = False
         return view
 
     @property
     def values(self) -> Array[tuple[int, *Shape], T]:
-        """Values as a read-only ``ndarray``."""
+        """Values as a read-only `ndarray`."""
         view = self._values[: self._length]
         view.flags.writeable = False
         return view
 
     @property
     def last(self) -> Array[Shape, T]:
-        """Most recent value as an ``ndarray``.
+        """Most recent value as an `ndarray`.
 
-        For scalar series (shape ``()``), returns a 0-dimensional array.
+        For scalar series (shape `()`), returns a $0$-dimensional array.
         """
         return self._values[self._length - 1, ...]  # type: ignore[return-value]
 
     def at(self, timestamp: np.datetime64) -> Array[Shape, T] | None:
-        """Returns the latest value at or before *timestamp* (as-of lookup).
+        """Returns the latest value at or before `timestamp` (as-of lookup).
 
-        Returns ``None`` if no entry exists at or before *timestamp*.
-        For scalar series (shape ``()``), returns a 0-dimensional array.
+        Returns `None` if no entry exists at or before `timestamp`.
+        For scalar series (shape `()`), returns a $0$-dimensional array.
         """
         if self._length == 0:
             return None
@@ -174,7 +156,7 @@ class Series[Shape: AnyShape, T: np.generic]:
     def between(
         self, start: np.datetime64, end: np.datetime64, left_inclusive: bool = True, right_inclusive: bool = True
     ) -> Series[Shape, T]:
-        """Returns a read-only view with timestamps in ``[start, end]``."""
+        """Returns a read-only view with timestamps in `[start, end]`."""
         if self._length == 0:
             return self._readonly_empty()
         ts = self._index[: self._length]
@@ -185,12 +167,12 @@ class Series[Shape: AnyShape, T: np.generic]:
         return self._readonly_slice(slice(int(l), int(r)))
 
     def append(self, timestamp: np.datetime64, value: Array[Shape, T]) -> None:
-        """Appends a ``(timestamp, value)`` pair.
+        """Appends a `(timestamp, value)` pair.
 
         The value must have the same element shape and a dtype compatible
         with the value buffer (dtype casting follows NumPy assignment rules).
 
-        Raises :class:`ValueError` if *timestamp* is not strictly greater than
+        Raises [ValueError][] if `timestamp` is not strictly greater than
         the current last timestamp or if the value shape doesn't match.
         """
 
@@ -218,7 +200,7 @@ class Series[Shape: AnyShape, T: np.generic]:
         """Append without monotonicity or shape checks.
 
         For internal use by callers that already guarantee ordering and shape
-        correctness (e.g. :class:`~tradingflow.scenario._ScenarioState`).
+        correctness.
         """
         if self._length >= len(self._index):
             self._grow()
@@ -228,13 +210,13 @@ class Series[Shape: AnyShape, T: np.generic]:
         self._length += 1
 
     def _readonly_empty(self) -> Series[Shape, T]:
-        """Returns an empty :class:`Series` with the same value dtype and element shape."""
+        """Returns an empty [`Series`][tradingflow.Series] with the same value dtype and element shape."""
         index = np.empty(0, dtype=self._index.dtype)
         values = np.empty((0, *self._shape), dtype=self._values.dtype)
         return Series(self._shape, self.dtype, _index=index, _values=values, _length=0)  # type: ignore[arg-type]
 
     def _readonly_slice(self, key: slice) -> Series[Shape, T]:
-        """Returns a read-only sliced :class:`Series` view without copying."""
+        """Returns a read-only sliced [`Series`][tradingflow.Series] view without copying."""
         index = self._index[: self._length][key]
         index.flags.writeable = False
         values = self._values[: self._length][key]

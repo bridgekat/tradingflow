@@ -14,10 +14,10 @@ from ..series import AnyShape, Series
 class Concat[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, None]):
     """Concatenates N series along an existing axis.
 
-    Mirrors :func:`numpy.concatenate`: all inputs must have at least one
+    Mirrors [`numpy.concatenate`][]: all inputs must have at least one
     dimension and must agree on every axis except *axis*, where sizes are
     summed.  Inputs without data at or before the timestamp contribute
-    ``NaN``.
+    `NaN`.
 
     Parameters
     ----------
@@ -26,11 +26,11 @@ class Concat[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, No
         same number of dimensions (>= 1), and matching sizes on every
         axis except *axis*.
     axis
-        Existing axis along which to concatenate.  Defaults to ``0``.
+        Existing axis along which to concatenate.  Defaults to `0`.
 
     Examples
     --------
-    Concatenate two ``(K,)`` vectors into ``(2K,)``::
+    Concatenate two `(K,)` vectors into `(2K,)`::
 
         combined = scenario.add_operator(Concat([features_a, features_b]))
     """

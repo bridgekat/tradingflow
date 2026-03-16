@@ -1,6 +1,6 @@
 """Cross-sectional linear regression predictor.
 
-Provides :class:`CrossSectionalRegression`, a :class:`RollingPredictor`
+Provides [`CrossSectionalRegression`][tradingflow.operators.predictors.CrossSectionalRegression], a [`RollingPredictor`][tradingflow.operators.predictors.RollingPredictor]
 that fits an OLS model across stocks (cross-sectionally) using realized
 returns computed from historical prices.  No look-ahead bias: at time *t*
 the model only uses returns that have already been realized.
@@ -21,7 +21,7 @@ class CrossSectionalRegression(RollingPredictor):
     """Cross-sectional OLS regression retrained on a rolling window.
 
     At each retraining step the model collects historical factor values
-    ``(N, D)`` paired with realized forward returns computed from the
+    `(N, D)` paired with realized forward returns computed from the
     price series.  All (stock, timestamp) pairs within the training window
     whose forward returns are already known are stacked into a single
     regression problem.  NaN entries are filtered out before fitting.
@@ -29,10 +29,10 @@ class CrossSectionalRegression(RollingPredictor):
     Parameters
     ----------
     features
-        Vector-valued series of shape ``(N, D)`` — cross-sectional factors
+        Vector-valued series of shape `(N, D)` — cross-sectional factors
         for *N* stocks and *D* factor dimensions.
     prices
-        Vector-valued series of shape ``(N,)`` — close prices for *N* stocks.
+        Vector-valued series of shape `(N,)` — close prices for *N* stocks.
     train_window
         Number of most-recent timestamps of historical data to use for
         training.  Each timestamp contributes up to *N* observations.

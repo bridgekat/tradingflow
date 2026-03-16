@@ -1,8 +1,8 @@
 """Rolling window base class for filter operators.
 
-Provides :class:`Rolling`, an abstract :class:`Operator` subclass that
+Provides [`Rolling`][tradingflow.operators.indicators.Rolling], an abstract [`Operator`][tradingflow.Operator] subclass that
 manages a rolling window specification (count or time-based) and exposes
-:meth:`_get_window` for concrete filters to extract the relevant slice
+[`_get_window`][tradingflow.operators.indicators.Rolling._get_window] for concrete filters to extract the relevant slice
 of input values.
 """
 
@@ -18,16 +18,16 @@ from ... import Array, Operator, Series
 class Rolling[Shape: tuple[int, ...], T: np.generic](Operator[tuple[Series[Shape, T]], Shape, T, None], ABC):
     """Abstract base for rolling window operators.
 
-    Accepts either a count-based window (``int``, last *N* elements) or a
-    time-based window (``np.timedelta64``, elements within a time span).
-    Subclasses use :meth:`_get_window` inside their :meth:`compute`
+    Accepts either a count-based window (`int`, last *N* elements) or a
+    time-based window (`np.timedelta64`, elements within a time span).
+    Subclasses use [`_get_window`][._get_window] inside their [`compute`][.compute]
     implementation to extract the relevant portion of an input series.
 
     Parameters
     ----------
     window
-        Rolling window specification: an ``int`` selects the last *N*
-        elements; a ``np.timedelta64`` selects elements within that time
+        Rolling window specification: an `int` selects the last *N*
+        elements; a `np.timedelta64` selects elements within that time
         span before the current timestamp.
     series
         Input series to operate on.

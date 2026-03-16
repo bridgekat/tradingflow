@@ -9,7 +9,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tradingflow import ArrayBundleSource, AsyncCallableSource, CSVSource, Scenario
+from tradingflow import Scenario
+from tradingflow.sources import ArrayBundleSource, AsyncCallableSource, CSVSource
 
 
 def ts(i: int) -> np.datetime64:
@@ -21,9 +22,7 @@ class TestCSVSource:
     def test_csv_source_with_custom_columns_and_converters(self, tmp_path: Path) -> None:
         path = tmp_path / "prices.csv"
         path.write_text(
-            "id,t_ns,price_text\n"
-            "a,1,10.5\n"
-            "b,2,20.25\n",
+            "id,t_ns,price_text\n" "a,1,10.5\n" "b,2,20.25\n",
             encoding="utf-8",
         )
 

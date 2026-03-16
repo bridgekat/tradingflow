@@ -14,7 +14,7 @@ from .rolling import Rolling
 class WeightedMovingAverage[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
     """Linearly weighted moving average (WMA).
 
-    Only supports count-based (``int``) windows.  Weights increase linearly
+    Only supports count-based (`int`) windows.  Weights increase linearly
     so the most recent value has the highest weight.
     """
 
@@ -26,7 +26,9 @@ class WeightedMovingAverage[Shape: tuple[int, ...], T: np.floating](Rolling[Shap
         super().__init__(window, series)
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> tuple[ArrayLike | None, None]:
+    def compute(
+        self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None
+    ) -> tuple[ArrayLike | None, None]:
         (series,) = inputs
         if not series:
             return None, None

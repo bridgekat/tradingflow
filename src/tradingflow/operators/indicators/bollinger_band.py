@@ -14,18 +14,18 @@ from .rolling import Rolling
 class BollingerBand[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
     """Bollinger band at a given standard-deviation offset.
 
-    Outputs ``mean + num_std * std`` over a rolling window.  Output shape
+    Outputs `mean + num_std * std` over a rolling window.  Output shape
     equals the input element shape.
 
     Parameters
     ----------
     window
-        Rolling window specification (count or time-based; see :class:`Rolling`).
+        Rolling window specification (count or time-based; see [`Rolling`][tradingflow.operators.indicators.Rolling]).
     series
         Input series to operate on.
     num_std
-        Signed standard-deviation multiplier (e.g. ``-2`` for the lower band,
-        ``0`` for the mean, ``+2`` for the upper band).
+        Signed standard-deviation multiplier (e.g. `-2` for the lower band,
+        `0` for the mean, `+2` for the upper band).
     """
 
     __slots__ = ("_num_std",)
@@ -42,7 +42,9 @@ class BollingerBand[Shape: tuple[int, ...], T: np.floating](Rolling[Shape, T]):
         self._num_std = num_std
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None) -> tuple[ArrayLike | None, None]:
+    def compute(
+        self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: None
+    ) -> tuple[ArrayLike | None, None]:
         (series,) = inputs
         if not series:
             return None, None

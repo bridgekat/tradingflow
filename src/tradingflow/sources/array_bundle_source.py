@@ -15,14 +15,14 @@ from ..source import Source, empty_live_gen
 
 
 class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
-    """Historical source backed by ``(timestamps, values)`` array bundles.
+    """Historical source backed by `(timestamps, values)` array bundles.
 
     The element shape and dtype are inferred from *values*.
 
     Parameters
     ----------
     timestamps
-        1-D array-like of ``datetime64``-compatible timestamps.
+        1-D array-like of `datetime64`-compatible timestamps.
     values
         Array-like of values; first dimension must match *timestamps* and
         trailing dimensions determine the emitted element shape.
@@ -102,7 +102,7 @@ class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
         )
 
     def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
-        """Returns a ``(historical, live)`` iterator pair; the live iterator is empty."""
+        """Returns a `(historical, live)` iterator pair; the live iterator is empty."""
         return self._historical_gen(), empty_live_gen()
 
     async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:

@@ -1,8 +1,8 @@
 """Moving covariance filter.
 
-Provides :class:`MovingCovariance`, a rolling sample covariance matrix
-operator for vector-valued series.  Input shape ``(n,)`` produces output
-shape ``(n, n)``.  Extends :class:`Operator` directly because the output
+Provides [`MovingCovariance`][tradingflow.operators.indicators.MovingCovariance], a rolling sample covariance matrix
+operator for vector-valued series.  Input shape `(n,)` produces output
+shape `(n, n)`.  Extends [`Operator`][tradingflow.Operator] directly because the output
 shape differs from the input element shape.
 """
 
@@ -18,20 +18,20 @@ from ... import Operator, Series
 class MovingCovariance[T: np.floating](Operator[tuple[Series[tuple[int], T]], tuple[int, int], T, None]):
     """Rolling sample covariance matrix for vector-valued series.
 
-    Unlike other rolling filters, the output shape ``(n, n)`` differs from
-    the input element shape ``(n,)``, so this class extends :class:`Operator`
-    directly rather than :class:`Rolling`.
+    Unlike other rolling filters, the output shape `(n, n)` differs from
+    the input element shape `(n,)`, so this class extends [`Operator`][tradingflow.Operator]
+    directly rather than [`Rolling`][tradingflow.operators.indicators.Rolling].
 
     Parameters
     ----------
     window
-        Rolling window specification: an ``int`` selects the last *N*
-        elements; a ``np.timedelta64`` selects elements within that time
+        Rolling window specification: an `int` selects the last *N*
+        elements; a `np.timedelta64` selects elements within that time
         span before the current timestamp.
     series
-        Input vector series of element shape ``(n,)``.
+        Input vector series of element shape `(n,)`.
     ddof
-        Delta degrees of freedom for covariance calculation (default ``1``
+        Delta degrees of freedom for covariance calculation (default `1`
         for sample covariance).
     """
 

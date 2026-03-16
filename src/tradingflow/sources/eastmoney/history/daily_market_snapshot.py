@@ -53,10 +53,10 @@ class DailyMarketSnapshotCSVSource(Source[tuple[int], np.float64]):
     """Historical source for raw daily price market snapshots.
 
     Expected raw columns:
-    ``date``, ``open``, ``close``, ``high``, ``low``, ``amount``, ``volume``.
+    `date`, `open`, `close`, `high`, `low`, `amount`, `volume`.
 
-    Output vector order follows :attr:`schema.field_ids`.
-    The raw ``volume`` is scaled by ``volume_lot_size`` (default ``100``),
+    Output vector order follows [`schema.field_ids`][tradingflow.sources.eastmoney.history.DailyMarketSnapshotSchema.field_ids].
+    The raw `volume` is scaled by `volume_lot_size` (default `100`),
     matching the conventions in the reference preprocessing code.
     """
 
@@ -104,7 +104,7 @@ class DailyMarketSnapshotCSVSource(Source[tuple[int], np.float64]):
         return self._diagnostics
 
     def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
-        """Returns a ``(historical, live)`` iterator pair; the live iterator is empty."""
+        """Returns a `(historical, live)` iterator pair; the live iterator is empty."""
         return self._historical_gen(), empty_live_gen()
 
     async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:

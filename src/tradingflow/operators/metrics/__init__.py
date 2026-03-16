@@ -1,7 +1,7 @@
 """Performance metrics triggered by a signal series.
 
 Both metrics take a market-value series and a signal series.  Outputs
-are scalar (shape ``()``) float64 values.
+are scalar (shape `()`) float64 values.
 
 Classes
 -------

@@ -16,13 +16,13 @@ class Filter[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], S
     """Filters entire elements by a scalar predicate.
 
     At each timestamp the latest value is passed to *fn*, which must return
-    a single boolean.  If ``True`` the value is emitted as-is; if ``False``
-    no output is produced for this timestamp (i.e. ``compute`` returns
-    ``None``).
+    a single boolean.  If `True` the value is emitted as-is; if `False`
+    no output is produced for this timestamp (i.e. `compute` returns
+    `None`).
 
-    This differs from :class:`~tradingflow.operators.Where`, which replaces
-    individual array elements with a fill value.  ``Filter`` drops the
-    entire element when the predicate is ``False``.
+    This differs from [`Where`][tradingflow.operators.Where], which replaces
+    individual array elements with a fill value.  `Filter` drops the
+    entire element when the predicate is `False`.
 
     Parameters
     ----------
@@ -30,7 +30,7 @@ class Filter[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], S
         Input series.
     fn
         Predicate receiving the latest value (an ndarray) and returning a
-        single ``bool``.
+        single `bool`.
 
     Examples
     --------
