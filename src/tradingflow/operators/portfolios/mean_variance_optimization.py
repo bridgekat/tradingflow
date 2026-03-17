@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ... import Series
+from ...observable import Observable
 
 
 class MeanVarianceOptimization:
@@ -12,5 +12,5 @@ class MeanVarianceOptimization:
        [NotImplementedError][].
     """
 
-    def __init__(self, predictions: Series, covariances: Series) -> None:
+    def __init__(self, predictions: Observable, covariances: Observable) -> None:
         raise NotImplementedError("MeanVarianceOptimization is not yet implemented.")

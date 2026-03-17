@@ -10,7 +10,9 @@
 //! The crate is compiled as a PyO3 `cdylib` and exposes benchmark entry
 //! points to Python.  The core types are Rust-only (no Python wrapper yet).
 
+pub mod observable;
 pub mod series;
+pub mod input;
 pub mod operator;
 pub mod operators;
 pub mod scenario;

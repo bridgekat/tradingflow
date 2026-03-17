@@ -8,11 +8,12 @@ from typing import Any, override
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ..observable import Observable
 from ..operator import Operator
-from ..series import AnyShape, Series
+from ..series import AnyShape
 
 
-class Where[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], Shape, T, None]):
+class Where[Shape: AnyShape, T: np.generic](Operator[tuple[Observable[Shape, T]], Shape, T, None]):
     """Element-wise conditional: keeps values where *fn* is `True`.
 
     At each timestamp the latest value is tested element-wise with *fn*.
@@ -41,7 +42,7 @@ class Where[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], Sh
 
     def __init__(
         self,
-        series: Series[Shape, T],
+        series: Observable[Shape, T],
         fn: Callable[[np.ndarray], np.ndarray],
         *,
         fill: float = np.nan,
@@ -58,12 +59,10 @@ class Where[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], Sh
     def compute(
         self,
         timestamp: np.datetime64,
-        inputs: tuple[Series[Shape, T]],
+        inputs: tuple[Observable[Shape, T]],
         state: None,
     ) -> tuple[ArrayLike | None, None]:
-        (series,) = inputs
-        if not series:
-            return None, None
-        latest = series[-1]
+        (obs,) = inputs
+        latest = obs.last
         mask = self._fn(latest)
         return np.where(mask, latest, self._fill), None

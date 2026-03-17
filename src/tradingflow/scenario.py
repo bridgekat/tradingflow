@@ -1,7 +1,7 @@
-"""Scenario runtime for source-driven series/operator execution.
+"""Scenario runtime for source-driven observable/operator execution.
 
 This module defines [`Scenario`][tradingflow.Scenario], a specification of sources and
-operators that form a directed acyclic graph of time series, and
+operators that form a directed acyclic graph of observable values, and
 [`_ScenarioState`][tradingflow.scenario._ScenarioState], the per-run mutable state created fresh for
 every [`Scenario.run`][tradingflow.Scenario.run] invocation.
 
@@ -9,7 +9,7 @@ Point-of-coherency queue (POCQ)
 -------------------------------
 Each source exposes a `(historical, live)` iterator pair via
 [`Source.subscribe`][tradingflow.Source.subscribe].  The runtime converts all incoming items
-into `(timestamp, series, value)` events and accumulates them in the POCQ.
+into `(timestamp, source_state, value)` events and accumulates them in the POCQ.
 
 * **Historical constraint** – before advancing the POCQ, every active
   historical iterator must have a pending event ready.  This prevents an
@@ -20,8 +20,8 @@ into `(timestamp, series, value)` events and accumulates them in the POCQ.
   and any existing live timestamp.
 * The POCQ accumulates events sharing the same timestamp.  When an event with
   a strictly larger timestamp arrives, all queued events are flushed
-  (appended to their series and propagated to downstream operators), and the
-  new event starts a fresh queue.
+  (written to their observables, copied to materialized series, and propagated
+  to downstream operators), and the new event starts a fresh queue.
 * After all iterators are exhausted, any remaining queued events are flushed.
 """
 
@@ -37,10 +37,12 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .observable import Observable
 from .operator import Operator
 from .series import Array, Series
 from .source import Source
 
+type _AnyObservable = Observable[Any, Any]
 type _AnySeries = Series[Any, Any]
 type _AnySource = Source[Any, Any]
 type _AnyOperator = Operator[Any, Any, Any, Any]
@@ -52,49 +54,67 @@ class Scenario:
     """A directed acyclic graph of sources and operators.
 
     Sources and operators are registered via [`add_source`][.add_source] and
-    [`add_operator`][.add_operator], each returning the output [`Series`][tradingflow.Series]
-    that will be written to during [`run`][.run].
+    [`add_operator`][.add_operator], each returning the output
+    [`Observable`][tradingflow.Observable] that will be updated during
+    [`run`][.run].  Observables can be *materialized* into
+    [`Series`][tradingflow.Series] via [`materialize`][.materialize].
     """
 
     __slots__ = (
         "_sources",
         "_operators",
+        "_materializations",
     )
 
-    _sources: list[tuple[_AnySource, _AnySeries]]
-    _operators: list[tuple[_AnyOperator, _AnySeries]]
+    _sources: list[tuple[_AnySource, _AnyObservable]]
+    _operators: list[tuple[_AnyOperator, _AnyObservable]]
+    _materializations: dict[int, _AnySeries]  # id(observable) -> series
 
     def __init__(self) -> None:
         self._sources = []
         self._operators = []
+        self._materializations = {}
 
     @property
-    def sources(self) -> list[tuple[_AnySource, _AnySeries]]:
+    def sources(self) -> list[tuple[_AnySource, _AnyObservable]]:
         """Registered sources in insertion order."""
         return self._sources
 
     @property
-    def operators(self) -> list[tuple[_AnyOperator, _AnySeries]]:
+    def operators(self) -> list[tuple[_AnyOperator, _AnyObservable]]:
         """Registered operators in insertion order."""
         return self._operators
 
-    def add_source(self, source: _AnySource) -> _AnySeries:
-        """Register a source and return its output series."""
-        series = Series(source.shape, source.dtype)
-        self._sources.append((source, series))
-        return series
+    def add_source(self, source: _AnySource) -> _AnyObservable:
+        """Register a source and return its output observable."""
+        observable = Observable(source.shape, source.dtype)
+        self._sources.append((source, observable))
+        return observable
 
-    def add_operator(self, operator: _AnyOperator) -> _AnySeries:
-        """Register an operator and return its output series."""
-        series = Series(operator.shape, operator.dtype)
-        self._operators.append((operator, series))
+    def add_operator(self, operator: _AnyOperator) -> _AnyObservable:
+        """Register an operator and return its output observable."""
+        observable = Observable(operator.shape, operator.dtype)
+        self._operators.append((operator, observable))
+        return observable
+
+    def materialize(self, observable: _AnyObservable) -> _AnySeries:
+        """Materialize an observable: allocate a series to store full history.
+
+        Returns the [`Series`][tradingflow.Series] that will be populated
+        during [`run`][.run].
+        """
+        key = id(observable)
+        if key in self._materializations:
+            return self._materializations[key]
+        series = Series(observable.shape, observable.dtype)
+        self._materializations[key] = series
         return series
 
     async def run(self) -> None:
         """Consume all source streams and propagate to operators.
 
-        Writes to the series returned by [`add_source`][..add_source] and
-        [`add_operator`][..add_operator].
+        Updates the observables returned by [`add_source`][.add_source] and
+        [`add_operator`][.add_operator], and appends to materialized series.
         """
         state = _ScenarioState(self)
         await state.run()
@@ -102,21 +122,18 @@ class Scenario:
 
 @dataclasses.dataclass(slots=True)
 class _SourceState:
-    """Per-source mutable state for one [`Scenario.run`][tradingflow.Scenario.run] invocation.
-
-    If both `hist_task` and `pending_hist` are `None`, it means that
-    the historical iterator is exhausted.  Similarly for the live iterator.
-    """
+    """Per-source mutable state for one [`Scenario.run`][tradingflow.Scenario.run] invocation."""
 
     source: _AnySource
-    series: _AnySeries
+    observable: _AnyObservable
+    series: _AnySeries | None
     hist_iter: AsyncIterator[tuple[np.datetime64, ArrayLike]]
     live_iter: AsyncIterator[ArrayLike]
     hist_task: asyncio.Task[Any] | None
     live_task: asyncio.Task[Any] | None
     pending_hist: tuple[np.datetime64, _AnyArray] | None
     pending_live: tuple[np.datetime64, _AnyArray] | None
-    last_time: np.datetime64 | None  # last timestamp pushed into the POCQ
+    last_time: np.datetime64 | None
 
 
 @dataclasses.dataclass(slots=True)
@@ -124,7 +141,8 @@ class _OperatorState:
     """Per-operator mutable state for one [`Scenario.run`][tradingflow.Scenario.run] invocation."""
 
     operator: _AnyOperator
-    series: _AnySeries
+    observable: _AnyObservable
+    series: _AnySeries | None
     state: Any
 
 
@@ -146,60 +164,64 @@ class _ScenarioState:
         "_heap_counter",
     )
 
-    # Keyed by output series (always unique per node, even if same source/operator object
-    # is registered multiple times).
-    _edges: dict[_AnySeries, list[_AnySeries]]
-    _topo_order: dict[_AnySeries, int]
-    _sources: dict[_AnySeries, _SourceState]
-    _operators: dict[_AnySeries, _OperatorState]
+    _edges: dict[int, list[int]]  # id(observable) -> [id(downstream_observable)]
+    _topo_order: dict[int, int]  # id(observable) -> topological rank
+    _sources: dict[int, _SourceState]  # id(observable) -> state
+    _operators: dict[int, _OperatorState]  # id(observable) -> state
     _queue: list[_AnyEvent]
     _num_hist_tasks: int
     _pending_heap: list[tuple[np.datetime64, int, _SourceState, bool]]
     _heap_counter: int
 
     def __init__(self, scenario: Scenario) -> None:
-        # Map: output series → list of downstream operator output series.
-        self._edges = {}
-        for _, series in scenario.sources:
-            self._edges[series] = []
-        for _, series in scenario.operators:
-            self._edges[series] = []
+        # Collect all observables (sources + operators).
+        all_obs: list[_AnyObservable] = []
+        for _, obs in scenario.sources:
+            all_obs.append(obs)
+        for _, obs in scenario.operators:
+            all_obs.append(obs)
 
-        for operator, series in scenario.operators:
-            for input in operator.inputs:
-                if input not in self._edges:
-                    raise ValueError("Operator input series must come from a registered source or operator output.")
-                self._edges[input].append(series)
+        # Map: id(observable) -> list of downstream operator id(observable).
+        self._edges = {id(obs): [] for obs in all_obs}
+
+        for operator, obs in scenario.operators:
+            for inp in operator.inputs:
+                # An input can be an Observable or a Series.
+                # Find the id of the input in our node set.
+                inp_id = self._resolve_input_id(inp, scenario)
+                if inp_id not in self._edges:
+                    raise ValueError("Operator input must come from a registered source or operator output.")
+                self._edges[inp_id].append(id(obs))
 
         # DFS topological sort with cycle detection.
-        flags: dict[_AnySeries, bool] = {}
-        exits: list[_AnySeries] = []
+        flags: dict[int, bool] = {}
+        exits: list[int] = []
 
-        def _dfs(s: _AnySeries) -> None:
-            if s in flags:
-                if flags[s]:
+        def _dfs(node_id: int) -> None:
+            if node_id in flags:
+                if flags[node_id]:
                     raise ValueError("Scenario operator dependency graph must be acyclic.")
                 return
-            flags[s] = True
-            for child in self._edges[s]:
-                _dfs(child)
-            flags[s] = False
-            exits.append(s)
+            flags[node_id] = True
+            for child_id in self._edges[node_id]:
+                _dfs(child_id)
+            flags[node_id] = False
+            exits.append(node_id)
 
-        for _, series in scenario.operators:
-            _dfs(series)
+        for _, obs in scenario.operators:
+            _dfs(id(obs))
 
         topo = list(reversed(exits))
-        self._topo_order = {s: i for i, s in enumerate(topo)}
+        self._topo_order = {node_id: i for i, node_id in enumerate(topo)}
 
-        # Initialize source states (keyed by output series so the same source object
-        # registered multiple times gets independent iterators and state).
+        # Initialize source states.
         self._sources = {}
-        for source, series in scenario.sources:
+        for source, obs in scenario.sources:
             hist_iter, live_iter = source.subscribe()
             st = _SourceState(
                 source=source,
-                series=series,
+                observable=obs,
+                series=scenario._materializations.get(id(obs)),
                 hist_iter=hist_iter.__aiter__(),
                 live_iter=live_iter.__aiter__(),
                 hist_task=None,
@@ -210,30 +232,52 @@ class _ScenarioState:
             )
             st.hist_task = asyncio.create_task(_anext(st.hist_iter))
             st.live_task = asyncio.create_task(_anext(st.live_iter))
-            self._sources[series] = st
+            self._sources[id(obs)] = st
 
-        # Initialize operator states (keyed by output series for the same reason).
+        # Initialize operator states.
         self._operators = {}
-        for operator, series in scenario.operators:
+        for operator, obs in scenario.operators:
             st = _OperatorState(
-                operator,
-                series,
-                operator.init_state(),
+                operator=operator,
+                observable=obs,
+                series=scenario._materializations.get(id(obs)),
+                state=operator.init_state(),
             )
-            self._operators[series] = st
+            self._operators[id(obs)] = st
+
+        # Initialize observable values.
+        # 1. Write source initial values to their observables.
+        for source, obs in scenario.sources:
+            obs.write(source.initial)
+        # 2. Run operators once in topological order to compute initial outputs.
+        for node_id in topo:
+            if node_id in self._operators:
+                st = self._operators[node_id]
+                raw_value, st.state = st.operator.compute(
+                    np.datetime64(0, "ns"), st.operator.inputs, st.state
+                )
+                if raw_value is not None:
+                    st.observable.write(np.asarray(raw_value, dtype=st.observable.dtype))
 
         # Initialize POCQ.
         self._queue = []
-        # O(1) check for whether all historical iterators have resolved.
-        # Starts at len(sources) because every source begins with a hist_task.
         self._num_hist_tasks = len(scenario.sources)
-        # Min-heap of pending events: (timestamp, tiebreaker, source_state, is_hist).
-        # The tiebreaker avoids comparing _SourceState and ensures FIFO among
-        # same-timestamp events.  Stale entries (where the corresponding
-        # pending_hist/pending_live has already been consumed) are detected and
-        # skipped on pop.
         self._pending_heap = []
         self._heap_counter = 0
+
+    @staticmethod
+    def _resolve_input_id(inp: Any, scenario: Scenario) -> int:
+        """Resolve an operator input (Observable or materialized Series) to a node id."""
+        # Direct observable reference.
+        if isinstance(inp, Observable):
+            return id(inp)
+        # Materialized series — find the observable it was materialized from.
+        if isinstance(inp, Series):
+            for obs_id, series in scenario._materializations.items():
+                if series is inp:
+                    return obs_id
+            raise ValueError("Series input must be a materialized series from this scenario.")
+        raise TypeError(f"Unsupported input type: {type(inp)}")
 
     # -------------------------------------------------------------------------
     # Main run loop
@@ -268,22 +312,15 @@ class _ScenarioState:
     def _next_ready_event(self) -> _AnyEvent | None:
         """Takes the pending event with minimum timestamp, or `None`
         if blocked.
-
-        The historical constraint requires every source with an active
-        historical iterator to have a pending event before any timestamp
-        can be committed.  Uses an O(1) counter instead of scanning all
-        sources, and a min-heap for O(log N) minimum lookup.
         """
         if self._num_hist_tasks > 0:
             return None
 
-        # Pop minimum from heap.
         while self._pending_heap:
             _, _, st, is_hist = heapq.heappop(self._pending_heap)
             pending = st.pending_hist if is_hist else st.pending_live
             assert pending is not None
 
-            # Consume the event.
             time, value = pending
             st.last_time = time
             if is_hist:
@@ -337,10 +374,11 @@ class _ScenarioState:
                     f"last committed timestamp {st.last_time!r}."
                 )
 
-            value = np.asarray(raw_val, dtype=st.series.dtype)
-            if value.shape != st.series.shape:
+            value = np.asarray(raw_val, dtype=st.observable.dtype)
+            if value.shape != st.observable.shape:
                 raise ValueError(
-                    f"Source '{st.source.name}' emitted value shape {value.shape}, " f"expected {st.series.shape}."
+                    f"Source '{st.source.name}' emitted value shape {value.shape}, "
+                    f"expected {st.observable.shape}."
                 )
 
             if is_hist:
@@ -364,61 +402,65 @@ class _ScenarioState:
         self._queue.append(next_event)
 
     def _flush_queue(self) -> None:
-        """Append POCQ events to their series and propagate to downstream operators.
+        """Write POCQ events to observables and propagate to downstream operators.
 
-        Downstream operators are processed in topological order via a min-heap
-        keyed by each operator's topological order.
+        For each updated node, the observable is written first.  If the node
+        has a materialized series, the value is also appended to it.
+        Downstream operators are processed in topological order via a min-heap.
         """
 
-        # Updated sources.
-        updated: set[_AnySeries] = set()
-        # Affected operators.
-        affected: dict[_AnySeries, np.datetime64] = {}
-        # Heap entries: (topo_order, series_id, op_series). Topo indices are
-        # unique so ties never occur.
-        heap: list[tuple[int, _AnySeries]] = []
+        # Updated source observables.
+        updated: set[int] = set()
+        # Affected operator observables.
+        affected: dict[int, np.datetime64] = {}
+        heap: list[tuple[int, int]] = []
 
-        def _touch(child: _AnySeries, t: np.datetime64) -> None:
-            if child in affected:
-                affected[child] = max(affected[child], t)
+        def _touch(child_id: int, t: np.datetime64) -> None:
+            if child_id in affected:
+                affected[child_id] = max(affected[child_id], t)
             else:
-                affected[child] = t
-                heapq.heappush(heap, (self._topo_order[child], child))
+                affected[child_id] = t
+                heapq.heappush(heap, (self._topo_order[child_id], child_id))
 
         for time, st, value in reversed(self._queue):
-            # When there are multiple events for the same source series, only the
-            # most recent one (the last one in the queue) is relevant.
-            if st.series in updated:
+            obs_id = id(st.observable)
+            if obs_id in updated:
                 continue
-            updated.add(st.series)
+            updated.add(obs_id)
 
-            # POCQ guarantees that flushes have strictly increasing timestamps.
-            st.series.append_unchecked(time, value)
-            for child in self._edges[st.series]:
-                _touch(child, time)
+            # Update observable.
+            st.observable.write(value)
+            # Materialize to series if applicable.
+            if st.series is not None:
+                st.series.append_unchecked(time, value)
+
+            for child_id in self._edges[obs_id]:
+                _touch(child_id, time)
 
         while heap:
-            _, op_series = heapq.heappop(heap)
-            time = affected.pop(op_series)
-            st = self._operators[op_series]
+            _, op_obs_id = heapq.heappop(heap)
+            time = affected.pop(op_obs_id)
+            st = self._operators[op_obs_id]
             raw_value, st.state = st.operator.compute(time, st.operator.inputs, st.state)
 
-            # Returning None suppresses the output entry and halts propagation
-            # to operators that are exclusively downstream of this one.
             if raw_value is None:
                 continue
 
-            value = np.asarray(raw_value, dtype=st.series.dtype)
-            if value.shape != st.series.shape:
+            value = np.asarray(raw_value, dtype=st.observable.dtype)
+            if value.shape != st.observable.shape:
                 raise ValueError(
                     f"Operator {type(st.operator).__name__!r} returned value shape "
-                    f"{value.shape}, expected {st.series.shape}."
+                    f"{value.shape}, expected {st.observable.shape}."
                 )
 
-            # POCQ guarantees that flushes have strictly increasing timestamps.
-            st.series.append_unchecked(time, value)
-            for child in self._edges[op_series]:
-                _touch(child, time)
+            # Update observable.
+            st.observable.write(value)
+            # Materialize to series if applicable.
+            if st.series is not None:
+                st.series.append_unchecked(time, value)
+
+            for child_id in self._edges[op_obs_id]:
+                _touch(child_id, time)
 
         self._queue.clear()
 

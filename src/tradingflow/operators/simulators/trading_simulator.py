@@ -14,10 +14,11 @@ from typing import Any, override
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ... import Operator, Series
+from ... import Operator
+from ...observable import Observable
 
 
-class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, dict]):
+class TradingSimulator(Operator[tuple[Observable, Observable], tuple[()], np.float64, dict]):
     """Simulates portfolio trading with optional commission.
 
     Tracks cash, positions and computes the total market value
@@ -56,8 +57,8 @@ class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, di
 
     def __init__(
         self,
-        prices: Series,
-        positions: Series,
+        prices: Observable,
+        positions: Observable,
         commission_rate: float = 0.0,
         min_charge: float = 0.0,
         initial_cash: float = 0.0,
@@ -77,7 +78,7 @@ class TradingSimulator(Operator[tuple[Series, Series], tuple[()], np.float64, di
 
     @override
     def compute(
-        self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict
+        self, timestamp: np.datetime64, inputs: tuple[Observable, Observable], state: dict
     ) -> tuple[ArrayLike | None, dict]:
         prices, positions = inputs
         if not prices or not positions:

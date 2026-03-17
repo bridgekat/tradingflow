@@ -8,11 +8,12 @@ from typing import override
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ..observable import Observable
 from ..operator import Operator
-from ..series import AnyShape, Series
+from ..series import AnyShape
 
 
-class Filter[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], Shape, T, None]):
+class Filter[Shape: AnyShape, T: np.generic](Operator[tuple[Observable[Shape, T]], Shape, T, None]):
     """Filters entire elements by a scalar predicate.
 
     At each timestamp the latest value is passed to *fn*, which must return
@@ -43,7 +44,7 @@ class Filter[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], S
 
     def __init__(
         self,
-        series: Series[Shape, T],
+        series: Observable[Shape, T],
         fn: Callable[[np.ndarray], bool],
     ) -> None:
         self._fn = fn
@@ -57,13 +58,11 @@ class Filter[Shape: AnyShape, T: np.generic](Operator[tuple[Series[Shape, T]], S
     def compute(
         self,
         timestamp: np.datetime64,
-        inputs: tuple[Series[Shape, T]],
+        inputs: tuple[Observable[Shape, T]],
         state: None,
     ) -> tuple[ArrayLike | None, None]:
-        (series,) = inputs
-        if not series:
-            return None, None
-        latest = series[-1]
+        (obs,) = inputs
+        latest = obs.last
         if self._fn(latest):
             return latest, None
         return None, None

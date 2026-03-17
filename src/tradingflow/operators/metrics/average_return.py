@@ -7,10 +7,11 @@ from typing import override
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ... import Operator, Series
+from ... import Operator
+from ...observable import Observable
 
 
-class AverageReturn(Operator[tuple[Series, Series], tuple[()], np.float64, dict]):
+class AverageReturn(Operator[tuple[Observable, Observable], tuple[()], np.float64, dict]):
     """Computes the running average return triggered by a signal series.
 
     At each timestamp where the signal series has data, a return is computed
@@ -20,7 +21,7 @@ class AverageReturn(Operator[tuple[Series, Series], tuple[()], np.float64, dict]
 
     __slots__ = ()
 
-    def __init__(self, market_values: Series, signal: Series) -> None:
+    def __init__(self, market_values: Observable, signal: Observable) -> None:
         super().__init__((market_values, signal), (), np.dtype(np.float64))
 
     @override
@@ -29,7 +30,7 @@ class AverageReturn(Operator[tuple[Series, Series], tuple[()], np.float64, dict]
 
     @override
     def compute(
-        self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict
+        self, timestamp: np.datetime64, inputs: tuple[Observable, Observable], state: dict
     ) -> tuple[ArrayLike | None, dict]:
         mv, signal = inputs
         if not signal or not mv:

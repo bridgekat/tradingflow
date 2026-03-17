@@ -13,10 +13,11 @@ from typing import override
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ... import Operator, Series
+from ... import Operator
+from ...observable import Observable
 
 
-class TopKRankLinear(Operator[tuple[Series], tuple[int], np.float64, None]):
+class TopKRankLinear(Operator[tuple[Observable], tuple[int], np.float64, None]):
     """Selects the top *k* assets and assigns rank-proportional weights.
 
     The highest-predicted asset receives the largest weight; weights are
@@ -27,7 +28,7 @@ class TopKRankLinear(Operator[tuple[Series], tuple[int], np.float64, None]):
 
     _k: int | float
 
-    def __init__(self, predictions: Series, k: int | float) -> None:
+    def __init__(self, predictions: Observable, k: int | float) -> None:
         n = predictions.shape[0]
         super().__init__((predictions,), (n,), np.dtype(np.float64))
         self._k = k
@@ -37,7 +38,7 @@ class TopKRankLinear(Operator[tuple[Series], tuple[int], np.float64, None]):
         return None
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series], state: None) -> tuple[ArrayLike | None, None]:
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Observable], state: None) -> tuple[ArrayLike | None, None]:
         (preds,) = inputs
         if not preds:
             return None, None

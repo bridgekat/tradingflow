@@ -225,7 +225,8 @@ class TestFinancialReportSource:
         )
         source = FinancialReportCSVSource(path=csv_path, kind="balance_sheet")
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
+        series = scenario.materialize(obs)
         asyncio.run(scenario.run())
 
         assert len(series) == 1
@@ -241,12 +242,16 @@ class TestFinancialReportSource:
         )
 
         scenario = Scenario()
-        balance_series = scenario.add_source(balance_source)
-        other_series = scenario.add_source(other_source)
+        balance_obs = scenario.add_source(balance_source)
+        other_obs = scenario.add_source(other_source)
 
         assets_idx = balance_source.schema.field_index["balance_sheet.assets"]
-        selector_series = scenario.add_operator(select(balance_series, (assets_idx,)))
-        sum_series = scenario.add_operator(add(selector_series, other_series))
+        selector_obs = scenario.add_operator(select(balance_obs, (assets_idx,)))
+        sum_obs = scenario.add_operator(add(selector_obs, other_obs))
+
+        selector_series = scenario.materialize(selector_obs)
+        sum_series = scenario.materialize(sum_obs)
+
         asyncio.run(scenario.run())
 
         assert len(selector_series) == 1
@@ -260,7 +265,8 @@ class TestGoldenFixtures:
         fixture = Path(__file__).parent / "fixtures" / "financial_reports" / "balance_raw_sample.csv"
         source = FinancialReportCSVSource(path=fixture, kind="balance_sheet")
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
+        series = scenario.materialize(obs)
         asyncio.run(scenario.run())
 
         i = source.schema.field_index
@@ -276,7 +282,8 @@ class TestGoldenFixtures:
         fixture = Path(__file__).parent / "fixtures" / "financial_reports" / "income_raw_sample.csv"
         source = FinancialReportCSVSource(path=fixture, kind="income_statement")
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
+        series = scenario.materialize(obs)
         asyncio.run(scenario.run())
 
         i = source.schema.field_index

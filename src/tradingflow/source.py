@@ -1,4 +1,4 @@
-"""Core interface for data sources which generate values into time series."""
+"""Core interface for data sources which generate observable values."""
 
 from __future__ import annotations
 
@@ -9,15 +9,15 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .series import AnyShape
+from .series import AnyShape, Array
 
 
 class Source[Shape: AnyShape, T: np.generic](ABC):
-    """Abstract base class for sources that produce data into a time series.
+    """Abstract base class for sources that produce observable values.
 
-    A source declares the element `shape` and `dtype` of the values it will
-    emit.  [`Scenario`][tradingflow.Scenario] creates the target
-    [`Series`][tradingflow.Series] when the source is registered via
+    A source declares the element `shape`, `dtype`, and *initial value* of the
+    values it will emit.  [`Scenario`][tradingflow.Scenario] creates the target
+    [`Observable`][tradingflow.Observable] when the source is registered via
     [`Scenario.add_source`][tradingflow.Scenario.add_source].
 
     Subclasses implement [`subscribe`][.subscribe] to return a `(historical, live)`
@@ -34,15 +34,19 @@ class Source[Shape: AnyShape, T: np.generic](ABC):
         Shape of each emitted value element.  Use `()` for scalars.
     dtype
         NumPy dtype for the emitted values (e.g. `np.float64`).
+    initial
+        Initial value for the observable.  Defaults to NaN for floating-point
+        dtypes and zero for others.
     name
         Optional human-readable name used in diagnostics and error messages;
         defaults to the class name.
     """
 
-    __slots__ = ("_shape", "_dtype", "_name")
+    __slots__ = ("_shape", "_dtype", "_initial", "_name")
 
     _shape: Shape
     _dtype: np.dtype[T]
+    _initial: Array[Shape, T]
     _name: str
 
     def __init__(
@@ -50,10 +54,17 @@ class Source[Shape: AnyShape, T: np.generic](ABC):
         shape: Shape,
         dtype: type[T] | np.dtype[T],
         *,
+        initial: ArrayLike | None = None,
         name: str | None = None,
     ) -> None:
         self._shape = shape
         self._dtype = np.dtype(dtype)
+        if initial is not None:
+            self._initial = np.asarray(initial, dtype=self._dtype)  # type: ignore[assignment]
+        elif np.issubdtype(self._dtype, np.floating):
+            self._initial = np.full(shape, np.nan, dtype=self._dtype)  # type: ignore[assignment]
+        else:
+            self._initial = np.zeros(shape, dtype=self._dtype)  # type: ignore[assignment]
         self._name = name or type(self).__name__
 
     @abstractmethod
@@ -70,6 +81,11 @@ class Source[Shape: AnyShape, T: np.generic](ABC):
     def dtype(self) -> np.dtype[T]:
         """NumPy dtype of emitted values."""
         return self._dtype
+
+    @property
+    def initial(self) -> Array[Shape, T]:
+        """Initial value for the observable."""
+        return self._initial
 
     @property
     def name(self) -> str:

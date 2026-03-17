@@ -7,11 +7,12 @@ from typing import Any, override
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ... import Array, Operator, Series
+from ... import Array, Operator
+from ...observable import Observable
 
 
 class ExponentialMovingAverage[Shape: tuple[int, ...], T: np.floating](
-    Operator[tuple[Series[Shape, T]], Shape, T, Array[Any, Any] | None]
+    Operator[tuple[Observable[Shape, T]], Shape, T, Array[Any, Any] | None]
 ):
     """Exponential moving average (EMA).
 
@@ -33,7 +34,7 @@ class ExponentialMovingAverage[Shape: tuple[int, ...], T: np.floating](
 
     _alpha: float
 
-    def __init__(self, alpha: float, series: Series[Shape, T]) -> None:
+    def __init__(self, alpha: float, series: Observable[Shape, T]) -> None:
         super().__init__((series,), series.shape, series.dtype)
         self._alpha = alpha
 
@@ -43,12 +44,10 @@ class ExponentialMovingAverage[Shape: tuple[int, ...], T: np.floating](
 
     @override
     def compute(
-        self, timestamp: np.datetime64, inputs: tuple[Series[Shape, T]], state: Array[Any, Any] | None
+        self, timestamp: np.datetime64, inputs: tuple[Observable[Shape, T]], state: Array[Any, Any] | None
     ) -> tuple[ArrayLike | None, Array[Any, Any] | None]:
-        (series,) = inputs
-        if not series:
-            return None, state
-        latest = series.last
+        (obs,) = inputs
+        latest = obs.last
         if state is not None:
             result = self._alpha * latest + (1.0 - self._alpha) * state
         else:

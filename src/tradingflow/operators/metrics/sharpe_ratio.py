@@ -7,10 +7,11 @@ from typing import override
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ... import Operator, Series
+from ... import Operator
+from ...observable import Observable
 
 
-class SharpeRatio(Operator[tuple[Series, Series], tuple[()], np.float64, dict]):
+class SharpeRatio(Operator[tuple[Observable, Observable], tuple[()], np.float64, dict]):
     """Annualised Sharpe ratio computed on signal-triggered returns.
 
     Outputs only when at least two returns have been observed and the
@@ -21,7 +22,7 @@ class SharpeRatio(Operator[tuple[Series, Series], tuple[()], np.float64, dict]):
 
     _periods_per_year: int
 
-    def __init__(self, market_values: Series, signal: Series, periods_per_year: int = 252) -> None:
+    def __init__(self, market_values: Observable, signal: Observable, periods_per_year: int = 252) -> None:
         super().__init__((market_values, signal), (), np.dtype(np.float64))
         self._periods_per_year = periods_per_year
 
@@ -31,7 +32,7 @@ class SharpeRatio(Operator[tuple[Series, Series], tuple[()], np.float64, dict]):
 
     @override
     def compute(
-        self, timestamp: np.datetime64, inputs: tuple[Series, Series], state: dict
+        self, timestamp: np.datetime64, inputs: tuple[Observable, Observable], state: dict
     ) -> tuple[ArrayLike | None, dict]:
         mv, signal = inputs
         if not signal or not mv:

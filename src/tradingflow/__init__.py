@@ -9,21 +9,25 @@ AnyShape
 Array[Shape, T]
     `np.ndarray[Shape, np.dtype[T]]`; shorthand for array types.
 
-Classes
--------
+Core classes
+------------
+Observable[Shape, T]
+    Latest-value container.  Every source and operator produces an observable.
 Series[Shape, T]
     NumPy-backed time series with strictly increasing timestamps.
+    Created by materializing an observable via `Scenario.materialize()`.
 Source[Shape, T]
-    Abstract base for sources that feed data into a time series via a
+    Abstract base for sources that feed data into an observable via a
     `(historical, live)` async-iterator pair returned by `subscribe()`.
 Operator[Inputs, Shape, T, State]
-    Base class for derived-series computations.
+    Base class for derived computations on observables and series.
 Scenario
     Async runtime that subscribes to source streams, accumulates events in the
     point-of-coherency queue (POCQ), and updates an acyclic source/operator
     dependency graph incrementally.
 """
 
+from .observable import Observable
 from .series import AnyShape, Array, Series
 from .source import Source
 from .operator import Operator
@@ -32,6 +36,7 @@ from .scenario import Scenario
 __all__ = [
     "AnyShape",
     "Array",
+    "Observable",
     "Operator",
     "Scenario",
     "Series",

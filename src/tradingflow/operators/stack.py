@@ -7,11 +7,12 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ..observable import Observable
 from ..operator import Operator
-from ..series import AnyShape, Series
+from ..series import AnyShape
 
 
-class Stack[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, None]):
+class Stack[T: np.generic](Operator[tuple[Observable[Any, T], ...], AnyShape, T, None]):
     """Stacks N series along a new axis.
 
     Mirrors [`numpy.stack`][]: all inputs must have the same shape,
@@ -41,7 +42,7 @@ class Stack[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, Non
 
     __slots__ = ("_axis",)
 
-    def __init__(self, inputs: list[Series[Any, T]], *, axis: int = 0) -> None:
+    def __init__(self, inputs: list[Observable[Any, T]], *, axis: int = 0) -> None:
         if not inputs:
             raise ValueError("Stack requires at least one input series.")
 
@@ -70,15 +71,12 @@ class Stack[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, Non
     def compute(
         self,
         timestamp: np.datetime64,
-        inputs: tuple[Series[Any, T], ...],
+        inputs: tuple[Observable[Any, T], ...],
         state: None,
     ) -> tuple[ArrayLike | None, None]:
         parts: list[np.ndarray] = []
 
-        for series in inputs:
-            if not series:
-                parts.append(np.full(series.shape, np.nan, dtype=self.dtype))
-            else:
-                parts.append(series.last)
+        for obs in inputs:
+            parts.append(obs.last)
 
         return np.stack(parts, axis=self._axis), None

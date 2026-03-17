@@ -6,8 +6,8 @@ from typing import Callable, override
 
 import numpy as np
 
+from ..observable import Observable
 from ..operator import Operator
-from ..series import Series
 
 
 type _AnyShape = tuple[int, ...]
@@ -18,13 +18,12 @@ type _ApplyFn[Shape: _AnyShape, InT: np.generic, OutT: np.generic] = Callable[
 
 
 class Apply[Shape: _AnyShape, InT: np.generic, OutT: np.generic](
-    Operator[tuple[Series[Shape, InT], ...], Shape, OutT, None]
+    Operator[tuple[Observable[Shape, InT], ...], Shape, OutT, None]
 ):
-    """Stateless operator that applies a function to the latest values of input series.
+    """Stateless operator that applies a function to the latest values of input observables.
 
     At each update, the latest value of every input is collected
-    into a list and passed to the user-supplied function.  If any input
-    series is empty the output is skipped (`None`).
+    into a list and passed to the user-supplied function.
     """
 
     __slots__ = ("_fn",)
@@ -33,7 +32,7 @@ class Apply[Shape: _AnyShape, InT: np.generic, OutT: np.generic](
 
     def __init__(
         self,
-        inputs: tuple[Series[Shape, InT], ...],
+        inputs: tuple[Observable[Shape, InT], ...],
         shape: Shape,
         dtype: type[OutT] | np.dtype[OutT],
         fn: _ApplyFn[Shape, InT, OutT],
@@ -49,12 +48,11 @@ class Apply[Shape: _AnyShape, InT: np.generic, OutT: np.generic](
     def compute(
         self,
         timestamp: np.datetime64,
-        inputs: tuple[Series[Shape, InT], ...],
+        inputs: tuple[Observable[Shape, InT], ...],
         state: None,
     ) -> tuple[_Array[Shape, OutT] | None, None]:
-        if not all(inputs):
-            return None, None
-        values: list[_Array[Shape, InT]] = [series.last for series in inputs]
+        # Observables always have values — no emptiness check needed.
+        values: list[_Array[Shape, InT]] = [inp.last for inp in inputs]
         return self._fn(values), None
 
 
@@ -83,44 +81,52 @@ def _divide[Shape: _AnyShape, T: np.floating](args: list[_Array[Shape, T]]) -> _
     return x / y  # type: ignore[return-value]
 
 
-def add[Shape: _AnyShape, T: np.number](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
+def add[Shape: _AnyShape, T: np.number](
+    a: Observable[Shape, T], b: Observable[Shape, T]
+) -> Apply[Shape, T, T]:
     """Element-wise addition: `a + b`."""
     return Apply((a, b), a.shape, a.dtype, _add)
 
 
-def subtract[Shape: _AnyShape, T: np.number](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
+def subtract[Shape: _AnyShape, T: np.number](
+    a: Observable[Shape, T], b: Observable[Shape, T]
+) -> Apply[Shape, T, T]:
     """Element-wise subtraction: `a - b`."""
     return Apply((a, b), a.shape, a.dtype, _subtract)
 
 
-def negate[Shape: _AnyShape, T: np.number](a: Series[Shape, T]) -> Apply[Shape, T, T]:
+def negate[Shape: _AnyShape, T: np.number](a: Observable[Shape, T]) -> Apply[Shape, T, T]:
     """Element-wise negation: `-a`."""
     return Apply((a,), a.shape, a.dtype, _negate)
 
 
-def multiply[Shape: _AnyShape, T: np.number](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
+def multiply[Shape: _AnyShape, T: np.number](
+    a: Observable[Shape, T], b: Observable[Shape, T]
+) -> Apply[Shape, T, T]:
     """Element-wise multiplication: `a * b`."""
     return Apply((a, b), a.shape, a.dtype, _multiply)
 
 
-def divide[Shape: _AnyShape, T: np.floating](a: Series[Shape, T], b: Series[Shape, T]) -> Apply[Shape, T, T]:
+def divide[Shape: _AnyShape, T: np.floating](
+    a: Observable[Shape, T], b: Observable[Shape, T]
+) -> Apply[Shape, T, T]:
     """Element-wise division: `a / b` with floating point inputs."""
     return Apply((a, b), a.shape, a.dtype, _divide)
 
 
 def map[Shape: _AnyShape, T: np.generic](
-    a: Series[Shape, T],
+    a: Observable[Shape, T],
     fn: Callable[[_Array[Shape, T]], _Array[Shape, T]],
 ) -> Apply[Shape, T, T]:
     """Unary element-wise transform: `fn(a)`.
 
     Convenience wrapper for [`Apply`][tradingflow.operators.Apply] with a single input.
-    The output series has the same shape and dtype as the input.
+    The output has the same shape and dtype as the input.
 
     Examples
     --------
     ::
 
-        log_s = scenario.add_operator(map(positive_s, np.log))
+        log_obs = scenario.add_operator(map(positive_obs, np.log))
     """
     return Apply((a,), a.shape, a.dtype, lambda args: fn(args[0]))

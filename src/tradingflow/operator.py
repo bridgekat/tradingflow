@@ -1,4 +1,4 @@
-"""Core interface for computations which generate values into time series."""
+"""Core interface for computations which generate observable values."""
 
 from __future__ import annotations
 
@@ -11,23 +11,26 @@ from numpy.typing import ArrayLike
 from .series import AnyShape, Series
 
 
-class Operator[Inputs: tuple[Series[Any, Any], ...], Shape: AnyShape, T: np.generic, State](ABC):
-    """Abstract base class for operators that compute derived time series.
+class Operator[Inputs, Shape: AnyShape, T: np.generic, State](ABC):
+    """Abstract base class for operators that compute derived values.
 
     `Operator[Inputs, Shape, T, State]` is parameterised by four type
     variables:
 
-    * **Inputs** – a tuple of [`Series`][tradingflow.Series] types consumed by the operator.
-    * **Shape** – the element shape of the output series.
-    * **T** – the NumPy scalar type of the output series.
+    * **Inputs** – a tuple of input objects ([`Observable`][tradingflow.Observable]
+      or [`Series`][tradingflow.Series]) consumed by the operator.  Operators
+      that only need the latest value should accept `Observable` inputs;
+      operators that need historical data should accept `Series` inputs.
+    * **Shape** – the element shape of the output.
+    * **T** – the NumPy scalar type of the output.
     * **State** – the type of the mutable state object carried across
       invocations.
 
     An `Operator` is a pure **specification**: it declares its inputs,
     output shape/dtype, initial state, and computation logic, but holds no
     mutable runtime state itself.  [`Scenario`][tradingflow.Scenario] owns the
-    output [`Series`][tradingflow.Series] and the current state, and calls
-    [`compute`][.compute] at each timestamp.
+    output [`Observable`][tradingflow.Observable] and the current state, and
+    calls [`compute`][.compute] at each timestamp.
 
     Subclass `Operator` and override [`init_state`][.init_state] and [`compute`][.compute]
     to define custom computation logic.
@@ -35,7 +38,8 @@ class Operator[Inputs: tuple[Series[Any, Any], ...], Shape: AnyShape, T: np.gene
     Parameters
     ----------
     inputs
-        Tuple of input series whose data feeds into the operator.
+        Tuple of input objects (Observable or Series) whose data feeds into
+        the operator.
     shape
         Shape of each output value element.  Use `()` for scalars.
     dtype
@@ -84,7 +88,8 @@ class Operator[Inputs: tuple[Series[Any, Any], ...], Shape: AnyShape, T: np.gene
         timestamp
             The current timestamp.
         inputs
-            One [`Series`][tradingflow.Series] per input, each sliced up to *timestamp*.
+            The input tuple ([`Observable`][tradingflow.Observable] or
+            [`Series`][tradingflow.Series] objects).
         state
             The current internal state of the operator.
 
@@ -98,17 +103,17 @@ class Operator[Inputs: tuple[Series[Any, Any], ...], Shape: AnyShape, T: np.gene
 
     @property
     def inputs(self) -> Inputs:
-        """The input series tuple (read-only)."""
+        """The input tuple (read-only)."""
         return self._inputs
 
     @property
     def shape(self) -> Shape:
-        """The element shape of the output series."""
+        """The element shape of the output."""
         return self._shape
 
     @property
     def dtype(self) -> np.dtype[T]:
-        """The NumPy dtype of the output series."""
+        """The NumPy dtype of the output."""
         return self._dtype
 
     @property

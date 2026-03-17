@@ -12,10 +12,11 @@ from typing import override
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ... import Operator, Series
+from ... import Operator
+from ...observable import Observable
 
 
-class TopK(Operator[tuple[Series], tuple[int], np.float64, None]):
+class TopK(Operator[tuple[Observable], tuple[int], np.float64, None]):
     """Selects the top *k* assets by predicted value and assigns equal weights.
 
     *k* may be an integer (fixed count) or a float in `(0, 1]`
@@ -26,7 +27,7 @@ class TopK(Operator[tuple[Series], tuple[int], np.float64, None]):
 
     _k: int | float
 
-    def __init__(self, predictions: Series, k: int | float) -> None:
+    def __init__(self, predictions: Observable, k: int | float) -> None:
         n = predictions.shape[0]
         super().__init__((predictions,), (n,), np.dtype(np.float64))
         self._k = k
@@ -36,7 +37,7 @@ class TopK(Operator[tuple[Series], tuple[int], np.float64, None]):
         return None
 
     @override
-    def compute(self, timestamp: np.datetime64, inputs: tuple[Series], state: None) -> tuple[ArrayLike | None, None]:
+    def compute(self, timestamp: np.datetime64, inputs: tuple[Observable], state: None) -> tuple[ArrayLike | None, None]:
         (preds,) = inputs
         if not preds:
             return None, None

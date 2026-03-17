@@ -7,11 +7,12 @@ from typing import Any, override
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ..observable import Observable
 from ..operator import Operator
-from ..series import AnyShape, Series
+from ..series import AnyShape
 
 
-class Select[T: np.generic](Operator[tuple[Series[Any, T]], AnyShape, T, None]):
+class Select[T: np.generic](Operator[tuple[Observable[Any, T]], AnyShape, T, None]):
     """Selects indices along one axis, optionally dropping that axis.
 
     Mirrors NumPy indexing conventions:
@@ -40,7 +41,7 @@ class Select[T: np.generic](Operator[tuple[Series[Any, T]], AnyShape, T, None]):
 
     def __init__(
         self,
-        series: Series[Any, T],
+        series: Observable[Any, T],
         index: int | tuple[int, ...],
         *,
         axis: int = -1,
@@ -82,20 +83,18 @@ class Select[T: np.generic](Operator[tuple[Series[Any, T]], AnyShape, T, None]):
     def compute(
         self,
         timestamp: np.datetime64,
-        inputs: tuple[Series[Any, T]],
+        inputs: tuple[Observable[Any, T]],
         state: None,
     ) -> tuple[ArrayLike | None, None]:
-        (series,) = inputs
-        if not series:
-            return None, None
-        latest = series[-1]
+        (obs,) = inputs
+        latest = obs.last
         idx: list[Any] = [slice(None)] * latest.ndim
         idx[self._axis] = self._index
         return latest[tuple(idx)], None
 
 
 def select[T: np.generic](
-    series: Series[Any, T],
+    series: Observable[Any, T],
     index: int | tuple[int, ...],
     *,
     axis: int = -1,

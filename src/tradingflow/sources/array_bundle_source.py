@@ -44,6 +44,7 @@ class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
         values: ArrayLike,
         *,
         dtype: type[T] | np.dtype[T] | None = None,
+        initial: ArrayLike | None = None,
         name: str | None = None,
     ) -> None:
         ts = np.asarray(timestamps, dtype="datetime64[ns]")
@@ -59,7 +60,7 @@ class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
             raise ValueError(f"timestamps length {len(ts)} does not match values length {len(vals)}")
 
         shape = cast(Shape, vals.shape[1:])
-        super().__init__(shape, dt, name=name)
+        super().__init__(shape, dt, initial=initial, name=name)
         self._timestamps = cast(Array[tuple[int], np.datetime64], ts)
         self._values = cast("Array[tuple[int, *Shape], T]", vals)
 
@@ -70,10 +71,11 @@ class ArrayBundleSource[Shape: AnyShape, T: np.generic](Source[Shape, T]):
         values: ArrayLike,
         *,
         dtype: type[T] | np.dtype[T] | None = None,
+        initial: ArrayLike | None = None,
         name: str | None = None,
     ) -> ArrayBundleSource[Shape, T]:
         """Constructs from in-memory arrays."""
-        return cls(timestamps=timestamps, values=values, dtype=dtype, name=name)
+        return cls(timestamps=timestamps, values=values, dtype=dtype, initial=initial, name=name)
 
     @classmethod
     def from_pickle(

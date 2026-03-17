@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 use crate::operators;
 use crate::scenario::Scenario;
-use crate::series::{Series, SeriesHandle};
+use crate::series::Series;
 
 // ---------------------------------------------------------------------------
 // Python-visible result type
@@ -56,6 +56,7 @@ pub fn bench_add_compute<'py>(
     raw_b: PyReadonlyArray1<'py, f64>,
     timestamps_ns: PyReadonlyArray1<'py, i64>,
 ) -> NativeSeries {
+    use crate::observable::Observable;
     use crate::operator::Operator;
 
     let _ = py;
@@ -64,23 +65,23 @@ pub fn bench_add_compute<'py>(
     let ts = timestamps_ns.as_slice().unwrap();
     let n = a.len();
 
-    let mut sa = Series::with_capacity(&[], n);
-    let mut sb = Series::with_capacity(&[], n);
+    let mut obs_a = Observable::new(&[], &[0.0]);
+    let mut obs_b = Observable::new(&[], &[0.0]);
     let mut op = operators::add();
-    let mut out = Series::with_capacity(&[], n);
+    let mut out_series = Series::with_capacity(&[], n);
     let mut buf = [0.0f64; 1];
 
     for i in 0..n {
-        sa.append_unchecked(ts[i], &[a[i]]);
-        sb.append_unchecked(ts[i], &[b[i]]);
-        if op.compute(ts[i], &[&sa, &sb], &mut buf) {
-            out.append_unchecked(ts[i], &buf);
+        obs_a.write(&[a[i]]);
+        obs_b.write(&[b[i]]);
+        if op.compute(ts[i], &[&obs_a, &obs_b], &mut buf) {
+            out_series.append_unchecked(ts[i], &buf);
         }
     }
 
     NativeSeries {
-        timestamps: out.timestamps_to_vec(),
-        values: out.values_to_vec(),
+        timestamps: out_series.timestamps_to_vec(),
+        values: out_series.values_to_vec(),
     }
 }
 
@@ -99,20 +100,20 @@ pub fn bench_scenario_compute<'py>(
     let n = a.len();
 
     let mut sc = Scenario::new();
-    let ha: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
-    let hb: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
-    let ho: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
-    sc.add_apply(&[ha, hb], ho, operators::add());
+    let ha = sc.add_source::<f64>(&[], &[0.0]);
+    let hb = sc.add_source::<f64>(&[], &[0.0]);
+    let ho = sc.add_apply(&[ha, hb], operators::add());
+    let ho_series = sc.materialize_with_capacity::<f64>(ho, n);
 
     for i in 0..n {
         unsafe {
-            sc.series_mut(ha).append_unchecked(ts[i], &[a[i]]);
-            sc.series_mut(hb).append_unchecked(ts[i], &[b[i]]);
+            sc.observable_mut(ha).write(&[a[i]]);
+            sc.observable_mut(hb).write(&[b[i]]);
         }
         sc.flush(ts[i], &[ha.index, hb.index]);
     }
 
-    let out = unsafe { sc.series_ref(ho) };
+    let out = unsafe { sc.series_ref(ho_series) };
     NativeSeries {
         timestamps: out.timestamps_to_vec(),
         values: out.values_to_vec(),
@@ -264,27 +265,25 @@ pub fn bench_scenario_chain<'py>(
     let n = a.len();
 
     let mut sc = Scenario::new();
-    let ha: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
-    let hb: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
+    let ha = sc.add_source::<f64>(&[], &[0.0]);
+    let hb = sc.add_source::<f64>(&[], &[0.0]);
 
-    let mut prev: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
-    sc.add_apply(&[ha, hb], prev, operators::add());
+    let mut prev = sc.add_apply(&[ha, hb], operators::add());
     for i in 1..depth {
-        let next: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
         let other = if i % 2 == 0 { ha } else { hb };
-        sc.add_apply(&[prev, other], next, operators::add());
-        prev = next;
+        prev = sc.add_apply(&[prev, other], operators::add());
     }
+    let prev_series = sc.materialize_with_capacity::<f64>(prev, n);
 
     for i in 0..n {
         unsafe {
-            sc.series_mut(ha).append_unchecked(ts[i], &[a[i]]);
-            sc.series_mut(hb).append_unchecked(ts[i], &[b[i]]);
+            sc.observable_mut(ha).write(&[a[i]]);
+            sc.observable_mut(hb).write(&[b[i]]);
         }
         sc.flush(ts[i], &[ha.index, hb.index]);
     }
 
-    let out = unsafe { sc.series_ref(prev) };
+    let out = unsafe { sc.series_ref(prev_series) };
     NativeSeries {
         timestamps: out.timestamps_to_vec(),
         values: out.values_to_vec(),
@@ -309,44 +308,207 @@ pub fn bench_scenario_sparse<'py>(
     let n = a.len();
 
     let mut sc = Scenario::new();
-    let ha: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
-    let hb: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
-    let hc: SeriesHandle<f64> = sc.add_series_with_capacity(&[], 0);
-    let hd: SeriesHandle<f64> = sc.add_series_with_capacity(&[], 0);
+    let ha = sc.add_source::<f64>(&[], &[0.0]);
+    let hb = sc.add_source::<f64>(&[], &[0.0]);
+    let hc = sc.add_source::<f64>(&[], &[0.0]);
+    let hd = sc.add_source::<f64>(&[], &[0.0]);
 
     // Active chain
-    let mut last_active: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
-    sc.add_apply(&[ha, hb], last_active, operators::add());
+    let mut last_active = sc.add_apply(&[ha, hb], operators::add());
     for _ in 1..active_ops {
-        let next: SeriesHandle<f64> = sc.add_series_with_capacity(&[], n);
-        sc.add_apply(&[last_active, ha], next, operators::add());
-        last_active = next;
+        last_active = sc.add_apply(&[last_active, ha], operators::add());
     }
+    let last_active_series = sc.materialize_with_capacity::<f64>(last_active, n);
 
     // Inactive chain (never triggered)
     let inactive_count = total_ops.saturating_sub(active_ops);
     if inactive_count > 0 {
-        let mut prev: SeriesHandle<f64> = sc.add_series_with_capacity(&[], 0);
-        sc.add_apply(&[hc, hd], prev, operators::add());
+        let mut prev = sc.add_apply(&[hc, hd], operators::add());
         for _ in 1..inactive_count {
-            let next: SeriesHandle<f64> = sc.add_series_with_capacity(&[], 0);
-            sc.add_apply(&[prev, hc], next, operators::add());
-            prev = next;
+            prev = sc.add_apply(&[prev, hc], operators::add());
         }
     }
 
     for i in 0..n {
         unsafe {
-            sc.series_mut(ha).append_unchecked(ts[i], &[a[i]]);
-            sc.series_mut(hb).append_unchecked(ts[i], &[b[i]]);
+            sc.observable_mut(ha).write(&[a[i]]);
+            sc.observable_mut(hb).write(&[b[i]]);
         }
         sc.flush(ts[i], &[ha.index, hb.index]);
     }
 
-    let out = unsafe { sc.series_ref(last_active) };
+    let out = unsafe { sc.series_ref(last_active_series) };
     NativeSeries {
         timestamps: out.timestamps_to_vec(),
         values: out.values_to_vec(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observable-only variants (no materialization — measures overhead savings)
+// ---------------------------------------------------------------------------
+
+/// Direct operator compute loop, output stays as observable (no Series).
+#[pyfunction]
+pub fn bench_add_compute_obs<'py>(
+    py: Python<'py>,
+    raw_a: PyReadonlyArray1<'py, f64>,
+    raw_b: PyReadonlyArray1<'py, f64>,
+    timestamps_ns: PyReadonlyArray1<'py, i64>,
+) -> NativeSeries {
+    use crate::observable::Observable;
+    use crate::operator::Operator;
+
+    let _ = py;
+    let a = raw_a.as_slice().unwrap();
+    let b = raw_b.as_slice().unwrap();
+    let ts = timestamps_ns.as_slice().unwrap();
+    let n = a.len();
+
+    let mut obs_a = Observable::new(&[], &[0.0]);
+    let mut obs_b = Observable::new(&[], &[0.0]);
+    let mut obs_out = Observable::new(&[], &[0.0]);
+    let mut op = operators::add();
+
+    for i in 0..n {
+        obs_a.write(&[a[i]]);
+        obs_b.write(&[b[i]]);
+        op.compute(ts[i], &[&obs_a, &obs_b], obs_out.vals_mut());
+    }
+
+    // Return only the last value for verification.
+    NativeSeries {
+        timestamps: vec![ts[n - 1]],
+        values: vec![obs_out.last()[0]],
+    }
+}
+
+/// Scenario single add, output NOT materialized.
+#[pyfunction]
+pub fn bench_scenario_compute_obs<'py>(
+    py: Python<'py>,
+    raw_a: PyReadonlyArray1<'py, f64>,
+    raw_b: PyReadonlyArray1<'py, f64>,
+    timestamps_ns: PyReadonlyArray1<'py, i64>,
+) -> NativeSeries {
+    let _ = py;
+    let a = raw_a.as_slice().unwrap();
+    let b = raw_b.as_slice().unwrap();
+    let ts = timestamps_ns.as_slice().unwrap();
+    let n = a.len();
+
+    let mut sc = Scenario::new();
+    let ha = sc.add_source::<f64>(&[], &[0.0]);
+    let hb = sc.add_source::<f64>(&[], &[0.0]);
+    let ho = sc.add_apply(&[ha, hb], operators::add());
+    // No materialize — output is observable only.
+
+    for i in 0..n {
+        unsafe {
+            sc.observable_mut(ha).write(&[a[i]]);
+            sc.observable_mut(hb).write(&[b[i]]);
+        }
+        sc.flush(ts[i], &[ha.index, hb.index]);
+    }
+
+    let out = unsafe { sc.observable_ref(ho) };
+    NativeSeries {
+        timestamps: vec![ts[n - 1]],
+        values: vec![out.last()[0]],
+    }
+}
+
+/// Scenario chain of `depth` add operators, NO materialization anywhere.
+#[pyfunction]
+pub fn bench_scenario_chain_obs<'py>(
+    py: Python<'py>,
+    raw_a: PyReadonlyArray1<'py, f64>,
+    raw_b: PyReadonlyArray1<'py, f64>,
+    timestamps_ns: PyReadonlyArray1<'py, i64>,
+    depth: usize,
+) -> NativeSeries {
+    let _ = py;
+    let a = raw_a.as_slice().unwrap();
+    let b = raw_b.as_slice().unwrap();
+    let ts = timestamps_ns.as_slice().unwrap();
+    let n = a.len();
+
+    let mut sc = Scenario::new();
+    let ha = sc.add_source::<f64>(&[], &[0.0]);
+    let hb = sc.add_source::<f64>(&[], &[0.0]);
+
+    let mut prev = sc.add_apply(&[ha, hb], operators::add());
+    for i in 1..depth {
+        let other = if i % 2 == 0 { ha } else { hb };
+        prev = sc.add_apply(&[prev, other], operators::add());
+    }
+    // No materialize — all nodes are observable only.
+
+    for i in 0..n {
+        unsafe {
+            sc.observable_mut(ha).write(&[a[i]]);
+            sc.observable_mut(hb).write(&[b[i]]);
+        }
+        sc.flush(ts[i], &[ha.index, hb.index]);
+    }
+
+    let out = unsafe { sc.observable_ref(prev) };
+    NativeSeries {
+        timestamps: vec![ts[n - 1]],
+        values: vec![out.last()[0]],
+    }
+}
+
+/// Sparse graph, NO materialization anywhere.
+#[pyfunction]
+pub fn bench_scenario_sparse_obs<'py>(
+    py: Python<'py>,
+    raw_a: PyReadonlyArray1<'py, f64>,
+    raw_b: PyReadonlyArray1<'py, f64>,
+    timestamps_ns: PyReadonlyArray1<'py, i64>,
+    total_ops: usize,
+    active_ops: usize,
+) -> NativeSeries {
+    let _ = py;
+    let a = raw_a.as_slice().unwrap();
+    let b = raw_b.as_slice().unwrap();
+    let ts = timestamps_ns.as_slice().unwrap();
+    let n = a.len();
+
+    let mut sc = Scenario::new();
+    let ha = sc.add_source::<f64>(&[], &[0.0]);
+    let hb = sc.add_source::<f64>(&[], &[0.0]);
+    let hc = sc.add_source::<f64>(&[], &[0.0]);
+    let hd = sc.add_source::<f64>(&[], &[0.0]);
+
+    // Active chain
+    let mut last_active = sc.add_apply(&[ha, hb], operators::add());
+    for _ in 1..active_ops {
+        last_active = sc.add_apply(&[last_active, ha], operators::add());
+    }
+    // No materialize.
+
+    // Inactive chain (never triggered)
+    let inactive_count = total_ops.saturating_sub(active_ops);
+    if inactive_count > 0 {
+        let mut prev = sc.add_apply(&[hc, hd], operators::add());
+        for _ in 1..inactive_count {
+            prev = sc.add_apply(&[prev, hc], operators::add());
+        }
+    }
+
+    for i in 0..n {
+        unsafe {
+            sc.observable_mut(ha).write(&[a[i]]);
+            sc.observable_mut(hb).write(&[b[i]]);
+        }
+        sc.flush(ts[i], &[ha.index, hb.index]);
+    }
+
+    let out = unsafe { sc.observable_ref(last_active) };
+    NativeSeries {
+        timestamps: vec![ts[n - 1]],
+        values: vec![out.last()[0]],
     }
 }
 
@@ -360,5 +522,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(bench_add_loop_fnptr, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(bench_scenario_chain, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(bench_scenario_sparse, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(bench_add_compute_obs, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(bench_scenario_compute_obs, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(bench_scenario_chain_obs, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(bench_scenario_sparse_obs, m)?)?;
     Ok(())
 }

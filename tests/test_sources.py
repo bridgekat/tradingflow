@@ -36,7 +36,8 @@ class TestCSVSource:
             converters={"price_text": float},
         )
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
+        series = scenario.materialize(obs)
         asyncio.run(scenario.run())
 
         assert list(series.index) == [ts(1), ts(2)]
@@ -82,7 +83,8 @@ class TestArrayBundleSource:
         )
 
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
+        series = scenario.materialize(obs)
         asyncio.run(scenario.run())
         assert list(series.index) == [ts(1), ts(2)]
         assert list(series.values) == pytest.approx([1.0, 2.0])
@@ -97,7 +99,8 @@ class TestArrayBundleSource:
 
         source = ArrayBundleSource.from_pickle(path)
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
+        series = scenario.materialize(obs)
         asyncio.run(scenario.run())
 
         assert list(series.index) == [ts(3), ts(4)]
@@ -120,7 +123,8 @@ class TestAsyncCallableSource:
 
         source = AsyncCallableSource((), np.float64, stream)
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
+        series = scenario.materialize(obs)
         asyncio.run(scenario.run())
 
         assert len(series) == 3

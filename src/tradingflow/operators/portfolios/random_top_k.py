@@ -12,10 +12,11 @@ from typing import override
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ... import Operator, Series
+from ... import Operator
+from ...observable import Observable
 
 
-class RandomTopK(Operator[tuple[Series], tuple[int], np.float64, np.random.Generator]):
+class RandomTopK(Operator[tuple[Observable], tuple[int], np.float64, np.random.Generator]):
     """Randomly selects *select_k* assets from the top *top_frac* percentile.
 
     At each update, the top `ceil(top_frac * N)` assets by predicted value
@@ -43,7 +44,7 @@ class RandomTopK(Operator[tuple[Series], tuple[int], np.float64, np.random.Gener
 
     def __init__(
         self,
-        predictions: Series,
+        predictions: Observable,
         top_frac: float = 0.1,
         select_k: int = 20,
         seed: int = 42,
@@ -62,7 +63,7 @@ class RandomTopK(Operator[tuple[Series], tuple[int], np.float64, np.random.Gener
     def compute(
         self,
         timestamp: np.datetime64,
-        inputs: tuple[Series],
+        inputs: tuple[Observable],
         state: np.random.Generator,
     ) -> tuple[ArrayLike | None, np.random.Generator]:
         (preds,) = inputs

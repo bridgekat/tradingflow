@@ -26,6 +26,7 @@ This file is kept short and concise. It provides initial context for all agentic
 ## Code Style
 
 - Add Python 3.12+ type annotations except for overly complex types or overloads.
+- All Python docstrings follow `mkdocstrings` syntax and `numpy` style.
 
 ## Scope
 

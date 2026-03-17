@@ -1,4 +1,5 @@
-//! Apply operator — applies a closure to the latest values of N input series.
+//! Apply operator — applies a closure to the latest values of N input
+//! observables.
 //!
 //! This is the workhorse operator for element-wise arithmetic.  The closure
 //! receives `&[&[T]]` (one slice per input, each of length = stride) and
@@ -7,8 +8,8 @@
 use std::marker::PhantomData;
 use std::ops;
 
+use crate::observable::Observable;
 use crate::operator::Operator;
-use crate::series::Series;
 
 /// Stateless operator that applies `F` to the latest values of its inputs.
 pub struct Apply<T: Copy, F: Fn(&[&[T]], &mut [T])> {
@@ -27,7 +28,7 @@ impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Apply<T, F> {
 
 impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Operator for Apply<T, F> {
     type Inputs<'a>
-        = &'a [&'a Series<T>]
+        = &'a [&'a Observable<T>]
     where
         Self: 'a;
     type Output = T;
@@ -36,24 +37,19 @@ impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Operator for Apply<T, F> {
     fn compute(
         &mut self,
         _timestamp: i64,
-        inputs: &[&Series<T>],
+        inputs: &[&Observable<T>],
         out: &mut [T],
     ) -> bool {
-        // All inputs must have at least one element.
-        for s in inputs {
-            if s.is_empty() {
-                return false;
-            }
-        }
+        // Observables always have values — no emptiness check needed.
         // Gather last-value slices.  Stack-allocate up to 8 inputs.
         let mut buf = [&[] as &[T]; 8];
         if inputs.len() <= 8 {
-            for (i, s) in inputs.iter().enumerate() {
-                buf[i] = s.last();
+            for (i, obs) in inputs.iter().enumerate() {
+                buf[i] = obs.last();
             }
             (self.func)(&buf[..inputs.len()], out);
         } else {
-            let v: Vec<&[T]> = inputs.iter().map(|s| s.last()).collect();
+            let v: Vec<&[T]> = inputs.iter().map(|o| o.last()).collect();
             (self.func)(&v, out);
         }
         true
@@ -64,7 +60,7 @@ impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Operator for Apply<T, F> {
 // Factory functions for common arithmetic operators
 // ---------------------------------------------------------------------------
 
-/// Element-wise addition of two series.
+/// Element-wise addition of two observables.
 pub fn add<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
 where
     T: Copy + ops::Add<Output = T>,
@@ -77,7 +73,7 @@ where
     })
 }
 
-/// Element-wise subtraction of two series.
+/// Element-wise subtraction of two observables.
 pub fn subtract<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
 where
     T: Copy + ops::Sub<Output = T>,
@@ -90,7 +86,7 @@ where
     })
 }
 
-/// Element-wise multiplication of two series.
+/// Element-wise multiplication of two observables.
 pub fn multiply<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
 where
     T: Copy + ops::Mul<Output = T>,
@@ -103,7 +99,7 @@ where
     })
 }
 
-/// Element-wise division of two series.
+/// Element-wise division of two observables.
 pub fn divide<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
 where
     T: Copy + ops::Div<Output = T>,
@@ -116,7 +112,7 @@ where
     })
 }
 
-/// Element-wise negation of a series.
+/// Element-wise negation of an observable.
 pub fn negate<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
 where
     T: Copy + ops::Neg<Output = T>,
@@ -136,15 +132,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::series::Series;
+    use crate::observable::Observable;
 
-    fn make_pair() -> (Series<f64>, Series<f64>) {
-        let mut a = Series::new(&[]);
-        let mut b = Series::new(&[]);
-        a.append_unchecked(1, &[10.0]);
-        a.append_unchecked(2, &[20.0]);
-        b.append_unchecked(1, &[3.0]);
-        b.append_unchecked(2, &[7.0]);
+    fn make_pair() -> (Observable<f64>, Observable<f64>) {
+        let a = Observable::new(&[], &[20.0]);
+        let b = Observable::new(&[], &[7.0]);
         (a, b)
     }
 
@@ -154,7 +146,7 @@ mod tests {
         let mut op = add::<f64>();
         let mut out = [0.0];
         assert!(op.compute(2, &[&a, &b], &mut out));
-        assert_eq!(out, [27.0]); // last values: 20 + 7
+        assert_eq!(out, [27.0]); // 20 + 7
     }
 
     #[test]
@@ -167,20 +159,20 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_input_returns_false() {
-        let a = Series::<f64>::new(&[]);
-        let b = Series::<f64>::new(&[]);
+    fn test_always_produces_output() {
+        // Observables always have values, so compute always returns true.
+        let a = Observable::<f64>::new(&[], &[0.0]);
+        let b = Observable::<f64>::new(&[], &[0.0]);
         let mut op = add::<f64>();
         let mut out = [0.0];
-        assert!(!op.compute(0, &[&a, &b], &mut out));
+        assert!(op.compute(0, &[&a, &b], &mut out));
+        assert_eq!(out, [0.0]); // 0.0 + 0.0
     }
 
     #[test]
     fn test_strided_add() {
-        let mut a = Series::new(&[2]);
-        let mut b = Series::new(&[2]);
-        a.append_unchecked(1, &[1.0, 2.0]);
-        b.append_unchecked(1, &[10.0, 20.0]);
+        let a = Observable::new(&[2], &[1.0, 2.0]);
+        let b = Observable::new(&[2], &[10.0, 20.0]);
         let mut op = add::<f64>();
         let mut out = [0.0, 0.0];
         assert!(op.compute(1, &[&a, &b], &mut out));

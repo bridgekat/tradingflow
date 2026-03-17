@@ -202,54 +202,14 @@ impl<T: Copy> Drop for Series<T> {
 }
 
 // ---------------------------------------------------------------------------
-// ErasedSeries
-// ---------------------------------------------------------------------------
-
-/// Type-erased wrapper around a heap-allocated `Series<T>`.
-///
-/// The actual `Series<T>` lives behind `ptr`; `drop_fn` knows the concrete
-/// type and is called on drop.  This is the C-style `void*` pattern — all
-/// type checking happens at registration time via [`SeriesHandle<T>`].
-pub(crate) struct ErasedSeries {
-    pub(crate) ptr: *mut u8,
-    drop_fn: unsafe fn(*mut u8),
-}
-
-impl ErasedSeries {
-    pub(crate) fn new<T: Copy>(shape: &[usize]) -> Self {
-        Self {
-            ptr: Box::into_raw(Box::new(Series::<T>::new(shape))) as *mut u8,
-            drop_fn: drop_series::<T>,
-        }
-    }
-
-    pub(crate) fn with_capacity<T: Copy>(shape: &[usize], cap: usize) -> Self {
-        Self {
-            ptr: Box::into_raw(Box::new(Series::<T>::with_capacity(shape, cap))) as *mut u8,
-            drop_fn: drop_series::<T>,
-        }
-    }
-}
-
-impl Drop for ErasedSeries {
-    fn drop(&mut self) {
-        // SAFETY: `drop_fn` matches the concrete type that was used to create `ptr`.
-        unsafe { (self.drop_fn)(self.ptr) }
-    }
-}
-
-unsafe fn drop_series<T: Copy>(ptr: *mut u8) {
-    unsafe { drop(Box::from_raw(ptr as *mut Series<T>)) };
-}
-
-// ---------------------------------------------------------------------------
 // SeriesHandle<T>
 // ---------------------------------------------------------------------------
 
-/// Zero-cost typed handle into a [`Scenario`]'s series storage.
+/// Zero-cost typed handle proving that a node has been materialized.
 ///
-/// Carries the series index and a `PhantomData<T>` for compile-time type
-/// checking at registration.  At runtime it is just a `usize`.
+/// Only constructible via [`Scenario::materialize`].  Carries the node index
+/// and a `PhantomData<T>` for compile-time type checking.  At runtime it is
+/// just a `usize`.
 pub struct SeriesHandle<T: Copy> {
     pub(crate) index: usize,
     _phantom: PhantomData<T>,

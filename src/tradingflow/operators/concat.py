@@ -7,11 +7,12 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ..observable import Observable
 from ..operator import Operator
-from ..series import AnyShape, Series
+from ..series import AnyShape
 
 
-class Concat[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, None]):
+class Concat[T: np.generic](Operator[tuple[Observable[Any, T], ...], AnyShape, T, None]):
     """Concatenates N series along an existing axis.
 
     Mirrors [`numpy.concatenate`][]: all inputs must have at least one
@@ -37,7 +38,7 @@ class Concat[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, No
 
     __slots__ = ("_axis",)
 
-    def __init__(self, inputs: list[Series[Any, T]], *, axis: int = 0) -> None:
+    def __init__(self, inputs: list[Observable[Any, T]], *, axis: int = 0) -> None:
         if not inputs:
             raise ValueError("Concat requires at least one input series.")
 
@@ -73,15 +74,12 @@ class Concat[T: np.generic](Operator[tuple[Series[Any, T], ...], AnyShape, T, No
     def compute(
         self,
         timestamp: np.datetime64,
-        inputs: tuple[Series[Any, T], ...],
+        inputs: tuple[Observable[Any, T], ...],
         state: None,
     ) -> tuple[ArrayLike | None, None]:
         parts: list[np.ndarray] = []
 
-        for series in inputs:
-            if not series:
-                parts.append(np.full(series.shape, np.nan, dtype=self.dtype))
-            else:
-                parts.append(series.last)
+        for obs in inputs:
+            parts.append(obs.last)
 
         return np.concatenate(parts, axis=self._axis), None

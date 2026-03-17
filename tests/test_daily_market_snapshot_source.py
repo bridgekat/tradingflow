@@ -28,7 +28,8 @@ class TestDailyMarketSnapshotCSVSource:
 
         source = DailyMarketSnapshotCSVSource(path)
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
+        series = scenario.materialize(obs)
         asyncio.run(scenario.run())
 
         assert len(series) == 1
@@ -63,7 +64,8 @@ class TestDailyMarketSnapshotCSVSource:
 
         source = DailyMarketSnapshotCSVSource(path, strict_row_checks=False)
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
+        series = scenario.materialize(obs)
         asyncio.run(scenario.run())
 
         assert len(series) == 1
@@ -93,9 +95,10 @@ class TestDailyMarketSnapshotCSVSource:
 
         source = DailyMarketSnapshotCSVSource(path)
         scenario = Scenario()
-        series = scenario.add_source(source)
+        obs = scenario.add_source(source)
         close_index = source.schema.field_index["close"]
-        close_output = scenario.add_operator(select(series, (close_index,)))
+        close_obs = scenario.add_operator(select(obs, (close_index,)))
+        close_output = scenario.materialize(close_obs)
 
         asyncio.run(scenario.run())
 

@@ -21,7 +21,7 @@ class TestScenario:
     def test_run_updates_only_affected_downstream_chain(self) -> None:
         """Operators only recompute when at least one of their inputs changed.
 
-        Graph: a, b, c → add(a, b) → multiply(sum, c) → negate(scaled)
+        Graph: a, b, c -> add(a, b) -> multiply(sum, c) -> negate(scaled)
 
         * `sum`    fires whenever a or b updates (t=1, t=2).
         * `scaled` fires whenever sum or c updates (t=1, t=2, t=3).
@@ -52,9 +52,14 @@ class TestScenario:
         b = scenario.add_source(source_b)
         c = scenario.add_source(source_c)
 
-        sum_series = scenario.add_operator(add(a, b))
-        scaled_series = scenario.add_operator(multiply(sum_series, c))
-        neg_series = scenario.add_operator(negate(scaled_series))
+        sum_obs = scenario.add_operator(add(a, b))
+        scaled_obs = scenario.add_operator(multiply(sum_obs, c))
+        neg_obs = scenario.add_operator(negate(scaled_obs))
+
+        sum_series = scenario.materialize(sum_obs)
+        scaled_series = scenario.materialize(scaled_obs)
+        neg_series = scenario.materialize(neg_obs)
+
         asyncio.run(scenario.run())
 
         assert list(sum_series.index) == [ts(1), ts(2)]
@@ -83,7 +88,8 @@ class TestScenario:
         scenario = Scenario()
         a = scenario.add_source(source_a)
         b = scenario.add_source(source_b)
-        sum_series = scenario.add_operator(add(a, b))
+        sum_obs = scenario.add_operator(add(a, b))
+        sum_series = scenario.materialize(sum_obs)
 
         asyncio.run(scenario.run())
         assert list(sum_series.index) == [ts(1)]
@@ -147,11 +153,12 @@ class TestScenario:
             sources.append(ArrayBundleSource.from_arrays(timestamps=raw_ts, values=values, name=f"src_{i}"))
 
         scenario = Scenario()
-        series = [scenario.add_source(src) for src in sources]
-        result = scenario.add_operator(add(series[0], series[1]))
-        for s in series[2:]:
-            result = scenario.add_operator(add(result, s))
+        obs_list = [scenario.add_source(src) for src in sources]
+        result_obs = scenario.add_operator(add(obs_list[0], obs_list[1]))
+        for o in obs_list[2:]:
+            result_obs = scenario.add_operator(add(result_obs, o))
 
+        result = scenario.materialize(result_obs)
         asyncio.run(scenario.run())
 
         assert len(result.index) > 0
@@ -164,9 +171,10 @@ class TestScenario:
     def test_two_random_sources_add_matches_simulation(self) -> None:
         """`add(A, B)` output matches a pure-Python reference simulation of the POCQ.
 
+        With observables, both inputs always have a value (initialized to NaN for floats).
         The reference model iterates the union of both sources' timestamps in order,
-        tracking the last known value for each source and emitting `last_a + last_b`
-        once both have been seen at least once.  The scenario result must agree
+        tracking the last known value for each source (starting at NaN) and emitting
+        `last_a + last_b` at every timestamp.  The scenario result must agree
         exactly on both timestamps and values.
         """
         rng = np.random.default_rng(99)
@@ -176,21 +184,21 @@ class TestScenario:
         vals_a = rng.uniform(0.0, 5.0, size=len(raw_ts_a))
         vals_b = rng.uniform(0.0, 5.0, size=len(raw_ts_b))
 
-        # Reference simulation: at each timestamp in the union, track last known values.
+        # Reference simulation: observables start at NaN (float source default).
         events_a = dict(zip(raw_ts_a.tolist(), vals_a.tolist()))
         events_b = dict(zip(raw_ts_b.tolist(), vals_b.tolist()))
         all_ts_raw = sorted(set(raw_ts_a.tolist()) | set(raw_ts_b.tolist()))
         exp_ts: list[np.datetime64] = []
         exp_vals: list[float] = []
-        last_a = last_b = None
+        last_a = np.nan
+        last_b = np.nan
         for t in all_ts_raw:
             if t in events_a:
                 last_a = events_a[t]
             if t in events_b:
                 last_b = events_b[t]
-            if last_a is not None and last_b is not None:
-                exp_ts.append(np.datetime64(t, "ns"))
-                exp_vals.append(last_a + last_b)
+            exp_ts.append(np.datetime64(t, "ns"))
+            exp_vals.append(last_a + last_b)
 
         src_a = ArrayBundleSource.from_arrays(
             timestamps=raw_ts_a.astype("datetime64[ns]"),
@@ -206,21 +214,21 @@ class TestScenario:
         scenario = Scenario()
         a = scenario.add_source(src_a)
         b = scenario.add_source(src_b)
-        result = scenario.add_operator(add(a, b))
+        result_obs = scenario.add_operator(add(a, b))
+        result = scenario.materialize(result_obs)
         asyncio.run(scenario.run())
 
         assert list(result.index) == exp_ts
-        assert list(result.values) == pytest.approx(exp_vals)
+        np.testing.assert_array_equal(list(result.values), exp_vals)
 
     def test_interleaved_sources_trigger_output_at_every_timestamp(self) -> None:
-        """Every timestamp fires an operator output once both inputs have been seen.
+        """Every timestamp fires an operator output.
 
         Source A emits at odd nanoseconds [1, 3, 5, 7, 9] and source B at even
-        nanoseconds [2, 4, 6, 8, 10].  `add(A, B)` cannot fire at t=1 because B
-        has no value yet, but from t=2 onward every new event from either source
-        triggers a recompute using the last known value of the other input.  The
-        expected output therefore spans t=2..10 with carry-forward semantics verified
-        at each step.
+        nanoseconds [2, 4, 6, 8, 10].  With observables (initialized to NaN),
+        `add(A, B)` fires at every timestamp because observables always have a
+        value.  At t=1 only A has updated but B's observable is NaN, so the output
+        is `a + NaN`.  From t=2 onward the carry-forward semantics apply.
         """
         # A fires at odd nanoseconds, B fires at even nanoseconds.
         ts_a = np.array([1, 3, 5, 7, 9], dtype="datetime64[ns]")
@@ -231,13 +239,16 @@ class TestScenario:
         scenario = Scenario()
         a = scenario.add_source(ArrayBundleSource.from_arrays(timestamps=ts_a, values=vals_a, name="a"))
         b = scenario.add_source(ArrayBundleSource.from_arrays(timestamps=ts_b, values=vals_b, name="b"))
-        result = scenario.add_operator(add(a, b))
+        result_obs = scenario.add_operator(add(a, b))
+        result = scenario.materialize(result_obs)
         asyncio.run(scenario.run())
 
-        # t=1: only A known → no output yet.
-        # From t=2 onward both are known, so every timestamp fires.
-        expected_ts = np.array([2, 3, 4, 5, 6, 7, 8, 9, 10], dtype="datetime64[ns]")
+        # t=1: a=1.0, b_obs=NaN -> output NaN (NaN propagation)
+        # t=2: a_last=1.0, b=10.0 -> output 11.0
+        # From t=2 onward both have been seen.
+        expected_ts = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype="datetime64[ns]")
         expected_vals = [
+            np.nan,       # t=1:  a=1,      b_obs=NaN (initial)
             1.0 + 10.0,  # t=2:  a_last=1, b=10
             2.0 + 10.0,  # t=3:  a=2,      b_last=10
             2.0 + 20.0,  # t=4:  a_last=2, b=20
@@ -250,7 +261,7 @@ class TestScenario:
         ]
 
         assert list(result.index) == list(expected_ts)
-        assert list(result.values) == pytest.approx(expected_vals)
+        np.testing.assert_array_equal(list(result.values), expected_vals)
 
     def test_same_source_added_twice_creates_independent_nodes(self) -> None:
         """The same source object registered twice creates two fully independent graph nodes.
@@ -265,12 +276,17 @@ class TestScenario:
             values=np.array([10.0, 20.0, 30.0]),
         )
         scenario = Scenario()
-        s1 = scenario.add_source(source)
-        s2 = scenario.add_source(source)
+        o1 = scenario.add_source(source)
+        o2 = scenario.add_source(source)
 
-        assert s1 is not s2
+        assert o1 is not o2
 
-        result = scenario.add_operator(add(s1, s2))
+        result_obs = scenario.add_operator(add(o1, o2))
+
+        s1 = scenario.materialize(o1)
+        s2 = scenario.materialize(o2)
+        result = scenario.materialize(result_obs)
+
         asyncio.run(scenario.run())
 
         # Both nodes should receive the full data independently.
@@ -297,10 +313,13 @@ class TestScenario:
         scenario = Scenario()
         s = scenario.add_source(source)
         neg_op = negate(s)
-        r1 = scenario.add_operator(neg_op)
-        r2 = scenario.add_operator(neg_op)
+        r1_obs = scenario.add_operator(neg_op)
+        r2_obs = scenario.add_operator(neg_op)
 
-        assert r1 is not r2
+        assert r1_obs is not r2_obs
+
+        r1 = scenario.materialize(r1_obs)
+        r2 = scenario.materialize(r2_obs)
 
         asyncio.run(scenario.run())
 
@@ -328,9 +347,10 @@ class TestScenario:
 
         def build_and_run() -> tuple[list, list]:
             scenario = Scenario()
-            series = [scenario.add_source(src) for src in sources]
-            partial = scenario.add_operator(add(series[0], series[1]))
-            result = scenario.add_operator(add(partial, series[2]))
+            obs_list = [scenario.add_source(src) for src in sources]
+            partial = scenario.add_operator(add(obs_list[0], obs_list[1]))
+            result_obs = scenario.add_operator(add(partial, obs_list[2]))
+            result = scenario.materialize(result_obs)
             asyncio.run(scenario.run())
             return list(result.index), list(result.values)
 
@@ -338,7 +358,7 @@ class TestScenario:
         ts2, vals2 = build_and_run()
 
         assert ts1 == ts2
-        assert vals1 == pytest.approx(vals2)
+        np.testing.assert_array_equal(vals1, vals2)
 
     def test_operator_returning_none_stops_downstream_propagation(self) -> None:
         """An operator returning `None` suppresses its output and halts downstream propagation.
@@ -364,7 +384,7 @@ class TestScenario:
                 return None
 
             def compute(self, timestamp: np.datetime64, inputs: object, state: None) -> tuple:
-                val = float(inputs[0][-1])  # type: ignore[index]
+                val = float(inputs[0].last)  # type: ignore[index]
                 return (None, None) if val > 0 else (np.float64(val), None)
 
         source = ArrayBundleSource.from_arrays(
@@ -373,13 +393,17 @@ class TestScenario:
         )
         scenario = Scenario()
         s = scenario.add_source(source)
-        filtered = scenario.add_operator(_FilterPositive(s))
-        downstream = scenario.add_operator(negate(filtered))
+        filtered_obs = scenario.add_operator(_FilterPositive(s))
+        downstream_obs = scenario.add_operator(negate(filtered_obs))
+
+        filtered = scenario.materialize(filtered_obs)
+        downstream = scenario.materialize(downstream_obs)
+
         asyncio.run(scenario.run())
 
-        # t=1: -1.0 passes through → filtered emits, downstream emits
-        # t=2:  2.0 is positive  → filtered returns None → no entry, downstream silent
-        # t=3: -3.0 passes through → filtered emits, downstream emits
+        # t=1: -1.0 passes through -> filtered emits, downstream emits
+        # t=2:  2.0 is positive  -> filtered returns None -> no entry, downstream silent
+        # t=3: -3.0 passes through -> filtered emits, downstream emits
         assert list(filtered.index) == [ts(1), ts(3)]
         assert list(filtered.values) == pytest.approx([-1.0, -3.0])
         assert list(downstream.index) == [ts(1), ts(3)]
