@@ -1,8 +1,6 @@
-# See: https://github.com/pypa/sampleproject/blob/main/pyproject.toml
-
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "tradingflow"
@@ -17,8 +15,10 @@ dev = ["pytest>=7.0"]
 docs = ["zensical", "mkdocstrings-python"]
 viz = ["matplotlib", "streamlit[charts]"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.maturin]
+features = ["pyo3/extension-module", "python"]
+python-source = "python"
+module-name = "tradingflow._native"
 
 [tool.black]
 line-length = 120

@@ -9,8 +9,8 @@ AnyShape
 Array[Shape, T]
     `np.ndarray[Shape, np.dtype[T]]`; shorthand for array types.
 
-Core classes
-------------
+Classes
+-------
 Observable[Shape, T]
     Latest-value container.  Every source and operator produces an observable.
 Series[Shape, T]

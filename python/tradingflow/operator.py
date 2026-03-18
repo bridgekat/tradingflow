@@ -19,7 +19,7 @@ from numpy.typing import ArrayLike
 
 from .series import AnyShape, Series
 
-from tradingflow_native import NativeOpHandle
+from tradingflow._native import NativeOpHandle
 
 
 class Operator[Inputs, Shape: AnyShape, T: np.generic, State](ABC):

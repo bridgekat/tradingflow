@@ -10,6 +10,12 @@ dist/
 .eggs/
 *.egg
 site/
+/target/
+
+# Native extension artifacts
+*.pyd
+*.so
+*.dylib
 
 # Virtual environments
 .venv/

@@ -2,7 +2,7 @@
 
 [`Scenario`][tradingflow.Scenario] specifies a directed acyclic graph of
 sources and operators.  The POCQ event loop and DAG propagation are
-implemented in Rust (``tradingflow_native``).  Python sources are driven
+implemented in Rust (``tradingflow._native``).  Python sources are driven
 concurrently on a background asyncio thread; events flow through channels
 to the Rust runtime on the main thread.
 
@@ -32,7 +32,7 @@ from .operator import NativeOperator, Operator
 from .series import Series
 from .source import Source
 
-from tradingflow_native import NativeScenario
+from tradingflow._native import NativeScenario
 
 type _AnyObservable = Observable[Any, Any]
 type _AnySeries = Series[Any, Any]

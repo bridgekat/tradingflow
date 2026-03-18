@@ -18,7 +18,7 @@ import numpy as np
 from ..observable import Observable
 from ..operator import Operator, NativeOperator
 
-from tradingflow_native import (
+from tradingflow._native import (
     add as _rust_add,
     subtract as _rust_subtract,
     multiply as _rust_multiply,

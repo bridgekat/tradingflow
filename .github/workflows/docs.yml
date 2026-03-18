@@ -18,13 +18,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/configure-pages@v5
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.x
-      - run: pip install -e ".[docs]"
+          python-version: '3.13'
+
+      # Build the Python package (maturin compiles Rust + installs Python)
+      - run: python -m pip install -e ".[docs]"
+
+      # Python docs (Zensical → site/)
       - run: zensical build --clean
+
+      # Rust docs (cargo doc → site/native/)
+      - run: cargo doc --no-deps --features python
+      - run: cp -r target/doc site/native
+
+      # Upload to GitHub Pages
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site

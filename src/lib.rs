@@ -11,13 +11,18 @@
 //! When compiled with the `python` feature, the crate also produces a PyO3
 //! `cdylib` exposing the runtime to Python.
 
-pub mod observable;
-pub mod series;
 pub mod input;
+pub mod observable;
 pub mod operator;
 pub mod operators;
 pub mod scenario;
+pub mod series;
 pub mod source;
+
+pub use observable::Observable;
+pub use operator::Operator;
+pub use scenario::Scenario;
+pub use series::Series;
 
 #[cfg(feature = "python")]
 mod bench;
@@ -29,7 +34,7 @@ use pyo3::prelude::*;
 
 #[cfg(feature = "python")]
 #[pymodule]
-fn tradingflow_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     bench::register(m)?;
     bridge::register(m)?;
     Ok(())

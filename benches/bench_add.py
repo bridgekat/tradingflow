@@ -20,17 +20,17 @@ from tradingflow.operators import add as py_add
 from tradingflow.operators.apply import Apply
 from tradingflow.sources import ArrayBundleSource
 
-from tradingflow_native import bench_add_compute as _rust_add_compute
-from tradingflow_native import bench_add_compute_obs as _rust_add_compute_obs
-from tradingflow_native import bench_add_loop as _rust_add_loop
-from tradingflow_native import bench_add_loop_interleaved as _rust_add_loop_interleaved
-from tradingflow_native import bench_add_loop_fnptr as _rust_add_loop_fnptr
-from tradingflow_native import bench_scenario_compute as _rust_scenario_compute
-from tradingflow_native import bench_scenario_compute_obs as _rust_scenario_compute_obs
-from tradingflow_native import bench_scenario_chain as _rust_scenario_chain
-from tradingflow_native import bench_scenario_chain_obs as _rust_scenario_chain_obs
-from tradingflow_native import bench_scenario_sparse as _rust_scenario_sparse
-from tradingflow_native import bench_scenario_sparse_obs as _rust_scenario_sparse_obs
+from tradingflow._native import bench_add_compute as _rust_add_compute
+from tradingflow._native import bench_add_compute_obs as _rust_add_compute_obs
+from tradingflow._native import bench_add_loop as _rust_add_loop
+from tradingflow._native import bench_add_loop_interleaved as _rust_add_loop_interleaved
+from tradingflow._native import bench_add_loop_fnptr as _rust_add_loop_fnptr
+from tradingflow._native import bench_scenario_compute as _rust_scenario_compute
+from tradingflow._native import bench_scenario_compute_obs as _rust_scenario_compute_obs
+from tradingflow._native import bench_scenario_chain as _rust_scenario_chain
+from tradingflow._native import bench_scenario_chain_obs as _rust_scenario_chain_obs
+from tradingflow._native import bench_scenario_sparse as _rust_scenario_sparse
+from tradingflow._native import bench_scenario_sparse_obs as _rust_scenario_sparse_obs
 
 
 # ---------------------------------------------------------------------------

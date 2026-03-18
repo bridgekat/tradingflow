@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  test:
     strategy:
       matrix:
         python: ['3.13']
@@ -16,14 +16,16 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install build dependencies
-        run: python -m pip install setuptools wheel build
-      - name: Install test dependencies
-        run: python -m pip install -e ".[dev]"
-      - name: Build
-        run: python -m build .
-      - name: Test
-        run: python -m pytest tests/ -x -q
+
+      # Build the Python package (maturin compiles Rust + installs Python)
+      - run: python -m pip install -e ".[dev]"
+
+      # Run Rust tests
+      - run: cargo test --lib
+
+      # Run Python tests
+      - run: python -m pytest tests/ -x -q
