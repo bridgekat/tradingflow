@@ -23,10 +23,10 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use crate::observable::{ObservableHandle, Observable};
+use crate::observable::{Observable, ObservableHandle};
 use crate::operator::Operator;
-use crate::operators::Apply;
 use crate::series::{Series, SeriesHandle};
+use crate::source::Source;
 
 // ---------------------------------------------------------------------------
 // NodeSlot (type-erased)
@@ -88,47 +88,40 @@ impl Drop for OperatorSlot {
 }
 
 // ---------------------------------------------------------------------------
-// Type-erased compute for Apply<T, F>
+// Type-erased compute for slice-input operators (&[S::Ref<'_>])
 // ---------------------------------------------------------------------------
 
-/// Universal compute entry point for [`Apply<T, F>`].
+/// Universal compute entry point for operators whose `Inputs<'a>` is
+/// `&'a [S::Ref<'a>]` (variable-arity, homogeneous inputs).
+///
+/// `S` is an [`InputSlice`] marker (e.g. `Obs<T>` or `Hist<T>`) that
+/// provides `slice_from_ptrs` for zero-copy reconstruction.
 ///
 /// # Safety
 ///
-/// * `input_ptrs` must point to `n_inputs` valid `*mut u8` entries, each
-///   actually a `*mut Observable<T>`.
-/// * `output_ptr` must point to a valid `Observable<T>`.
-/// * `state_ptr` must point to a valid `Apply<T, F>`.
+/// * `input_ptrs` must point to `n_inputs` valid `*mut u8` entries,
+///   each pointing to the concrete type behind `S`.
+/// * `output_obs_ptr` must point to a valid `Observable<Op::Output>`.
+/// * `state_ptr` must point to a valid `Op`.
 #[inline]
-unsafe fn compute_apply<T: Copy, F: Fn(&[&[T]], &mut [T])>(
+unsafe fn erased_compute_slice<S, Op>(
     timestamp: i64,
     input_ptrs: *const *mut u8,
     n_inputs: usize,
-    output_ptr: *mut u8,
+    output_obs_ptr: *mut u8,
     state_ptr: *mut u8,
-) -> bool {
-    let state = unsafe { &mut *(state_ptr as *mut Apply<T, F>) };
-    let output = unsafe { &mut *(output_ptr as *mut Observable<T>) };
-    let inputs: &[&Observable<T>] =
-        unsafe { std::slice::from_raw_parts(input_ptrs as *const &Observable<T>, n_inputs) };
+) -> bool
+where
+    S: crate::input::InputSlice,
+    Op: Operator,
+    Op::Output: Copy,
+    for<'a> Op: Operator<Inputs<'a> = &'a [S::Ref<'a>]>,
+{
+    let state = unsafe { &mut *(state_ptr as *mut Op) };
+    let output = unsafe { &mut *(output_obs_ptr as *mut Observable<Op::Output>) };
+    let inputs = unsafe { S::slice_from_ptrs(input_ptrs, n_inputs) };
     let out = output.vals_mut();
     state.compute(timestamp, inputs, out)
-}
-
-/// Drop function for Apply operator slots.
-unsafe fn drop_apply<T: Copy, F: Fn(&[&[T]], &mut [T])>(
-    state: *mut u8,
-    input_ptrs: *const *mut u8,
-    n_inputs: usize,
-) {
-    unsafe {
-        drop(Box::from_raw(state as *mut Apply<T, F>));
-        drop(Vec::from_raw_parts(
-            input_ptrs as *mut *mut u8,
-            n_inputs,
-            n_inputs,
-        ));
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,11 +153,7 @@ where
 }
 
 /// Drop function for heterogeneous operator slots.
-unsafe fn drop_erased_op<Op>(
-    state: *mut u8,
-    input_ptrs: *const *mut u8,
-    n_inputs: usize,
-) {
+unsafe fn drop_erased_op<Op>(state: *mut u8, input_ptrs: *const *mut u8, n_inputs: usize) {
     unsafe {
         drop(Box::from_raw(state as *mut Op));
         drop(Vec::from_raw_parts(
@@ -176,10 +165,36 @@ unsafe fn drop_erased_op<Op>(
 }
 
 // ---------------------------------------------------------------------------
+// SourceSlot (type-erased)
+// ---------------------------------------------------------------------------
+
+/// Type-erased source: stores a boxed Source and the information needed to
+/// write yielded values into the correct observable.
+struct SourceSlot {
+    node_index: usize,
+    source: Box<dyn Source>,
+    element_size: usize, // stride * size_of::<T>() in bytes
+    /// Type-erased: write raw bytes into the observable at obs_ptr.
+    write_fn: unsafe fn(*mut u8, &[u8]),
+}
+
+/// Typed write function: reinterpret bytes as `&[T]` and write to Observable.
+unsafe fn write_source_typed<T: Copy>(obs_ptr: *mut u8, bytes: &[u8]) {
+    let obs = unsafe { &mut *(obs_ptr as *mut Observable<T>) };
+    let values = unsafe {
+        std::slice::from_raw_parts(
+            bytes.as_ptr() as *const T,
+            bytes.len() / std::mem::size_of::<T>(),
+        )
+    };
+    obs.write(values);
+}
+
+// ---------------------------------------------------------------------------
 // Scenario
 // ---------------------------------------------------------------------------
 
-/// Owns all nodes and operators; coordinates DAG execution.
+/// Owns all nodes, operators, and sources; coordinates DAG execution.
 pub struct Scenario {
     nodes: Vec<NodeSlot>,
     /// `edges[node_idx]` → operator indices that read from this node.
@@ -191,6 +206,8 @@ pub struct Scenario {
     // Reusable per-flush scratch space:
     pending: Vec<bool>,
     heap: BinaryHeap<Reverse<(usize, usize)>>,
+    // Sources for run():
+    source_slots: Vec<SourceSlot>,
 }
 
 impl Scenario {
@@ -204,6 +221,7 @@ impl Scenario {
             topo_dirty: true,
             pending: Vec::new(),
             heap: BinaryHeap::new(),
+            source_slots: Vec::new(),
         }
     }
 
@@ -307,19 +325,13 @@ impl Scenario {
     ///
     /// The handle must have been created by this scenario with the same `T`.
     #[inline(always)]
-    pub unsafe fn observable_mut<T: Copy>(
-        &mut self,
-        h: ObservableHandle<T>,
-    ) -> &mut Observable<T> {
+    pub unsafe fn observable_mut<T: Copy>(&mut self, h: ObservableHandle<T>) -> &mut Observable<T> {
         unsafe { &mut *(self.nodes[h.index].obs_ptr as *mut Observable<T>) }
     }
 
     /// Get a shared reference to the concrete `Observable<T>`.
     #[inline(always)]
-    pub unsafe fn observable_ref<T: Copy>(
-        &self,
-        h: ObservableHandle<T>,
-    ) -> &Observable<T> {
+    pub unsafe fn observable_ref<T: Copy>(&self, h: ObservableHandle<T>) -> &Observable<T> {
         unsafe { &*(self.nodes[h.index].obs_ptr as *const Observable<T>) }
     }
 
@@ -339,30 +351,34 @@ impl Scenario {
         unsafe { &mut *(self.nodes[h.index].series_ptr as *mut Series<T>) }
     }
 
-    // -- Apply registration (homogeneous observable inputs) -----------------
+    // -- Slice operator registration (homogeneous inputs) ------------------
 
-    /// Register an [`Apply`] operator with homogeneous observable inputs.
+    /// Register an operator whose `Inputs<'a>` is `&'a [S::Ref<'a>]`.
+    ///
+    /// `S` is an [`InputSlice`] marker — `Obs<T>` for observable inputs or
+    /// `Hist<T>` for series inputs.  This is the general registration method
+    /// for variable-arity operators with homogeneous inputs (e.g. [`Apply`],
+    /// [`Concat`], [`Stack`]).
     ///
     /// Creates the output node internally and returns its handle.
-    pub fn add_apply<T: Copy + 'static, F: Fn(&[&[T]], &mut [T]) + 'static>(
+    pub fn add_slice_operator<S: crate::input::InputSlice + 'static, Op: 'static>(
         &mut self,
-        inputs: &[ObservableHandle<T>],
-        apply: Apply<T, F>,
-    ) -> ObservableHandle<T> {
-        // Determine output shape from inputs (all must have same stride).
-        let shape: &[usize] = if !inputs.is_empty() {
-            let stride = self.nodes[inputs[0].index].stride;
-            if stride == 1 { &[] } else { &[stride] }
-        } else {
-            &[]
-        };
-        let output = self.create_node::<T>(shape);
+        inputs: &[S::Handle],
+        output_shape: &[usize],
+        op: Op,
+    ) -> ObservableHandle<Op::Output>
+    where
+        Op: Operator,
+        Op::Output: Copy,
+        for<'a> Op: Operator<Inputs<'a> = &'a [S::Ref<'a>]>,
+    {
+        let output = self.create_node::<Op::Output>(output_shape);
         let op_idx = self.operators.len();
 
         let mut ptrs: Vec<*mut u8> = Vec::with_capacity(inputs.len());
         for h in inputs {
-            self.edges[h.index].push(op_idx);
-            ptrs.push(self.nodes[h.index].obs_ptr);
+            self.edges[S::node_index(*h)].push(op_idx);
+            ptrs.push(S::extract_ptr(&self.nodes, *h));
         }
         let n_inputs = ptrs.len();
         let input_ptrs = ptrs.as_ptr();
@@ -375,9 +391,9 @@ impl Scenario {
             output_obs_ptr: self.nodes[output.index].obs_ptr,
             output_series_ptr: self.nodes[output.index].series_ptr,
             materialize_fn: self.nodes[output.index].materialize_fn,
-            compute_fn: compute_apply::<T, F>,
-            state: Box::into_raw(Box::new(apply)) as *mut u8,
-            drop_fn: drop_apply::<T, F>,
+            compute_fn: erased_compute_slice::<S, Op>,
+            state: Box::into_raw(Box::new(op)) as *mut u8,
+            drop_fn: drop_erased_op::<Op>,
         });
         self.topo_dirty = true;
         output
@@ -427,6 +443,231 @@ impl Scenario {
         });
         self.topo_dirty = true;
         output
+    }
+
+    // -- Bridge helpers (for PyO3 bridge) ------------------------------------
+
+    /// Register an operator with a custom compute function and type-erased
+    /// state.  The output node type is determined by the caller via
+    /// `create_node_fn` which should call `self.create_node::<T>()` for the
+    /// appropriate `T`.
+    ///
+    /// Returns the output node index.
+    pub(crate) fn add_raw_operator(
+        &mut self,
+        input_indices: &[usize],
+        output_node_index: usize,
+        compute_fn: unsafe fn(i64, *const *mut u8, usize, *mut u8, *mut u8) -> bool,
+        state: *mut u8,
+        drop_fn: unsafe fn(*mut u8, *const *mut u8, usize),
+    ) {
+        let op_idx = self.operators.len();
+
+        let mut ptrs: Vec<*mut u8> = Vec::with_capacity(input_indices.len());
+        for &idx in input_indices {
+            self.edges[idx].push(op_idx);
+            ptrs.push(self.nodes[idx].obs_ptr);
+        }
+        let n_inputs = ptrs.len();
+        let input_ptrs = ptrs.as_ptr();
+        std::mem::forget(ptrs);
+
+        self.operators.push(OperatorSlot {
+            output_node_index,
+            input_ptrs,
+            n_inputs,
+            output_obs_ptr: self.nodes[output_node_index].obs_ptr,
+            output_series_ptr: self.nodes[output_node_index].series_ptr,
+            materialize_fn: self.nodes[output_node_index].materialize_fn,
+            compute_fn,
+            state,
+            drop_fn,
+        });
+        self.topo_dirty = true;
+    }
+
+    /// Create a typed node (for bridge dtype dispatch).
+    pub(crate) fn create_node_typed<T: Copy>(&mut self, shape: &[usize]) -> usize {
+        self.create_node::<T>(shape).index
+    }
+
+    /// Create a typed source node with an initial value (for bridge dtype
+    /// dispatch).
+    pub(crate) fn add_source_typed<T: Copy>(&mut self, shape: &[usize], initial: &[T]) -> usize {
+        self.add_source::<T>(shape, initial).index
+    }
+
+    /// Register a source by node index (for bridge dtype dispatch).
+    pub(crate) fn register_source_typed<T: Copy + 'static>(
+        &mut self,
+        node_index: usize,
+        source: Box<dyn Source>,
+    ) {
+        let stride = self.nodes[node_index].stride;
+        self.source_slots.push(SourceSlot {
+            node_index,
+            source,
+            element_size: stride * std::mem::size_of::<T>(),
+            write_fn: write_source_typed::<T>,
+        });
+    }
+
+    /// Materialise a node by index (for bridge — no typed handle).
+    pub(crate) fn materialize_by_index<T: Copy>(&mut self, node_index: usize) {
+        assert!(
+            self.nodes[node_index].series_ptr.is_null(),
+            "node already materialised"
+        );
+        let stride = self.nodes[node_index].stride;
+        let shape = if stride == 1 { vec![] } else { vec![stride] };
+        let series = Box::new(Series::<T>::new(&shape));
+        self.nodes[node_index].series_ptr = Box::into_raw(series) as *mut u8;
+        for slot in &mut self.operators {
+            if slot.output_node_index == node_index {
+                slot.output_series_ptr = self.nodes[node_index].series_ptr;
+            }
+        }
+    }
+
+    /// Number of nodes in the graph.
+    pub(crate) fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Raw observable pointer for a node.
+    pub(crate) fn node_obs_ptr(&self, idx: usize) -> *mut u8 {
+        self.nodes[idx].obs_ptr
+    }
+
+    /// Raw series pointer for a node (null if not materialised).
+    pub(crate) fn node_series_ptr(&self, idx: usize) -> *mut u8 {
+        self.nodes[idx].series_ptr
+    }
+
+    /// Stride (number of elements per value) for a node.
+    pub(crate) fn node_stride(&self, idx: usize) -> usize {
+        self.nodes[idx].stride
+    }
+
+    // -- Source registration ------------------------------------------------
+
+    /// Associate a [`Source`] with an existing source node.
+    ///
+    /// The source will be consumed by [`run`] to feed data into the node.
+    pub fn register_source<T: Copy + 'static>(
+        &mut self,
+        handle: ObservableHandle<T>,
+        source: Box<dyn Source>,
+    ) {
+        let stride = self.nodes[handle.index].stride;
+        self.source_slots.push(SourceSlot {
+            node_index: handle.index,
+            source,
+            element_size: stride * std::mem::size_of::<T>(),
+            write_fn: write_source_typed::<T>,
+        });
+    }
+
+    // -- Async run (POCQ) ---------------------------------------------------
+
+    /// Consume all registered sources, coalesce events, and propagate through
+    /// the operator DAG.
+    ///
+    /// Implements the Point-of-Coherency Queue (POCQ) algorithm:
+    /// - Historical constraint: all active historical sources must have a
+    ///   pending event before advancing.
+    /// - Coalescing: events at the same timestamp accumulate; flush triggers
+    ///   when a strictly larger timestamp arrives.
+    pub async fn run(&mut self) {
+        self.recompute_topo();
+
+        // Subscribe all sources and build per-source runtime state.
+        let slots: Vec<SourceSlot> = self.source_slots.drain(..).collect();
+        let mut states: Vec<RunSourceState> = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let (hist, live) = slot.source.subscribe().await;
+            states.push(RunSourceState {
+                node_index: slot.node_index,
+                element_size: slot.element_size,
+                write_fn: slot.write_fn,
+                obs_ptr: self.nodes[slot.node_index].obs_ptr,
+                hist_iter: Some(hist),
+                live_iter: Some(live),
+                buf: vec![0u8; slot.element_size],
+                pending_ts: None,
+                hist_exhausted: false,
+                live_exhausted: false,
+            });
+        }
+
+        // Fetch initial historical event from each source.
+        for st in &mut states {
+            st.fetch_hist().await;
+        }
+
+        // POCQ state.
+        let mut queue_ts: Option<i64> = None;
+        let mut queue_sources: Vec<usize> = Vec::new(); // node indices
+
+        loop {
+            // Check if all historical sources have pending events (or are exhausted).
+            let hist_blocked = states
+                .iter()
+                .any(|st| st.hist_iter.is_some() && st.pending_ts.is_none());
+            if hist_blocked {
+                // Should not happen in a well-formed sequential loop since
+                // fetch_hist() is awaited above. But for live sources that
+                // haven't been fetched yet, we'd await here.
+                // For now, fetch any source that lacks a pending event.
+                for st in &mut states {
+                    if st.hist_iter.is_some() && st.pending_ts.is_none() {
+                        st.fetch_hist().await;
+                    }
+                    if st.live_iter.is_some() && !st.live_exhausted && st.pending_ts.is_none() {
+                        st.fetch_live().await;
+                    }
+                }
+            }
+
+            // Find the minimum pending timestamp across all sources.
+            let min_ts = states.iter().filter_map(|st| st.pending_ts).min();
+
+            let Some(min_ts) = min_ts else {
+                // All sources exhausted — flush remaining queue and exit.
+                if !queue_sources.is_empty() {
+                    self.flush(queue_ts.unwrap(), &queue_sources);
+                    queue_sources.clear();
+                }
+                break;
+            };
+
+            // If the new timestamp is strictly greater than the current queue,
+            // flush the accumulated events first.
+            if let Some(qts) = queue_ts {
+                if min_ts > qts {
+                    self.flush(qts, &queue_sources);
+                    queue_sources.clear();
+                }
+            }
+
+            // Collect all sources at min_ts: write to observables, add to queue.
+            for st in &mut states {
+                if st.pending_ts == Some(min_ts) {
+                    // Write the buffered value to the observable.
+                    unsafe { (st.write_fn)(st.obs_ptr, &st.buf) };
+                    queue_sources.push(st.node_index);
+                    st.pending_ts = None;
+
+                    // Fetch next event from this source.
+                    if st.hist_iter.is_some() {
+                        st.fetch_hist().await;
+                    } else if st.live_iter.is_some() {
+                        st.fetch_live().await;
+                    }
+                }
+            }
+            queue_ts = Some(min_ts);
+        }
     }
 
     // -- Execution ----------------------------------------------------------
@@ -572,6 +813,69 @@ impl Default for Scenario {
     }
 }
 
+// SAFETY: Scenario owns all its data through heap-allocated raw pointers
+// (Observable, Series, operator states).  Moving the entire Scenario to
+// another thread is safe because all pointed-to data is exclusively owned
+// and moves with the struct.  This is needed for the PyO3 bridge which
+// moves Scenario into py.allow_threads().
+unsafe impl Send for Scenario {}
+
+// ---------------------------------------------------------------------------
+// RunSourceState — per-source mutable state during run()
+// ---------------------------------------------------------------------------
+
+/// Per-source runtime state used by [`Scenario::run`].
+struct RunSourceState {
+    node_index: usize,
+    #[allow(dead_code)]
+    element_size: usize,
+    write_fn: unsafe fn(*mut u8, &[u8]),
+    obs_ptr: *mut u8,
+    hist_iter: Option<Box<dyn crate::source::HistoricalIter>>,
+    live_iter: Option<Box<dyn crate::source::LiveIter>>,
+    buf: Vec<u8>,
+    /// Pending timestamp (None = no pending event).
+    pending_ts: Option<i64>,
+    hist_exhausted: bool,
+    live_exhausted: bool,
+}
+
+impl RunSourceState {
+    /// Fetch the next historical event into the buffer.
+    async fn fetch_hist(&mut self) {
+        if let Some(ref mut hist) = self.hist_iter {
+            match hist.next_into(&mut self.buf).await {
+                Some(ts) => {
+                    self.pending_ts = Some(ts);
+                }
+                None => {
+                    self.hist_iter = None;
+                    self.hist_exhausted = true;
+                    // Try live if available.
+                    self.fetch_live().await;
+                }
+            }
+        }
+    }
+
+    /// Fetch the next live event into the buffer.
+    async fn fetch_live(&mut self) {
+        if let Some(ref mut live) = self.live_iter {
+            if live.next_into(&mut self.buf).await {
+                // For live events, use wall-clock time.
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as i64;
+                self.pending_ts = Some(ts);
+            } else {
+                self.live_iter = None;
+                self.live_exhausted = true;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -579,14 +883,18 @@ impl Default for Scenario {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::Obs;
     use crate::operators;
+
+    /// Convenience alias for binary f64 observable inputs.
+    type O2 = (Obs<f64>, Obs<f64>);
 
     #[test]
     fn simple_add() {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_apply(&[ha, hb], operators::add());
+        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
 
         unsafe {
             sc.observable_mut(ha).write(&[10.0]);
@@ -603,7 +911,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_apply(&[ha, hb], operators::add());
+        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
         let ho_series = sc.materialize::<f64>(ho);
 
         unsafe {
@@ -634,8 +942,8 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let hab = sc.add_apply(&[ha, hb], operators::add());
-        let hout = sc.add_apply(&[hab, ha], operators::multiply());
+        let hab = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let hout = sc.add_operator::<O2, _>((hab, ha), &[], operators::multiply());
 
         unsafe {
             sc.observable_mut(ha).write(&[2.0]);
@@ -652,12 +960,11 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho1 = sc.add_apply(&[ha, hb], operators::add());
+        let ho1 = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
         let ho1_series = sc.materialize::<f64>(ho1);
 
-        // op1: ho2 is never written to → this op uses it as input
         let ho2 = sc.add_source::<f64>(&[], &[0.0]);
-        let hc = sc.add_apply(&[ho2, ha], operators::add());
+        let hc = sc.add_operator::<O2, _>((ho2, ha), &[], operators::add());
         let hc_series = sc.materialize::<f64>(hc);
 
         unsafe {
@@ -681,7 +988,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_apply(&[ha, hb], operators::add());
+        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
         let ho_series = sc.materialize_with_capacity::<f64>(ho, 100);
 
         for i in 0..100 {
@@ -707,8 +1014,8 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let hmid = sc.add_apply(&[ha, hb], operators::add());
-        let hout = sc.add_apply(&[hmid, ha], operators::multiply());
+        let hmid = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let hout = sc.add_operator::<O2, _>((hmid, ha), &[], operators::multiply());
         let hout_series = sc.materialize::<f64>(hout);
 
         for i in 1..=5 {
@@ -746,5 +1053,241 @@ mod tests {
         assert_eq!(series.len(), 10);
         assert_eq!(series.last(), &[9.0]);
         assert_eq!(series.timestamps(), &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    // -- Slice operator tests -----------------------------------------------
+
+    #[test]
+    fn slice_operator_concat() {
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[], &[1.0]);
+        let hb = sc.add_source::<f64>(&[], &[2.0]);
+        let hc = sc.add_source::<f64>(&[], &[3.0]);
+        let ho = sc.add_slice_operator::<Obs<f64>, _>(
+            &[ha, hb, hc],
+            &[3],
+            operators::Concat::new(&[], 0),
+        );
+        let ho_series = sc.materialize::<f64>(ho);
+
+        unsafe {
+            sc.observable_mut(ha).write(&[10.0]);
+            sc.observable_mut(hb).write(&[20.0]);
+            sc.observable_mut(hc).write(&[30.0]);
+        }
+        sc.flush(1, &[ha.index, hb.index, hc.index]);
+
+        let series = unsafe { sc.series_ref(ho_series) };
+        assert_eq!(series.len(), 1);
+        assert_eq!(series.last(), &[10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn slice_operator_stack() {
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[2], &[1.0, 2.0]);
+        let hb = sc.add_source::<f64>(&[2], &[3.0, 4.0]);
+        let ho = sc.add_slice_operator::<Obs<f64>, _>(
+            &[ha, hb],
+            &[2, 2],
+            operators::Stack::new(&[2], 0),
+        );
+        let ho_series = sc.materialize::<f64>(ho);
+
+        sc.flush(1, &[ha.index, hb.index]);
+
+        let series = unsafe { sc.series_ref(ho_series) };
+        assert_eq!(series.len(), 1);
+        assert_eq!(series.last(), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn select_operator() {
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[5], &[10.0, 20.0, 30.0, 40.0, 50.0]);
+        let ho =
+            sc.add_operator::<(Obs<f64>,), _>((ha,), &[2], operators::Select::flat(vec![1, 3]));
+        let ho_series = sc.materialize::<f64>(ho);
+
+        sc.flush(1, &[ha.index]);
+
+        let series = unsafe { sc.series_ref(ho_series) };
+        assert_eq!(series.len(), 1);
+        assert_eq!(series.last(), &[20.0, 40.0]);
+    }
+
+    #[test]
+    fn filter_operator() {
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[], &[0.0]);
+        let ho = sc.add_operator::<(Obs<f64>,), _>(
+            (ha,),
+            &[],
+            operators::Filter::new(|v: &[f64]| v[0] > 3.0),
+        );
+        let ho_series = sc.materialize::<f64>(ho);
+
+        // Value 1.0 → filtered out
+        unsafe { sc.observable_mut(ha).write(&[1.0]) };
+        sc.flush(1, &[ha.index]);
+        // Value 5.0 → passes
+        unsafe { sc.observable_mut(ha).write(&[5.0]) };
+        sc.flush(2, &[ha.index]);
+        // Value 2.0 → filtered out
+        unsafe { sc.observable_mut(ha).write(&[2.0]) };
+        sc.flush(3, &[ha.index]);
+        // Value 10.0 → passes
+        unsafe { sc.observable_mut(ha).write(&[10.0]) };
+        sc.flush(4, &[ha.index]);
+
+        let series = unsafe { sc.series_ref(ho_series) };
+        assert_eq!(series.len(), 2);
+        assert_eq!(series.timestamps(), &[2, 4]);
+        assert_eq!(series.values(), &[5.0, 10.0]);
+    }
+
+    #[test]
+    fn where_operator() {
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[3], &[0.0, 0.0, 0.0]);
+        let ho = sc.add_operator::<(Obs<f64>,), _>(
+            (ha,),
+            &[3],
+            operators::Where::new(|v: f64| v > 2.0, 0.0),
+        );
+        let ho_series = sc.materialize::<f64>(ho);
+
+        unsafe { sc.observable_mut(ha).write(&[1.0, 5.0, 2.0]) };
+        sc.flush(1, &[ha.index]);
+
+        let series = unsafe { sc.series_ref(ho_series) };
+        assert_eq!(series.len(), 1);
+        assert_eq!(series.last(), &[0.0, 5.0, 0.0]);
+    }
+
+    #[test]
+    fn negate_operator() {
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[], &[0.0]);
+        let ho = sc.add_operator::<(Obs<f64>,), _>((ha,), &[], operators::negate());
+
+        unsafe { sc.observable_mut(ha).write(&[7.0]) };
+        sc.flush(1, &[ha.index]);
+
+        let out = unsafe { sc.observable_ref(ho) };
+        assert_eq!(out.last(), &[-7.0]);
+    }
+
+    // -- run() tests --------------------------------------------------------
+
+    #[tokio::test]
+    async fn run_single_source() {
+        use crate::source::ArraySource;
+
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[], &[0.0]);
+        let ha_series = sc.materialize::<f64>(ha);
+
+        sc.register_source(
+            ha,
+            Box::new(ArraySource::new(vec![1, 2, 3], vec![10.0, 20.0, 30.0], 1)),
+        );
+
+        sc.run().await;
+
+        let series = unsafe { sc.series_ref(ha_series) };
+        assert_eq!(series.len(), 3);
+        assert_eq!(series.timestamps(), &[1, 2, 3]);
+        assert_eq!(series.values(), &[10.0, 20.0, 30.0]);
+    }
+
+    #[tokio::test]
+    async fn run_two_sources_interleaved() {
+        use crate::source::ArraySource;
+
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[], &[0.0]);
+        let hb = sc.add_source::<f64>(&[], &[0.0]);
+        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let ho_series = sc.materialize::<f64>(ho);
+
+        sc.register_source(
+            ha,
+            Box::new(ArraySource::new(vec![1, 3], vec![10.0, 30.0], 1)),
+        );
+        sc.register_source(
+            hb,
+            Box::new(ArraySource::new(vec![2, 3], vec![20.0, 40.0], 1)),
+        );
+
+        sc.run().await;
+
+        let series = unsafe { sc.series_ref(ho_series) };
+        // At ts=1: a=10, b=0 (initial) → 10
+        // At ts=2: a=10, b=20 → 30
+        // At ts=3: a=30, b=40 → 70 (coalesced)
+        assert_eq!(series.len(), 3);
+        assert_eq!(series.timestamps(), &[1, 2, 3]);
+        assert_eq!(series.values(), &[10.0, 30.0, 70.0]);
+    }
+
+    #[tokio::test]
+    async fn run_coalescing() {
+        use crate::source::ArraySource;
+
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[], &[0.0]);
+        let hb = sc.add_source::<f64>(&[], &[0.0]);
+        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let ho_series = sc.materialize::<f64>(ho);
+        let ha_series = sc.materialize::<f64>(ha);
+
+        sc.register_source(
+            ha,
+            Box::new(ArraySource::new(vec![1, 2], vec![10.0, 20.0], 1)),
+        );
+        sc.register_source(
+            hb,
+            Box::new(ArraySource::new(vec![1, 2], vec![100.0, 200.0], 1)),
+        );
+
+        sc.run().await;
+
+        let series = unsafe { sc.series_ref(ho_series) };
+        assert_eq!(series.len(), 2);
+        assert_eq!(series.timestamps(), &[1, 2]);
+        assert_eq!(series.values(), &[110.0, 220.0]);
+
+        let a_series = unsafe { sc.series_ref(ha_series) };
+        assert_eq!(a_series.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_chained_operators() {
+        use crate::source::ArraySource;
+
+        let mut sc = Scenario::new();
+        let ha = sc.add_source::<f64>(&[], &[0.0]);
+        let hb = sc.add_source::<f64>(&[], &[0.0]);
+        let hab = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let hout = sc.add_operator::<O2, _>((hab, ha), &[], operators::multiply());
+        let hout_series = sc.materialize::<f64>(hout);
+
+        sc.register_source(
+            ha,
+            Box::new(ArraySource::new(vec![1, 2], vec![2.0, 5.0], 1)),
+        );
+        sc.register_source(
+            hb,
+            Box::new(ArraySource::new(vec![1, 2], vec![3.0, 10.0], 1)),
+        );
+
+        sc.run().await;
+
+        let series = unsafe { sc.series_ref(hout_series) };
+        assert_eq!(series.len(), 2);
+        // At ts=1: (2+3)*2 = 10
+        // At ts=2: (5+10)*5 = 75
+        assert_eq!(series.values(), &[10.0, 75.0]);
     }
 }

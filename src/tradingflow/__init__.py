@@ -21,6 +21,9 @@ Source[Shape, T]
     `(historical, live)` async-iterator pair returned by `subscribe()`.
 Operator[Inputs, Shape, T, State]
     Base class for derived computations on observables and series.
+NativeOperator
+    Operator subclass backed by the Rust native extension.  Used by the
+    arithmetic factories (``add``, ``negate``, etc.).
 Scenario
     Async runtime that subscribes to source streams, accumulates events in the
     point-of-coherency queue (POCQ), and updates an acyclic source/operator
@@ -30,12 +33,13 @@ Scenario
 from .observable import Observable
 from .series import AnyShape, Array, Series
 from .source import Source
-from .operator import Operator
+from .operator import NativeOperator, Operator
 from .scenario import Scenario
 
 __all__ = [
     "AnyShape",
     "Array",
+    "NativeOperator",
     "Observable",
     "Operator",
     "Scenario",

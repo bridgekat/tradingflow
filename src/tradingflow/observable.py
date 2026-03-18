@@ -30,10 +30,8 @@ class Observable[Shape: AnyShape, T: np.generic]:
         NumPy dtype for the value buffer.
     """
 
-    __slots__ = ("_shape", "_dtype", "_value")
+    __slots__ = ("_value",)
 
-    _shape: Shape
-    _dtype: np.dtype[T]
     _value: Array[Shape, T]
 
     def __init__(
@@ -41,23 +39,17 @@ class Observable[Shape: AnyShape, T: np.generic]:
         shape: Shape,
         dtype: type[T] | np.dtype[T],
     ) -> None:
-        self._shape = shape
-        self._dtype = np.dtype(dtype)
-        self._value: Array[Shape, T] = np.empty(shape, dtype=self._dtype)  # type: ignore[assignment]
-
-    def __bool__(self) -> bool:
-        """Observables always have a value."""
-        return True
+        self._value: Array[Shape, T] = np.empty(shape, dtype=dtype)  # type: ignore[assignment]
 
     @property
     def shape(self) -> Shape:
         """Element shape of the stored value."""
-        return self._shape
+        return self._value.shape
 
     @property
     def dtype(self) -> np.dtype[T]:
         """NumPy dtype of the stored value."""
-        return self._dtype
+        return self._value.dtype
 
     @property
     def last(self) -> Array[Shape, T]:
@@ -66,4 +58,4 @@ class Observable[Shape: AnyShape, T: np.generic]:
 
     def write(self, value: Array[Shape, T]) -> None:
         """Overwrite the current value."""
-        self._value = np.asarray(value, dtype=self._dtype)  # type: ignore[assignment]
+        self._value = value

@@ -12,6 +12,8 @@
 
 use std::marker::PhantomData;
 
+use ndarray::{ArrayView1, ArrayViewD, IxDyn};
+
 // ---------------------------------------------------------------------------
 // Observable<T>
 // ---------------------------------------------------------------------------
@@ -23,6 +25,7 @@ use std::marker::PhantomData;
 /// All raw-pointer operations are behind safe methods.  The buffer is
 /// allocated once in `new` / `new_uninit` and freed in `Drop`.
 pub struct Observable<T: Copy> {
+    shape: Box<[usize]>,
     stride: usize,
     vals: *mut T,
 }
@@ -38,7 +41,7 @@ impl<T: Copy> Observable<T> {
     /// `initial.len()` must equal the stride (product of shape dimensions,
     /// min 1).
     pub fn new(shape: &[usize], initial: &[T]) -> Self {
-        let stride = shape.iter().product::<usize>().max(1);
+        let stride = shape.iter().product::<usize>();
         debug_assert_eq!(initial.len(), stride);
         let vals = alloc_buf::<T>(stride);
         // SAFETY: `vals` points to `stride` uninitialised `T`s; we copy
@@ -46,7 +49,7 @@ impl<T: Copy> Observable<T> {
         unsafe {
             std::ptr::copy_nonoverlapping(initial.as_ptr(), vals, stride);
         }
-        Self { stride, vals }
+        Self { shape: shape.into(), stride, vals }
     }
 
     /// Create an observable with an **uninitialised** value buffer.
@@ -55,20 +58,26 @@ impl<T: Copy> Observable<T> {
     /// reading.  Used for operator output nodes whose initial values are
     /// computed during graph initialisation.
     pub fn new_uninit(shape: &[usize]) -> Self {
-        let stride = shape.iter().product::<usize>().max(1);
+        let stride = shape.iter().product::<usize>();
         let vals = alloc_buf::<T>(stride);
-        Self { stride, vals }
+        Self { shape: shape.into(), stride, vals }
     }
 
     // -- Accessors ----------------------------------------------------------
 
-    /// Number of values per element (product of shape dimensions, min 1).
+    /// Element shape (e.g. `&[2, 3]` for a 2x3 matrix element).
+    #[inline(always)]
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+
+    /// Number of values per element (product of shape dimensions).
     #[inline(always)]
     pub fn stride(&self) -> usize {
         self.stride
     }
 
-    /// Read the current value as a slice of length `stride`.
+    /// Read the current value as a flat slice of length `stride`.
     ///
     /// # Safety contract (logical)
     ///
@@ -80,6 +89,22 @@ impl<T: Copy> Observable<T> {
         unsafe { std::slice::from_raw_parts(self.vals, self.stride) }
     }
 
+    /// Zero-copy flat `ArrayView1` of the current value.
+    #[inline]
+    pub fn as_array_view_flat(&self) -> ArrayView1<'_, T> {
+        unsafe { ArrayView1::from_shape_ptr(self.stride, self.vals as *const T) }
+    }
+
+    /// Zero-copy `ArrayViewD` with the element shape.
+    ///
+    /// - Scalar (shape `[]`): returns 0-dimensional view
+    /// - Vector (shape `[3]`): returns shape `[3]`
+    /// - Matrix (shape `[2, 3]`): returns shape `[2, 3]`
+    #[inline]
+    pub fn as_array_view(&self) -> ArrayViewD<'_, T> {
+        unsafe { ArrayViewD::from_shape_ptr(IxDyn(&self.shape), self.vals as *const T) }
+    }
+
     // -- Mutation ------------------------------------------------------------
 
     /// Mutable access to the value buffer for in-place writes.
@@ -89,6 +114,15 @@ impl<T: Copy> Observable<T> {
     pub fn vals_mut(&mut self) -> &mut [T] {
         // SAFETY: `vals[0..stride]` is always initialised and we have `&mut`.
         unsafe { std::slice::from_raw_parts_mut(self.vals, self.stride) }
+    }
+
+    /// Raw byte pointer to the value buffer.
+    ///
+    /// The buffer contains `stride` values of type `T`, i.e.
+    /// `stride * size_of::<T>()` bytes.
+    #[inline(always)]
+    pub fn vals_ptr(&mut self) -> *mut u8 {
+        self.vals as *mut u8
     }
 
     /// Overwrite the value buffer from a slice.
@@ -169,6 +203,7 @@ mod tests {
     fn new_uninit_scalar() {
         let mut obs = Observable::<f64>::new_uninit(&[]);
         assert_eq!(obs.stride(), 1);
+        assert_eq!(obs.shape(), &[] as &[usize]);
         obs.write(&[0.0]); // must init before reading
         assert_eq!(obs.last(), &[0.0]);
     }
@@ -177,6 +212,7 @@ mod tests {
     fn new_with_initial() {
         let obs = Observable::<f64>::new(&[3], &[1.0, 2.0, 3.0]);
         assert_eq!(obs.stride(), 3);
+        assert_eq!(obs.shape(), &[3]);
         assert_eq!(obs.last(), &[1.0, 2.0, 3.0]);
     }
 
@@ -202,8 +238,60 @@ mod tests {
     fn strided_observable() {
         let mut obs = Observable::<i32>::new(&[2, 3], &[1, 2, 3, 4, 5, 6]);
         assert_eq!(obs.stride(), 6);
+        assert_eq!(obs.shape(), &[2, 3]);
         assert_eq!(obs.last(), &[1, 2, 3, 4, 5, 6]);
         obs.write(&[10, 20, 30, 40, 50, 60]);
         assert_eq!(obs.last(), &[10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn array_view_scalar_zero_copy() {
+        let obs = Observable::<f64>::new(&[], &[42.0]);
+        let view = obs.as_array_view();
+        // Scalar → 0-dimensional view.
+        assert_eq!(view.shape(), &[] as &[usize]);
+        assert_eq!(view.ndim(), 0);
+        assert_eq!(view[[]], 42.0);
+        // Verify zero-copy.
+        assert_eq!(
+            view.as_slice().unwrap().as_ptr(),
+            obs.last().as_ptr(),
+        );
+    }
+
+    #[test]
+    fn array_view_vector_zero_copy() {
+        let obs = Observable::<f64>::new(&[3], &[1.0, 2.0, 3.0]);
+        let view = obs.as_array_view();
+        assert_eq!(view.shape(), &[3]);
+        assert_eq!(view[[0]], 1.0);
+        assert_eq!(view[[2]], 3.0);
+        assert_eq!(
+            view.as_slice().unwrap().as_ptr(),
+            obs.last().as_ptr(),
+        );
+    }
+
+    #[test]
+    fn array_view_matrix_zero_copy() {
+        let obs = Observable::<f64>::new(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let view = obs.as_array_view();
+        assert_eq!(view.shape(), &[2, 3]);
+        // Row 0, col 2
+        assert_eq!(view[[0, 2]], 3.0);
+        // Row 1, col 0
+        assert_eq!(view[[1, 0]], 4.0);
+        assert_eq!(
+            view.as_slice().unwrap().as_ptr(),
+            obs.last().as_ptr(),
+        );
+    }
+
+    #[test]
+    fn flat_view_always_1d() {
+        let obs = Observable::<f64>::new(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let flat = obs.as_array_view_flat();
+        assert_eq!(flat.len(), 6);
+        assert_eq!(flat[3], 4.0);
     }
 }

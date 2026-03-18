@@ -7,13 +7,14 @@
 //! * [`Hist<T>`] — read the full history from a [`Series<T>`].
 //!
 //! The [`InputSlot`] trait maps each marker to its handle type and reference
-//! type.  The [`InputTuple`] trait (implemented for tuples up to arity 8 via
-//! macro) converts a tuple of handles to/from a `Vec<*mut u8>` for type-erased
-//! storage in the [`Scenario`].
+//! type for single-element access (used by [`InputTuple`]).
+//!
+//! The [`InputSlice`] trait provides bulk reconstruction of a raw pointer
+//! array into a typed slice (used by [`Scenario::add_slice_operator`]).
 
 use std::marker::PhantomData;
 
-use crate::observable::{ObservableHandle, Observable};
+use crate::observable::{Observable, ObservableHandle};
 use crate::series::{Series, SeriesHandle};
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,7 @@ pub struct Obs<T: Copy>(PhantomData<T>);
 pub struct Hist<T: Copy>(PhantomData<T>);
 
 // ---------------------------------------------------------------------------
-// InputSlot
+// InputSlot — per-element access (for InputTuple)
 // ---------------------------------------------------------------------------
 
 /// Maps a marker type to its handle type and reference type.
@@ -61,7 +62,10 @@ pub trait InputSlot {
 
 impl<T: Copy> InputSlot for Obs<T> {
     type Handle = ObservableHandle<T>;
-    type Ref<'a> = &'a Observable<T> where T: 'a;
+    type Ref<'a>
+        = &'a Observable<T>
+    where
+        T: 'a;
 
     #[inline]
     fn extract_ptr(nodes: &[crate::scenario::NodeSlot], h: ObservableHandle<T>) -> *mut u8 {
@@ -81,7 +85,10 @@ impl<T: Copy> InputSlot for Obs<T> {
 
 impl<T: Copy> InputSlot for Hist<T> {
     type Handle = SeriesHandle<T>;
-    type Ref<'a> = &'a Series<T> where T: 'a;
+    type Ref<'a>
+        = &'a Series<T>
+    where
+        T: 'a;
 
     #[inline]
     fn extract_ptr(nodes: &[crate::scenario::NodeSlot], h: SeriesHandle<T>) -> *mut u8 {
@@ -93,6 +100,87 @@ impl<T: Copy> InputSlot for Hist<T> {
     #[inline]
     unsafe fn from_ptr<'a>(ptr: *mut u8) -> &'a Series<T> {
         unsafe { &*(ptr as *const Series<T>) }
+    }
+
+    #[inline]
+    fn node_index(h: SeriesHandle<T>) -> usize {
+        h.index
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InputSlice — bulk slice access (for add_slice_operator)
+// ---------------------------------------------------------------------------
+
+/// Maps a marker type to its handle type and slice-of-references type.
+///
+/// Like [`InputSlot`] but for variable-arity homogeneous inputs.
+/// Provides `slice_from_ptrs` for zero-copy reconstruction of a raw
+/// pointer array into `&[Ref<'_>]`.
+pub trait InputSlice {
+    /// The handle type the user provides at registration.
+    type Handle: Copy;
+    /// The element reference type (the slice element).
+    type Ref<'a>
+    where
+        Self: 'a;
+
+    /// Extract the raw pointer from the scenario's node storage.
+    fn extract_ptr(nodes: &[crate::scenario::NodeSlot], handle: Self::Handle) -> *mut u8;
+
+    /// Reinterpret a raw pointer array as a slice of references.
+    ///
+    /// This exploits the fact that `Ref<'a>` (a shared reference) has the
+    /// same size and alignment as `*mut u8`.
+    ///
+    /// # Safety
+    ///
+    /// * Each pointer in `ptrs[0..n]` must point to the correct concrete type.
+    /// * `Ref<'a>` must be pointer-sized (true for all reference types).
+    unsafe fn slice_from_ptrs<'a>(ptrs: *const *mut u8, n: usize) -> &'a [Self::Ref<'a>];
+
+    /// The node index referenced by this handle.
+    fn node_index(handle: Self::Handle) -> usize;
+}
+
+impl<T: Copy> InputSlice for Obs<T> {
+    type Handle = ObservableHandle<T>;
+    type Ref<'a>
+        = &'a Observable<T>
+    where
+        T: 'a;
+
+    #[inline]
+    fn extract_ptr(nodes: &[crate::scenario::NodeSlot], h: ObservableHandle<T>) -> *mut u8 {
+        nodes[h.index].obs_ptr
+    }
+
+    #[inline]
+    unsafe fn slice_from_ptrs<'a>(ptrs: *const *mut u8, n: usize) -> &'a [&'a Observable<T>] {
+        unsafe { std::slice::from_raw_parts(ptrs as *const &Observable<T>, n) }
+    }
+
+    #[inline]
+    fn node_index(h: ObservableHandle<T>) -> usize {
+        h.index
+    }
+}
+
+impl<T: Copy> InputSlice for Hist<T> {
+    type Handle = SeriesHandle<T>;
+    type Ref<'a>
+        = &'a Series<T>
+    where
+        T: 'a;
+
+    #[inline]
+    fn extract_ptr(nodes: &[crate::scenario::NodeSlot], h: SeriesHandle<T>) -> *mut u8 {
+        nodes[h.index].series_ptr
+    }
+
+    #[inline]
+    unsafe fn slice_from_ptrs<'a>(ptrs: *const *mut u8, n: usize) -> &'a [&'a Series<T>] {
+        unsafe { std::slice::from_raw_parts(ptrs as *const &Series<T>, n) }
     }
 
     #[inline]

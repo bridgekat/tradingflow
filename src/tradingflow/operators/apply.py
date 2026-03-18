@@ -1,4 +1,13 @@
-"""Generic n-ary apply operator and element-wise arithmetic helper factories."""
+"""Generic n-ary apply operator and element-wise arithmetic factories.
+
+[`Apply`][tradingflow.operators.Apply] is a closure-based operator for custom
+Python computations.
+
+The arithmetic factories ([`add`][tradingflow.operators.add],
+[`subtract`][tradingflow.operators.subtract], etc.) return
+[`NativeOperator`][tradingflow.NativeOperator] instances backed by opaque
+Rust operator handles.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +16,15 @@ from typing import Callable, override
 import numpy as np
 
 from ..observable import Observable
-from ..operator import Operator
+from ..operator import Operator, NativeOperator
+
+from tradingflow_native import (
+    add as _rust_add,
+    subtract as _rust_subtract,
+    multiply as _rust_multiply,
+    divide as _rust_divide,
+    negate as _rust_negate,
+)
 
 
 type _AnyShape = tuple[int, ...]
@@ -51,67 +68,53 @@ class Apply[Shape: _AnyShape, InT: np.generic, OutT: np.generic](
         inputs: tuple[Observable[Shape, InT], ...],
         state: None,
     ) -> tuple[_Array[Shape, OutT] | None, None]:
-        # Observables always have values — no emptiness check needed.
         values: list[_Array[Shape, InT]] = [inp.last for inp in inputs]
         return self._fn(values), None
 
 
-def _add[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
-    x, y = args
-    return x + y  # type: ignore[return-value]
-
-
-def _subtract[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
-    x, y = args
-    return x - y  # type: ignore[return-value]
-
-
-def _negate[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
-    (x,) = args
-    return -x
-
-
-def _multiply[Shape: _AnyShape, T: np.number](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
-    x, y = args
-    return x * y  # type: ignore[return-value]
-
-
-def _divide[Shape: _AnyShape, T: np.floating](args: list[_Array[Shape, T]]) -> _Array[Shape, T]:
-    x, y = args
-    return x / y  # type: ignore[return-value]
+# ---------------------------------------------------------------------------
+# Arithmetic factory functions
+# ---------------------------------------------------------------------------
 
 
 def add[Shape: _AnyShape, T: np.number](
     a: Observable[Shape, T], b: Observable[Shape, T]
-) -> Apply[Shape, T, T]:
+) -> NativeOperator:
     """Element-wise addition: `a + b`."""
-    return Apply((a, b), a.shape, a.dtype, _add)
+    d = str(a.dtype)
+    return NativeOperator(lambda: _rust_add(d), (a, b), a.shape, a.dtype)
 
 
 def subtract[Shape: _AnyShape, T: np.number](
     a: Observable[Shape, T], b: Observable[Shape, T]
-) -> Apply[Shape, T, T]:
+) -> NativeOperator:
     """Element-wise subtraction: `a - b`."""
-    return Apply((a, b), a.shape, a.dtype, _subtract)
+    d = str(a.dtype)
+    return NativeOperator(lambda: _rust_subtract(d), (a, b), a.shape, a.dtype)
 
 
-def negate[Shape: _AnyShape, T: np.number](a: Observable[Shape, T]) -> Apply[Shape, T, T]:
+def negate[Shape: _AnyShape, T: np.number](
+    a: Observable[Shape, T],
+) -> NativeOperator:
     """Element-wise negation: `-a`."""
-    return Apply((a,), a.shape, a.dtype, _negate)
+    d = str(a.dtype)
+    return NativeOperator(lambda: _rust_negate(d), (a,), a.shape, a.dtype)
 
 
 def multiply[Shape: _AnyShape, T: np.number](
     a: Observable[Shape, T], b: Observable[Shape, T]
-) -> Apply[Shape, T, T]:
+) -> NativeOperator:
     """Element-wise multiplication: `a * b`."""
-    return Apply((a, b), a.shape, a.dtype, _multiply)
+    d = str(a.dtype)
+    return NativeOperator(lambda: _rust_multiply(d), (a, b), a.shape, a.dtype)
 
 
 def divide[Shape: _AnyShape, T: np.floating](
     a: Observable[Shape, T], b: Observable[Shape, T]
-) -> Apply[Shape, T, T]:
+) -> NativeOperator:
     """Element-wise division: `a / b` with floating point inputs."""
-    return Apply((a, b), a.shape, a.dtype, _divide)
+    d = str(a.dtype)
+    return NativeOperator(lambda: _rust_divide(d), (a, b), a.shape, a.dtype)
 
 
 def map[Shape: _AnyShape, T: np.generic](

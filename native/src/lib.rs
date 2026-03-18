@@ -1,14 +1,15 @@
-//! `tradingflow-native` — Rust core for TradingFlow.
+//! `tradingflow` — Rust core for TradingFlow.
 //!
 //! This crate provides the performance-critical data structures and runtime
 //! for the TradingFlow event-driven trading framework:
 //!
-//! * [`Series`] — append-only time series with manual memory management.
-//! * [`Operator`] — trait for pure compute functions over series.
+//! * [`Observable`] — single-value buffer (latest value of a graph node).
+//! * [`Series`] — append-only time series with length-doubling growth.
+//! * [`Operator`] — trait for pure compute functions.
 //! * [`Scenario`] — DAG runtime with type-erased operator dispatch.
 //!
-//! The crate is compiled as a PyO3 `cdylib` and exposes benchmark entry
-//! points to Python.  The core types are Rust-only (no Python wrapper yet).
+//! When compiled with the `python` feature, the crate also produces a PyO3
+//! `cdylib` exposing the runtime to Python.
 
 pub mod observable;
 pub mod series;
@@ -16,12 +17,20 @@ pub mod input;
 pub mod operator;
 pub mod operators;
 pub mod scenario;
-mod bench;
+pub mod source;
 
+#[cfg(feature = "python")]
+mod bench;
+#[cfg(feature = "python")]
+mod bridge;
+
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 
+#[cfg(feature = "python")]
 #[pymodule]
 fn tradingflow_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     bench::register(m)?;
+    bridge::register(m)?;
     Ok(())
 }

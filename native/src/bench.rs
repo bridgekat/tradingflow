@@ -7,9 +7,12 @@ use numpy::ndarray::Array1;
 use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
 
+use crate::input::Obs;
 use crate::operators;
 use crate::scenario::Scenario;
 use crate::series::Series;
+
+type O2 = (Obs<f64>, Obs<f64>);
 
 // ---------------------------------------------------------------------------
 // Python-visible result type
@@ -74,7 +77,7 @@ pub fn bench_add_compute<'py>(
     for i in 0..n {
         obs_a.write(&[a[i]]);
         obs_b.write(&[b[i]]);
-        if op.compute(ts[i], &[&obs_a, &obs_b], &mut buf) {
+        if op.compute(ts[i], (&obs_a, &obs_b), &mut buf) {
             out_series.append_unchecked(ts[i], &buf);
         }
     }
@@ -102,7 +105,7 @@ pub fn bench_scenario_compute<'py>(
     let mut sc = Scenario::new();
     let ha = sc.add_source::<f64>(&[], &[0.0]);
     let hb = sc.add_source::<f64>(&[], &[0.0]);
-    let ho = sc.add_apply(&[ha, hb], operators::add());
+    let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
     let ho_series = sc.materialize_with_capacity::<f64>(ho, n);
 
     for i in 0..n {
@@ -268,10 +271,10 @@ pub fn bench_scenario_chain<'py>(
     let ha = sc.add_source::<f64>(&[], &[0.0]);
     let hb = sc.add_source::<f64>(&[], &[0.0]);
 
-    let mut prev = sc.add_apply(&[ha, hb], operators::add());
+    let mut prev = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
     for i in 1..depth {
         let other = if i % 2 == 0 { ha } else { hb };
-        prev = sc.add_apply(&[prev, other], operators::add());
+        prev = sc.add_operator::<O2, _>((prev, other), &[], operators::add());
     }
     let prev_series = sc.materialize_with_capacity::<f64>(prev, n);
 
@@ -314,18 +317,18 @@ pub fn bench_scenario_sparse<'py>(
     let hd = sc.add_source::<f64>(&[], &[0.0]);
 
     // Active chain
-    let mut last_active = sc.add_apply(&[ha, hb], operators::add());
+    let mut last_active = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
     for _ in 1..active_ops {
-        last_active = sc.add_apply(&[last_active, ha], operators::add());
+        last_active = sc.add_operator::<O2, _>((last_active, ha), &[], operators::add());
     }
     let last_active_series = sc.materialize_with_capacity::<f64>(last_active, n);
 
     // Inactive chain (never triggered)
     let inactive_count = total_ops.saturating_sub(active_ops);
     if inactive_count > 0 {
-        let mut prev = sc.add_apply(&[hc, hd], operators::add());
+        let mut prev = sc.add_operator::<O2, _>((hc, hd), &[], operators::add());
         for _ in 1..inactive_count {
-            prev = sc.add_apply(&[prev, hc], operators::add());
+            prev = sc.add_operator::<O2, _>((prev, hc), &[], operators::add());
         }
     }
 
@@ -373,7 +376,7 @@ pub fn bench_add_compute_obs<'py>(
     for i in 0..n {
         obs_a.write(&[a[i]]);
         obs_b.write(&[b[i]]);
-        op.compute(ts[i], &[&obs_a, &obs_b], obs_out.vals_mut());
+        op.compute(ts[i], (&obs_a, &obs_b), obs_out.vals_mut());
     }
 
     // Return only the last value for verification.
@@ -400,7 +403,7 @@ pub fn bench_scenario_compute_obs<'py>(
     let mut sc = Scenario::new();
     let ha = sc.add_source::<f64>(&[], &[0.0]);
     let hb = sc.add_source::<f64>(&[], &[0.0]);
-    let ho = sc.add_apply(&[ha, hb], operators::add());
+    let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
     // No materialize — output is observable only.
 
     for i in 0..n {
@@ -437,10 +440,10 @@ pub fn bench_scenario_chain_obs<'py>(
     let ha = sc.add_source::<f64>(&[], &[0.0]);
     let hb = sc.add_source::<f64>(&[], &[0.0]);
 
-    let mut prev = sc.add_apply(&[ha, hb], operators::add());
+    let mut prev = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
     for i in 1..depth {
         let other = if i % 2 == 0 { ha } else { hb };
-        prev = sc.add_apply(&[prev, other], operators::add());
+        prev = sc.add_operator::<O2, _>((prev, other), &[], operators::add());
     }
     // No materialize — all nodes are observable only.
 
@@ -482,18 +485,18 @@ pub fn bench_scenario_sparse_obs<'py>(
     let hd = sc.add_source::<f64>(&[], &[0.0]);
 
     // Active chain
-    let mut last_active = sc.add_apply(&[ha, hb], operators::add());
+    let mut last_active = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
     for _ in 1..active_ops {
-        last_active = sc.add_apply(&[last_active, ha], operators::add());
+        last_active = sc.add_operator::<O2, _>((last_active, ha), &[], operators::add());
     }
     // No materialize.
 
     // Inactive chain (never triggered)
     let inactive_count = total_ops.saturating_sub(active_ops);
     if inactive_count > 0 {
-        let mut prev = sc.add_apply(&[hc, hd], operators::add());
+        let mut prev = sc.add_operator::<O2, _>((hc, hd), &[], operators::add());
         for _ in 1..inactive_count {
-            prev = sc.add_apply(&[prev, hc], operators::add());
+            prev = sc.add_operator::<O2, _>((prev, hc), &[], operators::add());
         }
     }
 

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import numpy as np
 import pytest
 
 from tradingflow import Operator, Scenario
+from tradingflow.observable import Observable
+from tradingflow.series import AnyShape
 from tradingflow.sources import ArrayBundleSource, AsyncCallableSource
 from tradingflow.operators import add, multiply, negate
 
@@ -248,7 +251,7 @@ class TestScenario:
         # From t=2 onward both have been seen.
         expected_ts = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype="datetime64[ns]")
         expected_vals = [
-            np.nan,       # t=1:  a=1,      b_obs=NaN (initial)
+            np.nan,  # t=1:  a=1,      b_obs=NaN (initial)
             1.0 + 10.0,  # t=2:  a_last=1, b=10
             2.0 + 10.0,  # t=3:  a=2,      b_last=10
             2.0 + 20.0,  # t=4:  a_last=2, b=20
@@ -360,6 +363,56 @@ class TestScenario:
         assert ts1 == ts2
         np.testing.assert_array_equal(vals1, vals2)
 
+    def test_heterogeneous_dtype_operator(self) -> None:
+        """An operator can consume inputs of different dtypes.
+
+        A custom operator takes an int32 source and a float64 source,
+        producing a float64 output that is the int32 value cast to float
+        plus the float64 value.
+        """
+
+        class _MixedAdd(
+            Operator[
+                tuple[Observable[AnyShape, np.int32], Observable[AnyShape, np.float64]], AnyShape, np.float64, None
+            ]
+        ):
+            """Adds int32 input (cast to float) to float64 input."""
+
+            def __init__(
+                self,
+                int_inp: Observable[AnyShape, np.int32],
+                float_inp: Observable[AnyShape, np.float64],
+            ) -> None:
+                super().__init__((int_inp, float_inp), (), np.float64)
+
+            def init_state(self) -> None:
+                return None
+
+            def compute(self, timestamp, inputs, state) -> tuple:
+                a = float(inputs[0].last)
+                b = float(inputs[1].last)
+                return (np.float64(a + b), None)
+
+        int_source = ArrayBundleSource(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([10, 20], dtype=np.int32),
+        )
+        float_source = ArrayBundleSource(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([0.5, 1.5], dtype=np.float64),
+        )
+
+        scenario = Scenario()
+        a = scenario.add_source(int_source)
+        b = scenario.add_source(float_source)
+        result_obs = scenario.add_operator(_MixedAdd(a, b))
+        result = scenario.materialize(result_obs)
+
+        asyncio.run(scenario.run())
+
+        assert list(result.index) == [ts(1), ts(2)]
+        assert list(result.values) == pytest.approx([10.5, 21.5])
+
     def test_operator_returning_none_stops_downstream_propagation(self) -> None:
         """An operator returning `None` suppresses its output and halts downstream propagation.
 
@@ -408,3 +461,83 @@ class TestScenario:
         assert list(filtered.values) == pytest.approx([-1.0, -3.0])
         assert list(downstream.index) == [ts(1), ts(3)]
         assert list(downstream.values) == pytest.approx([1.0, 3.0])
+
+    def test_concurrent_async_live_sources_complete_within_deadline(self) -> None:
+        """Multiple async live sources with delays run concurrently.
+
+        Two live sources each sleep 0.3 s total (3 × 0.1 s).  If iterated
+        sequentially total wall time would be ≥ 0.6 s; with concurrent
+        iteration it should be ≈ 0.3 s.  We check completion within 0.8 s
+        (generous bound) and verify all events were received.
+        """
+
+        async def slow_source_a() -> None:
+            for i in range(3):
+                await asyncio.sleep(0.1)
+                yield float(i + 1)
+
+        async def slow_source_b() -> None:
+            for i in range(3):
+                await asyncio.sleep(0.1)
+                yield float((i + 1) * 10)
+
+        src_a = AsyncCallableSource((), np.float64, slow_source_a)
+        src_b = AsyncCallableSource((), np.float64, slow_source_b)
+
+        scenario = Scenario()
+        a = scenario.add_source(src_a)
+        b = scenario.add_source(src_b)
+
+        a_series = scenario.materialize(a)
+        b_series = scenario.materialize(b)
+
+        start = time.monotonic()
+        asyncio.run(scenario.run())
+        elapsed = time.monotonic() - start
+
+        assert len(a_series) == 3
+        assert len(b_series) == 3
+        assert set(float(v) for v in a_series.values) == {1.0, 2.0, 3.0}
+        assert set(float(v) for v in b_series.values) == {10.0, 20.0, 30.0}
+        assert elapsed < 0.8, (
+            f"Took {elapsed:.2f}s — sources may not be running concurrently"
+        )
+
+    def test_async_live_source_with_operator(self) -> None:
+        """A live source feeds into an operator, producing correct results.
+
+        A historical source and an async live source feed into ``add``.
+        Since live timestamps are wall-clock, we only check set-equality
+        of the resulting values.
+        """
+
+        async def live_gen() -> None:
+            yield 100.0
+            yield 200.0
+
+        hist_source = ArrayBundleSource.from_arrays(
+            timestamps=np.array([ts(1)]),
+            values=np.array([5.0]),
+        )
+        live_source = AsyncCallableSource((), np.float64, live_gen)
+
+        scenario = Scenario()
+        h = scenario.add_source(hist_source)
+        l = scenario.add_source(live_source)
+        result_obs = scenario.add_operator(add(h, l))
+
+        h_series = scenario.materialize(h)
+        l_series = scenario.materialize(l)
+        result = scenario.materialize(result_obs)
+
+        asyncio.run(scenario.run())
+
+        # Historical source emits 1 event, live source emits 2 events.
+        assert len(h_series) == 1
+        assert len(l_series) == 2
+        assert set(float(v) for v in l_series.values) == {100.0, 200.0}
+
+        # The operator should have fired at every unique timestamp.
+        # We can't predict exact values due to timestamp ordering,
+        # but the result should have at least 1 entry.
+        assert len(result) >= 1

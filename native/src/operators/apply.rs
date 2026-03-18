@@ -1,9 +1,10 @@
-//! Apply operator — applies a closure to the latest values of N input
-//! observables.
+//! Apply operator and built-in element-wise operators.
 //!
-//! This is the workhorse operator for element-wise arithmetic.  The closure
-//! receives `&[&[T]]` (one slice per input, each of length = stride) and
-//! writes into `&mut [T]`.
+//! * [`Apply<T, F>`] — closure-based stateless operator with homogeneous
+//!   observable inputs.  Registered via [`Scenario::add_slice_operator`].
+//! * [`Add<T>`], [`Subtract<T>`], [`Multiply<T>`], [`Divide<T>`],
+//!   [`Negate<T>`] — concrete operators with typed tuple inputs.  Registered
+//!   via [`Scenario::add_operator`] with the appropriate [`InputTuple`].
 
 use std::marker::PhantomData;
 use std::ops;
@@ -11,7 +12,16 @@ use std::ops;
 use crate::observable::Observable;
 use crate::operator::Operator;
 
-/// Stateless operator that applies `F` to the latest values of its inputs.
+// ---------------------------------------------------------------------------
+// Apply<T, F> — homogeneous closure operator
+// ---------------------------------------------------------------------------
+
+/// Stateless operator that applies `F` to N homogeneous observable inputs.
+///
+/// `F` receives `&[&[T]]` (one flat value slice per input) and writes into
+/// `&mut [T]` (the output buffer).  It always produces output.
+///
+/// Register via [`Scenario::add_slice_operator`].
 pub struct Apply<T: Copy, F: Fn(&[&[T]], &mut [T])> {
     func: F,
     _phantom: PhantomData<T>,
@@ -40,7 +50,6 @@ impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Operator for Apply<T, F> {
         inputs: &[&Observable<T>],
         out: &mut [T],
     ) -> bool {
-        // Observables always have values — no emptiness check needed.
         // Gather last-value slices.  Stack-allocate up to 8 inputs.
         let mut buf = [&[] as &[T]; 8];
         if inputs.len() <= 8 {
@@ -57,72 +66,141 @@ impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Operator for Apply<T, F> {
 }
 
 // ---------------------------------------------------------------------------
-// Factory functions for common arithmetic operators
+// Concrete element-wise operators (InputTuple-based, heterogeneous-capable)
 // ---------------------------------------------------------------------------
 
-/// Element-wise addition of two observables.
-pub fn add<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
-where
-    T: Copy + ops::Add<Output = T>,
-{
-    Apply::new(|inputs: &[&[T]], out: &mut [T]| {
-        let (a, b) = (inputs[0], inputs[1]);
+/// Element-wise addition: `out[i] = a[i] + b[i]`.
+pub struct Add<T: Copy>(PhantomData<T>);
+
+impl<T: Copy + ops::Add<Output = T>> Operator for Add<T> {
+    type Inputs<'a>
+        = (&'a Observable<T>, &'a Observable<T>)
+    where
+        Self: 'a;
+    type Output = T;
+
+    #[inline(always)]
+    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
+        let (a, b) = inputs;
+        let (a, b) = (a.last(), b.last());
         for i in 0..out.len() {
             out[i] = a[i] + b[i];
         }
-    })
+        true
+    }
 }
 
-/// Element-wise subtraction of two observables.
-pub fn subtract<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
-where
-    T: Copy + ops::Sub<Output = T>,
-{
-    Apply::new(|inputs: &[&[T]], out: &mut [T]| {
-        let (a, b) = (inputs[0], inputs[1]);
+/// Element-wise subtraction: `out[i] = a[i] - b[i]`.
+pub struct Subtract<T: Copy>(PhantomData<T>);
+
+impl<T: Copy + ops::Sub<Output = T>> Operator for Subtract<T> {
+    type Inputs<'a>
+        = (&'a Observable<T>, &'a Observable<T>)
+    where
+        Self: 'a;
+    type Output = T;
+
+    #[inline(always)]
+    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
+        let (a, b) = inputs;
+        let (a, b) = (a.last(), b.last());
         for i in 0..out.len() {
             out[i] = a[i] - b[i];
         }
-    })
+        true
+    }
 }
 
-/// Element-wise multiplication of two observables.
-pub fn multiply<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
-where
-    T: Copy + ops::Mul<Output = T>,
-{
-    Apply::new(|inputs: &[&[T]], out: &mut [T]| {
-        let (a, b) = (inputs[0], inputs[1]);
+/// Element-wise multiplication: `out[i] = a[i] * b[i]`.
+pub struct Multiply<T: Copy>(PhantomData<T>);
+
+impl<T: Copy + ops::Mul<Output = T>> Operator for Multiply<T> {
+    type Inputs<'a>
+        = (&'a Observable<T>, &'a Observable<T>)
+    where
+        Self: 'a;
+    type Output = T;
+
+    #[inline(always)]
+    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
+        let (a, b) = inputs;
+        let (a, b) = (a.last(), b.last());
         for i in 0..out.len() {
             out[i] = a[i] * b[i];
         }
-    })
+        true
+    }
 }
 
-/// Element-wise division of two observables.
-pub fn divide<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
-where
-    T: Copy + ops::Div<Output = T>,
-{
-    Apply::new(|inputs: &[&[T]], out: &mut [T]| {
-        let (a, b) = (inputs[0], inputs[1]);
+/// Element-wise division: `out[i] = a[i] / b[i]`.
+pub struct Divide<T: Copy>(PhantomData<T>);
+
+impl<T: Copy + ops::Div<Output = T>> Operator for Divide<T> {
+    type Inputs<'a>
+        = (&'a Observable<T>, &'a Observable<T>)
+    where
+        Self: 'a;
+    type Output = T;
+
+    #[inline(always)]
+    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
+        let (a, b) = inputs;
+        let (a, b) = (a.last(), b.last());
         for i in 0..out.len() {
             out[i] = a[i] / b[i];
         }
-    })
+        true
+    }
 }
 
-/// Element-wise negation of an observable.
-pub fn negate<T>() -> Apply<T, impl Fn(&[&[T]], &mut [T])>
-where
-    T: Copy + ops::Neg<Output = T>,
-{
-    Apply::new(|inputs: &[&[T]], out: &mut [T]| {
-        let a = inputs[0];
+/// Element-wise negation: `out[i] = -a[i]`.
+pub struct Negate<T: Copy>(PhantomData<T>);
+
+impl<T: Copy + ops::Neg<Output = T>> Operator for Negate<T> {
+    type Inputs<'a>
+        = (&'a Observable<T>,)
+    where
+        Self: 'a;
+    type Output = T;
+
+    #[inline(always)]
+    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
+        let (a,) = inputs;
+        let a = a.last();
         for i in 0..out.len() {
             out[i] = -a[i];
         }
-    })
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Factory functions
+// ---------------------------------------------------------------------------
+
+/// Create an [`Add`] operator.
+pub fn add<T: Copy + ops::Add<Output = T>>() -> Add<T> {
+    Add(PhantomData)
+}
+
+/// Create a [`Subtract`] operator.
+pub fn subtract<T: Copy + ops::Sub<Output = T>>() -> Subtract<T> {
+    Subtract(PhantomData)
+}
+
+/// Create a [`Multiply`] operator.
+pub fn multiply<T: Copy + ops::Mul<Output = T>>() -> Multiply<T> {
+    Multiply(PhantomData)
+}
+
+/// Create a [`Divide`] operator.
+pub fn divide<T: Copy + ops::Div<Output = T>>() -> Divide<T> {
+    Divide(PhantomData)
+}
+
+/// Create a [`Negate`] operator.
+pub fn negate<T: Copy + ops::Neg<Output = T>>() -> Negate<T> {
+    Negate(PhantomData)
 }
 
 // ---------------------------------------------------------------------------
@@ -134,39 +212,53 @@ mod tests {
     use super::*;
     use crate::observable::Observable;
 
-    fn make_pair() -> (Observable<f64>, Observable<f64>) {
-        let a = Observable::new(&[], &[20.0]);
-        let b = Observable::new(&[], &[7.0]);
-        (a, b)
-    }
-
     #[test]
     fn test_add() {
-        let (a, b) = make_pair();
+        let a = Observable::new(&[], &[20.0]);
+        let b = Observable::new(&[], &[7.0]);
         let mut op = add::<f64>();
         let mut out = [0.0];
-        assert!(op.compute(2, &[&a, &b], &mut out));
-        assert_eq!(out, [27.0]); // 20 + 7
+        assert!(op.compute(2, (&a, &b), &mut out));
+        assert_eq!(out, [27.0]);
     }
 
     #[test]
     fn test_subtract() {
-        let (a, b) = make_pair();
+        let a = Observable::new(&[], &[20.0]);
+        let b = Observable::new(&[], &[7.0]);
         let mut op = subtract::<f64>();
         let mut out = [0.0];
-        assert!(op.compute(2, &[&a, &b], &mut out));
-        assert_eq!(out, [13.0]); // 20 - 7
+        assert!(op.compute(2, (&a, &b), &mut out));
+        assert_eq!(out, [13.0]);
     }
 
     #[test]
-    fn test_always_produces_output() {
-        // Observables always have values, so compute always returns true.
-        let a = Observable::<f64>::new(&[], &[0.0]);
-        let b = Observable::<f64>::new(&[], &[0.0]);
-        let mut op = add::<f64>();
+    fn test_multiply() {
+        let a = Observable::new(&[], &[4.0]);
+        let b = Observable::new(&[], &[5.0]);
+        let mut op = multiply::<f64>();
         let mut out = [0.0];
-        assert!(op.compute(0, &[&a, &b], &mut out));
-        assert_eq!(out, [0.0]); // 0.0 + 0.0
+        assert!(op.compute(1, (&a, &b), &mut out));
+        assert_eq!(out, [20.0]);
+    }
+
+    #[test]
+    fn test_divide() {
+        let a = Observable::new(&[], &[20.0]);
+        let b = Observable::new(&[], &[4.0]);
+        let mut op = divide::<f64>();
+        let mut out = [0.0];
+        assert!(op.compute(1, (&a, &b), &mut out));
+        assert_eq!(out, [5.0]);
+    }
+
+    #[test]
+    fn test_negate() {
+        let a = Observable::new(&[], &[7.0]);
+        let mut op = negate::<f64>();
+        let mut out = [0.0];
+        assert!(op.compute(1, (&a,), &mut out));
+        assert_eq!(out, [-7.0]);
     }
 
     #[test]
@@ -175,7 +267,30 @@ mod tests {
         let b = Observable::new(&[2], &[10.0, 20.0]);
         let mut op = add::<f64>();
         let mut out = [0.0, 0.0];
-        assert!(op.compute(1, &[&a, &b], &mut out));
+        assert!(op.compute(1, (&a, &b), &mut out));
         assert_eq!(out, [11.0, 22.0]);
+    }
+
+    #[test]
+    fn test_apply_closure() {
+        let a = Observable::new(&[], &[3.0]);
+        let b = Observable::new(&[], &[4.0]);
+        let mut op = Apply::new(|inputs: &[&[f64]], out: &mut [f64]| {
+            // Pythagorean: sqrt(a^2 + b^2)
+            out[0] = (inputs[0][0] * inputs[0][0] + inputs[1][0] * inputs[1][0]).sqrt();
+        });
+        let mut out = [0.0];
+        assert!(op.compute(1, &[&a, &b], &mut out));
+        assert_eq!(out, [5.0]);
+    }
+
+    #[test]
+    fn test_always_produces_output() {
+        let a = Observable::<f64>::new(&[], &[0.0]);
+        let b = Observable::<f64>::new(&[], &[0.0]);
+        let mut op = add::<f64>();
+        let mut out = [0.0];
+        assert!(op.compute(0, (&a, &b), &mut out));
+        assert_eq!(out, [0.0]);
     }
 }

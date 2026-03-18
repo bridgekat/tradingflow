@@ -6,8 +6,15 @@
 //!
 //! Memory is managed manually (alloc / realloc) so that the hot-path
 //! [`append_unchecked`] compiles to a capacity check + two pointer writes.
+//!
+//! Zero-copy `ndarray` view accessors:
+//! - [`timestamps_view`] → `ArrayView1<i64>` (always 1-D)
+//! - [`values_view_flat`] → `ArrayView1<T>` (flat)
+//! - [`values_view`] → `ArrayViewD<T>` with shape `[len, ...element_shape]`
 
 use std::marker::PhantomData;
+
+use ndarray::{ArrayView1, ArrayViewD, IxDyn};
 
 const INITIAL_CAPACITY: usize = 16;
 
@@ -23,6 +30,7 @@ const INITIAL_CAPACITY: usize = 16;
 /// invariant `len <= cap` is maintained by every mutating method and `Drop`
 /// deallocates exactly what was allocated.
 pub struct Series<T: Copy> {
+    shape: Box<[usize]>,
     stride: usize,
     len: usize,
     cap: usize,
@@ -43,9 +51,10 @@ impl<T: Copy> Series<T> {
 
     /// Create a new series with shape-derived stride and at least `cap` slots.
     pub fn with_capacity(shape: &[usize], cap: usize) -> Self {
-        let stride = shape.iter().product::<usize>().max(1);
+        let stride = shape.iter().product::<usize>();
         let cap = cap.max(1);
         Self {
+            shape: shape.into(),
             stride,
             len: 0,
             cap,
@@ -56,13 +65,19 @@ impl<T: Copy> Series<T> {
 
     // -- Accessors ----------------------------------------------------------
 
+    /// Element shape (e.g. `&[2, 3]` for a 2x3 matrix element).
+    #[inline(always)]
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+
     /// Number of elements currently stored.
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// Number of values per element (product of shape dimensions, min 1).
+    /// Number of values per element (product of shape dimensions).
     #[inline(always)]
     pub fn stride(&self) -> usize {
         self.stride
@@ -109,6 +124,33 @@ impl<T: Copy> Series<T> {
     pub fn values(&self) -> &[T] {
         // SAFETY: `vals[0..len*stride]` is initialised.
         unsafe { std::slice::from_raw_parts(self.vals, self.len * self.stride) }
+    }
+
+    /// Zero-copy `ArrayView1` of timestamps `[0..len]`.
+    #[inline]
+    pub fn timestamps_view(&self) -> ArrayView1<'_, i64> {
+        unsafe { ArrayView1::from_shape_ptr(self.len, self.ts as *const i64) }
+    }
+
+    /// Zero-copy flat `ArrayView1` of all values (length `len * stride`).
+    #[inline]
+    pub fn values_view_flat(&self) -> ArrayView1<'_, T> {
+        unsafe { ArrayView1::from_shape_ptr(self.len * self.stride, self.vals as *const T) }
+    }
+
+    /// Zero-copy `ArrayViewD` with shape `[len, ...element_shape]`.
+    ///
+    /// - Scalar (shape `[]`): returns shape `[len]`
+    /// - Vector (shape `[3]`): returns shape `[len, 3]`
+    /// - Matrix (shape `[2, 3]`): returns shape `[len, 2, 3]`
+    #[inline]
+    pub fn values_view(&self) -> ArrayViewD<'_, T> {
+        let view_shape: Vec<usize> = if self.shape.is_empty() {
+            vec![self.len]
+        } else {
+            std::iter::once(self.len).chain(self.shape.iter().copied()).collect()
+        };
+        unsafe { ArrayViewD::from_shape_ptr(IxDyn(&view_shape), self.vals as *const T) }
     }
 
     /// Copy timestamps into a new `Vec`.
@@ -273,6 +315,7 @@ mod tests {
         s.append_unchecked(2, &[20.0]);
         s.append_unchecked(3, &[30.0]);
         assert_eq!(s.len(), 3);
+        assert_eq!(s.shape(), &[] as &[usize]);
         assert_eq!(s.timestamps(), &[1, 2, 3]);
         assert_eq!(s.values(), &[10.0, 20.0, 30.0]);
         assert_eq!(s.last(), &[30.0]);
@@ -296,6 +339,7 @@ mod tests {
         s.append_unchecked(2, &[4.0, 5.0, 6.0]);
         assert_eq!(s.len(), 2);
         assert_eq!(s.stride(), 3);
+        assert_eq!(s.shape(), &[3]);
         assert_eq!(s.last(), &[4.0, 5.0, 6.0]);
         assert_eq!(s.values(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
@@ -316,8 +360,76 @@ mod tests {
         s.append_unchecked(1, &[1.0]);
         s.clear();
         assert!(s.is_empty());
-        // Can append again after clear.
         s.append_unchecked(2, &[2.0]);
         assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn values_view_scalar() {
+        let mut s = Series::<f64>::new(&[]);
+        s.append_unchecked(1, &[10.0]);
+        s.append_unchecked(2, &[20.0]);
+        s.append_unchecked(3, &[30.0]);
+
+        // Scalar → shape [len]
+        let view = s.values_view();
+        assert_eq!(view.shape(), &[3]);
+        assert_eq!(view[[0]], 10.0);
+        assert_eq!(view[[2]], 30.0);
+        // Zero-copy.
+        assert_eq!(view.as_slice().unwrap().as_ptr(), s.values().as_ptr());
+    }
+
+    #[test]
+    fn values_view_vector() {
+        let mut s = Series::<f64>::new(&[3]);
+        s.append_unchecked(1, &[1.0, 2.0, 3.0]);
+        s.append_unchecked(2, &[4.0, 5.0, 6.0]);
+
+        // Vector → shape [len, 3]
+        let view = s.values_view();
+        assert_eq!(view.shape(), &[2, 3]);
+        assert_eq!(view[[0, 0]], 1.0);
+        assert_eq!(view[[0, 2]], 3.0);
+        assert_eq!(view[[1, 0]], 4.0);
+        assert_eq!(view[[1, 2]], 6.0);
+        assert_eq!(view.as_slice().unwrap().as_ptr(), s.values().as_ptr());
+    }
+
+    #[test]
+    fn values_view_matrix() {
+        let mut s = Series::<f64>::new(&[2, 3]);
+        s.append_unchecked(1, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        s.append_unchecked(2, &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+
+        // Matrix → shape [len, 2, 3]
+        let view = s.values_view();
+        assert_eq!(view.shape(), &[2, 2, 3]);
+        assert_eq!(view[[0, 0, 0]], 1.0);
+        assert_eq!(view[[0, 1, 2]], 6.0);
+        assert_eq!(view[[1, 0, 0]], 7.0);
+        assert_eq!(view[[1, 1, 2]], 12.0);
+        assert_eq!(view.as_slice().unwrap().as_ptr(), s.values().as_ptr());
+    }
+
+    #[test]
+    fn timestamps_view_always_1d() {
+        let mut s = Series::<f64>::new(&[2, 3]);
+        s.append_unchecked(100, &[0.0; 6]);
+        s.append_unchecked(200, &[0.0; 6]);
+        let ts = s.timestamps_view();
+        assert_eq!(ts.shape(), &[2]);
+        assert_eq!(ts[0], 100);
+        assert_eq!(ts[1], 200);
+        assert_eq!(ts.as_slice().unwrap().as_ptr(), s.timestamps().as_ptr());
+    }
+
+    #[test]
+    fn flat_view_always_1d() {
+        let mut s = Series::<f64>::new(&[2, 3]);
+        s.append_unchecked(1, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let flat = s.values_view_flat();
+        assert_eq!(flat.len(), 6);
+        assert_eq!(flat[3], 4.0);
     }
 }

@@ -179,47 +179,81 @@ class TestApply:
         np.testing.assert_array_almost_equal(output.values, [[11.0, 22.0], [33.0, 44.0]])
 
 
+def _make_timestamps(n: int) -> np.ndarray:
+    """Create n nanosecond timestamps [1, 2, ..., n]."""
+    return np.array([ts(i) for i in range(1, n + 1)])
+
+
+def _run_binary_factory(factory, a_vals, b_vals):
+    """Helper: run a binary NativeOperator factory via Scenario."""
+    src_a = ArrayBundleSource.from_arrays(
+        timestamps=_make_timestamps(len(a_vals)),
+        values=np.array(a_vals, dtype=np.float64),
+    )
+    src_b = ArrayBundleSource.from_arrays(
+        timestamps=_make_timestamps(len(b_vals)),
+        values=np.array(b_vals, dtype=np.float64),
+    )
+    scenario = Scenario()
+    a = scenario.add_source(src_a)
+    b = scenario.add_source(src_b)
+    result_obs = scenario.add_operator(factory(a, b))
+    result = scenario.materialize(result_obs)
+    asyncio.run(scenario.run())
+    return result
+
+
+def _run_unary_factory(factory, a_vals):
+    """Helper: run a unary NativeOperator factory via Scenario."""
+    src_a = ArrayBundleSource.from_arrays(
+        timestamps=_make_timestamps(len(a_vals)),
+        values=np.array(a_vals, dtype=np.float64),
+    )
+    scenario = Scenario()
+    a = scenario.add_source(src_a)
+    result_obs = scenario.add_operator(factory(a))
+    result = scenario.materialize(result_obs)
+    asyncio.run(scenario.run())
+    return result
+
+
 class TestFactoryFunctions:
     def test_add(self) -> None:
-        a_obs, a_s = make_scalar_observable([1.0, 2.0])
-        b_obs, b_s = make_scalar_observable([3.0, 4.0])
-        op = add(a_obs, b_obs)
-        output = run_op_with_observables(op, [ts(i) for i in range(1, 3)], [(a_obs, a_s), (b_obs, b_s)])
-        assert list(output.values) == pytest.approx([4.0, 6.0])
+        result = _run_binary_factory(add, [1.0, 2.0], [3.0, 4.0])
+        assert list(result.values) == pytest.approx([4.0, 6.0])
 
     def test_subtract(self) -> None:
-        a_obs, a_s = make_scalar_observable([10.0, 20.0])
-        b_obs, b_s = make_scalar_observable([3.0, 5.0])
-        op = subtract(a_obs, b_obs)
-        output = run_op_with_observables(op, [ts(i) for i in range(1, 3)], [(a_obs, a_s), (b_obs, b_s)])
-        assert list(output.values) == pytest.approx([7.0, 15.0])
+        result = _run_binary_factory(subtract, [10.0, 20.0], [3.0, 5.0])
+        assert list(result.values) == pytest.approx([7.0, 15.0])
 
     def test_multiply(self) -> None:
-        a_obs, a_s = make_scalar_observable([2.0, 3.0])
-        b_obs, b_s = make_scalar_observable([4.0, 5.0])
-        op = multiply(a_obs, b_obs)
-        output = run_op_with_observables(op, [ts(i) for i in range(1, 3)], [(a_obs, a_s), (b_obs, b_s)])
-        assert list(output.values) == pytest.approx([8.0, 15.0])
+        result = _run_binary_factory(multiply, [2.0, 3.0], [4.0, 5.0])
+        assert list(result.values) == pytest.approx([8.0, 15.0])
 
     def test_divide(self) -> None:
-        a_obs, a_s = make_scalar_observable([10.0, 20.0])
-        b_obs, b_s = make_scalar_observable([2.0, 4.0])
-        op = divide(a_obs, b_obs)
-        output = run_op_with_observables(op, [ts(i) for i in range(1, 3)], [(a_obs, a_s), (b_obs, b_s)])
-        assert list(output.values) == pytest.approx([5.0, 5.0])
+        result = _run_binary_factory(divide, [10.0, 20.0], [2.0, 4.0])
+        assert list(result.values) == pytest.approx([5.0, 5.0])
 
     def test_negate(self) -> None:
-        a_obs, a_s = make_scalar_observable([3.0, -5.0])
-        op = negate(a_obs)
-        output = run_op_with_observables(op, [ts(i) for i in range(1, 3)], [(a_obs, a_s)])
-        assert list(output.values) == pytest.approx([-3.0, 5.0])
+        result = _run_unary_factory(negate, [3.0, -5.0])
+        assert list(result.values) == pytest.approx([-3.0, 5.0])
 
     def test_vector_divide(self) -> None:
-        a_obs, a_s = make_vector_observable([[10.0, 20.0], [30.0, 40.0]])
-        b_obs, b_s = make_vector_observable([[2.0, 4.0], [5.0, 8.0]])
-        op = divide(a_obs, b_obs)
-        output = run_op_with_observables(op, [ts(i) for i in range(1, 3)], [(a_obs, a_s), (b_obs, b_s)])
-        np.testing.assert_array_almost_equal(output.values, [[5.0, 5.0], [6.0, 5.0]])
+        src_a = ArrayBundleSource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([[10.0, 20.0], [30.0, 40.0]]),
+        )
+        src_b = ArrayBundleSource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([[2.0, 4.0], [5.0, 8.0]]),
+        )
+        scenario = Scenario()
+        a = scenario.add_source(src_a)
+        b = scenario.add_source(src_b)
+        result_obs = scenario.add_operator(divide(a, b))
+        result = scenario.materialize(result_obs)
+        asyncio.run(scenario.run())
+        np.testing.assert_array_almost_equal(result.values, [[5.0, 5.0], [6.0, 5.0]])
 
 
 class TestSelect:

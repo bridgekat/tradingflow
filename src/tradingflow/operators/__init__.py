@@ -7,7 +7,7 @@ sub-packages by category:
   ([`add`][tradingflow.operators.add], [`subtract`][tradingflow.operators.subtract], [`multiply`][tradingflow.operators.multiply], [`divide`][tradingflow.operators.divide],
   [`negate`][tradingflow.operators.negate]), [`Concat`][tradingflow.operators.Concat], [`Filter`][tradingflow.operators.Filter], [`Stack`][tradingflow.operators.Stack],
   [`Where`][tradingflow.operators.Where], and [`Select`][tradingflow.operators.Select].
-* **operators.filters**: Rolling statistical filters and technical indicators.
+* **operators.indicators**: Rolling statistical indicators and technical indicators.
 * **operators.metrics**: Performance metrics (average return, Sharpe ratio).
 * **operators.portfolios**: Portfolio construction methods.
 * **operators.predictors**: Prediction models with rolling retraining.
