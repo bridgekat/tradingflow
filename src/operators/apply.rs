@@ -2,9 +2,9 @@
 //!
 //! * [`Apply<T, F>`] — closure-based stateless operator with homogeneous
 //!   observable inputs.  Registered via [`Scenario::add_slice_operator`].
-//! * [`Add<T>`], [`Subtract<T>`], [`Multiply<T>`], [`Divide<T>`],
-//!   [`Negate<T>`] — concrete operators with typed tuple inputs.  Registered
-//!   via [`Scenario::add_operator`] with the appropriate [`InputTuple`].
+//! * [`Elementwise2`] / [`Elementwise1`] — element-wise binary/unary ops.
+//!   Factory functions: [`add`], [`subtract`], [`multiply`], [`divide`],
+//!   [`negate`].
 
 use std::marker::PhantomData;
 use std::ops;
@@ -21,44 +21,52 @@ use crate::operator::Operator;
 /// `F` receives `&[&[T]]` (one flat value slice per input) and writes into
 /// `&mut [T]` (the output buffer).  It always produces output.
 ///
+/// The output shape is determined by `shape_fn` from the input shapes.
+///
 /// Register via [`Scenario::add_slice_operator`].
-pub struct Apply<T: Copy, F: Fn(&[&[T]], &mut [T])> {
+pub struct Apply<T: Copy, F: Fn(&[&[T]], &mut [T]), S: Fn(&[&[usize]]) -> Box<[usize]>> {
     func: F,
+    shape_fn: S,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Apply<T, F> {
-    pub fn new(func: F) -> Self {
+impl<T: Copy, F: Fn(&[&[T]], &mut [T]), S: Fn(&[&[usize]]) -> Box<[usize]>> Apply<T, F, S> {
+    pub fn new(shape_fn: S, func: F) -> Self {
         Self {
             func,
+            shape_fn,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Operator for Apply<T, F> {
+impl<
+    T: Copy + 'static,
+    F: Fn(&[&[T]], &mut [T]) + 'static,
+    S: Fn(&[&[usize]]) -> Box<[usize]> + 'static,
+> Operator for Apply<T, F, S>
+{
     type Inputs<'a>
-        = &'a [&'a Observable<T>]
+        = Box<[&'a Observable<T>]>
     where
         Self: 'a;
-    type Output = T;
+    type Scalar = T;
+
+    fn output_shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+        (self.shape_fn)(input_shapes)
+    }
 
     #[inline(always)]
-    fn compute(
-        &mut self,
-        _timestamp: i64,
-        inputs: &[&Observable<T>],
-        out: &mut [T],
-    ) -> bool {
+    fn compute(&mut self, _timestamp: i64, inputs: Box<[&Observable<T>]>, out: &mut [T]) -> bool {
         // Gather last-value slices.  Stack-allocate up to 8 inputs.
         let mut buf = [&[] as &[T]; 8];
         if inputs.len() <= 8 {
             for (i, obs) in inputs.iter().enumerate() {
-                buf[i] = obs.last();
+                buf[i] = obs.current();
             }
             (self.func)(&buf[..inputs.len()], out);
         } else {
-            let v: Vec<&[T]> = inputs.iter().map(|o| o.last()).collect();
+            let v: Vec<&[T]> = inputs.iter().map(|o| o.current()).collect();
             (self.func)(&v, out);
         }
         true
@@ -66,141 +74,127 @@ impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Operator for Apply<T, F> {
 }
 
 // ---------------------------------------------------------------------------
-// Concrete element-wise operators (InputTuple-based, heterogeneous-capable)
+// Element-wise binary operator
 // ---------------------------------------------------------------------------
 
-/// Element-wise addition: `out[i] = a[i] + b[i]`.
-pub struct Add<T: Copy>(PhantomData<T>);
+/// Element-wise binary operator: `out[i] = op(a[i], b[i])`.
+///
+/// Shape-preserving: output shape equals input shape (inputs must match).
+pub struct Elementwise2<T: Copy, Op: Fn(T, T) -> T> {
+    op: Op,
+    _phantom: PhantomData<T>,
+}
 
-impl<T: Copy + ops::Add<Output = T>> Operator for Add<T> {
+impl<T: Copy + 'static, Op: Fn(T, T) -> T + 'static> Operator for Elementwise2<T, Op> {
     type Inputs<'a>
         = (&'a Observable<T>, &'a Observable<T>)
     where
         Self: 'a;
-    type Output = T;
+    type Scalar = T;
+
+    fn output_shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+        input_shapes[0].into()
+    }
 
     #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
+    fn compute(
+        &mut self,
+        _ts: i64,
+        inputs: (&Observable<T>, &Observable<T>),
+        out: &mut [T],
+    ) -> bool {
         let (a, b) = inputs;
-        let (a, b) = (a.last(), b.last());
+        let (a, b) = (a.current(), b.current());
         for i in 0..out.len() {
-            out[i] = a[i] + b[i];
+            out[i] = (self.op)(a[i], b[i]);
         }
         true
     }
 }
 
-/// Element-wise subtraction: `out[i] = a[i] - b[i]`.
-pub struct Subtract<T: Copy>(PhantomData<T>);
+// ---------------------------------------------------------------------------
+// Element-wise unary operator
+// ---------------------------------------------------------------------------
 
-impl<T: Copy + ops::Sub<Output = T>> Operator for Subtract<T> {
-    type Inputs<'a>
-        = (&'a Observable<T>, &'a Observable<T>)
-    where
-        Self: 'a;
-    type Output = T;
-
-    #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
-        let (a, b) = inputs;
-        let (a, b) = (a.last(), b.last());
-        for i in 0..out.len() {
-            out[i] = a[i] - b[i];
-        }
-        true
-    }
+/// Element-wise unary operator: `out[i] = op(a[i])`.
+///
+/// Shape-preserving: output shape equals input shape.
+pub struct Elementwise1<T: Copy, Op: Fn(T) -> T> {
+    op: Op,
+    _phantom: PhantomData<T>,
 }
 
-/// Element-wise multiplication: `out[i] = a[i] * b[i]`.
-pub struct Multiply<T: Copy>(PhantomData<T>);
-
-impl<T: Copy + ops::Mul<Output = T>> Operator for Multiply<T> {
-    type Inputs<'a>
-        = (&'a Observable<T>, &'a Observable<T>)
-    where
-        Self: 'a;
-    type Output = T;
-
-    #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
-        let (a, b) = inputs;
-        let (a, b) = (a.last(), b.last());
-        for i in 0..out.len() {
-            out[i] = a[i] * b[i];
-        }
-        true
-    }
-}
-
-/// Element-wise division: `out[i] = a[i] / b[i]`.
-pub struct Divide<T: Copy>(PhantomData<T>);
-
-impl<T: Copy + ops::Div<Output = T>> Operator for Divide<T> {
-    type Inputs<'a>
-        = (&'a Observable<T>, &'a Observable<T>)
-    where
-        Self: 'a;
-    type Output = T;
-
-    #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
-        let (a, b) = inputs;
-        let (a, b) = (a.last(), b.last());
-        for i in 0..out.len() {
-            out[i] = a[i] / b[i];
-        }
-        true
-    }
-}
-
-/// Element-wise negation: `out[i] = -a[i]`.
-pub struct Negate<T: Copy>(PhantomData<T>);
-
-impl<T: Copy + ops::Neg<Output = T>> Operator for Negate<T> {
+impl<T: Copy + 'static, Op: Fn(T) -> T + 'static> Operator for Elementwise1<T, Op> {
     type Inputs<'a>
         = (&'a Observable<T>,)
     where
         Self: 'a;
-    type Output = T;
+    type Scalar = T;
+
+    fn output_shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+        input_shapes[0].into()
+    }
 
     #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
+    fn compute(&mut self, _ts: i64, inputs: (&Observable<T>,), out: &mut [T]) -> bool {
         let (a,) = inputs;
-        let a = a.last();
+        let a = a.current();
         for i in 0..out.len() {
-            out[i] = -a[i];
+            out[i] = (self.op)(a[i]);
         }
         true
     }
 }
+
+/// Type aliases.
+pub type Add<T> = Elementwise2<T, fn(T, T) -> T>;
+pub type Subtract<T> = Elementwise2<T, fn(T, T) -> T>;
+pub type Multiply<T> = Elementwise2<T, fn(T, T) -> T>;
+pub type Divide<T> = Elementwise2<T, fn(T, T) -> T>;
+pub type Negate<T> = Elementwise1<T, fn(T) -> T>;
 
 // ---------------------------------------------------------------------------
 // Factory functions
 // ---------------------------------------------------------------------------
 
-/// Create an [`Add`] operator.
+/// Create an element-wise addition operator.
 pub fn add<T: Copy + ops::Add<Output = T>>() -> Add<T> {
-    Add(PhantomData)
+    Elementwise2 {
+        op: |a, b| a + b,
+        _phantom: PhantomData,
+    }
 }
 
-/// Create a [`Subtract`] operator.
+/// Create an element-wise subtraction operator.
 pub fn subtract<T: Copy + ops::Sub<Output = T>>() -> Subtract<T> {
-    Subtract(PhantomData)
+    Elementwise2 {
+        op: |a, b| a - b,
+        _phantom: PhantomData,
+    }
 }
 
-/// Create a [`Multiply`] operator.
+/// Create an element-wise multiplication operator.
 pub fn multiply<T: Copy + ops::Mul<Output = T>>() -> Multiply<T> {
-    Multiply(PhantomData)
+    Elementwise2 {
+        op: |a, b| a * b,
+        _phantom: PhantomData,
+    }
 }
 
-/// Create a [`Divide`] operator.
+/// Create an element-wise division operator.
 pub fn divide<T: Copy + ops::Div<Output = T>>() -> Divide<T> {
-    Divide(PhantomData)
+    Elementwise2 {
+        op: |a, b| a / b,
+        _phantom: PhantomData,
+    }
 }
 
-/// Create a [`Negate`] operator.
+/// Create an element-wise negation operator.
 pub fn negate<T: Copy + ops::Neg<Output = T>>() -> Negate<T> {
-    Negate(PhantomData)
+    Elementwise1 {
+        op: |a| -a,
+        _phantom: PhantomData,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -275,12 +269,14 @@ mod tests {
     fn test_apply_closure() {
         let a = Observable::new(&[], &[3.0]);
         let b = Observable::new(&[], &[4.0]);
-        let mut op = Apply::new(|inputs: &[&[f64]], out: &mut [f64]| {
-            // Pythagorean: sqrt(a^2 + b^2)
-            out[0] = (inputs[0][0] * inputs[0][0] + inputs[1][0] * inputs[1][0]).sqrt();
-        });
+        let mut op = Apply::new(
+            |shapes: &[&[usize]]| shapes[0].into(),
+            |inputs: &[&[f64]], out: &mut [f64]| {
+                out[0] = (inputs[0][0] * inputs[0][0] + inputs[1][0] * inputs[1][0]).sqrt();
+            },
+        );
         let mut out = [0.0];
-        assert!(op.compute(1, &[&a, &b], &mut out));
+        assert!(op.compute(1, vec![&a, &b].into_boxed_slice(), &mut out));
         assert_eq!(out, [5.0]);
     }
 
@@ -292,5 +288,15 @@ mod tests {
         let mut out = [0.0];
         assert!(op.compute(0, (&a, &b), &mut out));
         assert_eq!(out, [0.0]);
+    }
+
+    #[test]
+    fn test_output_shape() {
+        let op = add::<f64>();
+        assert_eq!(&*op.output_shape(&[&[3], &[3]]), &[3]);
+        assert_eq!(&*op.output_shape(&[&[2, 3], &[2, 3]]), &[2, 3]);
+
+        let op = negate::<f64>();
+        assert_eq!(&*op.output_shape(&[&[5]]), &[5]);
     }
 }

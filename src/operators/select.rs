@@ -17,6 +17,10 @@ use crate::operator::Operator;
 pub struct Select<T: Copy> {
     /// For each output element, the index in the flat input buffer.
     index_map: Vec<usize>,
+    /// Axis along which selection was performed (used for output_shape).
+    axis: usize,
+    /// Number of selected indices.
+    n_selected: usize,
     _phantom: PhantomData<T>,
 }
 
@@ -24,8 +28,11 @@ impl<T: Copy> Select<T> {
     /// Select by flat indices (for 1-D inputs or when the caller has
     /// precomputed the mapping).
     pub fn flat(indices: Vec<usize>) -> Self {
+        let n = indices.len();
         Self {
             index_map: indices,
+            axis: 0,
+            n_selected: n,
             _phantom: PhantomData,
         }
     }
@@ -39,31 +46,30 @@ impl<T: Copy> Select<T> {
         let index_map = compute_select_map(input_shape, indices, axis);
         Self {
             index_map,
+            axis,
+            n_selected: indices.len(),
             _phantom: PhantomData,
         }
     }
-
-    /// Compute the output shape for a select operation.
-    ///
-    /// Returns the input shape with `shape[axis]` replaced by `indices.len()`.
-    pub fn output_shape(input_shape: &[usize], indices: &[usize], axis: usize) -> Vec<usize> {
-        let mut shape = input_shape.to_vec();
-        shape[axis] = indices.len();
-        shape
-    }
 }
 
-impl<T: Copy> Operator for Select<T> {
+impl<T: Copy + 'static> Operator for Select<T> {
     type Inputs<'a>
         = (&'a Observable<T>,)
     where
         Self: 'a;
-    type Output = T;
+    type Scalar = T;
+
+    fn output_shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+        let mut shape = input_shapes[0].to_vec();
+        shape[self.axis] = self.n_selected;
+        shape.into()
+    }
 
     #[inline(always)]
     fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
         let (obs,) = inputs;
-        let input = obs.last();
+        let input = obs.current();
         for (i, &src_idx) in self.index_map.iter().enumerate() {
             out[i] = input[src_idx];
         }
@@ -171,14 +177,11 @@ mod tests {
 
     #[test]
     fn output_shape_computation() {
-        assert_eq!(Select::<f64>::output_shape(&[5], &[1, 3], 0), vec![2]);
-        assert_eq!(
-            Select::<f64>::output_shape(&[3, 4], &[0, 2], 0),
-            vec![2, 4]
-        );
-        assert_eq!(
-            Select::<f64>::output_shape(&[3, 4], &[1], 1),
-            vec![3, 1]
-        );
+        let op = Select::<f64>::flat(vec![1, 3]);
+        assert_eq!(&*op.output_shape(&[&[5]]), &[2]);
+        let op = Select::<f64>::along_axis(&[3, 4], &[0, 2], 0);
+        assert_eq!(&*op.output_shape(&[&[3, 4]]), &[2, 4]);
+        let op = Select::<f64>::along_axis(&[3, 4], &[1], 1);
+        assert_eq!(&*op.output_shape(&[&[3, 4]]), &[3, 1]);
     }
 }

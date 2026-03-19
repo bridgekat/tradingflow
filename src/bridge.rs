@@ -28,8 +28,8 @@ use tokio::sync::mpsc;
 
 type PyObject = Py<PyAny>;
 
-use crate::input::Obs;
-use crate::observable::{Observable, ObservableHandle};
+use crate::observable::Observable;
+use crate::scenario::ObservableHandle;
 use crate::operators;
 use crate::scenario::Scenario;
 use crate::series::Series;
@@ -163,16 +163,21 @@ fn register_array_source_dispatch(
     Ok(())
 }
 
-fn create_node_dispatch(sc: &mut Scenario, shape: &[usize], dtype: &str) -> PyResult<usize> {
+fn create_node_dispatch(
+    sc: &mut Scenario,
+    shape: &[usize],
+    dtype: &str,
+    initial_bytes: &[u8],
+) -> PyResult<usize> {
     let dtype = normalise_dtype(dtype);
     match dtype {
-        "float64" => Ok(sc.create_node_typed::<f64>(shape)),
-        "float32" => Ok(sc.create_node_typed::<f32>(shape)),
-        "int64" => Ok(sc.create_node_typed::<i64>(shape)),
-        "int32" => Ok(sc.create_node_typed::<i32>(shape)),
-        "uint64" => Ok(sc.create_node_typed::<u64>(shape)),
-        "uint32" => Ok(sc.create_node_typed::<u32>(shape)),
-        "bool" => Ok(sc.create_node_typed::<u8>(shape)),
+        "float64" => Ok(sc.create_node_typed::<f64>(shape, &bytes_to_vec(initial_bytes))),
+        "float32" => Ok(sc.create_node_typed::<f32>(shape, &bytes_to_vec(initial_bytes))),
+        "int64" => Ok(sc.create_node_typed::<i64>(shape, &bytes_to_vec(initial_bytes))),
+        "int32" => Ok(sc.create_node_typed::<i32>(shape, &bytes_to_vec(initial_bytes))),
+        "uint64" => Ok(sc.create_node_typed::<u64>(shape, &bytes_to_vec(initial_bytes))),
+        "uint32" => Ok(sc.create_node_typed::<u32>(shape, &bytes_to_vec(initial_bytes))),
+        "bool" => Ok(sc.create_node_typed::<u8>(shape, &bytes_to_vec(initial_bytes))),
         other => Err(PyTypeError::new_err(format!("unsupported dtype: {other}"))),
     }
 }
@@ -181,9 +186,10 @@ fn create_node_dispatch(sc: &mut Scenario, shape: &[usize], dtype: &str) -> PyRe
 // NativeOpHandle — opaque operator handle for Python
 // ---------------------------------------------------------------------------
 
-/// Registration closure: given a Scenario, input indices, and output shape,
-/// registers the operator and returns the output node index.
-type RegisterFn = Box<dyn FnOnce(&mut Scenario, &[usize], &[usize]) -> usize + Send + Sync>;
+/// Registration closure: given a Scenario, input indices, and initial value
+/// (raw bytes), registers the operator and returns the output node index.
+type RegisterFn =
+    Box<dyn FnOnce(&mut Scenario, &[usize], &[u8]) -> usize + Send + Sync>;
 
 /// Opaque handle holding a pre-constructed, type-erased Rust operator.
 ///
@@ -206,15 +212,15 @@ impl NativeOpHandle {
     fn binary_obs<T, Op>(op: Op, dtype_str: String) -> Self
     where
         T: Copy + Send + Sync + 'static,
-        Op: crate::operator::Operator<Output = T> + Send + Sync + 'static,
+        Op: crate::operator::Operator<Scalar = T> + Send + Sync + 'static,
         for<'a> Op: crate::operator::Operator<Inputs<'a> = (&'a Observable<T>, &'a Observable<T>)>,
     {
         Self {
-            register_fn: Some(Box::new(move |sc, inputs, shape| {
+            register_fn: Some(Box::new(move |sc, inputs, initial_bytes| {
                 let h0 = ObservableHandle::<T>::new(inputs[0]);
                 let h1 = ObservableHandle::<T>::new(inputs[1]);
-                sc.add_operator::<(Obs<T>, Obs<T>), _>((h0, h1), shape, op)
-                    .index
+                let initial: Vec<T> = bytes_to_vec(initial_bytes);
+                sc.add_operator(&[h0, h1], &initial, op).index
             })),
             dtype_str,
         }
@@ -224,13 +230,14 @@ impl NativeOpHandle {
     fn unary_obs<T, Op>(op: Op, dtype_str: String) -> Self
     where
         T: Copy + Send + Sync + 'static,
-        Op: crate::operator::Operator<Output = T> + Send + Sync + 'static,
+        Op: crate::operator::Operator<Scalar = T> + Send + Sync + 'static,
         for<'a> Op: crate::operator::Operator<Inputs<'a> = (&'a Observable<T>,)>,
     {
         Self {
-            register_fn: Some(Box::new(move |sc, inputs, shape| {
+            register_fn: Some(Box::new(move |sc, inputs, initial_bytes| {
                 let h0 = ObservableHandle::<T>::new(inputs[0]);
-                sc.add_operator::<(Obs<T>,), _>((h0,), shape, op).index
+                let initial: Vec<T> = bytes_to_vec(initial_bytes);
+                sc.add_operator(&[h0], &initial, op).index
             })),
             dtype_str,
         }
@@ -240,14 +247,15 @@ impl NativeOpHandle {
     fn slice_obs<T, Op>(op: Op, dtype_str: String) -> Self
     where
         T: Copy + Send + Sync + 'static,
-        Op: crate::operator::Operator<Output = T> + Send + Sync + 'static,
+        Op: crate::operator::Operator<Scalar = T> + Send + Sync + 'static,
         for<'a> Op: crate::operator::Operator<Inputs<'a> = &'a [&'a Observable<T>]>,
     {
         Self {
-            register_fn: Some(Box::new(move |sc, inputs, shape| {
+            register_fn: Some(Box::new(move |sc, inputs, initial_bytes| {
                 let handles: Vec<ObservableHandle<T>> =
                     inputs.iter().map(|&i| ObservableHandle::new(i)).collect();
-                sc.add_slice_operator::<Obs<T>, _>(&handles, shape, op)
+                let initial: Vec<T> = bytes_to_vec(initial_bytes);
+                sc.add_operator(&handles, &initial, op)
                     .index
             })),
             dtype_str,
@@ -573,45 +581,44 @@ impl ObservableView {
 fn observable_to_numpy(
     py: Python<'_>,
     obs_ptr: *const u8,
-    shape: &[usize],
+    _shape: &[usize],
     dtype_str: &str,
 ) -> PyResult<PyObject> {
-    let ix = if shape.is_empty() { &[][..] } else { shape };
     let dtype = normalise_dtype(dtype_str);
     match dtype {
         "float64" => {
             let obs = unsafe { &*(obs_ptr as *const Observable<f64>) };
-            let arr = ArrayD::from_shape_vec(IxDyn(ix), obs.last().to_vec()).unwrap();
+            let arr = obs.last().to_owned();
             Ok(PyArrayDyn::from_owned_array(py, arr).into_any().unbind())
         }
         "float32" => {
             let obs = unsafe { &*(obs_ptr as *const Observable<f32>) };
-            let arr = ArrayD::from_shape_vec(IxDyn(ix), obs.last().to_vec()).unwrap();
+            let arr = obs.last().to_owned();
             Ok(PyArrayDyn::from_owned_array(py, arr).into_any().unbind())
         }
         "int64" => {
             let obs = unsafe { &*(obs_ptr as *const Observable<i64>) };
-            let arr = ArrayD::from_shape_vec(IxDyn(ix), obs.last().to_vec()).unwrap();
+            let arr = obs.last().to_owned();
             Ok(PyArrayDyn::from_owned_array(py, arr).into_any().unbind())
         }
         "int32" => {
             let obs = unsafe { &*(obs_ptr as *const Observable<i32>) };
-            let arr = ArrayD::from_shape_vec(IxDyn(ix), obs.last().to_vec()).unwrap();
+            let arr = obs.last().to_owned();
             Ok(PyArrayDyn::from_owned_array(py, arr).into_any().unbind())
         }
         "uint64" => {
             let obs = unsafe { &*(obs_ptr as *const Observable<u64>) };
-            let arr = ArrayD::from_shape_vec(IxDyn(ix), obs.last().to_vec()).unwrap();
+            let arr = obs.last().to_owned();
             Ok(PyArrayDyn::from_owned_array(py, arr).into_any().unbind())
         }
         "uint32" => {
             let obs = unsafe { &*(obs_ptr as *const Observable<u32>) };
-            let arr = ArrayD::from_shape_vec(IxDyn(ix), obs.last().to_vec()).unwrap();
+            let arr = obs.last().to_owned();
             Ok(PyArrayDyn::from_owned_array(py, arr).into_any().unbind())
         }
         "bool" => {
             let obs = unsafe { &*(obs_ptr as *const Observable<u8>) };
-            let arr = ArrayD::from_shape_vec(IxDyn(ix), obs.last().to_vec()).unwrap();
+            let arr = obs.last().to_owned();
             Ok(PyArrayDyn::from_owned_array(py, arr).into_any().unbind())
         }
         _ => Err(PyTypeError::new_err(format!("unsupported dtype: {dtype_str}"))),
@@ -710,9 +717,7 @@ fn series_values_to_numpy(
 macro_rules! series_last_match {
     ($py:expr, $ptr:expr, $shape:expr, $T:ty) => {{
         let s = unsafe { &*($ptr as *const Series<$T>) };
-        let data = s.last().to_vec();
-        let ix = if $shape.is_empty() { &[][..] } else { $shape };
-        let arr = ArrayD::from_shape_vec(IxDyn(ix), data).unwrap();
+        let arr = s.last().to_owned();
         Ok(PyArrayDyn::from_owned_array($py, arr).into_any().unbind())
     }};
 }
@@ -906,13 +911,14 @@ impl NativeScenario {
         input_indices: Vec<usize>,
         shape: Vec<usize>,
         dtype: String,
+        initial_value: Vec<u8>,
         py_operator: PyObject,
         py_inputs: PyObject,
         py_state: PyObject,
     ) -> PyResult<usize> {
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalise_dtype(&dtype).to_string();
-        let node_index = create_node_dispatch(sc, &shape, &dtype_norm)?;
+        let node_index = create_node_dispatch(sc, &shape, &dtype_norm, &initial_value)?;
 
         let stride: usize = if shape.is_empty() { 1 } else { shape.iter().product() };
         let elem_bytes = dtype_element_bytes(&dtype_norm)?;
@@ -941,13 +947,13 @@ impl NativeScenario {
         &mut self,
         handle: &mut NativeOpHandle,
         input_indices: Vec<usize>,
-        output_shape: Vec<usize>,
+        initial_value: Vec<u8>,
     ) -> PyResult<usize> {
         let f = handle.register_fn.take().ok_or_else(|| {
             PyRuntimeError::new_err("NativeOpHandle has already been consumed")
         })?;
         let sc = self.scenario.as_mut().unwrap();
-        let idx = f(sc, &input_indices, &output_shape);
+        let idx = f(sc, &input_indices, &initial_value);
         self.node_dtypes.push(handle.dtype_str.clone());
         Ok(idx)
     }

@@ -22,11 +22,56 @@
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::marker::PhantomData;
 
-use crate::observable::{Observable, ObservableHandle};
-use crate::operator::Operator;
-use crate::series::{Series, SeriesHandle};
+use crate::observable::Observable;
+use crate::operator::{InputRefs, Operator};
+use crate::series::Series;
 use crate::source::Source;
+
+/// A typed handle into a [`Scenario`]'s node storage.
+#[derive(Debug, Clone, Copy)]
+pub struct ObservableHandle<T: Copy> {
+    index: usize,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Copy> ObservableHandle<T> {
+    pub(self) fn new(index: usize) -> Self {
+        Self {
+            index,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Copy> ObservableHandle<T> {
+    pub fn index(&self) -> usize {
+        self.index
+    }
+}
+
+/// A typed handle into a [`Scenario`]'s node storage.
+#[derive(Debug, Clone, Copy)]
+pub struct SeriesHandle<T: Copy> {
+    index: usize,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Copy> SeriesHandle<T> {
+    pub(self) fn new(index: usize) -> Self {
+        Self {
+            index,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Copy> SeriesHandle<T> {
+    pub fn index(&self) -> usize {
+        self.index
+    }
+}
 
 // ---------------------------------------------------------------------------
 // NodeSlot (type-erased)
@@ -39,7 +84,9 @@ pub struct NodeSlot {
     /// Copy observable value into series (typed).
     materialize_fn: unsafe fn(*mut u8, *mut u8, i64),
     drop_fn: unsafe fn(*mut u8, *mut u8),
-    /// Stride of the observable (needed for creating series).
+    /// Element shape of the observable.
+    shape: Box<[usize]>,
+    /// Stride of the observable (product of shape dims, min 1).
     stride: usize,
 }
 
@@ -53,7 +100,7 @@ impl Drop for NodeSlot {
 unsafe fn materialize_copy<T: Copy>(obs_ptr: *mut u8, series_ptr: *mut u8, timestamp: i64) {
     let obs = unsafe { &*(obs_ptr as *const Observable<T>) };
     let series = unsafe { &mut *(series_ptr as *mut Series<T>) };
-    series.append_unchecked(timestamp, obs.last());
+    series.push(timestamp, obs.current());
 }
 
 /// Drop both the observable and the optional series.
@@ -91,20 +138,11 @@ impl Drop for OperatorSlot {
 // Type-erased compute for slice-input operators (&[S::Ref<'_>])
 // ---------------------------------------------------------------------------
 
-/// Universal compute entry point for operators whose `Inputs<'a>` is
-/// `&'a [S::Ref<'a>]` (variable-arity, homogeneous inputs).
+/// Type-erased compute entry point, monomorphised for each `Op`.
 ///
-/// `S` is an [`InputSlice`] marker (e.g. `Obs<T>` or `Hist<T>`) that
-/// provides `slice_from_ptrs` for zero-copy reconstruction.
-///
-/// # Safety
-///
-/// * `input_ptrs` must point to `n_inputs` valid `*mut u8` entries,
-///   each pointing to the concrete type behind `S`.
-/// * `output_obs_ptr` must point to a valid `Observable<Op::Output>`.
-/// * `state_ptr` must point to a valid `Op`.
+/// Uses [`InputRefs::from_ptrs`] to reconstruct the typed references.
 #[inline]
-unsafe fn erased_compute_slice<S, Op>(
+unsafe fn erased_compute<Op>(
     timestamp: i64,
     input_ptrs: *const *mut u8,
     n_inputs: usize,
@@ -112,43 +150,14 @@ unsafe fn erased_compute_slice<S, Op>(
     state_ptr: *mut u8,
 ) -> bool
 where
-    S: crate::input::InputSlice,
     Op: Operator,
-    Op::Output: Copy,
-    for<'a> Op: Operator<Inputs<'a> = &'a [S::Ref<'a>]>,
+    Op::Scalar: Copy,
+    for<'a> Op::Inputs<'a>: crate::operator::InputRefs<'a>,
 {
     let state = unsafe { &mut *(state_ptr as *mut Op) };
-    let output = unsafe { &mut *(output_obs_ptr as *mut Observable<Op::Output>) };
-    let inputs = unsafe { S::slice_from_ptrs(input_ptrs, n_inputs) };
-    let out = output.vals_mut();
-    state.compute(timestamp, inputs, out)
-}
-
-// ---------------------------------------------------------------------------
-// Type-erased compute for heterogeneous operators (via InputTuple)
-// ---------------------------------------------------------------------------
-
-/// Generic compute entry point for any operator registered via `add_operator`.
-///
-/// Monomorphised for each `(I, Op)` pair at registration time.
-#[inline]
-unsafe fn erased_compute<I, Op>(
-    timestamp: i64,
-    input_ptrs: *const *mut u8,
-    _n_inputs: usize,
-    output_obs_ptr: *mut u8,
-    state_ptr: *mut u8,
-) -> bool
-where
-    I: crate::input::InputTuple,
-    Op: Operator,
-    Op::Output: Copy,
-    for<'a> Op: Operator<Inputs<'a> = I::Refs<'a>>,
-{
-    let state = unsafe { &mut *(state_ptr as *mut Op) };
-    let output = unsafe { &mut *(output_obs_ptr as *mut Observable<Op::Output>) };
-    let inputs = unsafe { I::from_ptrs(input_ptrs) };
-    let out = output.vals_mut();
+    let output = unsafe { &mut *(output_obs_ptr as *mut Observable<Op::Scalar>) };
+    let inputs = unsafe { Op::Inputs::from_raw(input_ptrs as *const *const u8, n_inputs) };
+    let out = output.current_mut();
     state.compute(timestamp, inputs, out)
 }
 
@@ -227,19 +236,17 @@ impl Scenario {
 
     // -- Private: node creation ---------------------------------------------
 
-    /// Internal helper — create a node with an **uninitialised** observable.
-    ///
-    /// Used for operator output nodes; their initial values are computed
-    /// during [`recompute_topo`].
-    fn create_node<T: Copy>(&mut self, shape: &[usize]) -> ObservableHandle<T> {
+    /// Internal helper — create a node with an explicit initial value.
+    fn create_node<T: Copy>(&mut self, shape: &[usize], initial: &[T]) -> ObservableHandle<T> {
         let idx = self.nodes.len();
-        let obs = Box::new(Observable::<T>::new_uninit(shape));
+        let obs = Box::new(Observable::<T>::new(shape, initial));
         let stride = obs.stride();
         self.nodes.push(NodeSlot {
             obs_ptr: Box::into_raw(obs) as *mut u8,
             series_ptr: std::ptr::null_mut(),
             materialize_fn: materialize_copy::<T>,
             drop_fn: drop_node::<T>,
+            shape: shape.into(),
             stride,
         });
         self.edges.push(Vec::new());
@@ -262,6 +269,7 @@ impl Scenario {
             series_ptr: std::ptr::null_mut(),
             materialize_fn: materialize_copy::<T>,
             drop_fn: drop_node::<T>,
+            shape: shape.into(),
             stride,
         });
         self.edges.push(Vec::new());
@@ -280,34 +288,11 @@ impl Scenario {
             self.nodes[h.index].series_ptr.is_null(),
             "node already materialised"
         );
-        let stride = self.nodes[h.index].stride;
-        // Reconstruct shape as [stride] (flat).
-        let shape = if stride == 1 { vec![] } else { vec![stride] };
-        let series = Box::new(Series::<T>::new(&shape));
+        let obs = unsafe { &*(self.nodes[h.index].obs_ptr as *const Observable<T>) };
+        let shape = obs.shape().to_vec();
+        let series = Box::new(Series::<T>::new(&shape, obs.current()));
         self.nodes[h.index].series_ptr = Box::into_raw(series) as *mut u8;
         // Update any existing operator that outputs to this node.
-        for slot in &mut self.operators {
-            if slot.output_node_index == h.index {
-                slot.output_series_ptr = self.nodes[h.index].series_ptr;
-            }
-        }
-        SeriesHandle::new(h.index)
-    }
-
-    /// Materialise a node with pre-allocated series capacity.
-    pub fn materialize_with_capacity<T: Copy>(
-        &mut self,
-        h: ObservableHandle<T>,
-        cap: usize,
-    ) -> SeriesHandle<T> {
-        assert!(
-            self.nodes[h.index].series_ptr.is_null(),
-            "node already materialised"
-        );
-        let stride = self.nodes[h.index].stride;
-        let shape = if stride == 1 { vec![] } else { vec![stride] };
-        let series = Box::new(Series::<T>::with_capacity(&shape, cap));
-        self.nodes[h.index].series_ptr = Box::into_raw(series) as *mut u8;
         for slot in &mut self.operators {
             if slot.output_node_index == h.index {
                 slot.output_series_ptr = self.nodes[h.index].series_ptr;
@@ -351,34 +336,43 @@ impl Scenario {
         unsafe { &mut *(self.nodes[h.index].series_ptr as *mut Series<T>) }
     }
 
-    // -- Slice operator registration (homogeneous inputs) ------------------
+    // -- Operator registration -----------------------------------------------
 
-    /// Register an operator whose `Inputs<'a>` is `&'a [S::Ref<'a>]`.
+    /// Register an operator with inputs specified as a slice of [`InputSlot`]
+    /// handles.
     ///
-    /// `S` is an [`InputSlice`] marker — `Obs<T>` for observable inputs or
-    /// `Hist<T>` for series inputs.  This is the general registration method
-    /// for variable-arity operators with homogeneous inputs (e.g. [`Apply`],
-    /// [`Concat`], [`Stack`]).
+    /// `S` is the handle type (e.g. `ObservableHandle<T>` or `SeriesHandle<T>`).
+    /// The operator's `Inputs<'a>` must be reconstructible from raw pointers
+    /// via [`InputRefs`].
     ///
     /// Creates the output node internally and returns its handle.
-    pub fn add_slice_operator<S: crate::input::InputSlice + 'static, Op: 'static>(
-        &mut self,
-        inputs: &[S::Handle],
-        output_shape: &[usize],
+    pub fn add_operator<'a, Op>(
+        &'a mut self,
+        inputs: impl Into<<Op::Inputs<'a> as InputRefs<'a>>::Handles>,
+        initial: &[Op::Scalar],
         op: Op,
-    ) -> ObservableHandle<Op::Output>
+    ) -> ObservableHandle<Op::Scalar>
     where
         Op: Operator,
-        Op::Output: Copy,
-        for<'a> Op: Operator<Inputs<'a> = &'a [S::Ref<'a>]>,
     {
-        let output = self.create_node::<Op::Output>(output_shape);
+        let handles = inputs.into();
+        let node_ids = <Op::Inputs<'_> as InputRefs<'_>>::node_ids(&handles);
+        let input_shapes: Box<[&[usize]]> = node_ids
+            .iter()
+            .map(|&(i, _)| &*self.nodes[i].shape)
+            .collect();
+        let output_shape = op.output_shape(&input_shapes);
+        let output = self.create_node::<Op::Scalar>(&output_shape, initial);
         let op_idx = self.operators.len();
 
-        let mut ptrs: Vec<*mut u8> = Vec::with_capacity(inputs.len());
-        for h in inputs {
-            self.edges[S::node_index(*h)].push(op_idx);
-            ptrs.push(S::extract_ptr(&self.nodes, *h));
+        let mut ptrs: Vec<*mut u8> = Vec::with_capacity(node_ids.len());
+        for &(i, is_series) in node_ids.iter() {
+            self.edges[i].push(op_idx);
+            if is_series {
+                ptrs.push(self.nodes[i].series_ptr);
+            } else {
+                ptrs.push(self.nodes[i].obs_ptr);
+            }
         }
         let n_inputs = ptrs.len();
         let input_ptrs = ptrs.as_ptr();
@@ -391,53 +385,7 @@ impl Scenario {
             output_obs_ptr: self.nodes[output.index].obs_ptr,
             output_series_ptr: self.nodes[output.index].series_ptr,
             materialize_fn: self.nodes[output.index].materialize_fn,
-            compute_fn: erased_compute_slice::<S, Op>,
-            state: Box::into_raw(Box::new(op)) as *mut u8,
-            drop_fn: drop_erased_op::<Op>,
-        });
-        self.topo_dirty = true;
-        output
-    }
-
-    // -- Generic operator registration (heterogeneous inputs) ---------------
-
-    /// Register an operator with heterogeneous inputs specified by an
-    /// [`InputTuple`].
-    ///
-    /// Creates the output node internally and returns its handle.
-    pub fn add_operator<I, Op>(
-        &mut self,
-        inputs: I::Handles,
-        output_shape: &[usize],
-        op: Op,
-    ) -> ObservableHandle<Op::Output>
-    where
-        I: crate::input::InputTuple + 'static,
-        Op: Operator + 'static,
-        Op::Output: Copy,
-        for<'a> Op: Operator<Inputs<'a> = I::Refs<'a>>,
-    {
-        let output = self.create_node::<Op::Output>(output_shape);
-        let op_idx = self.operators.len();
-
-        let ptrs = I::extract_ptrs(&self.nodes, inputs);
-        let n_inputs = ptrs.len();
-        let input_ptrs = ptrs.as_ptr();
-        std::mem::forget(ptrs);
-
-        // Register edges from input nodes to this operator.
-        for idx in I::node_indices(inputs) {
-            self.edges[idx].push(op_idx);
-        }
-
-        self.operators.push(OperatorSlot {
-            output_node_index: output.index,
-            input_ptrs,
-            n_inputs,
-            output_obs_ptr: self.nodes[output.index].obs_ptr,
-            output_series_ptr: self.nodes[output.index].series_ptr,
-            materialize_fn: self.nodes[output.index].materialize_fn,
-            compute_fn: erased_compute::<I, Op>,
+            compute_fn: erased_compute::<Op>,
             state: Box::into_raw(Box::new(op)) as *mut u8,
             drop_fn: drop_erased_op::<Op>,
         });
@@ -487,8 +435,8 @@ impl Scenario {
     }
 
     /// Create a typed node (for bridge dtype dispatch).
-    pub(crate) fn create_node_typed<T: Copy>(&mut self, shape: &[usize]) -> usize {
-        self.create_node::<T>(shape).index
+    pub(crate) fn create_node_typed<T: Copy>(&mut self, shape: &[usize], initial: &[T]) -> usize {
+        self.create_node::<T>(shape, initial).index
     }
 
     /// Create a typed source node with an initial value (for bridge dtype
@@ -518,9 +466,9 @@ impl Scenario {
             self.nodes[node_index].series_ptr.is_null(),
             "node already materialised"
         );
-        let stride = self.nodes[node_index].stride;
-        let shape = if stride == 1 { vec![] } else { vec![stride] };
-        let series = Box::new(Series::<T>::new(&shape));
+        let obs = unsafe { &*(self.nodes[node_index].obs_ptr as *const Observable<T>) };
+        let shape = obs.shape().to_vec();
+        let series = Box::new(Series::<T>::new(&shape, obs.current()));
         self.nodes[node_index].series_ptr = Box::into_raw(series) as *mut u8;
         for slot in &mut self.operators {
             if slot.output_node_index == node_index {
@@ -883,18 +831,14 @@ impl RunSourceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::Obs;
     use crate::operators;
-
-    /// Convenience alias for binary f64 observable inputs.
-    type O2 = (Obs<f64>, Obs<f64>);
 
     #[test]
     fn simple_add() {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let ho = sc.add_operator([ha, hb], &[0.0], operators::add());
 
         unsafe {
             sc.observable_mut(ha).write(&[10.0]);
@@ -903,7 +847,7 @@ mod tests {
         sc.flush(1, &[ha.index, hb.index]);
 
         let out = unsafe { sc.observable_ref(ho) };
-        assert_eq!(out.last(), &[13.0]);
+        assert_eq!(out.current_view().as_slice().unwrap(), &[13.0]);
     }
 
     #[test]
@@ -911,7 +855,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let ho = sc.add_operator([ha, hb], &[0.0], operators::add());
         let ho_series = sc.materialize::<f64>(ho);
 
         unsafe {
@@ -928,13 +872,13 @@ mod tests {
 
         // Observable has latest value.
         let obs = unsafe { sc.observable_ref(ho) };
-        assert_eq!(obs.last(), &[27.0]);
+        assert_eq!(obs.current_view().as_slice().unwrap(), &[27.0]);
 
-        // Series has full history.
+        // Series has full history (initial + 2 flushes).
         let series = unsafe { sc.series_ref(ho_series) };
-        assert_eq!(series.len(), 2);
-        assert_eq!(series.timestamps(), &[1, 2]);
-        assert_eq!(series.values(), &[13.0, 27.0]);
+        assert_eq!(series.len(), 3);
+        assert_eq!(series.index(), &[i64::MIN, 1, 2]);
+        assert_eq!(series.values(), &[0.0, 13.0, 27.0]);
     }
 
     #[test]
@@ -942,8 +886,8 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let hab = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
-        let hout = sc.add_operator::<O2, _>((hab, ha), &[], operators::multiply());
+        let hab = sc.add_operator([ha, hb], &[0.0], operators::add());
+        let hout = sc.add_operator([hab, ha], &[0.0], operators::multiply());
 
         unsafe {
             sc.observable_mut(ha).write(&[2.0]);
@@ -952,7 +896,7 @@ mod tests {
         sc.flush(1, &[ha.index, hb.index]);
 
         let out = unsafe { sc.observable_ref(hout) };
-        assert_eq!(out.last(), &[10.0]); // (2+3) * 2
+        assert_eq!(out.current_view().as_slice().unwrap(), &[10.0]); // (2+3) * 2
     }
 
     #[test]
@@ -960,11 +904,11 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho1 = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let ho1 = sc.add_operator([ha, hb], &[0.0], operators::add());
         let ho1_series = sc.materialize::<f64>(ho1);
 
         let ho2 = sc.add_source::<f64>(&[], &[0.0]);
-        let hc = sc.add_operator::<O2, _>((ho2, ha), &[], operators::add());
+        let hc = sc.add_operator([ho2, ha], &[0.0], operators::add());
         let hc_series = sc.materialize::<f64>(hc);
 
         unsafe {
@@ -974,13 +918,13 @@ mod tests {
         sc.flush(1, &[ha.index, hb.index]);
 
         let out1 = unsafe { sc.series_ref(ho1_series) };
-        assert_eq!(out1.len(), 1);
-        assert_eq!(out1.last(), &[3.0]);
+        assert_eq!(out1.len(), 2); // initial + 1 flush
+        assert_eq!(out1.current_view().as_slice().unwrap(), &[3.0]);
 
         // hc produces output (both observables have values), but ho2 is 0.0 (initial).
         let outc = unsafe { sc.series_ref(hc_series) };
-        assert_eq!(outc.len(), 1);
-        assert_eq!(outc.last(), &[1.0]); // 0.0 + 1.0
+        assert_eq!(outc.len(), 2); // initial + 1 flush
+        assert_eq!(outc.current_view().as_slice().unwrap(), &[1.0]); // 0.0 + 1.0
     }
 
     #[test]
@@ -988,8 +932,8 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
-        let ho_series = sc.materialize_with_capacity::<f64>(ho, 100);
+        let ho = sc.add_operator([ha, hb], &[0.0], operators::add());
+        let ho_series = sc.materialize::<f64>(ho);
 
         for i in 0..100 {
             let ts = i as i64;
@@ -1003,8 +947,8 @@ mod tests {
         }
 
         let out = unsafe { sc.series_ref(ho_series) };
-        assert_eq!(out.len(), 100);
-        assert_eq!(out.last(), &[99.0 + 198.0]);
+        assert_eq!(out.len(), 101); // initial + 100 flushes
+        assert_eq!(out.current_view().as_slice().unwrap(), &[99.0 + 198.0]);
     }
 
     #[test]
@@ -1014,8 +958,8 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let hmid = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
-        let hout = sc.add_operator::<O2, _>((hmid, ha), &[], operators::multiply());
+        let hmid = sc.add_operator([ha, hb], &[0.0], operators::add());
+        let hout = sc.add_operator([hmid, ha], &[0.0], operators::multiply());
         let hout_series = sc.materialize::<f64>(hout);
 
         for i in 1..=5 {
@@ -1033,9 +977,9 @@ mod tests {
 
         // Final output has history.
         let out = unsafe { sc.series_ref(hout_series) };
-        assert_eq!(out.len(), 5);
+        assert_eq!(out.len(), 6); // initial + 5 flushes
         // At tick 5: mid = 5+10 = 15, out = 15*5 = 75
-        assert_eq!(out.last(), &[75.0]);
+        assert_eq!(out.current_view().as_slice().unwrap(), &[75.0]);
     }
 
     #[test]
@@ -1050,9 +994,8 @@ mod tests {
         }
 
         let series = unsafe { sc.series_ref(ha_series) };
-        assert_eq!(series.len(), 10);
-        assert_eq!(series.last(), &[9.0]);
-        assert_eq!(series.timestamps(), &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(series.len(), 11); // initial + 10 flushes
+        assert_eq!(series.current_view().as_slice().unwrap(), &[9.0]);
     }
 
     // -- Slice operator tests -----------------------------------------------
@@ -1063,9 +1006,9 @@ mod tests {
         let ha = sc.add_source::<f64>(&[], &[1.0]);
         let hb = sc.add_source::<f64>(&[], &[2.0]);
         let hc = sc.add_source::<f64>(&[], &[3.0]);
-        let ho = sc.add_slice_operator::<Obs<f64>, _>(
-            &[ha, hb, hc],
-            &[3],
+        let ho = sc.add_operator(
+            [ha, hb, hc],
+            &[0.0, 0.0, 0.0],
             operators::Concat::new(&[], 0),
         );
         let ho_series = sc.materialize::<f64>(ho);
@@ -1078,8 +1021,11 @@ mod tests {
         sc.flush(1, &[ha.index, hb.index, hc.index]);
 
         let series = unsafe { sc.series_ref(ho_series) };
-        assert_eq!(series.len(), 1);
-        assert_eq!(series.last(), &[10.0, 20.0, 30.0]);
+        assert_eq!(series.len(), 2); // initial + 1 flush
+        assert_eq!(
+            series.current_view().as_slice().unwrap(),
+            &[10.0, 20.0, 30.0]
+        );
     }
 
     #[test]
@@ -1087,9 +1033,9 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[2], &[1.0, 2.0]);
         let hb = sc.add_source::<f64>(&[2], &[3.0, 4.0]);
-        let ho = sc.add_slice_operator::<Obs<f64>, _>(
-            &[ha, hb],
-            &[2, 2],
+        let ho = sc.add_operator(
+            [ha, hb],
+            &[0.0, 0.0, 0.0, 0.0],
             operators::Stack::new(&[2], 0),
         );
         let ho_series = sc.materialize::<f64>(ho);
@@ -1097,34 +1043,32 @@ mod tests {
         sc.flush(1, &[ha.index, hb.index]);
 
         let series = unsafe { sc.series_ref(ho_series) };
-        assert_eq!(series.len(), 1);
-        assert_eq!(series.last(), &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(series.len(), 2); // initial + 1 flush
+        assert_eq!(
+            series.current_view().as_slice().unwrap(),
+            &[1.0, 2.0, 3.0, 4.0]
+        );
     }
 
     #[test]
     fn select_operator() {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[5], &[10.0, 20.0, 30.0, 40.0, 50.0]);
-        let ho =
-            sc.add_operator::<(Obs<f64>,), _>((ha,), &[2], operators::Select::flat(vec![1, 3]));
+        let ho = sc.add_operator([ha], &[0.0, 0.0], operators::Select::flat(vec![1, 3]));
         let ho_series = sc.materialize::<f64>(ho);
 
         sc.flush(1, &[ha.index]);
 
         let series = unsafe { sc.series_ref(ho_series) };
-        assert_eq!(series.len(), 1);
-        assert_eq!(series.last(), &[20.0, 40.0]);
+        assert_eq!(series.len(), 2); // initial + 1 flush
+        assert_eq!(series.current_view().as_slice().unwrap(), &[20.0, 40.0]);
     }
 
     #[test]
     fn filter_operator() {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_operator::<(Obs<f64>,), _>(
-            (ha,),
-            &[],
-            operators::Filter::new(|v: &[f64]| v[0] > 3.0),
-        );
+        let ho = sc.add_operator([ha], &[0.0], operators::Filter::new(|v: &[f64]| v[0] > 3.0));
         let ho_series = sc.materialize::<f64>(ho);
 
         // Value 1.0 → filtered out
@@ -1141,18 +1085,18 @@ mod tests {
         sc.flush(4, &[ha.index]);
 
         let series = unsafe { sc.series_ref(ho_series) };
-        assert_eq!(series.len(), 2);
-        assert_eq!(series.timestamps(), &[2, 4]);
-        assert_eq!(series.values(), &[5.0, 10.0]);
+        assert_eq!(series.len(), 3); // initial + 2 passes (filtered skipped)
+        assert_eq!(series.index(), &[i64::MIN, 2, 4]);
+        assert_eq!(series.values(), &[0.0, 5.0, 10.0]);
     }
 
     #[test]
     fn where_operator() {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[3], &[0.0, 0.0, 0.0]);
-        let ho = sc.add_operator::<(Obs<f64>,), _>(
-            (ha,),
-            &[3],
+        let ho = sc.add_operator(
+            [ha],
+            &[0.0, 0.0, 0.0],
             operators::Where::new(|v: f64| v > 2.0, 0.0),
         );
         let ho_series = sc.materialize::<f64>(ho);
@@ -1161,21 +1105,21 @@ mod tests {
         sc.flush(1, &[ha.index]);
 
         let series = unsafe { sc.series_ref(ho_series) };
-        assert_eq!(series.len(), 1);
-        assert_eq!(series.last(), &[0.0, 5.0, 0.0]);
+        assert_eq!(series.len(), 2); // initial + 1 flush
+        assert_eq!(series.current_view().as_slice().unwrap(), &[0.0, 5.0, 0.0]);
     }
 
     #[test]
     fn negate_operator() {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_operator::<(Obs<f64>,), _>((ha,), &[], operators::negate());
+        let ho = sc.add_operator([ha], &[0.0], operators::negate());
 
         unsafe { sc.observable_mut(ha).write(&[7.0]) };
         sc.flush(1, &[ha.index]);
 
         let out = unsafe { sc.observable_ref(ho) };
-        assert_eq!(out.last(), &[-7.0]);
+        assert_eq!(out.current_view().as_slice().unwrap(), &[-7.0]);
     }
 
     // -- run() tests --------------------------------------------------------
@@ -1196,9 +1140,9 @@ mod tests {
         sc.run().await;
 
         let series = unsafe { sc.series_ref(ha_series) };
-        assert_eq!(series.len(), 3);
-        assert_eq!(series.timestamps(), &[1, 2, 3]);
-        assert_eq!(series.values(), &[10.0, 20.0, 30.0]);
+        assert_eq!(series.len(), 4); // initial + 3 source events
+        assert_eq!(series.index(), &[i64::MIN, 1, 2, 3]);
+        assert_eq!(series.values(), &[0.0, 10.0, 20.0, 30.0]);
     }
 
     #[tokio::test]
@@ -1208,7 +1152,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let ho = sc.add_operator([ha, hb], &[0.0], operators::add());
         let ho_series = sc.materialize::<f64>(ho);
 
         sc.register_source(
@@ -1223,12 +1167,10 @@ mod tests {
         sc.run().await;
 
         let series = unsafe { sc.series_ref(ho_series) };
-        // At ts=1: a=10, b=0 (initial) → 10
-        // At ts=2: a=10, b=20 → 30
-        // At ts=3: a=30, b=40 → 70 (coalesced)
-        assert_eq!(series.len(), 3);
-        assert_eq!(series.timestamps(), &[1, 2, 3]);
-        assert_eq!(series.values(), &[10.0, 30.0, 70.0]);
+        // initial (0.0) + ts=1: a=10,b=0→10 + ts=2: a=10,b=20→30 + ts=3: a=30,b=40→70
+        assert_eq!(series.len(), 4);
+        assert_eq!(series.index(), &[i64::MIN, 1, 2, 3]);
+        assert_eq!(series.values(), &[0.0, 10.0, 30.0, 70.0]);
     }
 
     #[tokio::test]
@@ -1238,7 +1180,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let ho = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
+        let ho = sc.add_operator([ha, hb], &[0.0], operators::add());
         let ho_series = sc.materialize::<f64>(ho);
         let ha_series = sc.materialize::<f64>(ha);
 
@@ -1254,12 +1196,12 @@ mod tests {
         sc.run().await;
 
         let series = unsafe { sc.series_ref(ho_series) };
-        assert_eq!(series.len(), 2);
-        assert_eq!(series.timestamps(), &[1, 2]);
-        assert_eq!(series.values(), &[110.0, 220.0]);
+        assert_eq!(series.len(), 3); // initial + 2 coalesced flushes
+        assert_eq!(series.index(), &[i64::MIN, 1, 2]);
+        assert_eq!(series.values(), &[0.0, 110.0, 220.0]);
 
         let a_series = unsafe { sc.series_ref(ha_series) };
-        assert_eq!(a_series.len(), 2);
+        assert_eq!(a_series.len(), 3); // initial + 2 source events
     }
 
     #[tokio::test]
@@ -1269,8 +1211,8 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source::<f64>(&[], &[0.0]);
         let hb = sc.add_source::<f64>(&[], &[0.0]);
-        let hab = sc.add_operator::<O2, _>((ha, hb), &[], operators::add());
-        let hout = sc.add_operator::<O2, _>((hab, ha), &[], operators::multiply());
+        let hab = sc.add_operator([ha, hb], &[0.0], operators::add());
+        let hout = sc.add_operator([hab, ha], &[0.0], operators::multiply());
         let hout_series = sc.materialize::<f64>(hout);
 
         sc.register_source(
@@ -1285,9 +1227,8 @@ mod tests {
         sc.run().await;
 
         let series = unsafe { sc.series_ref(hout_series) };
-        assert_eq!(series.len(), 2);
-        // At ts=1: (2+3)*2 = 10
-        // At ts=2: (5+10)*5 = 75
-        assert_eq!(series.values(), &[10.0, 75.0]);
+        assert_eq!(series.len(), 3); // initial + 2 flushes
+        // initial: 0.0, ts=1: (2+3)*2 = 10, ts=2: (5+10)*5 = 75
+        assert_eq!(series.values(), &[0.0, 10.0, 75.0]);
     }
 }

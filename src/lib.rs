@@ -11,18 +11,19 @@
 //! When compiled with the `python` feature, the crate also produces a PyO3
 //! `cdylib` exposing the runtime to Python.
 
-pub mod input;
-pub mod observable;
-pub mod operator;
 pub mod operators;
-pub mod scenario;
-pub mod series;
-pub mod source;
+
+mod observable;
+mod operator;
+mod scenario;
+mod series;
+mod source;
 
 pub use observable::Observable;
-pub use operator::Operator;
+pub use operator::{InputRef, InputRefs, Operator};
 pub use scenario::Scenario;
 pub use series::Series;
+pub use source::Source;
 
 #[cfg(feature = "python")]
 mod bench;

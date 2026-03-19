@@ -31,17 +31,21 @@ impl<T: Copy, F: Fn(&[T]) -> bool> Filter<T, F> {
     }
 }
 
-impl<T: Copy, F: Fn(&[T]) -> bool> Operator for Filter<T, F> {
+impl<T: Copy + 'static, F: Fn(&[T]) -> bool + 'static> Operator for Filter<T, F> {
     type Inputs<'a>
         = (&'a Observable<T>,)
     where
         Self: 'a;
-    type Output = T;
+    type Scalar = T;
+
+    fn output_shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+        input_shapes[0].into()
+    }
 
     #[inline(always)]
     fn compute(&mut self, _ts: i64, inputs: (&Observable<T>,), out: &mut [T]) -> bool {
         let (obs,) = inputs;
-        let input = obs.last();
+        let input = obs.current();
         if (self.predicate)(input) {
             out.copy_from_slice(input);
             true

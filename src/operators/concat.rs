@@ -21,6 +21,7 @@ pub struct Concat<T: Copy> {
     /// Number of elements per input per outer iteration (product of dims
     /// from `axis` onwards).
     chunk_size: usize,
+    axis: usize,
     _phantom: PhantomData<T>,
 }
 
@@ -32,10 +33,10 @@ impl<T: Copy> Concat<T> {
     /// `axis`: the axis to concatenate along.
     pub fn new(input_shape: &[usize], axis: usize) -> Self {
         if input_shape.is_empty() {
-            // Scalar inputs — concat produces a 1-D vector.
             return Self {
                 outer_count: 1,
                 chunk_size: 1,
+                axis,
                 _phantom: PhantomData,
             };
         }
@@ -45,46 +46,34 @@ impl<T: Copy> Concat<T> {
         Self {
             outer_count,
             chunk_size,
+            axis,
             _phantom: PhantomData,
-        }
-    }
-
-    /// Compute the output shape for a concat operation.
-    ///
-    /// `input_shape`: shape of each input.
-    /// `n_inputs`: number of inputs.
-    /// `axis`: concatenation axis.
-    pub fn output_shape(input_shape: &[usize], n_inputs: usize, axis: usize) -> Vec<usize> {
-        if input_shape.is_empty() {
-            // Scalar inputs → output is [n_inputs].
-            vec![n_inputs]
-        } else {
-            let mut shape = input_shape.to_vec();
-            shape[axis] *= n_inputs;
-            shape
         }
     }
 }
 
-impl<T: Copy> Operator for Concat<T> {
-    type Inputs<'a>
-        = &'a [&'a Observable<T>]
-    where
-        Self: 'a;
-    type Output = T;
+impl<T: Copy + 'static> Operator for Concat<T> {
+    type Inputs<'a> = Box<[&'a Observable<T>]>;
+    type Scalar = T;
+
+    fn output_shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+        let n = input_shapes.len();
+        if input_shapes[0].is_empty() {
+            vec![n].into()
+        } else {
+            let mut shape = input_shapes[0].to_vec();
+            shape[self.axis] *= n;
+            shape.into()
+        }
+    }
 
     #[inline(always)]
-    fn compute(
-        &mut self,
-        _ts: i64,
-        inputs: &[&Observable<T>],
-        out: &mut [T],
-    ) -> bool {
+    fn compute(&mut self, _ts: i64, inputs: Box<[&Observable<T>]>, out: &mut [T]) -> bool {
         if self.outer_count == 1 {
             // Fast path: sequential copy (axis 0 or scalar inputs).
             let mut offset = 0;
-            for obs in inputs {
-                let src = obs.last();
+            for obs in inputs.iter() {
+                let src = obs.current();
                 out[offset..offset + src.len()].copy_from_slice(src);
                 offset += src.len();
             }
@@ -92,8 +81,8 @@ impl<T: Copy> Operator for Concat<T> {
             // General path: interleave blocks for higher axes.
             let mut out_offset = 0;
             for outer in 0..self.outer_count {
-                for obs in inputs {
-                    let src = obs.last();
+                for obs in inputs.iter() {
+                    let src = obs.current();
                     let src_offset = outer * self.chunk_size;
                     out[out_offset..out_offset + self.chunk_size]
                         .copy_from_slice(&src[src_offset..src_offset + self.chunk_size]);
@@ -121,7 +110,7 @@ mod tests {
         let c = Observable::new(&[], &[3.0]);
         let mut op = Concat::<f64>::new(&[], 0);
         let mut out = [0.0; 3];
-        assert!(op.compute(1, &[&a, &b, &c], &mut out));
+        assert!(op.compute(1, vec![&a, &b, &c].into_boxed_slice(), &mut out));
         assert_eq!(out, [1.0, 2.0, 3.0]);
     }
 
@@ -131,7 +120,7 @@ mod tests {
         let b = Observable::new(&[2], &[3.0, 4.0]);
         let mut op = Concat::<f64>::new(&[2], 0);
         let mut out = [0.0; 4];
-        assert!(op.compute(1, &[&a, &b], &mut out));
+        assert!(op.compute(1, vec![&a, &b].into_boxed_slice(), &mut out));
         assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
     }
 
@@ -144,16 +133,20 @@ mod tests {
         // Concat along axis 1 → output shape [2, 4]
         let mut op = Concat::<f64>::new(&[2, 2], 1);
         let mut out = [0.0; 8];
-        assert!(op.compute(1, &[&a, &b], &mut out));
+        assert!(op.compute(1, vec![&a, &b].into_boxed_slice(), &mut out));
         // Expected: [[1, 2, 5, 6], [3, 4, 7, 8]]
         assert_eq!(out, [1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
     }
 
     #[test]
     fn output_shape_computation() {
-        assert_eq!(Concat::<f64>::output_shape(&[], 3, 0), vec![3]);
-        assert_eq!(Concat::<f64>::output_shape(&[2], 3, 0), vec![6]);
-        assert_eq!(Concat::<f64>::output_shape(&[2, 3], 2, 0), vec![4, 3]);
-        assert_eq!(Concat::<f64>::output_shape(&[2, 3], 2, 1), vec![2, 6]);
+        let op = Concat::<f64>::new(&[], 0);
+        assert_eq!(&*op.output_shape(&[&[], &[], &[]]), &[3]);
+        let op = Concat::<f64>::new(&[2], 0);
+        assert_eq!(&*op.output_shape(&[&[2], &[2], &[2]]), &[6]);
+        let op = Concat::<f64>::new(&[2, 3], 0);
+        assert_eq!(&*op.output_shape(&[&[2, 3], &[2, 3]]), &[4, 3]);
+        let op = Concat::<f64>::new(&[2, 3], 1);
+        assert_eq!(&*op.output_shape(&[&[2, 3], &[2, 3]]), &[2, 6]);
     }
 }

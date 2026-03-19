@@ -1,80 +1,71 @@
-//! Append-only time series with `i64` nanosecond timestamps and flat `T` values.
-//!
-//! Timestamps and values share a single `len`/`cap` pair — they always grow
-//! together.  Values are stored as `cap * stride` contiguous `T`s; element *i*
-//! occupies `values[i*stride .. (i+1)*stride]`.
-//!
-//! Memory is managed manually (alloc / realloc) so that the hot-path
-//! [`append_unchecked`] compiles to a capacity check + two pointer writes.
-//!
-//! Zero-copy `ndarray` view accessors:
-//! - [`timestamps_view`] → `ArrayView1<i64>` (always 1-D)
-//! - [`values_view_flat`] → `ArrayView1<T>` (flat)
-//! - [`values_view`] → `ArrayViewD<T>` with shape `[len, ...element_shape]`
-
-use std::marker::PhantomData;
-
-use ndarray::{ArrayView1, ArrayViewD, IxDyn};
+use ndarray::{ArrayView1, ArrayViewD, ArrayViewMut1, ArrayViewMutD, Ix1, IxDyn};
 
 const INITIAL_CAPACITY: usize = 16;
+const INITIAL_TIMESTAMP: i64 = i64::MIN;
 
-// ---------------------------------------------------------------------------
-// Series<T>
-// ---------------------------------------------------------------------------
-
-/// Append-only time series.
+/// A time series of *n*-dimensional array values, with 64-bit timestamps
+/// representing nanoseconds since the UNIX epoch (1970-01-01 00:00:00 UTC).
 ///
-/// # Safety
+/// A [`Series<T>`] holds a contiguous buffer of `stride * cap` scalar values
+/// where `stride` is the product of the element shape dimensions and `cap` is the
+/// current capacity. The series grows by doubling the capacity when needed.
+/// Timestamps are stored in a separate buffer of length `cap`.
 ///
-/// All raw-pointer operations are encapsulated behind safe methods.  The
-/// invariant `len <= cap` is maintained by every mutating method and `Drop`
-/// deallocates exactly what was allocated.
+/// Every time series is created with an explicit initial value.
+/// Missing data should be represented via sentinel values (0, NaN, etc.).
+/// The initial timestamp is set to the minimum possible value ([`i64::MIN`]),
+/// representing the state before any updates.
+#[derive(Debug)]
 pub struct Series<T: Copy> {
-    shape: Box<[usize]>,
+    values: *mut T,
+    index: *mut i64,
     stride: usize,
-    len: usize,
     cap: usize,
-    ts: *mut i64,
-    vals: *mut T,
+    len_shape: Box<[usize]>,
 }
 
-// SAFETY: Series owns its allocations exclusively; no interior sharing.
-unsafe impl<T: Copy + Send> Send for Series<T> {}
-// SAFETY: &Series only exposes shared reads of the owned buffers.
-unsafe impl<T: Copy + Sync> Sync for Series<T> {}
-
 impl<T: Copy> Series<T> {
-    /// Create a new series with shape-derived stride and default capacity.
-    pub fn new(shape: &[usize]) -> Self {
-        Self::with_capacity(shape, INITIAL_CAPACITY)
-    }
-
-    /// Create a new series with shape-derived stride and at least `cap` slots.
-    pub fn with_capacity(shape: &[usize], cap: usize) -> Self {
+    /// Create a new series with an explicit initial value and default capacity.
+    ///
+    /// `value.len()` must equal the stride (product of shape dimensions).
+    pub fn new(shape: &[usize], value: &[T]) -> Self {
         let stride = shape.iter().product::<usize>();
-        let cap = cap.max(1);
+        let cap = INITIAL_CAPACITY.max(1);
+        let len_shape = std::iter::once(1)
+            .chain(shape.iter().copied())
+            .collect::<Box<[_]>>();
+        let values = alloc_buf::<T>(stride * cap);
+        let index = alloc_buf::<i64>(cap);
+        assert!(value.len() == stride);
+        // SAFETY: `index` have length at least 1.
+        unsafe { index.write(INITIAL_TIMESTAMP) };
+        // SAFETY: both slices have length at least `stride`, and `T: Copy`.
+        unsafe { std::ptr::copy_nonoverlapping(value.as_ptr(), values, stride) };
         Self {
-            shape: shape.into(),
+            values,
+            index,
             stride,
-            len: 0,
             cap,
-            ts: alloc_buf::<i64>(cap),
-            vals: alloc_buf::<T>(cap * stride),
+            len_shape,
         }
     }
 
-    // -- Accessors ----------------------------------------------------------
+    /// Whether the series is empty. Always returns false due to the initial value.
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len_shape[0] == 0
+    }
+
+    /// Number of observations currently stored, including the initial value.
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.len_shape[0]
+    }
 
     /// Element shape (e.g. `&[2, 3]` for a 2x3 matrix element).
     #[inline(always)]
     pub fn shape(&self) -> &[usize] {
-        &self.shape
-    }
-
-    /// Number of elements currently stored.
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.len
+        &self.len_shape[1..]
     }
 
     /// Number of values per element (product of shape dimensions).
@@ -83,202 +74,237 @@ impl<T: Copy> Series<T> {
         self.stride
     }
 
+    /// The value buffer as a slice of length `len * stride`.
     #[inline(always)]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
+    pub fn values(&self) -> &[T] {
+        // SAFETY: `values` has at least `stride * len` elements allocated.
+        unsafe { std::slice::from_raw_parts(self.values, self.stride * self.len()) }
     }
 
-    /// Value slice for the most recently appended element.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the series is empty.
+    /// The value buffer as a mutable slice of length `stride * len`.
     #[inline(always)]
-    pub fn last(&self) -> &[T] {
-        debug_assert!(self.len > 0, "last() on empty series");
-        // SAFETY: `len > 0` guarantees the range is initialised.
+    pub fn values_mut(&mut self) -> &mut [T] {
+        // SAFETY: `values` has at least `stride * len` elements allocated, and we have `&mut`.
+        unsafe { std::slice::from_raw_parts_mut(self.values, self.stride * self.len()) }
+    }
+
+    /// Array view of the value buffer with shape `[len, ...element_shape]`.
+    #[inline(always)]
+    pub fn values_view(&self) -> ArrayViewD<'_, T> {
+        // SAFETY: the shape is valid for the buffer which has length `stride * len`.
+        unsafe { ArrayViewD::from_shape_ptr(IxDyn(&self.len_shape), self.values) }
+    }
+
+    /// Mutable array view of the value buffer with shape `[len, ...element_shape]`.
+    #[inline(always)]
+    pub fn values_view_mut(&mut self) -> ArrayViewMutD<'_, T> {
+        // SAFETY: the shape is valid for the buffer which has length `stride * len`.
+        unsafe { ArrayViewMutD::from_shape_ptr(IxDyn(&self.len_shape), self.values) }
+    }
+
+    /// The timestamp buffer as a slice of length `len`.
+    #[inline(always)]
+    pub fn index(&self) -> &[i64] {
+        // SAFETY: `index` has at least `len` elements allocated.
+        unsafe { std::slice::from_raw_parts(self.index, self.len()) }
+    }
+
+    /// The timestamp buffer as a mutable slice of length `len`.
+    #[inline(always)]
+    pub fn index_mut(&mut self) -> &mut [i64] {
+        // SAFETY: `index` has at least `len` elements allocated, and we have `&mut`.
+        unsafe { std::slice::from_raw_parts_mut(self.index, self.len()) }
+    }
+
+    /// Array view of the timestamp buffer with shape `[len]`.
+    #[inline(always)]
+    pub fn index_view(&self) -> ArrayView1<'_, i64> {
+        // SAFETY: the shape is valid for the buffer which has length `len`.
+        unsafe { ArrayView1::from_shape_ptr(Ix1(self.len()), self.index) }
+    }
+
+    /// Mutable array view of the timestamp buffer with shape `[len]`.
+    #[inline(always)]
+    pub fn index_view_mut(&mut self) -> ArrayViewMut1<'_, i64> {
+        // SAFETY: the shape is valid for the buffer which has length `len`, and we have `&mut`.
+        unsafe { ArrayViewMut1::from_shape_ptr(Ix1(self.len()), self.index) }
+    }
+
+    /// The i-th element as a slice of length `stride`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `i < self.len()`.
+    #[inline(always)]
+    pub unsafe fn get_unchecked(&self, i: usize) -> &[T] {
+        // SAFETY: `values` has at least `stride * (i + 1)` elements allocated.
+        unsafe { std::slice::from_raw_parts(self.values.add(self.stride * i), self.stride) }
+    }
+
+    /// The i-th element as a mutable slice of length `stride`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `i < self.len()`.
+    #[inline(always)]
+    pub unsafe fn get_unchecked_mut(&mut self, i: usize) -> &mut [T] {
+        // SAFETY: `values` has at least `stride * (i + 1)` elements allocated, and we have `&mut`.
+        unsafe { std::slice::from_raw_parts_mut(self.values.add(self.stride * i), self.stride) }
+    }
+
+    /// Array view of the i-th element with the element shape.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `i < self.len()`.
+    #[inline(always)]
+    pub unsafe fn view_unchecked(&self, i: usize) -> ArrayViewD<'_, T> {
+        // SAFETY: the shape is valid for the buffer which has length `stride`.
+        unsafe { ArrayViewD::from_shape_ptr(IxDyn(self.shape()), self.get_unchecked(i).as_ptr()) }
+    }
+
+    /// Mutable array view of the i-th element with the element shape.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `i < self.len()`.
+    #[inline(always)]
+    pub unsafe fn view_unchecked_mut(&mut self, i: usize) -> ArrayViewMutD<'_, T> {
+        // SAFETY: the shape is valid for the buffer which has length `stride`, and we have `&mut`.
         unsafe {
-            std::slice::from_raw_parts(
-                self.vals.add((self.len - 1) * self.stride),
-                self.stride,
+            ArrayViewMutD::from_shape_ptr(
+                IxDyn(self.shape()),
+                self.get_unchecked_mut(i).as_mut_ptr(),
             )
         }
     }
 
-    /// Timestamp of the most recently appended element.
+    /// The current value as a slice of length `stride`.
     #[inline(always)]
-    pub fn last_timestamp(&self) -> i64 {
-        debug_assert!(self.len > 0, "last_timestamp() on empty series");
-        unsafe { *self.ts.add(self.len - 1) }
+    pub fn current(&self) -> &[T] {
+        // SAFETY: `len` is at least 1 due to the initial value, so `len - 1` is a valid index.
+        unsafe { self.get_unchecked(self.len().unchecked_sub(1)) }
     }
 
-    /// View all timestamps as a slice.
-    #[inline]
-    pub fn timestamps(&self) -> &[i64] {
-        // SAFETY: `ts[0..len]` is initialised.
-        unsafe { std::slice::from_raw_parts(self.ts, self.len) }
-    }
-
-    /// View all values as a flat slice (length = `len * stride`).
-    #[inline]
-    pub fn values(&self) -> &[T] {
-        // SAFETY: `vals[0..len*stride]` is initialised.
-        unsafe { std::slice::from_raw_parts(self.vals, self.len * self.stride) }
-    }
-
-    /// Zero-copy `ArrayView1` of timestamps `[0..len]`.
-    #[inline]
-    pub fn timestamps_view(&self) -> ArrayView1<'_, i64> {
-        unsafe { ArrayView1::from_shape_ptr(self.len, self.ts as *const i64) }
-    }
-
-    /// Zero-copy flat `ArrayView1` of all values (length `len * stride`).
-    #[inline]
-    pub fn values_view_flat(&self) -> ArrayView1<'_, T> {
-        unsafe { ArrayView1::from_shape_ptr(self.len * self.stride, self.vals as *const T) }
-    }
-
-    /// Zero-copy `ArrayViewD` with shape `[len, ...element_shape]`.
-    ///
-    /// - Scalar (shape `[]`): returns shape `[len]`
-    /// - Vector (shape `[3]`): returns shape `[len, 3]`
-    /// - Matrix (shape `[2, 3]`): returns shape `[len, 2, 3]`
-    #[inline]
-    pub fn values_view(&self) -> ArrayViewD<'_, T> {
-        let view_shape: Vec<usize> = if self.shape.is_empty() {
-            vec![self.len]
-        } else {
-            std::iter::once(self.len).chain(self.shape.iter().copied()).collect()
-        };
-        unsafe { ArrayViewD::from_shape_ptr(IxDyn(&view_shape), self.vals as *const T) }
-    }
-
-    /// Copy timestamps into a new `Vec`.
-    pub fn timestamps_to_vec(&self) -> Vec<i64> {
-        self.timestamps().to_vec()
-    }
-
-    /// Copy values into a new `Vec`.
-    pub fn values_to_vec(&self) -> Vec<T> {
-        self.values().to_vec()
-    }
-
-    // -- Mutation ------------------------------------------------------------
-
-    /// Append a `(timestamp, value)` pair **without** checking monotonicity.
-    ///
-    /// # Safety contract (logical)
-    ///
-    /// Caller must ensure timestamps are appended in strictly increasing order.
-    /// Violating this does not cause UB but breaks the Series ordering invariant.
+    /// The current value as a mutable slice of length `stride`.
     #[inline(always)]
-    pub fn append_unchecked(&mut self, ts: i64, value: &[T]) {
-        debug_assert_eq!(value.len(), self.stride);
-        if self.len == self.cap {
+    pub fn current_mut(&mut self) -> &mut [T] {
+        // SAFETY: `len` is at least 1 due to the initial value, so `len - 1` is a valid index.
+        unsafe { self.get_unchecked_mut(self.len().unchecked_sub(1)) }
+    }
+
+    /// Array view of the current value with the element shape.
+    #[inline(always)]
+    pub fn current_view(&self) -> ArrayViewD<'_, T> {
+        // SAFETY: `len` is at least 1 due to the initial value, so `len - 1` is a valid index.
+        unsafe { self.view_unchecked(self.len().unchecked_sub(1)) }
+    }
+
+    /// Mutable array view of the current value with the element shape.
+    #[inline(always)]
+    pub fn current_view_mut(&mut self) -> ArrayViewMutD<'_, T> {
+        // SAFETY: `len` is at least 1 due to the initial value, so `len - 1` is a valid index.
+        unsafe { self.view_unchecked_mut(self.len().unchecked_sub(1)) }
+    }
+}
+
+impl<T: Copy> std::ops::Index<usize> for Series<T> {
+    type Output = [T];
+
+    /// The i-th element as a slice of length `stride`.
+    #[inline(always)]
+    fn index(&self, i: usize) -> &[T] {
+        assert!(i < self.len(), "index out of bounds");
+        // SAFETY: bounds check ensures `i` is valid.
+        unsafe { self.get_unchecked(i) }
+    }
+}
+
+impl<T: Copy> std::ops::IndexMut<usize> for Series<T> {
+    /// The i-th element as a mutable slice of length `stride`.
+    #[inline(always)]
+    fn index_mut(&mut self, i: usize) -> &mut [T] {
+        assert!(i < self.len(), "index out of bounds");
+        // SAFETY: bounds check ensures `i` is valid.
+        unsafe { self.get_unchecked_mut(i) }
+    }
+}
+
+impl<T: Copy> Series<T> {
+    /// Array view of the i-th element with the element shape.
+    #[inline(always)]
+    pub fn view(&self, i: usize) -> ArrayViewD<'_, T> {
+        assert!(i < self.len(), "index out of bounds");
+        // SAFETY: bounds check ensures `i` is valid.
+        unsafe { self.view_unchecked(i) }
+    }
+
+    /// Mutable array view of the i-th element with the element shape.
+    #[inline(always)]
+    pub fn view_mut(&mut self, i: usize) -> ArrayViewMutD<'_, T> {
+        assert!(i < self.len(), "index out of bounds");
+        // SAFETY: bounds check ensures `i` is valid.
+        unsafe { self.view_unchecked_mut(i) }
+    }
+}
+
+impl<T: Copy> Series<T> {
+    /// Return the index of the last element whose timestamp is `<= t`.
+    #[inline]
+    pub fn as_of(&self, t: i64) -> usize {
+        // The first element should always satisfy the predicate.
+        self.index().partition_point(|&ts| ts <= t) - 1
+    }
+
+    /// Append a `(timestamp, value)` pair.
+    ///
+    /// `value.len()` must equal the stride (product of shape dimensions).
+    #[inline(always)]
+    pub fn push(&mut self, timestamp: i64, value: &[T]) {
+        assert!(value.len() == self.stride());
+        assert!(timestamp >= self.index()[self.len() - 1]);
+        // Ensure that we have room for one more element.
+        if self.len_shape[0] == self.cap {
             self.grow();
         }
         // SAFETY: `len < cap` after a possible grow; both buffers are large enough.
         unsafe {
-            self.ts.add(self.len).write(ts);
-            std::ptr::copy_nonoverlapping(
-                value.as_ptr(),
-                self.vals.add(self.len * self.stride),
-                self.stride,
-            );
+            let tp = self.index.add(self.len_shape[0]);
+            let vp = self.values.add(self.stride * self.len_shape[0]);
+            tp.write(timestamp);
+            std::ptr::copy_nonoverlapping(value.as_ptr(), vp, self.stride);
         }
-        self.len += 1;
+        self.len_shape[0] += 1;
     }
 
-    /// Reserve the next value slot without advancing `len`.
-    ///
-    /// Write into the returned slice, then call [`commit`] to publish the
-    /// element.  If the operator decides not to produce output, simply do
-    /// nothing — the slot is not yet visible.
-    #[inline(always)]
-    pub fn reserve_slot(&mut self) -> &mut [T] {
-        if self.len == self.cap {
-            self.grow();
-        }
-        // SAFETY: `len < cap`; the slice is within the allocation.
-        unsafe {
-            let p = self.vals.add(self.len * self.stride);
-            std::slice::from_raw_parts_mut(p, self.stride)
-        }
-    }
-
-    /// Publish the previously reserved slot with the given timestamp.
-    ///
-    /// Must be called exactly once after each successful [`reserve_slot`] write.
-    #[inline(always)]
-    pub fn commit(&mut self, ts: i64) {
-        debug_assert!(self.len < self.cap, "commit without prior reserve_slot");
-        // SAFETY: `len < cap` (reserve_slot guaranteed space).
-        unsafe { self.ts.add(self.len).write(ts) };
-        self.len += 1;
-    }
-
-    /// Remove all elements, keeping allocated capacity.
-    pub fn clear(&mut self) {
-        self.len = 0;
-    }
-
-    // -- Internal -----------------------------------------------------------
-
-    /// Double the capacity.  Marked `#[cold]` because it should rarely execute
-    /// on the hot path (geometric growth).
-    #[inline(never)]
-    #[cold]
+    /// Double the capacity.
     fn grow(&mut self) {
         let new_cap = self.cap * 2;
-        self.ts = realloc_buf(self.ts, self.cap, new_cap);
-        self.vals = realloc_buf(self.vals, self.cap * self.stride, new_cap * self.stride);
+        self.index = realloc_buf(self.index, self.cap, new_cap);
+        self.values = realloc_buf(self.values, self.stride * self.cap, self.stride * new_cap);
         self.cap = new_cap;
     }
 }
 
 impl<T: Copy> Drop for Series<T> {
     fn drop(&mut self) {
-        dealloc_buf(self.ts, self.cap);
-        dealloc_buf(self.vals, self.cap * self.stride);
+        dealloc_buf(self.index, self.cap);
+        dealloc_buf(self.values, self.stride * self.cap);
     }
 }
 
-// ---------------------------------------------------------------------------
-// SeriesHandle<T>
-// ---------------------------------------------------------------------------
+// SAFETY: Series owns its allocations exclusively; no interior sharing.
+unsafe impl<T: Copy + Send> Send for Series<T> {}
 
-/// Zero-cost typed handle proving that a node has been materialized.
-///
-/// Only constructible via [`Scenario::materialize`].  Carries the node index
-/// and a `PhantomData<T>` for compile-time type checking.  At runtime it is
-/// just a `usize`.
-pub struct SeriesHandle<T: Copy> {
-    pub(crate) index: usize,
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Copy> SeriesHandle<T> {
-    pub(crate) fn new(index: usize) -> Self {
-        Self {
-            index,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<T: Copy> Clone for SeriesHandle<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<T: Copy> Copy for SeriesHandle<T> {}
+// SAFETY: &Series only exposes shared reads of the owned buffers.
+unsafe impl<T: Copy + Sync> Sync for Series<T> {}
 
 // ---------------------------------------------------------------------------
 // Allocation helpers
 // ---------------------------------------------------------------------------
 
 fn alloc_buf<T>(count: usize) -> *mut T {
-    let layout = std::alloc::Layout::array::<T>(count).expect("layout overflow");
+    let layout = std::alloc::Layout::array::<T>(count).unwrap();
     // SAFETY: layout is non-zero (count >= 1 enforced by callers).
     let p = unsafe { std::alloc::alloc(layout) as *mut T };
     assert!(!p.is_null(), "allocation failed");
@@ -287,9 +313,9 @@ fn alloc_buf<T>(count: usize) -> *mut T {
 
 fn realloc_buf<T>(ptr: *mut T, old_count: usize, new_count: usize) -> *mut T {
     let old_layout = std::alloc::Layout::array::<T>(old_count).unwrap();
-    let new_size = std::alloc::Layout::array::<T>(new_count).unwrap().size();
+    let new_layout = std::alloc::Layout::array::<T>(new_count).unwrap();
     // SAFETY: `ptr` was allocated with `old_layout`; `new_size >= old_size`.
-    let p = unsafe { std::alloc::realloc(ptr as *mut u8, old_layout, new_size) as *mut T };
+    let p = unsafe { std::alloc::realloc(ptr as *mut u8, old_layout, new_layout.size()) as *mut T };
     assert!(!p.is_null(), "reallocation failed");
     p
 }
@@ -310,126 +336,142 @@ mod tests {
 
     #[test]
     fn append_and_read() {
-        let mut s = Series::<f64>::new(&[]);
-        s.append_unchecked(1, &[10.0]);
-        s.append_unchecked(2, &[20.0]);
-        s.append_unchecked(3, &[30.0]);
-        assert_eq!(s.len(), 3);
-        assert_eq!(s.shape(), &[] as &[usize]);
-        assert_eq!(s.timestamps(), &[1, 2, 3]);
-        assert_eq!(s.values(), &[10.0, 20.0, 30.0]);
-        assert_eq!(s.last(), &[30.0]);
-    }
-
-    #[test]
-    fn reserve_and_commit() {
-        let mut s = Series::<f64>::new(&[]);
-        let slot = s.reserve_slot();
-        slot[0] = 42.0;
-        s.commit(100);
+        let mut s = Series::new(&[], &[0.0]);
+        // Initial value is element 0 (at timestamp i64::MIN).
         assert_eq!(s.len(), 1);
-        assert_eq!(s.last(), &[42.0]);
-        assert_eq!(s.last_timestamp(), 100);
+        assert_eq!(s.current(), &[0.0]);
+        s.push(1, &[10.0]);
+        s.push(2, &[20.0]);
+        s.push(3, &[30.0]);
+        assert_eq!(s.len(), 4);
+        assert_eq!(s.shape(), &[]);
+        assert_eq!(s.index(), &[i64::MIN, 1, 2, 3]);
+        assert_eq!(s.values(), &[0.0, 10.0, 20.0, 30.0]);
+        assert_eq!(s.current_view().as_slice().unwrap(), &[30.0]);
     }
 
     #[test]
     fn strided_series() {
-        let mut s = Series::<f64>::new(&[3]);
-        s.append_unchecked(1, &[1.0, 2.0, 3.0]);
-        s.append_unchecked(2, &[4.0, 5.0, 6.0]);
-        assert_eq!(s.len(), 2);
+        let mut s = Series::new(&[3], &[0.0, 0.0, 0.0]);
+        s.push(1, &[1.0, 2.0, 3.0]);
+        s.push(2, &[4.0, 5.0, 6.0]);
+        assert_eq!(s.len(), 3); // initial + 2 pushes
         assert_eq!(s.stride(), 3);
         assert_eq!(s.shape(), &[3]);
-        assert_eq!(s.last(), &[4.0, 5.0, 6.0]);
-        assert_eq!(s.values(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(s.current_view().as_slice().unwrap(), &[4.0, 5.0, 6.0]);
+        assert_eq!(s.values(), &[0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]
     fn grow_beyond_initial_capacity() {
-        let mut s = Series::<i32>::with_capacity(&[], 2);
+        let mut s = Series::<i32>::new(&[], &[0]);
         for i in 0..100 {
-            s.append_unchecked(i as i64, &[i]);
+            s.push(i as i64, &[i]);
         }
-        assert_eq!(s.len(), 100);
-        assert_eq!(s.last(), &[99]);
-    }
-
-    #[test]
-    fn clear_resets_length() {
-        let mut s = Series::<f64>::new(&[]);
-        s.append_unchecked(1, &[1.0]);
-        s.clear();
-        assert!(s.is_empty());
-        s.append_unchecked(2, &[2.0]);
-        assert_eq!(s.len(), 1);
+        assert_eq!(s.len(), 101); // initial + 100 pushes
+        assert_eq!(s.current_view().as_slice().unwrap(), &[99]);
     }
 
     #[test]
     fn values_view_scalar() {
-        let mut s = Series::<f64>::new(&[]);
-        s.append_unchecked(1, &[10.0]);
-        s.append_unchecked(2, &[20.0]);
-        s.append_unchecked(3, &[30.0]);
+        let mut s = Series::new(&[], &[0.0]);
+        s.push(1, &[10.0]);
+        s.push(2, &[20.0]);
+        s.push(3, &[30.0]);
 
-        // Scalar → shape [len]
+        // Scalar → shape [len] (includes initial)
         let view = s.values_view();
-        assert_eq!(view.shape(), &[3]);
-        assert_eq!(view[[0]], 10.0);
-        assert_eq!(view[[2]], 30.0);
+        assert_eq!(view.shape(), &[4]);
+        assert_eq!(view[[0]], 0.0); // initial
+        assert_eq!(view[[1]], 10.0);
+        assert_eq!(view[[3]], 30.0);
         // Zero-copy.
         assert_eq!(view.as_slice().unwrap().as_ptr(), s.values().as_ptr());
     }
 
     #[test]
     fn values_view_vector() {
-        let mut s = Series::<f64>::new(&[3]);
-        s.append_unchecked(1, &[1.0, 2.0, 3.0]);
-        s.append_unchecked(2, &[4.0, 5.0, 6.0]);
+        let mut s = Series::new(&[3], &[0.0, 0.0, 0.0]);
+        s.push(1, &[1.0, 2.0, 3.0]);
+        s.push(2, &[4.0, 5.0, 6.0]);
 
-        // Vector → shape [len, 3]
+        // Vector → shape [len, 3] (includes initial row)
         let view = s.values_view();
-        assert_eq!(view.shape(), &[2, 3]);
-        assert_eq!(view[[0, 0]], 1.0);
-        assert_eq!(view[[0, 2]], 3.0);
-        assert_eq!(view[[1, 0]], 4.0);
-        assert_eq!(view[[1, 2]], 6.0);
+        assert_eq!(view.shape(), &[3, 3]);
+        assert_eq!(view[[1, 0]], 1.0);
+        assert_eq!(view[[1, 2]], 3.0);
+        assert_eq!(view[[2, 0]], 4.0);
+        assert_eq!(view[[2, 2]], 6.0);
         assert_eq!(view.as_slice().unwrap().as_ptr(), s.values().as_ptr());
     }
 
     #[test]
     fn values_view_matrix() {
-        let mut s = Series::<f64>::new(&[2, 3]);
-        s.append_unchecked(1, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        s.append_unchecked(2, &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let mut s = Series::new(&[2, 3], &[0.0; 6]);
+        s.push(1, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        s.push(2, &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
 
-        // Matrix → shape [len, 2, 3]
+        // Matrix → shape [len, 2, 3] (includes initial)
         let view = s.values_view();
-        assert_eq!(view.shape(), &[2, 2, 3]);
-        assert_eq!(view[[0, 0, 0]], 1.0);
-        assert_eq!(view[[0, 1, 2]], 6.0);
-        assert_eq!(view[[1, 0, 0]], 7.0);
-        assert_eq!(view[[1, 1, 2]], 12.0);
+        assert_eq!(view.shape(), &[3, 2, 3]);
+        assert_eq!(view[[1, 0, 0]], 1.0);
+        assert_eq!(view[[1, 1, 2]], 6.0);
+        assert_eq!(view[[2, 0, 0]], 7.0);
+        assert_eq!(view[[2, 1, 2]], 12.0);
         assert_eq!(view.as_slice().unwrap().as_ptr(), s.values().as_ptr());
     }
 
     #[test]
-    fn timestamps_view_always_1d() {
-        let mut s = Series::<f64>::new(&[2, 3]);
-        s.append_unchecked(100, &[0.0; 6]);
-        s.append_unchecked(200, &[0.0; 6]);
-        let ts = s.timestamps_view();
-        assert_eq!(ts.shape(), &[2]);
-        assert_eq!(ts[0], 100);
-        assert_eq!(ts[1], 200);
-        assert_eq!(ts.as_slice().unwrap().as_ptr(), s.timestamps().as_ptr());
+    fn timestamps_view() {
+        let mut s = Series::new(&[2, 3], &[0.0; 6]);
+        s.push(100, &[0.0; 6]);
+        s.push(200, &[0.0; 6]);
+        let ts = s.index_view();
+        assert_eq!(ts.shape(), &[3]); // initial + 2 pushes
+        assert_eq!(ts[0], i64::MIN); // initial timestamp
+        assert_eq!(ts[1], 100);
+        assert_eq!(ts[2], 200);
+        assert_eq!(ts.as_slice().unwrap().as_ptr(), s.index().as_ptr());
     }
 
     #[test]
-    fn flat_view_always_1d() {
-        let mut s = Series::<f64>::new(&[2, 3]);
-        s.append_unchecked(1, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let flat = s.values_view_flat();
-        assert_eq!(flat.len(), 6);
-        assert_eq!(flat[3], 4.0);
+    fn get_element() {
+        let mut s = Series::new(&[2], &[0.0, 0.0]);
+        s.push(10, &[1.0, 2.0]);
+        s.push(20, &[3.0, 4.0]);
+
+        assert_eq!(s.view(0).as_slice().unwrap(), &[0.0, 0.0]);
+        assert_eq!(s.view(1).as_slice().unwrap(), &[1.0, 2.0]);
+        assert_eq!(s.view(2).as_slice().unwrap(), &[3.0, 4.0]);
+    }
+
+    #[test]
+    fn as_of_exact_and_between() {
+        let mut s = Series::new(&[], &[0.0]);
+        s.push(10, &[1.0]);
+        s.push(20, &[2.0]);
+        s.push(30, &[3.0]);
+        // Before any element (even before initial at i64::MIN is impossible,
+        // but test the boundary just above initial).
+        assert_eq!(s.as_of(i64::MIN), 0);
+        // Exact matches.
+        assert_eq!(s.as_of(10), 1);
+        assert_eq!(s.as_of(20), 2);
+        assert_eq!(s.as_of(30), 3);
+        // Between timestamps — returns earlier.
+        assert_eq!(s.as_of(15), 1);
+        assert_eq!(s.as_of(25), 2);
+        // Beyond last timestamp.
+        assert_eq!(s.as_of(100), 3);
+    }
+
+    #[test]
+    fn as_of_duplicate_timestamps() {
+        let mut s = Series::new(&[], &[0.0]);
+        s.push(10, &[1.0]);
+        s.push(10, &[2.0]);
+        s.push(10, &[3.0]);
+        // Should return the last of the duplicates.
+        assert_eq!(s.as_of(10), 3);
     }
 }
