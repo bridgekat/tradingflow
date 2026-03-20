@@ -1,9 +1,6 @@
-use std::future::Future;
-use std::pin::Pin;
-
 use tokio::sync::mpsc;
 
-use super::OutputRef;
+use super::Output;
 
 /// A data source providing historical and/or real-time data streams.
 ///
@@ -29,30 +26,31 @@ pub trait Source: Send + 'static {
     /// Implementor-defined channel event type.
     type Event: Send + 'static;
 
-    /// Mutable view of the source's output container.
+    /// The source's output container.
     ///
-    /// Must be a mutable reference to [`Observable`](crate::Observable).
-    type Output<'a>: OutputRef<'a>;
+    /// Must be an [`Observable`](crate::Observable).
+    type Output: Output;
 
     /// Infer the output element shape.
     fn shape(&self) -> Box<[usize]>;
 
+    /// Provide the initial value for the output observable.
+    fn initial(&self) -> Box<[<Self::Output as Output>::Scalar]>;
+
     /// Start producing events. Creates channels, spawns producers, and
     /// returns the historical and real-time receivers.
+    ///
+    /// All async work is deferred into the spawned producer tasks;
+    /// this method itself is synchronous (but may require a tokio
+    /// runtime context for [`tokio::spawn`]).
     fn subscribe(
-        self: Box<Self>,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = (
-                        mpsc::Receiver<(i64, Self::Event)>,
-                        mpsc::Receiver<(i64, Self::Event)>,
-                    ),
-                > + Send,
-        >,
-    >;
+        self,
+    ) -> (
+        mpsc::Receiver<(i64, Self::Event)>,
+        mpsc::Receiver<(i64, Self::Event)>,
+    );
 
     /// Write an event into the output, or return `false` if no output is
     /// produced.
-    fn write(event: Self::Event, output: Self::Output<'_>) -> bool;
+    fn write(event: Self::Event, output: &mut Self::Output) -> bool;
 }

@@ -23,7 +23,7 @@ mod source;
 
 pub use observable::Observable;
 pub use operator::Operator;
-pub use refs::{InputRef, InputRefs, OutputRef, OutputRefs};
+pub use refs::{Input, Inputs, Output, Outputs, Scalar};
 pub use scenario::{InputHandle, InputHandles, Scenario};
 pub use series::Series;
 pub use source::Source;

@@ -1,4 +1,4 @@
-use super::{InputRefs, OutputRef};
+use super::{Inputs, Output};
 
 /// An operator that reads from one or more inputs and writes into an output.
 ///
@@ -11,27 +11,34 @@ use super::{InputRefs, OutputRef};
 /// update.
 pub trait Operator {
     /// Mutable runtime state, created by [`init`](Operator::init).
-    type State;
+    type State: Send + 'static;
 
-    /// Borrowed views of the operator's input containers.
+    /// The operator's input containers.
     ///
-    /// Must be either a reference to [`Observable`](crate::Observable), a
-    /// reference to [`Series`](crate::Series), or a slice or tuple thereof.
-    type Inputs<'a>: InputRefs<'a>;
+    /// Must be either an [`Observable`](crate::Observable), a
+    /// [`Series`](crate::Series), or a slice or tuple thereof.
+    type Inputs: Inputs + ?Sized;
 
-    /// Mutable view of the operator's output container.
+    /// The operator's output container.
     ///
-    /// Must be a mutable reference to [`Observable`](crate::Observable).
-    type Output<'a>: OutputRef<'a>;
+    /// Must be an [`Observable`](crate::Observable).
+    type Output: Output;
 
     /// Infer the output element shape from input element shapes.
     fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]>;
+
+    /// Provide the initial value for the output observable, used when the
+    /// initial [`compute`](Operator::compute) does not produce a value.
+    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[<Self::Output as Output>::Scalar]>;
 
     /// Create the initial runtime state.
     fn init(self) -> Self::State;
 
     /// Write the output from the inputs and the current state,
     /// or return `false` if no output is produced.
-    fn compute(state: &mut Self::State, inputs: Self::Inputs<'_>, output: Self::Output<'_>)
-    -> bool;
+    fn compute(
+        state: &mut Self::State,
+        inputs: <Self::Inputs as Inputs>::Refs<'_>,
+        output: &mut Self::Output,
+    ) -> bool;
 }

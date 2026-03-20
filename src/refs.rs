@@ -1,151 +1,162 @@
+use std::any::Any;
+
 use super::observable::Observable;
 use super::series::Series;
 
-/// A reference to a permitted input type.
-///
-/// Implemented by references to [`Observable`] and [`Series`].
-pub trait InputRef<'a> {
-    /// The scalar type of the input array.
-    type Scalar: Copy;
+/// A permitted array scalar type.
+pub trait Scalar: Copy + Send + Default + 'static {}
 
-    /// Reconstruct a typed reference from a raw pointer.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must point to the correct concrete type and be valid for `'a`.
-    unsafe fn from_raw(ptr: *const u8) -> Self;
+macro_rules! impl_scalar {
+    ($($T:ty),+ $(,)?) => { $(impl Scalar for $T {})+ };
+}
+
+impl_scalar!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64);
+
+/// A permitted input type.
+///
+/// Implemented by [`Observable`] and [`Series`].
+pub trait Input {
+    /// The scalar type of the input array.
+    type Scalar: Scalar;
+
+    /// Reconstruct a typed reference from a type-erased reference.
+    fn from_erased(any: &dyn Any) -> &Self;
 
     /// The shape of the input array.
-    fn shape(self) -> &'a [usize];
+    fn shape(&self) -> &[usize];
 }
 
-/// A mutable reference to a permitted output type.
+/// A permitted output type.
 ///
-/// Implemented by mutable references to [`Observable`].
-pub trait OutputRef<'a> {
+/// Implemented by [`Observable`].
+pub trait Output {
     /// The scalar type of the output array.
-    type Scalar: Copy;
+    type Scalar: Scalar;
 
-    /// Reconstruct a typed mutable reference from a raw pointer.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must point to the correct concrete type and be valid for `'a`.
-    unsafe fn from_raw(ptr: *mut u8) -> Self;
+    /// Reconstruct a typed reference from a type-erased reference.
+    fn from_erased(any: &mut dyn Any) -> &mut Self;
 
     /// The shape of the output array.
-    fn shape(self) -> &'a [usize];
+    fn shape(&self) -> &[usize];
 }
 
-/// A collection of references to permitted input types.
+/// A collection of permitted input types.
 ///
-/// Implemented by [`InputRef`], as well as slices and tuples
-/// containing [`InputRef`]s.
-pub trait InputRefs<'a> {
-    /// Reconstruct typed references from raw pointers.
-    ///
-    /// # Safety
-    ///
-    /// `ptrs` must contain pointers to correct concrete types and be valid for `'a`.
-    unsafe fn from_raw(ptrs: &[*const u8]) -> Self;
+/// Implemented by [`Input`], as well as slices and tuples containing
+/// [`Input`]s.
+pub trait Inputs {
+    /// The collection of references.
+    type Refs<'a>;
+
+    /// Reconstruct typed references from type-erased references.
+    fn from_erased<'a>(anys: Box<[&'a dyn Any]>) -> Self::Refs<'a>;
 
     /// The shapes of the input arrays.
-    fn shapes(self) -> Box<[&'a [usize]]>;
+    fn shapes<'a>(refs: Self::Refs<'a>) -> Box<[&'a [usize]]>;
 }
 
-/// A collection of references to permitted output types.
+/// A collection of permitted output types.
 ///
-/// Implemented by [`OutputRef`], as well as slices and tuples
-/// containing [`OutputRef`]s.
-pub trait OutputRefs<'a> {
-    /// Reconstruct typed mutable references from raw pointers.
-    ///
-    /// # Safety
-    ///
-    /// `ptrs` must contain pointers to correct concrete types and be valid for `'a`.
-    unsafe fn from_raw(ptrs: &[*mut u8]) -> Self;
+/// Implemented by [`Output`], as well as slices and tuples containing
+/// [`Output`]s.
+pub trait Outputs {
+    /// The collection of references.
+    type Refs<'a>;
+
+    /// The collection of mutable references.
+    type RefMuts<'a>;
+
+    /// Reconstruct typed references from type-erased references.
+    fn from_erased<'a>(anys: Box<[&'a mut dyn Any]>) -> Self::RefMuts<'a>;
 
     /// The shapes of the output arrays.
-    fn shapes(self) -> Box<[&'a [usize]]>;
+    fn shapes<'a>(refs: Self::Refs<'a>) -> Box<[&'a [usize]]>;
 }
 
-impl<'a, T: Copy> InputRef<'a> for &'a Observable<T> {
+impl<T: Scalar> Input for Observable<T> {
     type Scalar = T;
 
     #[inline(always)]
-    unsafe fn from_raw(ptr: *const u8) -> Self {
-        unsafe { &*(ptr as *const Observable<T>) }
+    fn from_erased(any: &dyn Any) -> &Self {
+        any.downcast_ref().unwrap()
     }
 
     #[inline(always)]
-    fn shape(self) -> &'a [usize] {
+    fn shape(&self) -> &[usize] {
         Observable::shape(self)
     }
 }
 
-impl<'a, T: Copy> InputRef<'a> for &'a Series<T> {
+impl<T: Scalar> Input for Series<T> {
     type Scalar = T;
 
     #[inline(always)]
-    unsafe fn from_raw(ptr: *const u8) -> Self {
-        unsafe { &*(ptr as *const Series<T>) }
+    fn from_erased(any: &dyn Any) -> &Self {
+        any.downcast_ref().unwrap()
     }
 
     #[inline(always)]
-    fn shape(self) -> &'a [usize] {
+    fn shape(&self) -> &[usize] {
         Series::shape(self)
     }
 }
 
-impl<'a, T: Copy> OutputRef<'a> for &'a mut Observable<T> {
+impl<T: Scalar> Output for Observable<T> {
     type Scalar = T;
 
     #[inline(always)]
-    unsafe fn from_raw(ptr: *mut u8) -> Self {
-        unsafe { &mut *(ptr as *mut Observable<T>) }
+    fn from_erased(any: &mut dyn Any) -> &mut Self {
+        any.downcast_mut::<Self>().unwrap()
     }
 
     #[inline(always)]
-    fn shape(self) -> &'a [usize] {
+    fn shape(&self) -> &[usize] {
         Observable::shape(self)
     }
 }
 
-impl<'a, R: InputRef<'a>> InputRefs<'a> for R {
+impl<T: Input + 'static> Inputs for T {
+    type Refs<'a> = &'a T;
+
     #[inline(always)]
-    unsafe fn from_raw(ptrs: &[*const u8]) -> Self {
-        unsafe { R::from_raw(ptrs[0]) }
+    fn from_erased<'a>(anys: Box<[&'a dyn Any]>) -> Self::Refs<'a> {
+        T::from_erased(anys[0])
     }
 
     #[inline(always)]
-    fn shapes(self) -> Box<[&'a [usize]]> {
-        Box::new([self.shape()])
+    fn shapes<'a>(refs: Self::Refs<'a>) -> Box<[&'a [usize]]> {
+        Box::new([refs.shape()])
     }
 }
 
-impl<'a, R: InputRef<'a>> InputRefs<'a> for Box<[R]> {
+impl<T: Input + 'static> Inputs for [T] {
+    type Refs<'a> = Box<[&'a T]>;
+
     #[inline(always)]
-    unsafe fn from_raw(ptrs: &[*const u8]) -> Self {
-        unsafe { ptrs.iter().map(|&ptr| R::from_raw(ptr)).collect() }
+    fn from_erased<'a>(anys: Box<[&'a dyn Any]>) -> Self::Refs<'a> {
+        anys.into_iter().map(T::from_erased).collect()
     }
 
     #[inline(always)]
-    fn shapes(self) -> Box<[&'a [usize]]> {
-        self.into_iter().map(|r| r.shape()).collect()
+    fn shapes<'a>(refs: Self::Refs<'a>) -> Box<[&'a [usize]]> {
+        refs.into_iter().map(T::shape).collect()
     }
 }
 
 macro_rules! impl_input_refs_for_tuple {
-    ($($idx:tt: $R:ident),+ $(,)?) => {
-        impl<'a, $($R: InputRef<'a>),+> InputRefs<'a> for ($($R,)+) {
+    ($($idx:tt: $T:ident),+ $(,)?) => {
+        impl<$($T: Input + 'static),+> Inputs for ($($T,)+) {
+            type Refs<'a> = ($(&'a $T,)+);
+
             #[inline(always)]
-            unsafe fn from_raw(ptrs: &[*const u8]) -> Self {
-                unsafe { ($($R::from_raw(ptrs[$idx]),)+) }
+            fn from_erased<'a>(anys: Box<[&'a dyn Any]>) -> Self::Refs<'a> {
+                let mut it = anys.into_iter();
+                ($($T::from_erased(it.next().unwrap()),)+)
             }
 
             #[inline(always)]
-            fn shapes(self) -> Box<[&'a [usize]]> {
-                Box::new([$(self.$idx.shape()),+])
+            fn shapes<'a>(refs: Self::Refs<'a>) -> Box<[&'a [usize]]> {
+                Box::new([$(refs.$idx.shape()),+])
             }
         }
     };
@@ -164,41 +175,51 @@ impl_input_refs_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I,
 impl_input_refs_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K);
 impl_input_refs_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);
 
-impl<'a, R: OutputRef<'a>> OutputRefs<'a> for R {
+impl<T: Output + 'static> Outputs for T {
+    type Refs<'a> = &'a T;
+    type RefMuts<'a> = &'a mut T;
+
     #[inline(always)]
-    unsafe fn from_raw(ptrs: &[*mut u8]) -> Self {
-        unsafe { R::from_raw(ptrs[0]) }
+    fn from_erased<'a>(anys: Box<[&'a mut dyn Any]>) -> Self::RefMuts<'a> {
+        T::from_erased(anys[0])
     }
 
     #[inline(always)]
-    fn shapes(self) -> Box<[&'a [usize]]> {
-        Box::new([self.shape()])
+    fn shapes<'a>(refs: Self::Refs<'a>) -> Box<[&'a [usize]]> {
+        Box::new([refs.shape()])
     }
 }
 
-impl<'a, R: OutputRef<'a>> OutputRefs<'a> for Box<[R]> {
+impl<T: Output + 'static> Outputs for [T] {
+    type Refs<'a> = Box<[&'a T]>;
+    type RefMuts<'a> = Box<[&'a mut T]>;
+
     #[inline(always)]
-    unsafe fn from_raw(ptrs: &[*mut u8]) -> Self {
-        unsafe { ptrs.iter().map(|&ptr| R::from_raw(ptr)).collect() }
+    fn from_erased<'a>(anys: Box<[&'a mut dyn Any]>) -> Self::RefMuts<'a> {
+        anys.into_iter().map(T::from_erased).collect()
     }
 
     #[inline(always)]
-    fn shapes(self) -> Box<[&'a [usize]]> {
-        self.into_iter().map(|r| r.shape()).collect()
+    fn shapes<'a>(refs: Self::Refs<'a>) -> Box<[&'a [usize]]> {
+        refs.into_iter().map(T::shape).collect()
     }
 }
 
 macro_rules! impl_output_refs_for_tuple {
-    ($($idx:tt: $R:ident),+ $(,)?) => {
-        impl<'a, $($R: OutputRef<'a>),+> OutputRefs<'a> for ($($R,)+) {
+    ($($idx:tt: $T:ident),+ $(,)?) => {
+        impl<$($T: Output + 'static),+> Outputs for ($($T,)+) {
+            type Refs<'a> = ($(&'a $T,)+);
+            type RefMuts<'a> = ($(&'a mut $T,)+);
+
             #[inline(always)]
-            unsafe fn from_raw(ptrs: &[*mut u8]) -> Self {
-                unsafe { ($($R::from_raw(ptrs[$idx]),)+) }
+            fn from_erased<'a>(anys: Box<[&'a mut dyn Any]>) -> Self::RefMuts<'a> {
+                let mut it = anys.into_iter();
+                ($($T::from_erased(it.next().unwrap()),)+)
             }
 
             #[inline(always)]
-            fn shapes(self) -> Box<[&'a [usize]]> {
-                Box::new([$(self.$idx.shape()),+])
+            fn shapes<'a>(refs: Self::Refs<'a>) -> Box<[&'a [usize]]> {
+                Box::new([$(refs.$idx.shape()),+])
             }
         }
     };

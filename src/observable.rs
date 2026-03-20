@@ -54,15 +54,13 @@ impl<T: Copy> Observable<T> {
     /// Array view of the current value with the element shape.
     #[inline(always)]
     pub fn current_view(&self) -> ArrayViewD<'_, T> {
-        // SAFETY: the shape is valid for the buffer which has length `stride`.
-        unsafe { ArrayViewD::from_shape_ptr(IxDyn(&self.shape), self.value.as_ptr()) }
+        ArrayViewD::from_shape(IxDyn(&self.shape), &self.value).unwrap()
     }
 
     /// Mutable array view of the current value with the element shape.
     #[inline(always)]
     pub fn current_view_mut(&mut self) -> ArrayViewMutD<'_, T> {
-        // SAFETY: the shape is valid for the buffer which has length `stride`.
-        unsafe { ArrayViewMutD::from_shape_ptr(IxDyn(&self.shape), self.value.as_mut_ptr()) }
+        ArrayViewMutD::from_shape(IxDyn(&self.shape), &mut self.value).unwrap()
     }
 
     /// Overwrite the current value from a slice.

@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 
 use crate::observable::Observable;
 use crate::operator::Operator;
+use crate::refs::Scalar;
 
 /// Stack N homogeneous observables along a new axis.
 ///
@@ -40,8 +41,8 @@ impl<T: Copy> Stack<T> {
                 _phantom: PhantomData,
             };
         }
-        let outer_count = input_shape[..axis].iter().product::<usize>().max(1);
-        let chunk_size = input_shape[axis..].iter().product::<usize>().max(1);
+        let outer_count = input_shape[..axis].iter().product::<usize>();
+        let chunk_size = input_shape[axis..].iter().product::<usize>();
         Self {
             outer_count,
             chunk_size,
@@ -51,16 +52,10 @@ impl<T: Copy> Stack<T> {
     }
 }
 
-impl<T: Copy + 'static> Operator for Stack<T> {
+impl<T: Scalar> Operator for Stack<T> {
     type State = Self;
-    type Inputs<'a>
-        = Box<[&'a Observable<T>]>
-    where
-        Self: 'a;
-    type Output<'o>
-        = &'o mut Observable<T>
-    where
-        Self: 'o;
+    type Inputs = [Observable<T>];
+    type Output = Observable<T>;
 
     fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         let n = input_shapes.len();
@@ -74,6 +69,12 @@ impl<T: Copy + 'static> Operator for Stack<T> {
             shape.extend_from_slice(&s[self.axis..]);
             shape.into()
         }
+    }
+
+    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
+        let shape = self.shape(input_shapes);
+        let stride = shape.iter().product::<usize>();
+        vec![T::default(); stride].into()
     }
 
     fn init(self) -> Self {

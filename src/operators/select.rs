@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 
 use crate::observable::Observable;
 use crate::operator::Operator;
+use crate::refs::{Inputs, Scalar};
 
 /// Select elements from an observable along an axis.
 ///
@@ -53,16 +54,10 @@ impl<T: Copy> Select<T> {
     }
 }
 
-impl<T: Copy + 'static> Operator for Select<T> {
+impl<T: Scalar> Operator for Select<T> {
     type State = Self;
-    type Inputs<'a>
-        = (&'a Observable<T>,)
-    where
-        Self: 'a;
-    type Output<'o>
-        = &'o mut Observable<T>
-    where
-        Self: 'o;
+    type Inputs = (Observable<T>,);
+    type Output = Observable<T>;
 
     fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         let mut shape = input_shapes[0].to_vec();
@@ -70,12 +65,22 @@ impl<T: Copy + 'static> Operator for Select<T> {
         shape.into()
     }
 
+    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
+        let shape = self.shape(input_shapes);
+        let stride = shape.iter().product::<usize>();
+        vec![T::default(); stride].into()
+    }
+
     fn init(self) -> Self {
         self
     }
 
     #[inline(always)]
-    fn compute(state: &mut Self, inputs: Self::Inputs<'_>, output: &mut Observable<T>) -> bool {
+    fn compute(
+        state: &mut Self,
+        inputs: <Self::Inputs as Inputs>::Refs<'_>,
+        output: &mut Observable<T>,
+    ) -> bool {
         let (obs,) = inputs;
         let input = obs.current();
         let out = output.current_mut();
@@ -98,7 +103,7 @@ fn compute_select_map(input_shape: &[usize], indices: &[usize], axis: usize) -> 
     let mut output_shape = input_shape.to_vec();
     output_shape[axis] = indices.len();
 
-    let output_size: usize = output_shape.iter().product::<usize>().max(1);
+    let output_size: usize = output_shape.iter().product::<usize>();
     let input_strides = row_major_strides(input_shape);
     let output_strides = row_major_strides(&output_shape);
 

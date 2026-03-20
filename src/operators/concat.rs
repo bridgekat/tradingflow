@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 
 use crate::observable::Observable;
 use crate::operator::Operator;
+use crate::refs::Scalar;
 
 /// Concatenate N homogeneous observables along an existing axis.
 ///
@@ -41,8 +42,8 @@ impl<T: Copy> Concat<T> {
             };
         }
         debug_assert!(axis < input_shape.len(), "axis out of bounds");
-        let outer_count = input_shape[..axis].iter().product::<usize>().max(1);
-        let chunk_size = input_shape[axis..].iter().product::<usize>().max(1);
+        let outer_count = input_shape[..axis].iter().product::<usize>();
+        let chunk_size = input_shape[axis..].iter().product::<usize>();
         Self {
             outer_count,
             chunk_size,
@@ -52,13 +53,10 @@ impl<T: Copy> Concat<T> {
     }
 }
 
-impl<T: Copy + 'static> Operator for Concat<T> {
+impl<T: Scalar> Operator for Concat<T> {
     type State = Self;
-    type Inputs<'a> = Box<[&'a Observable<T>]>;
-    type Output<'o>
-        = &'o mut Observable<T>
-    where
-        Self: 'o;
+    type Inputs = [Observable<T>];
+    type Output = Observable<T>;
 
     fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         let n = input_shapes.len();
@@ -69,6 +67,12 @@ impl<T: Copy + 'static> Operator for Concat<T> {
             shape[self.axis] *= n;
             shape.into()
         }
+    }
+
+    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
+        let shape = self.shape(input_shapes);
+        let stride = shape.iter().product::<usize>();
+        vec![T::default(); stride].into()
     }
 
     fn init(self) -> Self {

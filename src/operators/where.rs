@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 
 use crate::observable::Observable;
 use crate::operator::Operator;
+use crate::refs::Scalar;
 
 /// Element-wise conditional operator.
 ///
@@ -31,19 +32,18 @@ impl<T: Copy, F: Fn(T) -> bool> Where<T, F> {
     }
 }
 
-impl<T: Copy + 'static, F: Fn(T) -> bool + 'static> Operator for Where<T, F> {
+impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
     type State = Self;
-    type Inputs<'a>
-        = (&'a Observable<T>,)
-    where
-        Self: 'a;
-    type Output<'o>
-        = &'o mut Observable<T>
-    where
-        Self: 'o;
+    type Inputs = (Observable<T>,);
+    type Output = Observable<T>;
 
     fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         input_shapes[0].into()
+    }
+
+    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
+        let stride = input_shapes[0].iter().product::<usize>();
+        vec![T::default(); stride].into()
     }
 
     fn init(self) -> Self {

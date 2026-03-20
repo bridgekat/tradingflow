@@ -11,6 +11,7 @@ use std::ops;
 
 use crate::observable::Observable;
 use crate::operator::Operator;
+use crate::refs::Scalar;
 
 // ---------------------------------------------------------------------------
 // Apply<T, F> — homogeneous closure operator
@@ -41,23 +42,23 @@ impl<T: Copy, F: Fn(&[&[T]], &mut [T]), S: Fn(&[&[usize]]) -> Box<[usize]>> Appl
 }
 
 impl<
-    T: Copy + 'static,
-    F: Fn(&[&[T]], &mut [T]) + 'static,
-    S: Fn(&[&[usize]]) -> Box<[usize]> + 'static,
+    T: Scalar,
+    F: Fn(&[&[T]], &mut [T]) + Send + 'static,
+    S: Fn(&[&[usize]]) -> Box<[usize]> + Send + 'static,
 > Operator for Apply<T, F, S>
 {
     type State = Self;
-    type Inputs<'a>
-        = Box<[&'a Observable<T>]>
-    where
-        Self: 'a;
-    type Output<'o>
-        = &'o mut Observable<T>
-    where
-        Self: 'o;
+    type Inputs = [Observable<T>];
+    type Output = Observable<T>;
 
     fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         (self.shape_fn)(input_shapes)
+    }
+
+    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
+        let shape = self.shape(input_shapes);
+        let stride = shape.iter().product::<usize>();
+        vec![T::default(); stride].into()
     }
 
     fn init(self) -> Self {
@@ -97,19 +98,18 @@ pub struct Elementwise2<T: Copy, Op: Fn(T, T) -> T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy + 'static, Op: Fn(T, T) -> T + 'static> Operator for Elementwise2<T, Op> {
+impl<T: Scalar, Op: Fn(T, T) -> T + Send + 'static> Operator for Elementwise2<T, Op> {
     type State = Self;
-    type Inputs<'a>
-        = (&'a Observable<T>, &'a Observable<T>)
-    where
-        Self: 'a;
-    type Output<'o>
-        = &'o mut Observable<T>
-    where
-        Self: 'o;
+    type Inputs = (Observable<T>, Observable<T>);
+    type Output = Observable<T>;
 
     fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         input_shapes[0].into()
+    }
+
+    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
+        let stride = input_shapes[0].iter().product::<usize>();
+        vec![T::default(); stride].into()
     }
 
     fn init(self) -> Self {
@@ -144,19 +144,18 @@ pub struct Elementwise1<T: Copy, Op: Fn(T) -> T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy + 'static, Op: Fn(T) -> T + 'static> Operator for Elementwise1<T, Op> {
+impl<T: Scalar, Op: Fn(T) -> T + Send + 'static> Operator for Elementwise1<T, Op> {
     type State = Self;
-    type Inputs<'a>
-        = (&'a Observable<T>,)
-    where
-        Self: 'a;
-    type Output<'o>
-        = &'o mut Observable<T>
-    where
-        Self: 'o;
+    type Inputs = (Observable<T>,);
+    type Output = Observable<T>;
 
     fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         input_shapes[0].into()
+    }
+
+    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
+        let stride = input_shapes[0].iter().product::<usize>();
+        vec![T::default(); stride].into()
     }
 
     fn init(self) -> Self {
@@ -187,7 +186,7 @@ pub type Negate<T> = Elementwise1<T, fn(T) -> T>;
 // ---------------------------------------------------------------------------
 
 /// Create an element-wise addition operator.
-pub fn add<T: Copy + ops::Add<Output = T>>() -> Add<T> {
+pub fn add<T: Scalar + ops::Add<Output = T>>() -> Add<T> {
     Elementwise2 {
         op: |a, b| a + b,
         _phantom: PhantomData,
@@ -195,7 +194,7 @@ pub fn add<T: Copy + ops::Add<Output = T>>() -> Add<T> {
 }
 
 /// Create an element-wise subtraction operator.
-pub fn subtract<T: Copy + ops::Sub<Output = T>>() -> Subtract<T> {
+pub fn subtract<T: Scalar + ops::Sub<Output = T>>() -> Subtract<T> {
     Elementwise2 {
         op: |a, b| a - b,
         _phantom: PhantomData,
@@ -203,7 +202,7 @@ pub fn subtract<T: Copy + ops::Sub<Output = T>>() -> Subtract<T> {
 }
 
 /// Create an element-wise multiplication operator.
-pub fn multiply<T: Copy + ops::Mul<Output = T>>() -> Multiply<T> {
+pub fn multiply<T: Scalar + ops::Mul<Output = T>>() -> Multiply<T> {
     Elementwise2 {
         op: |a, b| a * b,
         _phantom: PhantomData,
@@ -211,7 +210,7 @@ pub fn multiply<T: Copy + ops::Mul<Output = T>>() -> Multiply<T> {
 }
 
 /// Create an element-wise division operator.
-pub fn divide<T: Copy + ops::Div<Output = T>>() -> Divide<T> {
+pub fn divide<T: Scalar + ops::Div<Output = T>>() -> Divide<T> {
     Elementwise2 {
         op: |a, b| a / b,
         _phantom: PhantomData,
@@ -219,7 +218,7 @@ pub fn divide<T: Copy + ops::Div<Output = T>>() -> Divide<T> {
 }
 
 /// Create an element-wise negation operator.
-pub fn negate<T: Copy + ops::Neg<Output = T>>() -> Negate<T> {
+pub fn negate<T: Scalar + ops::Neg<Output = T>>() -> Negate<T> {
     Elementwise1 {
         op: |a| -a,
         _phantom: PhantomData,
