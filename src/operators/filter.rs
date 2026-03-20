@@ -32,22 +32,30 @@ impl<T: Copy, F: Fn(&[T]) -> bool> Filter<T, F> {
 }
 
 impl<T: Copy + 'static, F: Fn(&[T]) -> bool + 'static> Operator for Filter<T, F> {
+    type State = Self;
     type Inputs<'a>
         = (&'a Observable<T>,)
     where
         Self: 'a;
-    type Scalar = T;
+    type Output<'o>
+        = &'o mut Observable<T>
+    where
+        Self: 'o;
 
-    fn output_shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+    fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         input_shapes[0].into()
     }
 
+    fn init(self) -> Self {
+        self
+    }
+
     #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: (&Observable<T>,), out: &mut [T]) -> bool {
+    fn compute(state: &mut Self, inputs: (&Observable<T>,), output: &mut Observable<T>) -> bool {
         let (obs,) = inputs;
         let input = obs.current();
-        if (self.predicate)(input) {
-            out.copy_from_slice(input);
+        if (state.predicate)(input) {
+            output.current_mut().copy_from_slice(input);
             true
         } else {
             false
@@ -67,28 +75,28 @@ mod tests {
     #[test]
     fn filter_passes() {
         let obs = Observable::new(&[], &[5.0]);
-        let mut op = Filter::new(|v: &[f64]| v[0] > 3.0);
-        let mut out = [0.0];
-        assert!(op.compute(1, (&obs,), &mut out));
-        assert_eq!(out, [5.0]);
+        let mut state = Filter::new(|v: &[f64]| v[0] > 3.0);
+        let mut out = Observable::new(&[], &[0.0]);
+        assert!(Filter::compute(&mut state, (&obs,), &mut out));
+        assert_eq!(out.current(), &[5.0]);
     }
 
     #[test]
     fn filter_drops() {
         let obs = Observable::new(&[], &[1.0]);
-        let mut op = Filter::new(|v: &[f64]| v[0] > 3.0);
-        let mut out = [0.0];
-        assert!(!op.compute(1, (&obs,), &mut out));
+        let mut state = Filter::new(|v: &[f64]| v[0] > 3.0);
+        let mut out = Observable::new(&[], &[0.0]);
+        assert!(!Filter::compute(&mut state, (&obs,), &mut out));
     }
 
     #[test]
     fn filter_strided() {
         let obs = Observable::new(&[3], &[1.0, 2.0, 3.0]);
         // Keep only if the sum > 5
-        let mut op = Filter::new(|v: &[f64]| v.iter().sum::<f64>() > 5.0);
-        let mut out = [0.0; 3];
+        let mut state = Filter::new(|v: &[f64]| v.iter().sum::<f64>() > 5.0);
+        let mut out = Observable::new(&[3], &[0.0; 3]);
         // Sum = 6 > 5 → keep
-        assert!(op.compute(1, (&obs,), &mut out));
-        assert_eq!(out, [1.0, 2.0, 3.0]);
+        assert!(Filter::compute(&mut state, (&obs,), &mut out));
+        assert_eq!(out.current(), &[1.0, 2.0, 3.0]);
     }
 }

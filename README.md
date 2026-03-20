@@ -23,7 +23,7 @@ An element in a time series can be a scalar, vector, matrix or higher-dimensiona
 
 ## Sources
 
-A [source](python/tradingflow/source.py) is used to generate observable values via asynchronous inputs from external data sources. A source must implement its `subscribe()` method, which returns two asynchronous iterators: one for historical `(timestamp, value)` tuples and one for live `value` updates. They should generate two complementary, non-overlapping segments of the same time series, split at some instant during the execution of `subscribe()`.
+A [source](python/tradingflow/source.py) is used to generate observable values via asynchronous inputs from external data sources. A source must implement its `subscribe()` method, which returns two asynchronous iterators: one for historical `(timestamp, value)` tuples and one for real-time `value` updates. They should generate two complementary, non-overlapping segments of the same time series, split at some instant during the execution of `subscribe()`.
 
 Sources are typically raw market data or pre-computed factors. Examples include:
 

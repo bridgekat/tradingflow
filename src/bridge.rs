@@ -28,12 +28,16 @@ use tokio::sync::mpsc;
 
 type PyObject = Py<PyAny>;
 
+use std::marker::PhantomData;
+
 use crate::observable::Observable;
+use crate::refs::OutputRef;
 use crate::scenario::ObservableHandle;
 use crate::operators;
 use crate::scenario::Scenario;
 use crate::series::Series;
-use crate::source::{self, ArraySource, HistoricalIter, LiveIter, Source};
+use crate::source::Source;
+use crate::sources::ArraySource;
 
 // ---------------------------------------------------------------------------
 // Error slot
@@ -132,31 +136,31 @@ fn register_array_source_dispatch(
     match dtype {
         "float64" => {
             let values = bytes_to_vec::<f64>(&values_bytes);
-            sc.register_source_typed::<f64>(node_index, Box::new(ArraySource::new(timestamps, values, stride)));
+            sc.register_source_by_index::<_, f64>(node_index, ArraySource::new(timestamps, values, stride));
         }
         "float32" => {
             let values = bytes_to_vec::<f32>(&values_bytes);
-            sc.register_source_typed::<f32>(node_index, Box::new(ArraySource::new(timestamps, values, stride)));
+            sc.register_source_by_index::<_, f32>(node_index, ArraySource::new(timestamps, values, stride));
         }
         "int64" => {
             let values = bytes_to_vec::<i64>(&values_bytes);
-            sc.register_source_typed::<i64>(node_index, Box::new(ArraySource::new(timestamps, values, stride)));
+            sc.register_source_by_index::<_, i64>(node_index, ArraySource::new(timestamps, values, stride));
         }
         "int32" => {
             let values = bytes_to_vec::<i32>(&values_bytes);
-            sc.register_source_typed::<i32>(node_index, Box::new(ArraySource::new(timestamps, values, stride)));
+            sc.register_source_by_index::<_, i32>(node_index, ArraySource::new(timestamps, values, stride));
         }
         "uint64" => {
             let values = bytes_to_vec::<u64>(&values_bytes);
-            sc.register_source_typed::<u64>(node_index, Box::new(ArraySource::new(timestamps, values, stride)));
+            sc.register_source_by_index::<_, u64>(node_index, ArraySource::new(timestamps, values, stride));
         }
         "uint32" => {
             let values = bytes_to_vec::<u32>(&values_bytes);
-            sc.register_source_typed::<u32>(node_index, Box::new(ArraySource::new(timestamps, values, stride)));
+            sc.register_source_by_index::<_, u32>(node_index, ArraySource::new(timestamps, values, stride));
         }
         "bool" => {
             let values = bytes_to_vec::<u8>(&values_bytes);
-            sc.register_source_typed::<u8>(node_index, Box::new(ArraySource::new(timestamps, values, stride)));
+            sc.register_source_by_index::<_, u8>(node_index, ArraySource::new(timestamps, values, stride));
         }
         other => return Err(PyTypeError::new_err(format!("unsupported dtype: {other}"))),
     }
@@ -186,10 +190,10 @@ fn create_node_dispatch(
 // NativeOpHandle — opaque operator handle for Python
 // ---------------------------------------------------------------------------
 
-/// Registration closure: given a Scenario, input indices, and initial value
-/// (raw bytes), registers the operator and returns the output node index.
+/// Registration closure: given a Scenario and input indices, registers the
+/// operator and returns the output node index.
 type RegisterFn =
-    Box<dyn FnOnce(&mut Scenario, &[usize], &[u8]) -> usize + Send + Sync>;
+    Box<dyn FnOnce(&mut Scenario, &[usize]) -> usize + Send + Sync>;
 
 /// Opaque handle holding a pre-constructed, type-erased Rust operator.
 ///
@@ -216,11 +220,10 @@ impl NativeOpHandle {
         for<'a> Op: crate::operator::Operator<Inputs<'a> = (&'a Observable<T>, &'a Observable<T>)>,
     {
         Self {
-            register_fn: Some(Box::new(move |sc, inputs, initial_bytes| {
+            register_fn: Some(Box::new(move |sc, inputs| {
                 let h0 = ObservableHandle::<T>::new(inputs[0]);
                 let h1 = ObservableHandle::<T>::new(inputs[1]);
-                let initial: Vec<T> = bytes_to_vec(initial_bytes);
-                sc.add_operator(&[h0, h1], &initial, op).index
+                sc.add_operator(&[h0, h1], op).index
             })),
             dtype_str,
         }
@@ -234,10 +237,9 @@ impl NativeOpHandle {
         for<'a> Op: crate::operator::Operator<Inputs<'a> = (&'a Observable<T>,)>,
     {
         Self {
-            register_fn: Some(Box::new(move |sc, inputs, initial_bytes| {
+            register_fn: Some(Box::new(move |sc, inputs| {
                 let h0 = ObservableHandle::<T>::new(inputs[0]);
-                let initial: Vec<T> = bytes_to_vec(initial_bytes);
-                sc.add_operator(&[h0], &initial, op).index
+                sc.add_operator(&[h0], op).index
             })),
             dtype_str,
         }
@@ -251,12 +253,10 @@ impl NativeOpHandle {
         for<'a> Op: crate::operator::Operator<Inputs<'a> = &'a [&'a Observable<T>]>,
     {
         Self {
-            register_fn: Some(Box::new(move |sc, inputs, initial_bytes| {
+            register_fn: Some(Box::new(move |sc, inputs| {
                 let handles: Vec<ObservableHandle<T>> =
                     inputs.iter().map(|&i| ObservableHandle::new(i)).collect();
-                let initial: Vec<T> = bytes_to_vec(initial_bytes);
-                sc.add_operator(&handles, &initial, op)
-                    .index
+                sc.add_operator(&handles, op).index
             })),
             dtype_str,
         }
@@ -391,73 +391,73 @@ fn bytes_to_vec<T: Copy>(bytes: &[u8]) -> Vec<T> {
 // ---------------------------------------------------------------------------
 
 /// Source that receives events from a Python background thread via channels.
-struct ChannelSource {
-    hist_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
-    live_rx: mpsc::UnboundedReceiver<Vec<u8>>,
-    element_size: usize,
+///
+/// `Payload = Vec<u8>` — raw bytes from Python, reinterpreted as `&[T]` in
+/// [`write`].
+struct ChannelSource<T: Copy> {
+    py_hist_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
+    py_live_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
+    _phantom: PhantomData<T>,
 }
 
-impl Source for ChannelSource {
+impl<T: Copy + Send + 'static> Source for ChannelSource<T> {
+    type Payload = Vec<u8>;
+    type Output<'a> = &'a mut Observable<T> where Self: 'a;
+
+    fn shape(&self) -> Box<[usize]> {
+        // Shape is determined by the node, not the source.
+        Box::new([])
+    }
+
     fn subscribe(
         self: Box<Self>,
-    ) -> Pin<Box<dyn Future<Output = (Box<dyn HistoricalIter>, Box<dyn LiveIter>)>>> {
+        buffer_size: usize,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = (
+                        mpsc::Receiver<(i64, Vec<u8>)>,
+                        mpsc::Receiver<(i64, Vec<u8>)>,
+                    ),
+                > + Send,
+        >,
+    > {
         Box::pin(async move {
-            let hist: Box<dyn HistoricalIter> = Box::new(ChannelHistoricalIter {
-                rx: self.hist_rx,
-                element_size: self.element_size,
+            let (hist_tx, hist_rx) = mpsc::channel(buffer_size);
+            let (live_tx, live_rx) = mpsc::channel(buffer_size);
+
+            // Forward from Python unbounded channels to bounded channels.
+            let mut py_hist = self.py_hist_rx;
+            tokio::spawn(async move {
+                while let Some(item) = py_hist.recv().await {
+                    if hist_tx.send(item).await.is_err() {
+                        break;
+                    }
+                }
             });
-            let live: Box<dyn LiveIter> = Box::new(ChannelLiveIter {
-                rx: self.live_rx,
-                element_size: self.element_size,
+
+            let mut py_live = self.py_live_rx;
+            tokio::spawn(async move {
+                while let Some(item) = py_live.recv().await {
+                    if live_tx.send(item).await.is_err() {
+                        break;
+                    }
+                }
             });
-            (hist, live)
+
+            (hist_rx, live_rx)
         })
     }
-}
 
-struct ChannelHistoricalIter {
-    rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
-    element_size: usize,
-}
-
-impl HistoricalIter for ChannelHistoricalIter {
-    fn next_into<'a>(
-        &'a mut self,
-        buf: &'a mut [u8],
-    ) -> Pin<Box<dyn Future<Output = Option<i64>> + 'a>> {
-        Box::pin(async move {
-            match self.rx.recv().await {
-                Some((ts, bytes)) => {
-                    let n = self.element_size.min(bytes.len()).min(buf.len());
-                    buf[..n].copy_from_slice(&bytes[..n]);
-                    Some(ts)
-                }
-                None => None,
-            }
-        })
-    }
-}
-
-struct ChannelLiveIter {
-    rx: mpsc::UnboundedReceiver<Vec<u8>>,
-    element_size: usize,
-}
-
-impl LiveIter for ChannelLiveIter {
-    fn next_into<'a>(
-        &'a mut self,
-        buf: &'a mut [u8],
-    ) -> Pin<Box<dyn Future<Output = bool> + 'a>> {
-        Box::pin(async move {
-            match self.rx.recv().await {
-                Some(bytes) => {
-                    let n = self.element_size.min(bytes.len()).min(buf.len());
-                    buf[..n].copy_from_slice(&bytes[..n]);
-                    true
-                }
-                None => false,
-            }
-        })
+    fn write(payload: Vec<u8>, output: &mut Observable<T>) -> bool {
+        let values = unsafe {
+            std::slice::from_raw_parts(
+                payload.as_ptr() as *const T,
+                payload.len() / std::mem::size_of::<T>(),
+            )
+        };
+        output.write(values);
+        true
     }
 }
 
@@ -493,10 +493,10 @@ impl HistoricalEventSender {
     }
 }
 
-/// Sends live value events (no timestamp) from Python to Rust.
+/// Sends live value events (with timestamp) from Python to Rust.
 #[pyclass]
 pub struct LiveEventSender {
-    tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    tx: Option<mpsc::UnboundedSender<(i64, Vec<u8>)>>,
     element_size: usize,
 }
 
@@ -506,10 +506,10 @@ unsafe impl Sync for LiveEventSender {}
 #[pymethods]
 impl LiveEventSender {
     /// Send a live event.
-    fn send(&self, py: Python<'_>, value: PyObject) -> PyResult<()> {
+    fn send(&self, py: Python<'_>, ts_ns: i64, value: PyObject) -> PyResult<()> {
         let bytes = extract_value_bytes(py, &value, self.element_size)?;
         if let Some(ref tx) = self.tx {
-            tx.send(bytes)
+            tx.send((ts_ns, bytes))
                 .map_err(|_| PyRuntimeError::new_err("live channel closed"))?;
         }
         Ok(())
@@ -947,13 +947,12 @@ impl NativeScenario {
         &mut self,
         handle: &mut NativeOpHandle,
         input_indices: Vec<usize>,
-        initial_value: Vec<u8>,
     ) -> PyResult<usize> {
         let f = handle.register_fn.take().ok_or_else(|| {
             PyRuntimeError::new_err("NativeOpHandle has already been consumed")
         })?;
         let sc = self.scenario.as_mut().unwrap();
-        let idx = f(sc, &input_indices, &initial_value);
+        let idx = f(sc, &input_indices);
         self.node_dtypes.push(handle.dtype_str.clone());
         Ok(idx)
     }
@@ -1016,12 +1015,7 @@ impl NativeScenario {
         let (hist_tx, hist_rx) = mpsc::unbounded_channel();
         let (live_tx, live_rx) = mpsc::unbounded_channel();
 
-        let channel_source = ChannelSource {
-            hist_rx,
-            live_rx,
-            element_size,
-        };
-        register_channel_source_dispatch(sc, node_index, &dtype_norm, Box::new(channel_source))?;
+        register_channel_source_dispatch(sc, node_index, &dtype_norm, hist_rx, live_rx)?;
 
         self.node_dtypes.push(dtype_norm);
 
@@ -1139,17 +1133,26 @@ fn register_channel_source_dispatch(
     sc: &mut Scenario,
     node_index: usize,
     dtype: &str,
-    source: Box<dyn Source>,
+    hist_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
+    live_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
 ) -> PyResult<()> {
     let dtype = normalise_dtype(dtype);
+    macro_rules! register {
+        ($T:ty) => {
+            sc.register_source_by_index::<_, $T>(
+                node_index,
+                ChannelSource::<$T> { py_hist_rx: hist_rx, py_live_rx: live_rx, _phantom: PhantomData },
+            )
+        };
+    }
     match dtype {
-        "float64" => sc.register_source_typed::<f64>(node_index, source),
-        "float32" => sc.register_source_typed::<f32>(node_index, source),
-        "int64" => sc.register_source_typed::<i64>(node_index, source),
-        "int32" => sc.register_source_typed::<i32>(node_index, source),
-        "uint64" => sc.register_source_typed::<u64>(node_index, source),
-        "uint32" => sc.register_source_typed::<u32>(node_index, source),
-        "bool" => sc.register_source_typed::<u8>(node_index, source),
+        "float64" => register!(f64),
+        "float32" => register!(f32),
+        "int64" => register!(i64),
+        "int32" => register!(i32),
+        "uint64" => register!(u64),
+        "uint32" => register!(u32),
+        "bool" => register!(u8),
         other => return Err(PyTypeError::new_err(format!("unsupported dtype: {other}"))),
     }
     Ok(())

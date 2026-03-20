@@ -52,13 +52,17 @@ impl<T: Copy> Stack<T> {
 }
 
 impl<T: Copy + 'static> Operator for Stack<T> {
+    type State = Self;
     type Inputs<'a>
         = Box<[&'a Observable<T>]>
     where
         Self: 'a;
-    type Scalar = T;
+    type Output<'o>
+        = &'o mut Observable<T>
+    where
+        Self: 'o;
 
-    fn output_shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+    fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         let n = input_shapes.len();
         if input_shapes[0].is_empty() {
             vec![n].into()
@@ -72,10 +76,18 @@ impl<T: Copy + 'static> Operator for Stack<T> {
         }
     }
 
+    fn init(self) -> Self {
+        self
+    }
+
     #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Box<[&Observable<T>]>, out: &mut [T]) -> bool {
-        if self.outer_count == 1 {
-            // Fast path: sequential copy (axis 0 or scalar inputs).
+    fn compute(
+        state: &mut Self,
+        inputs: Box<[&Observable<T>]>,
+        output: &mut Observable<T>,
+    ) -> bool {
+        let out = output.current_mut();
+        if state.outer_count == 1 {
             let mut offset = 0;
             for obs in inputs.iter() {
                 let src = obs.current();
@@ -83,15 +95,14 @@ impl<T: Copy + 'static> Operator for Stack<T> {
                 offset += src.len();
             }
         } else {
-            // General path: interleave blocks for higher axes.
             let mut out_offset = 0;
-            for outer in 0..self.outer_count {
+            for outer in 0..state.outer_count {
                 for obs in inputs.iter() {
                     let src = obs.current();
-                    let src_offset = outer * self.chunk_size;
-                    out[out_offset..out_offset + self.chunk_size]
-                        .copy_from_slice(&src[src_offset..src_offset + self.chunk_size]);
-                    out_offset += self.chunk_size;
+                    let src_offset = outer * state.chunk_size;
+                    out[out_offset..out_offset + state.chunk_size]
+                        .copy_from_slice(&src[src_offset..src_offset + state.chunk_size]);
+                    out_offset += state.chunk_size;
                 }
             }
         }
@@ -113,10 +124,14 @@ mod tests {
         let a = Observable::new(&[], &[1.0]);
         let b = Observable::new(&[], &[2.0]);
         let c = Observable::new(&[], &[3.0]);
-        let mut op = Stack::<f64>::new(&[], 0);
-        let mut out = [0.0; 3];
-        assert!(op.compute(1, vec![&a, &b, &c].into_boxed_slice(), &mut out));
-        assert_eq!(out, [1.0, 2.0, 3.0]);
+        let mut state = Stack::<f64>::new(&[], 0);
+        let mut out = Observable::new(&[3], &[0.0; 3]);
+        assert!(Stack::compute(
+            &mut state,
+            vec![&a, &b, &c].into_boxed_slice(),
+            &mut out
+        ));
+        assert_eq!(out.current(), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
@@ -124,38 +139,46 @@ mod tests {
         let a = Observable::new(&[2], &[1.0, 2.0]);
         let b = Observable::new(&[2], &[3.0, 4.0]);
         let c = Observable::new(&[2], &[5.0, 6.0]);
-        let mut op = Stack::<f64>::new(&[2], 0);
-        let mut out = [0.0; 6];
-        assert!(op.compute(1, vec![&a, &b, &c].into_boxed_slice(), &mut out));
-        assert_eq!(out, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut state = Stack::<f64>::new(&[2], 0);
+        let mut out = Observable::new(&[3, 2], &[0.0; 6]);
+        assert!(Stack::compute(
+            &mut state,
+            vec![&a, &b, &c].into_boxed_slice(),
+            &mut out
+        ));
+        assert_eq!(out.current(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]
     fn stack_vectors_axis1() {
         let a = Observable::new(&[3], &[1.0, 2.0, 3.0]);
         let b = Observable::new(&[3], &[4.0, 5.0, 6.0]);
-        let mut op = Stack::<f64>::new(&[3], 1);
-        let mut out = [0.0; 6];
-        assert!(op.compute(1, vec![&a, &b].into_boxed_slice(), &mut out));
+        let mut state = Stack::<f64>::new(&[3], 1);
+        let mut out = Observable::new(&[3, 2], &[0.0; 6]);
+        assert!(Stack::compute(
+            &mut state,
+            vec![&a, &b].into_boxed_slice(),
+            &mut out
+        ));
         // Expected shape [3, 2]: [[1, 4], [2, 5], [3, 6]]
         // Flat row-major: [1, 4, 2, 5, 3, 6]
-        assert_eq!(out, [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+        assert_eq!(out.current(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
     }
 
     #[test]
     fn output_shape_computation() {
         let op = Stack::<f64>::new(&[], 0);
-        assert_eq!(&*op.output_shape(&[&[], &[], &[]]), &[3]);
+        assert_eq!(&*op.shape(&[&[], &[], &[]]), &[3]);
         let op = Stack::<f64>::new(&[2], 0);
-        assert_eq!(&*op.output_shape(&[&[2], &[2], &[2]]), &[3, 2]);
+        assert_eq!(&*op.shape(&[&[2], &[2], &[2]]), &[3, 2]);
         let op = Stack::<f64>::new(&[2], 1);
-        assert_eq!(&*op.output_shape(&[&[2], &[2], &[2]]), &[2, 3]);
+        assert_eq!(&*op.shape(&[&[2], &[2], &[2]]), &[2, 3]);
         let s: &[usize] = &[2, 3];
         let op = Stack::<f64>::new(&[2, 3], 0);
-        assert_eq!(&*op.output_shape(&[s, s, s, s]), &[4, 2, 3]);
+        assert_eq!(&*op.shape(&[s, s, s, s]), &[4, 2, 3]);
         let op = Stack::<f64>::new(&[2, 3], 1);
-        assert_eq!(&*op.output_shape(&[s, s, s, s]), &[2, 4, 3]);
+        assert_eq!(&*op.shape(&[s, s, s, s]), &[2, 4, 3]);
         let op = Stack::<f64>::new(&[2, 3], 2);
-        assert_eq!(&*op.output_shape(&[s, s, s, s]), &[2, 3, 4]);
+        assert_eq!(&*op.shape(&[s, s, s, s]), &[2, 3, 4]);
     }
 }

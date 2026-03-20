@@ -12,16 +12,19 @@
 //! `cdylib` exposing the runtime to Python.
 
 pub mod operators;
+pub mod sources;
 
 mod observable;
 mod operator;
+mod refs;
 mod scenario;
 mod series;
 mod source;
 
 pub use observable::Observable;
-pub use operator::{InputRef, InputRefs, Operator};
-pub use scenario::Scenario;
+pub use operator::Operator;
+pub use refs::{InputRef, InputRefs, OutputRef, OutputRefs};
+pub use scenario::{InputHandle, InputHandles, Scenario};
 pub use series::Series;
 pub use source::Source;
 
