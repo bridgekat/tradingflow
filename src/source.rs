@@ -1,48 +1,32 @@
 use tokio::sync::mpsc;
 
-use super::Output;
+use super::store::ElementViewMut;
+use super::types::Scalar;
 
-/// A data source providing historical and/or real-time data streams.
+/// A data source providing historical and/or real-time data streams,
+/// writing into [`Store`](crate::store::Store) via [`ElementViewMut`].
 ///
 /// Each source maintains two conceptual queues (historical + real-time),
 /// implemented as bounded tokio [`mpsc`] channels. `subscribe` consumes
 /// the source, starts producing events, and returns the receivers.
 ///
 /// - **Historical channel**: `(timestamp, event)` with pre-recorded
-///   timestamps in non-decreasing order. Timestamps will be treated
-///   as-is, but must guarantee liveness: if the producer is still
-///   running, the channel will eventually receive another event.
+///   timestamps in non-decreasing order.
 /// - **Real-time channel**: `(timestamp, event)` with source-provided
-///   timestamps in non-decreasing order. Can wait indefinitely for
-///   another event, but the [`Scenario`](crate::Scenario) may adjust
-///   timestamps to enforce constraints.
-///
-/// The output must be an [`Observable`](crate::Observable).
-///
-/// The [`Scenario`](crate::Scenario) will call [`Source::subscribe`] to start
-/// the source, then call [`Source::write`] on each event received from either
-/// the historical or the real-time channel.
+///   timestamps in non-decreasing order.
 pub trait Source: Send + 'static {
     /// Implementor-defined channel event type.
     type Event: Send + 'static;
 
-    /// The source's output container.
+    /// The scalar type of the output store.
+    type Scalar: Scalar;
+
+    /// Compute the output element shape and default value.
     ///
-    /// Must be an [`Observable`](crate::Observable).
-    type Output: Output;
+    /// Returns `(output_shape, default_values)`.
+    fn default(&self) -> (Box<[usize]>, Box<[Self::Scalar]>);
 
-    /// Infer the output element shape.
-    fn shape(&self) -> Box<[usize]>;
-
-    /// Provide the initial value for the output observable.
-    fn initial(&self) -> Box<[<Self::Output as Output>::Scalar]>;
-
-    /// Start producing events. Creates channels, spawns producers, and
-    /// returns the historical and real-time receivers.
-    ///
-    /// All async work is deferred into the spawned producer tasks;
-    /// this method itself is synchronous (but may require a tokio
-    /// runtime context for [`tokio::spawn`]).
+    /// Start producing events.  Returns (historical_rx, live_rx).
     fn subscribe(
         self,
     ) -> (
@@ -50,7 +34,7 @@ pub trait Source: Send + 'static {
         mpsc::Receiver<(i64, Self::Event)>,
     );
 
-    /// Write an event into the output, or return `false` if no output is
-    /// produced.
-    fn write(event: Self::Event, output: &mut Self::Output) -> bool;
+    /// Write an event into the output view, or return `false` if no output
+    /// is produced.
+    fn write(event: Self::Event, output: ElementViewMut<'_, Self::Scalar>) -> bool;
 }

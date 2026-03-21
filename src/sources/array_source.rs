@@ -2,9 +2,9 @@
 
 use tokio::sync::mpsc;
 
-use crate::observable::Observable;
-use crate::refs::Scalar;
 use crate::source::Source;
+use crate::store::ElementViewMut;
+use crate::types::Scalar;
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
 ///
@@ -32,20 +32,16 @@ impl<T: Copy + Send + 'static> ArraySource<T> {
 
 impl<T: Scalar + Send> Source for ArraySource<T> {
     type Event = Vec<T>;
-    type Output = Observable<T>;
+    type Scalar = T;
 
-    fn shape(&self) -> Box<[usize]> {
-        if self.stride == 1 {
+    fn default(&self) -> (Box<[usize]>, Box<[T]>) {
+        let shape: Box<[usize]> = if self.stride == 1 {
             Box::new([])
         } else {
             Box::new([self.stride])
-        }
-    }
-
-    fn initial(&self) -> Box<[T]> {
-        let shape = self.shape();
+        };
         let stride = shape.iter().product::<usize>();
-        vec![T::default(); stride].into()
+        (shape, vec![T::default(); stride].into())
     }
 
     fn subscribe(self) -> (mpsc::Receiver<(i64, Vec<T>)>, mpsc::Receiver<(i64, Vec<T>)>) {
@@ -66,8 +62,8 @@ impl<T: Scalar + Send> Source for ArraySource<T> {
         (hist_rx, live_rx)
     }
 
-    fn write(payload: Vec<T>, output: &mut Observable<T>) -> bool {
-        output.write(&payload);
+    fn write(payload: Vec<T>, output: ElementViewMut<'_, T>) -> bool {
+        output.values.copy_from_slice(&payload);
         true
     }
 }

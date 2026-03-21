@@ -3,20 +3,18 @@
 //! Drops the entire element (returns `false` from `compute`) when the
 //! predicate returns `false`.  When the predicate passes, the input value
 //! is copied to the output unchanged.
-//!
-//! Register via [`Scenario::add_operator`] with `(Obs<T>,)` input.
 
 use std::marker::PhantomData;
 
-use crate::observable::Observable;
 use crate::operator::Operator;
-use crate::refs::Scalar;
+use crate::store::{ElementViewMut, Store};
+use crate::types::Scalar;
 
 /// Filter operator: passes or drops the entire element based on a predicate.
 ///
 /// `F` receives the flat value slice `&[T]` and returns `true` to keep the
 /// element or `false` to drop it.  When dropped, the operator returns
-/// `false` from `compute`, so the series is not appended to and downstream
+/// `false` from `compute`, so the store is not appended to and downstream
 /// operators are not triggered.
 pub struct Filter<T: Copy, F: Fn(&[T]) -> bool> {
     predicate: F,
@@ -34,16 +32,17 @@ impl<T: Copy, F: Fn(&[T]) -> bool> Filter<T, F> {
 
 impl<T: Scalar, F: Fn(&[T]) -> bool + Send + 'static> Operator for Filter<T, F> {
     type State = Self;
-    type Inputs = (Observable<T>,);
-    type Output = Observable<T>;
+    type Inputs = (Store<T>,);
+    type Scalar = T;
 
-    fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
-        input_shapes[0].into()
+    fn window_sizes(&self, _: &[&[usize]]) -> (usize,) {
+        (1,)
     }
 
-    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
-        let stride = input_shapes[0].iter().product::<usize>();
-        vec![T::default(); stride].into()
+    fn default(&self, input_shapes: &[&[usize]]) -> (Box<[usize]>, Box<[T]>) {
+        let shape: Box<[usize]> = input_shapes[0].into();
+        let stride = shape.iter().product::<usize>();
+        (shape, vec![T::default(); stride].into())
     }
 
     fn init(self) -> Self {
@@ -51,11 +50,10 @@ impl<T: Scalar, F: Fn(&[T]) -> bool + Send + 'static> Operator for Filter<T, F> 
     }
 
     #[inline(always)]
-    fn compute(state: &mut Self, inputs: (&Observable<T>,), output: &mut Observable<T>) -> bool {
-        let (obs,) = inputs;
-        let input = obs.current();
+    fn compute(state: &mut Self, inputs: (&Store<T>,), output: ElementViewMut<'_, T>) -> bool {
+        let input = inputs.0.current();
         if (state.predicate)(input) {
-            output.current_mut().copy_from_slice(input);
+            output.values.copy_from_slice(input);
             true
         } else {
             false
@@ -70,33 +68,54 @@ impl<T: Scalar, F: Fn(&[T]) -> bool + Send + 'static> Operator for Filter<T, F> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observable::Observable;
+    use crate::store::Store;
 
     #[test]
     fn filter_passes() {
-        let obs = Observable::new(&[], &[5.0]);
+        let store = Store::element(&[], &[5.0]);
         let mut state = Filter::new(|v: &[f64]| v[0] > 3.0);
-        let mut out = Observable::new(&[], &[0.0]);
-        assert!(Filter::compute(&mut state, (&obs,), &mut out));
+        let mut out = Store::element(&[], &[0.0]);
+        out.push_default(1);
+        let produced = Filter::compute(&mut state, (&store,), out.current_view_mut());
+        if produced {
+            out.commit();
+        } else {
+            out.rollback();
+        }
+        assert!(produced);
         assert_eq!(out.current(), &[5.0]);
     }
 
     #[test]
     fn filter_drops() {
-        let obs = Observable::new(&[], &[1.0]);
+        let store = Store::element(&[], &[1.0]);
         let mut state = Filter::new(|v: &[f64]| v[0] > 3.0);
-        let mut out = Observable::new(&[], &[0.0]);
-        assert!(!Filter::compute(&mut state, (&obs,), &mut out));
+        let mut out = Store::element(&[], &[0.0]);
+        out.push_default(1);
+        let produced = Filter::compute(&mut state, (&store,), out.current_view_mut());
+        if produced {
+            out.commit();
+        } else {
+            out.rollback();
+        }
+        assert!(!produced);
     }
 
     #[test]
     fn filter_strided() {
-        let obs = Observable::new(&[3], &[1.0, 2.0, 3.0]);
+        let store = Store::element(&[3], &[1.0, 2.0, 3.0]);
         // Keep only if the sum > 5
         let mut state = Filter::new(|v: &[f64]| v.iter().sum::<f64>() > 5.0);
-        let mut out = Observable::new(&[3], &[0.0; 3]);
-        // Sum = 6 > 5 → keep
-        assert!(Filter::compute(&mut state, (&obs,), &mut out));
+        let mut out = Store::element(&[3], &[0.0; 3]);
+        // Sum = 6 > 5 -> keep
+        out.push_default(1);
+        let produced = Filter::compute(&mut state, (&store,), out.current_view_mut());
+        if produced {
+            out.commit();
+        } else {
+            out.rollback();
+        }
+        assert!(produced);
         assert_eq!(out.current(), &[1.0, 2.0, 3.0]);
     }
 }

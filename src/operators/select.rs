@@ -1,17 +1,15 @@
 //! Select operator — index selection along an axis.
 //!
-//! Selects elements from an observable along a given axis using a precomputed
+//! Selects elements from a store along a given axis using a precomputed
 //! flat index mapping.  Supports arbitrary axis and multi-index selection.
-//!
-//! Register via [`Scenario::add_operator`] with `(Obs<T>,)` input.
 
 use std::marker::PhantomData;
 
-use crate::observable::Observable;
 use crate::operator::Operator;
-use crate::refs::{Inputs, Scalar};
+use crate::store::{ElementViewMut, Store};
+use crate::types::Scalar;
 
-/// Select elements from an observable along an axis.
+/// Select elements from a store along an axis.
 ///
 /// Precomputes a flat index mapping at construction time for O(1) per-element
 /// access during compute.
@@ -40,7 +38,7 @@ impl<T: Copy> Select<T> {
 
     /// Select along a specific axis of a multi-dimensional input.
     ///
-    /// `input_shape`: the element shape of the input observable.
+    /// `input_shape`: the element shape of the input store.
     /// `indices`: the indices to select along `axis`.
     /// `axis`: the axis to select along.
     pub fn along_axis(input_shape: &[usize], indices: &[usize], axis: usize) -> Self {
@@ -56,19 +54,18 @@ impl<T: Copy> Select<T> {
 
 impl<T: Scalar> Operator for Select<T> {
     type State = Self;
-    type Inputs = (Observable<T>,);
-    type Output = Observable<T>;
+    type Inputs = (Store<T>,);
+    type Scalar = T;
 
-    fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
-        let mut shape = input_shapes[0].to_vec();
-        shape[self.axis] = self.n_selected;
-        shape.into()
+    fn window_sizes(&self, _: &[&[usize]]) -> (usize,) {
+        (1,)
     }
 
-    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
-        let shape = self.shape(input_shapes);
+    fn default(&self, input_shapes: &[&[usize]]) -> (Box<[usize]>, Box<[T]>) {
+        let mut shape = input_shapes[0].to_vec();
+        shape[self.axis] = self.n_selected;
         let stride = shape.iter().product::<usize>();
-        vec![T::default(); stride].into()
+        (shape.into(), vec![T::default(); stride].into())
     }
 
     fn init(self) -> Self {
@@ -76,14 +73,9 @@ impl<T: Scalar> Operator for Select<T> {
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut Self,
-        inputs: <Self::Inputs as Inputs>::Refs<'_>,
-        output: &mut Observable<T>,
-    ) -> bool {
-        let (obs,) = inputs;
-        let input = obs.current();
-        let out = output.current_mut();
+    fn compute(state: &mut Self, inputs: (&Store<T>,), output: ElementViewMut<'_, T>) -> bool {
+        let input = inputs.0.current();
+        let out = output.values;
         for (i, &src_idx) in state.index_map.iter().enumerate() {
             out[i] = input[src_idx];
         }
@@ -145,57 +137,65 @@ fn row_major_strides(shape: &[usize]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observable::Observable;
+    use crate::store::Store;
 
     #[test]
     fn select_flat_indices() {
-        let obs = Observable::new(&[5], &[10.0, 20.0, 30.0, 40.0, 50.0]);
+        let store = Store::element(&[5], &[10.0, 20.0, 30.0, 40.0, 50.0]);
         let mut state = Select::<f64>::flat(vec![1, 3]);
-        let mut out = Observable::new(&[2], &[0.0, 0.0]);
-        assert!(Select::compute(&mut state, (&obs,), &mut out));
+        let mut out = Store::element(&[2], &[0.0, 0.0]);
+        out.push_default(1);
+        Select::compute(&mut state, (&store,), out.current_view_mut());
+        out.commit();
         assert_eq!(out.current(), &[20.0, 40.0]);
     }
 
     #[test]
     fn select_single_index() {
-        let obs = Observable::new(&[4], &[1.0, 2.0, 3.0, 4.0]);
+        let store = Store::element(&[4], &[1.0, 2.0, 3.0, 4.0]);
         let mut state = Select::<f64>::flat(vec![2]);
-        let mut out = Observable::new(&[1], &[0.0]);
-        assert!(Select::compute(&mut state, (&obs,), &mut out));
+        let mut out = Store::element(&[1], &[0.0]);
+        out.push_default(1);
+        Select::compute(&mut state, (&store,), out.current_view_mut());
+        out.commit();
         assert_eq!(out.current(), &[3.0]);
     }
 
     #[test]
     fn select_along_axis_2d() {
         // Input shape [3, 2]: [[1, 2], [3, 4], [5, 6]]
-        let obs = Observable::new(&[3, 2], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let store = Store::element(&[3, 2], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         // Select rows 0 and 2 along axis 0
         let mut state = Select::<f64>::along_axis(&[3, 2], &[0, 2], 0);
-        let mut out = Observable::new(&[2, 2], &[0.0; 4]);
-        assert!(Select::compute(&mut state, (&obs,), &mut out));
-        // Expected: [[1, 2], [5, 6]] → flat [1, 2, 5, 6]
+        let mut out = Store::element(&[2, 2], &[0.0; 4]);
+        out.push_default(1);
+        Select::compute(&mut state, (&store,), out.current_view_mut());
+        out.commit();
+        // Expected: [[1, 2], [5, 6]] -> flat [1, 2, 5, 6]
         assert_eq!(out.current(), &[1.0, 2.0, 5.0, 6.0]);
     }
 
     #[test]
     fn select_along_axis1_2d() {
         // Input shape [2, 4]: [[1, 2, 3, 4], [5, 6, 7, 8]]
-        let obs = Observable::new(&[2, 4], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let store = Store::element(&[2, 4], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
         // Select columns 1 and 3 along axis 1
         let mut state = Select::<f64>::along_axis(&[2, 4], &[1, 3], 1);
-        let mut out = Observable::new(&[2, 2], &[0.0; 4]);
-        assert!(Select::compute(&mut state, (&obs,), &mut out));
-        // Expected: [[2, 4], [6, 8]] → flat [2, 4, 6, 8]
+        let mut out = Store::element(&[2, 2], &[0.0; 4]);
+        out.push_default(1);
+        Select::compute(&mut state, (&store,), out.current_view_mut());
+        out.commit();
+        // Expected: [[2, 4], [6, 8]] -> flat [2, 4, 6, 8]
         assert_eq!(out.current(), &[2.0, 4.0, 6.0, 8.0]);
     }
 
     #[test]
     fn output_shape_computation() {
         let op = Select::<f64>::flat(vec![1, 3]);
-        assert_eq!(&*op.shape(&[&[5]]), &[2]);
+        assert_eq!(&*op.default(&[&[5]]).0, &[2]);
         let op = Select::<f64>::along_axis(&[3, 4], &[0, 2], 0);
-        assert_eq!(&*op.shape(&[&[3, 4]]), &[2, 4]);
+        assert_eq!(&*op.default(&[&[3, 4]]).0, &[2, 4]);
         let op = Select::<f64>::along_axis(&[3, 4], &[1], 1);
-        assert_eq!(&*op.shape(&[&[3, 4]]), &[3, 1]);
+        assert_eq!(&*op.default(&[&[3, 4]]).0, &[3, 1]);
     }
 }

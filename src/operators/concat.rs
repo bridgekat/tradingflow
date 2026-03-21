@@ -1,18 +1,16 @@
-//! Concat operator — concatenates N observables along an existing axis.
+//! Concat operator — concatenates N stores along an existing axis.
 //!
 //! All inputs must have the same element type and the same shape except
 //! along the concatenation axis.  The output shape has the concatenation
 //! axis size equal to the sum of all inputs' axis sizes.
-//!
-//! Register via [`Scenario::add_slice_operator`].
 
 use std::marker::PhantomData;
 
-use crate::observable::Observable;
 use crate::operator::Operator;
-use crate::refs::Scalar;
+use crate::store::{ElementViewMut, Store};
+use crate::types::Scalar;
 
-/// Concatenate N homogeneous observables along an existing axis.
+/// Concatenate N homogeneous stores along an existing axis.
 ///
 /// For axis 0 (and for scalar/1-D inputs), the flat storage layout is just
 /// sequential copies.  For higher axes, blocks are interleaved.
@@ -55,24 +53,25 @@ impl<T: Copy> Concat<T> {
 
 impl<T: Scalar> Operator for Concat<T> {
     type State = Self;
-    type Inputs = [Observable<T>];
-    type Output = Observable<T>;
+    type Inputs = [Store<T>];
+    type Scalar = T;
 
-    fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+    fn window_sizes(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         let n = input_shapes.len();
-        if input_shapes[0].is_empty() {
-            vec![n].into()
-        } else {
-            let mut shape = input_shapes[0].to_vec();
-            shape[self.axis] *= n;
-            shape.into()
-        }
+        vec![1; n].into()
     }
 
-    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
-        let shape = self.shape(input_shapes);
+    fn default(&self, input_shapes: &[&[usize]]) -> (Box<[usize]>, Box<[T]>) {
+        let n = input_shapes.len();
+        let shape: Box<[usize]> = if input_shapes[0].is_empty() {
+            vec![n].into()
+        } else {
+            let mut s = input_shapes[0].to_vec();
+            s[self.axis] *= n;
+            s.into()
+        };
         let stride = shape.iter().product::<usize>();
-        vec![T::default(); stride].into()
+        (shape, vec![T::default(); stride].into())
     }
 
     fn init(self) -> Self {
@@ -80,24 +79,20 @@ impl<T: Scalar> Operator for Concat<T> {
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut Self,
-        inputs: Box<[&Observable<T>]>,
-        output: &mut Observable<T>,
-    ) -> bool {
-        let out = output.current_mut();
+    fn compute(state: &mut Self, inputs: Box<[&Store<T>]>, output: ElementViewMut<'_, T>) -> bool {
+        let out = output.values;
         if state.outer_count == 1 {
             let mut offset = 0;
-            for obs in inputs.iter() {
-                let src = obs.current();
+            for store in inputs.iter() {
+                let src = store.current();
                 out[offset..offset + src.len()].copy_from_slice(src);
                 offset += src.len();
             }
         } else {
             let mut out_offset = 0;
             for outer in 0..state.outer_count {
-                for obs in inputs.iter() {
-                    let src = obs.current();
+                for store in inputs.iter() {
+                    let src = store.current();
                     let src_offset = outer * state.chunk_size;
                     out[out_offset..out_offset + state.chunk_size]
                         .copy_from_slice(&src[src_offset..src_offset + state.chunk_size]);
@@ -116,34 +111,38 @@ impl<T: Scalar> Operator for Concat<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observable::Observable;
+    use crate::store::Store;
 
     #[test]
     fn concat_scalars() {
-        let a = Observable::new(&[], &[1.0]);
-        let b = Observable::new(&[], &[2.0]);
-        let c = Observable::new(&[], &[3.0]);
+        let a = Store::element(&[], &[1.0]);
+        let b = Store::element(&[], &[2.0]);
+        let c = Store::element(&[], &[3.0]);
         let mut state = Concat::<f64>::new(&[], 0);
-        let mut out = Observable::new(&[3], &[0.0; 3]);
-        assert!(Concat::compute(
+        let mut out = Store::element(&[3], &[0.0; 3]);
+        out.push_default(1);
+        Concat::compute(
             &mut state,
             vec![&a, &b, &c].into_boxed_slice(),
-            &mut out
-        ));
+            out.current_view_mut(),
+        );
+        out.commit();
         assert_eq!(out.current(), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn concat_vectors_axis0() {
-        let a = Observable::new(&[2], &[1.0, 2.0]);
-        let b = Observable::new(&[2], &[3.0, 4.0]);
+        let a = Store::element(&[2], &[1.0, 2.0]);
+        let b = Store::element(&[2], &[3.0, 4.0]);
         let mut state = Concat::<f64>::new(&[2], 0);
-        let mut out = Observable::new(&[4], &[0.0; 4]);
-        assert!(Concat::compute(
+        let mut out = Store::element(&[4], &[0.0; 4]);
+        out.push_default(1);
+        Concat::compute(
             &mut state,
             vec![&a, &b].into_boxed_slice(),
-            &mut out
-        ));
+            out.current_view_mut(),
+        );
+        out.commit();
         assert_eq!(out.current(), &[1.0, 2.0, 3.0, 4.0]);
     }
 
@@ -151,16 +150,18 @@ mod tests {
     fn concat_2d_axis1() {
         // Input shape [2, 2]: each input is a 2x2 matrix
         // a = [[1, 2], [3, 4]], b = [[5, 6], [7, 8]]
-        let a = Observable::new(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
-        let b = Observable::new(&[2, 2], &[5.0, 6.0, 7.0, 8.0]);
-        // Concat along axis 1 → output shape [2, 4]
+        let a = Store::element(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let b = Store::element(&[2, 2], &[5.0, 6.0, 7.0, 8.0]);
+        // Concat along axis 1 -> output shape [2, 4]
         let mut state = Concat::<f64>::new(&[2, 2], 1);
-        let mut out = Observable::new(&[2, 4], &[0.0; 8]);
-        assert!(Concat::compute(
+        let mut out = Store::element(&[2, 4], &[0.0; 8]);
+        out.push_default(1);
+        Concat::compute(
             &mut state,
             vec![&a, &b].into_boxed_slice(),
-            &mut out
-        ));
+            out.current_view_mut(),
+        );
+        out.commit();
         // Expected: [[1, 2, 5, 6], [3, 4, 7, 8]]
         assert_eq!(out.current(), &[1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
     }
@@ -168,12 +169,12 @@ mod tests {
     #[test]
     fn output_shape_computation() {
         let op = Concat::<f64>::new(&[], 0);
-        assert_eq!(&*op.shape(&[&[], &[], &[]]), &[3]);
+        assert_eq!(&*op.default(&[&[], &[], &[]]).0, &[3]);
         let op = Concat::<f64>::new(&[2], 0);
-        assert_eq!(&*op.shape(&[&[2], &[2], &[2]]), &[6]);
+        assert_eq!(&*op.default(&[&[2], &[2], &[2]]).0, &[6]);
         let op = Concat::<f64>::new(&[2, 3], 0);
-        assert_eq!(&*op.shape(&[&[2, 3], &[2, 3]]), &[4, 3]);
+        assert_eq!(&*op.default(&[&[2, 3], &[2, 3]]).0, &[4, 3]);
         let op = Concat::<f64>::new(&[2, 3], 1);
-        assert_eq!(&*op.shape(&[&[2, 3], &[2, 3]]), &[2, 6]);
+        assert_eq!(&*op.default(&[&[2, 3], &[2, 3]]).0, &[2, 6]);
     }
 }

@@ -1,29 +1,32 @@
 [![Test](https://github.com/bridgekat/tradingflow/actions/workflows/test.yml/badge.svg)](https://github.com/bridgekat/tradingflow/actions/workflows/test.yml)
 
-**TradingFlow** is a lightweight library for quantitative investment research that supports multi-frequency market data, formulaic factors, forecasting models, portfolio optimization methods and backtesting in a unified data model. It is currently implemented in Python with NumPy.
+**TradingFlow** is a lightweight library for quantitative investment research that supports multi-frequency market data, formulaic factors, forecasting models, portfolio optimization methods and backtesting in a unified data model. The core runtime is implemented in Rust; a Python wrapper is provided for ease of use with Python's data science ecosystem.
 
 # Features
 
-- **Composable modules:** almost every piece of data is an observable value or time series, and almost every computation is an operator on them.
+- **Composable modules:** almost every piece of data is a time series, and almost every computation is a time series operator.
 - **Agent-friendly codebase:** we maintain code-documentation consistency and a hierarchy of documented modules to facilitate AI code exploration and generation. When using AI coding agents (Claude Code, Codex, OpenCode, etc.), start every session by instructing the agent to read [AGENTS.md](AGENTS.md) and then describe your tasks.
 
 # Core Concepts
 
-## Observable values
+## Data stores
 
-An [observable value](python/tradingflow/observable.py) is a piece of data that can be updated at strictly increasing `np.datetime64` timestamps.
+A [data store](src/store.rs) represents a time series. It holds a contiguous buffer of uniformly typed elements and a buffer of non-decreasing timestamps (nanoseconds since the UNIX epoch) associated to each element. The element type and shape (can be scalar, vector, matrix, or higher-dimensional array) are fixed at creation time.
 
-The data can be a scalar, vector, matrix, or higher-dimensional array with a fixed [`numpy.dtype`](https://numpy.org/doc/stable/reference/arrays.dtypes.html) and shape. An observable value can be considered as a time series that only stores its most recent value.
+A configurable **window size** controls retention:
 
-## Time Series
+- `window = 1` — stores only the most recent element.
+- `window = N` — stores a fixed sliding window of the most recent `N` elements.
+- `window = 0` — stores the full time series.
 
-A [time series](python/tradingflow/series.py) stores a sequence of uniformly typed elements indexed by strictly increasing `np.datetime64` timestamps, supporting integer indexing, slicing, timestamp lookups, and amortized O(1) appends. Any observable value can be *materialized* into a time series.
+Cheap **views** can be created from a data store without allocation:
 
-An element in a time series can be a scalar, vector, matrix or higher-dimensional array with a fixed [`numpy.dtype`](https://numpy.org/doc/stable/reference/arrays.dtypes.html) and shape. Elements in a time series are internally stored in a single [`numpy.ndarray`](https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html). This design is simple but not as flexible as Pandas-style data frames, which can contain columns of different types. To support such data, multiple time series must be created for different types.
+- `ElementView` / `ElementViewMut` — a single element.
+- `SeriesView` — the full retained history.
 
 ## Sources
 
-A [source](python/tradingflow/source.py) is used to generate observable values via asynchronous inputs from external data sources. A source must implement its `subscribe()` method, which returns two asynchronous iterators: one for historical `(timestamp, value)` tuples and one for real-time `value` updates. They should generate two complementary, non-overlapping segments of the same time series, split at some instant during the execution of `subscribe()`.
+A [source](src/source.rs) feeds elements into a data store via asynchronous channels. A source must implement its `subscribe()` method, which returns two channel receivers: one for historical `(timestamp, event)` tuples and one for real-time events. They should generate two complementary, non-overlapping segments of the same time series, split at some instant during the execution of `subscribe()`.
 
 Sources are typically raw market data or pre-computed factors. Examples include:
 
@@ -33,16 +36,20 @@ Sources are typically raw market data or pre-computed factors. Examples include:
 
 ## Operators
 
-An [operator](python/tradingflow/operator.py) is used to generate observable values via computations on other observable values or time series. An operator must implement its `compute()` method, which takes the current timestamp, a tuple of inputs and an optional mutable hidden state, and returns the updated output value. The `compute()` method is called to generate a new output from inputs when any of them is updated.
+An [operator](src/operator.rs) reads from one or more input data stores and writes into new elements in some output data store. An operator must implement its `compute()` method, which takes the current state, input data store references, and a mutable output view, and returns whether a value was produced. The `compute()` method is called to generate a new output when any input is updated.
+
+Each operator declares its required **minimum input window sizes**. Each data store's retention window is then computed as the maximum window size required by operators that depend on it, ensuring that all necessary historical data is retained for correct computation.
 
 Operators are the reusable building blocks of trading strategies. Examples include:
 
-- [**Technical indicators**](python/tradingflow/operators/indicators/) (e.g. 20-day moving average of instrument prices)
-- [**Model predictions**](python/tradingflow/operators/predictors/) (e.g. from a regression model predicting future instrument returns, periodically retrained on historical data)
-- [**Target positions**](python/tradingflow/operators/portfolios/) (e.g. periodically recomputed by mean-variance portfolio optimization on some forecasted returns and covariances)
+- **Technical indicators** (e.g. 20-day moving average of instrument prices)
+- **Model predictions** (e.g. from a regression model predicting future instrument returns, periodically retrained on historical data)
+- **Target positions** (e.g. periodically recomputed by mean-variance portfolio optimization on some forecasted returns and covariances)
 - **Trading signals** (e.g. differences between target and actual positions)
-- [**Performance metrics**](python/tradingflow/operators/metrics/) (e.g. cumulative returns calculated from past positions)
+- **Performance metrics** (e.g. cumulative returns calculated from past positions)
 
 ## Scenarios
 
-A [scenario](python/tradingflow/scenario.py) is a collection of time series, each associated with either a source or an operator along with its input time series. Time series dependencies must be acyclic. It provides a `run()` method which consumes all source streams, coalesces source events (which are only required to have non-decreasing timestamps) so that update timestamps are strictly increasing, and for each event updates all affected downstream time series.
+A [scenario](src/scenario/mod.rs) is a directed acyclic graph, whose nodes own data stores and whose edges are the operator dependencies. Each node can be associated with either a source or an operator. Dependencies must be acyclic.
+
+The scenario provides a `run()` method which consumes all source streams (historical and live) and puts them in a queue, coalesces events at the same timestamp, and for each batch propagates updates through the graph in topological order. It makes sure that update timestamps are strictly increasing each batch.

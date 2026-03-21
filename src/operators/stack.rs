@@ -1,17 +1,15 @@
-//! Stack operator — stacks N observables along a new axis.
+//! Stack operator — stacks N stores along a new axis.
 //!
 //! All inputs must have the same element type and shape.  The output shape
 //! has a new dimension of size `n_inputs` inserted at position `axis`.
-//!
-//! Register via [`Scenario::add_slice_operator`].
 
 use std::marker::PhantomData;
 
-use crate::observable::Observable;
 use crate::operator::Operator;
-use crate::refs::Scalar;
+use crate::store::{ElementViewMut, Store};
+use crate::types::Scalar;
 
-/// Stack N homogeneous observables along a new axis.
+/// Stack N homogeneous stores along a new axis.
 ///
 /// Inserts a new dimension at `axis` with size = number of inputs.
 /// For axis 0, the flat layout is just sequential copies (same as concat
@@ -54,27 +52,28 @@ impl<T: Copy> Stack<T> {
 
 impl<T: Scalar> Operator for Stack<T> {
     type State = Self;
-    type Inputs = [Observable<T>];
-    type Output = Observable<T>;
+    type Inputs = [Store<T>];
+    type Scalar = T;
 
-    fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
+    fn window_sizes(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
         let n = input_shapes.len();
-        if input_shapes[0].is_empty() {
+        vec![1; n].into()
+    }
+
+    fn default(&self, input_shapes: &[&[usize]]) -> (Box<[usize]>, Box<[T]>) {
+        let n = input_shapes.len();
+        let shape: Box<[usize]> = if input_shapes[0].is_empty() {
             vec![n].into()
         } else {
             let s = input_shapes[0];
-            let mut shape = Vec::with_capacity(s.len() + 1);
-            shape.extend_from_slice(&s[..self.axis]);
-            shape.push(n);
-            shape.extend_from_slice(&s[self.axis..]);
-            shape.into()
-        }
-    }
-
-    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
-        let shape = self.shape(input_shapes);
+            let mut v = Vec::with_capacity(s.len() + 1);
+            v.extend_from_slice(&s[..self.axis]);
+            v.push(n);
+            v.extend_from_slice(&s[self.axis..]);
+            v.into()
+        };
         let stride = shape.iter().product::<usize>();
-        vec![T::default(); stride].into()
+        (shape, vec![T::default(); stride].into())
     }
 
     fn init(self) -> Self {
@@ -82,24 +81,20 @@ impl<T: Scalar> Operator for Stack<T> {
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut Self,
-        inputs: Box<[&Observable<T>]>,
-        output: &mut Observable<T>,
-    ) -> bool {
-        let out = output.current_mut();
+    fn compute(state: &mut Self, inputs: Box<[&Store<T>]>, output: ElementViewMut<'_, T>) -> bool {
+        let out = output.values;
         if state.outer_count == 1 {
             let mut offset = 0;
-            for obs in inputs.iter() {
-                let src = obs.current();
+            for store in inputs.iter() {
+                let src = store.current();
                 out[offset..offset + src.len()].copy_from_slice(src);
                 offset += src.len();
             }
         } else {
             let mut out_offset = 0;
             for outer in 0..state.outer_count {
-                for obs in inputs.iter() {
-                    let src = obs.current();
+                for store in inputs.iter() {
+                    let src = store.current();
                     let src_offset = outer * state.chunk_size;
                     out[out_offset..out_offset + state.chunk_size]
                         .copy_from_slice(&src[src_offset..src_offset + state.chunk_size]);
@@ -118,49 +113,55 @@ impl<T: Scalar> Operator for Stack<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observable::Observable;
+    use crate::store::Store;
 
     #[test]
     fn stack_scalars_axis0() {
-        let a = Observable::new(&[], &[1.0]);
-        let b = Observable::new(&[], &[2.0]);
-        let c = Observable::new(&[], &[3.0]);
+        let a = Store::element(&[], &[1.0]);
+        let b = Store::element(&[], &[2.0]);
+        let c = Store::element(&[], &[3.0]);
         let mut state = Stack::<f64>::new(&[], 0);
-        let mut out = Observable::new(&[3], &[0.0; 3]);
-        assert!(Stack::compute(
+        let mut out = Store::element(&[3], &[0.0; 3]);
+        out.push_default(1);
+        Stack::compute(
             &mut state,
             vec![&a, &b, &c].into_boxed_slice(),
-            &mut out
-        ));
+            out.current_view_mut(),
+        );
+        out.commit();
         assert_eq!(out.current(), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn stack_vectors_axis0() {
-        let a = Observable::new(&[2], &[1.0, 2.0]);
-        let b = Observable::new(&[2], &[3.0, 4.0]);
-        let c = Observable::new(&[2], &[5.0, 6.0]);
+        let a = Store::element(&[2], &[1.0, 2.0]);
+        let b = Store::element(&[2], &[3.0, 4.0]);
+        let c = Store::element(&[2], &[5.0, 6.0]);
         let mut state = Stack::<f64>::new(&[2], 0);
-        let mut out = Observable::new(&[3, 2], &[0.0; 6]);
-        assert!(Stack::compute(
+        let mut out = Store::element(&[3, 2], &[0.0; 6]);
+        out.push_default(1);
+        Stack::compute(
             &mut state,
             vec![&a, &b, &c].into_boxed_slice(),
-            &mut out
-        ));
+            out.current_view_mut(),
+        );
+        out.commit();
         assert_eq!(out.current(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]
     fn stack_vectors_axis1() {
-        let a = Observable::new(&[3], &[1.0, 2.0, 3.0]);
-        let b = Observable::new(&[3], &[4.0, 5.0, 6.0]);
+        let a = Store::element(&[3], &[1.0, 2.0, 3.0]);
+        let b = Store::element(&[3], &[4.0, 5.0, 6.0]);
         let mut state = Stack::<f64>::new(&[3], 1);
-        let mut out = Observable::new(&[3, 2], &[0.0; 6]);
-        assert!(Stack::compute(
+        let mut out = Store::element(&[3, 2], &[0.0; 6]);
+        out.push_default(1);
+        Stack::compute(
             &mut state,
             vec![&a, &b].into_boxed_slice(),
-            &mut out
-        ));
+            out.current_view_mut(),
+        );
+        out.commit();
         // Expected shape [3, 2]: [[1, 4], [2, 5], [3, 6]]
         // Flat row-major: [1, 4, 2, 5, 3, 6]
         assert_eq!(out.current(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
@@ -169,17 +170,17 @@ mod tests {
     #[test]
     fn output_shape_computation() {
         let op = Stack::<f64>::new(&[], 0);
-        assert_eq!(&*op.shape(&[&[], &[], &[]]), &[3]);
+        assert_eq!(&*op.default(&[&[], &[], &[]]).0, &[3]);
         let op = Stack::<f64>::new(&[2], 0);
-        assert_eq!(&*op.shape(&[&[2], &[2], &[2]]), &[3, 2]);
+        assert_eq!(&*op.default(&[&[2], &[2], &[2]]).0, &[3, 2]);
         let op = Stack::<f64>::new(&[2], 1);
-        assert_eq!(&*op.shape(&[&[2], &[2], &[2]]), &[2, 3]);
+        assert_eq!(&*op.default(&[&[2], &[2], &[2]]).0, &[2, 3]);
         let s: &[usize] = &[2, 3];
         let op = Stack::<f64>::new(&[2, 3], 0);
-        assert_eq!(&*op.shape(&[s, s, s, s]), &[4, 2, 3]);
+        assert_eq!(&*op.default(&[s, s, s, s]).0, &[4, 2, 3]);
         let op = Stack::<f64>::new(&[2, 3], 1);
-        assert_eq!(&*op.shape(&[s, s, s, s]), &[2, 4, 3]);
+        assert_eq!(&*op.default(&[s, s, s, s]).0, &[2, 4, 3]);
         let op = Stack::<f64>::new(&[2, 3], 2);
-        assert_eq!(&*op.shape(&[s, s, s, s]), &[2, 3, 4]);
+        assert_eq!(&*op.default(&[s, s, s, s]).0, &[2, 3, 4]);
     }
 }

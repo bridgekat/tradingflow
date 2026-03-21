@@ -17,8 +17,11 @@ viz = ["matplotlib", "streamlit[charts]"]
 
 [tool.maturin]
 features = ["pyo3/extension-module", "python"]
-python-source = "python"
+python-source = "python/src"
 module-name = "tradingflow._native"
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
 
 [tool.black]
 line-length = 120

@@ -3,14 +3,12 @@
 //! For each element in the input, keeps the value if the per-element
 //! condition returns `true`, otherwise replaces it with a fill value.
 //! Unlike [`Filter`](super::Filter), `Where` always produces output.
-//!
-//! Register via [`Scenario::add_operator`] with `(Obs<T>,)` input.
 
 use std::marker::PhantomData;
 
-use crate::observable::Observable;
 use crate::operator::Operator;
-use crate::refs::Scalar;
+use crate::store::{ElementViewMut, Store};
+use crate::types::Scalar;
 
 /// Element-wise conditional operator.
 ///
@@ -34,16 +32,17 @@ impl<T: Copy, F: Fn(T) -> bool> Where<T, F> {
 
 impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
     type State = Self;
-    type Inputs = (Observable<T>,);
-    type Output = Observable<T>;
+    type Inputs = (Store<T>,);
+    type Scalar = T;
 
-    fn shape(&self, input_shapes: &[&[usize]]) -> Box<[usize]> {
-        input_shapes[0].into()
+    fn window_sizes(&self, _: &[&[usize]]) -> (usize,) {
+        (1,)
     }
 
-    fn initial(&self, input_shapes: &[&[usize]]) -> Box<[T]> {
-        let stride = input_shapes[0].iter().product::<usize>();
-        vec![T::default(); stride].into()
+    fn default(&self, input_shapes: &[&[usize]]) -> (Box<[usize]>, Box<[T]>) {
+        let shape: Box<[usize]> = input_shapes[0].into();
+        let stride = shape.iter().product::<usize>();
+        (shape, vec![T::default(); stride].into())
     }
 
     fn init(self) -> Self {
@@ -51,10 +50,9 @@ impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
     }
 
     #[inline(always)]
-    fn compute(state: &mut Self, inputs: (&Observable<T>,), output: &mut Observable<T>) -> bool {
-        let (obs,) = inputs;
-        let input = obs.current();
-        let out = output.current_mut();
+    fn compute(state: &mut Self, inputs: (&Store<T>,), output: ElementViewMut<'_, T>) -> bool {
+        let input = inputs.0.current();
+        let out = output.values;
         for i in 0..out.len() {
             out[i] = if (state.condition)(input[i]) {
                 input[i]
@@ -73,41 +71,49 @@ impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observable::Observable;
+    use crate::store::Store;
 
     #[test]
     fn where_keeps_passing() {
-        let obs = Observable::new(&[3], &[1.0, 5.0, 2.0]);
+        let store = Store::element(&[3], &[1.0, 5.0, 2.0]);
         let mut state = Where::new(|v: f64| v > 3.0, 0.0);
-        let mut out = Observable::new(&[3], &[0.0; 3]);
-        assert!(Where::compute(&mut state, (&obs,), &mut out));
+        let mut out = Store::element(&[3], &[0.0; 3]);
+        out.push_default(1);
+        Where::compute(&mut state, (&store,), out.current_view_mut());
+        out.commit();
         assert_eq!(out.current(), &[0.0, 5.0, 0.0]);
     }
 
     #[test]
     fn where_all_pass() {
-        let obs = Observable::new(&[2], &[10.0, 20.0]);
+        let store = Store::element(&[2], &[10.0, 20.0]);
         let mut state = Where::new(|v: f64| v > 0.0, -1.0);
-        let mut out = Observable::new(&[2], &[0.0; 2]);
-        assert!(Where::compute(&mut state, (&obs,), &mut out));
+        let mut out = Store::element(&[2], &[0.0; 2]);
+        out.push_default(1);
+        Where::compute(&mut state, (&store,), out.current_view_mut());
+        out.commit();
         assert_eq!(out.current(), &[10.0, 20.0]);
     }
 
     #[test]
     fn where_none_pass() {
-        let obs = Observable::new(&[2], &[-1.0, -2.0]);
+        let store = Store::element(&[2], &[-1.0, -2.0]);
         let mut state = Where::new(|v: f64| v > 0.0, 0.0);
-        let mut out = Observable::new(&[2], &[0.0; 2]);
-        assert!(Where::compute(&mut state, (&obs,), &mut out));
+        let mut out = Store::element(&[2], &[0.0; 2]);
+        out.push_default(1);
+        Where::compute(&mut state, (&store,), out.current_view_mut());
+        out.commit();
         assert_eq!(out.current(), &[0.0, 0.0]);
     }
 
     #[test]
     fn where_with_nan_fill() {
-        let obs = Observable::new(&[3], &[1.0, f64::NAN, 3.0]);
+        let store = Store::element(&[3], &[1.0, f64::NAN, 3.0]);
         let mut state = Where::new(|v: f64| !v.is_nan(), f64::NAN);
-        let mut out = Observable::new(&[3], &[0.0; 3]);
-        assert!(Where::compute(&mut state, (&obs,), &mut out));
+        let mut out = Store::element(&[3], &[0.0; 3]);
+        out.push_default(1);
+        Where::compute(&mut state, (&store,), out.current_view_mut());
+        out.commit();
         assert_eq!(out.current()[0], 1.0);
         assert!(out.current()[1].is_nan());
         assert_eq!(out.current()[2], 3.0);

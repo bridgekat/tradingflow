@@ -17,7 +17,8 @@ mod stack;
 mod r#where;
 
 pub use apply::{
-    Add, Apply, Divide, Multiply, Negate, Subtract, add, divide, multiply, negate, subtract,
+    Add, Apply1, Apply2, Divide, Multiply, Negate, Subtract, add, divide, multiply, negate,
+    subtract,
 };
 pub use concat::Concat;
 pub use filter::Filter;

@@ -10,7 +10,7 @@ This file is kept short and concise. It provides initial context for all agentic
 ## File Structure
 
 - Rust sources live in [`src/`](src/) (the crate root). Every folder is a module with a `mod.rs` or `lib.rs` entry point.
-- Python sources live in [`python/tradingflow/`](python/tradingflow/). Every folder is a module with an `__init__.py` entry point.
+- Python sources live in [`python/src/tradingflow/`](python/src/tradingflow/). Every folder is a module with an `__init__.py` entry point.
 - The project is built with [Maturin](https://www.maturin.rs/): `pip install -e ".[dev]"` compiles the Rust crate and installs the Python package together.
 
 ## Documentation
@@ -22,7 +22,7 @@ This file is kept short and concise. It provides initial context for all agentic
 
 ## Exploration
 
-- Read module entry points first, starting from [the Rust root](src/lib.rs) or [the Python root](python/tradingflow/__init__.py).
+- Read module entry points first, starting from [the Rust root](src/lib.rs) or [the Python root](python/src/tradingflow/__init__.py).
 - Read implementation files only for details that are not obvious from module entry points, or when there appears to be an inconsistency.
 - For the given task, existing code with similar functionalities may be read for reference before implementation.
 
