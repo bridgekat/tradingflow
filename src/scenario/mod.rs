@@ -1,8 +1,9 @@
 //! Scenario — the DAG runtime for event-driven computation.
 //!
 //! A [`Scenario`] is a directed acyclic graph of nodes, where each node holds
-//! a [`Store`](crate::store::Store).  Nodes are fed by [`Source`](crate::source::Source)s
-//! and connected by [`Operator`](crate::operator::Operator)s.
+//! an arbitrary value of type `T: Send + 'static`.  Nodes are fed by
+//! [`Source`](crate::source::Source)s and connected by
+//! [`Operator`](crate::operator::Operator)s.
 //!
 //! # Architecture
 //!
@@ -11,17 +12,9 @@
 //! [`TypeId`] checks.  After registration, operator dispatch uses raw pointer
 //! casts through monomorphised function pointers — zero dynamic dispatch
 //! overhead on the hot path.
-//!
-//! # Submodules
-//!
-//! * [`handle`] — [`Handle<T>`], [`InputKindsHandles`] (typed interface).
-//! * [`graph`] — [`Graph`], topological flush.
-//! * [`node`] — [`Node`], [`Closure`], typed construction helpers.
-//! * [`runner`] — [`SourceState`](runner::SourceState), source registration,
-//!   POCQ event loop.
 
 mod graph;
-mod handle;
+pub mod handle;
 mod node;
 mod runner;
 
@@ -31,37 +24,30 @@ use std::any::TypeId;
 
 use crate::operator::Operator;
 use crate::source::Source;
-use crate::store::Store;
-use crate::types::{InputKinds, Scalar};
+use crate::types::InputKinds;
 
 use graph::Graph;
 use node::{Closure, Node};
 use runner::SourceState;
 
-/// Store-based DAG runtime.
-///
-/// Wraps a [`Graph`] and provides a type-safe API for node creation, operator
-/// registration, store access, and event-driven execution.
+/// Type-erased DAG runtime for event-driven computation.
 ///
 /// # Type-safe API example
 ///
 /// ```ignore
+/// use tradingflow::array::Array;
+///
 /// let mut sc = Scenario::new();
 ///
-/// // Create nodes (non-windowed by default).
-/// let ha = sc.create_node::<f64>(&[], &[0.0]);
-/// let hb = sc.create_node::<f64>(&[], &[0.0]);
-///
-/// // Register an operator.  Inputs are validated via TypeId at registration.
-/// // The operator's window_sizes() auto-promotes input stores if needed.
+/// let ha = sc.create_node(Array::scalar(0.0_f64));
+/// let hb = sc.create_node(Array::scalar(0.0_f64));
 /// let hc = sc.add_operator(my_add_op, (ha, hb));
 ///
-/// // Write to source nodes and flush.
-/// sc.store_mut(ha).push(1, &[10.0]);
-/// sc.store_mut(hb).push(1, &[3.0]);
+/// sc.value_mut(ha)[0] = 10.0;
+/// sc.value_mut(hb)[0] = 3.0;
 /// sc.flush(1, &[ha.index(), hb.index()]);
 ///
-/// assert_eq!(sc.store(hc).current(), &[13.0]);
+/// assert_eq!(sc.value(hc).as_slice(), &[13.0]);
 /// ```
 pub struct Scenario {
     graph: Graph,
@@ -76,11 +62,11 @@ impl Scenario {
         }
     }
 
-    // -- Store access --------------------------------------------------------
+    // -- Value access --------------------------------------------------------
 
-    /// Immutable access to a node's store.  Panics on TypeId mismatch.
+    /// Immutable access to a node's value.  Panics on TypeId mismatch.
     #[inline(always)]
-    pub fn store<T: Scalar>(&self, h: Handle<T>) -> &Store<T> {
+    pub fn value<T: Send + 'static>(&self, h: Handle<T>) -> &T {
         let node = &self.graph.nodes[h.index()];
         assert_eq!(
             node.type_id,
@@ -88,12 +74,12 @@ impl Scenario {
             "type mismatch at node {}",
             h.index(),
         );
-        unsafe { &*(node.store as *const Store<T>) }
+        unsafe { &*(node.value as *const T) }
     }
 
-    /// Mutable access to a node's store.  Panics on TypeId mismatch.
+    /// Mutable access to a node's value.  Panics on TypeId mismatch.
     #[inline(always)]
-    pub fn store_mut<T: Scalar>(&mut self, h: Handle<T>) -> &mut Store<T> {
+    pub fn value_mut<T: Send + 'static>(&mut self, h: Handle<T>) -> &mut T {
         let node = &self.graph.nodes[h.index()];
         assert_eq!(
             node.type_id,
@@ -101,44 +87,42 @@ impl Scenario {
             "type mismatch at node {}",
             h.index(),
         );
-        unsafe { &mut *(node.store as *mut Store<T>) }
+        unsafe { &mut *(node.value as *mut T) }
     }
 
     // -- Node creation -------------------------------------------------------
 
-    /// Create a node.  Starts as `window = 1` (single element, no history).
-    /// Operators auto-promote inputs via `window_sizes()`, or call
-    /// `store_mut(h).ensure_min_window(n)` manually.
-    pub fn create_node<T: Scalar>(&mut self, shape: &[usize], default: &[T]) -> Handle<T> {
-        let store = Store::element(shape, default);
-        let idx = self.graph.add_node(Node::from_store(store));
+    /// Create a bare node with an initial value.
+    pub fn create_node<T: Send + 'static>(&mut self, value: T) -> Handle<T> {
+        let idx = self.graph.add_node(Node::new(value));
         Handle::new(idx)
     }
 
     /// Register a [`Source`], creating the output node.
-    pub fn add_source<S: Source>(&mut self, source: S) -> Handle<S::Scalar> {
-        let (shape, default) = source.default();
-        let store = Store::element(&shape, &default);
-        let idx = self.graph.add_node(Node::from_store(store));
-        let (hist_rx, live_rx) = source.subscribe();
+    pub fn add_source<S: Source>(&mut self, source: S) -> Handle<S::Output> {
+        let (hist_rx, live_rx, output) = source.init(i64::MIN);
+        let idx = self.graph.add_node(Node::new(output));
         self.source_states
             .push(SourceState::new::<S>(idx, hist_rx, live_rx));
         Handle::new(idx)
     }
 
     /// Register an [`Operator`], creating its output node.
+    ///
+    /// Calls [`Operator::init`] eagerly with the current input values
+    /// to produce the initial state and output.
     pub fn add_operator<O: Operator>(
         &mut self,
         operator: O,
         inputs: impl Into<<O::Inputs as InputKindsHandles>::Handles>,
-    ) -> Handle<O::Scalar>
+    ) -> Handle<O::Output>
     where
         O::Inputs: InputKindsHandles,
     {
         let handles = inputs.into();
         let node_ids = <O::Inputs as InputKindsHandles>::node_ids(&handles);
 
-        // 1. Validate TypeIds, collect input shapes.
+        // 1. Validate TypeIds.
         for &(idx, expected_tid) in node_ids.iter() {
             assert!(
                 idx < self.graph.len(),
@@ -149,34 +133,27 @@ impl Scenario {
                 "type mismatch at node {idx}",
             );
         }
-        let input_shapes: Box<[&[usize]]> = node_ids
+
+        // 2. Collect input value pointers.
+        let input_ptrs: Box<[*const u8]> = node_ids
             .iter()
-            .map(|&(idx, _)| self.graph.nodes[idx].shape())
+            .map(|&(idx, _)| self.graph.nodes[idx].value as *const u8)
             .collect();
 
-        // 2. Auto-promote input stores per `op.window_sizes()`.
-        let window_sizes = operator.window_sizes(&input_shapes);
-        let store_ptrs: Vec<*mut u8> = node_ids
-            .iter()
-            .map(|&(idx, _)| self.graph.nodes[idx].store)
-            .collect();
-        unsafe { <O::Inputs as InputKinds>::promote(&store_ptrs, &window_sizes) };
+        // 3. Call init eagerly — inputs are already heap-allocated and stable.
+        let input_refs = unsafe { <O::Inputs as InputKinds>::from_ptrs(&input_ptrs) };
+        let (state, output) = operator.init(input_refs, i64::MIN);
 
-        // 3. Collect input store pointers for the closure.
-        let input_ptrs: Box<[*const u8]> = store_ptrs.iter().map(|&p| p as *const u8).collect();
+        // 4. Create output node.
+        let output_idx = self.graph.add_node(Node::new(output));
 
-        // 4. Create output node (filled with `op.output()` default value).
-        let (output_shape, default) = operator.default(&input_shapes);
-        let output_store = Store::element(&output_shape, &default);
-        let output_idx = self.graph.add_node(Node::from_store(output_store));
-
-        // Wire edges: each input node -> output node.
+        // 5. Wire edges: each input node → output node.
         for &(input_idx, _) in node_ids.iter() {
             self.graph.add_edge(input_idx, output_idx);
         }
 
-        // 5. Attach closure.
-        let closure = Closure::from_operator(operator, input_ptrs);
+        // 6. Attach closure with the pre-computed state.
+        let closure = Closure::from_state::<O>(state, input_ptrs);
         self.graph.nodes[output_idx].closure = Some(closure);
 
         Handle::new(output_idx)
@@ -191,31 +168,14 @@ impl Scenario {
 
     // -- Low-level accessors (for bridge / FFI) ------------------------------
 
-    /// Raw store pointer for a node.  Used by the bridge to create views.
-    ///
-    /// # Safety
-    ///
-    /// The caller must know the scalar type `T` and cast accordingly.
+    /// Raw value pointer for a node.
     #[cfg(feature = "python")]
-    pub(crate) fn node_store_ptr(&self, index: usize) -> *mut u8 {
-        self.graph.nodes[index].store
-    }
-
-    /// Element stride (scalars per element) for a node.
-    #[cfg(feature = "python")]
-    pub(crate) fn node_stride(&self, index: usize) -> usize {
-        self.graph.nodes[index].stride()
-    }
-
-    /// Element shape for a node.
-    #[cfg(feature = "python")]
-    pub(crate) fn node_shape(&self, index: usize) -> &[usize] {
-        self.graph.nodes[index].shape()
+    pub(crate) fn node_value_ptr(&self, index: usize) -> *mut u8 {
+        self.graph.nodes[index].value
     }
 
     /// Number of nodes in the graph.
     #[cfg(feature = "python")]
-    #[allow(dead_code)]
     pub(crate) fn node_count(&self) -> usize {
         self.graph.len()
     }
@@ -228,42 +188,37 @@ impl Scenario {
 
     /// Attach a raw type-erased closure to a node.
     ///
-    /// This is used by the bridge to attach Python operator callbacks.
-    /// The `compute_fn` has the same signature as `ComputeFn` in the node
-    /// module: `unsafe fn(&[*const u8], *mut u8, *mut u8, i64) -> bool`.
+    /// Used by the bridge to attach Python operator callbacks.
+    /// Attach a raw type-erased closure to a node.
+    ///
+    /// The caller provides a concrete state type `S`, which is heap-allocated
+    /// by this method.  The `compute_fn` must cast `state_ptr` to `*mut S`.
     ///
     /// # Safety
     ///
-    /// The caller must ensure that:
-    /// * `input_ptrs` point to valid stores for the lifetime of the node.
-    /// * `state` is a valid heap-allocated state object.
-    /// * `compute_fn` correctly interprets the pointers.
+    /// * `input_ptrs` must point to valid node values for the node's lifetime.
+    /// * `compute_fn` must correctly interpret the pointer types.
     #[cfg(feature = "python")]
-    pub(crate) fn attach_raw_closure(
+    pub(crate) fn attach_raw_closure<S: Send + 'static>(
         &mut self,
         node_index: usize,
         input_ptrs: Box<[*const u8]>,
         compute_fn: unsafe fn(&[*const u8], *mut u8, *mut u8, i64) -> bool,
-        state: Box<dyn std::any::Any + Send>,
+        state: Box<S>,
     ) {
-        use node::Closure;
-
         let state_ptr = Box::into_raw(state) as *mut u8;
 
-        /// Drop a heap-allocated `Box<dyn Any + Send>`.
-        ///
         /// # Safety
-        ///
-        /// `ptr` must have been created by `Box::into_raw(Box::new(..))`.
-        unsafe fn drop_dyn_state(ptr: *mut u8) {
-            unsafe { drop(Box::from_raw(ptr as *mut Box<dyn std::any::Any + Send>)) };
+        /// `ptr` must have been created by `Box::into_raw(Box::new(..))` for type `T`.
+        unsafe fn drop_state<T>(ptr: *mut u8) {
+            unsafe { drop(Box::from_raw(ptr as *mut T)) };
         }
 
         self.graph.nodes[node_index].closure = Some(Closure::new(
             compute_fn,
             input_ptrs,
             state_ptr,
-            drop_dyn_state,
+            drop_state::<S>,
         ));
     }
 }
@@ -281,261 +236,169 @@ impl Default for Scenario {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ElementViewMut, Store};
-
-    /// Minimal binary add operator for testing.
-    struct TestAdd;
-
-    impl Operator for TestAdd {
-        type State = ();
-        type Inputs = (Store<f64>, Store<f64>);
-        type Scalar = f64;
-
-        fn window_sizes(&self, _: &[&[usize]]) -> (usize, usize) {
-            (1, 1)
-        }
-
-        fn default(&self, input_shapes: &[&[usize]]) -> (Box<[usize]>, Box<[f64]>) {
-            let shape: Box<[usize]> = input_shapes[0].into();
-            let stride = shape.iter().product::<usize>();
-            (shape, vec![0.0; stride].into())
-        }
-
-        fn init(self) {}
-
-        fn compute(
-            _state: &mut (),
-            inputs: (&Store<f64>, &Store<f64>),
-            output: ElementViewMut<'_, f64>,
-        ) -> bool {
-            let (a, b) = inputs;
-            let (a, b) = (a.current(), b.current());
-            for i in 0..output.values.len() {
-                output.values[i] = a[i] + b[i];
-            }
-            true
-        }
-    }
+    use crate::array::Array;
+    use crate::operators::{Filter, Record, add};
+    use crate::series::Series;
+    use crate::sources::ArraySource;
 
     #[test]
     fn scenario_simple_add() {
         let mut sc = Scenario::new();
-        let ha = sc.create_node::<f64>(&[], &[0.0]);
-        let hb = sc.create_node::<f64>(&[], &[0.0]);
-        let hc = sc.add_operator(TestAdd, [ha, hb]);
+        let ha = sc.create_node(Array::scalar(0.0_f64));
+        let hb = sc.create_node(Array::scalar(0.0_f64));
+        let hc = sc.add_operator(add::<f64>(), (ha, hb));
 
-        // Write new values and flush.
-        sc.store_mut(ha).push(1, &[10.0]);
-        sc.store_mut(hb).push(1, &[3.0]);
+        sc.value_mut(ha)[0] = 10.0;
+        sc.value_mut(hb)[0] = 3.0;
         sc.flush(1, &[ha.index(), hb.index()]);
 
-        assert_eq!(sc.store(hc).current(), &[13.0]);
+        assert_eq!(sc.value(hc).as_slice(), &[13.0]);
     }
 
     #[test]
-    fn scenario_windowed_output() {
+    fn scenario_strided_add() {
         let mut sc = Scenario::new();
-        let ha = sc.create_node::<f64>(&[], &[0.0]);
-        let hb = sc.create_node::<f64>(&[], &[0.0]);
-        let hc = sc.add_operator(TestAdd, [ha, hb]);
+        let ha = sc.create_node(Array::from_vec(&[2], vec![1.0_f64, 2.0]));
+        let hb = sc.create_node(Array::from_vec(&[2], vec![10.0_f64, 20.0]));
+        let hc = sc.add_operator(add::<f64>(), (ha, hb));
 
-        // Promote output to unbounded so it keeps full history.
-        sc.store_mut(hc).ensure_min_window(0);
-
-        sc.store_mut(ha).push(1, &[10.0]);
-        sc.store_mut(hb).push(1, &[3.0]);
         sc.flush(1, &[ha.index(), hb.index()]);
-
-        sc.store_mut(ha).push(2, &[20.0]);
-        sc.store_mut(hb).push(2, &[7.0]);
-        sc.flush(2, &[ha.index(), hb.index()]);
-
-        let store = sc.store(hc);
-        assert_eq!(store.len(), 3); // initial + 2 flushes
-        assert_eq!(store.timestamps(), &[i64::MIN, 1, 2]);
-        assert_eq!(store.values(), &[0.0, 13.0, 27.0]);
+        assert_eq!(sc.value(hc).as_slice(), &[11.0, 22.0]);
     }
 
     #[test]
     fn scenario_chain() {
         let mut sc = Scenario::new();
-        let ha = sc.create_node::<f64>(&[], &[0.0]);
-        let hb = sc.create_node::<f64>(&[], &[0.0]);
-        let hab = sc.add_operator(TestAdd, [ha, hb]);
+        let ha = sc.create_node(Array::scalar(2.0_f64));
+        let hb = sc.create_node(Array::scalar(3.0_f64));
+        let hab = sc.add_operator(add::<f64>(), (ha, hb));
 
-        /// Minimal multiply operator.
-        struct TestMul;
+        use crate::operators::multiply;
+        let hout = sc.add_operator(multiply::<f64>(), (hab, ha));
 
-        impl Operator for TestMul {
-            type State = ();
-            type Inputs = (Store<f64>, Store<f64>);
-            type Scalar = f64;
-
-            fn window_sizes(&self, _: &[&[usize]]) -> (usize, usize) {
-                (1, 1)
-            }
-
-            fn default(&self, s: &[&[usize]]) -> (Box<[usize]>, Box<[f64]>) {
-                let shape: Box<[usize]> = s[0].into();
-                let stride = shape.iter().product::<usize>();
-                (shape, vec![0.0; stride].into())
-            }
-
-            fn init(self) {}
-
-            fn compute(
-                _: &mut (),
-                inputs: (&Store<f64>, &Store<f64>),
-                output: ElementViewMut<'_, f64>,
-            ) -> bool {
-                let (a, b) = (inputs.0.current(), inputs.1.current());
-                for i in 0..output.values.len() {
-                    output.values[i] = a[i] * b[i];
-                }
-                true
-            }
-        }
-
-        let hout = sc.add_operator(TestMul, [hab, ha]);
-
-        sc.store_mut(ha).push(1, &[2.0]);
-        sc.store_mut(hb).push(1, &[3.0]);
         sc.flush(1, &[ha.index(), hb.index()]);
-
         // (2+3) * 2 = 10
-        assert_eq!(sc.store(hout).current(), &[10.0]);
+        assert_eq!(sc.value(hout).as_slice(), &[10.0]);
     }
 
-    // -- POCQ run tests (async, using real operators + ArraySource) ----------
+    #[test]
+    fn scenario_record() {
+        let mut sc = Scenario::new();
+        let ha = sc.create_node(Array::scalar(0.0_f64));
+        let hb = sc.create_node(Array::scalar(0.0_f64));
+        let hsum = sc.add_operator(add::<f64>(), (ha, hb));
+        let hseries = sc.add_operator(Record::<f64>::new(), (hsum,));
+
+        sc.value_mut(ha)[0] = 10.0;
+        sc.value_mut(hb)[0] = 3.0;
+        sc.flush(1, &[ha.index(), hb.index()]);
+
+        sc.value_mut(ha)[0] = 20.0;
+        sc.value_mut(hb)[0] = 7.0;
+        sc.flush(2, &[ha.index(), hb.index()]);
+
+        let series: &Series<f64> = sc.value(hseries);
+        assert_eq!(series.len(), 2);
+        assert_eq!(series.timestamps(), &[1, 2]);
+        assert_eq!(series.values(), &[13.0, 27.0]);
+    }
+
+    // -- POCQ run tests (async) -----------------------------------------------
 
     #[tokio::test]
     async fn scenario_run_single_source() {
-        use crate::sources::ArraySource;
-
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(vec![1, 2, 3], vec![10.0, 20.0, 30.0], 1));
-        sc.store_mut(ha).ensure_min_window(0); // keep history
+        let hseries = sc.add_operator(Record::<f64>::new(), (ha,));
 
         sc.run().await;
 
-        let store = sc.store(ha);
-        assert_eq!(store.len(), 4); // initial + 3
-        assert_eq!(store.timestamps(), &[i64::MIN, 1, 2, 3]);
-        assert_eq!(store.values(), &[0.0, 10.0, 20.0, 30.0]);
+        let series: &Series<f64> = sc.value(hseries);
+        assert_eq!(series.len(), 3);
+        assert_eq!(series.timestamps(), &[1, 2, 3]);
+        assert_eq!(series.values(), &[10.0, 20.0, 30.0]);
     }
 
     #[tokio::test]
-    async fn scenario_run_two_sources_interleaved() {
-        use crate::sources::ArraySource;
-
+    async fn scenario_run_two_sources_add() {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(vec![1, 3], vec![10.0, 30.0], 1));
         let hb = sc.add_source(ArraySource::new(vec![2, 3], vec![20.0, 40.0], 1));
-        let ho = sc.add_operator(TestAdd, [ha, hb]);
-        sc.store_mut(ho).ensure_min_window(0);
+        let ho = sc.add_operator(add::<f64>(), (ha, hb));
+        let hseries = sc.add_operator(Record::<f64>::new(), (ho,));
 
         sc.run().await;
 
-        let store = sc.store(ho);
-        // initial(0), ts=1: 10+0=10, ts=2: 10+20=30, ts=3: 30+40=70
-        assert_eq!(store.len(), 4);
-        assert_eq!(store.timestamps(), &[i64::MIN, 1, 2, 3]);
-        assert_eq!(store.values(), &[0.0, 10.0, 30.0, 70.0]);
+        let series: &Series<f64> = sc.value(hseries);
+        // ts=1: 10+0=10, ts=2: 10+20=30, ts=3: 30+40=70
+        assert_eq!(series.len(), 3);
+        assert_eq!(series.timestamps(), &[1, 2, 3]);
+        assert_eq!(series.values(), &[10.0, 30.0, 70.0]);
     }
 
     #[tokio::test]
     async fn scenario_run_coalescing() {
-        use crate::sources::ArraySource;
-
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![10.0, 20.0], 1));
         let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![100.0, 200.0], 1));
-        sc.store_mut(ha).ensure_min_window(0);
-        let ho = sc.add_operator(TestAdd, [ha, hb]);
-        sc.store_mut(ho).ensure_min_window(0);
+        let ho = sc.add_operator(add::<f64>(), (ha, hb));
+        let hseries = sc.add_operator(Record::<f64>::new(), (ho,));
 
         sc.run().await;
 
-        let out = sc.store(ho);
-        assert_eq!(out.len(), 3); // initial + 2 coalesced
-        assert_eq!(out.timestamps(), &[i64::MIN, 1, 2]);
-        assert_eq!(out.values(), &[0.0, 110.0, 220.0]);
-
-        let a = sc.store(ha);
-        assert_eq!(a.len(), 3); // initial + 2
+        let series: &Series<f64> = sc.value(hseries);
+        assert_eq!(series.len(), 2);
+        assert_eq!(series.timestamps(), &[1, 2]);
+        assert_eq!(series.values(), &[110.0, 220.0]);
     }
 
     #[tokio::test]
     async fn scenario_run_chained() {
-        use crate::sources::ArraySource;
-
-        struct TestMul2;
-
-        impl crate::operator::Operator for TestMul2 {
-            type State = ();
-            type Inputs = (Store<f64>, Store<f64>);
-            type Scalar = f64;
-
-            fn window_sizes(&self, _: &[&[usize]]) -> (usize, usize) {
-                (1, 1)
-            }
-
-            fn default(&self, s: &[&[usize]]) -> (Box<[usize]>, Box<[f64]>) {
-                let shape: Box<[usize]> = s[0].into();
-                let stride = shape.iter().product::<usize>();
-                (shape, vec![0.0; stride].into())
-            }
-
-            fn init(self) {}
-
-            fn compute(
-                _: &mut (),
-                inputs: (&Store<f64>, &Store<f64>),
-                output: ElementViewMut<'_, f64>,
-            ) -> bool {
-                let (a, b) = (inputs.0.current(), inputs.1.current());
-                for i in 0..output.values.len() {
-                    output.values[i] = a[i] * b[i];
-                }
-                true
-            }
-        }
-
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![2.0, 5.0], 1));
         let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![3.0, 10.0], 1));
-        let hab = sc.add_operator(TestAdd, [ha, hb]);
-        let hout = sc.add_operator(TestMul2, [hab, ha]);
-        sc.store_mut(hout).ensure_min_window(0);
+        let hab = sc.add_operator(add::<f64>(), (ha, hb));
+
+        use crate::operators::multiply;
+        let hout = sc.add_operator(multiply::<f64>(), (hab, ha));
+        let hseries = sc.add_operator(Record::<f64>::new(), (hout,));
 
         sc.run().await;
 
-        let out = sc.store(hout);
-        assert_eq!(out.len(), 3);
-        // initial: 0, ts=1: (2+3)*2=10, ts=2: (5+10)*5=75
-        assert_eq!(out.values(), &[0.0, 10.0, 75.0]);
+        let series: &Series<f64> = sc.value(hseries);
+        assert_eq!(series.len(), 2);
+        // ts=1: (2+3)*2=10, ts=2: (5+10)*5=75
+        assert_eq!(series.values(), &[10.0, 75.0]);
     }
 
     #[tokio::test]
     async fn scenario_run_filter() {
-        use crate::operators::Filter;
-        use crate::sources::ArraySource;
-
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
             vec![1, 2, 3, 4],
             vec![1.0, 5.0, 2.0, 10.0],
             1,
         ));
-        let ho = sc.add_operator(Filter::new(|v: &[f64]| v[0] > 3.0), [ha]);
-        sc.store_mut(ho).ensure_min_window(0);
+        let ho = sc.add_operator(Filter::new(|v: &Array<f64>| v[0] > 3.0), (ha,));
+        let hseries = sc.add_operator(Record::<f64>::new(), (ho,));
 
         sc.run().await;
 
-        let out = sc.store(ho);
-        // initial(0) + passes: ts=2(5.0), ts=4(10.0)
-        assert_eq!(out.len(), 3);
-        assert_eq!(out.timestamps(), &[i64::MIN, 2, 4]);
-        assert_eq!(out.values(), &[0.0, 5.0, 10.0]);
+        let series: &Series<f64> = sc.value(hseries);
+        // passes: ts=2(5.0), ts=4(10.0)
+        assert_eq!(series.len(), 2);
+        assert_eq!(series.timestamps(), &[2, 4]);
+        assert_eq!(series.values(), &[5.0, 10.0]);
+    }
+
+    #[test]
+    fn scenario_arbitrary_type() {
+        use std::collections::BTreeMap;
+
+        let mut sc = Scenario::new();
+        let h = sc.create_node(BTreeMap::<String, f64>::new());
+
+        sc.value_mut(h).insert("price".to_string(), 42.0);
+        assert_eq!(sc.value(h).get("price"), Some(&42.0));
     }
 }

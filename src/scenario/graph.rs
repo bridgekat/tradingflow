@@ -5,7 +5,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use super::Node;
+use super::node::Node;
 
 /// Untyped DAG owning [`Node`]s and implementing topological flush.
 ///
@@ -17,11 +17,6 @@ use super::Node;
 ///   input (via its closure's `input_ptrs`), then `i < j`.
 /// * Edges: `nodes[i].edges` contains indices of nodes whose closures read
 ///   from node `i`.
-///
-/// # Safety
-///
-/// All methods on `Graph` are safe, assuming nodes were constructed in
-/// topological order.
 pub(super) struct Graph {
     /// Type-erased nodes.
     pub nodes: Vec<Node>,
@@ -83,7 +78,7 @@ impl Graph {
             let node = &self.nodes[i];
             let produced = if let Some(ref closure) = node.closure {
                 // SAFETY: all pointers validated at node construction time.
-                unsafe { closure.compute(node.store, timestamp) }
+                unsafe { closure.compute(node.value, timestamp) }
             } else {
                 false
             };

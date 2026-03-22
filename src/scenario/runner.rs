@@ -9,7 +9,6 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::source::Source;
-use crate::store::Store;
 
 use super::Scenario;
 
@@ -36,16 +35,14 @@ trait ErasedChannel: Send {
     /// * `Err(())` — channel closed (source exhausted).
     fn try_wait(&mut self) -> Result<Option<i64>, ()>;
 
-    /// Write the pending event to a store via [`Store::push_default`] +
-    /// [`Store::element_view_mut`].
+    /// Write the pending event to the output value.
     ///
-    /// The event's own timestamp is used for the new element.
     /// Returns `true` if a value was produced.
     ///
     /// # Safety
     ///
-    /// `store_ptr` must point to a valid `Store<S::Scalar>`.
-    unsafe fn write(&mut self, store_ptr: *mut u8) -> bool;
+    /// `value_ptr` must point to a valid `S::Output`.
+    unsafe fn write(&mut self, value_ptr: *mut u8) -> bool;
 }
 
 /// Concrete [`ErasedChannel`] for a given [`Source`].
@@ -83,18 +80,10 @@ impl<S: Source> ErasedChannel for TypedChannel<S> {
         }
     }
 
-    unsafe fn write(&mut self, store_ptr: *mut u8) -> bool {
+    unsafe fn write(&mut self, value_ptr: *mut u8) -> bool {
         if let Some((ts, payload)) = self.pending.take() {
-            let store = unsafe { &mut *(store_ptr as *mut Store<S::Scalar>) };
-            store.push_default(ts);
-            let view = store.current_view_mut();
-            let produced = S::write(payload, view);
-            if produced {
-                store.commit();
-            } else {
-                store.rollback();
-            }
-            produced
+            let output = unsafe { &mut *(value_ptr as *mut S::Output) };
+            S::write(payload, output, ts)
         } else {
             false
         }
@@ -153,7 +142,7 @@ impl SourceState {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario — source registration and unified POCQ
+// Scenario — POCQ event loop
 // ---------------------------------------------------------------------------
 
 impl Scenario {
@@ -165,10 +154,6 @@ impl Scenario {
     /// Live events are polled non-blocking alongside.  The global minimum
     /// timestamp across ALL pending events (historical and live) determines
     /// what gets processed next.
-    ///
-    /// This means a live event with a smaller timestamp than all pending
-    /// historical events is processed first — correctly handling sources
-    /// that start at different times.
     pub async fn run(&mut self) {
         let mut queue_ts: Option<i64> = None;
         let mut queue_sources: Vec<usize> = Vec::new();
@@ -235,15 +220,15 @@ impl Scenario {
             // Step 5: Collect all events at min_ts from both channels.
             // ----------------------------------------------------------
             for src in &mut self.source_states {
-                let store_ptr = self.graph.nodes[src.node_index].store;
+                let value_ptr = self.graph.nodes[src.node_index].value;
                 if src.hist_ts == Some(min_ts) {
-                    // SAFETY: store_ptr is valid (node invariant).
-                    unsafe { src.hist.write(store_ptr) };
+                    // SAFETY: value_ptr is valid (node invariant).
+                    unsafe { src.hist.write(value_ptr) };
                     queue_sources.push(src.node_index);
                     src.hist_ts = None;
                 }
                 if src.live_ts == Some(min_ts) {
-                    unsafe { src.live.write(store_ptr) };
+                    unsafe { src.live.write(value_ptr) };
                     queue_sources.push(src.node_index);
                     src.live_ts = None;
                 }
@@ -258,9 +243,6 @@ impl Scenario {
     }
 
     /// Block until any non-exhausted live channel produces an event.
-    ///
-    /// Uses sequential polling with yield.  A future optimisation could
-    /// use `futures::future::select_all` for true concurrency.
     async fn wait_any_live(&mut self) {
         loop {
             for src in &mut self.source_states {
@@ -272,11 +254,10 @@ impl Scenario {
                         src.live_ts = Some(ts);
                         return;
                     }
-                    Ok(None) => {} // no event yet, channel still open
+                    Ok(None) => {}
                     Err(()) => src.live_exhausted = true,
                 }
             }
-            // Check if all live channels are done.
             if self
                 .source_states
                 .iter()
@@ -284,7 +265,6 @@ impl Scenario {
             {
                 return;
             }
-            // Yield to the runtime and retry.
             tokio::task::yield_now().await;
         }
     }

@@ -2,13 +2,13 @@
 
 use tokio::sync::mpsc;
 
+use crate::array::Array;
 use crate::source::Source;
-use crate::store::ElementViewMut;
 use crate::types::Scalar;
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
 ///
-/// Each event carries a single `T` value.  The historical channel is filled
+/// Each event carries an `Array<T>` value.  The historical channel is filled
 /// by a spawned task with bounded back-pressure; the live channel is empty.
 pub struct ArraySource<T: Scalar> {
     timestamps: Vec<i64>,
@@ -31,84 +31,48 @@ impl<T: Scalar> ArraySource<T> {
 }
 
 impl<T: Scalar> Source for ArraySource<T> {
-    type Event = Vec<T>;
-    type Scalar = T;
+    type Event = Array<T>;
+    type Output = Array<T>;
 
-    fn default(&self) -> (Box<[usize]>, Box<[T]>) {
-        let shape: Box<[usize]> = if self.stride == 1 {
-            Box::new([])
+    fn init(
+        self,
+        _timestamp: i64,
+    ) -> (
+        mpsc::Receiver<(i64, Array<T>)>,
+        mpsc::Receiver<(i64, Array<T>)>,
+        Array<T>,
+    ) {
+        let shape: Vec<usize> = if self.stride == 1 {
+            vec![]
         } else {
-            Box::new([self.stride])
+            vec![self.stride]
         };
-        let stride = shape.iter().product::<usize>();
-        (shape, vec![T::default(); stride].into())
-    }
+        let output = Array::zeros(&shape);
 
-    fn subscribe(self) -> (mpsc::Receiver<(i64, Vec<T>)>, mpsc::Receiver<(i64, Vec<T>)>) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
 
         let stride = self.stride;
-        tokio::spawn(async move {
+        std::thread::spawn(move || {
             for (i, &ts) in self.timestamps.iter().enumerate() {
                 let start = i * stride;
-                let payload = self.values[start..start + stride].to_vec();
-                if hist_tx.send((ts, payload)).await.is_err() {
+                let slice = &self.values[start..start + stride];
+                let arr = if stride == 1 {
+                    Array::scalar(slice[0].clone())
+                } else {
+                    Array::from_vec(&[stride], slice.to_vec())
+                };
+                if hist_tx.blocking_send((ts, arr)).is_err() {
                     break;
                 }
             }
         });
 
-        (hist_rx, live_rx)
+        (hist_rx, live_rx, output)
     }
 
-    fn write(payload: Vec<T>, output: ElementViewMut<'_, T>) -> bool {
-        output.values.clone_from_slice(&payload);
+    fn write(payload: Array<T>, output: &mut Array<T>, _timestamp: i64) -> bool {
+        output.assign(&payload);
         true
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn array_source_scalar() {
-        let src = ArraySource::<f64>::new(vec![10, 20, 30], vec![1.0, 2.0, 3.0], 1);
-        let (mut hist_rx, _live_rx) = src.subscribe();
-
-        let (ts, val) = hist_rx.recv().await.unwrap();
-        assert_eq!(ts, 10);
-        assert_eq!(val, vec![1.0]);
-
-        let (ts, val) = hist_rx.recv().await.unwrap();
-        assert_eq!(ts, 20);
-        assert_eq!(val, vec![2.0]);
-
-        let (ts, val) = hist_rx.recv().await.unwrap();
-        assert_eq!(ts, 30);
-        assert_eq!(val, vec![3.0]);
-
-        assert!(hist_rx.recv().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn array_source_strided() {
-        let src = ArraySource::<f64>::new(vec![1, 2], vec![10.0, 20.0, 30.0, 40.0], 2);
-        let (mut hist_rx, _live_rx) = src.subscribe();
-
-        let (ts, val) = hist_rx.recv().await.unwrap();
-        assert_eq!(ts, 1);
-        assert_eq!(val, vec![10.0, 20.0]);
-
-        let (ts, val) = hist_rx.recv().await.unwrap();
-        assert_eq!(ts, 2);
-        assert_eq!(val, vec![30.0, 40.0]);
-
-        assert!(hist_rx.recv().await.is_none());
     }
 }

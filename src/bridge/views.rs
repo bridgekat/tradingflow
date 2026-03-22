@@ -1,9 +1,7 @@
-//! Python-visible store views.
+//! Python-visible views for Array and Series nodes.
 //!
-//! [`StoreView`] exposes a Rust [`Store<T>`](crate::store::Store) to Python
-//! through raw pointer + dtype dispatch.  It provides both element-level
-//! access (`.last`, `.shape`) and series-level access (`.index`, `.values`)
-//! from a single pyclass.
+//! [`StoreView`] exposes Rust `Array<T>` or `Series<T>` nodes to Python
+//! through raw pointer + dtype dispatch.
 
 use numpy::ndarray::{Array1, ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn};
@@ -11,42 +9,48 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::store::Store;
+use crate::array::Array;
+use crate::series::Series;
 
 use super::dispatch::normalise_dtype;
 
 type PyObject = Py<PyAny>;
 
 // ---------------------------------------------------------------------------
+// NodeKind
+// ---------------------------------------------------------------------------
+
+/// What kind of value a node holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeKind {
+    /// Typed `Array<T>` (Rust and Python operators).
+    Array,
+    /// `Series<T>` (via Record).
+    Series,
+}
+
+// ---------------------------------------------------------------------------
 // StoreView
 // ---------------------------------------------------------------------------
 
-/// Python-visible view of a Rust `Store<T>`.
-///
-/// Wraps a raw pointer to the store plus metadata (dtype, element shape,
-/// stride).  All accessors dispatch on `dtype_str` to recover the concrete
-/// `Store<T>` type.
+/// Python-visible view of a Rust `Array<T>` or `Series<T>`.
 #[pyclass]
 pub struct StoreView {
-    store_ptr: *const u8,
+    value_ptr: *const u8,
+    kind: NodeKind,
     shape: Vec<usize>,
-    #[allow(dead_code)]
-    stride: usize,
     dtype_str: String,
 }
 
-// SAFETY: StoreView is only accessed from a single Python thread at a time.
-// The underlying Store is owned by the Scenario and outlives the view.
 unsafe impl Send for StoreView {}
 unsafe impl Sync for StoreView {}
 
 impl StoreView {
-    /// Create a new StoreView for a node.
-    pub fn new(store_ptr: *const u8, shape: Vec<usize>, stride: usize, dtype_str: String) -> Self {
+    pub fn new(value_ptr: *const u8, kind: NodeKind, shape: Vec<usize>, dtype_str: String) -> Self {
         Self {
-            store_ptr,
+            value_ptr,
+            kind,
             shape,
-            stride,
             dtype_str,
         }
     }
@@ -57,22 +61,37 @@ impl StoreView {
     /// Current (last) element as a numpy array.
     #[getter]
     fn last<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        store_current_to_numpy(py, self.store_ptr, &self.dtype_str)
+        match self.kind {
+            NodeKind::Array => array_to_numpy(py, self.value_ptr, &self.dtype_str),
+            NodeKind::Series => series_last_to_numpy(py, self.value_ptr, &self.dtype_str),
+        }
     }
 
-    /// All timestamps as a numpy int64 array.
+    /// All timestamps as a numpy int64 array (Series only).
     #[getter]
     pub fn index<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        // All Store<T> have the same timestamps layout; use f64 to access.
-        let store = unsafe { &*(self.store_ptr as *const Store<f64>) };
-        let arr = Array1::from(store.timestamps().to_vec());
-        Ok(PyArray1::from_owned_array(py, arr).into_any().unbind())
+        match self.kind {
+            NodeKind::Array => {
+                let arr = Array1::<i64>::default(0);
+                Ok(PyArray1::from_owned_array(py, arr).into_any().unbind())
+            }
+            NodeKind::Series => {
+                let series = unsafe { &*(self.value_ptr as *const Series<f64>) };
+                let arr = Array1::from(series.timestamps().to_vec());
+                Ok(PyArray1::from_owned_array(py, arr).into_any().unbind())
+            }
+        }
     }
 
-    /// All historical values as a numpy array.
+    /// All historical values as a numpy array (Series only).
     #[getter]
     pub fn values<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        store_values_to_numpy(py, self.store_ptr, &self.shape, &self.dtype_str)
+        match self.kind {
+            NodeKind::Array => array_to_numpy(py, self.value_ptr, &self.dtype_str),
+            NodeKind::Series => {
+                series_values_to_numpy(py, self.value_ptr, &self.shape, &self.dtype_str)
+            }
+        }
     }
 
     /// Element shape as a Python tuple.
@@ -90,68 +109,103 @@ impl StoreView {
         Ok(np.call_method1("dtype", (&self.dtype_str,))?.unbind())
     }
 
-    /// Number of elements in the store history.
+    /// Number of recorded elements (1 for Array nodes, series length for Series nodes).
     pub fn __len__(&self) -> usize {
-        // All Store<T> have the same timestamps layout.
-        let store = unsafe { &*(self.store_ptr as *const Store<f64>) };
-        store.len()
+        match self.kind {
+            NodeKind::Array => 1,
+            NodeKind::Series => {
+                let series = unsafe { &*(self.value_ptr as *const Series<f64>) };
+                series.len()
+            }
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch helpers
+// Dispatch helpers — Array
 // ---------------------------------------------------------------------------
 
-/// Read a Store's current element and return as numpy array.
-fn store_current_to_numpy(
-    py: Python<'_>,
-    store_ptr: *const u8,
-    dtype_str: &str,
-) -> PyResult<PyObject> {
+fn array_to_numpy(py: Python<'_>, value_ptr: *const u8, dtype_str: &str) -> PyResult<PyObject> {
     let dtype = normalise_dtype(dtype_str);
-    macro_rules! current_match {
+    macro_rules! arr_match {
         ($T:ty) => {{
-            let store = unsafe { &*(store_ptr as *const Store<$T>) };
-            let view = store.current_view();
-            let shape: Vec<usize> = view.shape.to_vec();
+            let arr = unsafe { &*(value_ptr as *const Array<$T>) };
+            let shape: Vec<usize> = arr.shape().to_vec();
             let full_shape = if shape.is_empty() { vec![1] } else { shape };
-            let arr = ArrayD::from_shape_vec(IxDyn(&full_shape), view.values.to_vec())
+            let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), arr.as_slice().to_vec())
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            Ok(PyArrayDyn::from_owned_array(py, arr).into_any().unbind())
+            Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
         }};
     }
     match dtype {
-        "float64" => current_match!(f64),
-        "float32" => current_match!(f32),
-        "int64" => current_match!(i64),
-        "int32" => current_match!(i32),
-        "uint64" => current_match!(u64),
-        "uint32" => current_match!(u32),
-        "bool" => current_match!(u8),
+        "float64" => arr_match!(f64),
+        "float32" => arr_match!(f32),
+        "int64" => arr_match!(i64),
+        "int32" => arr_match!(i32),
+        "uint64" => arr_match!(u64),
+        "uint32" => arr_match!(u32),
+        "bool" => arr_match!(u8),
         _ => Err(PyTypeError::new_err(format!(
             "unsupported dtype: {dtype_str}"
         ))),
     }
 }
 
-/// Read a Store's full values and return as numpy array.
-fn store_values_to_numpy(
+// ---------------------------------------------------------------------------
+// Dispatch helpers — Series
+// ---------------------------------------------------------------------------
+
+fn series_last_to_numpy(
     py: Python<'_>,
-    store_ptr: *const u8,
+    value_ptr: *const u8,
+    dtype_str: &str,
+) -> PyResult<PyObject> {
+    let dtype = normalise_dtype(dtype_str);
+    macro_rules! last_match {
+        ($T:ty) => {{
+            let series = unsafe { &*(value_ptr as *const Series<$T>) };
+            let values = series.last().unwrap_or(&[]);
+            let shape = series.shape();
+            let full_shape = if shape.is_empty() {
+                vec![1]
+            } else {
+                shape.to_vec()
+            };
+            let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), values.to_vec())
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
+        }};
+    }
+    match dtype {
+        "float64" => last_match!(f64),
+        "float32" => last_match!(f32),
+        "int64" => last_match!(i64),
+        "int32" => last_match!(i32),
+        "uint64" => last_match!(u64),
+        "uint32" => last_match!(u32),
+        "bool" => last_match!(u8),
+        _ => Err(PyTypeError::new_err(format!(
+            "unsupported dtype: {dtype_str}"
+        ))),
+    }
+}
+
+fn series_values_to_numpy(
+    py: Python<'_>,
+    value_ptr: *const u8,
     element_shape: &[usize],
     dtype_str: &str,
 ) -> PyResult<PyObject> {
     let dtype = normalise_dtype(dtype_str);
     macro_rules! values_match {
         ($T:ty) => {{
-            let store = unsafe { &*(store_ptr as *const Store<$T>) };
-            let sv = store.series_view();
-            let n = sv.len();
+            let series = unsafe { &*(value_ptr as *const Series<$T>) };
+            let n = series.len();
             let mut full_shape = vec![n];
             full_shape.extend_from_slice(element_shape);
-            let arr = ArrayD::from_shape_vec(IxDyn(&full_shape), sv.values.to_vec())
+            let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), series.values().to_vec())
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            Ok(PyArrayDyn::from_owned_array(py, arr).into_any().unbind())
+            Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
         }};
     }
     match dtype {

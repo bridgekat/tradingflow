@@ -1,15 +1,14 @@
 //! Typed handles and input-handle trait machinery.
 //!
 //! [`Handle<T>`] is a lightweight index into a [`Scenario`](super::Scenario)'s
-//! node storage, parameterised by the scalar type.  [`InputKindsHandles`] maps
+//! node storage, parameterised by the value type.  [`InputKindsHandles`] maps
 //! operator input types to their corresponding handle types for
 //! registration-time validation.
 
 use std::any::TypeId;
 use std::marker::PhantomData;
 
-use crate::store::Store;
-use crate::types::{InputKinds, Scalar};
+use crate::types::InputKinds;
 
 // ---------------------------------------------------------------------------
 // Handle
@@ -17,7 +16,7 @@ use crate::types::{InputKinds, Scalar};
 
 /// A typed handle into a [`Scenario`](super::Scenario)'s node storage.
 ///
-/// The type parameter encodes the scalar type of the node's store.
+/// The type parameter encodes the value type of the node.
 ///
 /// Handles carry only an index; type safety is enforced by [`TypeId`] checks
 /// at registration time.
@@ -49,35 +48,35 @@ impl<T> Handle<T> {
 }
 
 // ===========================================================================
-// Store-based handle mapping
+// Handle mapping
 // ===========================================================================
 
 /// Maps an [`InputKinds`] collection to its corresponding
 /// [`Handle`] collection, enabling registration-time validation.
 ///
 /// Provides `node_ids` which extracts `(node_index, TypeId)` pairs from
-/// handles for TypeId validation and store-pointer collection.
+/// handles for TypeId validation and pointer collection.
 pub trait InputKindsHandles: InputKinds {
-    /// The handle collection (e.g. `(Handle<f64>, Handle<f64>)`).
+    /// The handle collection (e.g. `(Handle<ArrayD<f64>>, Handle<ArrayD<f64>>)`).
     type Handles;
 
-    /// Extract `(node_index, scalar_type_id)` from each handle.
+    /// Extract `(node_index, value_type_id)` from each handle.
     fn node_ids(handles: &Self::Handles) -> Box<[(usize, TypeId)]>;
 }
 
-// -- Single store ------------------------------------------------------------
+// -- Single input ------------------------------------------------------------
 
-impl<T: Scalar> InputKindsHandles for Store<T> {
-    type Handles = Handle<T>;
+impl<A: Send + 'static> InputKindsHandles for (A,) {
+    type Handles = (Handle<A>,);
 
-    fn node_ids(handle: &Handle<T>) -> Box<[(usize, TypeId)]> {
-        Box::new([(handle.index, TypeId::of::<T>())])
+    fn node_ids(handles: &(Handle<A>,)) -> Box<[(usize, TypeId)]> {
+        Box::new([(handles.0.index, TypeId::of::<A>())])
     }
 }
 
 // -- Homogeneous slice -------------------------------------------------------
 
-impl<T: Scalar> InputKindsHandles for [Store<T>] {
+impl<T: Send + 'static> InputKindsHandles for [T] {
     type Handles = Box<[Handle<T>]>;
 
     fn node_ids(handles: &Box<[Handle<T>]>) -> Box<[(usize, TypeId)]> {
@@ -92,7 +91,7 @@ impl<T: Scalar> InputKindsHandles for [Store<T>] {
 
 macro_rules! impl_input_kinds_handles_tuple {
     ($($idx:tt: $T:ident),+ $(,)?) => {
-        impl<$($T: Scalar),+> InputKindsHandles for ($(Store<$T>,)+) {
+        impl<$($T: Send + 'static),+> InputKindsHandles for ($($T,)+) {
             type Handles = ($(Handle<$T>,)+);
 
             fn node_ids(handles: &Self::Handles) -> Box<[(usize, TypeId)]> {
@@ -102,7 +101,7 @@ macro_rules! impl_input_kinds_handles_tuple {
     };
 }
 
-impl_input_kinds_handles_tuple!(0: A);
+// Arity 1 is already covered above.
 impl_input_kinds_handles_tuple!(0: A, 1: B);
 impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C);
 impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D);

@@ -3,8 +3,12 @@
 //! Run with: `cargo bench`
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use tradingflow::array::Array;
+use tradingflow::operator::Operator;
 use tradingflow::operators;
-use tradingflow::{Operator, Scenario, Store};
+use tradingflow::operators::Record;
+use tradingflow::scenario::Scenario;
+use tradingflow::series::Series;
 
 const N: usize = 10_000;
 
@@ -38,7 +42,7 @@ fn bench_baseline_add(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// Baseline: plain add (series)
+// Baseline: plain add (output to series)
 // ---------------------------------------------------------------------------
 
 fn bench_baseline_add_series(c: &mut Criterion) {
@@ -46,13 +50,13 @@ fn bench_baseline_add_series(c: &mut Criterion) {
 
     c.bench_function("baseline_add_series", |bencher| {
         bencher.iter(|| {
-            let mut vec_a = Vec::new();
-            let mut vec_b = Vec::new();
+            let mut elem_a;
+            let mut elem_b;
             let mut vec_out = Vec::new();
             for i in 0..N {
-                vec_a.push(a[i]);
-                vec_b.push(b[i]);
-                vec_out.push(vec_a.last().unwrap() + vec_b.last().unwrap());
+                elem_a = a[i];
+                elem_b = b[i];
+                vec_out.push(elem_a + elem_b);
             }
             black_box(vec_out[N - 1]);
         });
@@ -60,111 +64,64 @@ fn bench_baseline_add_series(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// Store with plain add (element-only)
+// Array with compute (element-only)
 // ---------------------------------------------------------------------------
 
-fn bench_store_add(c: &mut Criterion) {
-    let (ts, a, b) = make_data();
+fn bench_direct_compute(c: &mut Criterion) {
+    let (_, a, b) = make_data();
 
-    c.bench_function("store_add", |bencher| {
+    c.bench_function("direct_compute", |bencher| {
         bencher.iter(|| {
-            let mut store_a = Store::element(&[], &[0.0_f64]);
-            let mut store_b = Store::element(&[], &[0.0_f64]);
-            let mut store_out = Store::element(&[], &[0.0_f64]);
+            let mut arr_a = Array::scalar(0.0_f64);
+            let mut arr_b = Array::scalar(0.0_f64);
+            let mut arr_out = Array::scalar(0.0_f64);
+            let (mut state, _) = operators::add::<f64>().init((&arr_a, &arr_b), i64::MIN);
             for i in 0..N {
-                store_a.push(ts[i], &[a[i]]);
-                store_b.push(ts[i], &[b[i]]);
-                store_out.push(ts[i], &[store_a.current()[0] + store_b.current()[0]]);
-            }
-            black_box(store_out.current()[0]);
-        });
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Store with plain add (series)
-// ---------------------------------------------------------------------------
-
-fn bench_store_add_series(c: &mut Criterion) {
-    let (ts, a, b) = make_data();
-
-    c.bench_function("store_add_series", |bencher| {
-        bencher.iter(|| {
-            let mut store_a = Store::series(&[], &[0.0_f64]);
-            let mut store_b = Store::series(&[], &[0.0_f64]);
-            let mut store_out = Store::series(&[], &[0.0_f64]);
-            for i in 0..N {
-                store_a.push(ts[i], &[a[i]]);
-                store_b.push(ts[i], &[b[i]]);
-                store_out.push(ts[i], &[store_a.current()[0] + store_b.current()[0]]);
-            }
-            black_box(store_out.current()[0]);
-        });
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Store compute (element-only)
-// ---------------------------------------------------------------------------
-
-fn bench_store_compute(c: &mut Criterion) {
-    let (ts, a, b) = make_data();
-
-    c.bench_function("store_compute", |bencher| {
-        bencher.iter(|| {
-            let mut store_a = Store::element(&[], &[0.0_f64]);
-            let mut store_b = Store::element(&[], &[0.0_f64]);
-            let mut store_out = Store::element(&[], &[0.0_f64]);
-            let mut state = operators::add::<f64>().init();
-            for i in 0..N {
-                store_a.push(ts[i], &[a[i]]);
-                store_b.push(ts[i], &[b[i]]);
-                store_out.push_default(ts[i]);
-                let produced = <operators::Add<f64> as Operator>::compute(
+                arr_a[0] = a[i];
+                arr_b[0] = b[i];
+                <operators::Add<f64> as Operator>::compute(
                     &mut state,
-                    (&store_a, &store_b),
-                    store_out.current_view_mut(),
+                    (&arr_a, &arr_b),
+                    &mut arr_out,
+                    i as i64,
                 );
-                if produced {
-                    store_out.commit();
-                } else {
-                    store_out.rollback();
-                }
             }
-            black_box(store_out.current()[0]);
+            black_box(arr_out[0]);
         });
     });
 }
 
 // ---------------------------------------------------------------------------
-// Store compute (series)
+// Array with compute (output to series)
 // ---------------------------------------------------------------------------
 
-fn bench_store_compute_series(c: &mut Criterion) {
-    let (ts, a, b) = make_data();
+fn bench_direct_compute_series(c: &mut Criterion) {
+    let (_, a, b) = make_data();
 
-    c.bench_function("store_compute_series", |bencher| {
+    c.bench_function("direct_compute_series", |bencher| {
         bencher.iter(|| {
-            let mut store_a = Store::series(&[], &[0.0_f64]);
-            let mut store_b = Store::series(&[], &[0.0_f64]);
-            let mut store_out = Store::series(&[], &[0.0_f64]);
-            let mut state = operators::add::<f64>().init();
+            let mut arr_a = Array::scalar(0.0_f64);
+            let mut arr_b = Array::scalar(0.0_f64);
+            let mut arr_out = Array::scalar(0.0_f64);
+            let (mut state, _) = operators::add::<f64>().init((&arr_a, &arr_b), i64::MIN);
+            let mut series_out = Series::new(&[]);
             for i in 0..N {
-                store_a.push(ts[i], &[a[i]]);
-                store_b.push(ts[i], &[b[i]]);
-                store_out.push_default(ts[i]);
-                let produced = <operators::Add<f64> as Operator>::compute(
+                arr_a[0] = a[i];
+                arr_b[0] = b[i];
+                <operators::Add<f64> as Operator>::compute(
                     &mut state,
-                    (&store_a, &store_b),
-                    store_out.current_view_mut(),
+                    (&arr_a, &arr_b),
+                    &mut arr_out,
+                    i as i64,
                 );
-                if produced {
-                    store_out.commit();
-                } else {
-                    store_out.rollback();
-                }
+                <operators::Record<f64> as Operator>::compute(
+                    &mut (),
+                    (&arr_out,),
+                    &mut series_out,
+                    i as i64,
+                );
             }
-            black_box(store_out.current()[0]);
+            black_box(series_out.last().unwrap()[0]);
         });
     });
 }
@@ -179,21 +136,21 @@ fn bench_scenario_operator(c: &mut Criterion) {
     c.bench_function("scenario_operator", |bencher| {
         bencher.iter(|| {
             let mut sc = Scenario::new();
-            let ha = sc.create_node::<f64>(&[], &[0.0]);
-            let hb = sc.create_node::<f64>(&[], &[0.0]);
+            let ha = sc.create_node(Array::scalar(0.0_f64));
+            let hb = sc.create_node(Array::scalar(0.0_f64));
             let ho = sc.add_operator(operators::add(), (ha, hb));
             for i in 0..N {
-                sc.store_mut(ha).push(ts[i], &[a[i]]);
-                sc.store_mut(hb).push(ts[i], &[b[i]]);
+                sc.value_mut(ha)[0] = a[i];
+                sc.value_mut(hb)[0] = b[i];
                 sc.flush(ts[i], &[ha.index(), hb.index()]);
             }
-            black_box(sc.store(ho).current()[0]);
+            black_box(sc.value(ho)[0]);
         });
     });
 }
 
 // ---------------------------------------------------------------------------
-// Scenario operator (series)
+// Scenario operator (output to series)
 // ---------------------------------------------------------------------------
 
 fn bench_scenario_operator_series(c: &mut Criterion) {
@@ -202,16 +159,16 @@ fn bench_scenario_operator_series(c: &mut Criterion) {
     c.bench_function("scenario_operator_series", |bencher| {
         bencher.iter(|| {
             let mut sc = Scenario::new();
-            let ha = sc.create_node::<f64>(&[], &[0.0]);
-            let hb = sc.create_node::<f64>(&[], &[0.0]);
+            let ha = sc.create_node(Array::scalar(0.0_f64));
+            let hb = sc.create_node(Array::scalar(0.0_f64));
             let ho = sc.add_operator(operators::add(), (ha, hb));
-            sc.store_mut(ho).ensure_min_window(0);
+            let hos = sc.add_operator(Record::<f64>::new(), (ho,));
             for i in 0..N {
-                sc.store_mut(ha).push(ts[i], &[a[i]]);
-                sc.store_mut(hb).push(ts[i], &[b[i]]);
+                sc.value_mut(ha)[0] = a[i];
+                sc.value_mut(hb)[0] = b[i];
                 sc.flush(ts[i], &[ha.index(), hb.index()]);
             }
-            black_box(sc.store(ho).current()[0]);
+            black_box(sc.value::<Series<f64>>(hos).last().unwrap()[0]);
         });
     });
 }
@@ -227,8 +184,8 @@ fn bench_scenario_chain(c: &mut Criterion) {
         c.bench_function(&format!("scenario_chain_depth{depth}"), |bencher| {
             bencher.iter(|| {
                 let mut sc = Scenario::new();
-                let ha = sc.create_node::<f64>(&[], &[0.0]);
-                let hb = sc.create_node::<f64>(&[], &[0.0]);
+                let ha = sc.create_node(Array::scalar(0.0_f64));
+                let hb = sc.create_node(Array::scalar(0.0_f64));
 
                 let mut prev = sc.add_operator(operators::add(), (ha, hb));
                 for i in 1..depth {
@@ -237,11 +194,11 @@ fn bench_scenario_chain(c: &mut Criterion) {
                 }
 
                 for i in 0..N {
-                    sc.store_mut(ha).push(ts[i], &[a[i]]);
-                    sc.store_mut(hb).push(ts[i], &[b[i]]);
+                    sc.value_mut(ha)[0] = a[i];
+                    sc.value_mut(hb)[0] = b[i];
                     sc.flush(ts[i], &[ha.index(), hb.index()]);
                 }
-                black_box(sc.store(prev).current()[0]);
+                black_box(sc.value(prev)[0]);
             });
         });
     }
@@ -260,10 +217,10 @@ fn bench_scenario_sparse(c: &mut Criterion) {
             |bencher| {
                 bencher.iter(|| {
                     let mut sc = Scenario::new();
-                    let ha = sc.create_node::<f64>(&[], &[0.0]);
-                    let hb = sc.create_node::<f64>(&[], &[0.0]);
-                    let hc = sc.create_node::<f64>(&[], &[0.0]);
-                    let hd = sc.create_node::<f64>(&[], &[0.0]);
+                    let ha = sc.create_node(Array::scalar(0.0_f64));
+                    let hb = sc.create_node(Array::scalar(0.0_f64));
+                    let hc = sc.create_node(Array::scalar(0.0_f64));
+                    let hd = sc.create_node(Array::scalar(0.0_f64));
 
                     // Active chain
                     let mut last = sc.add_operator(operators::add(), (ha, hb));
@@ -281,11 +238,11 @@ fn bench_scenario_sparse(c: &mut Criterion) {
                     }
 
                     for i in 0..N {
-                        sc.store_mut(ha).push(ts[i], &[a[i]]);
-                        sc.store_mut(hb).push(ts[i], &[b[i]]);
+                        sc.value_mut(ha)[0] = a[i];
+                        sc.value_mut(hb)[0] = b[i];
                         sc.flush(ts[i], &[ha.index(), hb.index()]);
                     }
-                    black_box(sc.store(last).current()[0]);
+                    black_box(sc.value(last)[0]);
                 });
             },
         );
@@ -296,10 +253,8 @@ criterion_group!(
     benches,
     bench_baseline_add,
     bench_baseline_add_series,
-    bench_store_add,
-    bench_store_add_series,
-    bench_store_compute,
-    bench_store_compute_series,
+    bench_direct_compute,
+    bench_direct_compute_series,
     bench_scenario_operator,
     bench_scenario_operator_series,
     bench_scenario_chain,

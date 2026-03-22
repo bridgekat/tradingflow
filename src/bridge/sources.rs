@@ -1,7 +1,8 @@
 //! Source registration for the Python bridge.
 //!
 //! Provides:
-//! * [`ChannelSource`] — a [`Source`] impl driven by Python via mpsc channels.
+//! * [`ChannelSource`] — a [`Source`](crate::source::Source) impl driven
+//!   by Python via mpsc channels.
 //! * [`HistoricalEventSender`] / [`LiveEventSender`] — pyclasses for Python
 //!   to push events into the channel source.
 //! * Array source registration helpers.
@@ -13,10 +14,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use tokio::sync::mpsc;
 
-use crate::scenario::{Handle, Scenario};
+use crate::array::Array;
+use crate::scenario::Scenario;
 use crate::source::Source;
 use crate::sources::ArraySource;
-use crate::store::ElementViewMut;
 use crate::types::Scalar;
 
 use super::dispatch::{dtype_element_bytes, normalise_dtype};
@@ -75,52 +76,50 @@ pub struct ChannelSource<T: Scalar> {
 
 impl<T: Scalar> Source for ChannelSource<T> {
     type Event = Vec<u8>;
-    type Scalar = T;
+    type Output = Array<T>;
 
-    fn default(&self) -> (Box<[usize]>, Box<[T]>) {
-        let shape = self.shape.clone();
-        let stride = shape.iter().product::<usize>();
-        (shape, vec![T::default(); stride].into())
-    }
-
-    fn subscribe(
+    fn init(
         self,
+        _timestamp: i64,
     ) -> (
         mpsc::Receiver<(i64, Vec<u8>)>,
         mpsc::Receiver<(i64, Vec<u8>)>,
+        Array<T>,
     ) {
+        let output = Array::zeros(&self.shape);
+
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (live_tx, live_rx) = mpsc::channel(64);
 
         let mut py_hist = self.py_hist_rx;
-        tokio::spawn(async move {
-            while let Some(item) = py_hist.recv().await {
-                if hist_tx.send(item).await.is_err() {
+        std::thread::spawn(move || {
+            while let Some(item) = py_hist.blocking_recv() {
+                if hist_tx.blocking_send(item).is_err() {
                     break;
                 }
             }
         });
 
         let mut py_live = self.py_live_rx;
-        tokio::spawn(async move {
-            while let Some(item) = py_live.recv().await {
-                if live_tx.send(item).await.is_err() {
+        std::thread::spawn(move || {
+            while let Some(item) = py_live.blocking_recv() {
+                if live_tx.blocking_send(item).is_err() {
                     break;
                 }
             }
         });
 
-        (hist_rx, live_rx)
+        (hist_rx, live_rx, output)
     }
 
-    fn write(payload: Vec<u8>, output: ElementViewMut<'_, T>) -> bool {
+    fn write(payload: Vec<u8>, output: &mut Array<T>, _timestamp: i64) -> bool {
         let values = unsafe {
             std::slice::from_raw_parts(
                 payload.as_ptr() as *const T,
                 payload.len() / std::mem::size_of::<T>(),
             )
         };
-        output.values.clone_from_slice(values);
+        output.as_slice_mut().clone_from_slice(values);
         true
     }
 }
@@ -186,8 +185,6 @@ impl LiveEventSender {
 // ---------------------------------------------------------------------------
 
 /// Create a node and register an `ArraySource` in one step.
-///
-/// Returns the node index.
 pub fn register_array_source(
     sc: &mut Scenario,
     dtype: &str,
@@ -200,8 +197,7 @@ pub fn register_array_source(
         ($T:ty) => {{
             let values = bytes_to_vec::<$T>(&values_bytes);
             let source = ArraySource::new(timestamps, values, stride);
-            let handle: Handle<$T> = sc.add_source(source);
-            handle.index()
+            sc.add_source(source).index()
         }};
     }
     let idx = match dtype {
@@ -249,8 +245,7 @@ pub fn register_channel_source(
                 shape: shape_box,
                 _phantom: PhantomData,
             };
-            let handle: Handle<$T> = sc.add_source(source);
-            handle.index()
+            sc.add_source(source).index()
         }};
     }
 

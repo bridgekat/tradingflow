@@ -35,18 +35,6 @@ pub fn dtype_element_bytes(dtype: &str) -> PyResult<usize> {
 }
 
 /// Dispatch on a normalised dtype string, calling a typed expression.
-///
-/// The macro expects `$dtype` to be a `&str` (already normalised) and
-/// `$body` to be a block/expression parameterised by a concrete type.
-///
-/// Usage:
-/// ```ignore
-/// dispatch_dtype!(dtype, T => {
-///     // T is f64 / f32 / i64 / i32 / u64 / u32 / u8
-///     do_something::<T>()
-/// })
-/// ```
-#[allow(unused_macros)]
 macro_rules! dispatch_dtype {
     ($dtype:expr, $T:ident => $body:expr) => {
         match $dtype {
@@ -66,5 +54,4 @@ macro_rules! dispatch_dtype {
     };
 }
 
-#[allow(unused_imports)]
 pub(crate) use dispatch_dtype;

@@ -2,14 +2,11 @@
 //!
 //! # Invariants
 //!
-//! * `type_id == TypeId::of::<T>()` where `T` is the store's scalar type.
-//! * `store` is a valid, non-null pointer to a heap-allocated `Store<T>`.
-//! * `shape` points into `Store<T>.shape`; valid for the node's lifetime
-//!   (the Store is heap-allocated and never moved).
+//! * `type_id == TypeId::of::<T>()` where `T` is the node's value type.
+//! * `value` is a valid, non-null pointer to a heap-allocated `T`.
 //! * If `closure` is `Some`: `state` is a valid pointer to `Op::State`;
-//!   each `input_ptrs[i]` points to a valid `Store<U>` (possibly different
-//!   scalar types) that outlives this node; `compute_fn` is monomorphised
-//!   for the correct operator type.
+//!   each `input_ptrs[i]` points to a valid value that outlives this node;
+//!   `compute_fn` is monomorphised for the correct operator type.
 //! * `edges[i]` are valid node indices in the owning `Graph`.
 //!
 //! # Safety boundary
@@ -20,82 +17,59 @@
 use std::any::TypeId;
 
 use crate::operator::Operator;
-use crate::store::Store;
-use crate::types::{InputKinds, Scalar};
+use crate::types::InputKinds;
 
 // ---------------------------------------------------------------------------
 // Function pointer types
 // ---------------------------------------------------------------------------
 
 /// Type-erased compute function.
-/// Returns `true` if an output value was produced, `false` to rollback.
+/// Returns `true` if an output value was produced, `false` to skip propagation.
 ///
 /// Arguments:
 ///
-/// * `input_ptrs` — `&[*const u8]` pointing to input `Store<T>`'s.
-/// * `output_store` — `*mut u8` pointing to the output `Store<T>`.
+/// * `input_ptrs` — `&[*const u8]` pointing to input values.
+/// * `output` — `*mut u8` pointing to the output value.
 /// * `state` — `*mut u8` pointing to the operator's `State`.
-/// * `timestamp` — flush timestamp for the new element.
+/// * `timestamp` — flush timestamp.
 pub(super) type ComputeFn = unsafe fn(&[*const u8], *mut u8, *mut u8, i64) -> bool;
 
 // ---------------------------------------------------------------------------
 // Node
 // ---------------------------------------------------------------------------
 
-/// Type-erased DAG node: owns a [`Store`] and optionally a [`Closure`].
+/// Type-erased DAG node: owns a value and optionally a [`Closure`].
 ///
 /// See [module-level docs](self) for layout and invariants.
 pub(super) struct Node {
-    /// `TypeId::of::<T>()` for the scalar type `T`.
+    /// `TypeId::of::<T>()` for the value type `T`.
     pub type_id: TypeId,
-    /// Heap-allocated `Store<T>` (via `Box::into_raw`).
-    pub store: *mut u8,
-    /// Points into `Store<T>.shape` (a `Box<[usize]>` inside the
-    /// heap-allocated Store).  Valid for the node's lifetime.
-    shape: *const [usize],
+    /// Heap-allocated value `T` (via `Box::into_raw`).
+    pub value: *mut u8,
     /// Operator closure, or `None` for source / bare nodes.
     pub closure: Option<Closure>,
     /// Downstream node indices (nodes whose closures read this node).
     pub edges: Vec<usize>,
-    /// Drop the store: `drop(Box::from_raw(ptr as *mut Store<T>))`.
-    store_drop_fn: unsafe fn(*mut u8),
+    /// Drop the value: `drop(Box::from_raw(ptr as *mut T))`.
+    value_drop_fn: unsafe fn(*mut u8),
 }
 
-// SAFETY: `Node` owns the heap allocation behind `store`.
+// SAFETY: `Node` owns the heap allocation behind `value`.
 unsafe impl Send for Node {}
 
 impl Node {
-    /// Create a new bare node (no closure) for a given scalar type.
+    /// Create a new bare node (no closure) for an arbitrary value type.
     ///
-    /// The store is heap-allocated; the returned `Node` owns it.
-    pub fn from_store<T: Scalar>(store: Store<T>) -> Self {
-        let store_ptr = Box::into_raw(Box::new(store));
-        // SAFETY: store_ptr is valid; Store<T>.shape is a Box<[usize]> whose
-        // heap allocation is stable for the Store's lifetime.
-        let shape_ptr = unsafe { (*store_ptr).shape() as *const [usize] };
+    /// The value is heap-allocated; the returned `Node` owns it.
+    pub fn new<T: Send + 'static>(value: T) -> Self {
+        let value_ptr = Box::into_raw(Box::new(value));
         Self {
             type_id: TypeId::of::<T>(),
-            store: store_ptr as *mut u8,
-            shape: shape_ptr,
+            value: value_ptr as *mut u8,
             closure: None,
             edges: Vec::new(),
-            store_drop_fn: drop_fn::<Store<T>>,
+            value_drop_fn: drop_fn::<T>,
         }
-    }
-
-    /// Element shape, borrowed from the underlying `Store<T>`.
-    #[inline(always)]
-    pub fn shape(&self) -> &[usize] {
-        // SAFETY: `shape` points into a heap-allocated `Store<T>.shape`
-        // which is valid for the node's lifetime (Store is behind
-        // `Box::into_raw` and only freed in `Drop`).
-        unsafe { &*self.shape }
-    }
-
-    /// Number of scalars per element (product of shape dimensions).
-    #[inline(always)]
-    pub fn stride(&self) -> usize {
-        self.shape().iter().product::<usize>()
     }
 }
 
@@ -103,12 +77,12 @@ impl Drop for Node {
     fn drop(&mut self) {
         // Drop the closure's state first (if any).
         if let Some(ref closure) = self.closure {
-            // SAFETY: `state` was allocated by `Box::into_raw` in `new_closure`.
+            // SAFETY: `state` was allocated by `Box::into_raw`.
             unsafe { (closure.state_drop_fn)(closure.state) };
         }
-        // Drop the store (which also frees the shape that `self.shape` points to).
-        // SAFETY: `store` was allocated by `Box::into_raw` in `new_node`.
-        unsafe { (self.store_drop_fn)(self.store) };
+        // Drop the value.
+        // SAFETY: `value` was allocated by `Box::into_raw` in `new`.
+        unsafe { (self.value_drop_fn)(self.value) };
     }
 }
 
@@ -122,16 +96,19 @@ impl Drop for Node {
 pub(super) struct Closure {
     /// Monomorphised compute function.
     compute_fn: ComputeFn,
-    /// Pre-collected pointers to input `Store<T>`'s.
+    /// Pre-collected pointers to input values.
     input_ptrs: Box<[*const u8]>,
-    /// Heap-allocated operator state (`Box::into_raw(Box::new(op.init()))`).
-    state: *mut u8,
+    /// Heap-allocated operator state (`Box::into_raw(Box::new(state))`).
+    pub(super) state: *mut u8,
     /// Drop the state: `drop(Box::from_raw(ptr as *mut State))`.
-    state_drop_fn: unsafe fn(*mut u8),
+    pub(super) state_drop_fn: unsafe fn(*mut u8),
 }
 
 impl Closure {
     /// Create a [`Closure`] from raw components.
+    ///
+    /// Used by the bridge to attach Python operator callbacks.
+    #[cfg(feature = "python")]
     pub fn new(
         compute_fn: ComputeFn,
         input_ptrs: Box<[*const u8]>,
@@ -146,14 +123,9 @@ impl Closure {
         }
     }
 
-    /// Build a [`Closure`] for an operator.
-    ///
-    /// # Arguments
-    ///
-    /// * `input_ptrs` — pointers to input stores, collected at registration.
-    /// * `op_state` — the operator's initial state (from [`Operator::init`]).
-    pub fn from_operator<O: Operator>(operator: O, input_ptrs: Box<[*const u8]>) -> Closure {
-        let state = operator.init();
+    /// Build a [`Closure`] for an operator whose state has already been
+    /// created (via [`Operator::init`]).
+    pub fn from_state<O: Operator>(state: O::State, input_ptrs: Box<[*const u8]>) -> Closure {
         Closure {
             compute_fn: compute_fn::<O>,
             input_ptrs,
@@ -162,15 +134,14 @@ impl Closure {
         }
     }
 
-    /// Invokes the closure's compute function with the given output store and
-    /// timestamp.
+    /// Invokes the closure's compute function with the given output pointer
+    /// and timestamp.
     ///
     /// # Safety
     ///
-    /// * Each `input_ptrs[i]` must point to a valid `Store` of the type
+    /// * Each `input_ptrs[i]` must point to a valid value of the type
     ///   expected by `O::Inputs` at position `i`.
-    /// * `output_ptr` must point to a valid `Store<O::Scalar>`.
-    /// * `state_ptr` must point to a valid `O::State`.
+    /// * `output_ptr` must point to a valid `O::Output`.
     /// * `output_ptr` must not alias any `input_ptrs[i]`.
     pub unsafe fn compute(&self, output_ptr: *mut u8, timestamp: i64) -> bool {
         unsafe { (self.compute_fn)(&self.input_ptrs, output_ptr, self.state, timestamp) }
@@ -195,15 +166,11 @@ unsafe fn drop_fn<T>(ptr: *mut u8) {
 
 /// Type-erased compute entry point, monomorphised per operator type.
 ///
-/// Pushes the store's default values as a new element, then calls
-/// [`Operator::compute`] to overwrite it.  On failure (returns `false`),
-/// the element is popped (rollback).
-///
 /// # Safety
 ///
-/// * Each `input_ptrs[i]` must point to a valid `Store` of the type expected
+/// * Each `input_ptrs[i]` must point to a valid value of the type expected
 ///   by `O::Inputs` at position `i`.
-/// * `output_ptr` must point to a valid `Store<O::Scalar>`.
+/// * `output_ptr` must point to a valid `O::Output`.
 /// * `state_ptr` must point to a valid `O::State`.
 /// * `output_ptr` must not alias any `input_ptrs[i]`.
 unsafe fn compute_fn<O: Operator>(
@@ -214,16 +181,8 @@ unsafe fn compute_fn<O: Operator>(
 ) -> bool {
     unsafe {
         let inputs = <O::Inputs as InputKinds>::from_ptrs(input_ptrs);
-        let store = &mut *(output_ptr as *mut Store<O::Scalar>);
+        let output = &mut *(output_ptr as *mut O::Output);
         let state = &mut *(state_ptr as *mut O::State);
-        store.push_default(timestamp);
-        let output = store.current_view_mut();
-        let produced = O::compute(state, inputs, output);
-        if produced {
-            store.commit();
-        } else {
-            store.rollback();
-        }
-        produced
+        O::compute(state, inputs, output, timestamp)
     }
 }
