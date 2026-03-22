@@ -87,23 +87,22 @@ impl<T: Scalar> Source for ChannelSource<T> {
         Array<T>,
     ) {
         let output = Array::zeros(&self.shape);
-
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (live_tx, live_rx) = mpsc::channel(64);
 
         let mut py_hist = self.py_hist_rx;
-        std::thread::spawn(move || {
-            while let Some(item) = py_hist.blocking_recv() {
-                if hist_tx.blocking_send(item).is_err() {
+        tokio::spawn(async move {
+            while let Some(item) = py_hist.recv().await {
+                if hist_tx.send(item).await.is_err() {
                     break;
                 }
             }
         });
 
         let mut py_live = self.py_live_rx;
-        std::thread::spawn(move || {
-            while let Some(item) = py_live.blocking_recv() {
-                if live_tx.blocking_send(item).is_err() {
+        tokio::spawn(async move {
+            while let Some(item) = py_live.recv().await {
+                if live_tx.send(item).await.is_err() {
                     break;
                 }
             }

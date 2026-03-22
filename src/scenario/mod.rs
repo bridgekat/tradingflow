@@ -99,6 +99,9 @@ impl Scenario {
     }
 
     /// Register a [`Source`], creating the output node.
+    ///
+    /// Sources that use [`tokio::spawn`] internally (e.g. [`ArraySource`],
+    /// [`IterSource`]) require a tokio runtime to be active.
     pub fn add_source<S: Source>(&mut self, source: S) -> Handle<S::Output> {
         let (hist_rx, live_rx, output) = source.init(i64::MIN);
         let idx = self.graph.add_node(Node::new(output));
@@ -109,12 +112,57 @@ impl Scenario {
 
     /// Register an [`Operator`], creating its output node.
     ///
-    /// Calls [`Operator::init`] eagerly with the current input values
-    /// to produce the initial state and output.
+    /// All inputs are trigger edges — the operator fires whenever any
+    /// input updates.  Use [`add_operator_periodic`](Scenario::add_operator_periodic)
+    /// to trigger on a clock instead.
     pub fn add_operator<O: Operator>(
         &mut self,
         operator: O,
         inputs: impl Into<<O::Inputs as InputKindsHandles>::Handles>,
+    ) -> Handle<O::Output>
+    where
+        O::Inputs: InputKindsHandles,
+    {
+        self.register_operator(operator, inputs, None)
+    }
+
+    /// Register an [`Operator`] that fires on a clock instead of on
+    /// input updates.
+    ///
+    /// The operator reads from `inputs` but is only scheduled when the
+    /// `clock` node updates.  The clock is not an input — the operator
+    /// does not read its value.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let prices = sc.add_source(daily_prices);
+    /// let clock = sc.add_source(monthly_clock);
+    ///
+    /// // Fires monthly, reads daily prices.
+    /// let h = sc.add_operator_periodic(my_op, (prices,), clock);
+    /// ```
+    pub fn add_operator_periodic<O: Operator>(
+        &mut self,
+        operator: O,
+        inputs: impl Into<<O::Inputs as InputKindsHandles>::Handles>,
+        clock: Handle<()>,
+    ) -> Handle<O::Output>
+    where
+        O::Inputs: InputKindsHandles,
+    {
+        self.register_operator(operator, inputs, Some(clock))
+    }
+
+    /// Shared implementation for operator registration.
+    ///
+    /// If `clock` is `None`, all inputs are trigger edges.
+    /// If `clock` is `Some(idx)`, only the clock node triggers.
+    fn register_operator<O: Operator>(
+        &mut self,
+        operator: O,
+        inputs: impl Into<<O::Inputs as InputKindsHandles>::Handles>,
+        clock: Option<Handle<()>>,
     ) -> Handle<O::Output>
     where
         O::Inputs: InputKindsHandles,
@@ -140,19 +188,26 @@ impl Scenario {
             .map(|&(idx, _)| self.graph.nodes[idx].value as *const u8)
             .collect();
 
-        // 3. Call init eagerly — inputs are already heap-allocated and stable.
+        // 3. Call init eagerly.
         let input_refs = unsafe { <O::Inputs as InputKinds>::from_ptrs(&input_ptrs) };
         let (state, output) = operator.init(input_refs, i64::MIN);
 
         // 4. Create output node.
         let output_idx = self.graph.add_node(Node::new(output));
 
-        // 5. Wire edges: each input node → output node.
-        for &(input_idx, _) in node_ids.iter() {
-            self.graph.add_edge(input_idx, output_idx);
+        // 5. Wire trigger edges.
+        match clock {
+            None => {
+                for &(input_idx, _) in node_ids.iter() {
+                    self.graph.add_trigger_edge(input_idx, output_idx);
+                }
+            }
+            Some(clock) => {
+                self.graph.add_trigger_edge(clock.index(), output_idx);
+            }
         }
 
-        // 6. Attach closure with the pre-computed state.
+        // 6. Attach closure.
         let closure = Closure::from_state::<O>(state, input_ptrs);
         self.graph.nodes[output_idx].closure = Some(closure);
 
@@ -174,16 +229,10 @@ impl Scenario {
         self.graph.nodes[index].value
     }
 
-    /// Number of nodes in the graph.
-    #[cfg(feature = "python")]
-    pub(crate) fn node_count(&self) -> usize {
-        self.graph.len()
-    }
-
     /// Add a directed edge between two nodes.
     #[cfg(feature = "python")]
-    pub(crate) fn add_edge(&mut self, from: usize, to: usize) {
-        self.graph.add_edge(from, to);
+    pub(crate) fn add_trigger_edge(&mut self, from: usize, to: usize) {
+        self.graph.add_trigger_edge(from, to);
     }
 
     /// Attach a raw type-erased closure to a node.
@@ -400,5 +449,76 @@ mod tests {
 
         sc.value_mut(h).insert("price".to_string(), 42.0);
         assert_eq!(sc.value(h).get("price"), Some(&42.0));
+    }
+
+    // -- Periodic operator tests -----------------------------------------------
+
+    #[tokio::test]
+    async fn scenario_periodic_single_input() {
+        // Source A updates at ts 1,2,3.  Clock fires at ts 2.
+        // Operator reads A, triggered only by clock.
+        use crate::sources::clock;
+
+        let mut sc = Scenario::new();
+        let ha = sc.add_source(ArraySource::new(vec![1, 2, 3], vec![10.0, 20.0, 30.0], 1));
+        let hclock = sc.add_source(clock(vec![2]));
+
+        let ho = sc.add_operator_periodic(Filter::new(|_: &Array<f64>| true), (ha,), hclock);
+        let hs = sc.add_operator(Record::<f64>::new(), (ho,));
+
+        sc.run().await;
+
+        let series: &Series<f64> = sc.value(hs);
+        // Only ts=2 triggers: A=20
+        assert_eq!(series.len(), 1);
+        assert_eq!(series.timestamps(), &[2]);
+        assert_eq!(series.values(), &[20.0]);
+    }
+
+    #[tokio::test]
+    async fn scenario_periodic_two_inputs() {
+        // A updates at 1,2,3; B updates at 1,3. Clock fires at 2.
+        use crate::sources::clock;
+
+        let mut sc = Scenario::new();
+        let ha = sc.add_source(ArraySource::new(vec![1, 2, 3], vec![1.0, 2.0, 3.0], 1));
+        let hb = sc.add_source(ArraySource::new(vec![1, 3], vec![10.0, 30.0], 1));
+        let hclock = sc.add_source(clock(vec![2]));
+
+        let ho = sc.add_operator_periodic(add::<f64>(), (ha, hb), hclock);
+        let hs = sc.add_operator(Record::<f64>::new(), (ho,));
+
+        sc.run().await;
+
+        let series: &Series<f64> = sc.value(hs);
+        // Clock fires at ts=2. At ts=2: A=2, B=10 (carry from ts=1).
+        assert_eq!(series.len(), 1);
+        assert_eq!(series.timestamps(), &[2]);
+        assert_eq!(series.values(), &[12.0]);
+    }
+
+    #[tokio::test]
+    async fn scenario_periodic_multiple_ticks() {
+        // Daily prices, monthly clock at ts=2 and ts=4.
+        use crate::sources::clock;
+
+        let mut sc = Scenario::new();
+        let ha = sc.add_source(ArraySource::new(
+            vec![1, 2, 3, 4, 5],
+            vec![10.0, 20.0, 30.0, 40.0, 50.0],
+            1,
+        ));
+        let hclock = sc.add_source(clock(vec![2, 4]));
+
+        let ho = sc.add_operator_periodic(Filter::new(|_: &Array<f64>| true), (ha,), hclock);
+        let hs = sc.add_operator(Record::<f64>::new(), (ho,));
+
+        sc.run().await;
+
+        let series: &Series<f64> = sc.value(hs);
+        // ts=2: A=20, ts=4: A=40
+        assert_eq!(series.len(), 2);
+        assert_eq!(series.timestamps(), &[2, 4]);
+        assert_eq!(series.values(), &[20.0, 40.0]);
     }
 }

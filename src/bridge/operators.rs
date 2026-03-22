@@ -152,11 +152,11 @@ pub fn select(dtype: &str, indices: Vec<usize>) -> PyResult<NativeOpHandle> {
 }
 
 #[pyfunction]
-pub fn concat(dtype: &str, input_shape: Vec<usize>, axis: usize) -> PyResult<NativeOpHandle> {
+pub fn concat(dtype: &str, axis: usize) -> PyResult<NativeOpHandle> {
     let d = normalise_dtype(dtype).to_string();
     match d.as_str() {
         "float64" => {
-            let op = operators::Concat::<f64>::new(&input_shape, axis);
+            let op = operators::Concat::<f64>::new(axis);
             Ok(NativeOpHandle {
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let handles: Box<[Handle<Array<f64>>]> =
@@ -167,7 +167,7 @@ pub fn concat(dtype: &str, input_shape: Vec<usize>, axis: usize) -> PyResult<Nat
             })
         }
         "float32" => {
-            let op = operators::Concat::<f32>::new(&input_shape, axis);
+            let op = operators::Concat::<f32>::new(axis);
             Ok(NativeOpHandle {
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let handles: Box<[Handle<Array<f32>>]> =
@@ -184,11 +184,11 @@ pub fn concat(dtype: &str, input_shape: Vec<usize>, axis: usize) -> PyResult<Nat
 }
 
 #[pyfunction]
-pub fn stack(dtype: &str, input_shape: Vec<usize>, axis: usize) -> PyResult<NativeOpHandle> {
+pub fn stack(dtype: &str, axis: usize) -> PyResult<NativeOpHandle> {
     let d = normalise_dtype(dtype).to_string();
     match d.as_str() {
         "float64" => {
-            let op = operators::Stack::<f64>::new(&input_shape, axis);
+            let op = operators::Stack::<f64>::new(axis);
             Ok(NativeOpHandle {
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let handles: Box<[Handle<Array<f64>>]> =
@@ -199,7 +199,7 @@ pub fn stack(dtype: &str, input_shape: Vec<usize>, axis: usize) -> PyResult<Nati
             })
         }
         "float32" => {
-            let op = operators::Stack::<f32>::new(&input_shape, axis);
+            let op = operators::Stack::<f32>::new(axis);
             Ok(NativeOpHandle {
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let handles: Box<[Handle<Array<f32>>]> =

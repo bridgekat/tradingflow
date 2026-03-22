@@ -9,7 +9,10 @@ use crate::types::Scalar;
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
 ///
 /// Each event carries an `Array<T>` value.  The historical channel is filled
-/// by a spawned task with bounded back-pressure; the live channel is empty.
+/// by a spawned tokio task with bounded back-pressure; the live channel is
+/// empty.
+///
+/// Requires a tokio runtime to be active when added to a scenario.
 pub struct ArraySource<T: Scalar> {
     timestamps: Vec<i64>,
     values: Vec<T>,
@@ -53,7 +56,7 @@ impl<T: Scalar> Source for ArraySource<T> {
         let (_, live_rx) = mpsc::channel(1);
 
         let stride = self.stride;
-        std::thread::spawn(move || {
+        tokio::spawn(async move {
             for (i, &ts) in self.timestamps.iter().enumerate() {
                 let start = i * stride;
                 let slice = &self.values[start..start + stride];
@@ -62,7 +65,7 @@ impl<T: Scalar> Source for ArraySource<T> {
                 } else {
                     Array::from_vec(&[stride], slice.to_vec())
                 };
-                if hist_tx.blocking_send((ts, arr)).is_err() {
+                if hist_tx.send((ts, arr)).await.is_err() {
                     break;
                 }
             }

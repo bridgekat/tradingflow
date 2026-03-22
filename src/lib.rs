@@ -20,6 +20,7 @@ pub mod series;
 pub mod source;
 pub mod sources;
 pub mod types;
+pub mod utils;
 
 #[cfg(feature = "python")]
 pub mod bridge;

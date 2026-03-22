@@ -210,7 +210,7 @@ class TestBridgeStrided:
         ha = sc.add_source([2], "float64", ts, a.tobytes(), 2)
         hb = sc.add_source([2], "float64", ts, b.tobytes(), 2)
 
-        cat_h = concat("float64", [2], 0)
+        cat_h = concat("float64", 0)
         ho = sc.register_handle_operator(cat_h, [ha, hb])
         hs = sc.record(ho)
 

@@ -135,3 +135,96 @@ pub fn negate<T: Scalar + ops::Neg<Output = T>>() -> Negate<T> {
         _phantom: PhantomData,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::array::Array;
+    use crate::operator::Operator;
+
+    #[test]
+    fn add_scalar() {
+        let a = Array::scalar(10.0_f64);
+        let b = Array::scalar(3.0);
+        let (mut s, mut o) = add::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[13.0]);
+    }
+
+    #[test]
+    fn add_vector() {
+        let a = Array::from_vec(&[3], vec![1.0, 2.0, 3.0]);
+        let b = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
+        let (mut s, mut o) = add::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[11.0, 22.0, 33.0]);
+    }
+
+    #[test]
+    fn add_i32() {
+        let a = Array::from_vec(&[3], vec![1_i32, 2, 3]);
+        let b = Array::from_vec(&[3], vec![10, 20, 30]);
+        let (mut s, mut o) = add::<i32>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[11, 22, 33]);
+    }
+
+    #[test]
+    fn subtract_scalar() {
+        let a = Array::scalar(20.0_f64);
+        let b = Array::scalar(7.0);
+        let (mut s, mut o) = subtract::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[13.0]);
+    }
+
+    #[test]
+    fn multiply_scalar() {
+        let a = Array::scalar(4.0_f64);
+        let b = Array::scalar(5.0);
+        let (mut s, mut o) = multiply::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[20.0]);
+    }
+
+    #[test]
+    fn divide_scalar() {
+        let a = Array::scalar(20.0_f64);
+        let b = Array::scalar(4.0);
+        let (mut s, mut o) = divide::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[5.0]);
+    }
+
+    #[test]
+    fn negate_vector() {
+        let a = Array::from_vec(&[3], vec![1.0_f64, -2.0, 3.0]);
+        let (mut s, mut o) = negate::<f64>().init((&a,), i64::MIN);
+        Apply1::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.as_slice(), &[-1.0, 2.0, -3.0]);
+    }
+
+    #[test]
+    fn multi_step() {
+        let mut a = Array::scalar(0.0_f64);
+        let mut b = Array::scalar(0.0);
+        let (mut s, mut o) = add::<f64>().init((&a, &b), i64::MIN);
+        a[0] = 10.0;
+        b[0] = 3.0;
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o[0], 13.0);
+        a[0] = 20.0;
+        b[0] = 7.0;
+        Apply2::compute(&mut s, (&a, &b), &mut o, 2);
+        assert_eq!(o[0], 27.0);
+    }
+
+    #[test]
+    fn preserves_shape() {
+        let a = Array::from_vec(&[2, 3], vec![0.0_f64; 6]);
+        let (_, o) = add::<f64>().init((&a, &a), i64::MIN);
+        assert_eq!(o.shape(), &[2, 3]);
+        let (_, o) = negate::<f64>().init((&a,), i64::MIN);
+        assert_eq!(o.shape(), &[2, 3]);
+    }
+}

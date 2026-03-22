@@ -135,12 +135,18 @@ unsafe impl Send for PyOperatorState {}
 // ---------------------------------------------------------------------------
 
 /// Python-visible wrapper around the Rust `Scenario` runtime.
+///
+/// Owns a tokio runtime that is entered on construction, so sources
+/// can use [`tokio::spawn`] during `add_source`.
 #[pyclass]
 pub struct NativeScenario {
     scenario: Option<Scenario>,
     error_slot: ErrorSlot,
     /// Per-node: (dtype_str, kind).
     node_info: Vec<(String, NodeKind)>,
+    /// Tokio runtime — kept alive for the scenario's lifetime.
+    /// The runtime context is entered on construction (guard is leaked).
+    _rt: tokio::runtime::Runtime,
 }
 
 unsafe impl Send for NativeScenario {}
@@ -150,10 +156,15 @@ unsafe impl Sync for NativeScenario {}
 impl NativeScenario {
     #[new]
     fn new() -> Self {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         Self {
             scenario: Some(Scenario::new()),
             error_slot: Arc::new(Mutex::new(None)),
             node_info: Vec::new(),
+            _rt: rt,
         }
     }
 
@@ -167,6 +178,7 @@ impl NativeScenario {
         values_bytes: &[u8],
         stride: usize,
     ) -> PyResult<usize> {
+        let _guard = self._rt.enter();
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalise_dtype(&dtype).to_string();
         let ts_vec = timestamps.as_slice()?.to_vec();
@@ -188,6 +200,7 @@ impl NativeScenario {
         py_inputs: PyObject,
         py_state: PyObject,
     ) -> PyResult<usize> {
+        let _guard = self._rt.enter();
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalise_dtype(&dtype).to_string();
 
@@ -287,11 +300,7 @@ impl NativeScenario {
         })?;
 
         py.detach(|| {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(scenario.run());
+            self._rt.block_on(scenario.run());
         });
 
         self.scenario = Some(scenario);
@@ -309,6 +318,7 @@ impl NativeScenario {
             PyRuntimeError::new_err("scenario already consumed by a previous run()")
         })?;
 
+        let rt = &self._rt;
         let (scenario, bg_result) = py.detach(move || {
             let bg_handle = std::thread::spawn(move || -> Result<(), String> {
                 Python::attach(|py| {
@@ -317,10 +327,6 @@ impl NativeScenario {
                 })
             });
 
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
             rt.block_on(scenario.run());
 
             let bg_result = bg_handle
@@ -381,7 +387,7 @@ fn register_py_operator(
         .collect();
 
     for &input_idx in input_indices {
-        sc.add_edge(input_idx, output_index);
+        sc.add_trigger_edge(input_idx, output_index);
     }
 
     let state = Box::new(op_state);

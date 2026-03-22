@@ -7,7 +7,7 @@
 //! * If `closure` is `Some`: `state` is a valid pointer to `Op::State`;
 //!   each `input_ptrs[i]` points to a valid value that outlives this node;
 //!   `compute_fn` is monomorphised for the correct operator type.
-//! * `edges[i]` are valid node indices in the owning `Graph`.
+//! * `trigger_edges[i]` are valid node indices in the owning `Graph`.
 //!
 //! # Safety boundary
 //!
@@ -48,8 +48,8 @@ pub(super) struct Node {
     pub value: *mut u8,
     /// Operator closure, or `None` for source / bare nodes.
     pub closure: Option<Closure>,
-    /// Downstream node indices (nodes whose closures read this node).
-    pub edges: Vec<usize>,
+    /// Downstream node indices that are triggered when this node updates.
+    pub trigger_edges: Vec<usize>,
     /// Drop the value: `drop(Box::from_raw(ptr as *mut T))`.
     value_drop_fn: unsafe fn(*mut u8),
 }
@@ -67,7 +67,7 @@ impl Node {
             type_id: TypeId::of::<T>(),
             value: value_ptr as *mut u8,
             closure: None,
-            edges: Vec::new(),
+            trigger_edges: Vec::new(),
             value_drop_fn: drop_fn::<T>,
         }
     }

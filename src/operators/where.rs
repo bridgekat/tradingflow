@@ -6,7 +6,8 @@ use crate::array::Array;
 use crate::operator::Operator;
 use crate::types::Scalar;
 
-/// Element-wise conditional operator.
+/// Element-wise conditional operator: keeps the value if the condition
+/// returns `true`, otherwise replaces it with `fill`.
 pub struct Where<T: Scalar, F: Fn(T) -> bool> {
     condition: F,
     fill: T,
@@ -49,5 +50,35 @@ impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
             };
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operator::Operator;
+
+    #[test]
+    fn mixed() {
+        let a = Array::from_vec(&[3], vec![1.0_f64, 5.0, 2.0]);
+        let (mut s, mut o) = Where::new(|v: f64| v > 3.0, 0.0).init((&a,), i64::MIN);
+        Where::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.as_slice(), &[0.0, 5.0, 0.0]);
+    }
+
+    #[test]
+    fn all_pass() {
+        let a = Array::from_vec(&[2], vec![10.0_f64, 20.0]);
+        let (mut s, mut o) = Where::new(|v: f64| v > 0.0, -1.0).init((&a,), i64::MIN);
+        Where::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.as_slice(), &[10.0, 20.0]);
+    }
+
+    #[test]
+    fn none_pass() {
+        let a = Array::from_vec(&[2], vec![-1.0_f64, -2.0]);
+        let (mut s, mut o) = Where::new(|v: f64| v > 0.0, 0.0).init((&a,), i64::MIN);
+        Where::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.as_slice(), &[0.0, 0.0]);
     }
 }

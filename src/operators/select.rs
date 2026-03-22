@@ -7,47 +7,59 @@ use crate::operator::Operator;
 use crate::types::Scalar;
 
 /// Select elements from an array along an axis.
+///
+/// Precomputes a flat index mapping at init time from the actual input shape.
 pub struct Select<T: Scalar> {
-    index_map: Vec<usize>,
-    output_shape: Vec<usize>,
+    indices: Vec<usize>,
+    axis: usize,
     _phantom: PhantomData<T>,
 }
 
 impl<T: Scalar> Select<T> {
+    /// Select by flat indices (axis 0, 1-D inputs).
     pub fn flat(indices: Vec<usize>) -> Self {
-        let n = indices.len();
         Self {
-            index_map: indices,
-            output_shape: vec![n],
+            indices,
+            axis: 0,
             _phantom: PhantomData,
         }
     }
 
-    pub fn along_axis(input_shape: &[usize], indices: &[usize], axis: usize) -> Self {
-        let index_map = compute_select_map(input_shape, indices, axis);
-        let mut output_shape = input_shape.to_vec();
-        output_shape[axis] = indices.len();
+    /// Select along a specific axis.
+    pub fn along_axis(indices: Vec<usize>, axis: usize) -> Self {
         Self {
-            index_map,
-            output_shape,
+            indices,
+            axis,
             _phantom: PhantomData,
         }
     }
 }
 
+/// Runtime state for [`Select`].
+pub struct SelectState {
+    index_map: Vec<usize>,
+}
+
 impl<T: Scalar> Operator for Select<T> {
-    type State = Self;
+    type State = SelectState;
     type Inputs = (Array<T>,);
     type Output = Array<T>;
 
-    fn init(self, _inputs: (&Array<T>,), _timestamp: i64) -> (Self, Array<T>) {
-        let output = Array::zeros(&self.output_shape);
-        (self, output)
+    fn init(self, inputs: (&Array<T>,), _timestamp: i64) -> (SelectState, Array<T>) {
+        let input_shape = inputs.0.shape();
+        let index_map = compute_select_map(input_shape, &self.indices, self.axis);
+        let mut output_shape = input_shape.to_vec();
+        if output_shape.is_empty() {
+            output_shape = vec![self.indices.len()];
+        } else {
+            output_shape[self.axis] = self.indices.len();
+        }
+        (SelectState { index_map }, Array::zeros(&output_shape))
     }
 
     #[inline(always)]
     fn compute(
-        state: &mut Self,
+        state: &mut SelectState,
         inputs: (&Array<T>,),
         output: &mut Array<T>,
         _timestamp: i64,
@@ -77,4 +89,44 @@ fn compute_select_map(input_shape: &[usize], indices: &[usize], axis: usize) -> 
         }
     }
     map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operator::Operator;
+
+    #[test]
+    fn flat() {
+        let a = Array::from_vec(&[5], vec![10.0, 20.0, 30.0, 40.0, 50.0_f64]);
+        let (mut s, mut o) = Select::<f64>::flat(vec![1, 3]).init((&a,), i64::MIN);
+        Select::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.shape(), &[2]);
+        assert_eq!(o.as_slice(), &[20.0, 40.0]);
+    }
+
+    #[test]
+    fn along_axis_columns() {
+        // 2x3 matrix, select columns 0 and 2
+        let a = Array::from_vec(&[2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0_f64]);
+        let (mut s, mut o) = Select::<f64>::along_axis(vec![0, 2], 1).init((&a,), i64::MIN);
+        Select::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.shape(), &[2, 2]);
+        assert_eq!(o.as_slice(), &[1.0, 3.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn single_element() {
+        let a = Array::from_vec(&[4], vec![10.0, 20.0, 30.0, 40.0_f64]);
+        let (mut s, mut o) = Select::<f64>::flat(vec![2]).init((&a,), i64::MIN);
+        Select::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.as_slice(), &[30.0]);
+    }
+
+    #[test]
+    fn init_reduces_axis() {
+        let a = Array::from_vec(&[2, 3], vec![0.0_f64; 6]);
+        let (_, o) = Select::<f64>::along_axis(vec![0], 1).init((&a,), i64::MIN);
+        assert_eq!(o.shape(), &[2, 1]);
+    }
 }

@@ -15,8 +15,8 @@ use super::node::Node;
 /// * `pending[i] == true` if and only if `i` is currently in `heap`.
 /// * Node indices encode topological order: if node `j` has node `i` as an
 ///   input (via its closure's `input_ptrs`), then `i < j`.
-/// * Edges: `nodes[i].edges` contains indices of nodes whose closures read
-///   from node `i`.
+/// * Edges: `nodes[i].trigger_edges` contains indices of nodes which should
+///   be notified by updates from node `i`.
 pub(super) struct Graph {
     /// Type-erased nodes.
     pub nodes: Vec<Node>,
@@ -44,9 +44,9 @@ impl Graph {
         idx
     }
 
-    /// Add a directed edge: when `from` is updated, `to` is scheduled.
-    pub fn add_edge(&mut self, from: usize, to: usize) {
-        self.nodes[from].edges.push(to);
+    /// Add a trigger edge: when `from` is updated, `to` is scheduled.
+    pub fn add_trigger_edge(&mut self, from: usize, to: usize) {
+        self.nodes[from].trigger_edges.push(to);
     }
 
     /// Number of nodes.
@@ -63,7 +63,7 @@ impl Graph {
     pub fn flush(&mut self, timestamp: i64, updated_sources: &[usize]) {
         // Seed the min-heap from updated source nodes' edges.
         for &i in updated_sources {
-            for &j in &self.nodes[i].edges {
+            for &j in &self.nodes[i].trigger_edges {
                 if !self.pending[j] {
                     self.pending[j] = true;
                     self.heap.push(Reverse(j));
@@ -84,7 +84,7 @@ impl Graph {
             };
 
             if produced {
-                for &j in &self.nodes[i].edges {
+                for &j in &self.nodes[i].trigger_edges {
                     if !self.pending[j] {
                         self.pending[j] = true;
                         self.heap.push(Reverse(j));

@@ -11,6 +11,9 @@ use tokio::sync::mpsc;
 ///   timestamps in non-decreasing order.
 /// - **Real-time channel**: `(timestamp, event)` with source-provided
 ///   timestamps in non-decreasing order.
+///
+/// Sources that use [`tokio::spawn`] in `init()` require a tokio runtime
+/// to be active when [`Scenario::add_source`] is called.
 pub trait Source: Send + 'static {
     /// Implementor-defined channel event type.
     type Event: Send + 'static;
