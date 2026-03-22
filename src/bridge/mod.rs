@@ -164,7 +164,6 @@ impl NativeScenario {
         timestamps: PyReadonlyArrayDyn<'_, i64>,
         values_bytes: &[u8],
         stride: usize,
-        windowed: bool,
     ) -> PyResult<usize> {
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalise_dtype(&dtype).to_string();
@@ -175,7 +174,6 @@ impl NativeScenario {
             ts_vec,
             values_bytes.to_vec(),
             stride.max(1),
-            windowed,
         )?;
         self.node_dtypes.push(dtype_norm);
         Ok(node_index)
@@ -263,12 +261,11 @@ impl NativeScenario {
         _py: Python<'_>,
         shape: Vec<usize>,
         dtype: String,
-        windowed: bool,
     ) -> PyResult<(usize, HistoricalEventSender, LiveEventSender)> {
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalise_dtype(&dtype).to_string();
         let (node_index, hist_sender, live_sender) =
-            sources::register_channel_source(sc, &shape, &dtype_norm, windowed)?;
+            sources::register_channel_source(sc, &shape, &dtype_norm)?;
         self.node_dtypes.push(dtype_norm);
         Ok((node_index, hist_sender, live_sender))
     }
@@ -477,13 +474,22 @@ pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(operators::stack, m)?)?;
     // Benchmark functions (mirrors benches/bench_add.rs)
     m.add_function(pyo3::wrap_pyfunction!(benches::bench_baseline_add, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(benches::bench_baseline_add_series, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(
+        benches::bench_baseline_add_series,
+        m
+    )?)?;
     m.add_function(pyo3::wrap_pyfunction!(benches::bench_store_add, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(benches::bench_store_add_series, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(benches::bench_store_compute, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(benches::bench_store_compute_series, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(
+        benches::bench_store_compute_series,
+        m
+    )?)?;
     m.add_function(pyo3::wrap_pyfunction!(benches::bench_scenario_operator, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(benches::bench_scenario_operator_series, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(
+        benches::bench_scenario_operator_series,
+        m
+    )?)?;
     m.add_function(pyo3::wrap_pyfunction!(benches::bench_scenario_chain, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(benches::bench_scenario_sparse, m)?)?;
     Ok(())

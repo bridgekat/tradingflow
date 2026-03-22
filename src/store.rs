@@ -343,8 +343,8 @@ impl<T: Scalar> ElementViewMut<'_, T> {
 
     /// Overwrite all values from a slice.
     #[inline(always)]
-    pub fn copy_from_slice(&mut self, src: &[T]) {
-        self.values.copy_from_slice(src);
+    pub fn clone_from_slice(&mut self, src: &[T]) {
+        self.values.clone_from_slice(src);
     }
 }
 

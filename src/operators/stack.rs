@@ -14,7 +14,7 @@ use crate::types::Scalar;
 /// Inserts a new dimension at `axis` with size = number of inputs.
 /// For axis 0, the flat layout is just sequential copies (same as concat
 /// axis 0 when all inputs have the same shape).
-pub struct Stack<T: Copy> {
+pub struct Stack<T: Scalar> {
     /// Number of outer iterations (product of dims before `axis`).
     outer_count: usize,
     /// Number of elements per input per outer iteration (product of dims
@@ -24,7 +24,7 @@ pub struct Stack<T: Copy> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy> Stack<T> {
+impl<T: Scalar> Stack<T> {
     /// Create a Stack operator.
     ///
     /// `input_shape`: the element shape of each input (all must match).
@@ -87,7 +87,7 @@ impl<T: Scalar> Operator for Stack<T> {
             let mut offset = 0;
             for store in inputs.iter() {
                 let src = store.current();
-                out[offset..offset + src.len()].copy_from_slice(src);
+                out[offset..offset + src.len()].clone_from_slice(src);
                 offset += src.len();
             }
         } else {
@@ -97,7 +97,7 @@ impl<T: Scalar> Operator for Stack<T> {
                     let src = store.current();
                     let src_offset = outer * state.chunk_size;
                     out[out_offset..out_offset + state.chunk_size]
-                        .copy_from_slice(&src[src_offset..src_offset + state.chunk_size]);
+                        .clone_from_slice(&src[src_offset..src_offset + state.chunk_size]);
                     out_offset += state.chunk_size;
                 }
             }

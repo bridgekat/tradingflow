@@ -12,13 +12,55 @@ use crate::store::{ElementViewMut, Store};
 use crate::types::Scalar;
 
 // ---------------------------------------------------------------------------
+// Element-wise unary operator
+// ---------------------------------------------------------------------------
+
+/// Element-wise unary operator: `out[i] = op(a[i])`.
+///
+/// Shape-preserving: output shape equals input shape.
+pub struct Apply1<T: Scalar, Op: Fn(T) -> T> {
+    op: Op,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Scalar, Op: Fn(T) -> T + Send + 'static> Operator for Apply1<T, Op> {
+    type State = Self;
+    type Inputs = (Store<T>,);
+    type Scalar = T;
+
+    fn window_sizes(&self, _: &[&[usize]]) -> (usize,) {
+        (1,)
+    }
+
+    fn default(&self, input_shapes: &[&[usize]]) -> (Box<[usize]>, Box<[T]>) {
+        let shape: Box<[usize]> = input_shapes[0].into();
+        let stride = shape.iter().product::<usize>();
+        (shape, vec![T::default(); stride].into())
+    }
+
+    fn init(self) -> Self {
+        self
+    }
+
+    #[inline(always)]
+    fn compute(state: &mut Self, inputs: (&Store<T>,), output: ElementViewMut<'_, T>) -> bool {
+        let a = inputs.0.current();
+        let out = output.values;
+        for i in 0..out.len() {
+            out[i] = (state.op)(a[i].clone());
+        }
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Element-wise binary operator
 // ---------------------------------------------------------------------------
 
 /// Element-wise binary operator: `out[i] = op(a[i], b[i])`.
 ///
 /// Shape-preserving: output shape equals input shape (inputs must match).
-pub struct Apply2<T: Copy, Op: Fn(T, T) -> T> {
+pub struct Apply2<T: Scalar, Op: Fn(T, T) -> T> {
     op: Op,
     _phantom: PhantomData<T>,
 }
@@ -51,64 +93,21 @@ impl<T: Scalar, Op: Fn(T, T) -> T + Send + 'static> Operator for Apply2<T, Op> {
         let (a, b) = (inputs.0.current(), inputs.1.current());
         let out = output.values;
         for i in 0..out.len() {
-            out[i] = (state.op)(a[i], b[i]);
+            out[i] = (state.op)(a[i].clone(), b[i].clone());
         }
         true
     }
 }
 
 // ---------------------------------------------------------------------------
-// Element-wise unary operator
+// Factory functions
 // ---------------------------------------------------------------------------
 
-/// Element-wise unary operator: `out[i] = op(a[i])`.
-///
-/// Shape-preserving: output shape equals input shape.
-pub struct Apply1<T: Copy, Op: Fn(T) -> T> {
-    op: Op,
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Scalar, Op: Fn(T) -> T + Send + 'static> Operator for Apply1<T, Op> {
-    type State = Self;
-    type Inputs = (Store<T>,);
-    type Scalar = T;
-
-    fn window_sizes(&self, _: &[&[usize]]) -> (usize,) {
-        (1,)
-    }
-
-    fn default(&self, input_shapes: &[&[usize]]) -> (Box<[usize]>, Box<[T]>) {
-        let shape: Box<[usize]> = input_shapes[0].into();
-        let stride = shape.iter().product::<usize>();
-        (shape, vec![T::default(); stride].into())
-    }
-
-    fn init(self) -> Self {
-        self
-    }
-
-    #[inline(always)]
-    fn compute(state: &mut Self, inputs: (&Store<T>,), output: ElementViewMut<'_, T>) -> bool {
-        let a = inputs.0.current();
-        let out = output.values;
-        for i in 0..out.len() {
-            out[i] = (state.op)(a[i]);
-        }
-        true
-    }
-}
-
-/// Type aliases.
 pub type Add<T> = Apply2<T, fn(T, T) -> T>;
 pub type Subtract<T> = Apply2<T, fn(T, T) -> T>;
 pub type Multiply<T> = Apply2<T, fn(T, T) -> T>;
 pub type Divide<T> = Apply2<T, fn(T, T) -> T>;
 pub type Negate<T> = Apply1<T, fn(T) -> T>;
-
-// ---------------------------------------------------------------------------
-// Factory functions
-// ---------------------------------------------------------------------------
 
 /// Create an element-wise addition operator.
 pub fn add<T: Scalar + ops::Add<Output = T>>() -> Add<T> {

@@ -12,8 +12,6 @@ use crate::source::Source;
 use crate::store::Store;
 
 use super::Scenario;
-use super::handle::Handle;
-use super::node::new_node;
 
 // ---------------------------------------------------------------------------
 // ErasedChannel — one trait for both historical and live channels
@@ -122,6 +120,29 @@ pub(super) struct SourceState {
 }
 
 impl SourceState {
+    /// Create a new `SourceState` from typed channel receivers.
+    pub(super) fn new<S: Source>(
+        node_index: usize,
+        hist_rx: tokio::sync::mpsc::Receiver<(i64, S::Event)>,
+        live_rx: tokio::sync::mpsc::Receiver<(i64, S::Event)>,
+    ) -> Self {
+        Self {
+            node_index,
+            hist: Box::new(TypedChannel::<S> {
+                rx: hist_rx,
+                pending: None,
+            }),
+            live: Box::new(TypedChannel::<S> {
+                rx: live_rx,
+                pending: None,
+            }),
+            hist_ts: None,
+            live_ts: None,
+            hist_exhausted: false,
+            live_exhausted: false,
+        }
+    }
+
     /// The minimum pending timestamp across both channels.
     fn min_pending_ts(&self) -> Option<i64> {
         match (self.hist_ts, self.live_ts) {
@@ -136,39 +157,6 @@ impl SourceState {
 // ---------------------------------------------------------------------------
 
 impl Scenario {
-    /// Register a [`Source`], creating the output node.
-    ///
-    /// If `windowed` is `true`, the source node uses `window = 0`
-    /// (unbounded history).  Otherwise it uses `window = 1` (single
-    /// element).  Downstream operators may auto-promote the window via
-    /// [`Operator::window_sizes`](crate::operator::Operator::window_sizes).
-    pub fn add_source<S: Source>(&mut self, source: S, windowed: bool) -> Handle<S::Scalar> {
-        let (shape, default) = source.default();
-        let store = if windowed {
-            Store::series(&shape, &default)
-        } else {
-            Store::element(&shape, &default)
-        };
-        let idx = self.graph.push_node(new_node(store));
-        let (hist_rx, live_rx) = source.subscribe();
-        self.source_states.push(SourceState {
-            node_index: idx,
-            hist: Box::new(TypedChannel::<S> {
-                rx: hist_rx,
-                pending: None,
-            }),
-            live: Box::new(TypedChannel::<S> {
-                rx: live_rx,
-                pending: None,
-            }),
-            hist_ts: None,
-            live_ts: None,
-            hist_exhausted: false,
-            live_exhausted: false,
-        });
-        Handle::new(idx)
-    }
-
     /// Run the unified POCQ event loop.
     ///
     /// Historical and live events participate in the same loop.  The

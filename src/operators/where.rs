@@ -14,13 +14,13 @@ use crate::types::Scalar;
 ///
 /// `F` is a per-element predicate: `fn(T) -> bool`.  Elements where `F`
 /// returns `false` are replaced with `fill`.
-pub struct Where<T: Copy, F: Fn(T) -> bool> {
+pub struct Where<T: Scalar, F: Fn(T) -> bool> {
     condition: F,
     fill: T,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy, F: Fn(T) -> bool> Where<T, F> {
+impl<T: Scalar, F: Fn(T) -> bool> Where<T, F> {
     pub fn new(condition: F, fill: T) -> Self {
         Self {
             condition,
@@ -54,10 +54,10 @@ impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
         let input = inputs.0.current();
         let out = output.values;
         for i in 0..out.len() {
-            out[i] = if (state.condition)(input[i]) {
-                input[i]
+            out[i] = if (state.condition)(input[i].clone()) {
+                input[i].clone()
             } else {
-                state.fill
+                state.fill.clone()
             };
         }
         true

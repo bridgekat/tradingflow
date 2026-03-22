@@ -11,18 +11,13 @@
 
 ## Data stores
 
-A [data store](src/store.rs) represents a time series. It holds a contiguous buffer of uniformly typed elements and a buffer of non-decreasing timestamps (nanoseconds since the UNIX epoch) associated to each element. The element type and shape (can be scalar, vector, matrix, or higher-dimensional array) are fixed at creation time.
+A [data store](src/store.rs) represents a time series. It holds a contiguous buffer of uniformly typed [scalars](src/types.rs) and a buffer of non-decreasing `i64` timestamps (nanoseconds since the UNIX epoch) associated to each element. The element type and shape (can be scalar, vector, matrix, or higher-dimensional array) are fixed at creation time.
 
 A configurable **window size** controls retention:
 
 - `window = 1` — stores only the most recent element.
 - `window = N` — stores a fixed sliding window of the most recent `N` elements.
 - `window = 0` — stores the full time series.
-
-Cheap **views** can be created from a data store without allocation:
-
-- `ElementView` / `ElementViewMut` — a single element.
-- `SeriesView` — the full retained history.
 
 ## Sources
 

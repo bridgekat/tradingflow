@@ -1,15 +1,13 @@
-use std::any::TypeId;
-
 use super::store::Store;
 
 /// A permitted array scalar type.
-pub trait Scalar: Copy + Send + Default + 'static {}
+pub trait Scalar: Sized + Send + Sync + Clone + Default + 'static {}
 
 macro_rules! impl_scalar {
     ($($T:ty),+ $(,)?) => { $(impl Scalar for $T {})+ };
 }
 
-impl_scalar!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64);
+impl_scalar!(bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 
 // ===========================================================================
 // Store-based input system
@@ -22,8 +20,9 @@ impl_scalar!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64);
 /// * `Refs<'a>` — aggregated immutable references to input stores
 ///   (e.g. `(&Store<A>, &Store<B>)` for a binary operator).
 /// * `WindowSizes` — aggregated minimum window sizes, one per input
-///   (e.g. `(usize, usize)`).  `0` means "don't care"; `N > 0` means the
-///   input store must retain at least `N` elements.
+///   (e.g. `(usize, usize)`).  `N > 0` means the input store must
+///   retain at least `N` elements, and `N = 0` means the input store
+///   must retain all elements.
 /// * `TypeIds` — aggregated type ids, one per input.
 ///
 /// Implemented for [`Store<T>`], `[Store<T>]`, and tuples of stores up to
@@ -34,12 +33,6 @@ pub trait InputKinds {
 
     /// Aggregated minimum window sizes (e.g. `(usize, usize)`).
     type WindowSizes;
-
-    /// Aggregated type ids (e.g. `[TypeId; 2]`).
-    type TypeIds: AsRef<[TypeId]>;
-
-    /// The type ids of the scalar types.
-    fn type_ids() -> Self::TypeIds;
 
     /// Reconstruct typed references from raw store pointers.
     ///
@@ -63,12 +56,6 @@ pub trait InputKinds {
 impl<T: Scalar> InputKinds for Store<T> {
     type Refs<'a> = &'a Store<T>;
     type WindowSizes = usize;
-    type TypeIds = [TypeId; 1];
-
-    #[inline(always)]
-    fn type_ids() -> [TypeId; 1] {
-        [TypeId::of::<T>()]
-    }
 
     #[inline(always)]
     unsafe fn from_ptrs<'a>(ptrs: &[*const u8]) -> &'a Store<T> {
@@ -87,12 +74,6 @@ impl<T: Scalar> InputKinds for Store<T> {
 impl<T: Scalar> InputKinds for [Store<T>] {
     type Refs<'a> = Box<[&'a Store<T>]>;
     type WindowSizes = Box<[usize]>;
-    type TypeIds = Box<[TypeId]>;
-
-    fn type_ids() -> Box<[TypeId]> {
-        // Slice length is not known statically; callers use node_ids instead.
-        Box::new([])
-    }
 
     #[inline(always)]
     unsafe fn from_ptrs<'a>(ptrs: &[*const u8]) -> Box<[&'a Store<T>]> {
@@ -115,12 +96,6 @@ macro_rules! impl_input_kinds_for_tuple {
         impl<$($T: Scalar),+> InputKinds for ($(Store<$T>,)+) {
             type Refs<'a> = ($(&'a Store<$T>,)+);
             type WindowSizes = ($(impl_input_kinds_for_tuple!(@usize $T),)+);
-            type TypeIds = [TypeId; impl_input_kinds_for_tuple!(@count $($T)+)];
-
-            #[inline(always)]
-            fn type_ids() -> Self::TypeIds {
-                [$(TypeId::of::<$T>()),+]
-            }
 
             #[inline(always)]
             unsafe fn from_ptrs<'a>(ptrs: &[*const u8]) -> Self::Refs<'a> {
@@ -137,10 +112,6 @@ macro_rules! impl_input_kinds_for_tuple {
         }
     };
     (@usize $T:ident) => { usize };
-    (@count $head:ident $($tail:ident)*) => {
-        1 + impl_input_kinds_for_tuple!(@count $($tail)*)
-    };
-    (@count) => { 0 };
 }
 
 impl_input_kinds_for_tuple!(0: A);

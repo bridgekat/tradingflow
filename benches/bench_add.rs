@@ -181,7 +181,7 @@ fn bench_scenario_operator(c: &mut Criterion) {
             let mut sc = Scenario::new();
             let ha = sc.create_node::<f64>(&[], &[0.0]);
             let hb = sc.create_node::<f64>(&[], &[0.0]);
-            let ho = sc.add_operator([ha, hb], operators::add());
+            let ho = sc.add_operator(operators::add(), (ha, hb));
             for i in 0..N {
                 sc.store_mut(ha).push(ts[i], &[a[i]]);
                 sc.store_mut(hb).push(ts[i], &[b[i]]);
@@ -204,7 +204,7 @@ fn bench_scenario_operator_series(c: &mut Criterion) {
             let mut sc = Scenario::new();
             let ha = sc.create_node::<f64>(&[], &[0.0]);
             let hb = sc.create_node::<f64>(&[], &[0.0]);
-            let ho = sc.add_operator([ha, hb], operators::add());
+            let ho = sc.add_operator(operators::add(), (ha, hb));
             sc.store_mut(ho).ensure_min_window(0);
             for i in 0..N {
                 sc.store_mut(ha).push(ts[i], &[a[i]]);
@@ -230,10 +230,10 @@ fn bench_scenario_chain(c: &mut Criterion) {
                 let ha = sc.create_node::<f64>(&[], &[0.0]);
                 let hb = sc.create_node::<f64>(&[], &[0.0]);
 
-                let mut prev = sc.add_operator([ha, hb], operators::add());
+                let mut prev = sc.add_operator(operators::add(), (ha, hb));
                 for i in 1..depth {
                     let other = if i % 2 == 0 { ha } else { hb };
-                    prev = sc.add_operator([prev, other], operators::add());
+                    prev = sc.add_operator(operators::add(), (prev, other));
                 }
 
                 for i in 0..N {
@@ -266,17 +266,17 @@ fn bench_scenario_sparse(c: &mut Criterion) {
                     let hd = sc.create_node::<f64>(&[], &[0.0]);
 
                     // Active chain
-                    let mut last = sc.add_operator([ha, hb], operators::add());
+                    let mut last = sc.add_operator(operators::add(), (ha, hb));
                     for _ in 1..active {
-                        last = sc.add_operator([last, ha], operators::add());
+                        last = sc.add_operator(operators::add(), (last, ha));
                     }
 
                     // Inactive chain
                     let inactive = total - active;
                     if inactive > 0 {
-                        let mut prev = sc.add_operator([hc, hd], operators::add());
+                        let mut prev = sc.add_operator(operators::add(), (hc, hd));
                         for _ in 1..inactive {
-                            prev = sc.add_operator([prev, hc], operators::add());
+                            prev = sc.add_operator(operators::add(), (prev, hc));
                         }
                     }
 

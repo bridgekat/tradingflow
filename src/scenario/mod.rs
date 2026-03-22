@@ -30,11 +30,12 @@ pub use handle::{Handle, InputKindsHandles};
 use std::any::TypeId;
 
 use crate::operator::Operator;
+use crate::source::Source;
 use crate::store::Store;
 use crate::types::{InputKinds, Scalar};
 
 use graph::Graph;
-use node::{new_closure, new_node};
+use node::{Closure, Node};
 use runner::SourceState;
 
 /// Store-based DAG runtime.
@@ -53,7 +54,7 @@ use runner::SourceState;
 ///
 /// // Register an operator.  Inputs are validated via TypeId at registration.
 /// // The operator's window_sizes() auto-promotes input stores if needed.
-/// let hc = sc.add_operator([ha, hb], my_add_op);
+/// let hc = sc.add_operator(my_add_op, (ha, hb));
 ///
 /// // Write to source nodes and flush.
 /// sc.store_mut(ha).push(1, &[10.0]);
@@ -73,17 +74,6 @@ impl Scenario {
             graph: Graph::new(),
             source_states: Vec::new(),
         }
-    }
-
-    // -- Node creation -------------------------------------------------------
-
-    /// Create a node.  Starts as `window = 1` (single element, no history).
-    /// Operators auto-promote inputs via `window_sizes()`, or call
-    /// `store_mut(h).ensure_min_window(n)` manually.
-    pub fn create_node<T: Scalar>(&mut self, shape: &[usize], default: &[T]) -> Handle<T> {
-        let store = Store::element(shape, default);
-        let idx = self.graph.push_node(new_node(store));
-        Handle::new(idx)
     }
 
     // -- Store access --------------------------------------------------------
@@ -114,27 +104,39 @@ impl Scenario {
         unsafe { &mut *(node.store as *mut Store<T>) }
     }
 
-    // -- Operator registration -----------------------------------------------
+    // -- Node creation -------------------------------------------------------
 
-    /// Register an operator, creating its output node.
-    ///
-    /// 1. Validates input handles via TypeId.
-    /// 2. Auto-promotes input stores per `op.window_sizes()`.
-    /// 3. Collects input store pointers for the closure.
-    /// 4. Creates the output node (filled with `op.output()` default value)
-    ///    and wires edges.
-    /// 5. Attaches the closure.
-    pub fn add_operator<Op>(
+    /// Create a node.  Starts as `window = 1` (single element, no history).
+    /// Operators auto-promote inputs via `window_sizes()`, or call
+    /// `store_mut(h).ensure_min_window(n)` manually.
+    pub fn create_node<T: Scalar>(&mut self, shape: &[usize], default: &[T]) -> Handle<T> {
+        let store = Store::element(shape, default);
+        let idx = self.graph.add_node(Node::from_store(store));
+        Handle::new(idx)
+    }
+
+    /// Register a [`Source`], creating the output node.
+    pub fn add_source<S: Source>(&mut self, source: S) -> Handle<S::Scalar> {
+        let (shape, default) = source.default();
+        let store = Store::element(&shape, &default);
+        let idx = self.graph.add_node(Node::from_store(store));
+        let (hist_rx, live_rx) = source.subscribe();
+        self.source_states
+            .push(SourceState::new::<S>(idx, hist_rx, live_rx));
+        Handle::new(idx)
+    }
+
+    /// Register an [`Operator`], creating its output node.
+    pub fn add_operator<O: Operator>(
         &mut self,
-        inputs: impl Into<<Op::Inputs as InputKindsHandles>::Handles>,
-        op: Op,
-    ) -> Handle<Op::Scalar>
+        operator: O,
+        inputs: impl Into<<O::Inputs as InputKindsHandles>::Handles>,
+    ) -> Handle<O::Scalar>
     where
-        Op: Operator,
-        Op::Inputs: InputKindsHandles,
+        O::Inputs: InputKindsHandles,
     {
         let handles = inputs.into();
-        let node_ids = <Op::Inputs as InputKindsHandles>::node_ids(&handles);
+        let node_ids = <O::Inputs as InputKindsHandles>::node_ids(&handles);
 
         // 1. Validate TypeIds, collect input shapes.
         for &(idx, expected_tid) in node_ids.iter() {
@@ -152,23 +154,21 @@ impl Scenario {
             .map(|&(idx, _)| self.graph.nodes[idx].shape())
             .collect();
 
-        // 2. Auto-promote input stores per operator's window_sizes.
-        let window_sizes = op.window_sizes(&input_shapes);
+        // 2. Auto-promote input stores per `op.window_sizes()`.
+        let window_sizes = operator.window_sizes(&input_shapes);
         let store_ptrs: Vec<*mut u8> = node_ids
             .iter()
             .map(|&(idx, _)| self.graph.nodes[idx].store)
             .collect();
-        unsafe { <Op::Inputs as InputKinds>::promote(&store_ptrs, &window_sizes) };
+        unsafe { <O::Inputs as InputKinds>::promote(&store_ptrs, &window_sizes) };
 
-        // 3. Collect input store pointers (as *const for the closure).
+        // 3. Collect input store pointers for the closure.
         let input_ptrs: Box<[*const u8]> = store_ptrs.iter().map(|&p| p as *const u8).collect();
 
-        // 4. Create output node.
-        let (output_shape, default) = op.default(&input_shapes);
-        let state = op.init();
-
+        // 4. Create output node (filled with `op.output()` default value).
+        let (output_shape, default) = operator.default(&input_shapes);
         let output_store = Store::element(&output_shape, &default);
-        let output_idx = self.graph.push_node(new_node(output_store));
+        let output_idx = self.graph.add_node(Node::from_store(output_store));
 
         // Wire edges: each input node -> output node.
         for &(input_idx, _) in node_ids.iter() {
@@ -176,7 +176,7 @@ impl Scenario {
         }
 
         // 5. Attach closure.
-        let closure = new_closure::<Op>(input_ptrs, state);
+        let closure = Closure::from_operator(operator, input_ptrs);
         self.graph.nodes[output_idx].closure = Some(closure);
 
         Handle::new(output_idx)
@@ -259,12 +259,12 @@ impl Scenario {
             unsafe { drop(Box::from_raw(ptr as *mut Box<dyn std::any::Any + Send>)) };
         }
 
-        self.graph.nodes[node_index].closure = Some(Closure {
+        self.graph.nodes[node_index].closure = Some(Closure::new(
             compute_fn,
-            state: state_ptr,
             input_ptrs,
-            drop_state: drop_dyn_state,
-        });
+            state_ptr,
+            drop_dyn_state,
+        ));
     }
 }
 
@@ -322,7 +322,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.create_node::<f64>(&[], &[0.0]);
         let hb = sc.create_node::<f64>(&[], &[0.0]);
-        let hc = sc.add_operator([ha, hb], TestAdd);
+        let hc = sc.add_operator(TestAdd, [ha, hb]);
 
         // Write new values and flush.
         sc.store_mut(ha).push(1, &[10.0]);
@@ -337,7 +337,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.create_node::<f64>(&[], &[0.0]);
         let hb = sc.create_node::<f64>(&[], &[0.0]);
-        let hc = sc.add_operator([ha, hb], TestAdd);
+        let hc = sc.add_operator(TestAdd, [ha, hb]);
 
         // Promote output to unbounded so it keeps full history.
         sc.store_mut(hc).ensure_min_window(0);
@@ -361,7 +361,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.create_node::<f64>(&[], &[0.0]);
         let hb = sc.create_node::<f64>(&[], &[0.0]);
-        let hab = sc.add_operator([ha, hb], TestAdd);
+        let hab = sc.add_operator(TestAdd, [ha, hb]);
 
         /// Minimal multiply operator.
         struct TestMul;
@@ -396,7 +396,7 @@ mod tests {
             }
         }
 
-        let hout = sc.add_operator([hab, ha], TestMul);
+        let hout = sc.add_operator(TestMul, [hab, ha]);
 
         sc.store_mut(ha).push(1, &[2.0]);
         sc.store_mut(hb).push(1, &[3.0]);
@@ -413,10 +413,8 @@ mod tests {
         use crate::sources::ArraySource;
 
         let mut sc = Scenario::new();
-        let ha = sc.add_source(
-            ArraySource::new(vec![1, 2, 3], vec![10.0, 20.0, 30.0], 1),
-            true,
-        );
+        let ha = sc.add_source(ArraySource::new(vec![1, 2, 3], vec![10.0, 20.0, 30.0], 1));
+        sc.store_mut(ha).ensure_min_window(0); // keep history
 
         sc.run().await;
 
@@ -431,10 +429,10 @@ mod tests {
         use crate::sources::ArraySource;
 
         let mut sc = Scenario::new();
-        let ha = sc.add_source(ArraySource::new(vec![1, 3], vec![10.0, 30.0], 1), false);
-        let hb = sc.add_source(ArraySource::new(vec![2, 3], vec![20.0, 40.0], 1), false);
-        let ho = sc.add_operator([ha, hb], TestAdd);
-        sc.store_mut(ho).ensure_min_window(0); // keep history
+        let ha = sc.add_source(ArraySource::new(vec![1, 3], vec![10.0, 30.0], 1));
+        let hb = sc.add_source(ArraySource::new(vec![2, 3], vec![20.0, 40.0], 1));
+        let ho = sc.add_operator(TestAdd, [ha, hb]);
+        sc.store_mut(ho).ensure_min_window(0);
 
         sc.run().await;
 
@@ -450,9 +448,10 @@ mod tests {
         use crate::sources::ArraySource;
 
         let mut sc = Scenario::new();
-        let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![10.0, 20.0], 1), true);
-        let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![100.0, 200.0], 1), false);
-        let ho = sc.add_operator([ha, hb], TestAdd);
+        let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![10.0, 20.0], 1));
+        let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![100.0, 200.0], 1));
+        sc.store_mut(ha).ensure_min_window(0);
+        let ho = sc.add_operator(TestAdd, [ha, hb]);
         sc.store_mut(ho).ensure_min_window(0);
 
         sc.run().await;
@@ -503,10 +502,10 @@ mod tests {
         }
 
         let mut sc = Scenario::new();
-        let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![2.0, 5.0], 1), false);
-        let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![3.0, 10.0], 1), false);
-        let hab = sc.add_operator([ha, hb], TestAdd);
-        let hout = sc.add_operator([hab, ha], TestMul2);
+        let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![2.0, 5.0], 1));
+        let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![3.0, 10.0], 1));
+        let hab = sc.add_operator(TestAdd, [ha, hb]);
+        let hout = sc.add_operator(TestMul2, [hab, ha]);
         sc.store_mut(hout).ensure_min_window(0);
 
         sc.run().await;
@@ -523,11 +522,12 @@ mod tests {
         use crate::sources::ArraySource;
 
         let mut sc = Scenario::new();
-        let ha = sc.add_source(
-            ArraySource::new(vec![1, 2, 3, 4], vec![1.0, 5.0, 2.0, 10.0], 1),
-            false,
-        );
-        let ho = sc.add_operator([ha], Filter::new(|v: &[f64]| v[0] > 3.0));
+        let ha = sc.add_source(ArraySource::new(
+            vec![1, 2, 3, 4],
+            vec![1.0, 5.0, 2.0, 10.0],
+            1,
+        ));
+        let ho = sc.add_operator(Filter::new(|v: &[f64]| v[0] > 3.0), [ha]);
         sc.store_mut(ho).ensure_min_window(0);
 
         sc.run().await;

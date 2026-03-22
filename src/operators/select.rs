@@ -13,7 +13,7 @@ use crate::types::Scalar;
 ///
 /// Precomputes a flat index mapping at construction time for O(1) per-element
 /// access during compute.
-pub struct Select<T: Copy> {
+pub struct Select<T: Scalar> {
     /// For each output element, the index in the flat input buffer.
     index_map: Vec<usize>,
     /// Axis along which selection was performed (used for output_shape).
@@ -23,7 +23,7 @@ pub struct Select<T: Copy> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy> Select<T> {
+impl<T: Scalar> Select<T> {
     /// Select by flat indices (for 1-D inputs or when the caller has
     /// precomputed the mapping).
     pub fn flat(indices: Vec<usize>) -> Self {
@@ -77,7 +77,7 @@ impl<T: Scalar> Operator for Select<T> {
         let input = inputs.0.current();
         let out = output.values;
         for (i, &src_idx) in state.index_map.iter().enumerate() {
-            out[i] = input[src_idx];
+            out[i] = input[src_idx].clone();
         }
         true
     }

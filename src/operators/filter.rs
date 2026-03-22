@@ -16,12 +16,12 @@ use crate::types::Scalar;
 /// element or `false` to drop it.  When dropped, the operator returns
 /// `false` from `compute`, so the store is not appended to and downstream
 /// operators are not triggered.
-pub struct Filter<T: Copy, F: Fn(&[T]) -> bool> {
+pub struct Filter<T: Scalar, F: Fn(&[T]) -> bool> {
     predicate: F,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy, F: Fn(&[T]) -> bool> Filter<T, F> {
+impl<T: Scalar, F: Fn(&[T]) -> bool> Filter<T, F> {
     pub fn new(predicate: F) -> Self {
         Self {
             predicate,
@@ -53,7 +53,7 @@ impl<T: Scalar, F: Fn(&[T]) -> bool + Send + 'static> Operator for Filter<T, F> 
     fn compute(state: &mut Self, inputs: (&Store<T>,), output: ElementViewMut<'_, T>) -> bool {
         let input = inputs.0.current();
         if (state.predicate)(input) {
-            output.values.copy_from_slice(input);
+            output.values.clone_from_slice(input);
             true
         } else {
             false

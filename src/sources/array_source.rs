@@ -10,13 +10,13 @@ use crate::types::Scalar;
 ///
 /// Each event carries a single `T` value.  The historical channel is filled
 /// by a spawned task with bounded back-pressure; the live channel is empty.
-pub struct ArraySource<T: Copy + Send + 'static> {
+pub struct ArraySource<T: Scalar> {
     timestamps: Vec<i64>,
     values: Vec<T>,
     stride: usize,
 }
 
-impl<T: Copy + Send + 'static> ArraySource<T> {
+impl<T: Scalar> ArraySource<T> {
     /// Create from timestamp and flat value arrays.
     ///
     /// `values.len()` must equal `timestamps.len() * stride`.
@@ -30,7 +30,7 @@ impl<T: Copy + Send + 'static> ArraySource<T> {
     }
 }
 
-impl<T: Scalar + Send> Source for ArraySource<T> {
+impl<T: Scalar> Source for ArraySource<T> {
     type Event = Vec<T>;
     type Scalar = T;
 
@@ -63,7 +63,7 @@ impl<T: Scalar + Send> Source for ArraySource<T> {
     }
 
     fn write(payload: Vec<T>, output: ElementViewMut<'_, T>) -> bool {
-        output.values.copy_from_slice(&payload);
+        output.values.clone_from_slice(&payload);
         true
     }
 }

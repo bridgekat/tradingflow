@@ -14,7 +14,7 @@ use crate::types::Scalar;
 ///
 /// For axis 0 (and for scalar/1-D inputs), the flat storage layout is just
 /// sequential copies.  For higher axes, blocks are interleaved.
-pub struct Concat<T: Copy> {
+pub struct Concat<T: Scalar> {
     /// Number of outer iterations (product of dims before `axis`).
     outer_count: usize,
     /// Number of elements per input per outer iteration (product of dims
@@ -24,7 +24,7 @@ pub struct Concat<T: Copy> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy> Concat<T> {
+impl<T: Scalar> Concat<T> {
     /// Create a Concat operator.
     ///
     /// `input_shape`: the element shape of each input (all inputs must
@@ -85,7 +85,7 @@ impl<T: Scalar> Operator for Concat<T> {
             let mut offset = 0;
             for store in inputs.iter() {
                 let src = store.current();
-                out[offset..offset + src.len()].copy_from_slice(src);
+                out[offset..offset + src.len()].clone_from_slice(src);
                 offset += src.len();
             }
         } else {
@@ -95,7 +95,7 @@ impl<T: Scalar> Operator for Concat<T> {
                     let src = store.current();
                     let src_offset = outer * state.chunk_size;
                     out[out_offset..out_offset + state.chunk_size]
-                        .copy_from_slice(&src[src_offset..src_offset + state.chunk_size]);
+                        .clone_from_slice(&src[src_offset..src_offset + state.chunk_size]);
                     out_offset += state.chunk_size;
                 }
             }

@@ -27,16 +27,17 @@ jobs:
       # Build the Python package (maturin compiles Rust + installs Python)
       - run: python -m pip install -e ".[docs]"
 
-      # Python docs (Zensical → site/)
+      # Python docs (Zensical → python/site/)
       - run: zensical build --clean
+        working-directory: python
 
-      # Rust docs (cargo doc → site/native/)
+      # Rust docs (cargo doc → python/site/native/)
       - run: cargo doc --no-deps --features python
-      - run: cp -r target/doc site/native
+      - run: cp -r target/doc python/site/native
 
       # Upload to GitHub Pages
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: site
+          path: python/site
       - uses: actions/deploy-pages@v4
         id: deployment

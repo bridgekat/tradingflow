@@ -43,9 +43,10 @@ impl NativeOpHandle {
         sc: &mut Scenario,
         input_indices: &[usize],
     ) -> PyResult<usize> {
-        let f = self.register_fn.take().ok_or_else(|| {
-            PyRuntimeError::new_err("NativeOpHandle has already been consumed")
-        })?;
+        let f = self
+            .register_fn
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("NativeOpHandle has already been consumed"))?;
         Ok(f(sc, input_indices))
     }
 }
@@ -68,7 +69,8 @@ macro_rules! def_binary_op {
                     register_fn: Some(Box::new(|sc, inputs| {
                         let h0 = Handle::<f64>::new(inputs[0]);
                         let h1 = Handle::<f64>::new(inputs[1]);
-                        sc.add_operator((h0, h1), operators::$py_name::<f64>()).index()
+                        sc.add_operator(operators::$py_name::<f64>(), (h0, h1))
+                            .index()
                     })),
                     dtype_str: d,
                 }),
@@ -76,7 +78,8 @@ macro_rules! def_binary_op {
                     register_fn: Some(Box::new(|sc, inputs| {
                         let h0 = Handle::<f32>::new(inputs[0]);
                         let h1 = Handle::<f32>::new(inputs[1]);
-                        sc.add_operator((h0, h1), operators::$py_name::<f32>()).index()
+                        sc.add_operator(operators::$py_name::<f32>(), (h0, h1))
+                            .index()
                     })),
                     dtype_str: d,
                 }),
@@ -99,14 +102,14 @@ macro_rules! def_unary_op {
                 "float64" => Ok(NativeOpHandle {
                     register_fn: Some(Box::new(|sc, inputs| {
                         let h0 = Handle::<f64>::new(inputs[0]);
-                        sc.add_operator((h0,), operators::$py_name::<f64>()).index()
+                        sc.add_operator(operators::$py_name::<f64>(), (h0,)).index()
                     })),
                     dtype_str: d,
                 }),
                 "float32" => Ok(NativeOpHandle {
                     register_fn: Some(Box::new(|sc, inputs| {
                         let h0 = Handle::<f32>::new(inputs[0]);
-                        sc.add_operator((h0,), operators::$py_name::<f32>()).index()
+                        sc.add_operator(operators::$py_name::<f32>(), (h0,)).index()
                     })),
                     dtype_str: d,
                 }),
@@ -136,7 +139,7 @@ pub fn select(dtype: &str, indices: Vec<usize>) -> PyResult<NativeOpHandle> {
             Ok(NativeOpHandle {
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let h0 = Handle::<f64>::new(inputs[0]);
-                    sc.add_operator((h0,), op).index()
+                    sc.add_operator(op, (h0,)).index()
                 })),
                 dtype_str: d,
             })
@@ -146,7 +149,7 @@ pub fn select(dtype: &str, indices: Vec<usize>) -> PyResult<NativeOpHandle> {
             Ok(NativeOpHandle {
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let h0 = Handle::<f32>::new(inputs[0]);
-                    sc.add_operator((h0,), op).index()
+                    sc.add_operator(op, (h0,)).index()
                 })),
                 dtype_str: d,
             })
@@ -167,7 +170,7 @@ pub fn concat(dtype: &str, input_shape: Vec<usize>, axis: usize) -> PyResult<Nat
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let handles: Box<[Handle<f64>]> =
                         inputs.iter().map(|&i| Handle::new(i)).collect();
-                    sc.add_operator(handles, op).index()
+                    sc.add_operator(op, handles).index()
                 })),
                 dtype_str: d,
             })
@@ -178,7 +181,7 @@ pub fn concat(dtype: &str, input_shape: Vec<usize>, axis: usize) -> PyResult<Nat
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let handles: Box<[Handle<f32>]> =
                         inputs.iter().map(|&i| Handle::new(i)).collect();
-                    sc.add_operator(handles, op).index()
+                    sc.add_operator(op, handles).index()
                 })),
                 dtype_str: d,
             })
@@ -199,7 +202,7 @@ pub fn stack(dtype: &str, input_shape: Vec<usize>, axis: usize) -> PyResult<Nati
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let handles: Box<[Handle<f64>]> =
                         inputs.iter().map(|&i| Handle::new(i)).collect();
-                    sc.add_operator(handles, op).index()
+                    sc.add_operator(op, handles).index()
                 })),
                 dtype_str: d,
             })
@@ -210,7 +213,7 @@ pub fn stack(dtype: &str, input_shape: Vec<usize>, axis: usize) -> PyResult<Nati
                 register_fn: Some(Box::new(move |sc, inputs| {
                     let handles: Box<[Handle<f32>]> =
                         inputs.iter().map(|&i| Handle::new(i)).collect();
-                    sc.add_operator(handles, op).index()
+                    sc.add_operator(op, handles).index()
                 })),
                 dtype_str: d,
             })

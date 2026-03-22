@@ -5,19 +5,9 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use super::node::Node;
+use super::Node;
 
-/// Untyped DAG graph owning [`Node`]s and implementing topological flush.
-///
-/// # Memory layout
-///
-/// ```text
-/// Graph {
-///     nodes:   Vec<Node>                  // type-erased nodes
-///     pending: Vec<bool>                  // pending[i] <=> node i is in the heap
-///     heap:    BinaryHeap<Reverse<usize>> // min-heap of node indices
-/// }
-/// ```
+/// Untyped DAG owning [`Node`]s and implementing topological flush.
 ///
 /// # Invariants
 ///
@@ -30,15 +20,19 @@ use super::node::Node;
 ///
 /// # Safety
 ///
-/// All methods on `Graph` are safe, assuming nodes were correctly constructed
-/// (which the typed `Scenario` layer guarantees).
+/// All methods on `Graph` are safe, assuming nodes were constructed in
+/// topological order.
 pub(super) struct Graph {
+    /// Type-erased nodes.
     pub nodes: Vec<Node>,
+    /// Pending update flags, parallel to `nodes`.
     pending: Vec<bool>,
+    /// Min-heap of node indices.
     heap: BinaryHeap<Reverse<usize>>,
 }
 
 impl Graph {
+    /// Create an empty graph.
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
@@ -48,7 +42,7 @@ impl Graph {
     }
 
     /// Append a node.  Returns its index (= topological rank).
-    pub fn push_node(&mut self, node: Node) -> usize {
+    pub fn add_node(&mut self, node: Node) -> usize {
         let idx = self.nodes.len();
         self.nodes.push(node);
         self.pending.push(false);
@@ -73,34 +67,32 @@ impl Graph {
     /// scheduled in turn.
     pub fn flush(&mut self, timestamp: i64, updated_sources: &[usize]) {
         // Seed the min-heap from updated source nodes' edges.
-        for &src_idx in updated_sources {
-            for &downstream in &self.nodes[src_idx].edges {
-                if !self.pending[downstream] {
-                    self.pending[downstream] = true;
-                    self.heap.push(Reverse(downstream));
+        for &i in updated_sources {
+            for &j in &self.nodes[i].edges {
+                if !self.pending[j] {
+                    self.pending[j] = true;
+                    self.heap.push(Reverse(j));
                 }
             }
         }
 
         // Process in topological order (node index IS topological rank).
-        while let Some(Reverse(node_idx)) = self.heap.pop() {
-            self.pending[node_idx] = false;
+        while let Some(Reverse(i)) = self.heap.pop() {
+            self.pending[i] = false;
 
-            let node = &self.nodes[node_idx];
+            let node = &self.nodes[i];
             let produced = if let Some(ref closure) = node.closure {
                 // SAFETY: all pointers validated at node construction time.
-                unsafe {
-                    (closure.compute_fn)(&closure.input_ptrs, node.store, closure.state, timestamp)
-                }
+                unsafe { closure.compute(node.store, timestamp) }
             } else {
                 false
             };
 
             if produced {
-                for &downstream in &self.nodes[node_idx].edges {
-                    if !self.pending[downstream] {
-                        self.pending[downstream] = true;
-                        self.heap.push(Reverse(downstream));
+                for &j in &self.nodes[i].edges {
+                    if !self.pending[j] {
+                        self.pending[j] = true;
+                        self.heap.push(Reverse(j));
                     }
                 }
             }

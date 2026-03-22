@@ -66,7 +66,7 @@ pub fn extract_value_bytes(
 ///
 /// Uses unbounded receivers from Python, then forwards to bounded channels
 /// for the Scenario's POCQ runtime.
-pub struct ChannelSource<T: Copy> {
+pub struct ChannelSource<T: Scalar> {
     py_hist_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
     py_live_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
     shape: Box<[usize]>,
@@ -120,7 +120,7 @@ impl<T: Scalar> Source for ChannelSource<T> {
                 payload.len() / std::mem::size_of::<T>(),
             )
         };
-        output.values.copy_from_slice(values);
+        output.values.clone_from_slice(values);
         true
     }
 }
@@ -194,14 +194,13 @@ pub fn register_array_source(
     timestamps: Vec<i64>,
     values_bytes: Vec<u8>,
     stride: usize,
-    windowed: bool,
 ) -> PyResult<usize> {
     let dtype = normalise_dtype(dtype);
     macro_rules! register {
         ($T:ty) => {{
             let values = bytes_to_vec::<$T>(&values_bytes);
             let source = ArraySource::new(timestamps, values, stride);
-            let handle: Handle<$T> = sc.add_source(source, windowed);
+            let handle: Handle<$T> = sc.add_source(source);
             handle.index()
         }};
     }
@@ -227,7 +226,6 @@ pub fn register_channel_source(
     sc: &mut Scenario,
     shape: &[usize],
     dtype: &str,
-    windowed: bool,
 ) -> PyResult<(usize, HistoricalEventSender, LiveEventSender)> {
     let dtype_norm = normalise_dtype(dtype);
     let stride: usize = if shape.is_empty() {
@@ -251,7 +249,7 @@ pub fn register_channel_source(
                 shape: shape_box,
                 _phantom: PhantomData,
             };
-            let handle: Handle<$T> = sc.add_source(source, windowed);
+            let handle: Handle<$T> = sc.add_source(source);
             handle.index()
         }};
     }
