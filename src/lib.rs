@@ -3,11 +3,11 @@
 //! This crate provides the performance-critical data structures and runtime
 //! for the TradingFlow event-driven trading framework:
 //!
-//! * [`Array`](array::Array) — dense, dynamically-shaped array.
-//! * [`Series`](series::Series) — append-only time series.
-//! * [`Operator`](operator::Operator) — trait for compute functions.
-//! * [`Source`](source::Source) — trait for data sources.
-//! * [`Scenario`](scenario::Scenario) — DAG runtime with type-erased dispatch.
+//! * [`Array`] — dense, dynamically-shaped array.
+//! * [`Series`] — append-only time series.
+//! * [`Operator`] — trait for compute functions.
+//! * [`Source`] — trait for data sources.
+//! * [`Scenario`] — DAG runtime with type-erased dispatch.
 //!
 //! When compiled with the `python` feature, the crate also produces a PyO3
 //! `cdylib` exposing the runtime to Python.
@@ -21,6 +21,14 @@ pub mod source;
 pub mod sources;
 pub mod types;
 pub mod utils;
+
+pub use array::Array;
+pub use operator::Operator;
+pub use scenario::Scenario;
+pub use series::Series;
+pub use source::Source;
+pub use types::Scalar;
+pub use utils::Schema;
 
 #[cfg(feature = "python")]
 pub mod bridge;

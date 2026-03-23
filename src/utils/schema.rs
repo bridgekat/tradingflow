@@ -1,27 +1,20 @@
 //! Schema — bidirectional name↔position mapping for array axes.
-//!
-//! A [`Schema`] maps string labels to integer positions along a single
-//! array axis.  It is a construction-time helper — not embedded in the
-//! DAG or carried by arrays at runtime.
-//!
-//! # Examples
-//!
-//! ```
-//! use tradingflow::utils::Schema;
-//!
-//! let symbols = Schema::new(["000001.SZ", "000002.SZ", "600519.SH"]);
-//! assert_eq!(symbols.index("600519.SH"), 2);
-//! assert_eq!(symbols.name(0), "000001.SZ");
-//! assert_eq!(symbols.indices(["600519.SH", "000001.SZ"]), vec![2, 0]);
-//! ```
 
 use std::collections::HashMap;
 
-/// Bidirectional name↔position mapping for a single array axis.
+/// A [`Schema`] maps string labels to integer positions along a single
+/// array axis.  It is a construction-time helper — not embedded in the
+/// DAG or carried by arrays at runtime.
+/// # Examples
 ///
-/// Used at graph construction time to resolve named columns/symbols into
-/// the integer indices that operators like [`Select`](crate::operators::Select)
-/// and [`Concat`](crate::operators::Concat) expect.
+/// ```
+/// use tradingflow::Schema;
+///
+/// let symbols = Schema::new(["000001.SZ", "000002.SZ", "600519.SH"]);
+/// assert_eq!(symbols.index("600519.SH"), 2);
+/// assert_eq!(symbols.name(0), "000001.SZ");
+/// assert_eq!(symbols.indices(["600519.SH", "000001.SZ"]), vec![2, 0]);
+/// ```
 #[derive(Clone, Debug)]
 pub struct Schema {
     names: Vec<String>,

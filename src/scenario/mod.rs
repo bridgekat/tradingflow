@@ -34,14 +34,15 @@ use runner::SourceState;
 ///
 /// # Type-safe API example
 ///
-/// ```ignore
-/// use tradingflow::array::Array;
+/// ```
+/// use tradingflow::{Scenario, Array};
+/// use tradingflow::operators::add;
 ///
 /// let mut sc = Scenario::new();
 ///
-/// let ha = sc.create_node(Array::scalar(0.0_f64));
-/// let hb = sc.create_node(Array::scalar(0.0_f64));
-/// let hc = sc.add_operator(my_add_op, (ha, hb));
+/// let ha = sc.create_node(Array::scalar(0.0));
+/// let hb = sc.create_node(Array::scalar(0.0));
+/// let hc = sc.add_operator(add::<f64>(), (ha, hb));
 ///
 /// sc.value_mut(ha)[0] = 10.0;
 /// sc.value_mut(hb)[0] = 3.0;
@@ -132,16 +133,6 @@ impl Scenario {
     /// The operator reads from `inputs` but is only scheduled when the
     /// `clock` node updates.  The clock is not an input — the operator
     /// does not read its value.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let prices = sc.add_source(daily_prices);
-    /// let clock = sc.add_source(monthly_clock);
-    ///
-    /// // Fires monthly, reads daily prices.
-    /// let h = sc.add_operator_periodic(my_op, (prices,), clock);
-    /// ```
     pub fn add_operator_periodic<O: Operator>(
         &mut self,
         operator: O,
