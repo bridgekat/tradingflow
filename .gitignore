@@ -16,6 +16,7 @@ site/
 *.pyd
 *.so
 *.dylib
+*.pdb
 
 # Virtual environments
 .venv/
