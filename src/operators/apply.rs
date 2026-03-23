@@ -7,9 +7,7 @@
 use std::marker::PhantomData;
 use std::ops;
 
-use crate::array::Array;
-use crate::operator::Operator;
-use crate::types::Scalar;
+use crate::{Array, Operator, Scalar};
 
 // ---------------------------------------------------------------------------
 // Element-wise unary operator
@@ -29,7 +27,7 @@ impl<T: Scalar, Op: Fn(T) -> T + Send + 'static> Operator for Apply1<T, Op> {
     type Output = Array<T>;
 
     fn init(self, inputs: (&Array<T>,), _timestamp: i64) -> (Self, Array<T>) {
-        (self, Array::zeros(inputs.0.shape()))
+        (self, Array::default(inputs.0.shape()))
     }
 
     #[inline(always)]
@@ -66,7 +64,7 @@ impl<T: Scalar, Op: Fn(T, T) -> T + Send + 'static> Operator for Apply2<T, Op> {
     type Output = Array<T>;
 
     fn init(self, inputs: (&Array<T>, &Array<T>), _timestamp: i64) -> (Self, Array<T>) {
-        (self, Array::zeros(inputs.0.shape()))
+        (self, Array::default(inputs.0.shape()))
     }
 
     #[inline(always)]

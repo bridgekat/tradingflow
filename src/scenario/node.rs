@@ -17,7 +17,7 @@
 use std::any::TypeId;
 
 use crate::operator::Operator;
-use crate::types::InputKinds;
+use crate::types::InputTypes;
 
 // ---------------------------------------------------------------------------
 // Function pointer types
@@ -180,7 +180,7 @@ unsafe fn compute_fn<O: Operator>(
     timestamp: i64,
 ) -> bool {
     unsafe {
-        let inputs = <O::Inputs as InputKinds>::from_ptrs(input_ptrs);
+        let inputs = <O::Inputs as InputTypes>::from_ptrs(input_ptrs);
         let output = &mut *(output_ptr as *mut O::Output);
         let state = &mut *(state_ptr as *mut O::State);
         O::compute(state, inputs, output, timestamp)

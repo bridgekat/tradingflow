@@ -22,12 +22,12 @@ pub mod sources;
 pub mod types;
 pub mod utils;
 
-pub use array::Array;
+pub use array::{Array, Scalar};
 pub use operator::Operator;
 pub use scenario::Scenario;
 pub use series::Series;
 pub use source::Source;
-pub use types::Scalar;
+pub use types::InputTypes;
 pub use utils::Schema;
 
 #[cfg(feature = "python")]

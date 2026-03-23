@@ -20,21 +20,25 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::array::Array;
-use crate::series::Series;
-use crate::types::Scalar;
+use crate::{Array, Scalar, Series};
+
+/// Type alias for arbitrary Python objects.
+pub type PyObject = Py<PyAny>;
 
 /// Additional bounds needed for numpy interop.
-pub(crate) trait NpScalar: Scalar + numpy::Element {}
-impl NpScalar for f64 {}
-impl NpScalar for f32 {}
-impl NpScalar for i64 {}
-impl NpScalar for i32 {}
-impl NpScalar for u64 {}
-impl NpScalar for u32 {}
-impl NpScalar for u8 {}
+pub trait PyScalar: Scalar + numpy::Element {}
 
-type PyObject = Py<PyAny>;
+impl PyScalar for bool {}
+impl PyScalar for i8 {}
+impl PyScalar for i16 {}
+impl PyScalar for i32 {}
+impl PyScalar for i64 {}
+impl PyScalar for u8 {}
+impl PyScalar for u16 {}
+impl PyScalar for u32 {}
+impl PyScalar for u64 {}
+impl PyScalar for f32 {}
+impl PyScalar for f64 {}
 
 // ===========================================================================
 // ArrayView
@@ -42,6 +46,7 @@ type PyObject = Py<PyAny>;
 
 /// Type-erased function: copy Array<T> data into a new numpy array.
 type ArrayValueFn = unsafe fn(*const u8, Python<'_>, &[usize]) -> PyResult<PyObject>;
+
 /// Type-erased function: copy numpy data into Array<T>.
 type ArrayWriteFn = unsafe fn(*mut u8, Python<'_>, &Bound<'_, PyAny>, &[usize]) -> PyResult<()>;
 
@@ -66,7 +71,7 @@ unsafe impl Sync for _ArrayView {}
 /// Called at the monomorphization site where `T` is known.  The returned
 /// view stores pre-resolved function pointers — no dtype dispatch at access
 /// time.
-pub fn make_array_view<T: NpScalar>(ptr: *mut u8, shape: &[usize], dtype_str: &str) -> _ArrayView {
+pub fn make_array_view<T: PyScalar>(ptr: *mut u8, shape: &[usize], dtype_str: &str) -> _ArrayView {
     _ArrayView {
         ptr,
         shape: shape.to_vec(),
@@ -108,7 +113,7 @@ impl _ArrayView {
 
 // -- Monomorphized helpers for ArrayView ------------------------------------
 
-unsafe fn array_value<T: NpScalar>(
+unsafe fn array_value<T: PyScalar>(
     ptr: *const u8,
     py: Python<'_>,
     shape: &[usize],
@@ -124,7 +129,7 @@ unsafe fn array_value<T: NpScalar>(
     Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
 }
 
-unsafe fn array_write<T: NpScalar>(
+unsafe fn array_write<T: PyScalar>(
     ptr: *mut u8,
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -195,7 +200,7 @@ unsafe impl Send for _SeriesView {}
 unsafe impl Sync for _SeriesView {}
 
 /// Create a [`_SeriesView`] for a node holding `Series<T>`.
-pub fn make_series_view<T: NpScalar>(
+pub fn make_series_view<T: PyScalar>(
     ptr: *mut u8,
     shape: &[usize],
     dtype_str: &str,
@@ -259,7 +264,7 @@ impl _SeriesView {
 
 // -- Monomorphized helpers for SeriesView -----------------------------------
 
-unsafe fn series_last<T: NpScalar>(
+unsafe fn series_last<T: PyScalar>(
     ptr: *const u8,
     py: Python<'_>,
     shape: &[usize],
@@ -276,7 +281,7 @@ unsafe fn series_last<T: NpScalar>(
     Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
 }
 
-unsafe fn series_values<T: NpScalar>(
+unsafe fn series_values<T: PyScalar>(
     ptr: *const u8,
     py: Python<'_>,
     element_shape: &[usize],
@@ -302,7 +307,7 @@ unsafe fn series_values<T: NpScalar>(
     Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
 }
 
-unsafe fn series_index<T: NpScalar>(
+unsafe fn series_index<T: PyScalar>(
     ptr: *const u8,
     py: Python<'_>,
     start: usize,
@@ -318,7 +323,7 @@ unsafe fn series_index<T: NpScalar>(
     Ok(PyArray1::from_owned_array(py, arr).into_any().unbind())
 }
 
-unsafe fn series_len<T: NpScalar>(ptr: *const u8) -> usize {
+unsafe fn series_len<T: PyScalar>(ptr: *const u8) -> usize {
     let series = unsafe { &*(ptr as *const Series<T>) };
     series.len()
 }

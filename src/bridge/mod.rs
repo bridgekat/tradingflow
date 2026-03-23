@@ -1,7 +1,7 @@
 //! PyO3 bridge — exposes the Rust runtime to Python.
 //!
 //! [`NativeScenario`] wraps the Rust [`Scenario`](crate::scenario::Scenario),
-//! providing three registration entry points:
+//! providing four registration entry points:
 //!
 //! * [`add_native_operator`](NativeScenario::add_native_operator) — register a
 //!   Rust-implemented operator by kind string + dtype + params.
@@ -31,10 +31,7 @@ use pyo3::types::{PyAny, PyDict};
 
 type PyObject = Py<PyAny>;
 
-use crate::array::Array;
-use crate::scenario::Scenario;
-use crate::series::Series;
-use crate::types::Scalar;
+use crate::{Array, Scalar, Scenario, Series};
 
 use dispatch::{dispatch_dtype, normalise_dtype};
 pub use sources::{HistoricalEventSender, LiveEventSender};
@@ -59,7 +56,7 @@ fn set_error(slot: &ErrorSlot, msg: String) {
 
 /// What kind of value a node holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ViewKind {
+pub(super) enum ViewKind {
     Array,
     Series,
 }
@@ -99,7 +96,7 @@ fn create_view(
 fn create_array_node(sc: &mut Scenario, shape: &[usize], dtype: &str) -> PyResult<usize> {
     macro_rules! create {
         ($T:ty) => {{
-            let arr = Array::<$T>::zeros(shape);
+            let arr = Array::<$T>::default(shape);
             Ok(sc.create_node(arr).index())
         }};
     }
@@ -127,9 +124,7 @@ fn resolve_type_id(kind: &str, dtype: &str) -> PyResult<TypeId> {
             match kind {
                 "array" => Ok(TypeId::of::<Array<$T>>()),
                 "series" => Ok(TypeId::of::<Series<$T>>()),
-                other => Err(PyTypeError::new_err(format!(
-                    "unknown node kind: {other}"
-                ))),
+                other => Err(PyTypeError::new_err(format!("unknown node kind: {other}"))),
             }
         };
     }
@@ -234,10 +229,15 @@ impl NativeScenario {
     ) -> PyResult<usize> {
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalise_dtype(dtype).to_string();
-        let idx = operators::dispatch_native_operator(
-            sc, kind, &dtype_norm, &input_indices, clock_index, params,
+        let (idx, view_kind) = operators::dispatch_native_operator(
+            sc,
+            kind,
+            &dtype_norm,
+            &input_indices,
+            clock_index,
+            params,
         )?;
-        self.push_node(py, idx, &dtype_norm, ViewKind::Array, &shape)?;
+        self.push_node(py, idx, &dtype_norm, view_kind, &shape)?;
         Ok(idx)
     }
 
@@ -314,7 +314,7 @@ impl NativeScenario {
                 ViewKind::Series => {
                     return Err(PyTypeError::new_err(
                         "Python operators cannot directly produce Series; \
-                         output Array and chain a Record operator instead"
+                         output Array and chain a Record operator instead",
                     ));
                 }
             };
@@ -343,13 +343,13 @@ impl NativeScenario {
                     .as_ref()
                     .map(|v| v.clone_ref(py))
                     .ok_or_else(|| {
-                        PyRuntimeError::new_err(format!(
-                            "node {idx} has no cached view"
-                        ))
+                        PyRuntimeError::new_err(format!("node {idx} has no cached view"))
                     })
             })
             .collect::<PyResult<_>>()?;
-        let py_inputs: PyObject = pyo3::types::PyTuple::new(py, &input_views)?.into_any().unbind();
+        let py_inputs: PyObject = pyo3::types::PyTuple::new(py, &input_views)?
+            .into_any()
+            .unbind();
         let py_output = self.cached_views[output_idx]
             .as_ref()
             .map(|v| v.clone_ref(py))
@@ -431,11 +431,7 @@ impl NativeScenario {
     }
 
     /// Convenience: get recorded timestamps as numpy int64 array.
-    fn series_timestamps<'py>(
-        &self,
-        py: Python<'py>,
-        node_index: usize,
-    ) -> PyResult<PyObject> {
+    fn series_timestamps<'py>(&self, py: Python<'py>, node_index: usize) -> PyResult<PyObject> {
         let sc = self.scenario.as_ref().unwrap();
         let ptr = sc.node_value_ptr(node_index) as *const u8;
         let series = unsafe { &*(ptr as *const Series<f64>) };
@@ -446,11 +442,7 @@ impl NativeScenario {
     }
 
     /// Convenience: get recorded values as numpy array.
-    fn series_values<'py>(
-        &self,
-        py: Python<'py>,
-        node_index: usize,
-    ) -> PyResult<PyObject> {
+    fn series_values<'py>(&self, py: Python<'py>, node_index: usize) -> PyResult<PyObject> {
         let (dtype, _) = &self.node_info[node_index];
         let sc = self.scenario.as_ref().unwrap();
         let ptr = sc.node_value_ptr(node_index) as *const u8;
@@ -573,7 +565,12 @@ unsafe fn py_compute_fn<T: Scalar>(
         let result = state.py_operator.call_method1(
             py,
             "compute",
-            (timestamp, &state.py_inputs, &state.py_output, &state.py_state),
+            (
+                timestamp,
+                &state.py_inputs,
+                &state.py_output,
+                &state.py_state,
+            ),
         )?;
 
         let tuple = result.bind(py);

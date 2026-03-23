@@ -2,9 +2,7 @@
 
 use num_traits::Float;
 
-use crate::operator::Operator;
-use crate::series::Series;
-use crate::types::Scalar;
+use crate::{Operator, Scalar, Series};
 
 /// Pairwise rolling covariance matrix of last `window` values.
 ///
@@ -140,7 +138,10 @@ mod tests {
         // Cov(x,y) = 4/3
         assert!((cov[1] - 4.0 / 3.0).abs() < 1e-10, "Cov(x,y) = {}", cov[1]);
         // Symmetric
-        assert!((cov[2] - cov[1]).abs() < 1e-10, "Cov(y,x) should equal Cov(x,y)");
+        assert!(
+            (cov[2] - cov[1]).abs() < 1e-10,
+            "Cov(y,x) should equal Cov(x,y)"
+        );
         // Var(y) = 8/3
         assert!((cov[3] - 8.0 / 3.0).abs() < 1e-10, "Var(y) = {}", cov[3]);
     }
@@ -175,7 +176,11 @@ mod tests {
         RollingCovariance::compute(&mut state, (&s,), &mut out, 4);
 
         let cov = out.last().unwrap();
-        assert!((cov[1]).abs() < 1e-10, "Cov(x,y) should be 0, got {}", cov[1]);
+        assert!(
+            (cov[1]).abs() < 1e-10,
+            "Cov(x,y) should be 0, got {}",
+            cov[1]
+        );
     }
 
     #[test]

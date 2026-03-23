@@ -2,9 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::array::Array;
-use crate::operator::Operator;
-use crate::types::Scalar;
+use crate::{Array, Operator, Scalar};
 
 /// Select elements from an array along an axis.
 ///
@@ -54,7 +52,7 @@ impl<T: Scalar> Operator for Select<T> {
         } else {
             output_shape[self.axis] = self.indices.len();
         }
-        (SelectState { index_map }, Array::zeros(&output_shape))
+        (SelectState { index_map }, Array::default(&output_shape))
     }
 
     #[inline(always)]

@@ -1,4 +1,4 @@
-use super::types::InputKinds;
+use super::types::InputTypes;
 
 /// An operator that reads from typed inputs and writes into a typed output.
 ///
@@ -16,7 +16,7 @@ pub trait Operator: Send + 'static {
     type State: Send + 'static;
 
     /// The operator's input types (e.g. `(ArrayD<f64>, ArrayD<f64>)`).
-    type Inputs: InputKinds + ?Sized;
+    type Inputs: InputTypes + ?Sized;
 
     /// The operator's output type.
     type Output: Send + 'static;
@@ -27,7 +27,7 @@ pub trait Operator: Send + 'static {
     /// time.  `timestamp` is `i64::MIN` (reserved for future use).
     fn init(
         self,
-        inputs: <Self::Inputs as InputKinds>::Refs<'_>,
+        inputs: <Self::Inputs as InputTypes>::Refs<'_>,
         timestamp: i64,
     ) -> (Self::State, Self::Output);
 
@@ -37,7 +37,7 @@ pub trait Operator: Send + 'static {
     /// is considered unchanged and downstream propagation is skipped.
     fn compute(
         state: &mut Self::State,
-        inputs: <Self::Inputs as InputKinds>::Refs<'_>,
+        inputs: <Self::Inputs as InputTypes>::Refs<'_>,
         output: &mut Self::Output,
         timestamp: i64,
     ) -> bool;

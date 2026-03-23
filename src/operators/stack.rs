@@ -1,8 +1,6 @@
 //! Stack operator — stacks N arrays along a new axis.
 
-use crate::array::Array;
-use crate::operator::Operator;
-use crate::types::Scalar;
+use crate::{Array, Operator, Scalar};
 
 /// Stack N homogeneous arrays along a new axis.
 pub struct Stack<T: Scalar> {
@@ -41,7 +39,7 @@ impl<T: Scalar> Operator for Stack<T> {
         shape.extend_from_slice(&first[..self.axis]);
         shape.push(inputs.len());
         shape.extend_from_slice(&first[self.axis..]);
-        (state, Array::zeros(&shape))
+        (state, Array::default(&shape))
     }
 
     #[inline(always)]

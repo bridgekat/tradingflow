@@ -1,6 +1,6 @@
 use ndarray::{ArrayViewD, IxDyn};
 
-use super::types::Scalar;
+use crate::Scalar;
 
 /// A time series of uniformly-shaped elements.
 ///

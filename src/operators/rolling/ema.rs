@@ -6,9 +6,7 @@
 
 use num_traits::Float;
 
-use crate::operator::Operator;
-use crate::series::Series;
-use crate::types::Scalar;
+use crate::{Operator, Scalar, Series};
 
 /// Exponential moving average.
 ///
@@ -29,7 +27,10 @@ pub struct Ema<T: Scalar + Float> {
 impl<T: Scalar + Float> Ema<T> {
     /// Create with explicit smoothing factor and window size.
     pub fn new(alpha: T, window: usize) -> Self {
-        assert!(alpha > T::zero() && alpha <= T::one(), "alpha must be in (0, 1]");
+        assert!(
+            alpha > T::zero() && alpha <= T::one(),
+            "alpha must be in (0, 1]"
+        );
         assert!(window >= 1, "window must be >= 1");
         Self { alpha, window }
     }

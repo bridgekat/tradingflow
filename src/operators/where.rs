@@ -2,9 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::array::Array;
-use crate::operator::Operator;
-use crate::types::Scalar;
+use crate::{Array, Operator, Scalar};
 
 /// Element-wise conditional operator: keeps the value if the condition
 /// returns `true`, otherwise replaces it with `fill`.

@@ -18,13 +18,13 @@ pub mod handle;
 mod node;
 mod runner;
 
-pub use handle::{Handle, InputKindsHandles};
+pub use handle::{Handle, InputTypesHandles};
 
 use std::any::TypeId;
 
 use crate::operator::Operator;
 use crate::source::Source;
-use crate::types::InputKinds;
+use crate::types::InputTypes;
 
 use graph::Graph;
 use node::{Closure, Node};
@@ -119,10 +119,10 @@ impl Scenario {
     pub fn add_operator<O: Operator>(
         &mut self,
         operator: O,
-        inputs: impl Into<<O::Inputs as InputKindsHandles>::Handles>,
+        inputs: impl Into<<O::Inputs as InputTypesHandles>::Handles>,
     ) -> Handle<O::Output>
     where
-        O::Inputs: InputKindsHandles,
+        O::Inputs: InputTypesHandles,
     {
         self.register_operator_from_handles(operator, inputs, None)
     }
@@ -136,11 +136,11 @@ impl Scenario {
     pub fn add_operator_periodic<O: Operator>(
         &mut self,
         operator: O,
-        inputs: impl Into<<O::Inputs as InputKindsHandles>::Handles>,
+        inputs: impl Into<<O::Inputs as InputTypesHandles>::Handles>,
         clock: Handle<()>,
     ) -> Handle<O::Output>
     where
-        O::Inputs: InputKindsHandles,
+        O::Inputs: InputTypesHandles,
     {
         self.register_operator_from_handles(operator, inputs, Some(clock))
     }
@@ -164,13 +164,13 @@ impl Scenario {
     fn register_operator_from_handles<O: Operator>(
         &mut self,
         operator: O,
-        inputs: impl Into<<O::Inputs as InputKindsHandles>::Handles>,
+        inputs: impl Into<<O::Inputs as InputTypesHandles>::Handles>,
         clock: Option<Handle<()>>,
     ) -> Handle<O::Output>
     where
-        O::Inputs: InputKindsHandles,
+        O::Inputs: InputTypesHandles,
     {
-        let input_indices = <O::Inputs as InputKindsHandles>::node_indices(&inputs.into());
+        let input_indices = <O::Inputs as InputTypesHandles>::node_indices(&inputs.into());
         let clock_idx = clock.map(|c| c.index());
         let output_idx =
             self.register_operator_from_indices::<O>(operator, &input_indices, clock_idx);
@@ -191,7 +191,7 @@ impl Scenario {
         clock_index: Option<usize>,
     ) -> usize {
         // Validate arity.
-        let expected_tids = <O::Inputs as InputKinds>::type_ids(input_indices.len());
+        let expected_tids = <O::Inputs as InputTypes>::type_ids(input_indices.len());
         assert_eq!(
             input_indices.len(),
             expected_tids.len(),
@@ -220,7 +220,7 @@ impl Scenario {
             .collect();
 
         // 3. Call init eagerly.
-        let input_refs = unsafe { <O::Inputs as InputKinds>::from_ptrs(&input_ptrs) };
+        let input_refs = unsafe { <O::Inputs as InputTypes>::from_ptrs(&input_ptrs) };
         let (state, output) = operator.init(input_refs, i64::MIN);
 
         // 4. Create output node.
@@ -266,9 +266,6 @@ impl Scenario {
         self.graph.add_trigger_edge(from, to);
     }
 
-    /// Attach a raw type-erased closure to a node.
-    ///
-    /// Used by the bridge to attach Python operator callbacks.
     /// Attach a raw type-erased closure to a node.
     ///
     /// The caller provides a concrete state type `S`, which is heap-allocated

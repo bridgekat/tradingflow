@@ -5,7 +5,22 @@
 
 use ndarray::{ArrayViewD, ArrayViewMutD, IxDyn};
 
-use super::types::Scalar;
+/// A permitted array scalar type.
+pub trait Scalar: Sized + Send + Sync + Clone + Default + 'static {}
+
+impl Scalar for () {}
+impl Scalar for bool {}
+impl Scalar for i8 {}
+impl Scalar for i16 {}
+impl Scalar for i32 {}
+impl Scalar for i64 {}
+impl Scalar for u8 {}
+impl Scalar for u16 {}
+impl Scalar for u32 {}
+impl Scalar for u64 {}
+impl Scalar for f32 {}
+impl Scalar for f64 {}
+impl Scalar for String {}
 
 /// A dense, dynamically-shaped array in standard (row-major) layout.
 ///
@@ -27,8 +42,8 @@ impl<T: Scalar> Array<T> {
         }
     }
 
-    /// Create a zero-filled array.
-    pub fn zeros(shape: &[usize]) -> Self {
+    /// Create a default-value-filled array.
+    pub fn default(shape: &[usize]) -> Self {
         Self::from_elem(shape, T::default())
     }
 
@@ -228,7 +243,7 @@ mod tests {
 
     #[test]
     fn array_assign() {
-        let mut a = Array::zeros(&[3]);
+        let mut a = Array::default(&[3]);
         let b = Array::from_vec(&[3], vec![1.0, 2.0, 3.0]);
         a.assign(&b);
         assert_eq!(a.as_slice(), &[1.0, 2.0, 3.0]);
@@ -236,7 +251,7 @@ mod tests {
 
     #[test]
     fn array_index_mut() {
-        let mut a = Array::zeros(&[2]);
+        let mut a = Array::default(&[2]);
         a[0] = 10.0;
         a[1] = 20.0;
         assert_eq!(a.as_slice(), &[10.0, 20.0]);
@@ -262,7 +277,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "reshape")]
     fn array_reshape_wrong_size() {
-        let mut a = Array::<f64>::zeros(&[6]);
+        let mut a = Array::<f64>::default(&[6]);
         a.reshape(&[2, 2]);
     }
 }

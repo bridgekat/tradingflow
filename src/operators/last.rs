@@ -4,10 +4,7 @@
 //! - `Last(Record(x))` recovers the latest array value
 //! - `Record(Last(s)).last()` equals `s.last()`
 
-use crate::array::Array;
-use crate::operator::Operator;
-use crate::series::Series;
-use crate::types::Scalar;
+use crate::{Array, Operator, Scalar, Series};
 
 /// Extract the most recent element from a `Series<T>` as an `Array<T>`.
 ///

@@ -2,9 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::array::Array;
-use crate::operator::Operator;
-use crate::types::Scalar;
+use crate::{Array, Operator, Scalar};
 
 /// Filter operator: passes or drops the entire element based on a predicate.
 pub struct Filter<T: Scalar, F: Fn(&Array<T>) -> bool> {

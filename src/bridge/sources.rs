@@ -15,11 +15,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use tokio::sync::mpsc;
 
-use crate::array::Array;
-use crate::scenario::Scenario;
-use crate::source::Source;
 use crate::sources::ArraySource;
-use crate::types::Scalar;
+use crate::{Array, Scalar, Scenario, Source};
 
 use super::dispatch::{dispatch_dtype, dtype_element_bytes};
 
@@ -84,7 +81,7 @@ impl<T: Scalar> Source for ChannelSource<T> {
         mpsc::Receiver<(i64, Vec<u8>)>,
         Array<T>,
     ) {
-        let output = Array::zeros(&self.shape);
+        let output = Array::default(&self.shape);
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (live_tx, live_rx) = mpsc::channel(64);
 

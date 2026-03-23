@@ -2,9 +2,7 @@
 
 use tokio::sync::mpsc;
 
-use crate::array::Array;
-use crate::source::Source;
-use crate::types::Scalar;
+use crate::{Array, Scalar, Source};
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
 ///
@@ -50,7 +48,7 @@ impl<T: Scalar> Source for ArraySource<T> {
         } else {
             vec![self.stride]
         };
-        let output = Array::zeros(&shape);
+        let output = Array::default(&shape);
 
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);

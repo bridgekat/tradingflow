@@ -1,12 +1,12 @@
 //! Typed handles and input-handle trait machinery.
 //!
 //! [`Handle<T>`] is a lightweight index into a [`Scenario`](super::Scenario)'s
-//! node storage, parameterised by the value type.  [`InputKindsHandles`] maps
+//! node storage, parameterised by the value type.  [`InputTypesHandles`] maps
 //! operator input types to their corresponding handle types.
 
 use std::marker::PhantomData;
 
-use crate::types::InputKinds;
+use crate::types::InputTypes;
 
 // ---------------------------------------------------------------------------
 // Handle
@@ -17,7 +17,7 @@ use crate::types::InputKinds;
 /// The type parameter encodes the value type of the node.
 ///
 /// Handles carry only an index; type safety is enforced by [`TypeId`] checks
-/// at registration time via [`InputKinds::type_ids`].
+/// at registration time via [`InputTypes::type_ids`].
 #[derive(Debug)]
 pub struct Handle<T> {
     pub(super) index: usize,
@@ -49,12 +49,12 @@ impl<T> Handle<T> {
 // Handle mapping
 // ===========================================================================
 
-/// Maps an [`InputKinds`] collection to its corresponding [`Handle`]
+/// Maps an [`InputTypes`] collection to its corresponding [`Handle`]
 /// collection.
 ///
 /// `node_indices` extracts the raw node index from each handle.
-/// TypeId validation is handled separately by [`InputKinds::type_ids`].
-pub trait InputKindsHandles: InputKinds {
+/// TypeId validation is handled separately by [`InputTypes::type_ids`].
+pub trait InputTypesHandles: InputTypes {
     /// The handle collection (e.g. `(Handle<Array<f64>>, Handle<Array<f64>>)`).
     type Handles;
 
@@ -64,7 +64,7 @@ pub trait InputKindsHandles: InputKinds {
 
 // -- Single input ------------------------------------------------------------
 
-impl<A: Send + 'static> InputKindsHandles for (A,) {
+impl<A: Send + 'static> InputTypesHandles for (A,) {
     type Handles = (Handle<A>,);
 
     fn node_indices(handles: &(Handle<A>,)) -> Box<[usize]> {
@@ -74,7 +74,7 @@ impl<A: Send + 'static> InputKindsHandles for (A,) {
 
 // -- Homogeneous slice -------------------------------------------------------
 
-impl<T: Send + 'static> InputKindsHandles for [T] {
+impl<T: Send + 'static> InputTypesHandles for [T] {
     type Handles = Box<[Handle<T>]>;
 
     fn node_indices(handles: &Box<[Handle<T>]>) -> Box<[usize]> {
@@ -86,7 +86,7 @@ impl<T: Send + 'static> InputKindsHandles for [T] {
 
 macro_rules! impl_input_kinds_handles_tuple {
     ($($idx:tt: $T:ident),+ $(,)?) => {
-        impl<$($T: Send + 'static),+> InputKindsHandles for ($($T,)+) {
+        impl<$($T: Send + 'static),+> InputTypesHandles for ($($T,)+) {
             type Handles = ($(Handle<$T>,)+);
 
             fn node_indices(handles: &Self::Handles) -> Box<[usize]> {

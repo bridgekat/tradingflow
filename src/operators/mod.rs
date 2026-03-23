@@ -19,7 +19,6 @@ pub use filter::Filter;
 pub use lag::Lag;
 pub use last::Last;
 pub use record::Record;
-pub use rolling::{Ema, ForwardFill, RollingCovariance, RollingMean, RollingSum, RollingVariance};
 pub use select::Select;
 pub use stack::Stack;
 pub use r#where::Where;

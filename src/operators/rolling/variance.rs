@@ -2,9 +2,7 @@
 
 use num_traits::Float;
 
-use crate::operator::Operator;
-use crate::series::Series;
-use crate::types::Scalar;
+use crate::{Operator, Scalar, Series};
 
 /// Element-wise rolling variance of last `window` values.
 ///

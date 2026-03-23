@@ -15,11 +15,14 @@ A [multi-dimensional array](src/array.rs) contains uniformly-typed [scalars](src
 
 A [time series](src/series.rs) contains uniformly-shaped array elements. It is backed by a flat `Vec<T>` scalar buffer and a parallel `Vec<i64>` of non-decreasing timestamps (each representing nanoseconds since the UNIX epoch).
 
-Most nodes in the computation graph hold either arrays or series as their output values. The built-in [record](src/operators/record.rs) operator records every historical value of its input node (array) into its output node (series).
+Most nodes in the computation graph hold either arrays or series as their output values. They can be converted back and forth by a pair of inverse operators, assuming series elements are pushed one-by-one:
+
+- The built-in [record](src/operators/record.rs) operator records every historical value of its input node (array) into its output node (series).
+- The built-in [last](src/operators/last.rs) operator only keeps the most recent value of its input node (series) in its output node (array).
 
 ## Sources
 
-A [source](src/source.rs) feeds data into a node via asynchronous channels. A source must implement its `init()` method, which consumes the source and returns two channel receivers: one receiver for historical `(timestamp, event)` tuples and one for real-time events. They should generate two complementary, non-overlapping segments of the same data stream, split at some instant during the execution of `init()`.
+A [source](src/source.rs) feeds data into a node via asynchronous channels. A source must implement its `init()` method, which consumes the source and returns two channel receivers: one for historical `(timestamp, event)` tuples and one for real-time. They should generate two complementary, non-overlapping segments of the same data stream, split at some instant during the execution of `init()`.
 
 Sources are typically raw market data or pre-computed factors. Examples include:
 

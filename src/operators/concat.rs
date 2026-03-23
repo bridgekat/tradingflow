@@ -1,8 +1,6 @@
 //! Concat operator — concatenates N arrays along an existing axis.
 
-use crate::array::Array;
-use crate::operator::Operator;
-use crate::types::Scalar;
+use crate::{Array, Operator, Scalar};
 
 /// Concatenate N homogeneous arrays along an existing axis.
 pub struct Concat<T: Scalar> {
@@ -39,7 +37,7 @@ impl<T: Scalar> Operator for Concat<T> {
         };
         let mut shape = first.to_vec();
         shape[self.axis] *= inputs.len();
-        (state, Array::zeros(&shape))
+        (state, Array::default(&shape))
     }
 
     #[inline(always)]
