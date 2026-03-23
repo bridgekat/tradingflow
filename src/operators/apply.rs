@@ -1,174 +1,86 @@
-//! Apply operator and built-in element-wise operators.
+//! Built-in element-wise operators.
 //!
-//! * [`Apply<T, F>`] — closure-based stateless operator with homogeneous
-//!   observable inputs.  Registered via [`Scenario::add_slice_operator`].
-//! * [`Add<T>`], [`Subtract<T>`], [`Multiply<T>`], [`Divide<T>`],
-//!   [`Negate<T>`] — concrete operators with typed tuple inputs.  Registered
-//!   via [`Scenario::add_operator`] with the appropriate [`InputTuple`].
+//! * [`Apply2`] / [`Apply1`] — element-wise binary/unary ops.
+//!   Factory functions: [`add`], [`subtract`], [`multiply`], [`divide`],
+//!   [`negate`].
 
 use std::marker::PhantomData;
 use std::ops;
 
-use crate::observable::Observable;
+use crate::array::Array;
 use crate::operator::Operator;
+use crate::types::Scalar;
 
 // ---------------------------------------------------------------------------
-// Apply<T, F> — homogeneous closure operator
+// Element-wise unary operator
 // ---------------------------------------------------------------------------
 
-/// Stateless operator that applies `F` to N homogeneous observable inputs.
+/// Element-wise unary operator: `out[i] = op(a[i])`.
 ///
-/// `F` receives `&[&[T]]` (one flat value slice per input) and writes into
-/// `&mut [T]` (the output buffer).  It always produces output.
-///
-/// Register via [`Scenario::add_slice_operator`].
-pub struct Apply<T: Copy, F: Fn(&[&[T]], &mut [T])> {
-    func: F,
+/// Shape-preserving: output shape equals input shape.
+pub struct Apply1<T: Scalar, Op: Fn(T) -> T> {
+    op: Op,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Apply<T, F> {
-    pub fn new(func: F) -> Self {
-        Self {
-            func,
-            _phantom: PhantomData,
-        }
-    }
-}
+impl<T: Scalar, Op: Fn(T) -> T + Send + 'static> Operator for Apply1<T, Op> {
+    type State = Self;
+    type Inputs = (Array<T>,);
+    type Output = Array<T>;
 
-impl<T: Copy, F: Fn(&[&[T]], &mut [T])> Operator for Apply<T, F> {
-    type Inputs<'a>
-        = &'a [&'a Observable<T>]
-    where
-        Self: 'a;
-    type Output = T;
+    fn init(self, inputs: (&Array<T>,), _timestamp: i64) -> (Self, Array<T>) {
+        (self, Array::zeros(inputs.0.shape()))
+    }
 
     #[inline(always)]
     fn compute(
-        &mut self,
+        state: &mut Self,
+        inputs: (&Array<T>,),
+        output: &mut Array<T>,
         _timestamp: i64,
-        inputs: &[&Observable<T>],
-        out: &mut [T],
     ) -> bool {
-        // Gather last-value slices.  Stack-allocate up to 8 inputs.
-        let mut buf = [&[] as &[T]; 8];
-        if inputs.len() <= 8 {
-            for (i, obs) in inputs.iter().enumerate() {
-                buf[i] = obs.last();
-            }
-            (self.func)(&buf[..inputs.len()], out);
-        } else {
-            let v: Vec<&[T]> = inputs.iter().map(|o| o.last()).collect();
-            (self.func)(&v, out);
+        let a = inputs.0.as_slice();
+        let out = output.as_slice_mut();
+        for i in 0..out.len() {
+            out[i] = (state.op)(a[i].clone());
         }
         true
     }
 }
 
 // ---------------------------------------------------------------------------
-// Concrete element-wise operators (InputTuple-based, heterogeneous-capable)
+// Element-wise binary operator
 // ---------------------------------------------------------------------------
 
-/// Element-wise addition: `out[i] = a[i] + b[i]`.
-pub struct Add<T: Copy>(PhantomData<T>);
-
-impl<T: Copy + ops::Add<Output = T>> Operator for Add<T> {
-    type Inputs<'a>
-        = (&'a Observable<T>, &'a Observable<T>)
-    where
-        Self: 'a;
-    type Output = T;
-
-    #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
-        let (a, b) = inputs;
-        let (a, b) = (a.last(), b.last());
-        for i in 0..out.len() {
-            out[i] = a[i] + b[i];
-        }
-        true
-    }
+/// Element-wise binary operator: `out[i] = op(a[i], b[i])`.
+///
+/// Shape-preserving: output shape equals input shape (inputs must match).
+pub struct Apply2<T: Scalar, Op: Fn(T, T) -> T> {
+    op: Op,
+    _phantom: PhantomData<T>,
 }
 
-/// Element-wise subtraction: `out[i] = a[i] - b[i]`.
-pub struct Subtract<T: Copy>(PhantomData<T>);
+impl<T: Scalar, Op: Fn(T, T) -> T + Send + 'static> Operator for Apply2<T, Op> {
+    type State = Self;
+    type Inputs = (Array<T>, Array<T>);
+    type Output = Array<T>;
 
-impl<T: Copy + ops::Sub<Output = T>> Operator for Subtract<T> {
-    type Inputs<'a>
-        = (&'a Observable<T>, &'a Observable<T>)
-    where
-        Self: 'a;
-    type Output = T;
-
-    #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
-        let (a, b) = inputs;
-        let (a, b) = (a.last(), b.last());
-        for i in 0..out.len() {
-            out[i] = a[i] - b[i];
-        }
-        true
+    fn init(self, inputs: (&Array<T>, &Array<T>), _timestamp: i64) -> (Self, Array<T>) {
+        (self, Array::zeros(inputs.0.shape()))
     }
-}
-
-/// Element-wise multiplication: `out[i] = a[i] * b[i]`.
-pub struct Multiply<T: Copy>(PhantomData<T>);
-
-impl<T: Copy + ops::Mul<Output = T>> Operator for Multiply<T> {
-    type Inputs<'a>
-        = (&'a Observable<T>, &'a Observable<T>)
-    where
-        Self: 'a;
-    type Output = T;
 
     #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
-        let (a, b) = inputs;
-        let (a, b) = (a.last(), b.last());
+    fn compute(
+        state: &mut Self,
+        inputs: (&Array<T>, &Array<T>),
+        output: &mut Array<T>,
+        _timestamp: i64,
+    ) -> bool {
+        let a = inputs.0.as_slice();
+        let b = inputs.1.as_slice();
+        let out = output.as_slice_mut();
         for i in 0..out.len() {
-            out[i] = a[i] * b[i];
-        }
-        true
-    }
-}
-
-/// Element-wise division: `out[i] = a[i] / b[i]`.
-pub struct Divide<T: Copy>(PhantomData<T>);
-
-impl<T: Copy + ops::Div<Output = T>> Operator for Divide<T> {
-    type Inputs<'a>
-        = (&'a Observable<T>, &'a Observable<T>)
-    where
-        Self: 'a;
-    type Output = T;
-
-    #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
-        let (a, b) = inputs;
-        let (a, b) = (a.last(), b.last());
-        for i in 0..out.len() {
-            out[i] = a[i] / b[i];
-        }
-        true
-    }
-}
-
-/// Element-wise negation: `out[i] = -a[i]`.
-pub struct Negate<T: Copy>(PhantomData<T>);
-
-impl<T: Copy + ops::Neg<Output = T>> Operator for Negate<T> {
-    type Inputs<'a>
-        = (&'a Observable<T>,)
-    where
-        Self: 'a;
-    type Output = T;
-
-    #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: Self::Inputs<'_>, out: &mut [T]) -> bool {
-        let (a,) = inputs;
-        let a = a.last();
-        for i in 0..out.len() {
-            out[i] = -a[i];
+            out[i] = (state.op)(a[i].clone(), b[i].clone());
         }
         true
     }
@@ -178,119 +90,141 @@ impl<T: Copy + ops::Neg<Output = T>> Operator for Negate<T> {
 // Factory functions
 // ---------------------------------------------------------------------------
 
-/// Create an [`Add`] operator.
-pub fn add<T: Copy + ops::Add<Output = T>>() -> Add<T> {
-    Add(PhantomData)
+pub type Add<T> = Apply2<T, fn(T, T) -> T>;
+pub type Subtract<T> = Apply2<T, fn(T, T) -> T>;
+pub type Multiply<T> = Apply2<T, fn(T, T) -> T>;
+pub type Divide<T> = Apply2<T, fn(T, T) -> T>;
+pub type Negate<T> = Apply1<T, fn(T) -> T>;
+
+/// Create an element-wise addition operator.
+pub fn add<T: Scalar + ops::Add<Output = T>>() -> Add<T> {
+    Apply2 {
+        op: |a, b| a + b,
+        _phantom: PhantomData,
+    }
 }
 
-/// Create a [`Subtract`] operator.
-pub fn subtract<T: Copy + ops::Sub<Output = T>>() -> Subtract<T> {
-    Subtract(PhantomData)
+/// Create an element-wise subtraction operator.
+pub fn subtract<T: Scalar + ops::Sub<Output = T>>() -> Subtract<T> {
+    Apply2 {
+        op: |a, b| a - b,
+        _phantom: PhantomData,
+    }
 }
 
-/// Create a [`Multiply`] operator.
-pub fn multiply<T: Copy + ops::Mul<Output = T>>() -> Multiply<T> {
-    Multiply(PhantomData)
+/// Create an element-wise multiplication operator.
+pub fn multiply<T: Scalar + ops::Mul<Output = T>>() -> Multiply<T> {
+    Apply2 {
+        op: |a, b| a * b,
+        _phantom: PhantomData,
+    }
 }
 
-/// Create a [`Divide`] operator.
-pub fn divide<T: Copy + ops::Div<Output = T>>() -> Divide<T> {
-    Divide(PhantomData)
+/// Create an element-wise division operator.
+pub fn divide<T: Scalar + ops::Div<Output = T>>() -> Divide<T> {
+    Apply2 {
+        op: |a, b| a / b,
+        _phantom: PhantomData,
+    }
 }
 
-/// Create a [`Negate`] operator.
-pub fn negate<T: Copy + ops::Neg<Output = T>>() -> Negate<T> {
-    Negate(PhantomData)
+/// Create an element-wise negation operator.
+pub fn negate<T: Scalar + ops::Neg<Output = T>>() -> Negate<T> {
+    Apply1 {
+        op: |a| -a,
+        _phantom: PhantomData,
+    }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observable::Observable;
+    use crate::array::Array;
+    use crate::operator::Operator;
 
     #[test]
-    fn test_add() {
-        let a = Observable::new(&[], &[20.0]);
-        let b = Observable::new(&[], &[7.0]);
-        let mut op = add::<f64>();
-        let mut out = [0.0];
-        assert!(op.compute(2, (&a, &b), &mut out));
-        assert_eq!(out, [27.0]);
+    fn add_scalar() {
+        let a = Array::scalar(10.0_f64);
+        let b = Array::scalar(3.0);
+        let (mut s, mut o) = add::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[13.0]);
     }
 
     #[test]
-    fn test_subtract() {
-        let a = Observable::new(&[], &[20.0]);
-        let b = Observable::new(&[], &[7.0]);
-        let mut op = subtract::<f64>();
-        let mut out = [0.0];
-        assert!(op.compute(2, (&a, &b), &mut out));
-        assert_eq!(out, [13.0]);
+    fn add_vector() {
+        let a = Array::from_vec(&[3], vec![1.0, 2.0, 3.0]);
+        let b = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
+        let (mut s, mut o) = add::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[11.0, 22.0, 33.0]);
     }
 
     #[test]
-    fn test_multiply() {
-        let a = Observable::new(&[], &[4.0]);
-        let b = Observable::new(&[], &[5.0]);
-        let mut op = multiply::<f64>();
-        let mut out = [0.0];
-        assert!(op.compute(1, (&a, &b), &mut out));
-        assert_eq!(out, [20.0]);
+    fn add_i32() {
+        let a = Array::from_vec(&[3], vec![1_i32, 2, 3]);
+        let b = Array::from_vec(&[3], vec![10, 20, 30]);
+        let (mut s, mut o) = add::<i32>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[11, 22, 33]);
     }
 
     #[test]
-    fn test_divide() {
-        let a = Observable::new(&[], &[20.0]);
-        let b = Observable::new(&[], &[4.0]);
-        let mut op = divide::<f64>();
-        let mut out = [0.0];
-        assert!(op.compute(1, (&a, &b), &mut out));
-        assert_eq!(out, [5.0]);
+    fn subtract_scalar() {
+        let a = Array::scalar(20.0_f64);
+        let b = Array::scalar(7.0);
+        let (mut s, mut o) = subtract::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[13.0]);
     }
 
     #[test]
-    fn test_negate() {
-        let a = Observable::new(&[], &[7.0]);
-        let mut op = negate::<f64>();
-        let mut out = [0.0];
-        assert!(op.compute(1, (&a,), &mut out));
-        assert_eq!(out, [-7.0]);
+    fn multiply_scalar() {
+        let a = Array::scalar(4.0_f64);
+        let b = Array::scalar(5.0);
+        let (mut s, mut o) = multiply::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[20.0]);
     }
 
     #[test]
-    fn test_strided_add() {
-        let a = Observable::new(&[2], &[1.0, 2.0]);
-        let b = Observable::new(&[2], &[10.0, 20.0]);
-        let mut op = add::<f64>();
-        let mut out = [0.0, 0.0];
-        assert!(op.compute(1, (&a, &b), &mut out));
-        assert_eq!(out, [11.0, 22.0]);
+    fn divide_scalar() {
+        let a = Array::scalar(20.0_f64);
+        let b = Array::scalar(4.0);
+        let (mut s, mut o) = divide::<f64>().init((&a, &b), i64::MIN);
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o.as_slice(), &[5.0]);
     }
 
     #[test]
-    fn test_apply_closure() {
-        let a = Observable::new(&[], &[3.0]);
-        let b = Observable::new(&[], &[4.0]);
-        let mut op = Apply::new(|inputs: &[&[f64]], out: &mut [f64]| {
-            // Pythagorean: sqrt(a^2 + b^2)
-            out[0] = (inputs[0][0] * inputs[0][0] + inputs[1][0] * inputs[1][0]).sqrt();
-        });
-        let mut out = [0.0];
-        assert!(op.compute(1, &[&a, &b], &mut out));
-        assert_eq!(out, [5.0]);
+    fn negate_vector() {
+        let a = Array::from_vec(&[3], vec![1.0_f64, -2.0, 3.0]);
+        let (mut s, mut o) = negate::<f64>().init((&a,), i64::MIN);
+        Apply1::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.as_slice(), &[-1.0, 2.0, -3.0]);
     }
 
     #[test]
-    fn test_always_produces_output() {
-        let a = Observable::<f64>::new(&[], &[0.0]);
-        let b = Observable::<f64>::new(&[], &[0.0]);
-        let mut op = add::<f64>();
-        let mut out = [0.0];
-        assert!(op.compute(0, (&a, &b), &mut out));
-        assert_eq!(out, [0.0]);
+    fn multi_step() {
+        let mut a = Array::scalar(0.0_f64);
+        let mut b = Array::scalar(0.0);
+        let (mut s, mut o) = add::<f64>().init((&a, &b), i64::MIN);
+        a[0] = 10.0;
+        b[0] = 3.0;
+        Apply2::compute(&mut s, (&a, &b), &mut o, 1);
+        assert_eq!(o[0], 13.0);
+        a[0] = 20.0;
+        b[0] = 7.0;
+        Apply2::compute(&mut s, (&a, &b), &mut o, 2);
+        assert_eq!(o[0], 27.0);
+    }
+
+    #[test]
+    fn preserves_shape() {
+        let a = Array::from_vec(&[2, 3], vec![0.0_f64; 6]);
+        let (_, o) = add::<f64>().init((&a, &a), i64::MIN);
+        assert_eq!(o.shape(), &[2, 3]);
+        let (_, o) = negate::<f64>().init((&a,), i64::MIN);
+        assert_eq!(o.shape(), &[2, 3]);
     }
 }

@@ -1,28 +1,18 @@
 //! Filter operator — whole-element filter by predicate.
-//!
-//! Drops the entire element (returns `false` from `compute`) when the
-//! predicate returns `false`.  When the predicate passes, the input value
-//! is copied to the output unchanged.
-//!
-//! Register via [`Scenario::add_operator`] with `(Obs<T>,)` input.
 
 use std::marker::PhantomData;
 
-use crate::observable::Observable;
+use crate::array::Array;
 use crate::operator::Operator;
+use crate::types::Scalar;
 
 /// Filter operator: passes or drops the entire element based on a predicate.
-///
-/// `F` receives the flat value slice `&[T]` and returns `true` to keep the
-/// element or `false` to drop it.  When dropped, the operator returns
-/// `false` from `compute`, so the series is not appended to and downstream
-/// operators are not triggered.
-pub struct Filter<T: Copy, F: Fn(&[T]) -> bool> {
+pub struct Filter<T: Scalar, F: Fn(&Array<T>) -> bool> {
     predicate: F,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy, F: Fn(&[T]) -> bool> Filter<T, F> {
+impl<T: Scalar, F: Fn(&Array<T>) -> bool> Filter<T, F> {
     pub fn new(predicate: F) -> Self {
         Self {
             predicate,
@@ -31,19 +21,24 @@ impl<T: Copy, F: Fn(&[T]) -> bool> Filter<T, F> {
     }
 }
 
-impl<T: Copy, F: Fn(&[T]) -> bool> Operator for Filter<T, F> {
-    type Inputs<'a>
-        = (&'a Observable<T>,)
-    where
-        Self: 'a;
-    type Output = T;
+impl<T: Scalar, F: Fn(&Array<T>) -> bool + Send + 'static> Operator for Filter<T, F> {
+    type State = Self;
+    type Inputs = (Array<T>,);
+    type Output = Array<T>;
+
+    fn init(self, inputs: (&Array<T>,), _timestamp: i64) -> (Self, Array<T>) {
+        (self, inputs.0.clone())
+    }
 
     #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: (&Observable<T>,), out: &mut [T]) -> bool {
-        let (obs,) = inputs;
-        let input = obs.last();
-        if (self.predicate)(input) {
-            out.copy_from_slice(input);
+    fn compute(
+        state: &mut Self,
+        inputs: (&Array<T>,),
+        output: &mut Array<T>,
+        _timestamp: i64,
+    ) -> bool {
+        if (state.predicate)(inputs.0) {
+            output.as_slice_mut().clone_from_slice(inputs.0.as_slice());
             true
         } else {
             false
@@ -51,40 +46,42 @@ impl<T: Copy, F: Fn(&[T]) -> bool> Operator for Filter<T, F> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observable::Observable;
+    use crate::operator::Operator;
 
     #[test]
-    fn filter_passes() {
-        let obs = Observable::new(&[], &[5.0]);
-        let mut op = Filter::new(|v: &[f64]| v[0] > 3.0);
-        let mut out = [0.0];
-        assert!(op.compute(1, (&obs,), &mut out));
-        assert_eq!(out, [5.0]);
+    fn passes() {
+        let a = Array::scalar(5.0_f64);
+        let (mut s, mut o) = Filter::new(|v: &Array<f64>| v[0] > 3.0).init((&a,), i64::MIN);
+        assert!(Filter::compute(&mut s, (&a,), &mut o, 1));
+        assert_eq!(o.as_slice(), &[5.0]);
     }
 
     #[test]
-    fn filter_drops() {
-        let obs = Observable::new(&[], &[1.0]);
-        let mut op = Filter::new(|v: &[f64]| v[0] > 3.0);
-        let mut out = [0.0];
-        assert!(!op.compute(1, (&obs,), &mut out));
+    fn drops() {
+        let a = Array::scalar(1.0_f64);
+        let (mut s, mut o) = Filter::new(|v: &Array<f64>| v[0] > 3.0).init((&a,), i64::MIN);
+        assert!(!Filter::compute(&mut s, (&a,), &mut o, 1));
     }
 
     #[test]
-    fn filter_strided() {
-        let obs = Observable::new(&[3], &[1.0, 2.0, 3.0]);
-        // Keep only if the sum > 5
-        let mut op = Filter::new(|v: &[f64]| v.iter().sum::<f64>() > 5.0);
-        let mut out = [0.0; 3];
-        // Sum = 6 > 5 → keep
-        assert!(op.compute(1, (&obs,), &mut out));
-        assert_eq!(out, [1.0, 2.0, 3.0]);
+    fn vector_sum() {
+        let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
+        let (mut s, mut o) = Filter::new(|v: &Array<f64>| v.as_slice().iter().sum::<f64>() > 5.0)
+            .init((&a,), i64::MIN);
+        assert!(Filter::compute(&mut s, (&a,), &mut o, 1));
+    }
+
+    #[test]
+    fn multi_step() {
+        let a = Array::scalar(5.0_f64);
+        let (mut s, mut o) = Filter::new(|v: &Array<f64>| v[0] > 3.0).init((&a,), i64::MIN);
+        assert!(Filter::compute(&mut s, (&Array::scalar(5.0),), &mut o, 1));
+        assert!(!Filter::compute(&mut s, (&Array::scalar(1.0),), &mut o, 2));
+        assert_eq!(o[0], 5.0);
+        assert!(Filter::compute(&mut s, (&Array::scalar(10.0),), &mut o, 3));
+        assert_eq!(o[0], 10.0);
     }
 }

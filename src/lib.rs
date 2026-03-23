@@ -3,31 +3,35 @@
 //! This crate provides the performance-critical data structures and runtime
 //! for the TradingFlow event-driven trading framework:
 //!
-//! * [`Observable`] — single-value buffer (latest value of a graph node).
-//! * [`Series`] — append-only time series with length-doubling growth.
-//! * [`Operator`] — trait for pure compute functions.
-//! * [`Scenario`] — DAG runtime with type-erased operator dispatch.
+//! * [`Array`] — dense, dynamically-shaped array.
+//! * [`Series`] — append-only time series.
+//! * [`Operator`] — trait for compute functions.
+//! * [`Source`] — trait for data sources.
+//! * [`Scenario`] — DAG runtime with type-erased dispatch.
 //!
 //! When compiled with the `python` feature, the crate also produces a PyO3
 //! `cdylib` exposing the runtime to Python.
 
-pub mod input;
-pub mod observable;
+pub mod array;
 pub mod operator;
 pub mod operators;
 pub mod scenario;
 pub mod series;
 pub mod source;
+pub mod sources;
+pub mod types;
+pub mod utils;
 
-pub use observable::Observable;
+pub use array::Array;
 pub use operator::Operator;
 pub use scenario::Scenario;
 pub use series::Series;
+pub use source::Source;
+pub use types::Scalar;
+pub use utils::Schema;
 
 #[cfg(feature = "python")]
-mod bench;
-#[cfg(feature = "python")]
-mod bridge;
+pub mod bridge;
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
@@ -35,7 +39,6 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    bench::register(m)?;
     bridge::register(m)?;
     Ok(())
 }

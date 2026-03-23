@@ -1,173 +1,121 @@
-//! Stack operator — stacks N observables along a new axis.
-//!
-//! All inputs must have the same element type and shape.  The output shape
-//! has a new dimension of size `n_inputs` inserted at position `axis`.
-//!
-//! Register via [`Scenario::add_slice_operator`].
+//! Stack operator — stacks N arrays along a new axis.
 
-use std::marker::PhantomData;
-
-use crate::observable::Observable;
+use crate::array::Array;
 use crate::operator::Operator;
+use crate::types::Scalar;
 
-/// Stack N homogeneous observables along a new axis.
-///
-/// Inserts a new dimension at `axis` with size = number of inputs.
-/// For axis 0, the flat layout is just sequential copies (same as concat
-/// axis 0 when all inputs have the same shape).
-pub struct Stack<T: Copy> {
-    /// Number of outer iterations (product of dims before `axis`).
-    outer_count: usize,
-    /// Number of elements per input per outer iteration (product of dims
-    /// from `axis` onwards in the *input* shape).
-    chunk_size: usize,
-    _phantom: PhantomData<T>,
+/// Stack N homogeneous arrays along a new axis.
+pub struct Stack<T: Scalar> {
+    axis: usize,
+    _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T: Copy> Stack<T> {
-    /// Create a Stack operator.
-    ///
-    /// `input_shape`: the element shape of each input (all must match).
-    /// `axis`: position for the new dimension (0 = outermost).
-    pub fn new(input_shape: &[usize], axis: usize) -> Self {
-        debug_assert!(axis <= input_shape.len(), "axis out of bounds");
-        if input_shape.is_empty() {
-            // Scalar inputs — stack produces a 1-D vector.
-            return Self {
-                outer_count: 1,
-                chunk_size: 1,
-                _phantom: PhantomData,
-            };
-        }
-        let outer_count = input_shape[..axis].iter().product::<usize>().max(1);
-        let chunk_size = input_shape[axis..].iter().product::<usize>().max(1);
+impl<T: Scalar> Stack<T> {
+    pub fn new(axis: usize) -> Self {
         Self {
-            outer_count,
-            chunk_size,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Compute the output shape for a stack operation.
-    ///
-    /// `input_shape`: shape of each input.
-    /// `n_inputs`: number of inputs.
-    /// `axis`: position for the new dimension.
-    pub fn output_shape(input_shape: &[usize], n_inputs: usize, axis: usize) -> Vec<usize> {
-        if input_shape.is_empty() {
-            // Scalar inputs → output is [n_inputs].
-            vec![n_inputs]
-        } else {
-            let mut shape = Vec::with_capacity(input_shape.len() + 1);
-            shape.extend_from_slice(&input_shape[..axis]);
-            shape.push(n_inputs);
-            shape.extend_from_slice(&input_shape[axis..]);
-            shape
+            axis,
+            _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<T: Copy> Operator for Stack<T> {
-    type Inputs<'a>
-        = &'a [&'a Observable<T>]
-    where
-        Self: 'a;
-    type Output = T;
+/// Runtime state for [`Stack`].
+pub struct StackState {
+    outer_count: usize,
+    chunk_size: usize,
+}
+
+impl<T: Scalar> Operator for Stack<T> {
+    type State = StackState;
+    type Inputs = [Array<T>];
+    type Output = Array<T>;
+
+    fn init(self, inputs: Box<[&Array<T>]>, _timestamp: i64) -> (StackState, Array<T>) {
+        let first = inputs[0].shape();
+        assert!(self.axis <= first.len(), "axis out of bounds");
+        let state = StackState {
+            outer_count: first[..self.axis].iter().product(),
+            chunk_size: first[self.axis..].iter().product(),
+        };
+        let mut shape = Vec::with_capacity(first.len() + 1);
+        shape.extend_from_slice(&first[..self.axis]);
+        shape.push(inputs.len());
+        shape.extend_from_slice(&first[self.axis..]);
+        (state, Array::zeros(&shape))
+    }
 
     #[inline(always)]
     fn compute(
-        &mut self,
-        _ts: i64,
-        inputs: &[&Observable<T>],
-        out: &mut [T],
+        state: &mut StackState,
+        inputs: Box<[&Array<T>]>,
+        output: &mut Array<T>,
+        _timestamp: i64,
     ) -> bool {
-        if self.outer_count == 1 {
-            // Fast path: sequential copy (axis 0 or scalar inputs).
-            let mut offset = 0;
-            for obs in inputs {
-                let src = obs.last();
-                out[offset..offset + src.len()].copy_from_slice(src);
-                offset += src.len();
-            }
-        } else {
-            // General path: interleave blocks for higher axes.
-            let mut out_offset = 0;
-            for outer in 0..self.outer_count {
-                for obs in inputs {
-                    let src = obs.last();
-                    let src_offset = outer * self.chunk_size;
-                    out[out_offset..out_offset + self.chunk_size]
-                        .copy_from_slice(&src[src_offset..src_offset + self.chunk_size]);
-                    out_offset += self.chunk_size;
-                }
-            }
-        }
+        super::concat::interleaved_copy(output, &inputs, state.outer_count, state.chunk_size);
         true
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observable::Observable;
+    use crate::array::Array;
+    use crate::operator::Operator;
 
-    #[test]
-    fn stack_scalars_axis0() {
-        let a = Observable::new(&[], &[1.0]);
-        let b = Observable::new(&[], &[2.0]);
-        let c = Observable::new(&[], &[3.0]);
-        let mut op = Stack::<f64>::new(&[], 0);
-        let mut out = [0.0; 3];
-        assert!(op.compute(1, &[&a, &b, &c], &mut out));
-        assert_eq!(out, [1.0, 2.0, 3.0]);
+    // Two 2×3 matrices stacked along each possible axis.
+    //
+    // a = [[1,2,3],[4,5,6]]   b = [[7,8,9],[10,11,12]]
+    //
+    // flat(a) = [1,2,3,4,5,6]   flat(b) = [7,8,9,10,11,12]
+
+    fn ab() -> (Array<f64>, Array<f64>) {
+        let a = Array::from_vec(&[2, 3], vec![1., 2., 3., 4., 5., 6.]);
+        let b = Array::from_vec(&[2, 3], vec![7., 8., 9., 10., 11., 12.]);
+        (a, b)
     }
 
     #[test]
-    fn stack_vectors_axis0() {
-        // Input shape [2], stack along axis 0 → output shape [3, 2]
-        let a = Observable::new(&[2], &[1.0, 2.0]);
-        let b = Observable::new(&[2], &[3.0, 4.0]);
-        let c = Observable::new(&[2], &[5.0, 6.0]);
-        let mut op = Stack::<f64>::new(&[2], 0);
-        let mut out = [0.0; 6];
-        assert!(op.compute(1, &[&a, &b, &c], &mut out));
-        // Flat: [1, 2, 3, 4, 5, 6]
-        assert_eq!(out, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    }
-
-    #[test]
-    fn stack_vectors_axis1() {
-        // Input shape [3], stack along axis 1 → output shape [3, 2]
-        let a = Observable::new(&[3], &[1.0, 2.0, 3.0]);
-        let b = Observable::new(&[3], &[4.0, 5.0, 6.0]);
-        let mut op = Stack::<f64>::new(&[3], 1);
-        let mut out = [0.0; 6];
-        assert!(op.compute(1, &[&a, &b], &mut out));
-        // Expected shape [3, 2]: [[1, 4], [2, 5], [3, 6]]
-        // Flat row-major: [1, 4, 2, 5, 3, 6]
-        assert_eq!(out, [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
-    }
-
-    #[test]
-    fn output_shape_computation() {
-        assert_eq!(Stack::<f64>::output_shape(&[], 3, 0), vec![3]);
-        assert_eq!(Stack::<f64>::output_shape(&[2], 3, 0), vec![3, 2]);
-        assert_eq!(Stack::<f64>::output_shape(&[2], 3, 1), vec![2, 3]);
+    fn matrix_axis0() {
+        // shape [2,2,3]: new axis = batch
+        // [[[1,2,3],[4,5,6]], [[7,8,9],[10,11,12]]]
+        let (a, b) = ab();
+        let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
+        let (mut s, mut o) = Stack::<f64>::new(0).init(inputs.clone(), i64::MIN);
+        Stack::compute(&mut s, inputs, &mut o, 1);
+        assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
-            Stack::<f64>::output_shape(&[2, 3], 4, 0),
-            vec![4, 2, 3]
+            o.as_slice(),
+            &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]
         );
+    }
+
+    #[test]
+    fn matrix_axis1() {
+        // shape [2,2,3]: new axis between rows and cols
+        // [[[1,2,3],[7,8,9]], [[4,5,6],[10,11,12]]]
+        let (a, b) = ab();
+        let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
+        let (mut s, mut o) = Stack::<f64>::new(1).init(inputs.clone(), i64::MIN);
+        Stack::compute(&mut s, inputs, &mut o, 1);
+        assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
-            Stack::<f64>::output_shape(&[2, 3], 4, 1),
-            vec![2, 4, 3]
+            o.as_slice(),
+            &[1., 2., 3., 7., 8., 9., 4., 5., 6., 10., 11., 12.]
         );
+    }
+
+    #[test]
+    fn matrix_axis2() {
+        // shape [2,3,2]: new axis = innermost
+        // [[[1,7],[2,8],[3,9]], [[4,10],[5,11],[6,12]]]
+        let (a, b) = ab();
+        let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
+        let (mut s, mut o) = Stack::<f64>::new(2).init(inputs.clone(), i64::MIN);
+        Stack::compute(&mut s, inputs, &mut o, 1);
+        assert_eq!(o.shape(), &[2, 3, 2]);
         assert_eq!(
-            Stack::<f64>::output_shape(&[2, 3], 4, 2),
-            vec![2, 3, 4]
+            o.as_slice(),
+            &[1., 7., 2., 8., 3., 9., 4., 10., 5., 11., 6., 12.]
         );
     }
 }

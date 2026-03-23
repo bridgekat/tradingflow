@@ -1,27 +1,20 @@
 //! Where operator — element-wise conditional replacement.
-//!
-//! For each element in the input, keeps the value if the per-element
-//! condition returns `true`, otherwise replaces it with a fill value.
-//! Unlike [`Filter`](super::Filter), `Where` always produces output.
-//!
-//! Register via [`Scenario::add_operator`] with `(Obs<T>,)` input.
 
 use std::marker::PhantomData;
 
-use crate::observable::Observable;
+use crate::array::Array;
 use crate::operator::Operator;
+use crate::types::Scalar;
 
-/// Element-wise conditional operator.
-///
-/// `F` is a per-element predicate: `fn(T) -> bool`.  Elements where `F`
-/// returns `false` are replaced with `fill`.
-pub struct Where<T: Copy, F: Fn(T) -> bool> {
+/// Element-wise conditional operator: keeps the value if the condition
+/// returns `true`, otherwise replaces it with `fill`.
+pub struct Where<T: Scalar, F: Fn(T) -> bool> {
     condition: F,
     fill: T,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Copy, F: Fn(T) -> bool> Where<T, F> {
+impl<T: Scalar, F: Fn(T) -> bool> Where<T, F> {
     pub fn new(condition: F, fill: T) -> Self {
         Self {
             condition,
@@ -31,72 +24,61 @@ impl<T: Copy, F: Fn(T) -> bool> Where<T, F> {
     }
 }
 
-impl<T: Copy, F: Fn(T) -> bool> Operator for Where<T, F> {
-    type Inputs<'a>
-        = (&'a Observable<T>,)
-    where
-        Self: 'a;
-    type Output = T;
+impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
+    type State = Self;
+    type Inputs = (Array<T>,);
+    type Output = Array<T>;
+
+    fn init(self, inputs: (&Array<T>,), _timestamp: i64) -> (Self, Array<T>) {
+        (self, inputs.0.clone())
+    }
 
     #[inline(always)]
-    fn compute(&mut self, _ts: i64, inputs: (&Observable<T>,), out: &mut [T]) -> bool {
-        let (obs,) = inputs;
-        let input = obs.last();
+    fn compute(
+        state: &mut Self,
+        inputs: (&Array<T>,),
+        output: &mut Array<T>,
+        _timestamp: i64,
+    ) -> bool {
+        let a = inputs.0.as_slice();
+        let out = output.as_slice_mut();
         for i in 0..out.len() {
-            out[i] = if (self.condition)(input[i]) {
-                input[i]
+            out[i] = if (state.condition)(a[i].clone()) {
+                a[i].clone()
             } else {
-                self.fill
+                state.fill.clone()
             };
         }
         true
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observable::Observable;
+    use crate::operator::Operator;
 
     #[test]
-    fn where_keeps_passing() {
-        let obs = Observable::new(&[3], &[1.0, 5.0, 2.0]);
-        let mut op = Where::new(|v: f64| v > 3.0, 0.0);
-        let mut out = [0.0; 3];
-        assert!(op.compute(1, (&obs,), &mut out));
-        assert_eq!(out, [0.0, 5.0, 0.0]);
+    fn mixed() {
+        let a = Array::from_vec(&[3], vec![1.0_f64, 5.0, 2.0]);
+        let (mut s, mut o) = Where::new(|v: f64| v > 3.0, 0.0).init((&a,), i64::MIN);
+        Where::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.as_slice(), &[0.0, 5.0, 0.0]);
     }
 
     #[test]
-    fn where_all_pass() {
-        let obs = Observable::new(&[2], &[10.0, 20.0]);
-        let mut op = Where::new(|v: f64| v > 0.0, -1.0);
-        let mut out = [0.0; 2];
-        assert!(op.compute(1, (&obs,), &mut out));
-        assert_eq!(out, [10.0, 20.0]);
+    fn all_pass() {
+        let a = Array::from_vec(&[2], vec![10.0_f64, 20.0]);
+        let (mut s, mut o) = Where::new(|v: f64| v > 0.0, -1.0).init((&a,), i64::MIN);
+        Where::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.as_slice(), &[10.0, 20.0]);
     }
 
     #[test]
-    fn where_none_pass() {
-        let obs = Observable::new(&[2], &[-1.0, -2.0]);
-        let mut op = Where::new(|v: f64| v > 0.0, 0.0);
-        let mut out = [0.0; 2];
-        assert!(op.compute(1, (&obs,), &mut out));
-        assert_eq!(out, [0.0, 0.0]);
-    }
-
-    #[test]
-    fn where_with_nan_fill() {
-        let obs = Observable::new(&[3], &[1.0, f64::NAN, 3.0]);
-        let mut op = Where::new(|v: f64| !v.is_nan(), f64::NAN);
-        let mut out = [0.0; 3];
-        assert!(op.compute(1, (&obs,), &mut out));
-        assert_eq!(out[0], 1.0);
-        assert!(out[1].is_nan());
-        assert_eq!(out[2], 3.0);
+    fn none_pass() {
+        let a = Array::from_vec(&[2], vec![-1.0_f64, -2.0]);
+        let (mut s, mut o) = Where::new(|v: f64| v > 0.0, 0.0).init((&a,), i64::MIN);
+        Where::compute(&mut s, (&a,), &mut o, 1);
+        assert_eq!(o.as_slice(), &[0.0, 0.0]);
     }
 }

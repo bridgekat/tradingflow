@@ -28,4 +28,4 @@ jobs:
       - run: cargo test --lib
 
       # Run Python tests
-      - run: python -m pytest tests/ -x -q
+      - run: python -m pytest python/tests/ -x -q

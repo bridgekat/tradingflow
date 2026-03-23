@@ -1,42 +1,44 @@
-//! Operator trait — the unit of computation in a TradingFlow DAG.
-//!
-//! An operator reads from one or more input [`Series`] and writes into an
-//! output [`Series`].  The implementing type **is** the mutable state (no
-//! separate `State` associated type).
-//!
-//! The trait uses a GAT for `Inputs<'a>` so that concrete operators can
-//! express heterogeneous input types (e.g. `&'a [&'a Series<f64>]`).
+use super::types::InputKinds;
 
-/// Core operator trait.
+/// An operator that reads from typed inputs and writes into a typed output.
 ///
-/// # Design rationale
+/// # Lifecycle
 ///
-/// * The implementing struct **is** the state — no separate `init_state()`.
-///   Construct the struct with whatever initial state you need.
-/// * `compute` returns `bool` (produced output?) rather than `Option<value>`
-///   because the output is written directly into a pre-reserved slot in the
-///   output [`Series`] for zero-copy operation.
-/// * `Sized` bound required for type erasure in [`Scenario`].
-pub trait Operator: Sized {
-    /// Borrowed view of the operator's inputs.
-    ///
-    /// Typically `&'a [&'a Series<T>]` for homogeneous inputs.
-    type Inputs<'a>
-    where
-        Self: 'a;
+/// 1. [`init`](Operator::init) consumes the operator spec together with
+///    initial input references and a timestamp, producing the runtime
+///    [`State`](Operator::State) and the initial
+///    [`Output`](Operator::Output) value.
+/// 2. [`compute`](Operator::compute) is called on each flush tick with
+///    mutable state, immutable input references, a mutable output
+///    reference, and the current timestamp.
+pub trait Operator: Send + 'static {
+    /// Mutable runtime state, created by [`init`](Operator::init).
+    type State: Send + 'static;
 
-    /// Element type written into the output series.
-    type Output: Copy;
+    /// The operator's input types (e.g. `(ArrayD<f64>, ArrayD<f64>)`).
+    type Inputs: InputKinds + ?Sized;
 
-    /// Compute one output element from the current state of the inputs.
+    /// The operator's output type.
+    type Output: Send + 'static;
+
+    /// Consume the operator spec and produce initial state and output.
     ///
-    /// `out` points to a pre-reserved slot in the output series (length =
-    /// series stride).  Write the result into `out` and return `true` to
-    /// publish, or return `false` to suppress output for this timestamp.
-    fn compute(
-        &mut self,
+    /// `inputs` are the current values of the input nodes at registration
+    /// time.  `timestamp` is `i64::MIN` (reserved for future use).
+    fn init(
+        self,
+        inputs: <Self::Inputs as InputKinds>::Refs<'_>,
         timestamp: i64,
-        inputs: Self::Inputs<'_>,
-        out: &mut [Self::Output],
+    ) -> (Self::State, Self::Output);
+
+    /// Compute the output from inputs and current state.
+    ///
+    /// Returns `true` if a value was produced.  If `false`, the output
+    /// is considered unchanged and downstream propagation is skipped.
+    fn compute(
+        state: &mut Self::State,
+        inputs: <Self::Inputs as InputKinds>::Refs<'_>,
+        output: &mut Self::Output,
+        timestamp: i64,
     ) -> bool;
 }
