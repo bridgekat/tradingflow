@@ -34,21 +34,29 @@ pub fn dtype_element_bytes(dtype: &str) -> PyResult<usize> {
     }
 }
 
-/// Dispatch on a normalised dtype string, calling a typed expression.
+/// Dispatch on a normalised dtype string, calling a macro-rule with a concrete
+/// scalar type.
+///
+/// Usage: `dispatch_dtype!(dtype_str, my_macro)` where `my_macro` is defined as
+/// `macro_rules! my_macro { ($T:ty) => { ... } }`.
+///
+/// The macro arm is invoked with the concrete type (e.g. `f64`, `i32`).
+/// The enclosing function must return `PyResult<_>` (the unsupported-dtype
+/// arm uses `return Err(...)`).
 macro_rules! dispatch_dtype {
-    ($dtype:expr, $T:ident => $body:expr) => {
-        match $dtype {
-            "float64" => { type $T = f64; $body }
-            "float32" => { type $T = f32; $body }
-            "int64"   => { type $T = i64; $body }
-            "int32"   => { type $T = i32; $body }
-            "uint64"  => { type $T = u64; $body }
-            "uint32"  => { type $T = u32; $body }
-            "bool"    => { type $T = u8;  $body }
+    ($dtype:expr, $macro_name:ident) => {
+        match crate::bridge::dispatch::normalise_dtype($dtype) {
+            "float64" => $macro_name!(f64),
+            "float32" => $macro_name!(f32),
+            "int64" => $macro_name!(i64),
+            "int32" => $macro_name!(i32),
+            "uint64" => $macro_name!(u64),
+            "uint32" => $macro_name!(u32),
+            "bool" => $macro_name!(u8),
             other => {
-                return Err(pyo3::exceptions::PyTypeError::new_err(
-                    format!("unsupported dtype: {other}"),
-                ))
+                return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                    "unsupported dtype: {other}"
+                )))
             }
         }
     };

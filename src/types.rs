@@ -1,3 +1,5 @@
+use std::any::TypeId;
+
 /// A permitted array scalar type.
 pub trait Scalar: Sized + Send + Sync + Clone + Default + 'static {}
 
@@ -17,6 +19,8 @@ impl_scalar!((), bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 ///
 /// * `Refs<'a>` — aggregated immutable references to input values
 ///   (e.g. `(&'a ArrayD<f64>, &'a ArrayD<f64>)` for a binary operator).
+/// * [`type_ids`](InputKinds::type_ids) — expected `TypeId`s for each input
+///   position, enabling runtime validation without typed handles.
 ///
 /// Implemented for single values `(T,)`, tuples of values up to arity 12,
 /// and homogeneous slices `[T]`.
@@ -31,6 +35,13 @@ pub trait InputKinds {
     /// Each `ptrs[i]` must point to a valid value whose type matches the
     /// corresponding position in `Self`.
     unsafe fn from_ptrs<'a>(ptrs: &[*const u8]) -> Self::Refs<'a>;
+
+    /// Expected `TypeId` for each input position.
+    ///
+    /// For tuples, returns one `TypeId` per position (ignores `arity`).
+    /// For homogeneous slices `[T]`, returns `arity` copies of
+    /// `TypeId::of::<T>()`.
+    fn type_ids(arity: usize) -> Box<[TypeId]>;
 }
 
 // -- Single input ------------------------------------------------------------
@@ -42,6 +53,10 @@ impl<A: Send + 'static> InputKinds for (A,) {
     unsafe fn from_ptrs<'a>(ptrs: &[*const u8]) -> (&'a A,) {
         unsafe { (&*(ptrs[0] as *const A),) }
     }
+
+    fn type_ids(_arity: usize) -> Box<[TypeId]> {
+        Box::new([TypeId::of::<A>()])
+    }
 }
 
 // -- Homogeneous slice input -------------------------------------------------
@@ -52,6 +67,10 @@ impl<T: Send + 'static> InputKinds for [T] {
     #[inline(always)]
     unsafe fn from_ptrs<'a>(ptrs: &[*const u8]) -> Box<[&'a T]> {
         unsafe { ptrs.iter().map(|&p| &*(p as *const T)).collect() }
+    }
+
+    fn type_ids(arity: usize) -> Box<[TypeId]> {
+        vec![TypeId::of::<T>(); arity].into()
     }
 }
 
@@ -65,6 +84,10 @@ macro_rules! impl_input_kinds_for_tuple {
             #[inline(always)]
             unsafe fn from_ptrs<'a>(ptrs: &[*const u8]) -> Self::Refs<'a> {
                 unsafe { ($(&*(ptrs[$idx] as *const $T),)+) }
+            }
+
+            fn type_ids(_arity: usize) -> Box<[TypeId]> {
+                Box::new([$(TypeId::of::<$T>(),)+])
             }
         }
     };

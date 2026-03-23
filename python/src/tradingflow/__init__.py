@@ -1,48 +1,38 @@
-"""TradingFlow core package.
+"""TradingFlow — Rust-native computation graph with Python bindings.
 
-This top-level package exposes the core abstractions used across the library:
+Core classes:
 
-Type aliases
-------------
-AnyShape
-    `tuple[int, ...]`; shape of one series element.
-Array[Shape, T]
-    `np.ndarray[Shape, np.dtype[T]]`; shorthand for array types.
+* [`Scenario`][tradingflow.Scenario] — async runtime for the DAG.
+* [`Source`][tradingflow.Source] — abstract base for Python data sources.
+* [`Operator`][tradingflow.Operator] — abstract base for Python operators.
+* [`NativeOperator`][tradingflow.NativeOperator] — descriptor for Rust operators.
+* [`Handle`][tradingflow.Handle] — typed reference to a graph node.
 
-Classes
--------
-Observable[Shape, T]
-    Latest-value container.  Every source and operator produces an observable.
-Series[Shape, T]
-    NumPy-backed time series with strictly increasing timestamps.
-    Created by materializing an observable via `Scenario.materialize()`.
-Source[Shape, T]
-    Abstract base for sources that feed data into an observable via a
-    `(historical, live)` async-iterator pair returned by `subscribe()`.
-Operator[Inputs, Shape, T, State]
-    Base class for derived computations on observables and series.
-NativeOperator
-    Operator subclass backed by the Rust native extension.  Used by the
-    arithmetic factories (``add``, ``negate``, etc.).
-Scenario
-    Async runtime that subscribes to source streams, accumulates events in the
-    point-of-coherency queue (POCQ), and updates an acyclic source/operator
-    dependency graph incrementally.
+Type markers (for generic parameters):
+
+* [`Array`][tradingflow.Array] — marker for Rust `Array<T>` nodes.
+* [`Series`][tradingflow.Series] — marker for Rust `Series<T>` nodes.
+
+View types (for Python operators reading/writing graph data):
+
+* [`ArrayView`][tradingflow.ArrayView] — view of a Rust `Array<T>` node.
+* [`SeriesView`][tradingflow.SeriesView] — view of a Rust `Series<T>` node.
 """
 
-from .observable import Observable
-from .series import AnyShape, Array, Series
-from .source import Source
 from .operator import NativeOperator, Operator
 from .scenario import Scenario
+from .source import Source
+from .types import Array, Handle, Series
+from .views import ArrayView, SeriesView
 
 __all__ = [
-    "AnyShape",
     "Array",
+    "ArrayView",
+    "Handle",
     "NativeOperator",
-    "Observable",
     "Operator",
     "Scenario",
     "Series",
+    "SeriesView",
     "Source",
 ]

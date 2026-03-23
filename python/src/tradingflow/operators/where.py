@@ -1,68 +1,78 @@
-"""Element-wise conditional operator."""
+"""Where operator — element-wise conditional replacement.
+
+Since Rust closures cannot cross FFI, this is a Python `Operator` subclass.
+The condition is applied element-wise; failing elements are replaced with a
+fill value.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, override
+from typing import Any
 
 import numpy as np
-from numpy.typing import ArrayLike
 
-from ..observable import Observable
 from ..operator import Operator
-from ..series import AnyShape
+from ..types import Array, Handle
 
 
-class Where[Shape: AnyShape, T: np.generic](Operator[tuple[Observable[Shape, T]], Shape, T, None]):
-    """Element-wise conditional: keeps values where *fn* is `True`.
+class Where[T: np.generic](
+    Operator[
+        tuple[Handle[Array[T]]],
+        Handle[Array[T]],
+        None,
+    ]
+):
+    """Element-wise conditional: keeps values where `condition` is `True`,
+    replaces others with `fill`.
 
-    At each timestamp the latest value is tested element-wise with *fn*.
-    Elements where *fn* returns `False` are replaced with *fill*
-    (default `NaN`).  Equivalent to `np.where(fn(x), x, fill)`.
+    Unlike [`Filter`][tradingflow.operators.Filter], this always produces
+    output (never halts propagation).
 
     Parameters
     ----------
-    series
-        Input series.
-    fn
-        Element-wise predicate.  Receives the latest value (an ndarray)
-        and must return a boolean array broadcastable to the same shape.
+    input
+        Upstream handle.
+    condition
+        Callable receiving a scalar value and returning `True` to keep it.
     fill
-        Replacement value for elements where *fn* is `False`.
-        Defaults to `np.nan`.
-
-    Examples
-    --------
-    Keep only positive values, NaN elsewhere::
-
-        positive_mcap = Where(mcap_series, fn=lambda x: x > 0)
+        Replacement value for elements where `condition` returns `False`.
+    name
+        Optional human-readable name.
     """
 
-    __slots__ = ("_fn", "_fill")
+    __slots__ = ("_condition", "_fill")
 
     def __init__(
         self,
-        series: Observable[Shape, T],
-        fn: Callable[[np.ndarray], np.ndarray],
+        input: Handle[Array[T]],
+        condition: Callable[[Any], bool],
+        fill: float | int = 0.0,
         *,
-        fill: float = np.nan,
+        name: str | None = None,
     ) -> None:
-        self._fn = fn
+        self._condition = condition
         self._fill = fill
-        super().__init__((series,), series.shape, series.dtype)
+        super().__init__(
+            inputs=(input,),
+            shape=input.shape,
+            dtype=input.dtype,
+            name=name,
+        )
 
-    @override
     def init_state(self) -> None:
         return None
 
-    @override
     def compute(
         self,
-        timestamp: np.datetime64,
-        inputs: tuple[Observable[Shape, T]],
-        state: None,
-    ) -> tuple[ArrayLike | None, None]:
-        (obs,) = inputs
-        latest = obs.last
-        mask = self._fn(latest)
-        return np.where(mask, latest, self._fill), None
+        timestamp: int,
+        inputs: tuple,
+        output: Any,
+        state: Any,
+    ) -> tuple[bool, Any]:
+        value = inputs[0].value()
+        cond_fn = np.vectorize(self._condition)
+        mask = cond_fn(value)
+        result = np.where(mask, value, self._fill)
+        output.write(result)
+        return True, state

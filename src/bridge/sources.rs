@@ -5,13 +5,14 @@
 //!   by Python via mpsc channels.
 //! * [`HistoricalEventSender`] / [`LiveEventSender`] — pyclasses for Python
 //!   to push events into the channel source.
-//! * Array source registration helpers.
+//! * [`dispatch_native_source`] — register a Rust source by kind string.
+//! * [`register_channel_source`] — register a channel-based source.
 
 use std::marker::PhantomData;
 
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
+use pyo3::types::{PyAny, PyDict};
 use tokio::sync::mpsc;
 
 use crate::array::Array;
@@ -20,7 +21,7 @@ use crate::source::Source;
 use crate::sources::ArraySource;
 use crate::types::Scalar;
 
-use super::dispatch::{dtype_element_bytes, normalise_dtype};
+use super::dispatch::{dispatch_dtype, dtype_element_bytes};
 
 type PyObject = Py<PyAny>;
 
@@ -64,9 +65,6 @@ pub fn extract_value_bytes(
 // ---------------------------------------------------------------------------
 
 /// Source that receives events from a Python background thread via channels.
-///
-/// Uses unbounded receivers from Python, then forwards to bounded channels
-/// for the Scenario's POCQ runtime.
 pub struct ChannelSource<T: Scalar> {
     py_hist_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
     py_live_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
@@ -180,7 +178,81 @@ impl LiveEventSender {
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch helpers
+// Native source dispatch
+// ---------------------------------------------------------------------------
+
+/// Register a Rust-native source by `(kind, dtype)` and return the output
+/// node index.
+pub fn dispatch_native_source(
+    sc: &mut Scenario,
+    kind: &str,
+    dtype: &str,
+    params: &Bound<'_, PyDict>,
+) -> PyResult<usize> {
+    match kind {
+        "array" => {
+            let timestamps: Vec<i64> = params
+                .get_item("timestamps")?
+                .ok_or_else(|| PyTypeError::new_err("array source requires 'timestamps'"))?
+                .extract()?;
+            let values_bytes: Vec<u8> = params
+                .get_item("values_bytes")?
+                .ok_or_else(|| PyTypeError::new_err("array source requires 'values_bytes'"))?
+                .extract()?;
+            let stride: usize = params
+                .get_item("stride")?
+                .ok_or_else(|| PyTypeError::new_err("array source requires 'stride'"))?
+                .extract()?;
+            register_array_source(sc, dtype, timestamps, values_bytes, stride)
+        }
+        "clock" => {
+            let timestamps: Vec<i64> = params
+                .get_item("timestamps")?
+                .ok_or_else(|| PyTypeError::new_err("clock source requires 'timestamps'"))?
+                .extract()?;
+            use crate::sources::clock;
+            Ok(sc.add_source_untyped(clock(timestamps)))
+        }
+        "daily_clock" => {
+            let start_ns: i64 = params
+                .get_item("start_ns")?
+                .ok_or_else(|| PyTypeError::new_err("daily_clock requires 'start_ns'"))?
+                .extract()?;
+            let end_ns: i64 = params
+                .get_item("end_ns")?
+                .ok_or_else(|| PyTypeError::new_err("daily_clock requires 'end_ns'"))?
+                .extract()?;
+            let tz: String = params
+                .get_item("tz")?
+                .ok_or_else(|| PyTypeError::new_err("daily_clock requires 'tz'"))?
+                .extract()?;
+            use crate::sources::daily_clock;
+            Ok(sc.add_source_untyped(daily_clock(start_ns, end_ns, &tz)))
+        }
+        "monthly_clock" => {
+            let start_ns: i64 = params
+                .get_item("start_ns")?
+                .ok_or_else(|| PyTypeError::new_err("monthly_clock requires 'start_ns'"))?
+                .extract()?;
+            let end_ns: i64 = params
+                .get_item("end_ns")?
+                .ok_or_else(|| PyTypeError::new_err("monthly_clock requires 'end_ns'"))?
+                .extract()?;
+            let tz: String = params
+                .get_item("tz")?
+                .ok_or_else(|| PyTypeError::new_err("monthly_clock requires 'tz'"))?
+                .extract()?;
+            use crate::sources::monthly_clock;
+            Ok(sc.add_source_untyped(monthly_clock(start_ns, end_ns, &tz)))
+        }
+        other => Err(PyTypeError::new_err(format!(
+            "unknown native source kind: {other}"
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration helpers
 // ---------------------------------------------------------------------------
 
 /// Create a node and register an `ArraySource` in one step.
@@ -191,29 +263,14 @@ pub fn register_array_source(
     values_bytes: Vec<u8>,
     stride: usize,
 ) -> PyResult<usize> {
-    let dtype = normalise_dtype(dtype);
     macro_rules! register {
         ($T:ty) => {{
             let values = bytes_to_vec::<$T>(&values_bytes);
             let source = ArraySource::new(timestamps, values, stride);
-            sc.add_source(source).index()
+            sc.add_source_untyped(source)
         }};
     }
-    let idx = match dtype {
-        "float64" => register!(f64),
-        "float32" => register!(f32),
-        "int64" => register!(i64),
-        "int32" => register!(i32),
-        "uint64" => register!(u64),
-        "uint32" => register!(u32),
-        "bool" => register!(u8),
-        other => {
-            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "unsupported dtype: {other}"
-            )));
-        }
-    };
-    Ok(idx)
+    Ok(dispatch_dtype!(dtype, register))
 }
 
 /// Create a channel source and return (node_index, hist_sender, live_sender).
@@ -222,13 +279,12 @@ pub fn register_channel_source(
     shape: &[usize],
     dtype: &str,
 ) -> PyResult<(usize, HistoricalEventSender, LiveEventSender)> {
-    let dtype_norm = normalise_dtype(dtype);
     let stride: usize = if shape.is_empty() {
         1
     } else {
         shape.iter().product()
     };
-    let elem_bytes = dtype_element_bytes(dtype_norm)?;
+    let elem_bytes = dtype_element_bytes(dtype)?;
     let element_size = stride * elem_bytes;
 
     let (hist_tx, hist_rx) = mpsc::unbounded_channel();
@@ -244,24 +300,11 @@ pub fn register_channel_source(
                 shape: shape_box,
                 _phantom: PhantomData,
             };
-            sc.add_source(source).index()
+            sc.add_source_untyped(source)
         }};
     }
 
-    let node_index = match dtype_norm {
-        "float64" => register_channel!(f64),
-        "float32" => register_channel!(f32),
-        "int64" => register_channel!(i64),
-        "int32" => register_channel!(i32),
-        "uint64" => register_channel!(u64),
-        "uint32" => register_channel!(u32),
-        "bool" => register_channel!(u8),
-        other => {
-            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "unsupported dtype: {other}"
-            )));
-        }
-    };
+    let node_index = dispatch_dtype!(dtype, register_channel);
 
     let hist_sender = HistoricalEventSender {
         tx: Some(hist_tx),

@@ -1,216 +1,127 @@
-//! Operator registration for the Python bridge.
+//! Native operator dispatch for the Python bridge.
 //!
-//! [`NativeOpHandle`] captures a fully-monomorphised operator registration
-//! closure.  Factory pyfunctions (`add`, `negate`, etc.) create handles that
-//! are consumed by [`NativeScenario::register_handle_operator`].
+//! [`dispatch_native_operator`] maps a `(kind, dtype)` pair to a
+//! monomorphised `Scenario::register_operator_from_indices` call.
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
-use crate::array::Array;
 use crate::operators;
-use crate::scenario::handle::Handle;
 use crate::scenario::Scenario;
 
-use super::dispatch::normalise_dtype;
+use super::dispatch::{dispatch_dtype, normalise_dtype};
 
-// ---------------------------------------------------------------------------
-// NativeOpHandle
-// ---------------------------------------------------------------------------
+/// Register a Rust-native operator by `(kind, dtype)` and return the output
+/// node index.
+///
+/// If `clock` is `Some(idx)`, only the clock node triggers.
+/// If `clock` is `None`, all inputs are trigger edges.
+pub fn dispatch_native_operator(
+    sc: &mut Scenario,
+    kind: &str,
+    dtype: &str,
+    input_indices: &[usize],
+    clock: Option<usize>,
+    params: &Bound<'_, PyDict>,
+) -> PyResult<usize> {
+    let dtype = normalise_dtype(dtype);
 
-/// Registration closure: given a Scenario and input indices, registers the
-/// operator and returns the output node index.
-type RegisterFn = Box<dyn FnOnce(&mut Scenario, &[usize]) -> usize + Send + Sync>;
+    match kind {
+        // -- Binary element-wise operators ----------------------------------
+        "add" => {
+            macro_rules! go { ($T:ty) => {
+                sc.register_operator_from_indices(operators::add::<$T>(), input_indices, clock)
+            }; }
+            Ok(dispatch_dtype!(dtype, go))
+        }
+        "subtract" => {
+            macro_rules! go { ($T:ty) => {
+                sc.register_operator_from_indices(operators::subtract::<$T>(), input_indices, clock)
+            }; }
+            Ok(dispatch_dtype!(dtype, go))
+        }
+        "multiply" => {
+            macro_rules! go { ($T:ty) => {
+                sc.register_operator_from_indices(operators::multiply::<$T>(), input_indices, clock)
+            }; }
+            Ok(dispatch_dtype!(dtype, go))
+        }
+        "divide" => {
+            macro_rules! go { ($T:ty) => {
+                sc.register_operator_from_indices(operators::divide::<$T>(), input_indices, clock)
+            }; }
+            Ok(dispatch_dtype!(dtype, go))
+        }
 
-/// Opaque handle holding a pre-constructed, type-erased Rust operator.
-#[pyclass]
-pub struct NativeOpHandle {
-    register_fn: Option<RegisterFn>,
-    pub(super) dtype_str: String,
-}
-
-unsafe impl Send for NativeOpHandle {}
-unsafe impl Sync for NativeOpHandle {}
-
-impl NativeOpHandle {
-    /// Consume the registration closure, returning the output node index.
-    pub fn take_and_register(
-        &mut self,
-        sc: &mut Scenario,
-        input_indices: &[usize],
-    ) -> PyResult<usize> {
-        let f = self
-            .register_fn
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("NativeOpHandle has already been consumed"))?;
-        Ok(f(sc, input_indices))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Factory pyfunctions — binary operators
-// ---------------------------------------------------------------------------
-
-macro_rules! def_binary_op {
-    ($py_name:ident) => {
-        #[pyfunction]
-        pub fn $py_name(dtype: &str) -> PyResult<NativeOpHandle> {
-            let d = normalise_dtype(dtype).to_string();
-            match d.as_str() {
-                "float64" => Ok(NativeOpHandle {
-                    register_fn: Some(Box::new(|sc, inputs| {
-                        let h0 = Handle::<Array<f64>>::new(inputs[0]);
-                        let h1 = Handle::<Array<f64>>::new(inputs[1]);
-                        sc.add_operator(operators::$py_name::<f64>(), (h0, h1))
-                            .index()
-                    })),
-                    dtype_str: d,
-                }),
-                "float32" => Ok(NativeOpHandle {
-                    register_fn: Some(Box::new(|sc, inputs| {
-                        let h0 = Handle::<Array<f32>>::new(inputs[0]);
-                        let h1 = Handle::<Array<f32>>::new(inputs[1]);
-                        sc.add_operator(operators::$py_name::<f32>(), (h0, h1))
-                            .index()
-                    })),
-                    dtype_str: d,
-                }),
+        // -- Unary element-wise operators -----------------------------------
+        "negate" => {
+            // negate requires T: Neg — not available for unsigned types.
+            match dtype {
+                "float64" => Ok(sc.register_operator_from_indices(operators::negate::<f64>(), input_indices, clock)),
+                "float32" => Ok(sc.register_operator_from_indices(operators::negate::<f32>(), input_indices, clock)),
+                "int64" => Ok(sc.register_operator_from_indices(operators::negate::<i64>(), input_indices, clock)),
+                "int32" => Ok(sc.register_operator_from_indices(operators::negate::<i32>(), input_indices, clock)),
                 other => Err(PyTypeError::new_err(format!(
-                    "Rust operator '{}' does not support dtype '{other}'",
-                    stringify!($py_name),
+                    "negate does not support dtype '{other}'"
                 ))),
             }
         }
-    };
-}
 
-macro_rules! def_unary_op {
-    ($py_name:ident) => {
-        #[pyfunction]
-        pub fn $py_name(dtype: &str) -> PyResult<NativeOpHandle> {
-            let d = normalise_dtype(dtype).to_string();
-            match d.as_str() {
-                "float64" => Ok(NativeOpHandle {
-                    register_fn: Some(Box::new(|sc, inputs| {
-                        let h0 = Handle::<Array<f64>>::new(inputs[0]);
-                        sc.add_operator(operators::$py_name::<f64>(), (h0,)).index()
-                    })),
-                    dtype_str: d,
-                }),
-                "float32" => Ok(NativeOpHandle {
-                    register_fn: Some(Box::new(|sc, inputs| {
-                        let h0 = Handle::<Array<f32>>::new(inputs[0]);
-                        sc.add_operator(operators::$py_name::<f32>(), (h0,)).index()
-                    })),
-                    dtype_str: d,
-                }),
-                other => Err(PyTypeError::new_err(format!(
-                    "Rust operator '{}' does not support dtype '{other}'",
-                    stringify!($py_name),
-                ))),
-            }
+        // -- Parameterised operators ----------------------------------------
+        "select" => {
+            let indices: Vec<usize> = params
+                .get_item("indices")?
+                .ok_or_else(|| PyTypeError::new_err("select requires 'indices' param"))?
+                .extract()?;
+            macro_rules! go { ($T:ty) => {
+                sc.register_operator_from_indices(
+                    operators::Select::<$T>::flat(indices.clone()),
+                    input_indices, clock,
+                )
+            }; }
+            Ok(dispatch_dtype!(dtype, go))
         }
-    };
-}
 
-def_binary_op!(add);
-def_binary_op!(subtract);
-def_binary_op!(multiply);
-def_binary_op!(divide);
-def_unary_op!(negate);
-
-// -- Parameterised operators -------------------------------------------------
-
-#[pyfunction]
-pub fn select(dtype: &str, indices: Vec<usize>) -> PyResult<NativeOpHandle> {
-    let d = normalise_dtype(dtype).to_string();
-    match d.as_str() {
-        "float64" => {
-            let op = operators::Select::<f64>::flat(indices);
-            Ok(NativeOpHandle {
-                register_fn: Some(Box::new(move |sc, inputs| {
-                    let h0 = Handle::<Array<f64>>::new(inputs[0]);
-                    sc.add_operator(op, (h0,)).index()
-                })),
-                dtype_str: d,
-            })
+        // -- Variadic (homogeneous) operators -------------------------------
+        "concat" => {
+            let axis: usize = params
+                .get_item("axis")?
+                .ok_or_else(|| PyTypeError::new_err("concat requires 'axis' param"))?
+                .extract()?;
+            macro_rules! go { ($T:ty) => {
+                sc.register_operator_from_indices(
+                    operators::Concat::<$T>::new(axis),
+                    input_indices, clock,
+                )
+            }; }
+            Ok(dispatch_dtype!(dtype, go))
         }
-        "float32" => {
-            let op = operators::Select::<f32>::flat(indices);
-            Ok(NativeOpHandle {
-                register_fn: Some(Box::new(move |sc, inputs| {
-                    let h0 = Handle::<Array<f32>>::new(inputs[0]);
-                    sc.add_operator(op, (h0,)).index()
-                })),
-                dtype_str: d,
-            })
+        "stack" => {
+            let axis: usize = params
+                .get_item("axis")?
+                .ok_or_else(|| PyTypeError::new_err("stack requires 'axis' param"))?
+                .extract()?;
+            macro_rules! go { ($T:ty) => {
+                sc.register_operator_from_indices(
+                    operators::Stack::<$T>::new(axis),
+                    input_indices, clock,
+                )
+            }; }
+            Ok(dispatch_dtype!(dtype, go))
         }
+
+        // -- Record (Array → Series) ----------------------------------------
+        "record" => {
+            macro_rules! go { ($T:ty) => {{
+                use crate::operators::Record;
+                sc.register_operator_from_indices(Record::<$T>::new(), input_indices, clock)
+            }}; }
+            Ok(dispatch_dtype!(dtype, go))
+        }
+
         other => Err(PyTypeError::new_err(format!(
-            "Rust operator 'select' does not support dtype '{other}'"
-        ))),
-    }
-}
-
-#[pyfunction]
-pub fn concat(dtype: &str, axis: usize) -> PyResult<NativeOpHandle> {
-    let d = normalise_dtype(dtype).to_string();
-    match d.as_str() {
-        "float64" => {
-            let op = operators::Concat::<f64>::new(axis);
-            Ok(NativeOpHandle {
-                register_fn: Some(Box::new(move |sc, inputs| {
-                    let handles: Box<[Handle<Array<f64>>]> =
-                        inputs.iter().map(|&i| Handle::new(i)).collect();
-                    sc.add_operator(op, handles).index()
-                })),
-                dtype_str: d,
-            })
-        }
-        "float32" => {
-            let op = operators::Concat::<f32>::new(axis);
-            Ok(NativeOpHandle {
-                register_fn: Some(Box::new(move |sc, inputs| {
-                    let handles: Box<[Handle<Array<f32>>]> =
-                        inputs.iter().map(|&i| Handle::new(i)).collect();
-                    sc.add_operator(op, handles).index()
-                })),
-                dtype_str: d,
-            })
-        }
-        other => Err(PyTypeError::new_err(format!(
-            "Rust operator 'concat' does not support dtype '{other}'"
-        ))),
-    }
-}
-
-#[pyfunction]
-pub fn stack(dtype: &str, axis: usize) -> PyResult<NativeOpHandle> {
-    let d = normalise_dtype(dtype).to_string();
-    match d.as_str() {
-        "float64" => {
-            let op = operators::Stack::<f64>::new(axis);
-            Ok(NativeOpHandle {
-                register_fn: Some(Box::new(move |sc, inputs| {
-                    let handles: Box<[Handle<Array<f64>>]> =
-                        inputs.iter().map(|&i| Handle::new(i)).collect();
-                    sc.add_operator(op, handles).index()
-                })),
-                dtype_str: d,
-            })
-        }
-        "float32" => {
-            let op = operators::Stack::<f32>::new(axis);
-            Ok(NativeOpHandle {
-                register_fn: Some(Box::new(move |sc, inputs| {
-                    let handles: Box<[Handle<Array<f32>>]> =
-                        inputs.iter().map(|&i| Handle::new(i)).collect();
-                    sc.add_operator(op, handles).index()
-                })),
-                dtype_str: d,
-            })
-        }
-        other => Err(PyTypeError::new_err(format!(
-            "Rust operator 'stack' does not support dtype '{other}'"
+            "unknown native operator kind: {other}"
         ))),
     }
 }

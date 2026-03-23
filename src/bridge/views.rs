@@ -1,97 +1,93 @@
 //! Python-visible views for Array and Series nodes.
 //!
-//! [`StoreView`] exposes Rust `Array<T>` or `Series<T>` nodes to Python
-//! through raw pointer + dtype dispatch.
+//! [`ArrayView`] and [`SeriesView`] are `#[pyclass]` wrappers that hold a raw
+//! pointer to a graph node's value.  All read/write methods **copy** data
+//! across the boundary — no reference to graph memory ever reaches Python.
+//!
+//! Each view stores pre-resolved function pointers (monomorphized at creation
+//! time), so methods dispatch without runtime dtype matching.
+//!
+//! # Safety
+//!
+//! The raw pointer is valid for the lifetime of the owning [`Scenario`].  Since
+//! all methods copy (never expose a reference), Python code cannot create
+//! dangling pointers even if the underlying buffer is reallocated (e.g. by
+//! `mem::replace` on an Array, or capacity-doubling on a Series).
 
 use numpy::ndarray::{Array1, ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn};
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::array::Array;
 use crate::series::Series;
+use crate::types::Scalar;
 
-use super::dispatch::normalise_dtype;
+/// Additional bounds needed for numpy interop.
+pub(crate) trait NpScalar: Scalar + numpy::Element {}
+impl NpScalar for f64 {}
+impl NpScalar for f32 {}
+impl NpScalar for i64 {}
+impl NpScalar for i32 {}
+impl NpScalar for u64 {}
+impl NpScalar for u32 {}
+impl NpScalar for u8 {}
 
 type PyObject = Py<PyAny>;
 
-// ---------------------------------------------------------------------------
-// NodeKind
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// ArrayView
+// ===========================================================================
 
-/// What kind of value a node holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NodeKind {
-    /// Typed `Array<T>` (Rust and Python operators).
-    Array,
-    /// `Series<T>` (via Record).
-    Series,
-}
+/// Type-erased function: copy Array<T> data into a new numpy array.
+type ArrayValueFn = unsafe fn(*const u8, Python<'_>, &[usize]) -> PyResult<PyObject>;
+/// Type-erased function: copy numpy data into Array<T>.
+type ArrayWriteFn = unsafe fn(*mut u8, Python<'_>, &Bound<'_, PyAny>, &[usize]) -> PyResult<()>;
 
-// ---------------------------------------------------------------------------
-// StoreView
-// ---------------------------------------------------------------------------
-
-/// Python-visible view of a Rust `Array<T>` or `Series<T>`.
+/// Python-visible view of a Rust `Array<T>` node.
+///
+/// Every read (`value`) copies data out.  Every write (`write`) copies data
+/// in.  No reference to graph memory is ever exposed to Python.
 #[pyclass]
-pub struct StoreView {
-    value_ptr: *const u8,
-    kind: NodeKind,
+pub struct _ArrayView {
+    ptr: *mut u8,
     shape: Vec<usize>,
     dtype_str: String,
+    value_fn: ArrayValueFn,
+    write_fn: ArrayWriteFn,
 }
 
-unsafe impl Send for StoreView {}
-unsafe impl Sync for StoreView {}
+unsafe impl Send for _ArrayView {}
+unsafe impl Sync for _ArrayView {}
 
-impl StoreView {
-    pub fn new(value_ptr: *const u8, kind: NodeKind, shape: Vec<usize>, dtype_str: String) -> Self {
-        Self {
-            value_ptr,
-            kind,
-            shape,
-            dtype_str,
-        }
+/// Create an [`_ArrayView`] for a node holding `Array<T>`.
+///
+/// Called at the monomorphization site where `T` is known.  The returned
+/// view stores pre-resolved function pointers — no dtype dispatch at access
+/// time.
+pub fn make_array_view<T: NpScalar>(ptr: *mut u8, shape: &[usize], dtype_str: &str) -> _ArrayView {
+    _ArrayView {
+        ptr,
+        shape: shape.to_vec(),
+        dtype_str: dtype_str.to_string(),
+        value_fn: array_value::<T>,
+        write_fn: array_write::<T>,
     }
 }
 
 #[pymethods]
-impl StoreView {
-    /// Current (last) element as a numpy array.
-    #[getter]
-    fn last<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        match self.kind {
-            NodeKind::Array => array_to_numpy(py, self.value_ptr, &self.dtype_str),
-            NodeKind::Series => series_last_to_numpy(py, self.value_ptr, &self.dtype_str),
-        }
+impl _ArrayView {
+    /// Copy the array data into a new numpy array.
+    fn value<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        unsafe { (self.value_fn)(self.ptr as *const u8, py, &self.shape) }
     }
 
-    /// All timestamps as a numpy int64 array (Series only).
-    #[getter]
-    pub fn index<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        match self.kind {
-            NodeKind::Array => {
-                let arr = Array1::<i64>::default(0);
-                Ok(PyArray1::from_owned_array(py, arr).into_any().unbind())
-            }
-            NodeKind::Series => {
-                let series = unsafe { &*(self.value_ptr as *const Series<f64>) };
-                let arr = Array1::from(series.timestamps().to_vec());
-                Ok(PyArray1::from_owned_array(py, arr).into_any().unbind())
-            }
-        }
-    }
-
-    /// All historical values as a numpy array (Series only).
-    #[getter]
-    pub fn values<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        match self.kind {
-            NodeKind::Array => array_to_numpy(py, self.value_ptr, &self.dtype_str),
-            NodeKind::Series => {
-                series_values_to_numpy(py, self.value_ptr, &self.shape, &self.dtype_str)
-            }
-        }
+    /// Overwrite the array data from a numpy array.
+    ///
+    /// The input must be broadcastable to the view's shape.
+    fn write<'py>(&self, py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+        unsafe { (self.write_fn)(self.ptr, py, value, &self.shape) }
     }
 
     /// Element shape as a Python tuple.
@@ -108,116 +104,221 @@ impl StoreView {
         let np = py.import("numpy")?;
         Ok(np.call_method1("dtype", (&self.dtype_str,))?.unbind())
     }
-
-    /// Number of recorded elements (1 for Array nodes, series length for Series nodes).
-    pub fn __len__(&self) -> usize {
-        match self.kind {
-            NodeKind::Array => 1,
-            NodeKind::Series => {
-                let series = unsafe { &*(self.value_ptr as *const Series<f64>) };
-                series.len()
-            }
-        }
-    }
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch helpers — Array
-// ---------------------------------------------------------------------------
+// -- Monomorphized helpers for ArrayView ------------------------------------
 
-fn array_to_numpy(py: Python<'_>, value_ptr: *const u8, dtype_str: &str) -> PyResult<PyObject> {
-    let dtype = normalise_dtype(dtype_str);
-    macro_rules! arr_match {
-        ($T:ty) => {{
-            let arr = unsafe { &*(value_ptr as *const Array<$T>) };
-            let shape: Vec<usize> = arr.shape().to_vec();
-            let full_shape = if shape.is_empty() { vec![1] } else { shape };
-            let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), arr.as_slice().to_vec())
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
-        }};
-    }
-    match dtype {
-        "float64" => arr_match!(f64),
-        "float32" => arr_match!(f32),
-        "int64" => arr_match!(i64),
-        "int32" => arr_match!(i32),
-        "uint64" => arr_match!(u64),
-        "uint32" => arr_match!(u32),
-        "bool" => arr_match!(u8),
-        _ => Err(PyTypeError::new_err(format!(
-            "unsupported dtype: {dtype_str}"
-        ))),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Dispatch helpers — Series
-// ---------------------------------------------------------------------------
-
-fn series_last_to_numpy(
+unsafe fn array_value<T: NpScalar>(
+    ptr: *const u8,
     py: Python<'_>,
-    value_ptr: *const u8,
-    dtype_str: &str,
+    shape: &[usize],
 ) -> PyResult<PyObject> {
-    let dtype = normalise_dtype(dtype_str);
-    macro_rules! last_match {
-        ($T:ty) => {{
-            let series = unsafe { &*(value_ptr as *const Series<$T>) };
-            let values = series.last().unwrap_or(&[]);
-            let shape = series.shape();
-            let full_shape = if shape.is_empty() {
-                vec![1]
-            } else {
-                shape.to_vec()
-            };
-            let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), values.to_vec())
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
-        }};
+    let arr = unsafe { &*(ptr as *const Array<T>) };
+    let full_shape = if shape.is_empty() {
+        vec![1]
+    } else {
+        shape.to_vec()
+    };
+    let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), arr.as_slice().to_vec())
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
+}
+
+unsafe fn array_write<T: NpScalar>(
+    ptr: *mut u8,
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    shape: &[usize],
+) -> PyResult<()> {
+    let arr = unsafe { &mut *(ptr as *mut Array<T>) };
+    let expected_len = arr.as_slice().len();
+
+    // Convert to contiguous numpy array and extract raw bytes.
+    let np = py.import("numpy")?;
+    let contiguous = np.call_method1("ascontiguousarray", (value,))?;
+    let interface = contiguous.getattr("__array_interface__")?;
+    let data_tuple = interface.get_item("data")?;
+    let src_ptr: usize = data_tuple.get_item(0)?.extract()?;
+
+    // Validate size.
+    let src_shape: Vec<usize> = interface.get_item("shape")?.extract()?;
+    let src_len: usize = if src_shape.is_empty() {
+        1
+    } else {
+        src_shape.iter().product()
+    };
+    if src_len != expected_len {
+        return Err(PyValueError::new_err(format!(
+            "shape mismatch: expected {} elements (shape {:?}), got {} (shape {:?})",
+            expected_len, shape, src_len, src_shape,
+        )));
     }
-    match dtype {
-        "float64" => last_match!(f64),
-        "float32" => last_match!(f32),
-        "int64" => last_match!(i64),
-        "int32" => last_match!(i32),
-        "uint64" => last_match!(u64),
-        "uint32" => last_match!(u32),
-        "bool" => last_match!(u8),
-        _ => Err(PyTypeError::new_err(format!(
-            "unsupported dtype: {dtype_str}"
-        ))),
+
+    // Copy.
+    let dst = arr.as_slice_mut();
+    unsafe {
+        std::ptr::copy_nonoverlapping(src_ptr as *const T, dst.as_mut_ptr(), expected_len);
+    }
+    Ok(())
+}
+
+// ===========================================================================
+// SeriesView
+// ===========================================================================
+
+/// Type-erased function: copy Series<T> last element into a new numpy array.
+type SeriesLastFn = unsafe fn(*const u8, Python<'_>, &[usize]) -> PyResult<PyObject>;
+/// Type-erased function: copy Series<T> values slice into a new numpy array.
+type SeriesValuesFn =
+    unsafe fn(*const u8, Python<'_>, &[usize], usize, usize) -> PyResult<PyObject>;
+/// Type-erased function: copy Series<T> timestamps slice into a new numpy array.
+type SeriesIndexFn = unsafe fn(*const u8, Python<'_>, usize, usize) -> PyResult<PyObject>;
+/// Type-erased function: get Series<T> length.
+type SeriesLenFn = unsafe fn(*const u8) -> usize;
+
+/// Python-visible view of a Rust `Series<T>` node.
+///
+/// Every read method copies data out.  Series buffers can reallocate during
+/// graph execution (capacity doubling on append); copies prevent dangling.
+#[pyclass]
+pub struct _SeriesView {
+    ptr: *mut u8,
+    shape: Vec<usize>,
+    dtype_str: String,
+    last_fn: SeriesLastFn,
+    values_fn: SeriesValuesFn,
+    index_fn: SeriesIndexFn,
+    len_fn: SeriesLenFn,
+}
+
+unsafe impl Send for _SeriesView {}
+unsafe impl Sync for _SeriesView {}
+
+/// Create a [`_SeriesView`] for a node holding `Series<T>`.
+pub fn make_series_view<T: NpScalar>(
+    ptr: *mut u8,
+    shape: &[usize],
+    dtype_str: &str,
+) -> _SeriesView {
+    _SeriesView {
+        ptr,
+        shape: shape.to_vec(),
+        dtype_str: dtype_str.to_string(),
+        last_fn: series_last::<T>,
+        values_fn: series_values::<T>,
+        index_fn: series_index::<T>,
+        len_fn: series_len::<T>,
     }
 }
 
-fn series_values_to_numpy(
+#[pymethods]
+impl _SeriesView {
+    /// Copy the latest element into a new numpy array.
+    fn last<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        unsafe { (self.last_fn)(self.ptr as *const u8, py, &self.shape) }
+    }
+
+    /// Copy a slice of values into a new numpy array.
+    ///
+    /// Returns shape `(end - start, *element_shape)`.
+    #[pyo3(signature = (start=0, end=None))]
+    fn values<'py>(&self, py: Python<'py>, start: usize, end: Option<usize>) -> PyResult<PyObject> {
+        let len = unsafe { (self.len_fn)(self.ptr as *const u8) };
+        let end = end.unwrap_or(len);
+        unsafe { (self.values_fn)(self.ptr as *const u8, py, &self.shape, start, end) }
+    }
+
+    /// Copy a slice of timestamps into a new numpy int64 array.
+    #[pyo3(signature = (start=0, end=None))]
+    fn slice<'py>(&self, py: Python<'py>, start: usize, end: Option<usize>) -> PyResult<PyObject> {
+        let len = unsafe { (self.len_fn)(self.ptr as *const u8) };
+        let end = end.unwrap_or(len);
+        unsafe { (self.index_fn)(self.ptr as *const u8, py, start, end) }
+    }
+
+    /// Number of recorded elements.
+    fn __len__(&self) -> usize {
+        unsafe { (self.len_fn)(self.ptr as *const u8) }
+    }
+
+    /// Element shape as a Python tuple.
+    #[getter]
+    fn shape<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        Ok(pyo3::types::PyTuple::new(py, &self.shape)?
+            .into_any()
+            .unbind())
+    }
+
+    /// Numpy dtype object.
+    #[getter]
+    fn dtype<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        let np = py.import("numpy")?;
+        Ok(np.call_method1("dtype", (&self.dtype_str,))?.unbind())
+    }
+}
+
+// -- Monomorphized helpers for SeriesView -----------------------------------
+
+unsafe fn series_last<T: NpScalar>(
+    ptr: *const u8,
     py: Python<'_>,
-    value_ptr: *const u8,
+    shape: &[usize],
+) -> PyResult<PyObject> {
+    let series = unsafe { &*(ptr as *const Series<T>) };
+    let values = series.last().unwrap_or(&[]);
+    let full_shape = if shape.is_empty() {
+        vec![1]
+    } else {
+        shape.to_vec()
+    };
+    let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), values.to_vec())
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
+}
+
+unsafe fn series_values<T: NpScalar>(
+    ptr: *const u8,
+    py: Python<'_>,
     element_shape: &[usize],
-    dtype_str: &str,
+    start: usize,
+    end: usize,
 ) -> PyResult<PyObject> {
-    let dtype = normalise_dtype(dtype_str);
-    macro_rules! values_match {
-        ($T:ty) => {{
-            let series = unsafe { &*(value_ptr as *const Series<$T>) };
-            let n = series.len();
-            let mut full_shape = vec![n];
-            full_shape.extend_from_slice(element_shape);
-            let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), series.values().to_vec())
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
-        }};
-    }
-    match dtype {
-        "float64" => values_match!(f64),
-        "float32" => values_match!(f32),
-        "int64" => values_match!(i64),
-        "int32" => values_match!(i32),
-        "uint64" => values_match!(u64),
-        "uint32" => values_match!(u32),
-        "bool" => values_match!(u8),
-        _ => Err(PyTypeError::new_err(format!(
-            "unsupported dtype: {dtype_str}"
-        ))),
-    }
+    let series = unsafe { &*(ptr as *const Series<T>) };
+    let n = series.len();
+    let start = start.min(n);
+    let end = end.min(n);
+    let stride: usize = if element_shape.is_empty() {
+        1
+    } else {
+        element_shape.iter().product()
+    };
+    let all_values = series.values();
+    let slice = &all_values[start * stride..end * stride];
+    let count = end - start;
+    let mut full_shape = vec![count];
+    full_shape.extend_from_slice(element_shape);
+    let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), slice.to_vec())
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
+}
+
+unsafe fn series_index<T: NpScalar>(
+    ptr: *const u8,
+    py: Python<'_>,
+    start: usize,
+    end: usize,
+) -> PyResult<PyObject> {
+    // T is unused for timestamps, but we need it to cast the pointer correctly.
+    let series = unsafe { &*(ptr as *const Series<T>) };
+    let n = series.len();
+    let start = start.min(n);
+    let end = end.min(n);
+    let slice = &series.timestamps()[start..end];
+    let arr = Array1::from(slice.to_vec());
+    Ok(PyArray1::from_owned_array(py, arr).into_any().unbind())
+}
+
+unsafe fn series_len<T: NpScalar>(ptr: *const u8) -> usize {
+    let series = unsafe { &*(ptr as *const Series<T>) };
+    series.len()
 }

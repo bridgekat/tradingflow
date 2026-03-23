@@ -1,68 +1,72 @@
-"""Whole-element filter operator."""
+"""Filter operator — drops elements that don't match a predicate.
+
+Since Rust closures cannot cross FFI, this is a Python `Operator` subclass.
+The predicate receives the full array and returns `True` to pass it through.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import override
+from typing import Any
 
 import numpy as np
-from numpy.typing import ArrayLike
 
-from ..observable import Observable
 from ..operator import Operator
-from ..series import AnyShape
+from ..types import Array, Handle
 
 
-class Filter[Shape: AnyShape, T: np.generic](Operator[tuple[Observable[Shape, T]], Shape, T, None]):
-    """Filters entire elements by a scalar predicate.
+class Filter[T: np.generic](
+    Operator[
+        tuple[Handle[Array[T]]],
+        Handle[Array[T]],
+        None,
+    ]
+):
+    """Passes or drops the entire element based on a predicate.
 
-    At each timestamp the latest value is passed to *fn*, which must return
-    a single boolean.  If `True` the value is emitted as-is; if `False`
-    no output is produced for this timestamp (i.e. `compute` returns
-    `None`).
-
-    This differs from [`Where`][tradingflow.operators.Where], which replaces
-    individual array elements with a fill value.  `Filter` drops the
-    entire element when the predicate is `False`.
+    When the predicate returns `False`, the operator produces no output
+    for that timestamp, halting downstream propagation.
 
     Parameters
     ----------
-    series
-        Input series.
-    fn
-        Predicate receiving the latest value (an ndarray) and returning a
-        single `bool`.
-
-    Examples
-    --------
-    Keep only timestamps where the sum is positive::
-
-        filtered = Filter(series, fn=lambda x: float(np.sum(x)) > 0)
+    input
+        Upstream handle.
+    predicate
+        Callable receiving a numpy array (the current value) and returning
+        `True` to pass it through, `False` to drop.
+    name
+        Optional human-readable name.
     """
 
-    __slots__ = ("_fn",)
+    __slots__ = ("_predicate",)
 
     def __init__(
         self,
-        series: Observable[Shape, T],
-        fn: Callable[[np.ndarray], bool],
+        input: Handle[Array[T]],
+        predicate: Callable[[np.ndarray], bool],
+        *,
+        name: str | None = None,
     ) -> None:
-        self._fn = fn
-        super().__init__((series,), series.shape, series.dtype)
+        self._predicate = predicate
+        super().__init__(
+            inputs=(input,),
+            shape=input.shape,
+            dtype=input.dtype,
+            name=name,
+        )
 
-    @override
     def init_state(self) -> None:
         return None
 
-    @override
     def compute(
         self,
-        timestamp: np.datetime64,
-        inputs: tuple[Observable[Shape, T]],
-        state: None,
-    ) -> tuple[ArrayLike | None, None]:
-        (obs,) = inputs
-        latest = obs.last
-        if self._fn(latest):
-            return latest, None
-        return None, None
+        timestamp: int,
+        inputs: tuple,
+        output: Any,
+        state: Any,
+    ) -> tuple[bool, Any]:
+        value = inputs[0].value()
+        if self._predicate(value):
+            output.write(value)
+            return True, state
+        return False, state

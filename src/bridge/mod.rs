@@ -1,51 +1,44 @@
-//! PyO3 bridge — exposes the new generalized Rust runtime to Python.
+//! PyO3 bridge — exposes the Rust runtime to Python.
 //!
 //! [`NativeScenario`] wraps the Rust [`Scenario`](crate::scenario::Scenario),
-//! allowing Python's `Scenario.run()` to delegate the POCQ event loop and
-//! DAG propagation to Rust.
+//! providing three registration entry points:
 //!
-//! # Python operator restrictions
+//! * [`add_native_operator`](NativeScenario::add_native_operator) — register a
+//!   Rust-implemented operator by kind string + dtype + params.
+//! * [`add_py_operator`](NativeScenario::add_py_operator) — register a
+//!   Python-implemented operator whose `compute()` is called via GIL during
+//!   flush.
+//! * [`add_source_raw`](NativeScenario::add_source_raw) — register a
+//!   channel-based source driven by Python async iterators.
+//! * [`add_native_source`](NativeScenario::add_native_source) — register a
+//!   Rust-implemented source by kind string.
 //!
-//! Python operators registered via [`NativeScenario::add_py_operator`] have
-//! their `compute(inputs, state)` callback invoked during Rust's synchronous
-//! `flush()`.  The following restrictions apply:
-//!
-//! 1. **No re-entrant scenario access.**  The `compute` callback MUST NOT
-//!    call back into the `NativeScenario` instance (e.g. `store_view()`,
-//!    `run()`, `record()`).  The scenario is mutably borrowed during
-//!    `run()`; re-entering causes `RuntimeError: Already mutably borrowed`.
-//!
-//! 2. **Use pre-captured views.**  Input data should be read via `StoreView`
-//!    objects captured before `run()` and passed as `py_inputs`.  These hold
-//!    raw pointers to node values that remain valid throughout the scenario's
-//!    lifetime.
-//!
-//! 3. **No long-running compute.**  The callback runs under the GIL during
-//!    the synchronous DAG flush.  Long-running Python code blocks the entire
-//!    DAG propagation.
+//! Views ([`ArrayView`], [`SeriesView`]) are cached per node and passed to
+//! Python operator callbacks.  All view methods copy data across the boundary —
+//! no reference to graph memory ever reaches Python.
 
 mod dispatch;
 mod operators;
 mod sources;
 mod views;
 
+use std::any::TypeId;
 use std::sync::{Arc, Mutex};
 
-use numpy::PyReadonlyArrayDyn;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
+use pyo3::types::{PyAny, PyDict};
 
 type PyObject = Py<PyAny>;
 
 use crate::array::Array;
 use crate::scenario::Scenario;
 use crate::series::Series;
+use crate::types::Scalar;
 
-use dispatch::{dtype_element_bytes, normalise_dtype};
-pub use operators::NativeOpHandle;
+use dispatch::{dispatch_dtype, normalise_dtype};
 pub use sources::{HistoricalEventSender, LiveEventSender};
-pub use views::{NodeKind, StoreView};
+pub use views::{_ArrayView, _SeriesView};
 
 // ---------------------------------------------------------------------------
 // Error slot
@@ -61,57 +54,86 @@ fn set_error(slot: &ErrorSlot, msg: String) {
 }
 
 // ---------------------------------------------------------------------------
+// View creation helpers (monomorphized)
+// ---------------------------------------------------------------------------
+
+/// What kind of value a node holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewKind {
+    Array,
+    Series,
+}
+
+/// Create a cached Python view for a node, given its kind and dtype.
+///
+/// Returns `None` if the dtype is unsupported.
+fn create_view(
+    py: Python<'_>,
+    ptr: *mut u8,
+    shape: &[usize],
+    dtype: &str,
+    kind: ViewKind,
+) -> PyResult<PyObject> {
+    macro_rules! make_view {
+        ($T:ty) => {
+            match kind {
+                ViewKind::Array => {
+                    let v = views::make_array_view::<$T>(ptr, shape, dtype);
+                    Ok(Py::new(py, v)?.into_any())
+                }
+                ViewKind::Series => {
+                    let v = views::make_series_view::<$T>(ptr, shape, dtype);
+                    Ok(Py::new(py, v)?.into_any())
+                }
+            }
+        };
+    }
+    dispatch_dtype!(dtype, make_view)
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch helpers
 // ---------------------------------------------------------------------------
 
 /// Create a node holding `Array<T>` with given shape/dtype.
-fn create_array_node_dispatch(
-    sc: &mut Scenario,
-    shape: &[usize],
-    dtype: &str,
-    default_bytes: &[u8],
-) -> PyResult<usize> {
-    let dtype = normalise_dtype(dtype);
+fn create_array_node(sc: &mut Scenario, shape: &[usize], dtype: &str) -> PyResult<usize> {
     macro_rules! create {
         ($T:ty) => {{
-            let values = sources::bytes_to_vec::<$T>(default_bytes);
-            let arr = Array::from_vec(shape, values);
-            sc.create_node(arr).index()
+            let arr = Array::<$T>::zeros(shape);
+            Ok(sc.create_node(arr).index())
         }};
     }
-    match dtype {
-        "float64" => Ok(create!(f64)),
-        "float32" => Ok(create!(f32)),
-        "int64" => Ok(create!(i64)),
-        "int32" => Ok(create!(i32)),
-        "uint64" => Ok(create!(u64)),
-        "uint32" => Ok(create!(u32)),
-        "bool" => Ok(create!(u8)),
-        other => Err(PyTypeError::new_err(format!("unsupported dtype: {other}"))),
-    }
+    dispatch_dtype!(dtype, create)
 }
 
 /// Add a record operator for a given Array node.
 fn record_dispatch(sc: &mut Scenario, node_index: usize, dtype: &str) -> PyResult<usize> {
-    let dtype = normalise_dtype(dtype);
     macro_rules! mat {
         ($T:ty) => {{
             use crate::operators::Record;
             use crate::scenario::handle::Handle;
             let h = Handle::<Array<$T>>::new(node_index);
-            sc.add_operator(Record::<$T>::new(), (h,)).index()
+            Ok(sc.add_operator(Record::<$T>::new(), (h,)).index())
         }};
     }
-    match dtype {
-        "float64" => Ok(mat!(f64)),
-        "float32" => Ok(mat!(f32)),
-        "int64" => Ok(mat!(i64)),
-        "int32" => Ok(mat!(i32)),
-        "uint64" => Ok(mat!(u64)),
-        "uint32" => Ok(mat!(u32)),
-        "bool" => Ok(mat!(u8)),
-        other => Err(PyTypeError::new_err(format!("unsupported dtype: {other}"))),
+    dispatch_dtype!(dtype, mat)
+}
+
+/// Resolve a Python-side `(kind, dtype)` pair to a Rust `TypeId`.
+fn resolve_type_id(kind: &str, dtype: &str) -> PyResult<TypeId> {
+    let dtype = normalise_dtype(dtype);
+    macro_rules! resolve {
+        ($T:ty) => {
+            match kind {
+                "array" => Ok(TypeId::of::<Array<$T>>()),
+                "series" => Ok(TypeId::of::<Series<$T>>()),
+                other => Err(PyTypeError::new_err(format!(
+                    "unknown node kind: {other}"
+                ))),
+            }
+        };
     }
+    dispatch_dtype!(dtype, resolve)
 }
 
 // ---------------------------------------------------------------------------
@@ -121,10 +143,8 @@ fn record_dispatch(sc: &mut Scenario, node_index: usize, dtype: &str) -> PyResul
 struct PyOperatorState {
     py_operator: PyObject,
     py_inputs: PyObject,
+    py_output: PyObject,
     py_state: PyObject,
-    element_size: usize,
-    #[allow(dead_code)]
-    dtype_str: String,
     error_slot: ErrorSlot,
 }
 
@@ -142,15 +162,41 @@ unsafe impl Send for PyOperatorState {}
 pub struct NativeScenario {
     scenario: Option<Scenario>,
     error_slot: ErrorSlot,
-    /// Per-node: (dtype_str, kind).
-    node_info: Vec<(String, NodeKind)>,
+    /// Per-node metadata: (dtype_str, view_kind).
+    node_info: Vec<(String, ViewKind)>,
+    /// Cached Python view objects, indexed by node index.
+    cached_views: Vec<Option<PyObject>>,
     /// Tokio runtime — kept alive for the scenario's lifetime.
-    /// The runtime context is entered on construction (guard is leaked).
     _rt: tokio::runtime::Runtime,
 }
 
 unsafe impl Send for NativeScenario {}
 unsafe impl Sync for NativeScenario {}
+
+impl NativeScenario {
+    /// Record a node's metadata and eagerly create + cache its Python view.
+    fn push_node(
+        &mut self,
+        py: Python<'_>,
+        node_index: usize,
+        dtype: &str,
+        kind: ViewKind,
+        shape: &[usize],
+    ) -> PyResult<()> {
+        // Ensure vectors are sized to accommodate node_index.
+        while self.node_info.len() <= node_index {
+            self.node_info.push((String::new(), ViewKind::Array));
+            self.cached_views.push(None);
+        }
+        self.node_info[node_index] = (dtype.to_string(), kind);
+
+        let sc = self.scenario.as_ref().unwrap();
+        let ptr = sc.node_value_ptr(node_index);
+        let view = create_view(py, ptr, shape, dtype, kind)?;
+        self.cached_views[node_index] = Some(view);
+        Ok(())
+    }
+}
 
 #[pymethods]
 impl NativeScenario {
@@ -164,134 +210,263 @@ impl NativeScenario {
             scenario: Some(Scenario::new()),
             error_slot: Arc::new(Mutex::new(None)),
             node_info: Vec::new(),
+            cached_views: Vec::new(),
             _rt: rt,
         }
     }
 
-    /// Register a source with pre-drained array data.
-    fn add_source(
-        &mut self,
-        _py: Python<'_>,
-        _shape: Vec<usize>,
-        dtype: String,
-        timestamps: PyReadonlyArrayDyn<'_, i64>,
-        values_bytes: &[u8],
-        stride: usize,
-    ) -> PyResult<usize> {
-        let _guard = self._rt.enter();
-        let sc = self.scenario.as_mut().unwrap();
-        let dtype_norm = normalise_dtype(&dtype).to_string();
-        let ts_vec = timestamps.as_slice()?.to_vec();
-        let node_index =
-            sources::register_array_source(sc, &dtype_norm, ts_vec, values_bytes.to_vec(), stride)?;
-        self.node_info.push((dtype_norm, NodeKind::Array));
-        Ok(node_index)
-    }
+    // -- Goal 1: Native (Rust) operator/source registration ------------------
 
-    /// Register a Python operator.
-    fn add_py_operator(
+    /// Register a Rust-native operator by kind + dtype + params.
+    ///
+    /// If `clock_index` is provided, the operator is triggered by the
+    /// clock node instead of its inputs.
+    #[pyo3(signature = (kind, dtype, input_indices, shape, params, clock_index=None))]
+    fn add_native_operator(
         &mut self,
-        _py: Python<'_>,
+        py: Python<'_>,
+        kind: &str,
+        dtype: &str,
         input_indices: Vec<usize>,
         shape: Vec<usize>,
-        dtype: String,
-        default_value: Vec<u8>,
-        py_operator: PyObject,
-        py_inputs: PyObject,
-        py_state: PyObject,
-    ) -> PyResult<usize> {
-        let _guard = self._rt.enter();
-        let sc = self.scenario.as_mut().unwrap();
-        let dtype_norm = normalise_dtype(&dtype).to_string();
-
-        // Create a properly typed Array<T> node.
-        let node_index = create_array_node_dispatch(sc, &shape, &dtype_norm, &default_value)?;
-
-        let stride: usize = if shape.is_empty() {
-            1
-        } else {
-            shape.iter().product()
-        };
-        let elem_bytes = dtype_element_bytes(&dtype_norm)?;
-        let element_size = stride * elem_bytes;
-
-        let op_state = PyOperatorState {
-            py_operator,
-            py_inputs,
-            py_state,
-            element_size,
-            dtype_str: dtype_norm.clone(),
-            error_slot: self.error_slot.clone(),
-        };
-
-        // Dispatch to monomorphized py_compute_fn<T> based on dtype.
-        register_py_operator(sc, &input_indices, node_index, op_state, &dtype_norm)?;
-
-        self.node_info.push((dtype_norm, NodeKind::Array));
-        Ok(node_index)
-    }
-
-    /// Register a Rust-native operator from an opaque handle.
-    fn register_handle_operator(
-        &mut self,
-        handle: &mut NativeOpHandle,
-        input_indices: Vec<usize>,
+        params: &Bound<'_, PyDict>,
+        clock_index: Option<usize>,
     ) -> PyResult<usize> {
         let sc = self.scenario.as_mut().unwrap();
-        let idx = handle.take_and_register(sc, &input_indices)?;
-        self.node_info
-            .push((handle.dtype_str.clone(), NodeKind::Array));
+        let dtype_norm = normalise_dtype(dtype).to_string();
+        let idx = operators::dispatch_native_operator(
+            sc, kind, &dtype_norm, &input_indices, clock_index, params,
+        )?;
+        self.push_node(py, idx, &dtype_norm, ViewKind::Array, &shape)?;
         Ok(idx)
     }
 
-    /// Record a node into a Series (adds a record operator).
+    /// Register a Rust-native source by kind + dtype + params.
     ///
-    /// Returns the index of the new Series node.
-    fn record(&mut self, node_index: usize) -> PyResult<usize> {
+    /// Returns the output node index.
+    fn add_native_source(
+        &mut self,
+        py: Python<'_>,
+        kind: &str,
+        dtype: &str,
+        shape: Vec<usize>,
+        params: &Bound<'_, PyDict>,
+    ) -> PyResult<usize> {
+        let _guard = self._rt.enter();
         let sc = self.scenario.as_mut().unwrap();
-        let (dtype, _) = &self.node_info[node_index];
-        let dtype = dtype.clone();
-        let series_idx = record_dispatch(sc, node_index, &dtype)?;
-        self.node_info.push((dtype, NodeKind::Series));
-        Ok(series_idx)
+        let dtype_norm = normalise_dtype(dtype).to_string();
+        let idx = sources::dispatch_native_source(sc, kind, &dtype_norm, params)?;
+        self.push_node(py, idx, &dtype_norm, ViewKind::Array, &shape)?;
+        Ok(idx)
     }
 
-    /// Get a StoreView for a node.
-    fn store_view(&self, node_index: usize) -> PyResult<StoreView> {
-        let sc = self.scenario.as_ref().unwrap();
-        let (dtype, kind) = &self.node_info[node_index];
-        let value_ptr = sc.node_value_ptr(node_index) as *const u8;
+    // -- Goal 2: Python operator/source registration -------------------------
 
-        // Determine shape from the stored value.
-        let shape = match kind {
-            NodeKind::Array => {
-                // All Array<T> have the same layout; use f64 to read shape.
-                let arr = unsafe { &*(value_ptr as *const Array<f64>) };
-                arr.shape().to_vec()
-            }
-            NodeKind::Series => {
-                let series = unsafe { &*(value_ptr as *const Series<f64>) };
-                series.shape().to_vec()
+    /// Register a Python operator.
+    ///
+    /// `input_types` is a list of `(kind, dtype)` pairs (e.g.
+    /// `[("array", "float64"), ("series", "int32")]`).
+    /// `output_type` is a `(kind, dtype)` pair for the output node.
+    #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator, py_state, clock_index=None))]
+    fn add_py_operator(
+        &mut self,
+        py: Python<'_>,
+        input_indices: Vec<usize>,
+        input_types: Vec<(String, String)>,
+        output_type: (String, String),
+        output_shape: Vec<usize>,
+        py_operator: PyObject,
+        py_state: PyObject,
+        clock_index: Option<usize>,
+    ) -> PyResult<usize> {
+        let (out_kind_str, out_dtype_str) = &output_type;
+        let out_dtype = normalise_dtype(out_dtype_str).to_string();
+
+        let out_view_kind = match out_kind_str.as_str() {
+            "array" => ViewKind::Array,
+            "series" => ViewKind::Series,
+            other => {
+                return Err(PyTypeError::new_err(format!(
+                    "unsupported output kind: {other}"
+                )));
             }
         };
 
-        Ok(StoreView::new(value_ptr, *kind, shape, dtype.clone()))
+        // 1. Validate input TypeIds, create output node, wire edges.
+        let output_idx = {
+            let sc = self.scenario.as_mut().unwrap();
+
+            for (i, (&idx, (kind, dtype))) in
+                input_indices.iter().zip(input_types.iter()).enumerate()
+            {
+                let expected = resolve_type_id(kind, dtype)?;
+                let actual = sc.node_type_id(idx);
+                if expected != actual {
+                    return Err(PyTypeError::new_err(format!(
+                        "input {i} (node {idx}): type mismatch — \
+                         expected ({kind}, {dtype}), got a different type"
+                    )));
+                }
+            }
+
+            let output_idx = match out_view_kind {
+                ViewKind::Array => create_array_node(sc, &output_shape, &out_dtype)?,
+                ViewKind::Series => {
+                    return Err(PyTypeError::new_err(
+                        "Python operators cannot directly produce Series; \
+                         output Array and chain a Record operator instead"
+                    ));
+                }
+            };
+
+            match clock_index {
+                None => {
+                    for &input_idx in &input_indices {
+                        sc.add_trigger_edge(input_idx, output_idx);
+                    }
+                }
+                Some(clock_idx) => {
+                    sc.add_trigger_edge(clock_idx, output_idx);
+                }
+            }
+
+            output_idx
+        }; // sc borrow dropped
+
+        // 2. Create views.
+        self.push_node(py, output_idx, &out_dtype, out_view_kind, &output_shape)?;
+
+        let input_views: Vec<PyObject> = input_indices
+            .iter()
+            .map(|&idx| {
+                self.cached_views[idx]
+                    .as_ref()
+                    .map(|v| v.clone_ref(py))
+                    .ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "node {idx} has no cached view"
+                        ))
+                    })
+            })
+            .collect::<PyResult<_>>()?;
+        let py_inputs: PyObject = pyo3::types::PyTuple::new(py, &input_views)?.into_any().unbind();
+        let py_output = self.cached_views[output_idx]
+            .as_ref()
+            .map(|v| v.clone_ref(py))
+            .unwrap();
+
+        // 3. Build state and attach closure.
+        let op_state = PyOperatorState {
+            py_operator,
+            py_inputs,
+            py_output,
+            py_state,
+            error_slot: self.error_slot.clone(),
+        };
+        let sc = self.scenario.as_mut().unwrap();
+        register_py_closure(sc, output_idx, op_state, &out_dtype)?;
+
+        Ok(output_idx)
     }
 
     /// Register a channel-based source (for async Python sources).
-    fn add_channel_source(
+    ///
+    /// Returns `(node_index, hist_sender, live_sender)`.
+    fn add_source_raw(
         &mut self,
-        _py: Python<'_>,
+        py: Python<'_>,
         shape: Vec<usize>,
         dtype: String,
     ) -> PyResult<(usize, HistoricalEventSender, LiveEventSender)> {
+        let _guard = self._rt.enter();
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalise_dtype(&dtype).to_string();
         let (node_index, hist_sender, live_sender) =
             sources::register_channel_source(sc, &shape, &dtype_norm)?;
-        self.node_info.push((dtype_norm, NodeKind::Array));
+        self.push_node(py, node_index, &dtype_norm, ViewKind::Array, &shape)?;
         Ok((node_index, hist_sender, live_sender))
     }
+
+    // -- Record (materialize) ------------------------------------------------
+
+    /// Record a node into a Series (adds a Record operator).
+    ///
+    /// Returns the index of the new Series node.
+    fn record(&mut self, py: Python<'_>, node_index: usize) -> PyResult<usize> {
+        let sc = self.scenario.as_mut().unwrap();
+        let (dtype, _) = &self.node_info[node_index];
+        let dtype = dtype.clone();
+        let series_idx = record_dispatch(sc, node_index, &dtype)?;
+
+        // Determine shape from the Array node.
+        let arr_ptr = sc.node_value_ptr(node_index) as *const u8;
+        let shape = {
+            let arr = unsafe { &*(arr_ptr as *const Array<f64>) };
+            arr.shape().to_vec()
+        };
+
+        self.push_node(py, series_idx, &dtype, ViewKind::Series, &shape)?;
+        Ok(series_idx)
+    }
+
+    // -- View access ---------------------------------------------------------
+
+    /// Get a cached view for a node.
+    fn get_view(&self, py: Python<'_>, node_index: usize) -> PyResult<PyObject> {
+        match self.cached_views.get(node_index) {
+            Some(Some(view)) => Ok(view.clone_ref(py)),
+            _ => Err(PyRuntimeError::new_err(format!(
+                "node {node_index} has no Python-representable view"
+            ))),
+        }
+    }
+
+    /// Convenience: get the number of recorded elements (Series nodes).
+    fn series_len(&self, node_index: usize) -> usize {
+        let sc = self.scenario.as_ref().unwrap();
+        let ptr = sc.node_value_ptr(node_index) as *const u8;
+        // All Series<T> have the same len() layout.
+        let series = unsafe { &*(ptr as *const Series<f64>) };
+        series.len()
+    }
+
+    /// Convenience: get recorded timestamps as numpy int64 array.
+    fn series_timestamps<'py>(
+        &self,
+        py: Python<'py>,
+        node_index: usize,
+    ) -> PyResult<PyObject> {
+        let sc = self.scenario.as_ref().unwrap();
+        let ptr = sc.node_value_ptr(node_index) as *const u8;
+        let series = unsafe { &*(ptr as *const Series<f64>) };
+        let arr = numpy::ndarray::Array1::from(series.timestamps().to_vec());
+        Ok(numpy::PyArray1::from_owned_array(py, arr)
+            .into_any()
+            .unbind())
+    }
+
+    /// Convenience: get recorded values as numpy array.
+    fn series_values<'py>(
+        &self,
+        py: Python<'py>,
+        node_index: usize,
+    ) -> PyResult<PyObject> {
+        let (dtype, _) = &self.node_info[node_index];
+        let sc = self.scenario.as_ref().unwrap();
+        let ptr = sc.node_value_ptr(node_index) as *const u8;
+        macro_rules! extract {
+            ($T:ty) => {{
+                let series = unsafe { &*(ptr as *const Series<$T>) };
+                let nd = numpy::ndarray::Array1::from(series.values().to_vec());
+                Ok(numpy::PyArray1::from_owned_array(py, nd)
+                    .into_any()
+                    .unbind())
+            }};
+        }
+        dispatch_dtype!(dtype, extract)
+    }
+
+    // -- Execution -----------------------------------------------------------
 
     /// Run the POCQ event loop.
     fn run(&mut self, py: Python<'_>) -> PyResult<()> {
@@ -348,47 +523,19 @@ impl NativeScenario {
             Err(msg) => Err(PyRuntimeError::new_err(msg)),
         }
     }
-
-    /// Convenience: get the number of recorded elements.
-    fn series_len(&self, node_index: usize) -> PyResult<usize> {
-        let sv = self.store_view(node_index)?;
-        Ok(sv.__len__())
-    }
-
-    /// Convenience: get recorded timestamps.
-    fn series_timestamps<'py>(&self, py: Python<'py>, node_index: usize) -> PyResult<PyObject> {
-        let sv = self.store_view(node_index)?;
-        sv.index(py)
-    }
-
-    /// Convenience: get recorded values.
-    fn series_values<'py>(&self, py: Python<'py>, node_index: usize) -> PyResult<PyObject> {
-        let sv = self.store_view(node_index)?;
-        sv.values(py)
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Python operator registration (monomorphized per dtype)
+// Python operator closure (monomorphized per output dtype)
 // ---------------------------------------------------------------------------
 
-use crate::types::Scalar;
-
-fn register_py_operator(
+fn register_py_closure(
     sc: &mut Scenario,
-    input_indices: &[usize],
     output_index: usize,
     op_state: PyOperatorState,
     dtype: &str,
 ) -> PyResult<()> {
-    let input_ptrs: Box<[*const u8]> = input_indices
-        .iter()
-        .map(|&idx| sc.node_value_ptr(idx) as *const u8)
-        .collect();
-
-    for &input_idx in input_indices {
-        sc.add_trigger_edge(input_idx, output_index);
-    }
+    let input_ptrs: Box<[*const u8]> = Box::new([]);
 
     let state = Box::new(op_state);
 
@@ -397,39 +544,24 @@ fn register_py_operator(
             sc.attach_raw_closure(output_index, input_ptrs, py_compute_fn::<$T>, state)
         };
     }
-
-    match normalise_dtype(dtype) {
-        "float64" => register!(f64),
-        "float32" => register!(f32),
-        "int64" => register!(i64),
-        "int32" => register!(i32),
-        "uint64" => register!(u64),
-        "uint32" => register!(u32),
-        "bool" => register!(u8),
-        other => {
-            return Err(PyTypeError::new_err(format!(
-                "unsupported dtype for Python operator: {other}"
-            )));
-        }
-    }
+    dispatch_dtype!(dtype, register);
 
     Ok(())
 }
 
 /// Monomorphized compute function for Python operators.
 ///
-/// `T` matches the `Array<T>` stored in the output node.  The Python callback
-/// produces a numpy array; we copy its raw data into `Array<T>::as_slice_mut()`.
+/// Calls `operator.compute(timestamp, inputs, output, state)` via GIL.
+/// The Python callback writes into the output view; returns `(bool, new_state)`.
 ///
 /// # Safety
 ///
-/// * `output_ptr` must point to a valid `Array<T>`.
 /// * `state_ptr` must point to a valid `PyOperatorState`.
 unsafe fn py_compute_fn<T: Scalar>(
     _input_ptrs: &[*const u8],
-    output_ptr: *mut u8,
+    _output_ptr: *mut u8,
     state_ptr: *mut u8,
-    _timestamp: i64,
+    timestamp: i64,
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut PyOperatorState) };
 
@@ -438,35 +570,18 @@ unsafe fn py_compute_fn<T: Scalar>(
     }
 
     let result = Python::attach(|py| -> PyResult<bool> {
-        let result =
-            state
-                .py_operator
-                .call_method1(py, "compute", (&state.py_inputs, &state.py_state))?;
+        let result = state.py_operator.call_method1(
+            py,
+            "compute",
+            (timestamp, &state.py_inputs, &state.py_output, &state.py_state),
+        )?;
 
         let tuple = result.bind(py);
-        let raw_value = tuple.get_item(0)?;
+        let produced: bool = tuple.get_item(0)?.extract()?;
         let new_state = tuple.get_item(1)?;
         state.py_state = new_state.unbind();
 
-        if raw_value.is_none() {
-            return Ok(false);
-        }
-
-        // Convert value to contiguous numpy array.
-        let np = py.import("numpy")?;
-        let contiguous = np.call_method1("ascontiguousarray", (&raw_value,))?;
-        let interface = contiguous.getattr("__array_interface__")?;
-        let data_tuple = interface.get_item("data")?;
-        let ptr_int: usize = data_tuple.get_item(0)?.extract()?;
-
-        // Copy typed data into Array<T>.
-        let arr = unsafe { &mut *(output_ptr as *mut Array<T>) };
-        let dst = arr.as_slice_mut();
-        unsafe {
-            std::ptr::copy_nonoverlapping(ptr_int as *const T, dst.as_mut_ptr(), dst.len());
-        }
-
-        Ok(true)
+        Ok(produced)
     });
 
     match result {
@@ -484,17 +599,9 @@ unsafe fn py_compute_fn<T: Scalar>(
 
 pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_class::<NativeScenario>()?;
-    m.add_class::<StoreView>()?;
+    m.add_class::<_ArrayView>()?;
+    m.add_class::<_SeriesView>()?;
     m.add_class::<HistoricalEventSender>()?;
     m.add_class::<LiveEventSender>()?;
-    m.add_class::<NativeOpHandle>()?;
-    m.add_function(pyo3::wrap_pyfunction!(operators::add, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(operators::subtract, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(operators::multiply, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(operators::divide, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(operators::negate, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(operators::select, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(operators::concat, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(operators::stack, m)?)?;
     Ok(())
 }
