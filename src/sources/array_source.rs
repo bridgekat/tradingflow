@@ -48,7 +48,7 @@ impl<T: Scalar> Source for ArraySource<T> {
         } else {
             vec![self.stride]
         };
-        let output = Array::default(&shape);
+        let output = Array::zeros(&shape);
 
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);

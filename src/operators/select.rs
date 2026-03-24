@@ -52,7 +52,7 @@ impl<T: Scalar> Operator for Select<T> {
         } else {
             output_shape[self.axis] = self.indices.len();
         }
-        (SelectState { index_map }, Array::default(&output_shape))
+        (SelectState { index_map }, Array::zeros(&output_shape))
     }
 
     #[inline(always)]

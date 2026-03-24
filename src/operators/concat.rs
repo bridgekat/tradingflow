@@ -37,7 +37,7 @@ impl<T: Scalar> Operator for Concat<T> {
         };
         let mut shape = first.to_vec();
         shape[self.axis] *= inputs.len();
-        (state, Array::default(&shape))
+        (state, Array::zeros(&shape))
     }
 
     #[inline(always)]

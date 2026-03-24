@@ -30,7 +30,7 @@ This file is kept short and concise. It provides initial context for all agentic
 
 - Do not put too much code in module entry points; implementations should go into separate files.
 - All Rust docstrings should follow [rustdoc](https://doc.rust-lang.org/rustdoc/) syntax and style.
-- All Python docstrings should follow [mkdocstrings](https://mkdocstrings.github.io/usage/) (not Sphinx) cross-references syntax and [numpydoc](https://numpydoc.readthedocs.io/en/latest/format.html) style. Since mkdocstrings is Markdown-based, use single backticks for inline code, not the double backticks of reStructuredText. This is supported by [Zensical](https://zensical.org/docs/), the new documentation generator we use.
+- All Python docstrings should follow Markdown (not reStructuredText) for base syntax, [mkdocstrings](https://mkdocstrings.github.io/usage/) for cross-references syntax and [numpydoc](https://numpydoc.readthedocs.io/en/latest/format.html) only for sections style. This is supported by [Zensical](https://zensical.org/docs/), the new documentation generator we use.
 - Add Python 3.12+ type annotations except for overly complex types or overloads.
 
 ## Scope

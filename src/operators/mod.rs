@@ -11,8 +11,20 @@ pub mod stack;
 pub mod r#where;
 
 pub use apply::{
-    Add, Apply1, Apply2, Divide, Multiply, Negate, Subtract, add, divide, multiply, negate,
-    subtract,
+    // Generics
+    Apply1, Apply2,
+    // Arithmetic
+    Add, Subtract, Multiply, Divide, Negate,
+    add, subtract, multiply, divide, negate,
+    // Float unary
+    Log, Log2, Log10, Exp, Exp2, Sqrt, Ceil, Floor, Round, Recip,
+    log, log2, log10, exp, exp2, sqrt, ceil, floor, round, recip,
+    // Signed unary
+    Abs, Sign, abs, sign,
+    // Parameterized unary
+    pow, scale, shift, clamp, nan_to_num,
+    // Float binary
+    Min, Max, min, max,
 };
 pub use concat::Concat;
 pub use filter::Filter;

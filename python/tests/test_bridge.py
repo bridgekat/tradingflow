@@ -276,3 +276,110 @@ class TestPythonViewWrappers:
         assert len(wrapper) == 2
         np.testing.assert_array_almost_equal(np.asarray(wrapper.values()).flatten(), [10.0, 20.0])
         assert repr(wrapper).startswith("SeriesView(")
+
+
+class TestArrayViewEnhancements:
+    """Test new ArrayView features: __array__, arithmetic, indexing."""
+
+    def _make_view(self):
+        from tradingflow.views import ArrayView
+
+        sc = NativeScenario()
+        idx, hist, live = sc.add_source_raw([3], "float64")
+        hist.send(1, np.array([1.0, 2.0, 3.0], dtype=np.float64))
+        hist.close()
+        live.close()
+        sc.run()
+        return ArrayView(sc.get_view(idx)), sc
+
+    def test_array_protocol(self) -> None:
+        view, _ = self._make_view()
+        arr = np.asarray(view)
+        assert isinstance(arr, np.ndarray)
+        np.testing.assert_array_equal(arr, [1.0, 2.0, 3.0])
+
+    def test_numpy_ufunc(self) -> None:
+        view, _ = self._make_view()
+        result = np.log(view)
+        np.testing.assert_array_almost_equal(result, np.log([1.0, 2.0, 3.0]))
+
+    def test_getitem(self) -> None:
+        view, _ = self._make_view()
+        assert view[0] == 1.0
+        np.testing.assert_array_equal(view[1:3], [2.0, 3.0])
+
+    def test_arithmetic(self) -> None:
+        view, _ = self._make_view()
+        np.testing.assert_array_equal(view + 10, [11.0, 12.0, 13.0])
+        np.testing.assert_array_equal(view * 2, [2.0, 4.0, 6.0])
+        np.testing.assert_array_equal(-view, [-1.0, -2.0, -3.0])
+
+    def test_to_numpy(self) -> None:
+        view, _ = self._make_view()
+        np.testing.assert_array_equal(view.to_numpy(), [1.0, 2.0, 3.0])
+
+
+class TestSeriesViewEnhancements:
+    """Test new SeriesView features: timestamps, at, asof, to_dataframe, __getitem__."""
+
+    def _make_series(self):
+        from tradingflow.views import SeriesView
+
+        sc = NativeScenario()
+        idx, hist, live = sc.add_source_raw([], "float64")
+        hist.send(100, np.array([10.0], dtype=np.float64))
+        hist.send(200, np.array([20.0], dtype=np.float64))
+        hist.send(300, np.array([30.0], dtype=np.float64))
+        hist.close()
+        live.close()
+        hs = sc.add_native_operator("record", "float64", [idx], [], {})
+        sc.run()
+        return SeriesView(sc.get_view(hs)), sc
+
+    def test_timestamps_dtype(self) -> None:
+        view, _ = self._make_series()
+        ts = view.timestamps()
+        assert ts.dtype == np.dtype("datetime64[ns]")
+        assert len(ts) == 3
+
+    def test_at_positive(self) -> None:
+        view, _ = self._make_series()
+        np.testing.assert_array_almost_equal(view.at(0), [10.0])
+        np.testing.assert_array_almost_equal(view.at(2), [30.0])
+
+    def test_at_negative(self) -> None:
+        view, _ = self._make_series()
+        np.testing.assert_array_almost_equal(view.at(-1), [30.0])
+        np.testing.assert_array_almost_equal(view.at(-3), [10.0])
+
+    def test_asof(self) -> None:
+        view, _ = self._make_series()
+        np.testing.assert_array_almost_equal(view.asof(200), [20.0])
+        np.testing.assert_array_almost_equal(view.asof(250), [20.0])
+        assert view.asof(50) is None
+
+    def test_to_numpy(self) -> None:
+        view, _ = self._make_series()
+        ts, vals = view.to_numpy()
+        assert ts.dtype == np.dtype("datetime64[ns]")
+        assert len(ts) == 3
+        np.testing.assert_array_almost_equal(vals.flatten(), [10.0, 20.0, 30.0])
+
+    def test_getitem_int(self) -> None:
+        view, _ = self._make_series()
+        np.testing.assert_array_almost_equal(view[0], [10.0])
+        np.testing.assert_array_almost_equal(view[-1], [30.0])
+
+    def test_getitem_slice(self) -> None:
+        view, _ = self._make_series()
+        vals = view[1:3]
+        np.testing.assert_array_almost_equal(vals.flatten(), [20.0, 30.0])
+
+    def test_to_dataframe(self) -> None:
+        import pandas as pd
+
+        view, _ = self._make_series()
+        df = view.to_dataframe()
+        assert isinstance(df, pd.DataFrame)
+        assert isinstance(df.index, pd.DatetimeIndex)
+        assert len(df) == 3

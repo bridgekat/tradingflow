@@ -39,7 +39,7 @@ impl<T: Scalar> Operator for Stack<T> {
         shape.extend_from_slice(&first[..self.axis]);
         shape.push(inputs.len());
         shape.extend_from_slice(&first[self.axis..]);
-        (state, Array::default(&shape))
+        (state, Array::zeros(&shape))
     }
 
     #[inline(always)]

@@ -29,7 +29,7 @@ impl<T: Scalar> Operator for Last<T> {
         let out = if let Some(last) = inputs.0.last() {
             Array::from_vec(shape, last.to_vec())
         } else {
-            Array::from_elem(shape, self.fill.clone())
+            Array::full(shape, self.fill.clone())
         };
         (self.fill, out)
     }
@@ -41,7 +41,7 @@ impl<T: Scalar> Operator for Last<T> {
         _timestamp: i64,
     ) -> bool {
         if let Some(last) = inputs.0.last() {
-            output.assign_slice(last);
+            output.as_slice_mut().clone_from_slice(last);
         } else {
             let out = output.as_slice_mut();
             for v in out.iter_mut() {

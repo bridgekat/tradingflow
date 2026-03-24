@@ -96,7 +96,7 @@ fn create_view(
 fn create_array_node(sc: &mut Scenario, shape: &[usize], dtype: &str) -> PyResult<usize> {
     macro_rules! create {
         ($T:ty) => {{
-            let arr = Array::<$T>::default(shape);
+            let arr = Array::<$T>::zeros(shape);
             Ok(sc.create_node(arr).index())
         }};
     }

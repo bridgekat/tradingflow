@@ -25,6 +25,19 @@ from tradingflow.operators import (
     rolling_covariance,
     ema,
     forward_fill,
+    # New math operators
+    log,
+    exp,
+    sqrt,
+    abs,
+    recip,
+    pow,
+    scale,
+    shift,
+    clamp,
+    nan_to_num,
+    min,
+    max,
 )
 from tradingflow.types import Handle
 
@@ -453,3 +466,162 @@ class TestStack:
         vals = sc.series_values(s)
         # stack axis=0: shape (2,2) → [[1,2],[3,4]]
         np.testing.assert_array_almost_equal(vals[0], [[1.0, 2.0], [3.0, 4.0]])
+
+
+# ---------------------------------------------------------------------------
+# Math unary operators
+# ---------------------------------------------------------------------------
+
+
+class TestMathUnary:
+    def test_log(self) -> None:
+        sc, h, _ = _scalar_scenario([1.0, np.e, np.e**2])
+        h_log = sc.add_operator(log(h))
+        s = sc.add_operator(record(h_log))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([0.0, 1.0, 2.0], abs=1e-12)
+
+    def test_exp(self) -> None:
+        sc, h, _ = _scalar_scenario([0.0, 1.0])
+        h_exp = sc.add_operator(exp(h))
+        s = sc.add_operator(record(h_exp))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals[0] == pytest.approx(1.0)
+        assert vals[1] == pytest.approx(np.e)
+
+    def test_sqrt(self) -> None:
+        sc, h, _ = _scalar_scenario([4.0, 9.0, 16.0])
+        h_sqrt = sc.add_operator(sqrt(h))
+        s = sc.add_operator(record(h_sqrt))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([2.0, 3.0, 4.0])
+
+    def test_abs(self) -> None:
+        sc, h, _ = _scalar_scenario([-3.0, 0.0, 5.0])
+        h_abs = sc.add_operator(abs(h))
+        s = sc.add_operator(record(h_abs))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([3.0, 0.0, 5.0])
+
+    def test_recip(self) -> None:
+        sc, h, _ = _scalar_scenario([2.0, 4.0, 0.5])
+        h_recip = sc.add_operator(recip(h))
+        s = sc.add_operator(record(h_recip))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([0.5, 0.25, 2.0])
+
+
+# ---------------------------------------------------------------------------
+# Parameterized operators
+# ---------------------------------------------------------------------------
+
+
+class TestParameterized:
+    def test_pow(self) -> None:
+        sc, h, _ = _scalar_scenario([1.0, 2.0, 3.0])
+        h_pow = sc.add_operator(pow(h, 2.0))
+        s = sc.add_operator(record(h_pow))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([1.0, 4.0, 9.0])
+
+    def test_scale(self) -> None:
+        sc, h, _ = _scalar_scenario([1.0, 2.0, 3.0])
+        h_sc = sc.add_operator(scale(h, 3.0))
+        s = sc.add_operator(record(h_sc))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([3.0, 6.0, 9.0])
+
+    def test_shift(self) -> None:
+        sc, h, _ = _scalar_scenario([1.0, 2.0, 3.0])
+        h_sh = sc.add_operator(shift(h, 10.0))
+        s = sc.add_operator(record(h_sh))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([11.0, 12.0, 13.0])
+
+    def test_clamp(self) -> None:
+        sc, h, _ = _scalar_scenario([1.0, 3.0, 7.0])
+        h_cl = sc.add_operator(clamp(h, 2.0, 5.0))
+        s = sc.add_operator(record(h_cl))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([2.0, 3.0, 5.0])
+
+    def test_nan_to_num(self) -> None:
+        sc, h, _ = _scalar_scenario([1.0, float("nan"), 3.0])
+        h_nn = sc.add_operator(nan_to_num(h, 0.0))
+        s = sc.add_operator(record(h_nn))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([1.0, 0.0, 3.0])
+
+
+# ---------------------------------------------------------------------------
+# Binary math operators
+# ---------------------------------------------------------------------------
+
+
+class TestBinaryMath:
+    def test_min(self) -> None:
+        sc = Scenario()
+        a = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2), ts(3)]),
+            values=np.array([1.0, 5.0, 3.0]),
+        ))
+        b = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2), ts(3)]),
+            values=np.array([2.0, 4.0, 6.0]),
+        ))
+        h = sc.add_operator(min(a, b))
+        s = sc.add_operator(record(h))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([1.0, 4.0, 3.0])
+
+    def test_max(self) -> None:
+        sc = Scenario()
+        a = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2), ts(3)]),
+            values=np.array([1.0, 5.0, 3.0]),
+        ))
+        b = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2), ts(3)]),
+            values=np.array([2.0, 4.0, 6.0]),
+        ))
+        h = sc.add_operator(max(a, b))
+        s = sc.add_operator(record(h))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([2.0, 5.0, 6.0])
+
+
+# ---------------------------------------------------------------------------
+# Chained operations (log-ratio pattern)
+# ---------------------------------------------------------------------------
+
+
+class TestChained:
+    def test_log_ratio(self) -> None:
+        """log(a / b) — the log-ratio pattern for factors like log(book/price)."""
+        sc = Scenario()
+        a = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([np.e**2, np.e**3]),
+        ))
+        b = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([np.e, np.e]),
+        ))
+        ratio = sc.add_operator(divide(a, b))
+        log_ratio = sc.add_operator(log(ratio))
+        s = sc.add_operator(record(log_ratio))
+        _run(sc)
+        vals = list(sc.series_values(s))
+        assert vals == pytest.approx([1.0, 2.0], abs=1e-12)

@@ -81,7 +81,7 @@ impl<T: Scalar> Source for ChannelSource<T> {
         mpsc::Receiver<(i64, Vec<u8>)>,
         Array<T>,
     ) {
-        let output = Array::default(&self.shape);
+        let output = Array::zeros(&self.shape);
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (live_tx, live_rx) = mpsc::channel(64);
 

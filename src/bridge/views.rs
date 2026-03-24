@@ -1,6 +1,6 @@
 //! Python-visible views for Array and Series nodes.
 //!
-//! [`ArrayView`] and [`SeriesView`] are `#[pyclass]` wrappers that hold a raw
+//! [`_ArrayView`] and [`_SeriesView`] are `#[pyclass]` wrappers that hold a raw
 //! pointer to a graph node's value.  All read/write methods **copy** data
 //! across the boundary — no reference to graph memory ever reaches Python.
 //!
@@ -16,7 +16,7 @@
 
 use numpy::ndarray::{Array1, ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -67,10 +67,6 @@ unsafe impl Send for _ArrayView {}
 unsafe impl Sync for _ArrayView {}
 
 /// Create an [`_ArrayView`] for a node holding `Array<T>`.
-///
-/// Called at the monomorphization site where `T` is known.  The returned
-/// view stores pre-resolved function pointers — no dtype dispatch at access
-/// time.
 pub fn make_array_view<T: PyScalar>(ptr: *mut u8, shape: &[usize], dtype_str: &str) -> _ArrayView {
     _ArrayView {
         ptr,
@@ -89,8 +85,6 @@ impl _ArrayView {
     }
 
     /// Overwrite the array data from a numpy array.
-    ///
-    /// The input must be broadcastable to the view's shape.
     fn write<'py>(&self, py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<()> {
         unsafe { (self.write_fn)(self.ptr, py, value, &self.shape) }
     }
@@ -138,14 +132,12 @@ unsafe fn array_write<T: PyScalar>(
     let arr = unsafe { &mut *(ptr as *mut Array<T>) };
     let expected_len = arr.as_slice().len();
 
-    // Convert to contiguous numpy array and extract raw bytes.
     let np = py.import("numpy")?;
     let contiguous = np.call_method1("ascontiguousarray", (value,))?;
     let interface = contiguous.getattr("__array_interface__")?;
     let data_tuple = interface.get_item("data")?;
     let src_ptr: usize = data_tuple.get_item(0)?.extract()?;
 
-    // Validate size.
     let src_shape: Vec<usize> = interface.get_item("shape")?.extract()?;
     let src_len: usize = if src_shape.is_empty() {
         1
@@ -159,7 +151,6 @@ unsafe fn array_write<T: PyScalar>(
         )));
     }
 
-    // Copy.
     let dst = arr.as_slice_mut();
     unsafe {
         std::ptr::copy_nonoverlapping(src_ptr as *const T, dst.as_mut_ptr(), expected_len);
@@ -180,6 +171,10 @@ type SeriesValuesFn =
 type SeriesIndexFn = unsafe fn(*const u8, Python<'_>, usize, usize) -> PyResult<PyObject>;
 /// Type-erased function: get Series<T> length.
 type SeriesLenFn = unsafe fn(*const u8) -> usize;
+/// Type-erased function: as-of temporal lookup.
+type SeriesAsofFn = unsafe fn(*const u8, Python<'_>, &[usize], i64) -> PyResult<PyObject>;
+/// Type-erased function: positional element access.
+type SeriesAtFn = unsafe fn(*const u8, Python<'_>, &[usize], usize) -> PyResult<PyObject>;
 
 /// Python-visible view of a Rust `Series<T>` node.
 ///
@@ -194,6 +189,8 @@ pub struct _SeriesView {
     values_fn: SeriesValuesFn,
     index_fn: SeriesIndexFn,
     len_fn: SeriesLenFn,
+    asof_fn: SeriesAsofFn,
+    at_fn: SeriesAtFn,
 }
 
 unsafe impl Send for _SeriesView {}
@@ -213,6 +210,8 @@ pub fn make_series_view<T: PyScalar>(
         values_fn: series_values::<T>,
         index_fn: series_index::<T>,
         len_fn: series_len::<T>,
+        asof_fn: series_asof::<T>,
+        at_fn: series_at::<T>,
     }
 }
 
@@ -239,6 +238,38 @@ impl _SeriesView {
         let len = unsafe { (self.len_fn)(self.ptr as *const u8) };
         let end = end.unwrap_or(len);
         unsafe { (self.index_fn)(self.ptr as *const u8, py, start, end) }
+    }
+
+    /// As-of temporal lookup: most recent element with `ts <= timestamp`.
+    ///
+    /// Returns `None` if no element satisfies the condition.
+    #[pyo3(signature = (timestamp,))]
+    fn asof<'py>(&self, py: Python<'py>, timestamp: i64) -> PyResult<PyObject> {
+        unsafe { (self.asof_fn)(self.ptr as *const u8, py, &self.shape, timestamp) }
+    }
+
+    /// Element at positional index (supports negative indexing).
+    #[pyo3(signature = (index,))]
+    fn at<'py>(&self, py: Python<'py>, index: i64) -> PyResult<PyObject> {
+        let len = unsafe { (self.len_fn)(self.ptr as *const u8) };
+        let i = if index < 0 {
+            let positive = (-index) as usize;
+            if positive > len {
+                return Err(PyIndexError::new_err(format!(
+                    "index {index} out of bounds (len {len})"
+                )));
+            }
+            len - positive
+        } else {
+            let i = index as usize;
+            if i >= len {
+                return Err(PyIndexError::new_err(format!(
+                    "index {index} out of bounds (len {len})"
+                )));
+            }
+            i
+        };
+        unsafe { (self.at_fn)(self.ptr as *const u8, py, &self.shape, i) }
     }
 
     /// Number of recorded elements.
@@ -313,7 +344,6 @@ unsafe fn series_index<T: PyScalar>(
     start: usize,
     end: usize,
 ) -> PyResult<PyObject> {
-    // T is unused for timestamps, but we need it to cast the pointer correctly.
     let series = unsafe { &*(ptr as *const Series<T>) };
     let n = series.len();
     let start = start.min(n);
@@ -326,4 +356,44 @@ unsafe fn series_index<T: PyScalar>(
 unsafe fn series_len<T: PyScalar>(ptr: *const u8) -> usize {
     let series = unsafe { &*(ptr as *const Series<T>) };
     series.len()
+}
+
+unsafe fn series_asof<T: PyScalar>(
+    ptr: *const u8,
+    py: Python<'_>,
+    shape: &[usize],
+    timestamp: i64,
+) -> PyResult<PyObject> {
+    let series = unsafe { &*(ptr as *const Series<T>) };
+    match series.asof(timestamp) {
+        Some(slice) => {
+            let full_shape = if shape.is_empty() {
+                vec![1]
+            } else {
+                shape.to_vec()
+            };
+            let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), slice.to_vec())
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
+        }
+        None => Ok(py.None().into_pyobject(py)?.unbind().into()),
+    }
+}
+
+unsafe fn series_at<T: PyScalar>(
+    ptr: *const u8,
+    py: Python<'_>,
+    shape: &[usize],
+    i: usize,
+) -> PyResult<PyObject> {
+    let series = unsafe { &*(ptr as *const Series<T>) };
+    let slice = series.at(i);
+    let full_shape = if shape.is_empty() {
+        vec![1]
+    } else {
+        shape.to_vec()
+    };
+    let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), slice.to_vec())
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
 }
