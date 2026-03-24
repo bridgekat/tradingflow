@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import numpy as np
 import pytest
 
@@ -26,7 +24,7 @@ class TestIterSource:
         )
         h = sc.add_source(src)
         s = sc.add_operator(record(h))
-        asyncio.run(sc.run())
+        sc.run()
 
         assert sc.series_len(s) == 3
         np.testing.assert_array_almost_equal(sc.series_values(s), [10.0, 20.0, 30.0])
@@ -40,7 +38,7 @@ class TestIterSource:
         )
         h = sc.add_source(src)
         s = sc.add_operator(record(h))
-        asyncio.run(sc.run())
+        sc.run()
 
         assert sc.series_len(s) == 2
         np.testing.assert_array_almost_equal(
@@ -54,7 +52,7 @@ class TestIterSource:
         b = sc.add_source(IterSource([(ts(1), 1.0), (ts(2), 2.0)], shape=(), dtype=np.float64))
         c = sc.add_operator(add(a, b))
         s = sc.add_operator(record(c))
-        asyncio.run(sc.run())
+        sc.run()
         np.testing.assert_array_almost_equal(sc.series_values(s), [11.0, 22.0])
 
     def test_repeated_run(self) -> None:
@@ -64,7 +62,7 @@ class TestIterSource:
             sc = Scenario()
             h = sc.add_source(IterSource(data, shape=(), dtype=np.float64))
             s = sc.add_operator(record(h))
-            asyncio.run(sc.run())
+            sc.run()
             np.testing.assert_array_almost_equal(sc.series_values(s), [5.0, 10.0])
 
     def test_generator_expression(self) -> None:
@@ -76,7 +74,7 @@ class TestIterSource:
         )
         h = sc.add_source(src)
         s = sc.add_operator(record(h))
-        asyncio.run(sc.run())
+        sc.run()
         np.testing.assert_array_almost_equal(sc.series_values(s), [10.0, 20.0, 30.0])
 
 
@@ -96,7 +94,7 @@ class TestClockSource:
         ))
         _clk = sc.add_source(clock([ts(2)]))
         s = sc.add_operator(record(data))
-        asyncio.run(sc.run())
+        sc.run()
 
         assert sc.series_len(s) == 3
         np.testing.assert_array_almost_equal(sc.series_values(s), [10.0, 20.0, 30.0])

@@ -114,10 +114,10 @@ class Scenario:
 
     # -- Execution ------------------------------------------------------------
 
-    async def run(self) -> None:
+    def run(self) -> None:
         """Execute the POCQ event loop.
 
-        Python sources are driven concurrently on a background asyncio thread.
+        Python sources are driven concurrently on a background thread.
         The Rust runtime runs on the main thread.
         """
         driver_error: list[BaseException | None] = [None]

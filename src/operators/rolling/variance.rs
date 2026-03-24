@@ -1,4 +1,6 @@
 //! Rolling variance operator.
+//!
+//! O(1) per element per tick via incremental sum/sum_sq with NaN counting.
 
 use num_traits::Float;
 
@@ -23,49 +25,73 @@ impl<T: Scalar + Float> RollingVariance<T> {
     }
 }
 
+/// Runtime state for [`RollingVariance`].
+pub struct VarState<T: Scalar + Float> {
+    window: usize,
+    sum: Vec<T>,
+    sum_sq: Vec<T>,
+    nan_count: Vec<u32>,
+}
+
 impl<T: Scalar + Float> Operator for RollingVariance<T> {
-    type State = usize;
+    type State = VarState<T>;
     type Inputs = (Series<T>,);
     type Output = Series<T>;
 
-    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (usize, Series<T>) {
-        (self.window, Series::new(inputs.0.shape()))
+    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (VarState<T>, Series<T>) {
+        let stride = inputs.0.stride();
+        let state = VarState {
+            window: self.window,
+            sum: vec![T::zero(); stride],
+            sum_sq: vec![T::zero(); stride],
+            nan_count: vec![0; stride],
+        };
+        (state, Series::new(inputs.0.shape()))
     }
 
     fn compute(
-        state: &mut usize,
+        state: &mut VarState<T>,
         inputs: (&Series<T>,),
         output: &mut Series<T>,
         timestamp: i64,
     ) -> bool {
-        let window = *state;
         let series = inputs.0;
         let len = series.len();
-        let stride = series.stride();
-        let start = len.saturating_sub(window);
-        let count = T::from(len - start).unwrap();
+        let stride = state.sum.len();
 
-        let mut sum = vec![T::zero(); stride];
-        let mut sum_sq = vec![T::zero(); stride];
+        // Add new element.
+        let new_row = series.at(len - 1);
+        for j in 0..stride {
+            let v = new_row[j];
+            if v.is_nan() {
+                state.nan_count[j] += 1;
+            } else {
+                state.sum[j] = state.sum[j] + v;
+                state.sum_sq[j] = state.sum_sq[j] + v * v;
+            }
+        }
 
-        for i in start..len {
-            let row = series.at(i);
-            for (j, &v) in row.iter().enumerate() {
+        // Evict oldest element if window is full.
+        if len > state.window {
+            let old_row = series.at(len - 1 - state.window);
+            for j in 0..stride {
+                let v = old_row[j];
                 if v.is_nan() {
-                    sum[j] = T::nan();
-                    sum_sq[j] = T::nan();
-                } else if !sum[j].is_nan() {
-                    sum[j] = sum[j] + v;
-                    sum_sq[j] = sum_sq[j] + v * v;
+                    state.nan_count[j] -= 1;
+                } else {
+                    state.sum[j] = state.sum[j] - v;
+                    state.sum_sq[j] = state.sum_sq[j] - v * v;
                 }
             }
         }
 
+        // Produce output.
+        let count = T::from(len.min(state.window)).unwrap();
         let mut buf = vec![T::nan(); stride];
         for j in 0..stride {
-            if !sum[j].is_nan() {
-                let mean = sum[j] / count;
-                buf[j] = sum_sq[j] / count - mean * mean;
+            if state.nan_count[j] == 0 {
+                let mean = state.sum[j] / count;
+                buf[j] = state.sum_sq[j] / count - mean * mean;
             }
         }
 
@@ -80,7 +106,7 @@ mod tests {
 
     fn push_compute(
         s: &mut Series<f64>,
-        state: &mut usize,
+        state: &mut VarState<f64>,
         out: &mut Series<f64>,
         ts: i64,
         val: f64,
@@ -153,5 +179,69 @@ mod tests {
         assert!((row[0] - 1.0).abs() < 1e-10);
         // Var([10,20]) = (100+400)/2 - (30/2)^2 = 250 - 225 = 25
         assert!((row[1] - 25.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn variance_nan_eviction() {
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = RollingVariance::<f64>::new(3).init((&s,), i64::MIN);
+
+        push_compute(&mut s, &mut state, &mut out, 1, 1.0);
+        push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
+        push_compute(&mut s, &mut state, &mut out, 3, 3.0);
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 4, 4.0);
+        assert!(out.last().unwrap()[0].is_nan()); // NaN still in window
+
+        push_compute(&mut s, &mut state, &mut out, 5, 5.0);
+        // Window [3, 4, 5] → Var = E[x²]-E[x]² = (9+16+25)/3 - (12/3)² = 50/3 - 16 = 2/3
+        let var = out.last().unwrap()[0];
+        assert!(
+            (var - 2.0 / 3.0).abs() < 1e-10,
+            "expected 2/3 after NaN eviction, got {var}"
+        );
+    }
+
+    #[test]
+    fn variance_multiple_nans() {
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = RollingVariance::<f64>::new(2).init((&s,), i64::MIN);
+
+        push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
+        push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 3, 3.0);
+        assert!(out.last().unwrap()[0].is_nan()); // one NaN remains
+
+        push_compute(&mut s, &mut state, &mut out, 4, 5.0);
+        // Window [3, 5] → Var = (9+25)/2 - (8/2)² = 17 - 16 = 1
+        let var = out.last().unwrap()[0];
+        assert!((var - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn variance_nan_vector_independent() {
+        let mut s = Series::<f64>::new(&[2]);
+        let (mut state, mut out) = RollingVariance::<f64>::new(2).init((&s,), i64::MIN);
+
+        s.push(1, &[f64::NAN, 2.0]);
+        RollingVariance::compute(&mut state, (&s,), &mut out, 1);
+        assert!(out.last().unwrap()[0].is_nan());
+        assert_eq!(out.last().unwrap()[1], 0.0); // single value → var = 0
+
+        s.push(2, &[4.0, 4.0]);
+        RollingVariance::compute(&mut state, (&s,), &mut out, 2);
+        assert!(out.last().unwrap()[0].is_nan()); // NaN still in window
+        let var_1 = out.last().unwrap()[1];
+        // Var([2,4]) = (4+16)/2 - (6/2)² = 10 - 9 = 1
+        assert!((var_1 - 1.0).abs() < 1e-10);
+
+        s.push(3, &[6.0, 6.0]);
+        RollingVariance::compute(&mut state, (&s,), &mut out, 3);
+        let var_0 = out.last().unwrap()[0];
+        // Window for elem 0: [4, 6] → Var = (16+36)/2 - (10/2)² = 26 - 25 = 1
+        assert!((var_0 - 1.0).abs() < 1e-10, "expected 1.0, got {var_0}");
     }
 }

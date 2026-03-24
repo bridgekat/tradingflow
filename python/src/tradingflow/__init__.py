@@ -7,6 +7,7 @@ Core classes:
 * [`Operator`][tradingflow.Operator] — abstract base for Python operators.
 * [`NativeOperator`][tradingflow.NativeOperator] — descriptor for Rust operators.
 * [`Handle`][tradingflow.Handle] — typed reference to a graph node.
+* [`Schema`][tradingflow.Schema] — bidirectional name↔position mapping for array axes.
 
 Type markers (for generic parameters):
 
@@ -21,6 +22,7 @@ View types (for Python operators reading/writing graph data):
 
 from .operator import NativeOperator, Operator
 from .scenario import Scenario
+from .schema import Schema
 from .source import Source
 from .types import Array, Handle, Series
 from .views import ArrayView, SeriesView
@@ -32,6 +34,7 @@ __all__ = [
     "NativeOperator",
     "Operator",
     "Scenario",
+    "Schema",
     "Series",
     "SeriesView",
     "Source",

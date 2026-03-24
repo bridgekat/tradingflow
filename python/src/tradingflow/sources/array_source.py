@@ -1,34 +1,39 @@
-"""Array-bundle historical source."""
+"""Array-bundle historical source — dispatched to Rust via the native path.
+
+Unlike Python `Source` subclasses that go through async iterators and
+mpsc channels, `ArraySource` sends timestamps and values directly to the
+Rust `ArraySource` implementation, avoiding all Python/Rust round-trip
+overhead per event.
+"""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ..source import Source, empty_live_gen
+from .clock import NativeSource
 
 
-class ArraySource(Source):
+class ArraySource(NativeSource):
     """Historical source backed by `(timestamps, values)` array bundles.
+
+    Dispatched entirely to the Rust `ArraySource` implementation for
+    maximum throughput — no Python async iterators or channel overhead.
 
     Parameters
     ----------
     timestamps
-        1-D array-like of `datetime64`-compatible timestamps.
+        1-D array-like of `datetime64`-compatible timestamps in
+        non-decreasing order.
     values
         Array-like of values; first dimension must match *timestamps*.
     dtype
         Optional NumPy dtype to cast *values* to.
-    initial
-        Optional initial value.
     name
         Optional source name.
     """
-
-    __slots__ = ("_timestamps", "_values")
 
     def __init__(
         self,
@@ -36,7 +41,6 @@ class ArraySource(Source):
         values: ArrayLike,
         *,
         dtype: type | np.dtype | None = None,
-        initial: ArrayLike | None = None,
         name: str | None = None,
     ) -> None:
         ts = np.asarray(timestamps, dtype="datetime64[ns]")
@@ -51,10 +55,26 @@ class ArraySource(Source):
         if len(ts) != len(vals):
             raise ValueError(f"timestamps length {len(ts)} does not match values length {len(vals)}")
 
+        # Validate non-decreasing timestamps.
+        ts_i64 = ts.view("int64")
+        if len(ts_i64) > 1 and np.any(np.diff(ts_i64) < 0):
+            raise ValueError("timestamps must be non-decreasing")
+
         shape = cast(tuple[int, ...], vals.shape[1:])
-        super().__init__(shape, dt, initial=initial, name=name)
-        self._timestamps = ts
-        self._values = vals
+        stride = int(np.prod(shape)) if shape else 1
+        values_bytes = np.ascontiguousarray(vals).tobytes()
+
+        super().__init__(
+            "array",
+            dtype=str(dt),
+            shape=shape,
+            params={
+                "timestamps": ts_i64.tolist(),
+                "values_bytes": values_bytes,
+                "stride": stride,
+            },
+            name=name,
+        )
 
     @classmethod
     def from_arrays(
@@ -63,15 +83,7 @@ class ArraySource(Source):
         values: ArrayLike,
         *,
         dtype: type | np.dtype | None = None,
-        initial: ArrayLike | None = None,
         name: str | None = None,
     ) -> ArraySource:
         """Construct from in-memory arrays."""
-        return cls(timestamps=timestamps, values=values, dtype=dtype, initial=initial, name=name)
-
-    def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
-        return self._historical_gen(), empty_live_gen()
-
-    async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:
-        for i in range(len(self._timestamps)):
-            yield self._timestamps[i], self._values[i]
+        return cls(timestamps=timestamps, values=values, dtype=dtype, name=name)

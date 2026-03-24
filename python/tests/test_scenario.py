@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import numpy as np
 import pytest
 
@@ -37,7 +35,7 @@ class TestScenario:
         scaled_s = sc.add_operator(record(scaled_h))
         neg_s = sc.add_operator(record(neg_h))
 
-        asyncio.run(sc.run())
+        sc.run()
 
         assert list(sc.series_timestamps(sum_s)) == [ts(1), ts(2)]
         assert list(sc.series_timestamps(scaled_s)) == [ts(1), ts(2), ts(3)]
@@ -57,19 +55,14 @@ class TestScenario:
         sum_h = sc.add_operator(add(a, b))
         sum_s = sc.add_operator(record(sum_h))
 
-        asyncio.run(sc.run())
+        sc.run()
         assert list(sc.series_timestamps(sum_s)) == [ts(1)]
         assert list(sc.series_values(sum_s)) == pytest.approx([5.0])
 
     def test_run_rejects_decreasing_source_timestamps(self) -> None:
-        """A source with decreasing timestamps raises."""
-        source = ArraySource.from_arrays(timestamps=np.array([ts(2), ts(1)]), values=np.array([1.0, 2.0]))
-        sc = Scenario()
-        h = sc.add_source(source)
-        sc.add_operator(record(h))
-
-        with pytest.raises(ValueError, match="less than last committed timestamp"):
-            asyncio.run(sc.run())
+        """A source with decreasing timestamps raises at construction time."""
+        with pytest.raises(ValueError, match="non-decreasing"):
+            ArraySource.from_arrays(timestamps=np.array([ts(2), ts(1)]), values=np.array([1.0, 2.0]))
 
     def test_output_timestamps_strictly_increasing(self) -> None:
         """Operator output timestamps are strictly increasing."""
@@ -88,7 +81,7 @@ class TestScenario:
             result_h = sc.add_operator(add(result_h, o))
 
         result_s = sc.add_operator(record(result_h))
-        asyncio.run(sc.run())
+        sc.run()
 
         ts_arr = sc.series_timestamps(result_s)
         assert len(ts_arr) > 0
@@ -119,7 +112,7 @@ class TestScenario:
         b = sc.add_source(ArraySource.from_arrays(timestamps=raw_ts_b.astype("datetime64[ns]"), values=vals_b.astype(np.float64), name="b"))
         result_h = sc.add_operator(add(a, b))
         result_s = sc.add_operator(record(result_h))
-        asyncio.run(sc.run())
+        sc.run()
 
         assert list(sc.series_timestamps(result_s)) == exp_ts
         np.testing.assert_array_almost_equal(list(sc.series_values(result_s)), exp_vals)
@@ -136,7 +129,7 @@ class TestScenario:
         b = sc.add_source(ArraySource.from_arrays(timestamps=ts_b, values=vals_b, name="b"))
         result_h = sc.add_operator(add(a, b))
         result_s = sc.add_operator(record(result_h))
-        asyncio.run(sc.run())
+        sc.run()
 
         expected_ts = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype="datetime64[ns]")
         expected_vals = [1.0, 11.0, 12.0, 22.0, 23.0, 33.0, 34.0, 44.0, 45.0, 55.0]
@@ -156,7 +149,7 @@ class TestScenario:
         s2 = sc.add_operator(record(o2))
         result_s = sc.add_operator(record(result_h))
 
-        asyncio.run(sc.run())
+        sc.run()
 
         assert list(sc.series_timestamps(s1)) == [ts(1), ts(2), ts(3)]
         assert list(sc.series_timestamps(s2)) == [ts(1), ts(2), ts(3)]
@@ -180,7 +173,7 @@ class TestScenario:
             partial = sc.add_operator(add(obs_list[0], obs_list[1]))
             result_h = sc.add_operator(add(partial, obs_list[2]))
             result_s = sc.add_operator(record(result_h))
-            asyncio.run(sc.run())
+            sc.run()
             return list(sc.series_timestamps(result_s)), list(sc.series_values(result_s))
 
         ts1, vals1 = build_and_run()
@@ -197,7 +190,7 @@ class TestScenario:
         downstream = sc.add_operator(negate(filtered))
         fs = sc.add_operator(record(filtered))
         ds = sc.add_operator(record(downstream))
-        asyncio.run(sc.run())
+        sc.run()
 
         assert list(sc.series_timestamps(fs)) == [ts(1), ts(3)]
         assert list(sc.series_values(fs)) == pytest.approx([-1.0, -3.0])
@@ -211,7 +204,7 @@ class TestScenario:
         s = sc.add_source(source)
         w = sc.add_operator(Where(s, lambda x: x > 3.0, fill=0.0))
         ws = sc.add_operator(record(w))
-        asyncio.run(sc.run())
+        sc.run()
         np.testing.assert_array_almost_equal(sc.series_values(ws).flatten(), [0.0, 5.0, 0.0])
 
     def test_python_operator_chained_with_native(self) -> None:
@@ -222,6 +215,6 @@ class TestScenario:
         filtered = sc.add_operator(Filter(s, lambda v: float(v.flat[0]) > 3.0))
         negated = sc.add_operator(negate(filtered))
         ns = sc.add_operator(record(negated))
-        asyncio.run(sc.run())
+        sc.run()
         assert list(sc.series_timestamps(ns)) == [ts(2), ts(4)]
         assert list(sc.series_values(ns)) == pytest.approx([-5.0, -10.0])

@@ -1,8 +1,7 @@
 //! Exponential moving average operator with window-normalized weights.
 //!
-//! On each tick, reads the latest value from the input Series and updates
-//! a running EMA. The EMA is normalized within a finite window so that
-//! weights sum to ~1 regardless of truncation.
+//! O(1) per element per tick. Weight sum is computed analytically (not
+//! tracked incrementally), and eviction uses a precomputed decay factor.
 
 use num_traits::Float;
 
@@ -16,9 +15,8 @@ use crate::{Operator, Scalar, Series};
 /// ```
 /// where `w_i = alpha * (1 - alpha)^i`.
 ///
-/// NaN handling: if the input element is NaN, the output for that element
-/// is NaN. Use [`ForwardFill`](super::ForwardFill) upstream if you want
-/// carry-forward semantics.
+/// NaN handling: if any value in the window is NaN for an element, the
+/// output for that element is NaN (same as the other rolling operators).
 pub struct Ema<T: Scalar + Float> {
     alpha: T,
     window: usize,
@@ -52,21 +50,22 @@ impl<T: Scalar + Float> Ema<T> {
     }
 }
 
-/// Runtime state for EMA: alpha, window, and per-element running buffers.
+/// Runtime state for EMA.
+///
+/// `weight_sum` is not stored — it equals `1 - (1-α)^min(len, window)`
+/// and is computed each tick via `fill_decay`.
 pub struct EmaState<T: Scalar + Float> {
     alpha: T,
+    one_minus_alpha: T,
+    /// `(1 - alpha)^window`, precomputed for O(1) eviction.
+    decay_factor: T,
     window: usize,
-    /// Per-element: weighted sum of values in the window.
+    /// Per-element weighted sum of values in the window.
     weighted_sum: Vec<T>,
-    /// Per-element: sum of weights in the window.
-    weight_sum: Vec<T>,
-    /// Per-element: individual weights for the last `window` ticks.
-    /// Ring buffer: weights[tick % window] is the oldest weight.
-    weights: Vec<Vec<T>>,
-    /// Per-element: individual weighted values for the last `window` ticks.
-    weighted_vals: Vec<Vec<T>>,
-    /// Current tick count (for ring buffer indexing).
-    tick: usize,
+    /// Count of NaN values in the window, per element position.
+    nan_count: Vec<u32>,
+    /// Tracks `(1-α)^len` during fill-up for computing weight_sum.
+    fill_decay: T,
 }
 
 impl<T: Scalar + Float> Operator for Ema<T> {
@@ -76,14 +75,19 @@ impl<T: Scalar + Float> Operator for Ema<T> {
 
     fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (EmaState<T>, Series<T>) {
         let stride = inputs.0.stride();
+        let one_minus_alpha = T::one() - self.alpha;
+        let mut decay_factor = T::one();
+        for _ in 0..self.window {
+            decay_factor = decay_factor * one_minus_alpha;
+        }
         let state = EmaState {
             alpha: self.alpha,
+            one_minus_alpha,
+            decay_factor,
             window: self.window,
             weighted_sum: vec![T::zero(); stride],
-            weight_sum: vec![T::zero(); stride],
-            weights: vec![vec![T::zero(); self.window]; stride],
-            weighted_vals: vec![vec![T::zero(); self.window]; stride],
-            tick: 0,
+            nan_count: vec![0; stride],
+            fill_decay: T::one(),
         };
         (state, Series::new(inputs.0.shape()))
     }
@@ -95,63 +99,52 @@ impl<T: Scalar + Float> Operator for Ema<T> {
         timestamp: i64,
     ) -> bool {
         let series = inputs.0;
-        let row = series.last().unwrap();
+        let len = series.len();
+        let row = series.at(len - 1);
         let stride = row.len();
         let alpha = state.alpha;
-        let one_minus_alpha = T::one() - alpha;
-        let window = state.window;
-        let slot = state.tick % window;
+        let one_minus_alpha = state.one_minus_alpha;
+
+        // Compute weight_sum analytically: 1 - (1-α)^min(len, window).
+        state.fill_decay = state.fill_decay * one_minus_alpha;
+        let weight_sum = T::one() - if len >= state.window {
+            state.decay_factor
+        } else {
+            state.fill_decay
+        };
 
         let mut buf = vec![T::nan(); stride];
 
         for i in 0..stride {
             let x = row[i];
+
+            // 1. Decay existing accumulator.
+            state.weighted_sum[i] = state.weighted_sum[i] * one_minus_alpha;
+
+            // 2. Add new value (NaN contributes zero weight).
             if x.is_nan() {
-                // NaN input → NaN output, but still need to evict old slot
-                let old_w = state.weights[i][slot];
-                let old_wv = state.weighted_vals[i][slot];
-                state.weight_sum[i] = state.weight_sum[i] - old_w;
-                state.weighted_sum[i] = state.weighted_sum[i] - old_wv;
-                state.weights[i][slot] = T::zero();
-                state.weighted_vals[i][slot] = T::zero();
-
-                // Decay all existing weights
-                state.weight_sum[i] = state.weight_sum[i] * one_minus_alpha;
-                state.weighted_sum[i] = state.weighted_sum[i] * one_minus_alpha;
-                for j in 0..window {
-                    state.weights[i][j] = state.weights[i][j] * one_minus_alpha;
-                    state.weighted_vals[i][j] = state.weighted_vals[i][j] * one_minus_alpha;
-                }
-                // buf[i] stays NaN
+                state.nan_count[i] += 1;
             } else {
-                // Evict oldest value from the window
-                let old_w = state.weights[i][slot];
-                let old_wv = state.weighted_vals[i][slot];
-                state.weight_sum[i] = state.weight_sum[i] - old_w;
-                state.weighted_sum[i] = state.weighted_sum[i] - old_wv;
+                state.weighted_sum[i] = state.weighted_sum[i] + alpha * x;
+            }
 
-                // Decay all existing weights
-                state.weight_sum[i] = state.weight_sum[i] * one_minus_alpha;
-                state.weighted_sum[i] = state.weighted_sum[i] * one_minus_alpha;
-                for j in 0..window {
-                    state.weights[i][j] = state.weights[i][j] * one_minus_alpha;
-                    state.weighted_vals[i][j] = state.weighted_vals[i][j] * one_minus_alpha;
+            // 3. Evict oldest value if window is full.
+            if len > state.window {
+                let x_old = series.at(len - 1 - state.window)[i];
+                if x_old.is_nan() {
+                    state.nan_count[i] -= 1;
+                } else {
+                    let evict_weight = alpha * state.decay_factor;
+                    state.weighted_sum[i] = state.weighted_sum[i] - evict_weight * x_old;
                 }
+            }
 
-                // Add new value with weight alpha
-                let w = alpha;
-                state.weights[i][slot] = w;
-                state.weighted_vals[i][slot] = w * x;
-                state.weight_sum[i] = state.weight_sum[i] + w;
-                state.weighted_sum[i] = state.weighted_sum[i] + w * x;
-
-                if state.weight_sum[i] > T::zero() {
-                    buf[i] = state.weighted_sum[i] / state.weight_sum[i];
-                }
+            // 4. Output: NaN if any NaN in window, else weighted average.
+            if state.nan_count[i] == 0 && weight_sum > T::zero() {
+                buf[i] = state.weighted_sum[i] / weight_sum;
             }
         }
 
-        state.tick += 1;
         output.push(timestamp, &buf);
         true
     }
@@ -214,21 +207,36 @@ mod tests {
     }
 
     #[test]
-    fn ema_nan_output() {
+    fn ema_nan_propagation() {
+        // NaN in window → NaN output, until NaN is evicted.
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 10).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), i64::MIN);
 
         push_compute(&mut s, &mut state, &mut out, 1, 10.0);
         assert_eq!(out.last().unwrap()[0], 10.0);
 
-        // NaN input → NaN output
-        s.push(2, &[f64::NAN]);
-        Ema::compute(&mut state, (&s,), &mut out, 2);
+        push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
         assert!(out.last().unwrap()[0].is_nan());
 
-        // Valid input resumes
         push_compute(&mut s, &mut state, &mut out, 3, 20.0);
-        assert!(!out.last().unwrap()[0].is_nan());
+        // NaN still in window → NaN
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 4, 30.0);
+        // NaN still in window [NaN, 20, 30] → NaN
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 5, 40.0);
+        // NaN evicted, window [20, 30, 40] → valid
+        let val = out.last().unwrap()[0];
+        assert!(!val.is_nan(), "expected valid output after NaN eviction");
+        // weighted: 0.5*40 + 0.25*30 + 0.125*20 = 30
+        // weight_sum: 1 - 0.5^3 = 0.875
+        let expected = 30.0 / 0.875;
+        assert!(
+            (val - expected).abs() < 1e-10,
+            "expected {expected}, got {val}"
+        );
     }
 
     #[test]
@@ -279,5 +287,86 @@ mod tests {
         let expected_1 = (0.5 * 200.0 + 0.25 * 100.0) / (0.5 + 0.25);
         assert!((row[0] - expected_0).abs() < 1e-10);
         assert!((row[1] - expected_1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn ema_nan_at_start() {
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
+
+        push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 2, 10.0);
+        // NaN still in window → NaN
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 3, 20.0);
+        // NaN evicted, window [10, 20]
+        let val = out.last().unwrap()[0];
+        assert!(!val.is_nan());
+    }
+
+    #[test]
+    fn ema_multiple_nans() {
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), i64::MIN);
+
+        push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
+        push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
+        push_compute(&mut s, &mut state, &mut out, 3, 10.0);
+        // Two NaNs in window → NaN
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 4, 20.0);
+        // One NaN remains → NaN
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 5, 30.0);
+        // Both NaNs evicted → valid
+        assert!(!out.last().unwrap()[0].is_nan());
+    }
+
+    #[test]
+    fn ema_nan_vector_independent() {
+        let mut s = Series::<f64>::new(&[2]);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
+
+        // NaN only in element 0
+        s.push(1, &[f64::NAN, 10.0]);
+        Ema::compute(&mut state, (&s,), &mut out, 1);
+        assert!(out.last().unwrap()[0].is_nan());
+        assert_eq!(out.last().unwrap()[1], 10.0);
+
+        s.push(2, &[5.0, 20.0]);
+        Ema::compute(&mut state, (&s,), &mut out, 2);
+        // NaN still in window for element 0
+        assert!(out.last().unwrap()[0].is_nan());
+        assert!(!out.last().unwrap()[1].is_nan());
+
+        s.push(3, &[15.0, 30.0]);
+        Ema::compute(&mut state, (&s,), &mut out, 3);
+        // NaN evicted for element 0
+        assert!(!out.last().unwrap()[0].is_nan());
+        assert!(!out.last().unwrap()[1].is_nan());
+    }
+
+    #[test]
+    fn ema_nan_eviction_restores_correct_value() {
+        // After NaN exits, the weighted average uses only valid values.
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
+
+        push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
+        push_compute(&mut s, &mut state, &mut out, 2, 10.0);
+        assert!(out.last().unwrap()[0].is_nan()); // NaN still in window
+
+        push_compute(&mut s, &mut state, &mut out, 3, 10.0);
+        // NaN evicted, window [10, 10] → EMA of constant = 10
+        let val = out.last().unwrap()[0];
+        assert!(
+            (val - 10.0).abs() < 1e-10,
+            "expected 10.0 after NaN eviction, got {val}"
+        );
     }
 }

@@ -29,7 +29,7 @@ class TestBridgeNativeOperator:
         ha = self._make_source(sc, [1, 2], [10.0, 20.0])
         hb = self._make_source(sc, [1, 2], [1.0, 2.0])
         hc = sc.add_native_operator("add", "float64", [ha, hb], [], {})
-        hs = sc.record(hc)
+        hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
         assert sc.series_len(hs) == 2
         np.testing.assert_array_almost_equal(
@@ -42,7 +42,7 @@ class TestBridgeNativeOperator:
         ha = self._make_source(sc, [1], [10.0])
         hb = self._make_source(sc, [1], [3.0])
         hc = sc.add_native_operator("subtract", "float64", [ha, hb], [], {})
-        hs = sc.record(hc)
+        hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [7.0])
 
@@ -51,7 +51,7 @@ class TestBridgeNativeOperator:
         ha = self._make_source(sc, [1], [4.0])
         hb = self._make_source(sc, [1], [5.0])
         hc = sc.add_native_operator("multiply", "float64", [ha, hb], [], {})
-        hs = sc.record(hc)
+        hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [20.0])
 
@@ -59,7 +59,7 @@ class TestBridgeNativeOperator:
         sc = NativeScenario()
         ha = self._make_source(sc, [1, 2], [10.0, -5.0])
         hc = sc.add_native_operator("negate", "float64", [ha], [], {})
-        hs = sc.record(hc)
+        hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [-10.0, 5.0])
 
@@ -69,7 +69,7 @@ class TestBridgeNativeOperator:
         hb = self._make_source(sc, [1, 2], [3.0, 10.0])
         hab = sc.add_native_operator("add", "float64", [ha, hb], [], {})
         hout = sc.add_native_operator("multiply", "float64", [hab, ha], [], {})
-        hs = sc.record(hout)
+        hs = sc.add_native_operator("record", "float64", [hout], [], {})
         sc.run()
         # (2+3)*2=10, (5+10)*5=75
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [10.0, 75.0])
@@ -79,7 +79,7 @@ class TestBridgeNativeOperator:
         ha = self._make_source(sc, [1, 3], [10.0, 30.0])
         hb = self._make_source(sc, [2, 3], [20.0, 40.0])
         hc = sc.add_native_operator("add", "float64", [ha, hb], [], {})
-        hs = sc.record(hc)
+        hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
         # ts=1: 10+0=10, ts=2: 10+20=30, ts=3: 30+40=70
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [10.0, 30.0, 70.0])
@@ -101,7 +101,7 @@ class TestBridgeStrided:
         ha = self._make_strided_source(sc, [1], [[1.0, 2.0]])
         hb = self._make_strided_source(sc, [1], [[10.0, 20.0]])
         hc = sc.add_native_operator("add", "float64", [ha, hb], [2], {})
-        hs = sc.record(hc)
+        hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [11.0, 22.0])
 
@@ -109,7 +109,7 @@ class TestBridgeStrided:
         sc = NativeScenario()
         ha = self._make_strided_source(sc, [1], [[10.0, 20.0, 30.0]])
         hc = sc.add_native_operator("select", "float64", [ha], [2], {"indices": [0, 2]})
-        hs = sc.record(hc)
+        hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [10.0, 30.0])
 
@@ -118,7 +118,7 @@ class TestBridgeStrided:
         ha = self._make_strided_source(sc, [1], [[1.0, 2.0]])
         hb = self._make_strided_source(sc, [1], [[3.0, 4.0]])
         hc = sc.add_native_operator("concat", "float64", [ha, hb], [4], {"axis": 0})
-        hs = sc.record(hc)
+        hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [1.0, 2.0, 3.0, 4.0])
 
@@ -149,7 +149,7 @@ class TestBridgePyOperator:
             AddConst(),
             None,
         )
-        hs = sc.record(op_idx)
+        hs = sc.add_native_operator("record", "float64", [op_idx], [], {})
         sc.run()
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [15.0, 25.0])
 
@@ -178,7 +178,7 @@ class TestBridgePyOperator:
             RunningSum(),
             None,
         )
-        hs = sc.record(op_idx)
+        hs = sc.add_native_operator("record", "float64", [op_idx], [], {})
         sc.run()
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [10.0, 30.0, 60.0])
 
@@ -209,7 +209,7 @@ class TestBridgePyOperator:
             FilterAbove3(),
             None,
         )
-        hs = sc.record(op_idx)
+        hs = sc.add_native_operator("record", "float64", [op_idx], [], {})
         sc.run()
         assert sc.series_len(hs) == 2
         np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [5.0, 10.0])
@@ -235,7 +235,7 @@ class TestBridgeGetView:
         hist.send(2, np.array([20.0], dtype=np.float64))
         hist.close()
         live.close()
-        hs = sc.record(idx)
+        hs = sc.add_native_operator("record", "float64", [idx], [], {})
         sc.run()
         view = sc.get_view(hs)
         assert len(view) == 2
@@ -269,7 +269,7 @@ class TestPythonViewWrappers:
         hist.send(2, np.array([20.0], dtype=np.float64))
         hist.close()
         live.close()
-        hs = sc.record(idx)
+        hs = sc.add_native_operator("record", "float64", [idx], [], {})
         sc.run()
         native_view = sc.get_view(hs)
         wrapper = SeriesView(native_view)

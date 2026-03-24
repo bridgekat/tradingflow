@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import numpy as np
 import pytest
 
@@ -11,6 +9,14 @@ from tradingflow import Scenario
 from tradingflow.sources import ArraySource
 from tradingflow.operators import (
     record,
+    add,
+    subtract,
+    multiply,
+    divide,
+    negate,
+    select,
+    concat,
+    stack,
     last,
     lag,
     rolling_sum,
@@ -28,7 +34,7 @@ def ts(i: int) -> np.datetime64:
 
 
 def _run(sc: Scenario) -> None:
-    asyncio.run(sc.run())
+    sc.run()
 
 
 def _scalar_scenario(values: list[float]) -> tuple[Scenario, Handle, Handle]:
@@ -335,3 +341,115 @@ class TestForwardFill:
         _run(sc)
         vals = list(sc.series_values(h_ff))
         assert vals == pytest.approx([1.0, 2.0, 3.0])
+
+
+# ---------------------------------------------------------------------------
+# Subtract
+# ---------------------------------------------------------------------------
+
+
+class TestSubtract:
+    def test_subtract_scalar(self) -> None:
+        sc = Scenario()
+        a = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([10.0, 30.0]),
+        ))
+        b = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([3.0, 7.0]),
+        ))
+        h = sc.add_operator(subtract(a, b))
+        s = sc.add_operator(record(h))
+        _run(sc)
+        assert list(sc.series_values(s)) == pytest.approx([7.0, 23.0])
+
+
+# ---------------------------------------------------------------------------
+# Divide
+# ---------------------------------------------------------------------------
+
+
+class TestDivide:
+    def test_divide_scalar(self) -> None:
+        sc = Scenario()
+        a = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([20.0, 9.0]),
+        ))
+        b = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([4.0, 3.0]),
+        ))
+        h = sc.add_operator(divide(a, b))
+        s = sc.add_operator(record(h))
+        _run(sc)
+        assert list(sc.series_values(s)) == pytest.approx([5.0, 3.0])
+
+
+# ---------------------------------------------------------------------------
+# Select
+# ---------------------------------------------------------------------------
+
+
+class TestSelect:
+    def test_select_flat(self) -> None:
+        sc = Scenario()
+        src = ArraySource.from_arrays(
+            timestamps=np.array([ts(1), ts(2)]),
+            values=np.array([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]]),
+        )
+        h = sc.add_source(src)
+        sel = sc.add_operator(select(h, [0, 2]))
+        s = sc.add_operator(record(sel))
+        _run(sc)
+        vals = sc.series_values(s)
+        np.testing.assert_array_almost_equal(vals[0], [10.0, 30.0])
+        np.testing.assert_array_almost_equal(vals[1], [40.0, 60.0])
+
+
+# ---------------------------------------------------------------------------
+# Concat
+# ---------------------------------------------------------------------------
+
+
+class TestConcat:
+    def test_concat_axis0(self) -> None:
+        sc = Scenario()
+        a = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1)]),
+            values=np.array([[1.0, 2.0]]),
+        ))
+        b = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1)]),
+            values=np.array([[3.0, 4.0]]),
+        ))
+        h = sc.add_operator(concat([a, b], axis=0))
+        s = sc.add_operator(record(h))
+        _run(sc)
+        vals = sc.series_values(s)
+        np.testing.assert_array_almost_equal(vals[0], [1.0, 2.0, 3.0, 4.0])
+
+
+# ---------------------------------------------------------------------------
+# Stack
+# ---------------------------------------------------------------------------
+
+
+class TestStack:
+    def test_stack_axis0(self) -> None:
+        sc = Scenario()
+        a = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1)]),
+            values=np.array([[1.0, 2.0]]),
+        ))
+        b = sc.add_source(ArraySource.from_arrays(
+            timestamps=np.array([ts(1)]),
+            values=np.array([[3.0, 4.0]]),
+        ))
+        h = sc.add_operator(stack([a, b], axis=0))
+        s = sc.add_operator(record(h))
+        _run(sc)
+        vals = sc.series_values(s)
+        # stack axis=0: shape (2,2) → [[1,2],[3,4]]
+        np.testing.assert_array_almost_equal(vals[0], [[1.0, 2.0], [3.0, 4.0]])

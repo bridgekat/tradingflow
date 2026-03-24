@@ -103,19 +103,6 @@ fn create_array_node(sc: &mut Scenario, shape: &[usize], dtype: &str) -> PyResul
     dispatch_dtype!(dtype, create)
 }
 
-/// Add a record operator for a given Array node.
-fn record_dispatch(sc: &mut Scenario, node_index: usize, dtype: &str) -> PyResult<usize> {
-    macro_rules! mat {
-        ($T:ty) => {{
-            use crate::operators::Record;
-            use crate::scenario::handle::Handle;
-            let h = Handle::<Array<$T>>::new(node_index);
-            Ok(sc.add_operator(Record::<$T>::new(), (h,)).index())
-        }};
-    }
-    dispatch_dtype!(dtype, mat)
-}
-
 /// Resolve a Python-side `(kind, dtype)` pair to a Rust `TypeId`.
 fn resolve_type_id(kind: &str, dtype: &str) -> PyResult<TypeId> {
     let dtype = normalise_dtype(dtype);
@@ -385,28 +372,6 @@ impl NativeScenario {
             sources::register_channel_source(sc, &shape, &dtype_norm)?;
         self.push_node(py, node_index, &dtype_norm, ViewKind::Array, &shape)?;
         Ok((node_index, hist_sender, live_sender))
-    }
-
-    // -- Record (materialize) ------------------------------------------------
-
-    /// Record a node into a Series (adds a Record operator).
-    ///
-    /// Returns the index of the new Series node.
-    fn record(&mut self, py: Python<'_>, node_index: usize) -> PyResult<usize> {
-        let sc = self.scenario.as_mut().unwrap();
-        let (dtype, _) = &self.node_info[node_index];
-        let dtype = dtype.clone();
-        let series_idx = record_dispatch(sc, node_index, &dtype)?;
-
-        // Determine shape from the Array node.
-        let arr_ptr = sc.node_value_ptr(node_index) as *const u8;
-        let shape = {
-            let arr = unsafe { &*(arr_ptr as *const Array<f64>) };
-            arr.shape().to_vec()
-        };
-
-        self.push_node(py, series_idx, &dtype, ViewKind::Series, &shape)?;
-        Ok(series_idx)
     }
 
     // -- View access ---------------------------------------------------------

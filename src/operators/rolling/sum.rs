@@ -1,4 +1,6 @@
 //! Rolling sum operator.
+//!
+//! O(1) per element per tick via incremental add/subtract with NaN counting.
 
 use num_traits::Float;
 
@@ -22,38 +24,70 @@ impl<T: Scalar + Float> RollingSum<T> {
     }
 }
 
+/// Runtime state for [`RollingSum`].
+pub struct SumState<T: Scalar + Float> {
+    window: usize,
+    sum: Vec<T>,
+    nan_count: Vec<u32>,
+}
+
 impl<T: Scalar + Float> Operator for RollingSum<T> {
-    type State = usize;
+    type State = SumState<T>;
     type Inputs = (Series<T>,);
     type Output = Series<T>;
 
-    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (usize, Series<T>) {
-        (self.window, Series::new(inputs.0.shape()))
+    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (SumState<T>, Series<T>) {
+        let stride = inputs.0.stride();
+        let state = SumState {
+            window: self.window,
+            sum: vec![T::zero(); stride],
+            nan_count: vec![0; stride],
+        };
+        (state, Series::new(inputs.0.shape()))
     }
 
     fn compute(
-        state: &mut usize,
+        state: &mut SumState<T>,
         inputs: (&Series<T>,),
         output: &mut Series<T>,
         timestamp: i64,
     ) -> bool {
-        let window = *state;
         let series = inputs.0;
         let len = series.len();
-        let stride = series.stride();
-        let start = len.saturating_sub(window);
+        let stride = state.sum.len();
 
-        let mut buf = vec![T::zero(); stride];
+        // Add new element.
+        let new_row = series.at(len - 1);
+        for j in 0..stride {
+            let v = new_row[j];
+            if v.is_nan() {
+                state.nan_count[j] += 1;
+            } else {
+                state.sum[j] = state.sum[j] + v;
+            }
+        }
 
-        for i in start..len {
-            let row = series.at(i);
-            for (j, &v) in row.iter().enumerate() {
+        // Evict oldest element if window is full.
+        if len > state.window {
+            let old_row = series.at(len - 1 - state.window);
+            for j in 0..stride {
+                let v = old_row[j];
                 if v.is_nan() {
-                    buf[j] = T::nan();
-                } else if !buf[j].is_nan() {
-                    buf[j] = buf[j] + v;
+                    state.nan_count[j] -= 1;
+                } else {
+                    state.sum[j] = state.sum[j] - v;
                 }
             }
+        }
+
+        // Produce output.
+        let mut buf = vec![T::zero(); stride];
+        for j in 0..stride {
+            buf[j] = if state.nan_count[j] > 0 {
+                T::nan()
+            } else {
+                state.sum[j]
+            };
         }
 
         output.push(timestamp, &buf);
@@ -67,7 +101,7 @@ mod tests {
 
     fn push_compute(
         s: &mut Series<f64>,
-        state: &mut usize,
+        state: &mut SumState<f64>,
         out: &mut Series<f64>,
         ts: i64,
         val: f64,
@@ -130,5 +164,80 @@ mod tests {
         s.push(3, &[3.0, 30.0]);
         RollingSum::compute(&mut state, (&s,), &mut out, 3);
         assert_eq!(out.last().unwrap(), &[5.0, 50.0]); // 2+3, 20+30
+    }
+
+    #[test]
+    fn sum_nan_at_start() {
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = RollingSum::<f64>::new(2).init((&s,), i64::MIN);
+
+        push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 2, 5.0);
+        // Window [NaN, 5] → NaN
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 3, 10.0);
+        // Window [5, 10] → NaN evicted
+        assert_eq!(out.last().unwrap()[0], 15.0);
+    }
+
+    #[test]
+    fn sum_multiple_nans() {
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = RollingSum::<f64>::new(3).init((&s,), i64::MIN);
+
+        push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
+        push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
+        push_compute(&mut s, &mut state, &mut out, 3, 1.0);
+        assert!(out.last().unwrap()[0].is_nan()); // two NaNs in window
+
+        push_compute(&mut s, &mut state, &mut out, 4, 2.0);
+        assert!(out.last().unwrap()[0].is_nan()); // still one NaN
+
+        push_compute(&mut s, &mut state, &mut out, 5, 3.0);
+        // Window [1, 2, 3] → both NaNs evicted
+        assert_eq!(out.last().unwrap()[0], 6.0);
+    }
+
+    #[test]
+    fn sum_nan_vector_independent() {
+        // NaN in element 0 should not affect element 1.
+        let mut s = Series::<f64>::new(&[2]);
+        let (mut state, mut out) = RollingSum::<f64>::new(2).init((&s,), i64::MIN);
+
+        s.push(1, &[f64::NAN, 10.0]);
+        RollingSum::compute(&mut state, (&s,), &mut out, 1);
+        assert!(out.last().unwrap()[0].is_nan());
+        assert_eq!(out.last().unwrap()[1], 10.0);
+
+        s.push(2, &[5.0, 20.0]);
+        RollingSum::compute(&mut state, (&s,), &mut out, 2);
+        assert!(out.last().unwrap()[0].is_nan()); // NaN still in window for elem 0
+        assert_eq!(out.last().unwrap()[1], 30.0);
+
+        s.push(3, &[7.0, 30.0]);
+        RollingSum::compute(&mut state, (&s,), &mut out, 3);
+        assert_eq!(out.last().unwrap()[0], 12.0); // NaN evicted: 5+7
+        assert_eq!(out.last().unwrap()[1], 50.0); // 20+30
+    }
+
+    #[test]
+    fn sum_nan_eviction_restores_correct_sum() {
+        // Verify the running sum is accurate after NaN eviction.
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = RollingSum::<f64>::new(3).init((&s,), i64::MIN);
+
+        push_compute(&mut s, &mut state, &mut out, 1, 10.0);
+        push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
+        push_compute(&mut s, &mut state, &mut out, 3, 30.0);
+        push_compute(&mut s, &mut state, &mut out, 4, 40.0);
+        // Window [NaN, 30, 40] → NaN
+        assert!(out.last().unwrap()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 5, 50.0);
+        // Window [30, 40, 50] → NaN evicted, sum = 120
+        assert_eq!(out.last().unwrap()[0], 120.0);
     }
 }

@@ -201,28 +201,30 @@ pub fn dispatch_native_operator(
         "rolling_sum" | "rolling_mean" | "rolling_variance" | "rolling_covariance" => {
             let window: usize = params
                 .get_item("window")?
-                .ok_or_else(|| {
-                    PyTypeError::new_err(format!("{kind} requires 'window' param"))
-                })?
+                .ok_or_else(|| PyTypeError::new_err(format!("{kind} requires 'window' param")))?
                 .extract()?;
             macro_rules! go {
                 ($T:ty) => {
                     match kind {
                         "rolling_sum" => sc.register_operator_from_indices(
                             operators::rolling::RollingSum::<$T>::new(window),
-                            input_indices, clock,
+                            input_indices,
+                            clock,
                         ),
                         "rolling_mean" => sc.register_operator_from_indices(
                             operators::rolling::RollingMean::<$T>::new(window),
-                            input_indices, clock,
+                            input_indices,
+                            clock,
                         ),
                         "rolling_variance" => sc.register_operator_from_indices(
                             operators::rolling::RollingVariance::<$T>::new(window),
-                            input_indices, clock,
+                            input_indices,
+                            clock,
                         ),
                         "rolling_covariance" => sc.register_operator_from_indices(
                             operators::rolling::RollingCovariance::<$T>::new(window),
-                            input_indices, clock,
+                            input_indices,
+                            clock,
                         ),
                         _ => unreachable!(),
                     }
