@@ -202,6 +202,23 @@ pub fn dispatch_native_source(
                 .extract()?;
             register_array_source(sc, dtype, timestamps, values_bytes, stride)
         }
+        "csv" => {
+            let path: String = params
+                .get_item("path")?
+                .ok_or_else(|| PyTypeError::new_err("csv source requires 'path'"))?
+                .extract()?;
+            let time_column: String = params
+                .get_item("time_column")?
+                .ok_or_else(|| PyTypeError::new_err("csv source requires 'time_column'"))?
+                .extract()?;
+            let value_columns: Vec<String> = params
+                .get_item("value_columns")?
+                .ok_or_else(|| PyTypeError::new_err("csv source requires 'value_columns'"))?
+                .extract()?;
+            use crate::sources::CsvSource;
+            let source = CsvSource::new(path, time_column, value_columns);
+            Ok(sc.add_source_untyped(source))
+        }
         "clock" => {
             let timestamps: Vec<i64> = params
                 .get_item("timestamps")?
