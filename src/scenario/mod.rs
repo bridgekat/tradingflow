@@ -12,6 +12,14 @@
 //! [`TypeId`] checks.  After registration, operator dispatch uses raw pointer
 //! casts through monomorphised function pointers — zero dynamic dispatch
 //! overhead on the hot path.
+//!
+//! # Operator registration
+//!
+//! All operator registration flows through [`Scenario::add_erased_operator`],
+//! which accepts an [`ErasedOperator`].  Typed convenience methods
+//! ([`add_operator`](Scenario::add_operator),
+//! [`register_operator_from_indices`](Scenario::register_operator_from_indices))
+//! construct an [`ErasedOperator`] from a concrete [`Operator`] and delegate.
 
 mod graph;
 pub mod handle;
@@ -19,6 +27,7 @@ mod node;
 mod runner;
 
 pub use handle::{Handle, InputTypesHandles};
+pub use node::{ComputeFn, ErasedOperator, drop_fn};
 
 use std::any::TypeId;
 
@@ -111,6 +120,8 @@ impl Scenario {
         Handle::new(idx)
     }
 
+    // -- Typed operator registration -----------------------------------------
+
     /// Register an [`Operator`], creating its output node.
     ///
     /// All inputs are trigger edges — the operator fires whenever any
@@ -129,10 +140,6 @@ impl Scenario {
 
     /// Register an [`Operator`] that fires on a clock instead of on
     /// input updates.
-    ///
-    /// The operator reads from `inputs` but is only scheduled when the
-    /// `clock` node updates.  The clock is not an input — the operator
-    /// does not read its value.
     pub fn add_operator_periodic<O: Operator>(
         &mut self,
         operator: O,
@@ -144,21 +151,6 @@ impl Scenario {
     {
         self.register_operator_from_handles(operator, inputs, Some(clock))
     }
-
-    // -- Untyped registration (for FFI / bridge) ------------------------------
-
-    /// Register a [`Source`], returning the output node index instead of a
-    /// typed [`Handle`].
-    pub fn add_source_untyped<S: Source>(&mut self, source: S) -> usize {
-        self.add_source(source).index()
-    }
-
-    /// `TypeId` of a node's value.
-    pub fn node_type_id(&self, index: usize) -> TypeId {
-        self.graph.nodes[index].type_id
-    }
-
-    // -- Typed registration --------------------------------------------------
 
     /// Register an operator from typed handles.
     fn register_operator_from_handles<O: Operator>(
@@ -179,18 +171,16 @@ impl Scenario {
 
     /// Register an operator from raw node indices.
     ///
-    /// Validates `TypeId`s, collects input pointers, calls `init`, creates
-    /// the output node, wires trigger edges, and attaches the closure.
-    ///
-    /// If `clock` is `None`, all inputs are trigger edges.
-    /// If `clock` is `Some(idx)`, only the clock node triggers.
+    /// Validates `TypeId`s, calls [`Operator::init`] via
+    /// [`ErasedOperator::from_operator`], then delegates to
+    /// [`add_erased_operator`](Scenario::add_erased_operator).
     pub fn register_operator_from_indices<O: Operator>(
         &mut self,
         operator: O,
         input_indices: &[usize],
         clock_index: Option<usize>,
     ) -> usize {
-        // Validate arity.
+        // Validate arity + TypeIds before calling init.
         let expected_tids = <O::Inputs as InputTypes>::type_ids(input_indices.len());
         assert_eq!(
             input_indices.len(),
@@ -199,9 +189,57 @@ impl Scenario {
             expected_tids.len(),
             input_indices.len(),
         );
+        for (i, (&idx, &expected_tid)) in
+            input_indices.iter().zip(expected_tids.iter()).enumerate()
+        {
+            assert!(idx < self.graph.len(), "invalid index: node {idx} out of range");
+            assert_eq!(
+                self.graph.nodes[idx].type_id, expected_tid,
+                "type mismatch at input {i} (node {idx})",
+            );
+        }
 
-        // 1. Validate TypeIds.
-        for (i, (&idx, &expected_tid)) in input_indices.iter().zip(expected_tids.iter()).enumerate()
+        // Collect validated input pointers and call init.
+        let input_ptrs: Box<[*const u8]> = input_indices
+            .iter()
+            .map(|&idx| self.graph.nodes[idx].value as *const u8)
+            .collect();
+        // SAFETY: input pointers are valid — we just validated TypeIds above.
+        let erased = unsafe { ErasedOperator::from_operator(operator, &input_ptrs, i64::MIN) };
+        self.add_erased_operator(erased, input_indices, clock_index)
+    }
+
+    // -- Erased operator registration ----------------------------------------
+
+    /// Register a pre-initialized, type-erased operator.
+    ///
+    /// This is the unified registration method used by both the typed Rust
+    /// API and the Python bridge.
+    ///
+    /// 1. Validates input `TypeId`s against `erased.input_type_ids`.
+    /// 2. Transfers the pre-initialized output into a new node.
+    /// 3. Wires trigger edges (inputs or clock).
+    /// 4. Attaches the compute closure with pre-initialized state.
+    ///
+    /// Returns the output node index.
+    pub fn add_erased_operator(
+        &mut self,
+        mut erased: ErasedOperator,
+        input_indices: &[usize],
+        clock_index: Option<usize>,
+    ) -> usize {
+        // 1. Validate arity.
+        assert_eq!(
+            input_indices.len(),
+            erased.input_type_ids.len(),
+            "arity mismatch: operator expects {} inputs, got {}",
+            erased.input_type_ids.len(),
+            input_indices.len(),
+        );
+
+        // 2. Validate TypeIds.
+        for (i, (&idx, &expected_tid)) in
+            input_indices.iter().zip(erased.input_type_ids.iter()).enumerate()
         {
             assert!(
                 idx < self.graph.len(),
@@ -213,20 +251,23 @@ impl Scenario {
             );
         }
 
-        // 2. Collect input value pointers.
+        // 3. Collect input value pointers for the closure.
         let input_ptrs: Box<[*const u8]> = input_indices
             .iter()
             .map(|&idx| self.graph.nodes[idx].value as *const u8)
             .collect();
 
-        // 3. Call init eagerly.
-        let input_refs = unsafe { <O::Inputs as InputTypes>::from_ptrs(&input_ptrs) };
-        let (state, output) = operator.init(input_refs, i64::MIN);
+        // 4. Take ownership of pre-initialized state + output.
+        let (state_ptr, output_ptr) = erased.take_ptrs();
 
-        // 4. Create output node.
-        let output_idx = self.graph.add_node(Node::new(output));
+        // 5. Create output node.
+        let output_idx = self.graph.add_node(Node::from_raw(
+            erased.output_type_id,
+            output_ptr,
+            erased.output_drop_fn,
+        ));
 
-        // 5. Wire trigger edges.
+        // 6. Wire trigger edges.
         match clock_index {
             None => {
                 for &input_idx in input_indices {
@@ -238,11 +279,48 @@ impl Scenario {
             }
         }
 
-        // 6. Attach closure.
-        let closure = Closure::from_state::<O>(state, input_ptrs);
-        self.graph.nodes[output_idx].closure = Some(closure);
+        // 7. Attach closure.
+        self.graph.nodes[output_idx].closure = Some(Closure::new(
+            erased.compute_fn,
+            input_ptrs,
+            state_ptr,
+            erased.state_drop_fn,
+        ));
 
         output_idx
+    }
+
+    // -- Untyped helpers (for FFI / bridge) -----------------------------------
+
+    /// Register a [`Source`], returning the output node index instead of a
+    /// typed [`Handle`].
+    pub fn add_source_untyped<S: Source>(&mut self, source: S) -> usize {
+        self.add_source(source).index()
+    }
+
+    /// `TypeId` of a node's value.
+    pub fn node_type_id(&self, index: usize) -> TypeId {
+        self.graph.nodes[index].type_id
+    }
+
+    /// Raw value pointer for a node.
+    pub(crate) fn node_value_ptr(&self, index: usize) -> *mut u8 {
+        self.graph.nodes[index].value
+    }
+
+    /// Mutable reference to the closure state of a node.
+    ///
+    /// Returns `None` if the node has no closure.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the returned pointer is cast to the correct
+    /// state type and not used after the node is dropped.
+    pub(crate) fn closure_state_ptr(&self, index: usize) -> Option<*mut u8> {
+        self.graph.nodes[index]
+            .closure
+            .as_ref()
+            .map(|c| c.state)
     }
 
     // -- Flush ---------------------------------------------------------------
@@ -250,53 +328,6 @@ impl Scenario {
     /// Propagate updates through the DAG.
     pub fn flush(&mut self, timestamp: i64, updated_sources: &[usize]) {
         self.graph.flush(timestamp, updated_sources);
-    }
-
-    // -- Low-level accessors (for bridge / FFI) ------------------------------
-
-    /// Raw value pointer for a node.
-    #[cfg(feature = "python")]
-    pub(crate) fn node_value_ptr(&self, index: usize) -> *mut u8 {
-        self.graph.nodes[index].value
-    }
-
-    /// Add a directed edge between two nodes.
-    #[cfg(feature = "python")]
-    pub(crate) fn add_trigger_edge(&mut self, from: usize, to: usize) {
-        self.graph.add_trigger_edge(from, to);
-    }
-
-    /// Attach a raw type-erased closure to a node.
-    ///
-    /// The caller provides a concrete state type `S`, which is heap-allocated
-    /// by this method.  The `compute_fn` must cast `state_ptr` to `*mut S`.
-    ///
-    /// # Safety
-    ///
-    /// * `input_ptrs` must point to valid node values for the node's lifetime.
-    /// * `compute_fn` must correctly interpret the pointer types.
-    #[cfg(feature = "python")]
-    pub(crate) fn attach_raw_closure<S: Send + 'static>(
-        &mut self,
-        node_index: usize,
-        input_ptrs: Box<[*const u8]>,
-        compute_fn: unsafe fn(&[*const u8], *mut u8, *mut u8, i64) -> bool,
-        state: Box<S>,
-    ) {
-        let state_ptr = Box::into_raw(state) as *mut u8;
-
-        /// # Safety
-        /// `ptr` must have been created by `Box::into_raw(Box::new(..))` for type `T`.
-        unsafe fn drop_state<T>(ptr: *mut u8) {
-            unsafe { drop(Box::from_raw(ptr as *mut T)) };
-        }
-
-        self.graph.nodes[node_index].closure = Some(Closure::new(
-            compute_fn,
-            input_ptrs,
-            state_ptr,
-            drop_state::<S>,
-        ));
     }
 }
 
@@ -378,6 +409,30 @@ mod tests {
         assert_eq!(series.len(), 2);
         assert_eq!(series.timestamps(), &[1, 2]);
         assert_eq!(series.values(), &[13.0, 27.0]);
+    }
+
+    // -- Erased operator test -------------------------------------------------
+
+    #[test]
+    fn scenario_add_erased_operator() {
+        let mut sc = Scenario::new();
+        let ha = sc.create_node(Array::scalar(0.0_f64));
+        let hb = sc.create_node(Array::scalar(0.0_f64));
+
+        let input_ptrs: Box<[*const u8]> = [ha.index(), hb.index()]
+            .iter()
+            .map(|&idx| sc.graph.nodes[idx].value as *const u8)
+            .collect();
+        // SAFETY: input pointers are valid Array<f64>.
+        let erased = unsafe { ErasedOperator::from_operator(add::<f64>(), &input_ptrs, i64::MIN) };
+        let out_idx = sc.add_erased_operator(erased, &[ha.index(), hb.index()], None);
+
+        sc.value_mut(ha)[0] = 10.0;
+        sc.value_mut(hb)[0] = 3.0;
+        sc.flush(1, &[ha.index(), hb.index()]);
+
+        let out = unsafe { &*(sc.graph.nodes[out_idx].value as *const Array<f64>) };
+        assert_eq!(out.as_slice(), &[13.0]);
     }
 
     // -- POCQ run tests (async) -----------------------------------------------
@@ -509,8 +564,6 @@ mod tests {
 
     #[tokio::test]
     async fn scenario_periodic_single_input() {
-        // Source A updates at ts 1,2,3.  Clock fires at ts 2.
-        // Operator reads A, triggered only by clock.
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
@@ -523,7 +576,6 @@ mod tests {
         sc.run().await;
 
         let series: &Series<f64> = sc.value(hs);
-        // Only ts=2 triggers: A=20
         assert_eq!(series.len(), 1);
         assert_eq!(series.timestamps(), &[2]);
         assert_eq!(series.values(), &[20.0]);
@@ -531,7 +583,6 @@ mod tests {
 
     #[tokio::test]
     async fn scenario_periodic_two_inputs() {
-        // A updates at 1,2,3; B updates at 1,3. Clock fires at 2.
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
@@ -545,7 +596,6 @@ mod tests {
         sc.run().await;
 
         let series: &Series<f64> = sc.value(hs);
-        // Clock fires at ts=2. At ts=2: A=2, B=10 (carry from ts=1).
         assert_eq!(series.len(), 1);
         assert_eq!(series.timestamps(), &[2]);
         assert_eq!(series.values(), &[12.0]);
@@ -553,7 +603,6 @@ mod tests {
 
     #[tokio::test]
     async fn scenario_periodic_multiple_ticks() {
-        // Daily prices, monthly clock at ts=2 and ts=4.
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
@@ -570,7 +619,6 @@ mod tests {
         sc.run().await;
 
         let series: &Series<f64> = sc.value(hs);
-        // ts=2: A=20, ts=4: A=40
         assert_eq!(series.len(), 2);
         assert_eq!(series.timestamps(), &[2, 4]);
         assert_eq!(series.values(), &[20.0, 40.0]);

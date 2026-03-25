@@ -13,9 +13,8 @@
 //! * [`add_native_source`](NativeScenario::add_native_source) — register a
 //!   Rust-implemented source by kind string.
 //!
-//! Views ([`ArrayView`], [`SeriesView`]) are cached per node and passed to
-//! Python operator callbacks.  All view methods copy data across the boundary —
-//! no reference to graph memory ever reaches Python.
+//! Both native and Python operators are registered through
+//! [`Scenario::add_erased_operator`], the unified type-erased entry point.
 
 mod dispatch;
 mod operators;
@@ -31,6 +30,7 @@ use pyo3::types::{PyAny, PyDict};
 
 type PyObject = Py<PyAny>;
 
+use crate::scenario::{ErasedOperator, drop_fn};
 use crate::{Array, Scalar, Scenario, Series};
 
 use dispatch::{dispatch_dtype, normalise_dtype};
@@ -62,8 +62,6 @@ pub(super) enum ViewKind {
 }
 
 /// Create a cached Python view for a node, given its kind and dtype.
-///
-/// Returns `None` if the dtype is unsupported.
 fn create_view(
     py: Python<'_>,
     ptr: *mut u8,
@@ -92,17 +90,6 @@ fn create_view(
 // Dispatch helpers
 // ---------------------------------------------------------------------------
 
-/// Create a node holding `Array<T>` with given shape/dtype.
-fn create_array_node(sc: &mut Scenario, shape: &[usize], dtype: &str) -> PyResult<usize> {
-    macro_rules! create {
-        ($T:ty) => {{
-            let arr = Array::<$T>::zeros(shape);
-            Ok(sc.create_node(arr).index())
-        }};
-    }
-    dispatch_dtype!(dtype, create)
-}
-
 /// Resolve a Python-side `(kind, dtype)` pair to a Rust `TypeId`.
 fn resolve_type_id(kind: &str, dtype: &str) -> PyResult<TypeId> {
     let dtype = normalise_dtype(dtype);
@@ -124,8 +111,8 @@ fn resolve_type_id(kind: &str, dtype: &str) -> PyResult<TypeId> {
 
 struct PyOperatorState {
     py_operator: PyObject,
-    py_inputs: PyObject,
-    py_output: PyObject,
+    py_inputs: Option<PyObject>,
+    py_output: Option<PyObject>,
     py_state: PyObject,
     error_slot: ErrorSlot,
 }
@@ -200,9 +187,6 @@ impl NativeScenario {
     // -- Goal 1: Native (Rust) operator/source registration ------------------
 
     /// Register a Rust-native operator by kind + dtype + params.
-    ///
-    /// If `clock_index` is provided, the operator is triggered by the
-    /// clock node instead of its inputs.
     #[pyo3(signature = (kind, dtype, input_indices, shape, params, clock_index=None))]
     fn add_native_operator(
         &mut self,
@@ -229,8 +213,6 @@ impl NativeScenario {
     }
 
     /// Register a Rust-native source by kind + dtype + params.
-    ///
-    /// Returns the output node index.
     fn add_native_source(
         &mut self,
         py: Python<'_>,
@@ -249,7 +231,7 @@ impl NativeScenario {
 
     // -- Goal 2: Python operator/source registration -------------------------
 
-    /// Register a Python operator.
+    /// Register a Python operator via [`ErasedOperator`].
     ///
     /// `input_types` is a list of `(kind, dtype)` pairs (e.g.
     /// `[("array", "float64"), ("series", "int32")]`).
@@ -279,48 +261,73 @@ impl NativeScenario {
             }
         };
 
-        // 1. Validate input TypeIds, create output node, wire edges.
-        let output_idx = {
-            let sc = self.scenario.as_mut().unwrap();
+        if out_view_kind != ViewKind::Array {
+            return Err(PyTypeError::new_err(
+                "Python operators cannot directly produce Series; \
+                 output Array and chain a Record operator instead",
+            ));
+        }
 
-            for (i, (&idx, (kind, dtype))) in
-                input_indices.iter().zip(input_types.iter()).enumerate()
-            {
-                let expected = resolve_type_id(kind, dtype)?;
-                let actual = sc.node_type_id(idx);
-                if expected != actual {
-                    return Err(PyTypeError::new_err(format!(
-                        "input {i} (node {idx}): type mismatch — \
-                         expected ({kind}, {dtype}), got a different type"
-                    )));
-                }
+        // 1. Resolve and validate input TypeIds.
+        let sc = self.scenario.as_ref().unwrap();
+        let mut input_type_ids = Vec::with_capacity(input_indices.len());
+        for (i, (&idx, (kind, dtype))) in
+            input_indices.iter().zip(input_types.iter()).enumerate()
+        {
+            let expected = resolve_type_id(kind, dtype)?;
+            let actual = sc.node_type_id(idx);
+            if expected != actual {
+                return Err(PyTypeError::new_err(format!(
+                    "input {i} (node {idx}): type mismatch — \
+                     expected ({kind}, {dtype}), got a different type"
+                )));
             }
+            input_type_ids.push(expected);
+        }
 
-            let output_idx = match out_view_kind {
-                ViewKind::Array => create_array_node(sc, &output_shape, &out_dtype)?,
-                ViewKind::Series => {
-                    return Err(PyTypeError::new_err(
-                        "Python operators cannot directly produce Series; \
-                         output Array and chain a Record operator instead",
-                    ));
-                }
+        // 2. Resolve output TypeId.
+        let output_type_id = resolve_type_id(out_kind_str, &out_dtype)?;
+
+        // 3. Pre-allocate output and state, then construct ErasedOperator.
+        let erased = {
+            let state = PyOperatorState {
+                py_operator,
+                py_inputs: None,
+                py_output: None,
+                py_state,
+                error_slot: self.error_slot.clone(),
             };
+            let state_ptr = Box::into_raw(Box::new(state)) as *mut u8;
+            let shape = output_shape.clone();
 
-            match clock_index {
-                None => {
-                    for &input_idx in &input_indices {
-                        sc.add_trigger_edge(input_idx, output_idx);
+            macro_rules! make_erased {
+                ($T:ty) => {
+                    // SAFETY: state_ptr is a valid PyOperatorState;
+                    // output_ptr is a valid Array<$T>; compute/drop fns match.
+                    unsafe {
+                        let output_ptr = Box::into_raw(Box::new(
+                            Array::<$T>::zeros(&shape),
+                        )) as *mut u8;
+                        ErasedOperator::new(
+                            input_type_ids.into(),
+                            output_type_id,
+                            state_ptr,
+                            output_ptr,
+                            py_compute_fn::<$T>,
+                            drop_fn::<PyOperatorState>,
+                            drop_fn::<Array<$T>>,
+                        )
                     }
-                }
-                Some(clock_idx) => {
-                    sc.add_trigger_edge(clock_idx, output_idx);
-                }
+                };
             }
+            dispatch_dtype!(&out_dtype, make_erased)
+        };
 
-            output_idx
-        }; // sc borrow dropped
+        // 4. Register via the unified path.
+        let sc = self.scenario.as_mut().unwrap();
+        let output_idx = sc.add_erased_operator(erased, &input_indices, clock_index);
 
-        // 2. Create views.
+        // 5. Create views and patch the state.
         self.push_node(py, output_idx, &out_dtype, out_view_kind, &output_shape)?;
 
         let input_views: Vec<PyObject> = input_indices
@@ -342,16 +349,11 @@ impl NativeScenario {
             .map(|v| v.clone_ref(py))
             .unwrap();
 
-        // 3. Build state and attach closure.
-        let op_state = PyOperatorState {
-            py_operator,
-            py_inputs,
-            py_output,
-            py_state,
-            error_slot: self.error_slot.clone(),
-        };
-        let sc = self.scenario.as_mut().unwrap();
-        register_py_closure(sc, output_idx, op_state, &out_dtype)?;
+        let sc = self.scenario.as_ref().unwrap();
+        let state_ptr = sc.closure_state_ptr(output_idx).unwrap();
+        let state = unsafe { &mut *(state_ptr as *mut PyOperatorState) };
+        state.py_inputs = Some(py_inputs);
+        state.py_output = Some(py_output);
 
         Ok(output_idx)
     }
@@ -390,7 +392,6 @@ impl NativeScenario {
     fn series_len(&self, node_index: usize) -> usize {
         let sc = self.scenario.as_ref().unwrap();
         let ptr = sc.node_value_ptr(node_index) as *const u8;
-        // All Series<T> have the same len() layout.
         let series = unsafe { &*(ptr as *const Series<f64>) };
         series.len()
     }
@@ -483,28 +484,8 @@ impl NativeScenario {
 }
 
 // ---------------------------------------------------------------------------
-// Python operator closure (monomorphized per output dtype)
+// Python operator compute function (monomorphized per output dtype)
 // ---------------------------------------------------------------------------
-
-fn register_py_closure(
-    sc: &mut Scenario,
-    output_index: usize,
-    op_state: PyOperatorState,
-    dtype: &str,
-) -> PyResult<()> {
-    let input_ptrs: Box<[*const u8]> = Box::new([]);
-
-    let state = Box::new(op_state);
-
-    macro_rules! register {
-        ($T:ty) => {
-            sc.attach_raw_closure(output_index, input_ptrs, py_compute_fn::<$T>, state)
-        };
-    }
-    dispatch_dtype!(dtype, register);
-
-    Ok(())
-}
 
 /// Monomorphized compute function for Python operators.
 ///
@@ -526,16 +507,14 @@ unsafe fn py_compute_fn<T: Scalar>(
         return false;
     }
 
+    let py_inputs = state.py_inputs.as_ref().expect("py_inputs not initialized");
+    let py_output = state.py_output.as_ref().expect("py_output not initialized");
+
     let result = Python::attach(|py| -> PyResult<bool> {
         let result = state.py_operator.call_method1(
             py,
             "compute",
-            (
-                timestamp,
-                &state.py_inputs,
-                &state.py_output,
-                &state.py_state,
-            ),
+            (timestamp, py_inputs, py_output, &state.py_state),
         )?;
 
         let tuple = result.bind(py);

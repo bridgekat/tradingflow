@@ -8,8 +8,8 @@ use std::any::TypeId;
 ///
 /// Provides:
 ///
-/// * `Refs<'a>` — aggregated immutable references to input values
-///   (e.g. `(&'a ArrayD<f64>, &'a ArrayD<f64>)` for a binary operator).
+/// * [`Refs<'a>`](InputTypes::Refs) — aggregated immutable references to input
+///   values (e.g. `(&'a Array<f64>, &'a Array<f64>)` for a binary operator).
 /// * [`type_ids`](InputTypes::type_ids) — expected `TypeId`s for each input
 ///   position, enabling runtime validation without typed handles.
 ///

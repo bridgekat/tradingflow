@@ -24,7 +24,7 @@ pub mod utils;
 
 pub use array::{Array, Scalar};
 pub use operator::Operator;
-pub use scenario::Scenario;
+pub use scenario::{ErasedOperator, Scenario};
 pub use series::Series;
 pub use source::Source;
 pub use types::InputTypes;
