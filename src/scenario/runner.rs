@@ -1,94 +1,12 @@
 //! Async source handling and the POCQ event loop.
 //!
-//! [`ErasedChannel`] provides type-erased channel operations for sources.
 //! [`SourceState`] tracks per-source runtime state.  The [`Scenario::run`]
 //! method implements the Point-of-Coherency Queue (POCQ) algorithm that
 //! consumes all registered sources and propagates events through the DAG.
 
-use std::future::Future;
-use std::pin::Pin;
-
-use crate::source::Source;
+use crate::source::{ErasedReceiver, WriteFn};
 
 use super::Scenario;
-
-// ---------------------------------------------------------------------------
-// ErasedChannel — one trait for both historical and live channels
-// ---------------------------------------------------------------------------
-
-/// Type-erased async channel for source events.
-///
-/// Both historical and live channels implement this same trait.  The
-/// scheduling policy (historical constraint vs free-running) is in the
-/// POCQ loop, not here.
-trait ErasedChannel: Send {
-    /// Block until the next event is available and return its timestamp.
-    ///
-    /// If an event is already pending, returns its timestamp immediately.
-    /// Returns `None` when the channel is closed (source exhausted).
-    fn wait(&mut self) -> Pin<Box<dyn Future<Output = Option<i64>> + '_>>;
-
-    /// Non-blocking poll for the next event.
-    ///
-    /// * `Ok(Some(ts))` — event pending with this timestamp.
-    /// * `Ok(None)` — no event ready right now, channel still open.
-    /// * `Err(())` — channel closed (source exhausted).
-    fn try_wait(&mut self) -> Result<Option<i64>, ()>;
-
-    /// Write the pending event to the output value.
-    ///
-    /// Returns `true` if a value was produced.
-    ///
-    /// # Safety
-    ///
-    /// `value_ptr` must point to a valid `S::Output`.
-    unsafe fn write(&mut self, value_ptr: *mut u8) -> bool;
-}
-
-/// Concrete [`ErasedChannel`] for a given [`Source`].
-struct TypedChannel<S: Source> {
-    rx: tokio::sync::mpsc::Receiver<(i64, S::Event)>,
-    pending: Option<(i64, S::Event)>,
-}
-
-impl<S: Source> TypedChannel<S> {
-    fn fill_pending(&mut self, item: (i64, S::Event)) -> i64 {
-        let ts = item.0;
-        self.pending = Some(item);
-        ts
-    }
-}
-
-impl<S: Source> ErasedChannel for TypedChannel<S> {
-    fn wait(&mut self) -> Pin<Box<dyn Future<Output = Option<i64>> + '_>> {
-        Box::pin(async move {
-            if let Some(ref item) = self.pending {
-                return Some(item.0);
-            }
-            self.rx.recv().await.map(|item| self.fill_pending(item))
-        })
-    }
-
-    fn try_wait(&mut self) -> Result<Option<i64>, ()> {
-        if let Some(ref item) = self.pending {
-            return Ok(Some(item.0));
-        }
-        match self.rx.try_recv() {
-            Ok(item) => Ok(Some(self.fill_pending(item))),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Err(()),
-        }
-    }
-
-    unsafe fn write(&mut self, value_ptr: *mut u8) -> bool {
-        if let Some((ts, payload)) = self.pending.take() {
-            let output = unsafe { &mut *(value_ptr as *mut S::Output) };
-            S::write(payload, output, ts)
-        } else {
-            false
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // SourceState
@@ -96,12 +14,13 @@ impl<S: Source> ErasedChannel for TypedChannel<S> {
 
 /// Per-source runtime state for [`Scenario`].
 ///
-/// Each source has independent historical and live channels.  Both can
+/// Each source has independent historical and live receivers.  Both can
 /// have a pending event simultaneously.
 pub(super) struct SourceState {
     pub node_index: usize,
-    hist: Box<dyn ErasedChannel>,
-    live: Box<dyn ErasedChannel>,
+    hist: ErasedReceiver,
+    live: ErasedReceiver,
+    write_fn: WriteFn,
     hist_ts: Option<i64>,
     live_ts: Option<i64>,
     hist_exhausted: bool,
@@ -109,22 +28,17 @@ pub(super) struct SourceState {
 }
 
 impl SourceState {
-    /// Create a new `SourceState` from typed channel receivers.
-    pub(super) fn new<S: Source>(
+    pub(super) fn new(
         node_index: usize,
-        hist_rx: tokio::sync::mpsc::Receiver<(i64, S::Event)>,
-        live_rx: tokio::sync::mpsc::Receiver<(i64, S::Event)>,
+        hist: ErasedReceiver,
+        live: ErasedReceiver,
+        write_fn: WriteFn,
     ) -> Self {
         Self {
             node_index,
-            hist: Box::new(TypedChannel::<S> {
-                rx: hist_rx,
-                pending: None,
-            }),
-            live: Box::new(TypedChannel::<S> {
-                rx: live_rx,
-                pending: None,
-            }),
+            hist,
+            live,
+            write_fn,
             hist_ts: None,
             live_ts: None,
             hist_exhausted: false,
@@ -179,8 +93,8 @@ impl Scenario {
             for src in &mut self.source_states {
                 if !src.live_exhausted && src.live_ts.is_none() {
                     match src.live.try_wait() {
-                        Ok(ts) => src.live_ts = ts,
-                        Err(()) => src.live_exhausted = true,
+                        Some(ts) => src.live_ts = ts,
+                        None => src.live_exhausted = true,
                     }
                 }
             }
@@ -222,13 +136,12 @@ impl Scenario {
             for src in &mut self.source_states {
                 let value_ptr = self.graph.nodes[src.node_index].value;
                 if src.hist_ts == Some(min_ts) {
-                    // SAFETY: value_ptr is valid (node invariant).
-                    unsafe { src.hist.write(value_ptr) };
+                    unsafe { (src.write_fn)(src.hist.state_ptr(), value_ptr) };
                     queue_sources.push(src.node_index);
                     src.hist_ts = None;
                 }
                 if src.live_ts == Some(min_ts) {
-                    unsafe { src.live.write(value_ptr) };
+                    unsafe { (src.write_fn)(src.live.state_ptr(), value_ptr) };
                     queue_sources.push(src.node_index);
                     src.live_ts = None;
                 }
@@ -250,12 +163,12 @@ impl Scenario {
                     continue;
                 }
                 match src.live.try_wait() {
-                    Ok(Some(ts)) => {
+                    Some(Some(ts)) => {
                         src.live_ts = Some(ts);
                         return;
                     }
-                    Ok(None) => {}
-                    Err(()) => src.live_exhausted = true,
+                    Some(None) => {}
+                    None => src.live_exhausted = true,
                 }
             }
             if self

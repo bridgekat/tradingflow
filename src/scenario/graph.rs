@@ -45,7 +45,13 @@ impl Graph {
     }
 
     /// Add a trigger edge: when `from` is updated, `to` is scheduled.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `from < to < self.nodes.len()` is not satisfied.
     pub fn add_trigger_edge(&mut self, from: usize, to: usize) {
+        assert!(from < to, "nodes must be added in topological order");
+        assert!(to < self.nodes.len(), "node index out of bounds");
         self.nodes[from].trigger_edges.push(to);
     }
 

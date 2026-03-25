@@ -1,22 +1,22 @@
 //! Source registration for the Python bridge.
 //!
 //! Provides:
-//! * [`ChannelSource`] — a [`Source`](crate::source::Source) impl driven
-//!   by Python via mpsc channels.
 //! * [`HistoricalEventSender`] / [`LiveEventSender`] — pyclasses for Python
-//!   to push events into the channel source.
+//!   to push events into a channel-based source.
 //! * [`dispatch_native_source`] — register a Rust source by kind string.
-//! * [`register_channel_source`] — register a channel-based source.
+//! * [`register_channel_source`] — register a channel-based source backed
+//!   by an [`ErasedSource`](crate::source::ErasedSource).
 
-use std::marker::PhantomData;
+use std::any::TypeId;
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use tokio::sync::mpsc;
 
+use crate::source::{ErasedReceiver, ErasedSource};
 use crate::sources::ArraySource;
-use crate::{Array, Scalar, Scenario, Source};
+use crate::{Array, Scalar, Scenario};
 
 use super::dispatch::{dispatch_dtype, dtype_element_bytes};
 
@@ -27,14 +27,22 @@ type PyObject = Py<PyAny>;
 // ---------------------------------------------------------------------------
 
 /// Reinterpret a byte buffer as a `Vec<T>`.
-pub fn bytes_to_vec<T: Copy>(bytes: &[u8]) -> Vec<T> {
+///
+/// # Safety
+///
+/// `T` must be a numeric type where every bit pattern of size
+/// `size_of::<T>()` is a valid value.
+pub unsafe fn bytes_to_vec<T: Copy>(bytes: &[u8]) -> Vec<T> {
     let elem_size = std::mem::size_of::<T>();
     let n = bytes.len() / elem_size;
     let mut result = Vec::with_capacity(n);
-    for i in 0..n {
-        let offset = i * elem_size;
-        let val = unsafe { std::ptr::read_unaligned(bytes[offset..].as_ptr() as *const T) };
-        result.push(val);
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            result.as_mut_ptr() as *mut u8,
+            n * elem_size,
+        );
+        result.set_len(n);
     }
     result
 }
@@ -55,67 +63,6 @@ pub fn extract_value_bytes(
         std::ptr::copy_nonoverlapping(ptr_int as *const u8, bytes.as_mut_ptr(), element_size);
     }
     Ok(bytes)
-}
-
-// ---------------------------------------------------------------------------
-// ChannelSource — for concurrent async Python sources
-// ---------------------------------------------------------------------------
-
-/// Source that receives events from a Python background thread via channels.
-pub struct ChannelSource<T: Scalar> {
-    py_hist_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
-    py_live_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
-    shape: Box<[usize]>,
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Scalar> Source for ChannelSource<T> {
-    type Event = Vec<u8>;
-    type Output = Array<T>;
-
-    fn init(
-        self,
-        _timestamp: i64,
-    ) -> (
-        mpsc::Receiver<(i64, Vec<u8>)>,
-        mpsc::Receiver<(i64, Vec<u8>)>,
-        Array<T>,
-    ) {
-        let output = Array::zeros(&self.shape);
-        let (hist_tx, hist_rx) = mpsc::channel(64);
-        let (live_tx, live_rx) = mpsc::channel(64);
-
-        let mut py_hist = self.py_hist_rx;
-        tokio::spawn(async move {
-            while let Some(item) = py_hist.recv().await {
-                if hist_tx.send(item).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        let mut py_live = self.py_live_rx;
-        tokio::spawn(async move {
-            while let Some(item) = py_live.recv().await {
-                if live_tx.send(item).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        (hist_rx, live_rx, output)
-    }
-
-    fn write(payload: Vec<u8>, output: &mut Array<T>, _timestamp: i64) -> bool {
-        let values = unsafe {
-            std::slice::from_raw_parts(
-                payload.as_ptr() as *const T,
-                payload.len() / std::mem::size_of::<T>(),
-            )
-        };
-        output.as_slice_mut().clone_from_slice(values);
-        true
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -279,12 +226,14 @@ pub fn register_array_source(
 ) -> PyResult<usize> {
     macro_rules! register {
         ($T:ty) => {{
-            let values = bytes_to_vec::<$T>(&values_bytes);
+            // SAFETY: dispatch_dtype only dispatches to numeric types where
+            // all bit patterns are valid.
+            let values = unsafe { bytes_to_vec::<$T>(&values_bytes) };
             let source = ArraySource::new(timestamps, values, stride);
             sc.add_source_untyped(source)
         }};
     }
-    Ok(dispatch_dtype!(dtype, register))
+    Ok(dispatch_dtype!(dtype, register, numeric))
 }
 
 /// Create a channel source and return (node_index, hist_sender, live_sender).
@@ -301,24 +250,19 @@ pub fn register_channel_source(
     let elem_bytes = dtype_element_bytes(dtype)?;
     let element_size = stride * elem_bytes;
 
-    let (hist_tx, hist_rx) = mpsc::unbounded_channel();
-    let (live_tx, live_rx) = mpsc::unbounded_channel();
+    let (hist_tx, py_hist_rx) = mpsc::unbounded_channel();
+    let (live_tx, py_live_rx) = mpsc::unbounded_channel();
 
     let shape_box: Box<[usize]> = shape.into();
 
     macro_rules! register_channel {
         ($T:ty) => {{
-            let source = ChannelSource::<$T> {
-                py_hist_rx: hist_rx,
-                py_live_rx: live_rx,
-                shape: shape_box,
-                _phantom: PhantomData,
-            };
-            sc.add_source_untyped(source)
+            let erased = make_channel_source::<$T>(py_hist_rx, py_live_rx, shape_box);
+            sc.add_erased_source(erased)
         }};
     }
 
-    let node_index = dispatch_dtype!(dtype, register_channel);
+    let node_index = dispatch_dtype!(dtype, register_channel, numeric);
 
     let hist_sender = HistoricalEventSender {
         tx: Some(hist_tx),
@@ -330,4 +274,110 @@ pub fn register_channel_source(
     };
 
     Ok((node_index, hist_sender, live_sender))
+}
+
+/// Construct an [`ErasedSource`] for a Python channel source.
+///
+/// Spawns async tasks to forward events from unbounded Python channels
+/// to bounded internal channels.
+fn make_channel_source<T: Scalar + Copy>(
+    py_hist_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
+    py_live_rx: mpsc::UnboundedReceiver<(i64, Vec<u8>)>,
+    shape: Box<[usize]>,
+) -> ErasedSource {
+    let event_type_id = TypeId::of::<Vec<u8>>();
+    let output_type_id = TypeId::of::<Array<T>>();
+
+    let init_fn: Box<dyn FnOnce(i64) -> (ErasedReceiver, ErasedReceiver, *mut u8)> =
+        Box::new(move |_timestamp: i64| {
+            let output = Array::<T>::zeros(&shape);
+
+            let (hist_tx, hist_rx) = mpsc::channel(64);
+            let (live_tx, live_rx) = mpsc::channel(64);
+
+            // Forward unbounded → bounded.
+            let mut py_hist = py_hist_rx;
+            tokio::spawn(async move {
+                while let Some(item) = py_hist.recv().await {
+                    if hist_tx.send(item).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let mut py_live = py_live_rx;
+            tokio::spawn(async move {
+                while let Some(item) = py_live.recv().await {
+                    if live_tx.send(item).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            let hist = ErasedReceiver::from_receiver(hist_rx);
+            let live = ErasedReceiver::from_receiver(live_rx);
+            let output_ptr = Box::into_raw(Box::new(output)) as *mut u8;
+            (hist, live, output_ptr)
+        });
+
+    // SAFETY: init_fn returns valid receivers and a valid Array<T> pointer;
+    // write_fn correctly extracts Vec<u8> from ReceiverState and copies into Array<T>;
+    // output_drop_fn correctly drops Array<T>.
+    unsafe {
+        ErasedSource::new(
+            event_type_id,
+            output_type_id,
+            init_fn,
+            channel_write_fn::<T>,
+            erased_drop_fn::<Array<T>>,
+        )
+    }
+}
+
+/// Write function for channel sources: extract pending `Vec<u8>` from the
+/// receiver state and copy bytes into `Array<T>`.
+///
+/// # Safety
+///
+/// * `receiver_state` must point to a valid `ReceiverState<Vec<u8>>`.
+/// * `output_ptr` must point to a valid `Array<T>`.
+/// * `T` must be a numeric type where all bit patterns are valid (ensured
+///   by `dispatch_dtype!(..., numeric)`).
+unsafe fn channel_write_fn<T: Scalar + Copy>(receiver_state: *mut u8, output_ptr: *mut u8) -> bool {
+    // ReceiverState is private to source.rs, but its layout is:
+    // { rx: Receiver<(i64, Vec<u8>)>, pending: Option<(i64, Vec<u8>)> }
+    // We access it through the same struct definition re-created here.
+    // Instead, we use the crate-internal access pattern: the pending event
+    // is stored as Option<(i64, E)> at a known offset.
+    //
+    // Actually, we can't access ReceiverState directly since it's private.
+    // The write_fn is monomorphized and stored when the ErasedSource is
+    // created — at that point, the concrete type is known.  The function
+    // accesses the state through the same type it was created with.
+    use crate::source::ReceiverState;
+    let rs = unsafe { &mut *(receiver_state as *mut ReceiverState<Vec<u8>>) };
+    if let Some((_ts, payload)) = rs.pending.take() {
+        let output = unsafe { &mut *(output_ptr as *mut Array<T>) };
+        let byte_len = output.as_slice().len() * std::mem::size_of::<T>();
+        assert_eq!(
+            payload.len(),
+            byte_len,
+            "channel payload size mismatch: expected {byte_len}, got {}",
+            payload.len(),
+        );
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                payload.as_ptr(),
+                output.as_slice_mut().as_mut_ptr() as *mut u8,
+                byte_len,
+            );
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Type-erased box drop function.
+unsafe fn erased_drop_fn<T>(ptr: *mut u8) {
+    unsafe { drop(Box::from_raw(ptr as *mut T)) };
 }

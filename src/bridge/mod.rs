@@ -30,7 +30,7 @@ use pyo3::types::{PyAny, PyDict};
 
 type PyObject = Py<PyAny>;
 
-use crate::scenario::{ErasedOperator, drop_fn};
+use crate::operator::ErasedOperator;
 use crate::{Array, Scalar, Scenario, Series};
 
 use dispatch::{dispatch_dtype, normalise_dtype};
@@ -271,9 +271,7 @@ impl NativeScenario {
         // 1. Resolve and validate input TypeIds.
         let sc = self.scenario.as_ref().unwrap();
         let mut input_type_ids = Vec::with_capacity(input_indices.len());
-        for (i, (&idx, (kind, dtype))) in
-            input_indices.iter().zip(input_types.iter()).enumerate()
-        {
+        for (i, (&idx, (kind, dtype))) in input_indices.iter().zip(input_types.iter()).enumerate() {
             let expected = resolve_type_id(kind, dtype)?;
             let actual = sc.node_type_id(idx);
             if expected != actual {
@@ -303,19 +301,18 @@ impl NativeScenario {
             macro_rules! make_erased {
                 ($T:ty) => {
                     // SAFETY: state_ptr is a valid PyOperatorState;
-                    // output_ptr is a valid Array<$T>; compute/drop fns match.
+                    // output is a valid Array<$T>; compute/drop fns match.
                     unsafe {
-                        let output_ptr = Box::into_raw(Box::new(
-                            Array::<$T>::zeros(&shape),
-                        )) as *mut u8;
+                        let output_ptr =
+                            Box::into_raw(Box::new(Array::<$T>::zeros(&shape))) as *mut u8;
                         ErasedOperator::new(
+                            TypeId::of::<PyOperatorState>(),
                             input_type_ids.into(),
                             output_type_id,
-                            state_ptr,
-                            output_ptr,
+                            Box::new(move |_, _| (state_ptr, output_ptr)),
                             py_compute_fn::<$T>,
-                            drop_fn::<PyOperatorState>,
-                            drop_fn::<Array<$T>>,
+                            erased_drop_fn::<PyOperatorState>,
+                            erased_drop_fn::<Array<$T>>,
                         )
                     }
                 };
@@ -483,6 +480,11 @@ impl NativeScenario {
     }
 }
 
+/// Type-erased box drop function, monomorphised per value type.
+unsafe fn erased_drop_fn<T>(ptr: *mut u8) {
+    unsafe { drop(Box::from_raw(ptr as *mut T)) };
+}
+
 // ---------------------------------------------------------------------------
 // Python operator compute function (monomorphized per output dtype)
 // ---------------------------------------------------------------------------
@@ -496,9 +498,9 @@ impl NativeScenario {
 ///
 /// * `state_ptr` must point to a valid `PyOperatorState`.
 unsafe fn py_compute_fn<T: Scalar>(
+    state_ptr: *mut u8,
     _input_ptrs: &[*const u8],
     _output_ptr: *mut u8,
-    state_ptr: *mut u8,
     timestamp: i64,
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut PyOperatorState) };

@@ -1,14 +1,11 @@
-//! Type-erased node, closure, and erased operator for the DAG graph.
+//! Type-erased node and closure for the DAG graph.
 //!
 //! # Key types
 //!
-//! * [`ErasedOperator`] — type-erased, pre-initialized operator ready to be
-//!   installed into the DAG via
-//!   [`Scenario::add_erased_operator`](super::Scenario::add_erased_operator).
-//! * [`Closure`] — an installed operator: input pointers and state bound to
-//!   a compute function.
 //! * [`Node`] — a type-erased DAG node owning a value and optionally a
 //!   [`Closure`].
+//! * [`Closure`] — an installed operator: input pointers and state bound to
+//!   a compute function.
 //!
 //! # Invariants
 //!
@@ -21,147 +18,7 @@
 
 use std::any::TypeId;
 
-use crate::operator::Operator;
-use crate::types::InputTypes;
-
-// ===========================================================================
-// Function pointer types
-// ===========================================================================
-
-/// Type-erased compute function.
-///
-/// Returns `true` if an output value was produced, `false` to skip
-/// downstream propagation.
-///
-/// Arguments:
-///
-/// * `input_ptrs` — `&[*const u8]` pointing to input values.
-/// * `output` — `*mut u8` pointing to the output value.
-/// * `state` — `*mut u8` pointing to the operator's mutable state.
-/// * `timestamp` — flush timestamp.
-pub type ComputeFn = unsafe fn(&[*const u8], *mut u8, *mut u8, i64) -> bool;
-
-// ===========================================================================
-// ErasedOperator
-// ===========================================================================
-
-/// Type-erased, pre-initialized operator ready to be installed into the DAG.
-///
-/// Holds the operator's state and initial output (already produced by
-/// `init`), plus the function pointers needed for compute and cleanup.
-///
-/// # Lifecycle
-///
-/// 1. Created via [`from_operator`](ErasedOperator::from_operator) (safe,
-///    typed) or [`new`](ErasedOperator::new) (`unsafe`, raw).
-/// 2. Consumed by
-///    [`Scenario::add_erased_operator`](super::Scenario::add_erased_operator),
-///    which transfers the state and output pointers into the DAG.
-/// 3. If dropped without being installed, the `Drop` impl cleans up.
-pub struct ErasedOperator {
-    /// Expected `TypeId` for each input position.
-    pub input_type_ids: Box<[TypeId]>,
-    /// `TypeId` of the output value.
-    pub output_type_id: TypeId,
-    /// Heap-allocated operator state (via `Box::into_raw`), or null if
-    /// already transferred.
-    state: *mut u8,
-    /// Heap-allocated initial output value (via `Box::into_raw`), or null
-    /// if already transferred.
-    output: *mut u8,
-    /// Compute function pointer.
-    pub(super) compute_fn: ComputeFn,
-    /// Drop the state pointer.
-    pub(super) state_drop_fn: unsafe fn(*mut u8),
-    /// Drop the output pointer.
-    pub(super) output_drop_fn: unsafe fn(*mut u8),
-}
-
-// SAFETY: all contained pointers are to heap allocations created by the
-// current thread; the function pointers are Send by construction.
-unsafe impl Send for ErasedOperator {}
-
-impl ErasedOperator {
-    /// Construct from raw, pre-initialized components.
-    ///
-    /// # Safety
-    ///
-    /// * `state` must be a valid pointer from `Box::into_raw`, or null.
-    /// * `output` must be a valid pointer from `Box::into_raw` to a value
-    ///   whose `TypeId` matches `output_type_id`, or null.
-    /// * `compute_fn` must correctly interpret input pointers as
-    ///   `input_type_ids` types, output pointer as `output_type_id` type,
-    ///   and state pointer as the type behind `state`.
-    /// * `state_drop_fn` must safely drop the `state` pointer.
-    /// * `output_drop_fn` must safely drop the `output` pointer.
-    pub unsafe fn new(
-        input_type_ids: Box<[TypeId]>,
-        output_type_id: TypeId,
-        state: *mut u8,
-        output: *mut u8,
-        compute_fn: ComputeFn,
-        state_drop_fn: unsafe fn(*mut u8),
-        output_drop_fn: unsafe fn(*mut u8),
-    ) -> Self {
-        Self {
-            input_type_ids,
-            output_type_id,
-            state,
-            output,
-            compute_fn,
-            state_drop_fn,
-            output_drop_fn,
-        }
-    }
-
-    /// Construct from a typed [`Operator`] implementation.
-    ///
-    /// Calls [`Operator::init`] eagerly with the given input pointers and
-    /// timestamp, producing the operator state and initial output value.
-    ///
-    /// # Safety
-    ///
-    /// Each `input_ptrs[i]` must point to a valid value whose `TypeId`
-    /// matches `O::Inputs::type_ids()` at position `i`.
-    pub unsafe fn from_operator<O: Operator>(
-        op: O,
-        input_ptrs: &[*const u8],
-        timestamp: i64,
-    ) -> Self {
-        let inputs = unsafe { <O::Inputs as InputTypes>::from_ptrs(input_ptrs) };
-        let (state, output) = op.init(inputs, timestamp);
-        Self {
-            input_type_ids: <O::Inputs as InputTypes>::type_ids(input_ptrs.len()),
-            output_type_id: TypeId::of::<O::Output>(),
-            state: Box::into_raw(Box::new(state)) as *mut u8,
-            output: Box::into_raw(Box::new(output)) as *mut u8,
-            compute_fn: compute_fn::<O>,
-            state_drop_fn: drop_fn::<O::State>,
-            output_drop_fn: drop_fn::<O::Output>,
-        }
-    }
-
-    /// Take ownership of the state and output pointers.
-    ///
-    /// After this call, `self.state` and `self.output` are null, so the
-    /// `Drop` impl becomes a no-op for those fields.
-    pub(super) fn take_ptrs(&mut self) -> (*mut u8, *mut u8) {
-        let state = std::mem::replace(&mut self.state, std::ptr::null_mut());
-        let output = std::mem::replace(&mut self.output, std::ptr::null_mut());
-        (state, output)
-    }
-}
-
-impl Drop for ErasedOperator {
-    fn drop(&mut self) {
-        if !self.state.is_null() {
-            unsafe { (self.state_drop_fn)(self.state) };
-        }
-        if !self.output.is_null() {
-            unsafe { (self.output_drop_fn)(self.output) };
-        }
-    }
-}
+use crate::operator::{ComputeFn, ErasedOperator};
 
 // ===========================================================================
 // Node
@@ -183,7 +40,8 @@ pub(super) struct Node {
     value_drop_fn: unsafe fn(*mut u8),
 }
 
-// SAFETY: `Node` owns the heap allocation behind `value`.
+// SAFETY: `Node` owns the heap allocation behind `value`, which points to
+// a type satisfying `Send`.
 unsafe impl Send for Node {}
 
 impl Node {
@@ -197,28 +55,62 @@ impl Node {
             value: value_ptr as *mut u8,
             closure: None,
             trigger_edges: Vec::new(),
-            value_drop_fn: drop_fn::<T>,
+            value_drop_fn: erased_drop_fn::<T>,
         }
     }
 
-    /// Create a bare node from raw, type-erased components.
-    ///
-    /// # Safety
-    ///
-    /// * `value` must be a valid pointer from `Box::into_raw`.
-    /// * `type_id` must match the actual type behind `value`.
-    /// * `value_drop_fn` must correctly drop the value.
-    pub(super) fn from_raw(
+    /// Create a bare node from a pre-allocated raw value pointer.
+    pub fn from_raw_value(
         type_id: TypeId,
         value: *mut u8,
-        value_drop_fn: unsafe fn(*mut u8),
+        drop_fn: unsafe fn(*mut u8),
     ) -> Self {
         Self {
             type_id,
             value,
             closure: None,
             trigger_edges: Vec::new(),
-            value_drop_fn,
+            value_drop_fn: drop_fn,
+        }
+    }
+
+    /// Create a node from an [`ErasedOperator`].
+    ///
+    /// Validates input types, calls the deferred init, and attaches the
+    /// compute closure.  Panics on arity or `TypeId` mismatch.
+    pub fn from_erased_operator(
+        erased: ErasedOperator,
+        input_ptrs: Box<[*const u8]>,
+        input_type_ids: &[TypeId],
+        timestamp: i64,
+    ) -> Self {
+        assert_eq!(
+            input_type_ids.len(),
+            erased.input_type_ids().len(),
+            "arity mismatch: operator expects {} inputs, got {}",
+            erased.input_type_ids().len(),
+            input_type_ids.len(),
+        );
+        for (i, (&expected, &actual)) in erased
+            .input_type_ids()
+            .iter()
+            .zip(input_type_ids)
+            .enumerate()
+        {
+            assert_eq!(expected, actual, "type mismatch at input {i}");
+        }
+        let output_type_id = erased.output_type_id();
+        let compute_fn = erased.compute_fn();
+        let state_drop_fn = erased.state_drop_fn();
+        let output_drop_fn = erased.output_drop_fn();
+        let (state_ptr, output_ptr) = unsafe { erased.init(&input_ptrs, timestamp) };
+        let closure = Closure::new(compute_fn, input_ptrs, state_ptr, state_drop_fn);
+        Self {
+            type_id: output_type_id,
+            value: output_ptr,
+            closure: Some(closure),
+            trigger_edges: Vec::new(),
+            value_drop_fn: output_drop_fn,
         }
     }
 }
@@ -253,7 +145,7 @@ pub(super) struct Closure {
 
 impl Closure {
     /// Create a closure from raw components.
-    pub(super) fn new(
+    fn new(
         compute_fn: ComputeFn,
         input_ptrs: Box<[*const u8]>,
         state: *mut u8,
@@ -275,45 +167,15 @@ impl Closure {
     /// * `output_ptr` must point to a valid output value.
     /// * `output_ptr` must not alias any `input_ptrs[i]`.
     pub unsafe fn compute(&self, output_ptr: *mut u8, timestamp: i64) -> bool {
-        unsafe { (self.compute_fn)(&self.input_ptrs, output_ptr, self.state, timestamp) }
+        unsafe { (self.compute_fn)(self.state, &self.input_ptrs, output_ptr, timestamp) }
     }
 }
 
-// SAFETY: `Closure` owns the heap allocation behind `state`.
+// SAFETY: `Closure` owns the heap allocation behind `state`, which points to
+// a type satisfying `Send`.
 unsafe impl Send for Closure {}
 
-// ===========================================================================
-// Helpers
-// ===========================================================================
-
-/// Drop a heap-allocated `T`.
-///
-/// # Safety
-///
-/// `ptr` must have been created by `Box::into_raw(Box::new(..))` for type `T`.
-pub unsafe fn drop_fn<T>(ptr: *mut u8) {
+/// Type-erased box drop function, monomorphised per value type.
+unsafe fn erased_drop_fn<T>(ptr: *mut u8) {
     unsafe { drop(Box::from_raw(ptr as *mut T)) };
-}
-
-/// Type-erased compute entry point, monomorphised per operator type.
-///
-/// # Safety
-///
-/// * Each `input_ptrs[i]` must point to a valid value of the type expected
-///   by `O::Inputs` at position `i`.
-/// * `output_ptr` must point to a valid `O::Output`.
-/// * `state_ptr` must point to a valid `O::State`.
-/// * `output_ptr` must not alias any `input_ptrs[i]`.
-unsafe fn compute_fn<O: Operator>(
-    input_ptrs: &[*const u8],
-    output_ptr: *mut u8,
-    state_ptr: *mut u8,
-    timestamp: i64,
-) -> bool {
-    unsafe {
-        let inputs = <O::Inputs as InputTypes>::from_ptrs(input_ptrs);
-        let output = &mut *(output_ptr as *mut O::Output);
-        let state = &mut *(state_ptr as *mut O::State);
-        O::compute(state, inputs, output, timestamp)
-    }
 }

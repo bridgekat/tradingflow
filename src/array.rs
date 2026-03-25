@@ -40,13 +40,13 @@ impl Scalar for f32 {}
 impl Scalar for f64 {}
 impl Scalar for String {}
 
-/// A dense, dynamically-shaped array in standard (row-major) layout.
+/// An N-dimensional array in standard (row-major contiguous) layout.
 ///
-/// Backed by a flat `Vec<T>`.  Shape is fixed after construction (use
-/// [`reshape`](Array::reshape) to change it).  All slice accessors are
+/// Backed by a flat boxed slice.  Size is fixed after construction (use
+/// [`reshape`](Array::reshape) to change shape).  All slice accessors are
 /// zero-cost.
 pub struct Array<T: Scalar> {
-    data: Vec<T>,
+    data: Box<[T]>,
     shape: Box<[usize]>,
 }
 
@@ -58,7 +58,7 @@ impl<T: Scalar> Array<T> {
     /// Create a scalar (0-dimensional) array holding one element.
     pub fn scalar(value: T) -> Self {
         Self {
-            data: vec![value],
+            data: vec![value].into(),
             shape: Box::new([]),
         }
     }
@@ -67,7 +67,7 @@ impl<T: Scalar> Array<T> {
     pub fn full(shape: &[usize], value: T) -> Self {
         let len = shape.iter().product::<usize>();
         Self {
-            data: vec![value; len],
+            data: vec![value; len].into(),
             shape: shape.into(),
         }
     }
@@ -93,7 +93,7 @@ impl<T: Scalar> Array<T> {
             data.len(),
         );
         Self {
-            data,
+            data: data.into(),
             shape: shape.into(),
         }
     }
@@ -101,7 +101,7 @@ impl<T: Scalar> Array<T> {
     /// Create an array from a function of flat index.
     pub fn from_fn(shape: &[usize], f: impl FnMut(usize) -> T) -> Self {
         let len = shape.iter().product::<usize>();
-        let data: Vec<T> = (0..len).map(f).collect();
+        let data = (0..len).map(f).collect();
         Self {
             data,
             shape: shape.into(),
@@ -250,7 +250,7 @@ impl<T: Scalar> Array<T> {
 
     /// Consume and return the underlying data buffer.
     pub fn into_vec(self) -> Vec<T> {
-        self.data
+        self.data.into()
     }
 }
 
