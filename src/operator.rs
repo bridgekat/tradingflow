@@ -138,26 +138,32 @@ impl ErasedOperator {
         }
     }
 
+    /// The [`TypeId`] of the operator's state type.
     pub fn state_type_id(&self) -> TypeId {
         self.state_type_id
     }
 
+    /// The [`TypeId`]s of the operator's input types, one per input position.
     pub fn input_type_ids(&self) -> &[TypeId] {
         &self.input_type_ids
     }
 
+    /// The [`TypeId`] of the operator's output type.
     pub fn output_type_id(&self) -> TypeId {
         self.output_type_id
     }
 
+    /// The type-erased compute function pointer.
     pub fn compute_fn(&self) -> ComputeFn {
         self.compute_fn
     }
 
+    /// The type-erased drop function for the operator's state.
     pub fn state_drop_fn(&self) -> unsafe fn(*mut u8) {
         self.state_drop_fn
     }
 
+    /// The type-erased drop function for the operator's output.
     pub fn output_drop_fn(&self) -> unsafe fn(*mut u8) {
         self.output_drop_fn
     }

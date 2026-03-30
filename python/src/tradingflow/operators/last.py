@@ -6,7 +6,7 @@ from ..operator import NativeOperator
 from ..types import Handle
 
 
-def last(a: Handle, *, fill: float | int = 0) -> NativeOperator:
+class Last(NativeOperator):
     """Extract the most recent value from a Series as an Array.
 
     If the series is empty, the output is filled with *fill*.
@@ -18,5 +18,7 @@ def last(a: Handle, *, fill: float | int = 0) -> NativeOperator:
     fill
         Value used when the series is empty (default ``0``).
     """
-    params = {"fill": fill} if fill != 0 else {}
-    return NativeOperator(kind="last", inputs=(a,), shape=a.shape, dtype=a.dtype, params=params)
+
+    def __init__(self, a: Handle, *, fill: float | int = 0) -> None:
+        params = {"fill": fill} if fill != 0 else {}
+        super().__init__(kind="last", inputs=(a,), shape=a.shape, dtype=a.dtype, params=params)

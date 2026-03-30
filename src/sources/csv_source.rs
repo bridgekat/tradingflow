@@ -1,8 +1,4 @@
 //! Historical-only source that reads a CSV file.
-//!
-//! [`CsvSource`] parses a CSV with a date/datetime column and one or more
-//! numeric value columns, then feeds rows through the same channel
-//! mechanism as [`ArraySource`](super::ArraySource).
 
 use chrono::NaiveDate;
 use tokio::sync::mpsc;

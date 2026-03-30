@@ -16,6 +16,7 @@ pub struct RollingVariance<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> RollingVariance<T> {
+    /// Create a new rolling variance operator with the given window size.
     pub fn new(window: usize) -> Self {
         assert!(window >= 1, "window must be >= 1");
         Self {
@@ -28,8 +29,11 @@ impl<T: Scalar + Float> RollingVariance<T> {
 /// Runtime state for [`RollingVariance`].
 pub struct VarState<T: Scalar + Float> {
     window: usize,
+    /// Running sum per element position.
     sum: Vec<T>,
+    /// Running sum of squares per element position.
     sum_sq: Vec<T>,
+    /// NaN count in window per element position.
     nan_count: Vec<u32>,
 }
 

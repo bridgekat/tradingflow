@@ -1,10 +1,4 @@
-"""Array-bundle historical source — dispatched to Rust via the native path.
-
-Unlike Python `Source` subclasses that go through async iterators and
-mpsc channels, `ArraySource` sends timestamps and values directly to the
-Rust `ArraySource` implementation, avoiding all Python/Rust round-trip
-overhead per event.
-"""
+"""Array-bundle historical source dispatched to Rust."""
 
 from __future__ import annotations
 
@@ -85,5 +79,9 @@ class ArraySource(NativeSource):
         dtype: type | np.dtype | None = None,
         name: str | None = None,
     ) -> ArraySource:
-        """Construct from in-memory arrays."""
+        """Construct from in-memory arrays.
+
+        Convenience alias for the constructor — parameters are identical
+        to [`ArraySource.__init__`][tradingflow.sources.ArraySource.__init__].
+        """
         return cls(timestamps=timestamps, values=values, dtype=dtype, name=name)

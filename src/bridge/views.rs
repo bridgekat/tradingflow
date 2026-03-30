@@ -1,18 +1,4 @@
 //! Python-visible views for Array and Series nodes.
-//!
-//! [`NativeArrayView`] and [`NativeSeriesView`] are `#[pyclass]` wrappers that hold a raw
-//! pointer to a graph node's value.  All read/write methods **copy** data
-//! across the boundary — no reference to graph memory ever reaches Python.
-//!
-//! Each view stores pre-resolved function pointers (monomorphized at creation
-//! time), so methods dispatch without runtime dtype matching.
-//!
-//! # Safety
-//!
-//! The raw pointer is valid for the lifetime of the owning [`Scenario`].  Since
-//! all methods copy (never expose a reference), Python code cannot create
-//! dangling pointers even if the underlying buffer is reallocated (e.g. by
-//! `mem::replace` on an Array, or capacity-doubling on a Series).
 
 use numpy::ndarray::{Array1, ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn};
@@ -49,11 +35,14 @@ impl PyScalar for f64 {}
 /// What kind of value a node holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewKind {
+    /// A fixed-shape multidimensional array.
     Array,
+    /// A time-indexed append-only series.
     Series,
 }
 
-/// Create a Python view for a node, given its kind and dtype.
+/// Create a Python view ([`NativeArrayView`] or [`NativeSeriesView`]) for a
+/// node, dispatching on its kind and dtype.
 pub fn create_view(
     py: Python<'_>,
     ptr: *mut u8,
@@ -90,8 +79,12 @@ type ArrayWriteFn = unsafe fn(*mut u8, Python<'_>, &Bound<'_, PyAny>, &[usize]) 
 
 /// Python-visible view of a Rust `Array<T>` node.
 ///
-/// Every read (`value`) copies data out.  Every write (`write`) copies data
-/// in.  No reference to graph memory is ever exposed to Python.
+/// Holds a raw pointer to the graph node's value. Every read ([`value`](Self::value))
+/// copies data out; every write ([`write`](Self::write)) copies data in. No
+/// reference to graph memory is ever exposed to Python.
+///
+/// Function pointers are monomorphized at creation time, so methods dispatch
+/// without runtime dtype matching.
 #[pyclass]
 pub struct NativeArrayView {
     ptr: *mut u8,
@@ -225,9 +218,13 @@ type SeriesPushFn =
 
 /// Python-visible view of a Rust `Series<T>` node.
 ///
-/// Read methods copy data out.  The [`push`](NativeSeriesView::push) method appends
-/// an element, copying data in.  Series buffers can reallocate during graph
-/// execution (capacity doubling on append); copies prevent dangling.
+/// Holds a raw pointer to the graph node's value. Read methods copy data out;
+/// [`push`](Self::push) appends an element, copying data in. Series buffers
+/// can reallocate during graph execution (capacity doubling on append); copying
+/// prevents dangling references.
+///
+/// Function pointers are monomorphized at creation time, so methods dispatch
+/// without runtime dtype matching.
 #[pyclass]
 pub struct NativeSeriesView {
     ptr: *mut u8,

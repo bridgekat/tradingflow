@@ -1,19 +1,4 @@
-"""Schema — bidirectional name-to-position mapping for array axes.
-
-A `Schema` maps string labels to integer positions along a single array axis.
-It is a construction-time helper — not embedded in the DAG or carried by arrays
-at runtime.
-
-Example
--------
->>> schema = Schema(["000001.SZ", "000002.SZ", "600519.SH"])
->>> schema.index("600519.SH")
-2
->>> schema.name(0)
-'000001.SZ'
->>> schema.indices(["600519.SH", "000001.SZ"])
-[2, 0]
-"""
+"""Bidirectional name-to-position mapping for array axes."""
 
 from __future__ import annotations
 

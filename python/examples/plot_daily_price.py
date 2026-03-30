@@ -9,18 +9,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from tradingflow import Scenario, Schema
-from tradingflow.operators import (
-    add,
-    last,
-    record,
-    rolling_mean,
-    rolling_variance,
-    scale,
-    select,
-    sqrt,
-    subtract,
-)
 from tradingflow.sources import CSVSource
+from tradingflow.operators import Add, Last, Record, RollingMean, RollingVariance, Scale, Select, Sqrt, Subtract
+
 
 DATA_DIR = Path(__file__).parent / "data" / "a_shares_history_raw"
 
@@ -29,50 +20,36 @@ WINDOW = 20
 
 
 def build_scenario(symbol: str) -> tuple[Scenario, dict]:
-    """Build a scenario with MA and Bollinger Band operators.
-
-    Operator graph::
-
-        source [6]
-          ├─ record ─────────────────────────────────────────── price_series
-          └─ select [1] (close)
-               └─ record ────────────────────────────────────── close_series
-                    ├─ rolling_mean(20) ─────────────────────── ma_series
-                    │    └─ last ─┬─ add(·, band) ─ record ──── upper_series
-                    │             └─ sub(·, band) ─ record ──── lower_series
-                    └─ rolling_variance(20) ─────────────────── var_series
-                         └─ last ─ sqrt ─ scale(2) ──────────── band
-    """
-    source = CSVSource(DATA_DIR / f"{symbol}_daily_price_raw.csv", PRICE_SCHEMA)
-
+    """Build a scenario with MA and Bollinger Band operators."""
     sc = Scenario()
-    h = sc.add_source(source)
+
+    # Load daily price history from CSV. Shape: (6,).
+    price_arr = sc.add_source(CSVSource(DATA_DIR / f"{symbol}_daily_price_raw.csv", PRICE_SCHEMA))
 
     # Record full price vector for the price/volume plot.
-    price_series = sc.add_operator(record(h))
+    price_series = sc.add_operator(Record(price_arr))
 
-    # Extract close price (index 1 in the schema).
-    close_idx = PRICE_SCHEMA.index("close")
-    close_arr = sc.add_operator(select(h, [close_idx]))
-    close_series = sc.add_operator(record(close_arr))
+    # Extract close price. Shape: ().
+    close_arr = sc.add_operator(Select(price_arr, [PRICE_SCHEMA.index("close")]))
+    close_series = sc.add_operator(Record(close_arr))
 
     # 20-day moving average (Series → Series).
-    ma_series = sc.add_operator(rolling_mean(close_series, window=WINDOW))
+    ma_series = sc.add_operator(RollingMean(close_series, window=WINDOW))
 
     # 20-day rolling std: sqrt(variance) (Series → Series → Array → Array).
-    var_series = sc.add_operator(rolling_variance(close_series, window=WINDOW))
-    var_arr = sc.add_operator(last(var_series))
-    std_arr = sc.add_operator(sqrt(var_arr))
+    var_series = sc.add_operator(RollingVariance(close_series, window=WINDOW))
+    var_arr = sc.add_operator(Last(var_series))
+    std_arr = sc.add_operator(Sqrt(var_arr))
 
     # Bollinger band offset: 2 × std.
-    band_arr = sc.add_operator(scale(std_arr, 2.0))
+    band_arr = sc.add_operator(Scale(std_arr, 2.0))
 
     # Upper and lower bands: MA ± 2×std (Array + Array → record → Series).
-    ma_arr = sc.add_operator(last(ma_series))
-    upper_arr = sc.add_operator(add(ma_arr, band_arr))
-    lower_arr = sc.add_operator(subtract(ma_arr, band_arr))
-    upper_series = sc.add_operator(record(upper_arr))
-    lower_series = sc.add_operator(record(lower_arr))
+    ma_arr = sc.add_operator(Last(ma_series))
+    upper_arr = sc.add_operator(Add(ma_arr, band_arr))
+    lower_arr = sc.add_operator(Subtract(ma_arr, band_arr))
+    upper_series = sc.add_operator(Record(upper_arr))
+    lower_series = sc.add_operator(Record(lower_arr))
 
     handles = {
         "price": price_series,
@@ -85,10 +62,9 @@ def build_scenario(symbol: str) -> tuple[Scenario, dict]:
 
 def extract_series(sc: Scenario, handle, columns=None) -> pd.DataFrame:
     """Extract a recorded Series as a DataFrame."""
-    ts = sc.series_timestamps(handle)
-    vals = sc.series_values(handle)
-    if vals.ndim == 1:
-        vals = vals.reshape(-1, 1)
+    view = sc.series_view(handle)
+    ts = view.timestamps()
+    vals = view.values()
     return pd.DataFrame(vals, index=pd.DatetimeIndex(ts), columns=columns)
 
 

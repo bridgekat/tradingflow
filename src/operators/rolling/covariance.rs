@@ -19,6 +19,7 @@ pub struct RollingCovariance<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> RollingCovariance<T> {
+    /// Create a new rolling covariance operator with the given window size.
     pub fn new(window: usize) -> Self {
         assert!(window >= 1, "window must be >= 1");
         Self {

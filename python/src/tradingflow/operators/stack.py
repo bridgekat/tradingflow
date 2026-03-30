@@ -1,4 +1,4 @@
-"""Stack operator factory."""
+"""Stack operator."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from ..operator import NativeOperator
 from ..types import Handle
 
 
-def stack(inputs: Sequence[Handle], *, axis: int = 0) -> NativeOperator:
+class Stack(NativeOperator):
     """Stack N arrays along a new axis.
 
     All inputs must have the same dtype and shape. The output shape
@@ -21,14 +21,16 @@ def stack(inputs: Sequence[Handle], *, axis: int = 0) -> NativeOperator:
     axis
         Position of the new axis (default ``0``).
     """
-    if not inputs:
-        raise ValueError("stack requires at least one input.")
-    base_shape = list(inputs[0].shape)
-    out_shape = base_shape[:axis] + [len(inputs)] + base_shape[axis:]
-    return NativeOperator(
-        kind="stack",
-        inputs=tuple(inputs),
-        shape=tuple(out_shape),
-        dtype=inputs[0].dtype,
-        params={"axis": axis},
-    )
+
+    def __init__(self, inputs: Sequence[Handle], *, axis: int = 0) -> None:
+        if not inputs:
+            raise ValueError("Stack requires at least one input.")
+        base_shape = list(inputs[0].shape)
+        out_shape = base_shape[:axis] + [len(inputs)] + base_shape[axis:]
+        super().__init__(
+            kind="stack",
+            inputs=tuple(inputs),
+            shape=tuple(out_shape),
+            dtype=inputs[0].dtype,
+            params={"axis": axis},
+        )

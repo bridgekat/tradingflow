@@ -1,8 +1,4 @@
-//! Clock sources — emit events at fixed intervals for triggering operators.
-//!
-//! Clock sources produce `()` — they exist purely as scheduling triggers.
-//! Use with [`Scenario::add_operator_periodic`] to fire operators at
-//! specific timestamps without carrying data.
+//! Clock sources — emit `()` events at calendar-aligned timestamps.
 
 use super::iter_source::IterSource;
 

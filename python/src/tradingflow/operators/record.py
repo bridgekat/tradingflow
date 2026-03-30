@@ -6,10 +6,12 @@ from ..operator import NativeOperator
 from ..types import Handle
 
 
-def record(a: Handle) -> NativeOperator:
+class Record(NativeOperator):
     """Record an Array node into a Series (accumulates history).
 
     The output is a `Series<T>` node that appends the input's value
     at each timestamp.
     """
-    return NativeOperator(kind="record", inputs=(a,), shape=a.shape, dtype=a.dtype)
+
+    def __init__(self, a: Handle) -> None:
+        super().__init__(kind="record", inputs=(a,), shape=a.shape, dtype=a.dtype)

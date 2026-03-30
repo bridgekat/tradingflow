@@ -1,4 +1,4 @@
-"""Cast operator factory."""
+"""Cast operator."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from ..operator import NativeOperator
 from ..types import Handle
 
 
-def cast(a: Handle, dtype: type | np.dtype) -> NativeOperator:
+class Cast(NativeOperator):
     """Element-wise type conversion: ``out[i] = input[i] as dtype``.
 
     Uses truncating/saturating semantics (equivalent to Rust ``as``).
@@ -20,11 +20,13 @@ def cast(a: Handle, dtype: type | np.dtype) -> NativeOperator:
     dtype
         Target numpy dtype.
     """
-    target = np.dtype(dtype)
-    return NativeOperator(
-        kind="cast",
-        inputs=(a,),
-        shape=a.shape,
-        dtype=target,
-        params={"from_dtype": str(a.dtype)},
-    )
+
+    def __init__(self, a: Handle, dtype: type | np.dtype) -> None:
+        target = np.dtype(dtype)
+        super().__init__(
+            kind="cast",
+            inputs=(a,),
+            shape=a.shape,
+            dtype=target,
+            params={"from_dtype": str(a.dtype)},
+        )

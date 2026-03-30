@@ -31,9 +31,10 @@ class TestBridgeNativeOperator:
         hc = sc.add_native_operator("add", "float64", [ha, hb], [], {})
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
-        assert sc.series_len(hs) == 2
+        view = sc.view(hs)
+        assert len(view) == 2
         np.testing.assert_array_almost_equal(
-            np.asarray(sc.series_values(hs)),
+            np.asarray(view.values()).flatten(),
             [11.0, 22.0],
         )
 
@@ -44,7 +45,7 @@ class TestBridgeNativeOperator:
         hc = sc.add_native_operator("subtract", "float64", [ha, hb], [], {})
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [7.0])
+        np.testing.assert_array_almost_equal(np.asarray(sc.view(hs).values()).flatten(), [7.0])
 
     def test_multiply(self) -> None:
         sc = NativeScenario()
@@ -53,7 +54,7 @@ class TestBridgeNativeOperator:
         hc = sc.add_native_operator("multiply", "float64", [ha, hb], [], {})
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [20.0])
+        np.testing.assert_array_almost_equal(np.asarray(sc.view(hs).values()).flatten(), [20.0])
 
     def test_negate(self) -> None:
         sc = NativeScenario()
@@ -61,7 +62,7 @@ class TestBridgeNativeOperator:
         hc = sc.add_native_operator("negate", "float64", [ha], [], {})
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [-10.0, 5.0])
+        np.testing.assert_array_almost_equal(np.asarray(sc.view(hs).values()).flatten(), [-10.0, 5.0])
 
     def test_chained_operators(self) -> None:
         sc = NativeScenario()
@@ -72,7 +73,7 @@ class TestBridgeNativeOperator:
         hs = sc.add_native_operator("record", "float64", [hout], [], {})
         sc.run()
         # (2+3)*2=10, (5+10)*5=75
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [10.0, 75.0])
+        np.testing.assert_array_almost_equal(np.asarray(sc.view(hs).values()).flatten(), [10.0, 75.0])
 
     def test_interleaved_sources(self) -> None:
         sc = NativeScenario()
@@ -82,7 +83,7 @@ class TestBridgeNativeOperator:
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
         # ts=1: 10+0=10, ts=2: 10+20=30, ts=3: 30+40=70
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [10.0, 30.0, 70.0])
+        np.testing.assert_array_almost_equal(np.asarray(sc.view(hs).values()).flatten(), [10.0, 30.0, 70.0])
 
 
 class TestBridgeStrided:
@@ -101,26 +102,26 @@ class TestBridgeStrided:
         ha = self._make_strided_source(sc, [1], [[1.0, 2.0]])
         hb = self._make_strided_source(sc, [1], [[10.0, 20.0]])
         hc = sc.add_native_operator("add", "float64", [ha, hb], [2], {})
-        hs = sc.add_native_operator("record", "float64", [hc], [], {})
+        hs = sc.add_native_operator("record", "float64", [hc], [2], {})
         sc.run()
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [11.0, 22.0])
+        np.testing.assert_array_almost_equal(sc.view(hs).values().flatten(), [11.0, 22.0])
 
     def test_select(self) -> None:
         sc = NativeScenario()
         ha = self._make_strided_source(sc, [1], [[10.0, 20.0, 30.0]])
         hc = sc.add_native_operator("select", "float64", [ha], [2], {"indices": [0, 2]})
-        hs = sc.add_native_operator("record", "float64", [hc], [], {})
+        hs = sc.add_native_operator("record", "float64", [hc], [2], {})
         sc.run()
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [10.0, 30.0])
+        np.testing.assert_array_almost_equal(sc.view(hs).values().flatten(), [10.0, 30.0])
 
     def test_concat(self) -> None:
         sc = NativeScenario()
         ha = self._make_strided_source(sc, [1], [[1.0, 2.0]])
         hb = self._make_strided_source(sc, [1], [[3.0, 4.0]])
         hc = sc.add_native_operator("concat", "float64", [ha, hb], [4], {"axis": 0})
-        hs = sc.add_native_operator("record", "float64", [hc], [], {})
+        hs = sc.add_native_operator("record", "float64", [hc], [4], {})
         sc.run()
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [1.0, 2.0, 3.0, 4.0])
+        np.testing.assert_array_almost_equal(sc.view(hs).values().flatten(), [1.0, 2.0, 3.0, 4.0])
 
 
 class TestBridgePyOperator:
@@ -151,7 +152,7 @@ class TestBridgePyOperator:
         )
         hs = sc.add_native_operator("record", "float64", [op_idx], [], {})
         sc.run()
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [15.0, 25.0])
+        np.testing.assert_array_almost_equal(np.asarray(sc.view(hs).values()).flatten(), [15.0, 25.0])
 
     def test_py_operator_stateful(self) -> None:
         """Stateful Python operator that computes running sum."""
@@ -180,7 +181,7 @@ class TestBridgePyOperator:
         )
         hs = sc.add_native_operator("record", "float64", [op_idx], [], {})
         sc.run()
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [10.0, 30.0, 60.0])
+        np.testing.assert_array_almost_equal(np.asarray(sc.view(hs).values()).flatten(), [10.0, 30.0, 60.0])
 
     def test_py_operator_filter(self) -> None:
         """Python operator that skips propagation by returning False."""
@@ -211,12 +212,13 @@ class TestBridgePyOperator:
         )
         hs = sc.add_native_operator("record", "float64", [op_idx], [], {})
         sc.run()
-        assert sc.series_len(hs) == 2
-        np.testing.assert_array_almost_equal(np.asarray(sc.series_values(hs)), [5.0, 10.0])
+        view = sc.view(hs)
+        assert len(view) == 2
+        np.testing.assert_array_almost_equal(np.asarray(view.values()).flatten(), [5.0, 10.0])
 
 
 class TestBridgeGetView:
-    """Test get_view for raw native views."""
+    """Test view for raw native views."""
 
     def test_array_view(self) -> None:
         sc = NativeScenario()
@@ -225,7 +227,7 @@ class TestBridgeGetView:
         hist.close()
         live.close()
         sc.run()
-        view = sc.get_view(idx)
+        view = sc.view(idx)
         np.testing.assert_array_almost_equal(view.value(), [42.0])
 
     def test_series_view(self) -> None:
@@ -237,7 +239,7 @@ class TestBridgeGetView:
         live.close()
         hs = sc.add_native_operator("record", "float64", [idx], [], {})
         sc.run()
-        view = sc.get_view(hs)
+        view = sc.view(hs)
         assert len(view) == 2
         np.testing.assert_array_almost_equal(np.asarray(view.values()).flatten(), [10.0, 20.0])
 
@@ -254,7 +256,7 @@ class TestPythonViewWrappers:
         hist.close()
         live.close()
         sc.run()
-        native_view = sc.get_view(idx)
+        native_view = sc.view(idx)
         wrapper = ArrayView(native_view)
         np.testing.assert_array_almost_equal(wrapper.value(), [42.0])
         assert wrapper.dtype == np.dtype("float64")
@@ -271,7 +273,7 @@ class TestPythonViewWrappers:
         live.close()
         hs = sc.add_native_operator("record", "float64", [idx], [], {})
         sc.run()
-        native_view = sc.get_view(hs)
+        native_view = sc.view(hs)
         wrapper = SeriesView(native_view)
         assert len(wrapper) == 2
         np.testing.assert_array_almost_equal(np.asarray(wrapper.values()).flatten(), [10.0, 20.0])
@@ -290,7 +292,7 @@ class TestArrayViewEnhancements:
         hist.close()
         live.close()
         sc.run()
-        return ArrayView(sc.get_view(idx)), sc
+        return ArrayView(sc.view(idx)), sc
 
     def test_array_protocol(self) -> None:
         view, _ = self._make_view()
@@ -334,7 +336,7 @@ class TestSeriesViewEnhancements:
         live.close()
         hs = sc.add_native_operator("record", "float64", [idx], [], {})
         sc.run()
-        return SeriesView(sc.get_view(hs)), sc
+        return SeriesView(sc.view(hs)), sc
 
     def test_timestamps_dtype(self) -> None:
         view, _ = self._make_series()

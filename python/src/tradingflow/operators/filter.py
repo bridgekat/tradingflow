@@ -1,8 +1,4 @@
-"""Filter operator — drops elements that don't match a predicate.
-
-Since Rust closures cannot cross FFI, this is a Python `Operator` subclass.
-The predicate receives the full array and returns `True` to pass it through.
-"""
+"""Filter operator -- predicate-gated passthrough."""
 
 from __future__ import annotations
 

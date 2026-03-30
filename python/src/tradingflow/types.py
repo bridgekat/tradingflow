@@ -1,15 +1,4 @@
-"""Node type markers and Handle for the computation graph.
-
-Type markers (`Array`, `Series`) are pure Python generic classes that encode
-Rust node value types. They serve dual purpose:
-
-1. **Static type checking** — pyright/mypy can verify input/output compatibility.
-2. **Runtime extraction** — `node_type_to_name()` maps them to `(kind, dtype)`
-   pairs for Rust `TypeId` validation.
-
-`Handle[NodeType]` is a typed reference to a graph node, parameterized by
-the node's value type marker.
-"""
+"""Node type markers and Handle for the computation graph."""
 
 from __future__ import annotations
 
@@ -98,10 +87,10 @@ def node_type_to_name(tp: type) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-class Handle[NodeType]:
+class Handle[T]:
     """Typed reference to a graph node.
 
-    `NodeType` encodes the node's value type (e.g. `Array[np.float64]`).
+    `T` encodes the node's value type (e.g. `Array[np.float64]`).
     This enables static type checking: pyright can verify that an operator
     expecting `Handle[Array[np.float64]]` inputs doesn't receive a
     `Handle[Array[np.int32]]`.
@@ -119,12 +108,15 @@ class Handle[NodeType]:
 
     @property
     def index(self) -> int:
+        """Integer index of the node in the graph."""
         return self._index
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Element shape of the node's value."""
         return self._shape
 
     @property
     def dtype(self) -> np.dtype:
+        """NumPy dtype of the node's value."""
         return self._dtype

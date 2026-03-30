@@ -1,14 +1,14 @@
 //! Last operator — extracts the most recent element from a Series.
-//!
-//! Two-sided inverse of [`Record`](super::Record):
-//! - `Last(Record(x))` recovers the latest array value
-//! - `Record(Last(s)).last()` equals `s.last()`
 
 use crate::{Array, Operator, Scalar, Series};
 
 /// Extract the most recent element from a `Series<T>` as an `Array<T>`.
 ///
-/// If the series is empty, the output is filled with the provided `fill` value.
+/// If the series is empty, the output is filled with the provided `default` value.
+///
+/// Two-sided inverse of [`Record`](super::Record):
+/// - `Last(Record(x))` recovers the latest array value.
+/// - `Record(Last(s)).last()` equals `s.last()`.
 pub struct Last<T: Scalar> {
     fill: T,
 }

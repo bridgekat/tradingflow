@@ -1,9 +1,4 @@
-"""Where operator — element-wise conditional replacement.
-
-Since Rust closures cannot cross FFI, this is a Python `Operator` subclass.
-The condition is applied element-wise; failing elements are replaced with a
-fill value.
-"""
+"""Where operator -- element-wise conditional replacement."""
 
 from __future__ import annotations
 

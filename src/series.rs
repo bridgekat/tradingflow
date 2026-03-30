@@ -1,15 +1,4 @@
 //! Time series with append-only semantics and temporal lookups.
-//!
-//! [`Series`] stores uniformly-shaped elements indexed by non-decreasing
-//! `i64` timestamps (nanoseconds since UNIX epoch).
-//!
-//! # Access patterns
-//!
-//! * Positional: [`at`](Series::at), [`last`](Series::last),
-//!   [`values_range`](Series::values_range), [`tail`](Series::tail).
-//! * Temporal: [`asof`](Series::asof), [`search`](Series::search).
-//! * Bulk: [`timestamps`](Series::timestamps), [`values`](Series::values),
-//!   [`view`](Series::view), [`iter`](Series::iter).
 
 use ndarray::{ArrayViewD, IxDyn};
 

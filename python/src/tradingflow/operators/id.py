@@ -1,4 +1,4 @@
-"""Identity operator factory."""
+"""Identity operator."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from ..operator import NativeOperator
 from ..types import Handle
 
 
-def id(a: Handle) -> NativeOperator:
+class Id(NativeOperator):
     """Identity passthrough: clones input to output unchanged.
 
     Useful as a trigger-gated passthrough when combined with a clock.
@@ -16,4 +16,6 @@ def id(a: Handle) -> NativeOperator:
     a
         Handle to an Array node.
     """
-    return NativeOperator(kind="id", inputs=(a,), shape=a.shape, dtype=a.dtype)
+
+    def __init__(self, a: Handle) -> None:
+        super().__init__(kind="id", inputs=(a,), shape=a.shape, dtype=a.dtype)

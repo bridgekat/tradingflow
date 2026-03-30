@@ -39,18 +39,16 @@ pub fn dispatch_native_operator(
 ) -> PyResult<(usize, ViewKind)> {
     let dtype = normalize_dtype(dtype);
 
-    // Each non-parameterized op gets its own inline `go!` macro.
-    // A helper macro can't forward $T:ty through nested macro_rules.
     macro_rules! go_add {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::add::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Add::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_sub {
         ($T:ty) => {
             add_operator_from_indices(
                 sc,
-                operators::subtract::<$T>(),
+                operators::Subtract::<$T>::new(),
                 input_indices,
                 trigger_index,
             )
@@ -60,7 +58,7 @@ pub fn dispatch_native_operator(
         ($T:ty) => {
             add_operator_from_indices(
                 sc,
-                operators::multiply::<$T>(),
+                operators::Multiply::<$T>::new(),
                 input_indices,
                 trigger_index,
             )
@@ -68,82 +66,82 @@ pub fn dispatch_native_operator(
     }
     macro_rules! go_div {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::divide::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Divide::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_neg {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::negate::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Negate::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_log {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::log::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Log::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_log2 {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::log2::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Log2::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_log10 {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::log10::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Log10::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_exp {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::exp::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Exp::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_exp2 {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::exp2::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Exp2::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_sqrt {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::sqrt::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Sqrt::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_ceil {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::ceil::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Ceil::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_floor {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::floor::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Floor::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_round {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::round::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Round::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_recip {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::recip::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Recip::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_abs {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::abs::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Abs::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_sign {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::sign::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Sign::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_min {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::min::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Min::<$T>::new(), input_indices, trigger_index)
         };
     }
     macro_rules! go_max {
         ($T:ty) => {
-            add_operator_from_indices(sc, operators::max::<$T>(), input_indices, trigger_index)
+            add_operator_from_indices(sc, operators::Max::<$T>::new(), input_indices, trigger_index)
         };
     }
 
@@ -187,7 +185,7 @@ pub fn dispatch_native_operator(
                         .extract()?;
                     add_operator_from_indices(
                         sc,
-                        operators::pow::<$T>(n),
+                        operators::Pow::<$T>::new(n),
                         input_indices,
                         trigger_index,
                     )
@@ -206,7 +204,7 @@ pub fn dispatch_native_operator(
                         .extract()?;
                     add_operator_from_indices(
                         sc,
-                        operators::scale::<$T>(c),
+                        operators::Scale::<$T>::new(c),
                         input_indices,
                         trigger_index,
                     )
@@ -225,7 +223,7 @@ pub fn dispatch_native_operator(
                         .extract()?;
                     add_operator_from_indices(
                         sc,
-                        operators::shift::<$T>(c),
+                        operators::Shift::<$T>::new(c),
                         input_indices,
                         trigger_index,
                     )
@@ -248,7 +246,7 @@ pub fn dispatch_native_operator(
                         .extract()?;
                     add_operator_from_indices(
                         sc,
-                        operators::clamp::<$T>(lo, hi),
+                        operators::Clamp::<$T>::new(lo, hi),
                         input_indices,
                         trigger_index,
                     )
@@ -267,7 +265,7 @@ pub fn dispatch_native_operator(
                         .extract()?;
                     add_operator_from_indices(
                         sc,
-                        operators::nan_to_num::<$T>(val),
+                        operators::Fillna::<$T>::new(val),
                         input_indices,
                         trigger_index,
                     )
@@ -510,15 +508,26 @@ pub fn dispatch_native_operator(
                 .get_item("shape")?
                 .ok_or_else(|| PyTypeError::new_err("const requires 'shape' param"))?
                 .extract()?;
+            let value_bytes: Option<Vec<u8>> = params
+                .get_item("value_bytes")?
+                .map(|v| v.extract())
+                .transpose()?;
             macro_rules! go {
-                ($T:ty) => {
+                ($T:ty) => {{
+                    let arr = match value_bytes {
+                        Some(ref bytes) => {
+                            let data = unsafe { super::sources::bytes_to_vec::<$T>(bytes) };
+                            crate::Array::from_vec(&shape, data)
+                        }
+                        None => crate::Array::<$T>::zeros(&shape),
+                    };
                     add_operator_from_indices(
                         sc,
-                        operators::Const::new(crate::Array::<$T>::zeros(&shape)),
+                        operators::Const::new(arr),
                         input_indices,
                         trigger_index,
                     )
-                };
+                }};
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
         }

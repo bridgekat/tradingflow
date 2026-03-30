@@ -4,7 +4,11 @@ use std::marker::PhantomData;
 
 use crate::{Array, Operator, Scalar};
 
-/// Filter operator: passes or drops the entire element based on a predicate.
+/// Filter operator: passes or drops the entire input array based on a predicate.
+///
+/// When the predicate returns `true`, the input is copied to the output and
+/// `compute` returns `true`. Otherwise the output is left unchanged and
+/// `compute` returns `false`.
 pub struct Filter<T: Scalar, F: Fn(&Array<T>) -> bool> {
     predicate: F,
     _phantom: PhantomData<T>,

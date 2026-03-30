@@ -1,9 +1,4 @@
-"""Source interface for data feeding into the computation graph.
-
-[`Source`][tradingflow.Source] is the abstract base for Python-implemented
-sources. [`NativeSource`][tradingflow.NativeSource] is a descriptor for
-Rust-implemented sources.
-"""
+"""Source interface for data feeding into the computation graph."""
 
 from __future__ import annotations
 
@@ -60,18 +55,22 @@ class Source(ABC):
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Element shape of each emitted value."""
         return self._shape
 
     @property
     def dtype(self) -> np.dtype:
+        """NumPy dtype for emitted values."""
         return self._dtype
 
     @property
     def initial(self) -> np.ndarray:
+        """Initial value array."""
         return self._initial
 
     @property
     def name(self) -> str:
+        """Human-readable name."""
         return self._name
 
 
@@ -90,9 +89,22 @@ async def empty_live_gen() -> AsyncIterator[Any]:
 class NativeSource:
     """Descriptor for a Rust-implemented source.
 
-    Analogous to `NativeOperator` — carries `kind` + `params` and is
-    dispatched entirely on the native side. Not a `Source` subclass
-    (no Python async iterators).
+    Analogous to [`NativeOperator`][tradingflow.NativeOperator] -- carries
+    `kind` + `params` and is dispatched entirely on the native side. Not a
+    [`Source`][tradingflow.Source] subclass (no Python async iterators).
+
+    Parameters
+    ----------
+    kind
+        Source kind string dispatched on the Rust side.
+    dtype
+        NumPy dtype string (default `"float64"`).
+    shape
+        Element shape (default `()`).
+    params
+        Source-specific parameters.
+    name
+        Optional human-readable name (defaults to *kind*).
     """
 
     __slots__ = ("_kind", "_dtype", "_shape", "_params", "_name")
@@ -114,20 +126,25 @@ class NativeSource:
 
     @property
     def kind(self) -> str:
+        """Source kind string."""
         return self._kind
 
     @property
     def dtype(self) -> str:
+        """NumPy dtype string."""
         return self._dtype
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Element shape."""
         return self._shape
 
     @property
     def params(self) -> dict:
+        """Source-specific parameters."""
         return self._params
 
     @property
     def name(self) -> str:
+        """Human-readable name."""
         return self._name

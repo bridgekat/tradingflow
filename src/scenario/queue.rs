@@ -1,37 +1,4 @@
-//! Async source handling and the POCQ event loop.
-//!
-//! [`SourceState`](super::node::SourceState) tracks per-source runtime state
-//! inside each source [`Node`](super::node::Node).  The [`Scenario::run`]
-//! method implements the Point-of-Coherency Queue (POCQ) algorithm that
-//! consumes all registered sources and propagates events through the DAG.
-//!
-//! # Algorithm
-//!
-//! The event loop maintains a min-heap (`BinaryHeap<Reverse<HeapEntry>>`) of
-//! pending `(timestamp, source_idx, kind)` triples, alongside two
-//! `FuturesUnordered<ErasedRecvFuture>` collections — one for historical
-//! re-fills (`hist_refills`) and one for live re-fills (`live_refills`).
-//! This gives **O(log N) per-event** cost for N sources.
-//!
-//! **Historical constraint**: before any pop, every non-exhausted historical
-//! channel must have its next event in the heap.  Enforced by `drain_hist`,
-//! which blocks concurrently on all in-flight historical re-fills but may
-//! exit early once it is provably safe to do so:
-//!
-//! Because historical channels are non-decreasing, the next event from source
-//! `i` has timestamp ≥ `last_hist_ts[i]` (the last consumed timestamp).  A
-//! `BTreeMap` multiset (`hist_pending_ts`) tracks the minimum such lower bound
-//! across all in-flight futures in O(log N).  Once that minimum is strictly
-//! greater than the current heap minimum, no pending future can produce an
-//! event that beats the heap minimum, so it is safe to pop without waiting.
-//!
-//! **Live channels**: managed symmetrically via `live_refills`.  `drain_live`
-//! is a non-blocking poll — it drains all currently-ready live futures without
-//! suspending the task.  When the heap runs dry, the loop blocks on
-//! `live_refills.next()` until the next live event arrives.
-//!
-//! **Timestamp clamping**: live events are inserted into the heap with
-//! `ts = ts.max(current_ts)` so that ingested timestamps are non-decreasing.
+//! POCQ (Point-of-Coherency Queue) event loop for [`Scenario::run`].
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};

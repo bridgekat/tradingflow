@@ -13,6 +13,7 @@ pub struct ForwardFill<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> ForwardFill<T> {
+    /// Create a new forward-fill operator.
     pub fn new() -> Self {
         Self {
             _phantom: std::marker::PhantomData,

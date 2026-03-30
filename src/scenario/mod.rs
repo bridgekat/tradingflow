@@ -13,12 +13,38 @@
 //! casts through monomorphised function pointers — zero dynamic dispatch
 //! overhead on the hot path.
 //!
-//! # Operator registration
+//! Node indices encode topological order: if node `j` depends on node `i`,
+//! then `i < j`.  Flush propagation uses a min-heap keyed by node index to
+//! process updates in topological order.
+//!
+//! # Registration API
+//!
+//! - [`Scenario::add_const`] — register a constant node (shorthand for
+//!   [`Const`](crate::operators::Const) operator).
+//! - [`Scenario::add_source`] — register a [`Source`](crate::source::Source),
+//!   creating an output node.  Requires a tokio runtime for sources that spawn
+//!   tasks internally.
+//! - [`Scenario::add_operator`] — register a concrete
+//!   [`Operator`](crate::operator::Operator), creating its output node.
+//!   Accepts typed [`Handle`]s for inputs and an optional trigger handle.
 //!
 //! All operator registration flows through [`Scenario::add_erased_operator`],
-//! which accepts an [`ErasedOperator`].
-//! [`add_operator`](Scenario::add_operator) constructs an [`ErasedOperator`]
-//! from a concrete [`Operator`] and delegates.
+//! which accepts an [`ErasedOperator`](crate::operator::ErasedOperator).
+//! Source registration flows through [`Scenario::add_erased_source`], which
+//! accepts an [`ErasedSource`](crate::source::ErasedSource).
+//!
+//! # Execution
+//!
+//! - [`Scenario::flush`] — manually propagate updates through the DAG for a
+//!   set of updated source node indices at a given timestamp.
+//! - [`Scenario::run`] — async POCQ (Point-of-Coherency Queue) event loop
+//!   that drains all historical and live source channels in timestamp order,
+//!   coalescing same-timestamp events before flushing.  See the [`queue`]
+//!   module for ordering guarantees and complexity.
+//!
+//! # Sub-modules
+//!
+//! - [`handle`] — [`Handle<T>`] typed index and [`InputTypesHandles`] trait.
 
 mod graph;
 pub mod handle;
@@ -42,13 +68,13 @@ use node::Node;
 ///
 /// ```
 /// use tradingflow::{Scenario, Array};
-/// use tradingflow::operators;
+/// use tradingflow::operators::Add;
 ///
 /// let mut sc = Scenario::new();
 ///
 /// let ha = sc.add_const(Array::scalar(0.0));
 /// let hb = sc.add_const(Array::scalar(0.0));
-/// let hc = sc.add_operator(operators::add(), (ha, hb), None);
+/// let hc = sc.add_operator(Add::new(), (ha, hb), None);
 ///
 /// sc.value_mut(ha)[0] = 10.0;
 /// sc.value_mut(hb)[0] = 3.0;
@@ -194,7 +220,7 @@ impl Default for Scenario {
 mod tests {
     use super::*;
     use crate::array::Array;
-    use crate::operators::{Filter, Record, add};
+    use crate::operators::{Add, Filter, Record};
     use crate::series::Series;
     use crate::sources::ArraySource;
 
@@ -218,7 +244,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_const(Array::scalar(0.0_f64));
         let hb = sc.add_const(Array::scalar(0.0_f64));
-        let hc = sc.add_operator(add::<f64>(), (ha, hb), None);
+        let hc = sc.add_operator(Add::new(), (ha, hb), None);
 
         sc.value_mut(ha)[0] = 10.0;
         sc.value_mut(hb)[0] = 3.0;
@@ -232,7 +258,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_const(Array::from_vec(&[2], vec![1.0_f64, 2.0]));
         let hb = sc.add_const(Array::from_vec(&[2], vec![10.0_f64, 20.0]));
-        let hc = sc.add_operator(add::<f64>(), (ha, hb), None);
+        let hc = sc.add_operator(Add::new(), (ha, hb), None);
 
         sc.flush(1, &[ha.index(), hb.index()]);
         assert_eq!(sc.value(hc).as_slice(), &[11.0, 22.0]);
@@ -243,10 +269,10 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_const(Array::scalar(2.0_f64));
         let hb = sc.add_const(Array::scalar(3.0_f64));
-        let hab = sc.add_operator(add::<f64>(), (ha, hb), None);
+        let hab = sc.add_operator(Add::new(), (ha, hb), None);
 
-        use crate::operators::multiply;
-        let hout = sc.add_operator(multiply::<f64>(), (hab, ha), None);
+        use crate::operators::Multiply;
+        let hout = sc.add_operator(Multiply::new(), (hab, ha), None);
 
         sc.flush(1, &[ha.index(), hb.index()]);
         // (2+3) * 2 = 10
@@ -258,7 +284,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_const(Array::scalar(0.0_f64));
         let hb = sc.add_const(Array::scalar(0.0_f64));
-        let hsum = sc.add_operator(add::<f64>(), (ha, hb), None);
+        let hsum = sc.add_operator(Add::new(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (hsum,), None);
 
         sc.value_mut(ha)[0] = 10.0;
@@ -296,7 +322,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(vec![1, 3], vec![10.0, 30.0], 1));
         let hb = sc.add_source(ArraySource::new(vec![2, 3], vec![20.0, 40.0], 1));
-        let ho = sc.add_operator(add::<f64>(), (ha, hb), None);
+        let ho = sc.add_operator(Add::new(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
         sc.run().await;
@@ -313,7 +339,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![10.0, 20.0], 1));
         let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![100.0, 200.0], 1));
-        let ho = sc.add_operator(add::<f64>(), (ha, hb), None);
+        let ho = sc.add_operator(Add::new(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
         sc.run().await;
@@ -329,10 +355,10 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![2.0, 5.0], 1));
         let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![3.0, 10.0], 1));
-        let hab = sc.add_operator(add::<f64>(), (ha, hb), None);
+        let hab = sc.add_operator(Add::new(), (ha, hb), None);
 
-        use crate::operators::multiply;
-        let hout = sc.add_operator(multiply::<f64>(), (hab, ha), None);
+        use crate::operators::Multiply;
+        let hout = sc.add_operator(Multiply::new(), (hab, ha), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (hout,), None);
 
         sc.run().await;
@@ -391,7 +417,7 @@ mod tests {
         let hb = sc.add_source(ArraySource::new(vec![1, 3], vec![10.0, 30.0], 1));
         let hclock = sc.add_source(clock(vec![2]));
 
-        let ho = sc.add_operator(add::<f64>(), (ha, hb), Some(hclock));
+        let ho = sc.add_operator(Add::new(), (ha, hb), Some(hclock));
         let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
         sc.run().await;

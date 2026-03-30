@@ -1,23 +1,4 @@
-//! Type-erased node and its processing state for the DAG graph.
-//!
-//! # Key types
-//!
-//! * [`Node`] — a type-erased DAG node owning a value and a [`NodeState`].
-//! * [`NodeState`] — classifies a node as a [`Source`](NodeState::Source) or
-//!   an [`Operator`](NodeState::Operator).
-//! * [`SourceState`] — per-source channel state and function pointers.
-//! * [`OperatorState`] — per-operator computation state and function pointers.
-//!
-//! # Invariants
-//!
-//! * `Node::type_id == TypeId::of::<T>()` where `T` is the node's value type.
-//! * `Node::value_ptr` is a valid, non-null pointer to a heap-allocated `T`.
-//! * For [`NodeState::Operator`]: [`OperatorState::state_ptr`] is a valid
-//!   pointer; each `input_ptrs[i]` points to a valid value that outlives this
-//!   node; `compute_fn` is compatible with the types.
-//! * For [`NodeState::Source`]: `hist_rx_ptr` and `live_rx_ptr` are valid
-//!   pointers to `PeekableReceiver<(i64, E)>` allocations.
-//! * `trigger_edges[i]` are valid node indices in the owning `Graph`.
+//! Type-erased DAG node and its source/operator state.
 
 use std::any::TypeId;
 
@@ -150,7 +131,9 @@ impl Drop for Node {
 /// Indicates which channel (historical or live) an event came from.
 #[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub enum ChannelKind {
+    /// Historical (replay) channel.
     Hist,
+    /// Live (real-time) channel.
     Live,
 }
 
@@ -183,6 +166,7 @@ impl SourceState {
         }
     }
 
+    /// Returns the raw receiver pointer for the given channel kind.
     pub fn rx_ptr(&self, kind: ChannelKind) -> *mut u8 {
         match kind {
             ChannelKind::Hist => self.hist_rx_ptr,
@@ -190,10 +174,12 @@ impl SourceState {
         }
     }
 
+    /// Returns the type-erased poll function pointer.
     pub fn poll_fn(&self) -> PollFn {
         self.poll_fn
     }
 
+    /// Returns the type-erased write function pointer.
     pub fn write_fn(&self) -> WriteFn {
         self.write_fn
     }

@@ -151,26 +151,32 @@ impl ErasedSource {
         }
     }
 
+    /// The [`TypeId`] of the source's event type.
     pub fn event_type_id(&self) -> TypeId {
         self.event_type_id
     }
 
+    /// The [`TypeId`] of the source's output type.
     pub fn output_type_id(&self) -> TypeId {
         self.output_type_id
     }
 
+    /// The type-erased poll function pointer for peeking channel events.
     pub fn poll_fn(&self) -> PollFn {
         self.poll_fn
     }
 
+    /// The type-erased write function pointer for consuming buffered events.
     pub fn write_fn(&self) -> WriteFn {
         self.write_fn
     }
 
+    /// The type-erased drop function for the channel receivers.
     pub fn rx_drop_fn(&self) -> unsafe fn(*mut u8) {
         self.rx_drop_fn
     }
 
+    /// The type-erased drop function for the source's output.
     pub fn output_drop_fn(&self) -> unsafe fn(*mut u8) {
         self.output_drop_fn
     }

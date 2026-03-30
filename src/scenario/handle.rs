@@ -33,6 +33,7 @@ impl<T> Clone for Handle<T> {
 impl<T> Copy for Handle<T> {}
 
 impl<T> Handle<T> {
+    /// Create a handle from a raw node index.
     pub(crate) fn new(index: usize) -> Self {
         Self {
             index,
@@ -40,6 +41,7 @@ impl<T> Handle<T> {
         }
     }
 
+    /// Returns the underlying node index.
     pub fn index(&self) -> usize {
         self.index
     }

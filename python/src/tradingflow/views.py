@@ -1,22 +1,15 @@
-"""Typed Python wrappers over the native `NativeArrayView` and `NativeSeriesView`.
-
-These classes provide LSP-visible type annotations, docstrings, and
-autocompletion for the underlying Rust `#[pyclass]` types. All methods
-delegate to the inner native view via composition.
-
-The native views are the safety boundary — they copy data on every access
-and never expose references to graph memory. These wrappers add no new
-unsafe behavior.
-"""
+"""Typed Python wrappers over native array and series views."""
 
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 from tradingflow._native import NativeArrayView, NativeSeriesView
+from .schema import Schema
 
 
-class ArrayView:
+class ArrayView[T: np.generic]:
     """View of a Rust `Array<T>` node in the computation graph.
 
     All reads copy data out; all writes copy data in. No reference to
@@ -123,7 +116,7 @@ class ArrayView:
         return f"ArrayView(shape={self.shape}, dtype={self.dtype})"
 
 
-class SeriesView:
+class SeriesView[T: np.generic]:
     """View of a Rust `Series<T>` node in the computation graph.
 
     All reads copy data out. Series buffers can reallocate during graph
@@ -209,7 +202,7 @@ class SeriesView:
         """Return `(timestamps_datetime64, values)` tuple."""
         return self.timestamps(), self.values()
 
-    def to_dataframe(self, columns=None) -> "pd.DataFrame":
+    def to_dataframe(self, columns=None) -> pd.DataFrame:
         """Convert to pandas DataFrame with DatetimeIndex.
 
         Parameters
@@ -226,7 +219,7 @@ class SeriesView:
             vals = vals.reshape(-1, 1)
         elif vals.ndim > 2:
             vals = vals.reshape(len(ts), -1)
-        if hasattr(columns, "name"):  # Schema duck-type
+        if isinstance(columns, Schema):
             columns = [columns.name(i) for i in range(vals.shape[1])]
         return pd.DataFrame(vals, index=pd.DatetimeIndex(ts), columns=columns)
 

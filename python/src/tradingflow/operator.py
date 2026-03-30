@@ -1,9 +1,4 @@
-"""Operator interface for the TradingFlow computation graph.
-
-[`Operator`][tradingflow.Operator] is the abstract base for Python-implemented
-operators. [`NativeOperator`][tradingflow.NativeOperator] is a descriptor for
-Rust-implemented operators.
-"""
+"""Operator interface for the computation graph."""
 
 from __future__ import annotations
 
@@ -79,18 +74,22 @@ class Operator[Inputs, Output, State](ABC):
 
     @property
     def inputs(self) -> tuple[Handle, ...]:
+        """Tuple of upstream handles."""
         return self._inputs
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Shape of each output value element."""
         return self._shape
 
     @property
     def dtype(self) -> np.dtype:
+        """NumPy dtype of the output."""
         return self._dtype
 
     @property
     def name(self) -> str:
+        """Human-readable name."""
         return self._name
 
     def get_io_types(self) -> tuple[list[tuple[str, str]], tuple[str, str]]:
@@ -181,24 +180,30 @@ class NativeOperator:
 
     @property
     def kind(self) -> str:
+        """Operator kind string."""
         return self._kind
 
     @property
     def inputs(self) -> tuple[Handle, ...]:
+        """Tuple of upstream handles."""
         return self._inputs
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Output element shape."""
         return self._shape
 
     @property
     def dtype(self) -> np.dtype:
+        """Output numpy dtype."""
         return self._dtype
 
     @property
     def params(self) -> dict[str, Any]:
+        """Operator-specific parameters."""
         return self._params
 
     @property
     def name(self) -> str:
+        """Human-readable name."""
         return self._name

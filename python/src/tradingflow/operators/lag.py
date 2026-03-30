@@ -6,7 +6,7 @@ from ..operator import NativeOperator
 from ..types import Handle
 
 
-def lag(a: Handle, offset: int = 1, *, fill: float | int = 0) -> NativeOperator:
+class Lag(NativeOperator):
     """Output the value from *offset* steps ago.
 
     If fewer than ``offset + 1`` values have been recorded, the output
@@ -21,7 +21,9 @@ def lag(a: Handle, offset: int = 1, *, fill: float | int = 0) -> NativeOperator:
     fill
         Value used when history is insufficient (default ``0``).
     """
-    params: dict = {"offset": offset}
-    if fill != 0:
-        params["fill"] = fill
-    return NativeOperator(kind="lag", inputs=(a,), shape=a.shape, dtype=a.dtype, params=params)
+
+    def __init__(self, a: Handle, offset: int = 1, *, fill: float | int = 0) -> None:
+        params: dict = {"offset": offset}
+        if fill != 0:
+            params["fill"] = fill
+        super().__init__(kind="lag", inputs=(a,), shape=a.shape, dtype=a.dtype, params=params)

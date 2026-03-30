@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 from tradingflow import Scenario
-from tradingflow.operators import add, record
-from tradingflow.sources import ArraySource, IterSource, clock
+from tradingflow.operators import Add, Record
+from tradingflow.sources import ArraySource, IterSource, Clock
 
 
 def ts(i: int) -> np.datetime64:
@@ -23,11 +23,11 @@ class TestIterSource:
             shape=(), dtype=np.float64,
         )
         h = sc.add_source(src)
-        s = sc.add_operator(record(h))
+        s = sc.add_operator(Record(h))
         sc.run()
 
-        assert sc.series_len(s) == 3
-        np.testing.assert_array_almost_equal(sc.series_values(s), [10.0, 20.0, 30.0])
+        assert len(sc.series_view(s)) == 3
+        np.testing.assert_array_almost_equal(sc.series_view(s).values(), [10.0, 20.0, 30.0])
 
     def test_vector_values(self) -> None:
         """IterSource works with vector-valued elements."""
@@ -37,12 +37,12 @@ class TestIterSource:
             shape=(2,), dtype=np.float64,
         )
         h = sc.add_source(src)
-        s = sc.add_operator(record(h))
+        s = sc.add_operator(Record(h))
         sc.run()
 
-        assert sc.series_len(s) == 2
+        assert len(sc.series_view(s)) == 2
         np.testing.assert_array_almost_equal(
-            sc.series_values(s).flatten(), [1.0, 2.0, 3.0, 4.0]
+            sc.series_view(s).values().flatten(), [1.0, 2.0, 3.0, 4.0]
         )
 
     def test_with_operator(self) -> None:
@@ -50,10 +50,10 @@ class TestIterSource:
         sc = Scenario()
         a = sc.add_source(IterSource([(ts(1), 10.0), (ts(2), 20.0)], shape=(), dtype=np.float64))
         b = sc.add_source(IterSource([(ts(1), 1.0), (ts(2), 2.0)], shape=(), dtype=np.float64))
-        c = sc.add_operator(add(a, b))
-        s = sc.add_operator(record(c))
+        c = sc.add_operator(Add(a, b))
+        s = sc.add_operator(Record(c))
         sc.run()
-        np.testing.assert_array_almost_equal(sc.series_values(s), [11.0, 22.0])
+        np.testing.assert_array_almost_equal(sc.series_view(s).values(), [11.0, 22.0])
 
     def test_repeated_run(self) -> None:
         """IterSource can be used across multiple scenario runs."""
@@ -61,9 +61,9 @@ class TestIterSource:
         for _ in range(2):
             sc = Scenario()
             h = sc.add_source(IterSource(data, shape=(), dtype=np.float64))
-            s = sc.add_operator(record(h))
+            s = sc.add_operator(Record(h))
             sc.run()
-            np.testing.assert_array_almost_equal(sc.series_values(s), [5.0, 10.0])
+            np.testing.assert_array_almost_equal(sc.series_view(s).values(), [5.0, 10.0])
 
     def test_generator_expression(self) -> None:
         """IterSource works with a generator expression (consumed to list at init)."""
@@ -73,16 +73,16 @@ class TestIterSource:
             shape=(), dtype=np.float64,
         )
         h = sc.add_source(src)
-        s = sc.add_operator(record(h))
+        s = sc.add_operator(Record(h))
         sc.run()
-        np.testing.assert_array_almost_equal(sc.series_values(s), [10.0, 20.0, 30.0])
+        np.testing.assert_array_almost_equal(sc.series_view(s).values(), [10.0, 20.0, 30.0])
 
 
 class TestClockSource:
     def test_clock_registers(self) -> None:
         """Clock source can be registered without errors."""
         sc = Scenario()
-        clk = sc.add_source(clock([ts(1), ts(2), ts(3)]))
+        clk = sc.add_source(Clock([ts(1), ts(2), ts(3)]))
         assert clk.index >= 0
 
     def test_clock_with_array_source(self) -> None:
@@ -92,9 +92,9 @@ class TestClockSource:
             timestamps=np.array([ts(1), ts(2), ts(3)]),
             values=np.array([10.0, 20.0, 30.0]),
         ))
-        _clk = sc.add_source(clock([ts(2)]))
-        s = sc.add_operator(record(data))
+        _clk = sc.add_source(Clock([ts(2)]))
+        s = sc.add_operator(Record(data))
         sc.run()
 
-        assert sc.series_len(s) == 3
-        np.testing.assert_array_almost_equal(sc.series_values(s), [10.0, 20.0, 30.0])
+        assert len(sc.series_view(s)) == 3
+        np.testing.assert_array_almost_equal(sc.series_view(s).values(), [10.0, 20.0, 30.0])

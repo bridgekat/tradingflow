@@ -84,7 +84,15 @@ impl NativeScenario {
         }
     }
 
-    // -- Native (Rust) operator/source registration --------------------------
+    /// Get a cached view for a node.
+    fn view(&self, py: Python<'_>, node_index: usize) -> PyResult<PyObject> {
+        match self.cached_views.get(node_index) {
+            Some(Some(view)) => Ok(view.clone_ref(py)),
+            _ => Err(PyRuntimeError::new_err(format!(
+                "node {node_index} has no Python-representable view"
+            ))),
+        }
+    }
 
     /// Register a Rust-native source by kind + dtype + params.
     #[pyo3(signature = (kind, dtype, shape, params))]
@@ -130,8 +138,6 @@ impl NativeScenario {
         self.push_node(py, idx, &dtype_norm, view_kind, &shape)?;
         Ok(idx)
     }
-
-    // -- Python operator/source registration ---------------------------------
 
     /// Register a channel-based source (for async Python sources).
     ///
@@ -234,68 +240,6 @@ impl NativeScenario {
         Ok(output_idx)
     }
 
-    // -- View access ---------------------------------------------------------
-
-    /// Get a cached view for a node.
-    fn get_view(&self, py: Python<'_>, node_index: usize) -> PyResult<PyObject> {
-        match self.cached_views.get(node_index) {
-            Some(Some(view)) => Ok(view.clone_ref(py)),
-            _ => Err(PyRuntimeError::new_err(format!(
-                "node {node_index} has no Python-representable view"
-            ))),
-        }
-    }
-
-    /// Convenience: get the number of recorded elements (Series nodes).
-    fn series_len(&self, node_index: usize) -> PyResult<usize> {
-        let (dtype, _) = &self.node_info[node_index];
-        let sc = self.scenario.as_ref().unwrap();
-        let ptr = sc.value_ptr(node_index) as *const u8;
-        macro_rules! get_len {
-            ($T:ty) => {{
-                let series = unsafe { &*(ptr as *const Series<$T>) };
-                series.len()
-            }};
-        }
-        Ok(dispatch_dtype!(dtype, get_len))
-    }
-
-    /// Convenience: get recorded timestamps as numpy int64 array.
-    fn series_timestamps<'py>(&self, py: Python<'py>, node_index: usize) -> PyResult<PyObject> {
-        let (dtype, _) = &self.node_info[node_index];
-        let sc = self.scenario.as_ref().unwrap();
-        let ptr = sc.value_ptr(node_index) as *const u8;
-        macro_rules! get_ts {
-            ($T:ty) => {{
-                let series = unsafe { &*(ptr as *const Series<$T>) };
-                let arr = numpy::ndarray::Array1::from(series.timestamps().to_vec());
-                Ok(numpy::PyArray1::from_owned_array(py, arr)
-                    .into_any()
-                    .unbind())
-            }};
-        }
-        dispatch_dtype!(dtype, get_ts)
-    }
-
-    /// Convenience: get recorded values as numpy array.
-    fn series_values<'py>(&self, py: Python<'py>, node_index: usize) -> PyResult<PyObject> {
-        let (dtype, _) = &self.node_info[node_index];
-        let sc = self.scenario.as_ref().unwrap();
-        let ptr = sc.value_ptr(node_index) as *const u8;
-        macro_rules! extract {
-            ($T:ty) => {{
-                let series = unsafe { &*(ptr as *const Series<$T>) };
-                let nd = numpy::ndarray::Array1::from(series.values().to_vec());
-                Ok(numpy::PyArray1::from_owned_array(py, nd)
-                    .into_any()
-                    .unbind())
-            }};
-        }
-        dispatch_dtype!(dtype, extract)
-    }
-
-    // -- Execution -----------------------------------------------------------
-
     /// Run the POCQ event loop.
     fn run(&mut self, py: Python<'_>) -> PyResult<()> {
         let mut scenario = self.scenario.take().ok_or_else(|| {
@@ -315,7 +259,10 @@ impl NativeScenario {
         }
     }
 
-    /// Run with a Python driver on a background thread.
+    /// Run the POCQ event loop while executing a Python driver on a background thread.
+    ///
+    /// The driver callable is invoked with no arguments on a separate thread.
+    /// The scenario event loop runs on the current thread until completion.
     fn run_with_driver(&mut self, py: Python<'_>, driver: PyObject) -> PyResult<()> {
         let mut scenario = self.scenario.take().ok_or_else(|| {
             PyRuntimeError::new_err("scenario already consumed by a previous run()")

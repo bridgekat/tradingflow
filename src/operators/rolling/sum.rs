@@ -15,6 +15,7 @@ pub struct RollingSum<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> RollingSum<T> {
+    /// Create a new rolling sum operator with the given window size.
     pub fn new(window: usize) -> Self {
         assert!(window >= 1, "window must be >= 1");
         Self {
@@ -27,7 +28,9 @@ impl<T: Scalar + Float> RollingSum<T> {
 /// Runtime state for [`RollingSum`].
 pub struct SumState<T: Scalar + Float> {
     window: usize,
+    /// Running sum per element position.
     sum: Vec<T>,
+    /// NaN count in window per element position.
     nan_count: Vec<u32>,
 }
 

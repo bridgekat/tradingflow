@@ -1,34 +1,30 @@
-"""Const operator factory."""
+"""Const operator."""
 
 from __future__ import annotations
 
 import numpy as np
 
 from ..operator import NativeOperator
-from ..types import Handle
 
 
-def const(
-    shape: tuple[int, ...],
-    dtype: type | np.dtype = np.float64,
-) -> NativeOperator:
-    """A zero-input node holding a constant zero-filled array.
+class Const(NativeOperator):
+    """A zero-input node holding a constant array value.
 
-    The output is set once at init and never changes. The value can be
-    mutated externally via the scenario's value access methods.
+    The output is set once at init and never recomputed. The value can
+    be mutated externally via the scenario's view access methods.
 
     Parameters
     ----------
-    shape
-        Shape of the output array.
-    dtype
-        NumPy dtype of the output (default ``float64``).
+    value
+        Initial value as a numpy array.
     """
-    target = np.dtype(dtype)
-    return NativeOperator(
-        kind="const",
-        inputs=(),
-        shape=shape,
-        dtype=target,
-        params={"shape": list(shape)},
-    )
+
+    def __init__(self, value: np.ndarray) -> None:
+        arr = np.ascontiguousarray(value).reshape(value.shape)
+        super().__init__(
+            kind="const",
+            inputs=(),
+            shape=arr.shape,
+            dtype=arr.dtype,
+            params={"shape": list(arr.shape), "value_bytes": arr.tobytes()},
+        )

@@ -1,23 +1,4 @@
 //! Dense array with dynamic shape, guaranteed standard (C-contiguous) layout.
-//!
-//! [`Array`] is the primary data container for nodes in the computation graph.
-//! Unlike [`ndarray::ArrayD`], all slice accessors are O(1) with no runtime
-//! contiguity checks — contiguity is an invariant enforced by construction.
-//!
-//! # Construction
-//!
-//! * [`Array::scalar`] — 0-dimensional array holding one element.
-//! * [`Array::zeros`] — filled with `T::default()` (0 for numeric types).
-//! * [`Array::full`] — filled with a specific value.
-//! * [`Array::from_vec`] — from a flat buffer and shape.
-//! * [`Array::from_fn`] — from a function of flat index.
-//!
-//! # Element-wise transforms
-//!
-//! * [`Array::map`], [`Array::map_inplace`], [`Array::zip_with`],
-//!   [`Array::fill`].
-//! * Arithmetic operators `+`, `-`, `*`, `/` (element-wise, allocating) for
-//!   both `Array × Array` and `Array × scalar`.
 
 use std::ops;
 

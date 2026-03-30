@@ -6,7 +6,7 @@
 use pyo3::PyResult;
 use pyo3::exceptions::PyTypeError;
 
-/// normalize a numpy dtype string to a canonical form.
+/// Normalize a numpy dtype string to a canonical form.
 pub fn normalize_dtype(dtype: &str) -> &str {
     match dtype {
         "bool" | "|b1" => "bool",

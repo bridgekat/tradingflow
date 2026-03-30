@@ -1,8 +1,8 @@
 //! Source registration for the Python bridge.
 //!
 //! Provides:
-//! * [`HistoricalEventSender`] / [`LiveEventSender`] — pyclasses for Python
-//!   to push events into a channel-based source.
+//! * [`EventSender`] — pyclass for Python to push events into a
+//!   channel-based source (one sender per channel: historical and live).
 //! * [`dispatch_native_source`] — register a Rust source by kind string.
 //! * [`register_channel_source`] — register a channel-based source backed
 //!   by an [`ErasedSource`](crate::source::ErasedSource).
@@ -83,6 +83,9 @@ unsafe impl Sync for EventSender {}
 
 #[pymethods]
 impl EventSender {
+    /// Send a `(timestamp, value)` event into the channel.
+    ///
+    /// The value is extracted as raw bytes from a numpy array.
     fn send(&self, py: Python<'_>, ts_ns: i64, value: PyObject) -> PyResult<()> {
         let bytes = extract_value_bytes(py, &value, self.element_size)?;
         if let Some(ref tx) = self.tx {
@@ -92,6 +95,7 @@ impl EventSender {
         Ok(())
     }
 
+    /// Close the channel, signalling no more events will be sent.
     fn close(&mut self) {
         self.tx.take();
     }

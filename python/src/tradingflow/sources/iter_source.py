@@ -1,9 +1,4 @@
-"""Iterator-based source — feeds events from a Python iterator.
-
-This is the Python equivalent of Rust's `IterSource`. Since arbitrary
-Python iterators cannot cross FFI, this is implemented as a `Source`
-subclass that converts the iterator into async historical events.
-"""
+"""Iterator-based source -- feeds events from a Python iterable."""
 
 from __future__ import annotations
 
@@ -26,8 +21,9 @@ class IterSource(Source):
     ----------
     iterable
         Iterable of `(datetime64, array_like)` pairs. Timestamps must be
-        in non-decreasing order. The iterable is consumed once per
-        `subscribe()` call.
+        in non-decreasing order. The iterable is materialised into a list
+        at construction time, so it can be replayed across multiple
+        `subscribe` calls.
     shape
         Shape of each emitted value element.
     dtype

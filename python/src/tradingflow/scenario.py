@@ -1,9 +1,4 @@
-"""Scenario runtime — thin Python wrapper around the Rust native backend.
-
-[`Scenario`][tradingflow.Scenario] specifies a directed acyclic graph of
-sources and operators. The POCQ event loop and DAG propagation are
-implemented in Rust (`tradingflow._native`).
-"""
+"""Scenario runtime -- thin Python wrapper around the Rust native backend."""
 
 from __future__ import annotations
 
@@ -12,11 +7,12 @@ from typing import Any
 
 import numpy as np
 
+from tradingflow._native import NativeArrayView, NativeSeriesView, NativeScenario
+from . import Array, Series, operators
 from .operator import Operator, NativeOperator
 from .source import Source, NativeSource
 from .types import Handle
-
-from tradingflow._native import NativeScenario
+from .views import ArrayView, SeriesView
 
 
 class Scenario:
@@ -33,6 +29,30 @@ class Scenario:
     def __init__(self) -> None:
         self._native = NativeScenario()
         self._sources: list[tuple[Source, Any, Any]] = []
+
+    def array_view(self, handle: Handle[Array[Any]]) -> ArrayView:
+        """Get an ArrayView for an Array node."""
+        inner = self._native.view(handle.index)
+        assert isinstance(inner, NativeArrayView)
+        return ArrayView(inner)
+
+    def series_view(self, handle: Handle[Series[Any]]) -> SeriesView:
+        """Get a SeriesView for a Series node."""
+        inner = self._native.view(handle.index)
+        assert isinstance(inner, NativeSeriesView)
+        return SeriesView(inner)
+
+    def add_const(self, value: np.ndarray) -> Handle:
+        """Register a constant node with an initial value.
+
+        Shorthand for ``add_operator(Const(value))``.
+
+        Parameters
+        ----------
+        value
+            Initial value.
+        """
+        return self.add_operator(operators.Const(value))
 
     def add_source(self, source: Source | NativeSource) -> Handle:
         """Register a source and return a handle to its output node."""
@@ -91,27 +111,6 @@ class Scenario:
                 clock_index=clock.index if clock else None,
             )
         return Handle(idx, operator.shape, operator.dtype)
-
-    # -- Series access --------------------------------------------------------
-
-    def series_len(self, handle: Handle) -> int:
-        """Number of recorded elements in a Series node."""
-        return self._native.series_len(handle.index)
-
-    def series_timestamps(self, handle: Handle) -> np.ndarray:
-        """Recorded timestamps as datetime64[ns] array."""
-        ts_i64 = np.asarray(self._native.series_timestamps(handle.index))
-        return ts_i64.view("datetime64[ns]")
-
-    def series_values(self, handle: Handle) -> np.ndarray:
-        """Recorded values as numpy array."""
-        vals_raw = np.asarray(self._native.series_values(handle.index))
-        n = self._native.series_len(handle.index)
-        if handle.shape:
-            return vals_raw.reshape(n, *handle.shape)
-        return vals_raw
-
-    # -- Execution ------------------------------------------------------------
 
     def run(self) -> None:
         """Execute the POCQ event loop.

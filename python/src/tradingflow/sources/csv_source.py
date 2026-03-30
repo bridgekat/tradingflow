@@ -1,16 +1,4 @@
-"""CSV file source — dispatched to Rust for parsing and ingestion.
-
-Example
--------
-```python
-from pathlib import Path
-from tradingflow import Schema
-from tradingflow.sources import CSVSource
-
-schema = Schema(["open", "close", "high", "low", "volume", "amount"])
-source = CSVSource(Path("000001_daily_price_raw.csv"), schema, time_column="date")
-```
-"""
+"""CSV file source dispatched to Rust for parsing and ingestion."""
 
 from __future__ import annotations
 
@@ -26,8 +14,7 @@ class CSVSource(NativeSource):
     """Historical source backed by a CSV file, parsed in Rust.
 
     The CSV must have a date/datetime column and one or more numeric
-    value columns.  Dates are parsed as ``YYYY-MM-DD`` (or
-    ``YYYY-MM-DD HH:MM:SS``, truncated to date).
+    value columns. Parsing is handled entirely by the Rust backend.
 
     Parameters
     ----------
@@ -63,5 +50,3 @@ class CSVSource(NativeSource):
             },
             name=name,
         )
-
-        self.schema = schema
