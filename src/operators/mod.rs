@@ -1,7 +1,9 @@
 pub mod apply;
+pub mod cast;
 pub mod concat;
 pub mod r#const;
 pub mod filter;
+pub mod id;
 pub mod lag;
 pub mod last;
 pub mod record;
@@ -63,8 +65,10 @@ pub use apply::{
     sqrt,
     subtract,
 };
+pub use cast::Cast;
 pub use concat::Concat;
 pub use r#const::Const;
+pub use id::Id;
 pub use filter::Filter;
 pub use lag::Lag;
 pub use last::Last;

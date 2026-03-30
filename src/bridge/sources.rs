@@ -66,52 +66,28 @@ pub fn extract_value_bytes(
 }
 
 // ---------------------------------------------------------------------------
-// Python-callable event senders
+// Python-callable event sender
 // ---------------------------------------------------------------------------
 
-/// Sends historical `(timestamp, value)` events from Python to Rust.
+/// Sends `(timestamp, value)` events from Python into a Rust channel.
+///
+/// Used for both historical and live channels of a Python-driven source.
 #[pyclass]
-pub struct HistoricalEventSender {
+pub struct EventSender {
     tx: Option<mpsc::UnboundedSender<(i64, Vec<u8>)>>,
     element_size: usize,
 }
 
-unsafe impl Send for HistoricalEventSender {}
-unsafe impl Sync for HistoricalEventSender {}
+unsafe impl Send for EventSender {}
+unsafe impl Sync for EventSender {}
 
 #[pymethods]
-impl HistoricalEventSender {
+impl EventSender {
     fn send(&self, py: Python<'_>, ts_ns: i64, value: PyObject) -> PyResult<()> {
         let bytes = extract_value_bytes(py, &value, self.element_size)?;
         if let Some(ref tx) = self.tx {
             tx.send((ts_ns, bytes))
-                .map_err(|_| PyRuntimeError::new_err("historical channel closed"))?;
-        }
-        Ok(())
-    }
-
-    fn close(&mut self) {
-        self.tx.take();
-    }
-}
-
-/// Sends live value events (with timestamp) from Python to Rust.
-#[pyclass]
-pub struct LiveEventSender {
-    tx: Option<mpsc::UnboundedSender<(i64, Vec<u8>)>>,
-    element_size: usize,
-}
-
-unsafe impl Send for LiveEventSender {}
-unsafe impl Sync for LiveEventSender {}
-
-#[pymethods]
-impl LiveEventSender {
-    fn send(&self, py: Python<'_>, ts_ns: i64, value: PyObject) -> PyResult<()> {
-        let bytes = extract_value_bytes(py, &value, self.element_size)?;
-        if let Some(ref tx) = self.tx {
-            tx.send((ts_ns, bytes))
-                .map_err(|_| PyRuntimeError::new_err("live channel closed"))?;
+                .map_err(|_| PyRuntimeError::new_err("channel closed"))?;
         }
         Ok(())
     }
@@ -241,7 +217,7 @@ pub fn register_channel_source(
     sc: &mut Scenario,
     shape: &[usize],
     dtype: &str,
-) -> PyResult<(usize, HistoricalEventSender, LiveEventSender)> {
+) -> PyResult<(usize, EventSender, EventSender)> {
     let stride: usize = if shape.is_empty() {
         1
     } else {
@@ -264,11 +240,11 @@ pub fn register_channel_source(
 
     let node_index = dispatch_dtype!(dtype, register_channel, numeric);
 
-    let hist_sender = HistoricalEventSender {
+    let hist_sender = EventSender {
         tx: Some(hist_tx),
         element_size,
     };
-    let live_sender = LiveEventSender {
+    let live_sender = EventSender {
         tx: Some(live_tx),
         element_size,
     };
@@ -359,7 +335,7 @@ unsafe fn channel_write_fn<T: Scalar + Copy>(
     let rx = unsafe { &mut *(receiver_state as *mut PeekableReceiver<(i64, Vec<u8>)>) };
     if let Some((_ts, payload)) = rx.take_pending() {
         let output = unsafe { &mut *(output_ptr as *mut Array<T>) };
-        let byte_len = output.as_slice().len() * std::mem::size_of::<T>();
+        let byte_len = std::mem::size_of_val(output.as_slice());
         assert_eq!(
             payload.len(),
             byte_len,

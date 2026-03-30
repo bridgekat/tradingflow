@@ -1,6 +1,6 @@
 //! Python-visible views for Array and Series nodes.
 //!
-//! [`_ArrayView`] and [`_SeriesView`] are `#[pyclass]` wrappers that hold a raw
+//! [`NativeArrayView`] and [`NativeSeriesView`] are `#[pyclass]` wrappers that hold a raw
 //! pointer to a graph node's value.  All read/write methods **copy** data
 //! across the boundary — no reference to graph memory ever reaches Python.
 //!
@@ -25,6 +25,8 @@ use crate::{Array, Scalar, Series};
 /// Type alias for arbitrary Python objects.
 pub type PyObject = Py<PyAny>;
 
+use super::dispatch::dispatch_dtype;
+
 /// Additional bounds needed for numpy interop.
 pub trait PyScalar: Scalar + numpy::Element {}
 
@@ -41,6 +43,42 @@ impl PyScalar for f32 {}
 impl PyScalar for f64 {}
 
 // ===========================================================================
+// View creation (dtype-dispatched)
+// ===========================================================================
+
+/// What kind of value a node holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewKind {
+    Array,
+    Series,
+}
+
+/// Create a Python view for a node, given its kind and dtype.
+pub fn create_view(
+    py: Python<'_>,
+    ptr: *mut u8,
+    shape: &[usize],
+    dtype: &str,
+    kind: ViewKind,
+) -> PyResult<PyObject> {
+    macro_rules! make_view {
+        ($T:ty) => {
+            match kind {
+                ViewKind::Array => {
+                    let v = make_array_view::<$T>(ptr, shape, dtype);
+                    Ok(Py::new(py, v)?.into_any())
+                }
+                ViewKind::Series => {
+                    let v = make_series_view::<$T>(ptr, shape, dtype);
+                    Ok(Py::new(py, v)?.into_any())
+                }
+            }
+        };
+    }
+    dispatch_dtype!(dtype, make_view)
+}
+
+// ===========================================================================
 // ArrayView
 // ===========================================================================
 
@@ -55,7 +93,7 @@ type ArrayWriteFn = unsafe fn(*mut u8, Python<'_>, &Bound<'_, PyAny>, &[usize]) 
 /// Every read (`value`) copies data out.  Every write (`write`) copies data
 /// in.  No reference to graph memory is ever exposed to Python.
 #[pyclass]
-pub struct _ArrayView {
+pub struct NativeArrayView {
     ptr: *mut u8,
     shape: Vec<usize>,
     dtype_str: String,
@@ -63,12 +101,16 @@ pub struct _ArrayView {
     write_fn: ArrayWriteFn,
 }
 
-unsafe impl Send for _ArrayView {}
-unsafe impl Sync for _ArrayView {}
+unsafe impl Send for NativeArrayView {}
+unsafe impl Sync for NativeArrayView {}
 
-/// Create an [`_ArrayView`] for a node holding `Array<T>`.
-pub fn make_array_view<T: PyScalar>(ptr: *mut u8, shape: &[usize], dtype_str: &str) -> _ArrayView {
-    _ArrayView {
+/// Create an [`NativeArrayView`] for a node holding `Array<T>`.
+pub fn make_array_view<T: PyScalar>(
+    ptr: *mut u8,
+    shape: &[usize],
+    dtype_str: &str,
+) -> NativeArrayView {
+    NativeArrayView {
         ptr,
         shape: shape.to_vec(),
         dtype_str: dtype_str.to_string(),
@@ -78,7 +120,7 @@ pub fn make_array_view<T: PyScalar>(ptr: *mut u8, shape: &[usize], dtype_str: &s
 }
 
 #[pymethods]
-impl _ArrayView {
+impl NativeArrayView {
     /// Copy the array data into a new numpy array.
     fn value<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
         unsafe { (self.value_fn)(self.ptr as *const u8, py, &self.shape) }
@@ -105,6 +147,23 @@ impl _ArrayView {
     }
 }
 
+// -- Numpy interop helper ---------------------------------------------------
+
+/// Make the input contiguous and extract its data pointer and shape.
+///
+/// The caller must keep the returned [`Bound`] alive while using the pointer.
+fn contiguous_numpy_data<'py>(
+    py: Python<'py>,
+    value: &Bound<'py, PyAny>,
+) -> PyResult<(Bound<'py, PyAny>, usize, Vec<usize>)> {
+    let np = py.import("numpy")?;
+    let arr = np.call_method1("ascontiguousarray", (value,))?;
+    let interface = arr.getattr("__array_interface__")?;
+    let ptr: usize = interface.get_item("data")?.get_item(0)?.extract()?;
+    let shape: Vec<usize> = interface.get_item("shape")?.extract()?;
+    Ok((arr, ptr, shape))
+}
+
 // -- Monomorphized helpers for ArrayView ------------------------------------
 
 unsafe fn array_value<T: PyScalar>(
@@ -113,12 +172,7 @@ unsafe fn array_value<T: PyScalar>(
     shape: &[usize],
 ) -> PyResult<PyObject> {
     let arr = unsafe { &*(ptr as *const Array<T>) };
-    let full_shape = if shape.is_empty() {
-        vec![1]
-    } else {
-        shape.to_vec()
-    };
-    let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), arr.as_slice().to_vec())
+    let nd = ArrayD::from_shape_vec(IxDyn(shape), arr.as_slice().to_vec())
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
 }
@@ -132,18 +186,8 @@ unsafe fn array_write<T: PyScalar>(
     let arr = unsafe { &mut *(ptr as *mut Array<T>) };
     let expected_len = arr.as_slice().len();
 
-    let np = py.import("numpy")?;
-    let contiguous = np.call_method1("ascontiguousarray", (value,))?;
-    let interface = contiguous.getattr("__array_interface__")?;
-    let data_tuple = interface.get_item("data")?;
-    let src_ptr: usize = data_tuple.get_item(0)?.extract()?;
-
-    let src_shape: Vec<usize> = interface.get_item("shape")?.extract()?;
-    let src_len: usize = if src_shape.is_empty() {
-        1
-    } else {
-        src_shape.iter().product()
-    };
+    let (_contiguous, src_ptr, src_shape) = contiguous_numpy_data(py, value)?;
+    let src_len: usize = src_shape.iter().product();
     if src_len != expected_len {
         return Err(PyValueError::new_err(format!(
             "shape mismatch: expected {} elements (shape {:?}), got {} (shape {:?})",
@@ -175,13 +219,17 @@ type SeriesLenFn = unsafe fn(*const u8) -> usize;
 type SeriesAsofFn = unsafe fn(*const u8, Python<'_>, &[usize], i64) -> PyResult<PyObject>;
 /// Type-erased function: positional element access.
 type SeriesAtFn = unsafe fn(*const u8, Python<'_>, &[usize], usize) -> PyResult<PyObject>;
+/// Type-erased function: push an element into Series<T>.
+type SeriesPushFn =
+    unsafe fn(*mut u8, Python<'_>, &Bound<'_, PyAny>, &[usize], i64) -> PyResult<()>;
 
 /// Python-visible view of a Rust `Series<T>` node.
 ///
-/// Every read method copies data out.  Series buffers can reallocate during
-/// graph execution (capacity doubling on append); copies prevent dangling.
+/// Read methods copy data out.  The [`push`](NativeSeriesView::push) method appends
+/// an element, copying data in.  Series buffers can reallocate during graph
+/// execution (capacity doubling on append); copies prevent dangling.
 #[pyclass]
-pub struct _SeriesView {
+pub struct NativeSeriesView {
     ptr: *mut u8,
     shape: Vec<usize>,
     dtype_str: String,
@@ -191,18 +239,19 @@ pub struct _SeriesView {
     len_fn: SeriesLenFn,
     asof_fn: SeriesAsofFn,
     at_fn: SeriesAtFn,
+    push_fn: SeriesPushFn,
 }
 
-unsafe impl Send for _SeriesView {}
-unsafe impl Sync for _SeriesView {}
+unsafe impl Send for NativeSeriesView {}
+unsafe impl Sync for NativeSeriesView {}
 
-/// Create a [`_SeriesView`] for a node holding `Series<T>`.
+/// Create a [`NativeSeriesView`] for a node holding `Series<T>`.
 pub fn make_series_view<T: PyScalar>(
     ptr: *mut u8,
     shape: &[usize],
     dtype_str: &str,
-) -> _SeriesView {
-    _SeriesView {
+) -> NativeSeriesView {
+    NativeSeriesView {
         ptr,
         shape: shape.to_vec(),
         dtype_str: dtype_str.to_string(),
@@ -212,11 +261,12 @@ pub fn make_series_view<T: PyScalar>(
         len_fn: series_len::<T>,
         asof_fn: series_asof::<T>,
         at_fn: series_at::<T>,
+        push_fn: series_push::<T>,
     }
 }
 
 #[pymethods]
-impl _SeriesView {
+impl NativeSeriesView {
     /// Copy the latest element into a new numpy array.
     fn last<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
         unsafe { (self.last_fn)(self.ptr as *const u8, py, &self.shape) }
@@ -272,6 +322,16 @@ impl _SeriesView {
         unsafe { (self.at_fn)(self.ptr as *const u8, py, &self.shape, i) }
     }
 
+    /// Append an element with the given timestamp.
+    fn push<'py>(
+        &self,
+        py: Python<'py>,
+        timestamp: i64,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<()> {
+        unsafe { (self.push_fn)(self.ptr, py, value, &self.shape, timestamp) }
+    }
+
     /// Number of recorded elements.
     fn __len__(&self) -> usize {
         unsafe { (self.len_fn)(self.ptr as *const u8) }
@@ -302,12 +362,7 @@ unsafe fn series_last<T: PyScalar>(
 ) -> PyResult<PyObject> {
     let series = unsafe { &*(ptr as *const Series<T>) };
     let values = series.last().unwrap_or(&[]);
-    let full_shape = if shape.is_empty() {
-        vec![1]
-    } else {
-        shape.to_vec()
-    };
-    let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), values.to_vec())
+    let nd = ArrayD::from_shape_vec(IxDyn(shape), values.to_vec())
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
 }
@@ -323,11 +378,7 @@ unsafe fn series_values<T: PyScalar>(
     let n = series.len();
     let start = start.min(n);
     let end = end.min(n);
-    let stride: usize = if element_shape.is_empty() {
-        1
-    } else {
-        element_shape.iter().product()
-    };
+    let stride: usize = element_shape.iter().product::<usize>();
     let all_values = series.values();
     let slice = &all_values[start * stride..end * stride];
     let count = end - start;
@@ -367,16 +418,11 @@ unsafe fn series_asof<T: PyScalar>(
     let series = unsafe { &*(ptr as *const Series<T>) };
     match series.asof(timestamp) {
         Some(slice) => {
-            let full_shape = if shape.is_empty() {
-                vec![1]
-            } else {
-                shape.to_vec()
-            };
-            let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), slice.to_vec())
+            let nd = ArrayD::from_shape_vec(IxDyn(shape), slice.to_vec())
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
         }
-        None => Ok(py.None().into_pyobject(py)?.unbind().into()),
+        None => Ok(py.None().into_pyobject(py)?.unbind()),
     }
 }
 
@@ -388,12 +434,34 @@ unsafe fn series_at<T: PyScalar>(
 ) -> PyResult<PyObject> {
     let series = unsafe { &*(ptr as *const Series<T>) };
     let slice = series.at(i);
-    let full_shape = if shape.is_empty() {
-        vec![1]
-    } else {
-        shape.to_vec()
-    };
-    let nd = ArrayD::from_shape_vec(IxDyn(&full_shape), slice.to_vec())
+    let nd = ArrayD::from_shape_vec(IxDyn(shape), slice.to_vec())
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     Ok(PyArrayDyn::from_owned_array(py, nd).into_any().unbind())
+}
+
+unsafe fn series_push<T: PyScalar>(
+    ptr: *mut u8,
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    shape: &[usize],
+    timestamp: i64,
+) -> PyResult<()> {
+    let series = unsafe { &mut *(ptr as *mut Series<T>) };
+    let stride: usize = shape.iter().product::<usize>();
+
+    let (_contiguous, src_ptr, src_shape) = contiguous_numpy_data(py, value)?;
+    let src_len: usize = src_shape.iter().product::<usize>();
+    if src_len != stride {
+        return Err(PyValueError::new_err(format!(
+            "push: expected {} elements (shape {:?}), got {} (shape {:?})",
+            stride, shape, src_len, src_shape,
+        )));
+    }
+
+    let mut buf = vec![T::default(); stride];
+    unsafe {
+        std::ptr::copy_nonoverlapping(src_ptr as *const T, buf.as_mut_ptr(), stride);
+    }
+    series.push(timestamp, &buf);
+    Ok(())
 }

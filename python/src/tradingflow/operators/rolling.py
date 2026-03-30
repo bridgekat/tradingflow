@@ -16,7 +16,10 @@ def rolling_sum(a: Handle, window: int) -> NativeOperator:
     If any value in the window is NaN, the output for that element is NaN.
     """
     return NativeOperator(
-        kind="rolling_sum", inputs=(a,), shape=a.shape, dtype=a.dtype,
+        kind="rolling_sum",
+        inputs=(a,),
+        shape=a.shape,
+        dtype=a.dtype,
         params={"window": window},
     )
 
@@ -27,7 +30,10 @@ def rolling_mean(a: Handle, window: int) -> NativeOperator:
     If any value in the window is NaN, the output for that element is NaN.
     """
     return NativeOperator(
-        kind="rolling_mean", inputs=(a,), shape=a.shape, dtype=a.dtype,
+        kind="rolling_mean",
+        inputs=(a,),
+        shape=a.shape,
+        dtype=a.dtype,
         params={"window": window},
     )
 
@@ -38,7 +44,10 @@ def rolling_variance(a: Handle, window: int) -> NativeOperator:
     If any value in the window is NaN, the output for that element is NaN.
     """
     return NativeOperator(
-        kind="rolling_variance", inputs=(a,), shape=a.shape, dtype=a.dtype,
+        kind="rolling_variance",
+        inputs=(a,),
+        shape=a.shape,
+        dtype=a.dtype,
         params={"window": window},
     )
 
@@ -53,7 +62,10 @@ def rolling_covariance(a: Handle, window: int) -> NativeOperator:
         raise ValueError("rolling_covariance requires 1-D input")
     k = a.shape[0]
     return NativeOperator(
-        kind="rolling_covariance", inputs=(a,), shape=(k, k), dtype=a.dtype,
+        kind="rolling_covariance",
+        inputs=(a,),
+        shape=(k, k),
+        dtype=a.dtype,
         params={"window": window},
     )
 
@@ -66,7 +78,7 @@ def ema(
     span: int | None = None,
     half_life: float | None = None,
 ) -> NativeOperator:
-    """Window-normalised exponential moving average.
+    """Window-normalized exponential moving average.
 
     Exactly one of *alpha*, *span*, or *half_life* must be provided:
 
@@ -94,7 +106,10 @@ def ema(
     else:
         params["half_life"] = half_life
     return NativeOperator(
-        kind="ema", inputs=(a,), shape=a.shape, dtype=a.dtype,
+        kind="ema",
+        inputs=(a,),
+        shape=a.shape,
+        dtype=a.dtype,
         params=params,
     )
 
@@ -105,5 +120,8 @@ def forward_fill(a: Handle) -> NativeOperator:
     If no valid value has been seen yet for an element, the output is NaN.
     """
     return NativeOperator(
-        kind="forward_fill", inputs=(a,), shape=a.shape, dtype=a.dtype,
+        kind="forward_fill",
+        inputs=(a,),
+        shape=a.shape,
+        dtype=a.dtype,
     )

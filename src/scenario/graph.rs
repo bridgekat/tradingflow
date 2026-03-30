@@ -5,7 +5,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use super::node::{Node, NodeState};
+use super::node::Node;
 
 /// Untyped DAG owning [`Node`]s and implementing topological flush.
 ///
@@ -82,12 +82,11 @@ impl Graph {
             self.pending[i] = false;
 
             let node = &self.nodes[i];
-            let produced = match &node.state {
-                NodeState::Operator(op_state) => {
-                    // SAFETY: all pointers validated at node construction time.
-                    unsafe { op_state.compute(node.value_ptr, timestamp) }
-                }
-                NodeState::Source(_) => false,
+            let produced = if let Some(state) = node.operator_state() {
+                // SAFETY: all pointers validated at node construction time.
+                unsafe { state.compute(node.value_ptr, timestamp) }
+            } else {
+                false
             };
 
             if produced {

@@ -34,7 +34,7 @@ use crate::operators::Const;
 use crate::source::{ErasedSource, Source};
 
 use graph::Graph;
-use node::{Node, NodeState, SourceState};
+use node::Node;
 
 /// Type-erased DAG runtime for event-driven computation.
 ///
@@ -69,8 +69,6 @@ impl Scenario {
         }
     }
 
-    // -- Value access --------------------------------------------------------
-
     /// Immutable access to a node's value.  Panics on TypeId mismatch.
     #[inline(always)]
     pub fn value<T: Send + 'static>(&self, h: Handle<T>) -> &T {
@@ -95,6 +93,11 @@ impl Scenario {
             h.index(),
         );
         unsafe { &mut *(node.value_ptr as *mut T) }
+    }
+
+    /// Raw value pointer to a node.
+    pub fn value_ptr(&self, index: usize) -> *mut u8 {
+        self.graph.nodes[index].value_ptr
     }
 
     /// Register a constant node with an initial value.
@@ -128,31 +131,14 @@ impl Scenario {
     }
 
     /// Register a type-erased source.
-    pub fn add_erased_source(&mut self, source: ErasedSource) -> usize {
-        let output_type_id = source.output_type_id();
-        let output_drop_fn = source.output_drop_fn();
-        let write_fn = source.write_fn();
-        let poll_fn = source.poll_fn();
-        let rx_drop_fn = source.rx_drop_fn();
-        // SAFETY: returned pointers are from Box::into_raw and will be managed
-        // by SourceState (channel receivers) and Node (output value).
-        let (hist_rx_ptr, live_rx_ptr, output_ptr) = source.init(i64::MIN);
-        let source_state =
-            SourceState::new(hist_rx_ptr, live_rx_ptr, write_fn, poll_fn, rx_drop_fn);
-        let idx = self.graph.add_node(Node::from_source(
-            output_type_id,
-            output_ptr,
-            output_drop_fn,
-            source_state,
-        ));
-        self.source_indices.push(idx);
-        idx
+    pub fn add_erased_source(&mut self, erased: ErasedSource) -> usize {
+        let node = Node::from_erased_source(erased, i64::MIN);
+        let output_idx = self.graph.add_node(node);
+        self.source_indices.push(output_idx);
+        output_idx
     }
 
     /// Register a type-erased operator.
-    ///
-    /// Type validation, init, and operator state setup are handled by
-    /// [`Node::from_erased_operator`].
     pub fn add_erased_operator(
         &mut self,
         erased: ErasedOperator,
@@ -187,35 +173,6 @@ impl Scenario {
         }
         output_idx
     }
-
-    // -- Untyped helpers (for FFI / bridge) -----------------------------------
-
-    /// `TypeId` of a node's value.
-    pub fn node_type_id(&self, index: usize) -> TypeId {
-        self.graph.nodes[index].type_id
-    }
-
-    /// Raw value pointer for a node.
-    pub(crate) fn node_value_ptr(&self, index: usize) -> *mut u8 {
-        self.graph.nodes[index].value_ptr
-    }
-
-    /// Raw pointer to an operator node's state allocation.
-    ///
-    /// Returns `None` if the node is not an operator.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the returned pointer is cast to the correct
-    /// state type and not used after the node is dropped.
-    pub(crate) fn operator_state_ptr(&self, index: usize) -> Option<*mut u8> {
-        match &self.graph.nodes[index].state {
-            NodeState::Operator(c) => Some(c.state_ptr),
-            _ => None,
-        }
-    }
-
-    // -- Flush ---------------------------------------------------------------
 
     /// Propagate updates through the DAG.
     pub fn flush(&mut self, timestamp: i64, updated_sources: &[usize]) {

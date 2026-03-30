@@ -11,8 +11,8 @@ use crate::operators;
 use crate::scenario::Scenario;
 use crate::{ErasedOperator, Operator};
 
-use super::ViewKind;
-use super::dispatch::{dispatch_dtype, normalise_dtype};
+use super::dispatch::{dispatch_dtype, normalize_dtype};
+use super::views::ViewKind;
 
 fn add_operator_from_indices(
     sc: &mut Scenario,
@@ -37,7 +37,7 @@ pub fn dispatch_native_operator(
     trigger_index: Option<usize>,
     params: &Bound<'_, PyDict>,
 ) -> PyResult<(usize, ViewKind)> {
-    let dtype = normalise_dtype(dtype);
+    let dtype = normalize_dtype(dtype);
 
     // Each non-parameterized op gets its own inline `go!` macro.
     // A helper macro can't forward $T:ty through nested macro_rules.
@@ -460,6 +460,67 @@ pub fn dispatch_native_operator(
                 };
             }
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Series))
+        }
+
+        // -- Identity (Array → Array) -------------------------------------------
+        "id" => {
+            macro_rules! go {
+                ($T:ty) => {
+                    add_operator_from_indices(
+                        sc,
+                        operators::Id::<crate::Array<$T>>::new(),
+                        input_indices,
+                        trigger_index,
+                    )
+                };
+            }
+            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+        }
+
+        // -- Cast (Array<S> → Array<T>) ------------------------------------------
+        "cast" => {
+            let from_dtype: String = params
+                .get_item("from_dtype")?
+                .ok_or_else(|| PyTypeError::new_err("cast requires 'from_dtype' param"))?
+                .extract()?;
+            macro_rules! go_from {
+                ($S:ty) => {{
+                    macro_rules! go_to {
+                        ($T:ty) => {
+                            add_operator_from_indices(
+                                sc,
+                                operators::Cast::<$S, $T>::new(),
+                                input_indices,
+                                trigger_index,
+                            )
+                        };
+                    }
+                    dispatch_dtype!(dtype, go_to, numeric)
+                }};
+            }
+            Ok((
+                dispatch_dtype!(&from_dtype, go_from, numeric),
+                ViewKind::Array,
+            ))
+        }
+
+        // -- Const (0-input → Array) ---------------------------------------------
+        "const" => {
+            let shape: Vec<usize> = params
+                .get_item("shape")?
+                .ok_or_else(|| PyTypeError::new_err("const requires 'shape' param"))?
+                .extract()?;
+            macro_rules! go {
+                ($T:ty) => {
+                    add_operator_from_indices(
+                        sc,
+                        operators::Const::new(crate::Array::<$T>::zeros(&shape)),
+                        input_indices,
+                        trigger_index,
+                    )
+                };
+            }
+            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
         }
 
         other => Err(PyTypeError::new_err(format!(

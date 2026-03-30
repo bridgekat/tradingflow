@@ -22,7 +22,7 @@
 use std::any::TypeId;
 
 use crate::operator::{ComputeFn, ErasedOperator};
-use crate::source::{PollFn, WriteFn};
+use crate::source::{ErasedSource, PollFn, WriteFn};
 
 // ===========================================================================
 // NodeState
@@ -59,20 +59,23 @@ pub(super) struct Node {
 unsafe impl Send for Node {}
 
 impl Node {
-    /// Create a source node from a pre-allocated raw value pointer and
-    /// [`SourceState`].
-    pub fn from_source(
-        type_id: TypeId,
-        value_ptr: *mut u8,
-        value_drop_fn: unsafe fn(*mut u8),
-        source_state: SourceState,
-    ) -> Self {
+    /// Create a source node from an [`ErasedSource`].
+    ///
+    /// Calls the deferred init and attaches the channel state.
+    pub fn from_erased_source(erased: ErasedSource, timestamp: i64) -> Self {
+        let output_type_id = erased.output_type_id();
+        let poll_fn = erased.poll_fn();
+        let write_fn = erased.write_fn();
+        let rx_drop_fn = erased.rx_drop_fn();
+        let output_drop_fn = erased.output_drop_fn();
+        let (hist_rx_ptr, live_rx_ptr, output_ptr) = erased.init(timestamp);
+        let state = SourceState::new(hist_rx_ptr, live_rx_ptr, poll_fn, write_fn, rx_drop_fn);
         Self {
-            type_id,
-            value_ptr,
-            state: NodeState::Source(source_state),
+            type_id: output_type_id,
+            value_ptr: output_ptr,
+            state: NodeState::Source(state),
             trigger_edges: Vec::new(),
-            value_drop_fn,
+            value_drop_fn: output_drop_fn,
         }
     }
 
@@ -106,11 +109,11 @@ impl Node {
         let state_drop_fn = erased.state_drop_fn();
         let output_drop_fn = erased.output_drop_fn();
         let (state_ptr, output_ptr) = unsafe { erased.init(&input_ptrs, timestamp) };
-        let op_state = OperatorState::new(compute_fn, input_ptrs, state_ptr, state_drop_fn);
+        let state = OperatorState::new(compute_fn, input_ptrs, state_ptr, state_drop_fn);
         Self {
             type_id: output_type_id,
             value_ptr: output_ptr,
-            state: NodeState::Operator(op_state),
+            state: NodeState::Operator(state),
             trigger_edges: Vec::new(),
             value_drop_fn: output_drop_fn,
         }
@@ -120,6 +123,14 @@ impl Node {
     pub fn source_state(&self) -> Option<&SourceState> {
         match &self.state {
             NodeState::Source(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Returns the [`OperatorState`] if this is an operator node.
+    pub fn operator_state(&self) -> Option<&OperatorState> {
+        match &self.state {
+            NodeState::Operator(s) => Some(s),
             _ => None,
         }
     }
@@ -150,8 +161,8 @@ pub enum ChannelKind {
 pub(super) struct SourceState {
     hist_rx_ptr: *mut u8,
     live_rx_ptr: *mut u8,
-    write_fn: WriteFn,
     poll_fn: PollFn,
+    write_fn: WriteFn,
     rx_drop_fn: unsafe fn(*mut u8),
 }
 
@@ -159,15 +170,15 @@ impl SourceState {
     pub(super) fn new(
         hist_rx_ptr: *mut u8,
         live_rx_ptr: *mut u8,
-        write_fn: WriteFn,
         poll_fn: PollFn,
+        write_fn: WriteFn,
         rx_drop_fn: unsafe fn(*mut u8),
     ) -> Self {
         Self {
             hist_rx_ptr,
             live_rx_ptr,
-            write_fn,
             poll_fn,
+            write_fn,
             rx_drop_fn,
         }
     }
@@ -179,12 +190,12 @@ impl SourceState {
         }
     }
 
-    pub fn write_fn(&self) -> WriteFn {
-        self.write_fn
-    }
-
     pub fn poll_fn(&self) -> PollFn {
         self.poll_fn
+    }
+
+    pub fn write_fn(&self) -> WriteFn {
+        self.write_fn
     }
 }
 
