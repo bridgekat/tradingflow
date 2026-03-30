@@ -347,7 +347,7 @@ impl NativeScenario {
             .unwrap();
 
         let sc = self.scenario.as_ref().unwrap();
-        let state_ptr = sc.closure_state_ptr(output_idx).unwrap();
+        let state_ptr = sc.operator_state_ptr(output_idx).unwrap();
         let state = unsafe { &mut *(state_ptr as *mut PyOperatorState) };
         state.py_inputs = Some(py_inputs);
         state.py_output = Some(py_output);

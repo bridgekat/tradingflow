@@ -1,5 +1,6 @@
 pub mod apply;
 pub mod concat;
+pub mod r#const;
 pub mod filter;
 pub mod lag;
 pub mod last;
@@ -7,26 +8,63 @@ pub mod record;
 pub mod rolling;
 pub mod select;
 pub mod stack;
-#[path = "where.rs"]
 pub mod r#where;
 
 pub use apply::{
-    // Generics
-    Apply1, Apply2,
-    // Arithmetic
-    Add, Subtract, Multiply, Divide, Negate,
-    add, subtract, multiply, divide, negate,
-    // Float unary
-    Log, Log2, Log10, Exp, Exp2, Sqrt, Ceil, Floor, Round, Recip,
-    log, log2, log10, exp, exp2, sqrt, ceil, floor, round, recip,
     // Signed unary
-    Abs, Sign, abs, sign,
-    // Parameterized unary
-    pow, scale, shift, clamp, nan_to_num,
+    Abs,
+    // Arithmetic
+    Add,
+    // Generics
+    Apply1,
+    Apply2,
+    Ceil,
+    Divide,
+    Exp,
+    Exp2,
+    Floor,
+    // Float unary
+    Log,
+    Log2,
+    Log10,
+    Max,
     // Float binary
-    Min, Max, min, max,
+    Min,
+    Multiply,
+    Negate,
+    Recip,
+    Round,
+    Sign,
+    Sqrt,
+    Subtract,
+    abs,
+    add,
+    ceil,
+    clamp,
+    divide,
+    exp,
+    exp2,
+    floor,
+    log,
+    log2,
+    log10,
+    max,
+    min,
+    multiply,
+    nan_to_num,
+    negate,
+    // Parameterized unary
+    pow,
+    recip,
+    round,
+    scale,
+    shift,
+    sign,
+    sqrt,
+    subtract,
 };
 pub use concat::Concat;
+pub use r#const::Const;
 pub use filter::Filter;
 pub use lag::Lag;
 pub use last::Last;

@@ -9,8 +9,8 @@ use super::types::InputTypes;
 ///
 /// 1. [`init`](Self::init) consumes the spec, producing runtime
 ///    [`State`](Self::State) and the initial [`Output`](Self::Output).
-/// 2. [`compute`](Self::compute) is called on each flush with the current
-///    state, input references, output reference, and timestamp.
+/// 2. [`compute`](Self::compute) is called on each flush to update the
+///    output.
 pub trait Operator: 'static {
     /// Mutable runtime state.
     type State: Send + 'static;
@@ -26,7 +26,7 @@ pub trait Operator: 'static {
         timestamp: i64,
     ) -> (Self::State, Self::Output);
 
-    /// Compute the output from inputs and current state.
+    /// Update the output from inputs and current state.
     ///
     /// Returns `true` if downstream propagation should occur.
     fn compute(
@@ -37,17 +37,31 @@ pub trait Operator: 'static {
     ) -> bool;
 }
 
-/// Type-erased initialization function closure.
+/// Type-erased initialization closure for an operator.
 ///
-/// Arguments: `(input_ptrs, timestamp)`.
-/// Returns `(state_ptr, output_ptr)`, where both pointers are from
-/// [`Box::into_raw`].
+/// Parameters:
+///
+/// * `input_ptrs: &[*const u8]` — pointers to input node values.
+/// * `timestamp: i64` — initial timestamp.
+///
+/// Returns:
+///
+/// * `state_ptr: *mut u8` — from [`Box::into_raw`], points to `O::State`.
+/// * `output_ptr: *mut u8` — from [`Box::into_raw`], points to `O::Output`.
 pub type InitFn = Box<dyn FnOnce(&[*const u8], i64) -> (*mut u8, *mut u8)>;
 
-/// Type-erased compute function pointer.
+/// Type-erased compute function pointer for an operator.
 ///
-/// Arguments: `(state_ptr, input_ptrs, output_ptr, timestamp)`.
-/// Returns `true` if downstream propagation should occur.
+/// Parameters:
+///
+/// * `state_ptr: *mut u8` — points to `O::State`.
+/// * `input_ptrs: &[*const u8]` — pointers to input node values.
+/// * `output_ptr: *mut u8` — points to `O::Output`.
+/// * `timestamp: i64` — current flush timestamp.
+///
+/// Returns:
+///
+/// * `true` if downstream propagation should occur.
 pub type ComputeFn = unsafe fn(*mut u8, &[*const u8], *mut u8, i64) -> bool;
 
 /// Type-erased representation of an operator.
@@ -56,10 +70,8 @@ pub type ComputeFn = unsafe fn(*mut u8, &[*const u8], *mut u8, i64) -> bool;
 ///
 /// 1. Created via [`from_operator`](ErasedOperator::from_operator) (safe,
 ///    typed) or [`new`](ErasedOperator::new) (`unsafe`, raw).
-/// 2. Consumed by `Node::from_erased_operator`, which validates input
-///    types, calls the deferred init, and constructs the DAG node.
-/// 3. If dropped without being installed, the closure drops its captured
-///    state (e.g. the operator spec) automatically.
+/// 2. Consumed by [`Scenario::add_erased_operator`], which validates input
+///    types, calls [`init`](ErasedOperator::init), and constructs the DAG node.
 pub struct ErasedOperator {
     state_type_id: TypeId,
     input_type_ids: Box<[TypeId]>,
@@ -75,15 +87,16 @@ impl ErasedOperator {
     ///
     /// # Safety
     ///
-    /// * `init_fn` must correctly interpret input pointers as
-    ///   `input_type_ids` types, and return valid `(state_ptr, output_ptr)`
-    ///   from `Box::into_raw`, which contain types matching `state_type_id`
-    ///   and `output_type_id`.
-    /// * `compute_fn` must correctly interpret state pointer as `state_type_id`
-    ///   type, input pointers as `input_type_ids` types and output pointer as
-    ///   `output_type_id` type.
-    /// * `state_drop_fn` & `output_drop_fn` must correctly drop the respective
-    ///   types.
+    /// * `init_fn` must return valid `(state_ptr, output_ptr)` from
+    ///   [`Box::into_raw`] pointing to objects of types `state_type_id` and
+    ///   `output_type_id` respectively.
+    /// * `compute_fn` must correctly interpret `state_ptr`, `input_ptrs`,
+    ///   and `output_ptr` as pointers to objects of types `state_type_id`,
+    ///   `input_type_ids`, and `output_type_id` respectively.
+    /// * `state_drop_fn` must correctly drop [`Box::from_raw`] pointing to
+    ///   an object of type `state_type_id`.
+    /// * `output_drop_fn` must correctly drop [`Box::from_raw`] pointing to
+    ///   an object of type `output_type_id`.
     pub unsafe fn new(
         state_type_id: TypeId,
         input_type_ids: Box<[TypeId]>,
@@ -104,7 +117,7 @@ impl ErasedOperator {
         }
     }
 
-    /// Construct from a typed [`Operator`] configuration.
+    /// Construct from a typed [`Operator`].
     pub fn from_operator<O: Operator>(op: O, arity: usize) -> Self {
         Self {
             state_type_id: TypeId::of::<O::State>(),

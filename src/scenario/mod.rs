@@ -23,18 +23,18 @@
 mod graph;
 pub mod handle;
 mod node;
-mod runner;
+mod queue;
 
 pub use handle::{Handle, InputTypesHandles};
 
 use std::any::TypeId;
 
 use crate::operator::{ErasedOperator, Operator};
+use crate::operators::Const;
 use crate::source::{ErasedSource, Source};
 
 use graph::Graph;
-use node::Node;
-use runner::SourceState;
+use node::{Node, NodeState, SourceState};
 
 /// Type-erased DAG runtime for event-driven computation.
 ///
@@ -46,8 +46,8 @@ use runner::SourceState;
 ///
 /// let mut sc = Scenario::new();
 ///
-/// let ha = sc.create_node(Array::scalar(0.0));
-/// let hb = sc.create_node(Array::scalar(0.0));
+/// let ha = sc.add_const(Array::scalar(0.0));
+/// let hb = sc.add_const(Array::scalar(0.0));
 /// let hc = sc.add_operator(operators::add(), (ha, hb), None);
 ///
 /// sc.value_mut(ha)[0] = 10.0;
@@ -58,14 +58,14 @@ use runner::SourceState;
 /// ```
 pub struct Scenario {
     graph: Graph,
-    source_states: Vec<SourceState>,
+    source_indices: Vec<usize>,
 }
 
 impl Scenario {
     pub fn new() -> Self {
         Self {
             graph: Graph::new(),
-            source_states: Vec::new(),
+            source_indices: Vec::new(),
         }
     }
 
@@ -81,7 +81,7 @@ impl Scenario {
             "type mismatch at node {}",
             h.index(),
         );
-        unsafe { &*(node.value as *const T) }
+        unsafe { &*(node.value_ptr as *const T) }
     }
 
     /// Mutable access to a node's value.  Panics on TypeId mismatch.
@@ -94,15 +94,12 @@ impl Scenario {
             "type mismatch at node {}",
             h.index(),
         );
-        unsafe { &mut *(node.value as *mut T) }
+        unsafe { &mut *(node.value_ptr as *mut T) }
     }
 
-    // -- Node creation -------------------------------------------------------
-
-    /// Create a bare node with an initial value.
-    pub fn create_node<T: Send + 'static>(&mut self, value: T) -> Handle<T> {
-        let idx = self.graph.add_node(Node::new(value));
-        Handle::new(idx)
+    /// Register a constant node with an initial value.
+    pub fn add_const<T: Send + 'static>(&mut self, value: T) -> Handle<T> {
+        self.add_operator(Const::new(value), (), None)
     }
 
     /// Register a [`Source`], creating the output node.
@@ -113,22 +110,6 @@ impl Scenario {
         let erased = ErasedSource::from_source(source);
         Handle::new(self.add_erased_source(erased))
     }
-
-    /// Register a type-erased source.
-    pub fn add_erased_source(&mut self, source: ErasedSource) -> usize {
-        let output_type_id = source.output_type_id();
-        let output_drop_fn = source.output_drop_fn();
-        let write_fn = source.write_fn();
-        let (hist, live, output_ptr) = source.init(i64::MIN);
-        let idx = self
-            .graph
-            .add_node(Node::from_raw_value(output_type_id, output_ptr, output_drop_fn));
-        self.source_states
-            .push(SourceState::new(idx, hist, live, write_fn));
-        idx
-    }
-
-    // -- Typed operator registration -----------------------------------------
 
     /// Register an [`Operator`], creating its output node.
     pub fn add_operator<O: Operator>(
@@ -146,11 +127,31 @@ impl Scenario {
         Handle::new(self.add_erased_operator(erased, &input_indices, trigger_index))
     }
 
-    // -- Erased operator registration ----------------------------------------
+    /// Register a type-erased source.
+    pub fn add_erased_source(&mut self, source: ErasedSource) -> usize {
+        let output_type_id = source.output_type_id();
+        let output_drop_fn = source.output_drop_fn();
+        let write_fn = source.write_fn();
+        let poll_fn = source.poll_fn();
+        let rx_drop_fn = source.rx_drop_fn();
+        // SAFETY: returned pointers are from Box::into_raw and will be managed
+        // by SourceState (channel receivers) and Node (output value).
+        let (hist_rx_ptr, live_rx_ptr, output_ptr) = source.init(i64::MIN);
+        let source_state =
+            SourceState::new(hist_rx_ptr, live_rx_ptr, write_fn, poll_fn, rx_drop_fn);
+        let idx = self.graph.add_node(Node::from_source(
+            output_type_id,
+            output_ptr,
+            output_drop_fn,
+            source_state,
+        ));
+        self.source_indices.push(idx);
+        idx
+    }
 
     /// Register a type-erased operator.
     ///
-    /// Type validation, init, and closure attachment are handled by
+    /// Type validation, init, and operator state setup are handled by
     /// [`Node::from_erased_operator`].
     pub fn add_erased_operator(
         &mut self,
@@ -166,7 +167,7 @@ impl Scenario {
         }
         let input_ptrs: Box<[*const u8]> = input_indices
             .iter()
-            .map(|&idx| self.graph.nodes[idx].value as *const u8)
+            .map(|&idx| self.graph.nodes[idx].value_ptr as *const u8)
             .collect();
         let input_type_ids: Box<[TypeId]> = input_indices
             .iter()
@@ -189,12 +190,6 @@ impl Scenario {
 
     // -- Untyped helpers (for FFI / bridge) -----------------------------------
 
-    /// Register a [`Source`], returning the output node index instead of a
-    /// typed [`Handle`].
-    pub fn add_source_untyped<S: Source>(&mut self, source: S) -> usize {
-        self.add_source(source).index()
-    }
-
     /// `TypeId` of a node's value.
     pub fn node_type_id(&self, index: usize) -> TypeId {
         self.graph.nodes[index].type_id
@@ -202,19 +197,22 @@ impl Scenario {
 
     /// Raw value pointer for a node.
     pub(crate) fn node_value_ptr(&self, index: usize) -> *mut u8 {
-        self.graph.nodes[index].value
+        self.graph.nodes[index].value_ptr
     }
 
-    /// Mutable reference to the closure state of a node.
+    /// Raw pointer to an operator node's state allocation.
     ///
-    /// Returns `None` if the node has no closure.
+    /// Returns `None` if the node is not an operator.
     ///
     /// # Safety
     ///
     /// The caller must ensure the returned pointer is cast to the correct
     /// state type and not used after the node is dropped.
-    pub(crate) fn closure_state_ptr(&self, index: usize) -> Option<*mut u8> {
-        self.graph.nodes[index].closure.as_ref().map(|c| c.state)
+    pub(crate) fn operator_state_ptr(&self, index: usize) -> Option<*mut u8> {
+        match &self.graph.nodes[index].state {
+            NodeState::Operator(c) => Some(c.state_ptr),
+            _ => None,
+        }
     }
 
     // -- Flush ---------------------------------------------------------------
@@ -243,11 +241,26 @@ mod tests {
     use crate::series::Series;
     use crate::sources::ArraySource;
 
+    // -- Basic tests ----------------------------------------------------------
+
+    #[test]
+    fn scenario_arbitrary_type() {
+        use std::collections::BTreeMap;
+
+        let mut sc = Scenario::new();
+        let h = sc.add_const(BTreeMap::<String, f64>::new());
+
+        sc.value_mut(h).insert("price".to_string(), 42.0);
+        assert_eq!(sc.value(h).get("price"), Some(&42.0));
+    }
+
+    // -- Simple operator tests ------------------------------------------------
+
     #[test]
     fn scenario_simple_add() {
         let mut sc = Scenario::new();
-        let ha = sc.create_node(Array::scalar(0.0_f64));
-        let hb = sc.create_node(Array::scalar(0.0_f64));
+        let ha = sc.add_const(Array::scalar(0.0_f64));
+        let hb = sc.add_const(Array::scalar(0.0_f64));
         let hc = sc.add_operator(add::<f64>(), (ha, hb), None);
 
         sc.value_mut(ha)[0] = 10.0;
@@ -260,8 +273,8 @@ mod tests {
     #[test]
     fn scenario_strided_add() {
         let mut sc = Scenario::new();
-        let ha = sc.create_node(Array::from_vec(&[2], vec![1.0_f64, 2.0]));
-        let hb = sc.create_node(Array::from_vec(&[2], vec![10.0_f64, 20.0]));
+        let ha = sc.add_const(Array::from_vec(&[2], vec![1.0_f64, 2.0]));
+        let hb = sc.add_const(Array::from_vec(&[2], vec![10.0_f64, 20.0]));
         let hc = sc.add_operator(add::<f64>(), (ha, hb), None);
 
         sc.flush(1, &[ha.index(), hb.index()]);
@@ -271,8 +284,8 @@ mod tests {
     #[test]
     fn scenario_chain() {
         let mut sc = Scenario::new();
-        let ha = sc.create_node(Array::scalar(2.0_f64));
-        let hb = sc.create_node(Array::scalar(3.0_f64));
+        let ha = sc.add_const(Array::scalar(2.0_f64));
+        let hb = sc.add_const(Array::scalar(3.0_f64));
         let hab = sc.add_operator(add::<f64>(), (ha, hb), None);
 
         use crate::operators::multiply;
@@ -286,8 +299,8 @@ mod tests {
     #[test]
     fn scenario_record() {
         let mut sc = Scenario::new();
-        let ha = sc.create_node(Array::scalar(0.0_f64));
-        let hb = sc.create_node(Array::scalar(0.0_f64));
+        let ha = sc.add_const(Array::scalar(0.0_f64));
+        let hb = sc.add_const(Array::scalar(0.0_f64));
         let hsum = sc.add_operator(add::<f64>(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (hsum,), None);
 
@@ -305,26 +318,7 @@ mod tests {
         assert_eq!(series.values(), &[13.0, 27.0]);
     }
 
-    // -- Erased operator test -------------------------------------------------
-
-    #[test]
-    fn scenario_add_erased_operator() {
-        let mut sc = Scenario::new();
-        let ha = sc.create_node(Array::scalar(0.0_f64));
-        let hb = sc.create_node(Array::scalar(0.0_f64));
-
-        let erased = ErasedOperator::from_operator(add::<f64>(), 2);
-        let out_idx = sc.add_erased_operator(erased, &[ha.index(), hb.index()], None);
-
-        sc.value_mut(ha)[0] = 10.0;
-        sc.value_mut(hb)[0] = 3.0;
-        sc.flush(1, &[ha.index(), hb.index()]);
-
-        let out = unsafe { &*(sc.graph.nodes[out_idx].value as *const Array<f64>) };
-        assert_eq!(out.as_slice(), &[13.0]);
-    }
-
-    // -- POCQ run tests (async) -----------------------------------------------
+    // -- Async run tests ------------------------------------------------------
 
     #[tokio::test]
     async fn scenario_run_single_source() {
@@ -412,21 +406,8 @@ mod tests {
         assert_eq!(series.values(), &[5.0, 10.0]);
     }
 
-    #[test]
-    fn scenario_arbitrary_type() {
-        use std::collections::BTreeMap;
-
-        let mut sc = Scenario::new();
-        let h = sc.create_node(BTreeMap::<String, f64>::new());
-
-        sc.value_mut(h).insert("price".to_string(), 42.0);
-        assert_eq!(sc.value(h).get("price"), Some(&42.0));
-    }
-
-    // -- Periodic operator tests -----------------------------------------------
-
     #[tokio::test]
-    async fn scenario_periodic_single_input() {
+    async fn scenario_run_periodic_single_input() {
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
@@ -445,7 +426,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scenario_periodic_two_inputs() {
+    async fn scenario_run_periodic_two_inputs() {
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
@@ -465,7 +446,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scenario_periodic_multiple_ticks() {
+    async fn scenario_run_periodic_multiple_ticks() {
         use crate::sources::clock;
 
         let mut sc = Scenario::new();

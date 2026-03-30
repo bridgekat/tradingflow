@@ -5,7 +5,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use super::node::Node;
+use super::node::{Node, NodeState};
 
 /// Untyped DAG owning [`Node`]s and implementing topological flush.
 ///
@@ -14,7 +14,7 @@ use super::node::Node;
 /// * `pending.len() == nodes.len()`.
 /// * `pending[i] == true` if and only if `i` is currently in `heap`.
 /// * Node indices encode topological order: if node `j` has node `i` as an
-///   input (via its closure's `input_ptrs`), then `i < j`.
+///   input (via its operator state's `input_ptrs`), then `i < j`.
 /// * Edges: `nodes[i].trigger_edges` contains indices of nodes which should
 ///   be notified by updates from node `i`.
 pub(super) struct Graph {
@@ -62,9 +62,9 @@ impl Graph {
 
     /// Propagate updates through the DAG.
     ///
-    /// For each updated source node, schedules its downstream closure nodes
+    /// For each updated source node, schedules its downstream operator nodes
     /// onto a min-heap keyed by node index (= topological order).  Each
-    /// closure is invoked; if it produces output, its downstream nodes are
+    /// operator is invoked; if it produces output, its downstream nodes are
     /// scheduled in turn.
     pub fn flush(&mut self, timestamp: i64, updated_sources: &[usize]) {
         // Seed the min-heap from updated source nodes' edges.
@@ -82,11 +82,12 @@ impl Graph {
             self.pending[i] = false;
 
             let node = &self.nodes[i];
-            let produced = if let Some(ref closure) = node.closure {
-                // SAFETY: all pointers validated at node construction time.
-                unsafe { closure.compute(node.value, timestamp) }
-            } else {
-                false
+            let produced = match &node.state {
+                NodeState::Operator(op_state) => {
+                    // SAFETY: all pointers validated at node construction time.
+                    unsafe { op_state.compute(node.value_ptr, timestamp) }
+                }
+                NodeState::Source(_) => false,
             };
 
             if produced {

@@ -62,6 +62,16 @@ pub trait InputTypesHandles: InputTypes {
     fn node_indices(handles: &Self::Handles) -> Box<[usize]>;
 }
 
+// -- Empty input (0-arity) ---------------------------------------------------
+
+impl InputTypesHandles for () {
+    type Handles = ();
+
+    fn node_indices(_handles: &()) -> Box<[usize]> {
+        Box::new([])
+    }
+}
+
 // -- Single input ------------------------------------------------------------
 
 impl<A: Send + 'static> InputTypesHandles for (A,) {

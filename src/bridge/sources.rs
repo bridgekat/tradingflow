@@ -14,7 +14,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use tokio::sync::mpsc;
 
-use crate::source::{ErasedReceiver, ErasedSource};
+use crate::source::{ErasedSource, PeekableReceiver, PollFn, WriteFn};
 use crate::sources::ArraySource;
 use crate::{Array, Scalar, Scenario};
 
@@ -164,7 +164,7 @@ pub fn dispatch_native_source(
                 .extract()?;
             use crate::sources::CsvSource;
             let source = CsvSource::new(path, time_column, value_columns);
-            Ok(sc.add_source_untyped(source))
+            Ok(sc.add_source(source).index())
         }
         "clock" => {
             let timestamps: Vec<i64> = params
@@ -172,7 +172,7 @@ pub fn dispatch_native_source(
                 .ok_or_else(|| PyTypeError::new_err("clock source requires 'timestamps'"))?
                 .extract()?;
             use crate::sources::clock;
-            Ok(sc.add_source_untyped(clock(timestamps)))
+            Ok(sc.add_source(clock(timestamps)).index())
         }
         "daily_clock" => {
             let start_ns: i64 = params
@@ -188,7 +188,7 @@ pub fn dispatch_native_source(
                 .ok_or_else(|| PyTypeError::new_err("daily_clock requires 'tz'"))?
                 .extract()?;
             use crate::sources::daily_clock;
-            Ok(sc.add_source_untyped(daily_clock(start_ns, end_ns, &tz)))
+            Ok(sc.add_source(daily_clock(start_ns, end_ns, &tz)).index())
         }
         "monthly_clock" => {
             let start_ns: i64 = params
@@ -204,7 +204,7 @@ pub fn dispatch_native_source(
                 .ok_or_else(|| PyTypeError::new_err("monthly_clock requires 'tz'"))?
                 .extract()?;
             use crate::sources::monthly_clock;
-            Ok(sc.add_source_untyped(monthly_clock(start_ns, end_ns, &tz)))
+            Ok(sc.add_source(monthly_clock(start_ns, end_ns, &tz)).index())
         }
         other => Err(PyTypeError::new_err(format!(
             "unknown native source kind: {other}"
@@ -230,7 +230,7 @@ pub fn register_array_source(
             // all bit patterns are valid.
             let values = unsafe { bytes_to_vec::<$T>(&values_bytes) };
             let source = ArraySource::new(timestamps, values, stride);
-            sc.add_source_untyped(source)
+            sc.add_source(source).index()
         }};
     }
     Ok(dispatch_dtype!(dtype, register, numeric))
@@ -287,8 +287,15 @@ fn make_channel_source<T: Scalar + Copy>(
 ) -> ErasedSource {
     let event_type_id = TypeId::of::<Vec<u8>>();
     let output_type_id = TypeId::of::<Array<T>>();
+    let poll_fn: PollFn = |state, cx| unsafe {
+        (&mut *(state as *mut PeekableReceiver<(i64, Vec<u8>)>))
+            .poll_pending(cx)
+            .map(|opt| opt.map(|item| item.0))
+    };
+    let state_drop_fn: unsafe fn(*mut u8) =
+        |ptr| unsafe { drop(Box::from_raw(ptr as *mut PeekableReceiver<(i64, Vec<u8>)>)) };
 
-    let init_fn: Box<dyn FnOnce(i64) -> (ErasedReceiver, ErasedReceiver, *mut u8)> =
+    let init_fn: Box<dyn FnOnce(i64) -> (*mut u8, *mut u8, *mut u8)> =
         Box::new(move |_timestamp: i64| {
             let output = Array::<T>::zeros(&shape);
 
@@ -313,49 +320,44 @@ fn make_channel_source<T: Scalar + Copy>(
                 }
             });
 
-            let hist = ErasedReceiver::from_receiver(hist_rx);
-            let live = ErasedReceiver::from_receiver(live_rx);
+            let hist_state = Box::into_raw(Box::new(PeekableReceiver::new(hist_rx))) as *mut u8;
+            let live_state = Box::into_raw(Box::new(PeekableReceiver::new(live_rx))) as *mut u8;
             let output_ptr = Box::into_raw(Box::new(output)) as *mut u8;
-            (hist, live, output_ptr)
+            (hist_state, live_state, output_ptr)
         });
 
-    // SAFETY: init_fn returns valid receivers and a valid Array<T> pointer;
-    // write_fn correctly extracts Vec<u8> from ReceiverState and copies into Array<T>;
-    // output_drop_fn correctly drops Array<T>.
+    // SAFETY: init_fn returns valid PeekableReceiver<(i64, Vec<u8>)> pointers and a valid
+    // Array<T> output pointer; all function pointers are correctly monomorphised
+    // for Vec<u8> events and Array<T> output.
     unsafe {
         ErasedSource::new(
             event_type_id,
             output_type_id,
             init_fn,
-            channel_write_fn::<T>,
+            poll_fn,
+            channel_write_fn::<T> as WriteFn,
+            state_drop_fn,
             erased_drop_fn::<Array<T>>,
         )
     }
 }
 
 /// Write function for channel sources: extract pending `Vec<u8>` from the
-/// receiver state and copy bytes into `Array<T>`.
+/// peekable receiver and copy bytes into `Array<T>`.
 ///
 /// # Safety
 ///
-/// * `receiver_state` must point to a valid `ReceiverState<Vec<u8>>`.
+/// * `receiver_state` must point to a valid `PeekableReceiver<(i64, Vec<u8>)>`.
 /// * `output_ptr` must point to a valid `Array<T>`.
 /// * `T` must be a numeric type where all bit patterns are valid (ensured
 ///   by `dispatch_dtype!(..., numeric)`).
-unsafe fn channel_write_fn<T: Scalar + Copy>(receiver_state: *mut u8, output_ptr: *mut u8) -> bool {
-    // ReceiverState is private to source.rs, but its layout is:
-    // { rx: Receiver<(i64, Vec<u8>)>, pending: Option<(i64, Vec<u8>)> }
-    // We access it through the same struct definition re-created here.
-    // Instead, we use the crate-internal access pattern: the pending event
-    // is stored as Option<(i64, E)> at a known offset.
-    //
-    // Actually, we can't access ReceiverState directly since it's private.
-    // The write_fn is monomorphized and stored when the ErasedSource is
-    // created — at that point, the concrete type is known.  The function
-    // accesses the state through the same type it was created with.
-    use crate::source::ReceiverState;
-    let rs = unsafe { &mut *(receiver_state as *mut ReceiverState<Vec<u8>>) };
-    if let Some((_ts, payload)) = rs.pending.take() {
+unsafe fn channel_write_fn<T: Scalar + Copy>(
+    receiver_state: *mut u8,
+    output_ptr: *mut u8,
+    _ts: i64,
+) -> bool {
+    let rx = unsafe { &mut *(receiver_state as *mut PeekableReceiver<(i64, Vec<u8>)>) };
+    if let Some((_ts, payload)) = rx.take_pending() {
         let output = unsafe { &mut *(output_ptr as *mut Array<T>) };
         let byte_len = output.as_slice().len() * std::mem::size_of::<T>();
         assert_eq!(

@@ -51,6 +51,20 @@ impl<T: Send + 'static> InputTypes for [T] {
     }
 }
 
+// -- Empty input (0-arity) ---------------------------------------------------
+
+impl InputTypes for () {
+    type Refs<'a> = ();
+
+    #[inline(always)]
+    unsafe fn from_ptrs<'a>(_ptrs: &[*const u8]) -> Self::Refs<'a> {}
+
+    #[inline(always)]
+    fn type_ids(_arity: usize) -> Box<[TypeId]> {
+        Box::new([])
+    }
+}
+
 // -- Tuple inputs (macro-generated) ------------------------------------------
 
 macro_rules! impl_input_types_for_tuple {

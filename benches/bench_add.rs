@@ -136,8 +136,8 @@ fn bench_scenario_operator(c: &mut Criterion) {
     c.bench_function("scenario_operator", |bencher| {
         bencher.iter(|| {
             let mut sc = Scenario::new();
-            let ha = sc.create_node(Array::scalar(0.0_f64));
-            let hb = sc.create_node(Array::scalar(0.0_f64));
+            let ha = sc.add_const(Array::scalar(0.0_f64));
+            let hb = sc.add_const(Array::scalar(0.0_f64));
             let ho = sc.add_operator(operators::add(), (ha, hb), None);
             for i in 0..N {
                 sc.value_mut(ha)[0] = a[i];
@@ -159,8 +159,8 @@ fn bench_scenario_operator_series(c: &mut Criterion) {
     c.bench_function("scenario_operator_series", |bencher| {
         bencher.iter(|| {
             let mut sc = Scenario::new();
-            let ha = sc.create_node(Array::scalar(0.0_f64));
-            let hb = sc.create_node(Array::scalar(0.0_f64));
+            let ha = sc.add_const(Array::scalar(0.0_f64));
+            let hb = sc.add_const(Array::scalar(0.0_f64));
             let ho = sc.add_operator(operators::add(), (ha, hb), None);
             let hos = sc.add_operator(Record::new(), (ho,), None);
             for i in 0..N {
@@ -184,8 +184,8 @@ fn bench_scenario_chain(c: &mut Criterion) {
         c.bench_function(&format!("scenario_chain_depth{depth}"), |bencher| {
             bencher.iter(|| {
                 let mut sc = Scenario::new();
-                let ha = sc.create_node(Array::scalar(0.0_f64));
-                let hb = sc.create_node(Array::scalar(0.0_f64));
+                let ha = sc.add_const(Array::scalar(0.0_f64));
+                let hb = sc.add_const(Array::scalar(0.0_f64));
 
                 let mut prev = sc.add_operator(operators::add(), (ha, hb), None);
                 for i in 1..depth {
@@ -217,10 +217,10 @@ fn bench_scenario_sparse(c: &mut Criterion) {
             |bencher| {
                 bencher.iter(|| {
                     let mut sc = Scenario::new();
-                    let ha = sc.create_node(Array::scalar(0.0_f64));
-                    let hb = sc.create_node(Array::scalar(0.0_f64));
-                    let hc = sc.create_node(Array::scalar(0.0_f64));
-                    let hd = sc.create_node(Array::scalar(0.0_f64));
+                    let ha = sc.add_const(Array::scalar(0.0_f64));
+                    let hb = sc.add_const(Array::scalar(0.0_f64));
+                    let hc = sc.add_const(Array::scalar(0.0_f64));
+                    let hd = sc.add_const(Array::scalar(0.0_f64));
 
                     // Active chain
                     let mut last = sc.add_operator(operators::add(), (ha, hb), None);
