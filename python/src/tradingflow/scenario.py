@@ -46,7 +46,7 @@ class Scenario:
             )
             return Handle(idx, source.shape, np.dtype(source.dtype))
         else:
-            idx, hist_sender, live_sender = self._native.add_source_raw(
+            idx, hist_sender, live_sender = self._native.add_py_source(
                 list(source.shape),
                 str(source.dtype),
             )

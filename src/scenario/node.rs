@@ -1,188 +1,268 @@
-//! Type-erased node and operator closure for the DAG graph.
+//! Type-erased node and its processing state for the DAG graph.
+//!
+//! # Key types
+//!
+//! * [`Node`] — a type-erased DAG node owning a value and a [`NodeState`].
+//! * [`NodeState`] — classifies a node as a [`Source`](NodeState::Source) or
+//!   an [`Operator`](NodeState::Operator).
+//! * [`SourceState`] — per-source channel state and function pointers.
+//! * [`OperatorState`] — per-operator computation state and function pointers.
 //!
 //! # Invariants
 //!
-//! * `type_id == TypeId::of::<T>()` where `T` is the node's value type.
-//! * `value` is a valid, non-null pointer to a heap-allocated `T`.
-//! * If `closure` is `Some`: `state` is a valid pointer to `Op::State`;
-//!   each `input_ptrs[i]` points to a valid value that outlives this node;
-//!   `compute_fn` is monomorphised for the correct operator type.
+//! * `Node::type_id == TypeId::of::<T>()` where `T` is the node's value type.
+//! * `Node::value_ptr` is a valid, non-null pointer to a heap-allocated `T`.
+//! * For [`NodeState::Operator`]: [`OperatorState::state_ptr`] is a valid
+//!   pointer; each `input_ptrs[i]` points to a valid value that outlives this
+//!   node; `compute_fn` is compatible with the types.
+//! * For [`NodeState::Source`]: `hist_rx_ptr` and `live_rx_ptr` are valid
+//!   pointers to `PeekableReceiver<(i64, E)>` allocations.
 //! * `trigger_edges[i]` are valid node indices in the owning `Graph`.
-//!
-//! # Safety boundary
-//!
-//! `Node` construction and access do not guarantee the invariants above.
-//! These must be maintained throughout the [`scenario`][super] module.
 
 use std::any::TypeId;
 
-use crate::operator::Operator;
-use crate::types::InputTypes;
+use crate::operator::{ComputeFn, ErasedOperator};
+use crate::source::{ErasedSource, PollFn, WriteFn};
 
-// ---------------------------------------------------------------------------
-// Function pointer types
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// NodeState
+// ===========================================================================
 
-/// Type-erased compute function.
-/// Returns `true` if an output value was produced, `false` to skip propagation.
-///
-/// Arguments:
-///
-/// * `input_ptrs` — `&[*const u8]` pointing to input values.
-/// * `output` — `*mut u8` pointing to the output value.
-/// * `state` — `*mut u8` pointing to the operator's `State`.
-/// * `timestamp` — flush timestamp.
-pub(super) type ComputeFn = unsafe fn(&[*const u8], *mut u8, *mut u8, i64) -> bool;
+/// State of the node based on its role.
+pub(super) enum NodeState {
+    Source(SourceState),
+    Operator(OperatorState),
+}
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Node
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
-/// Type-erased DAG node: owns a value and optionally a [`Closure`].
+/// Type-erased DAG node: owns a value and a [`NodeState`].
 ///
 /// See [module-level docs](self) for layout and invariants.
 pub(super) struct Node {
     /// `TypeId::of::<T>()` for the value type `T`.
     pub type_id: TypeId,
     /// Heap-allocated value `T` (via `Box::into_raw`).
-    pub value: *mut u8,
-    /// Operator closure, or `None` for source / bare nodes.
-    pub closure: Option<Closure>,
+    pub value_ptr: *mut u8,
+    /// Node classification and attached state.
+    pub state: NodeState,
     /// Downstream node indices that are triggered when this node updates.
     pub trigger_edges: Vec<usize>,
     /// Drop the value: `drop(Box::from_raw(ptr as *mut T))`.
     value_drop_fn: unsafe fn(*mut u8),
 }
 
-// SAFETY: `Node` owns the heap allocation behind `value`.
+// SAFETY: `Node` owns the heap allocation behind `value_ptr`, which points to
+// a type satisfying `Send`.
 unsafe impl Send for Node {}
 
 impl Node {
-    /// Create a new bare node (no closure) for an arbitrary value type.
+    /// Create a source node from an [`ErasedSource`].
     ///
-    /// The value is heap-allocated; the returned `Node` owns it.
-    pub fn new<T: Send + 'static>(value: T) -> Self {
-        let value_ptr = Box::into_raw(Box::new(value));
+    /// Calls the deferred init and attaches the channel state.
+    pub fn from_erased_source(erased: ErasedSource, timestamp: i64) -> Self {
+        let output_type_id = erased.output_type_id();
+        let poll_fn = erased.poll_fn();
+        let write_fn = erased.write_fn();
+        let rx_drop_fn = erased.rx_drop_fn();
+        let output_drop_fn = erased.output_drop_fn();
+        let (hist_rx_ptr, live_rx_ptr, output_ptr) = erased.init(timestamp);
+        let state = SourceState::new(hist_rx_ptr, live_rx_ptr, poll_fn, write_fn, rx_drop_fn);
         Self {
-            type_id: TypeId::of::<T>(),
-            value: value_ptr as *mut u8,
-            closure: None,
+            type_id: output_type_id,
+            value_ptr: output_ptr,
+            state: NodeState::Source(state),
             trigger_edges: Vec::new(),
-            value_drop_fn: drop_fn::<T>,
+            value_drop_fn: output_drop_fn,
+        }
+    }
+
+    /// Create an operator node from an [`ErasedOperator`].
+    ///
+    /// Validates input types, calls the deferred init, and attaches the
+    /// compute state.  Panics on arity or `TypeId` mismatch.
+    pub fn from_erased_operator(
+        erased: ErasedOperator,
+        input_ptrs: Box<[*const u8]>,
+        input_type_ids: &[TypeId],
+        timestamp: i64,
+    ) -> Self {
+        assert_eq!(
+            input_type_ids.len(),
+            erased.input_type_ids().len(),
+            "arity mismatch: operator expects {} inputs, got {}",
+            erased.input_type_ids().len(),
+            input_type_ids.len(),
+        );
+        for (i, (&expected, &actual)) in erased
+            .input_type_ids()
+            .iter()
+            .zip(input_type_ids)
+            .enumerate()
+        {
+            assert_eq!(expected, actual, "type mismatch at input {i}");
+        }
+        let output_type_id = erased.output_type_id();
+        let compute_fn = erased.compute_fn();
+        let state_drop_fn = erased.state_drop_fn();
+        let output_drop_fn = erased.output_drop_fn();
+        let (state_ptr, output_ptr) = unsafe { erased.init(&input_ptrs, timestamp) };
+        let state = OperatorState::new(compute_fn, input_ptrs, state_ptr, state_drop_fn);
+        Self {
+            type_id: output_type_id,
+            value_ptr: output_ptr,
+            state: NodeState::Operator(state),
+            trigger_edges: Vec::new(),
+            value_drop_fn: output_drop_fn,
+        }
+    }
+
+    /// Returns the [`SourceState`] if this is a source node.
+    pub fn source_state(&self) -> Option<&SourceState> {
+        match &self.state {
+            NodeState::Source(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Returns the [`OperatorState`] if this is an operator node.
+    pub fn operator_state(&self) -> Option<&OperatorState> {
+        match &self.state {
+            NodeState::Operator(s) => Some(s),
+            _ => None,
         }
     }
 }
 
 impl Drop for Node {
     fn drop(&mut self) {
-        // Drop the closure's state first (if any).
-        if let Some(ref closure) = self.closure {
-            // SAFETY: `state` was allocated by `Box::into_raw`.
-            unsafe { (closure.state_drop_fn)(closure.state) };
-        }
-        // Drop the value.
-        // SAFETY: `value` was allocated by `Box::into_raw` in `new`.
-        unsafe { (self.value_drop_fn)(self.value) };
+        // `self.state` is dropped automatically, handling Source/Operator state.
+        unsafe { (self.value_drop_fn)(self.value_ptr) };
     }
 }
 
-// ---------------------------------------------------------------------------
-// Closure
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// SourceState
+// ===========================================================================
 
-/// Type-erased operator closure attached to a [`Node`].
+/// Indicates which channel (historical or live) an event came from.
+#[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
+pub enum ChannelKind {
+    Hist,
+    Live,
+}
+
+/// Per-source channel state and function pointers.
 ///
-/// See [module-level docs](self) for layout and invariants.
-pub(super) struct Closure {
+/// Owns the two channel state allocations (`hist_rx_ptr` and `live_rx_ptr`)
+/// and the function pointers needed to interact with them.
+pub(super) struct SourceState {
+    hist_rx_ptr: *mut u8,
+    live_rx_ptr: *mut u8,
+    poll_fn: PollFn,
+    write_fn: WriteFn,
+    rx_drop_fn: unsafe fn(*mut u8),
+}
+
+impl SourceState {
+    pub(super) fn new(
+        hist_rx_ptr: *mut u8,
+        live_rx_ptr: *mut u8,
+        poll_fn: PollFn,
+        write_fn: WriteFn,
+        rx_drop_fn: unsafe fn(*mut u8),
+    ) -> Self {
+        Self {
+            hist_rx_ptr,
+            live_rx_ptr,
+            poll_fn,
+            write_fn,
+            rx_drop_fn,
+        }
+    }
+
+    pub fn rx_ptr(&self, kind: ChannelKind) -> *mut u8 {
+        match kind {
+            ChannelKind::Hist => self.hist_rx_ptr,
+            ChannelKind::Live => self.live_rx_ptr,
+        }
+    }
+
+    pub fn poll_fn(&self) -> PollFn {
+        self.poll_fn
+    }
+
+    pub fn write_fn(&self) -> WriteFn {
+        self.write_fn
+    }
+}
+
+impl Drop for SourceState {
+    fn drop(&mut self) {
+        unsafe { (self.rx_drop_fn)(self.hist_rx_ptr) };
+        unsafe { (self.rx_drop_fn)(self.live_rx_ptr) };
+    }
+}
+
+// SAFETY: `SourceState` owns the heap allocations behind `hist_rx_ptr` and
+// `live_rx_ptr`, which point to [`PeekableReceiver`] types satisfying `Send`.
+unsafe impl Send for SourceState {}
+
+// ===========================================================================
+// OperatorState
+// ===========================================================================
+
+/// Per-operator computation state and function pointers.
+///
+/// Owns the heap-allocated [`Operator::State`](crate::Operator::State),
+/// pre-collected input pointers, and the monomorphised compute function.
+pub(super) struct OperatorState {
     /// Monomorphised compute function.
     compute_fn: ComputeFn,
     /// Pre-collected pointers to input values.
     input_ptrs: Box<[*const u8]>,
-    /// Heap-allocated operator state (`Box::into_raw(Box::new(state))`).
-    pub(super) state: *mut u8,
-    /// Drop the state: `drop(Box::from_raw(ptr as *mut State))`.
-    pub(super) state_drop_fn: unsafe fn(*mut u8),
+    /// Heap-allocated operator state.
+    pub(super) state_ptr: *mut u8,
+    /// Drop the state.
+    state_drop_fn: unsafe fn(*mut u8),
 }
 
-impl Closure {
-    /// Create a [`Closure`] from raw components.
-    ///
-    /// Used by the bridge to attach Python operator callbacks.
-    #[cfg(feature = "python")]
-    pub fn new(
+impl OperatorState {
+    /// Create from raw components.
+    fn new(
         compute_fn: ComputeFn,
         input_ptrs: Box<[*const u8]>,
-        state: *mut u8,
+        state_ptr: *mut u8,
         state_drop_fn: unsafe fn(*mut u8),
     ) -> Self {
         Self {
             compute_fn,
             input_ptrs,
-            state,
+            state_ptr,
             state_drop_fn,
         }
     }
 
-    /// Build a [`Closure`] for an operator whose state has already been
-    /// created (via [`Operator::init`]).
-    pub fn from_state<O: Operator>(state: O::State, input_ptrs: Box<[*const u8]>) -> Closure {
-        Closure {
-            compute_fn: compute_fn::<O>,
-            input_ptrs,
-            state: Box::into_raw(Box::new(state)) as *mut u8,
-            state_drop_fn: drop_fn::<O::State>,
-        }
-    }
-
-    /// Invokes the closure's compute function with the given output pointer
-    /// and timestamp.
+    /// Invoke the compute function.
     ///
     /// # Safety
     ///
-    /// * Each `input_ptrs[i]` must point to a valid value of the type
-    ///   expected by `O::Inputs` at position `i`.
-    /// * `output_ptr` must point to a valid `O::Output`.
+    /// * Each `input_ptrs[i]` must point to a valid value of the expected type.
+    /// * `output_ptr` must point to a valid output value.
     /// * `output_ptr` must not alias any `input_ptrs[i]`.
     pub unsafe fn compute(&self, output_ptr: *mut u8, timestamp: i64) -> bool {
-        unsafe { (self.compute_fn)(&self.input_ptrs, output_ptr, self.state, timestamp) }
+        unsafe { (self.compute_fn)(self.state_ptr, &self.input_ptrs, output_ptr, timestamp) }
     }
 }
 
-// SAFETY: `Closure` owns the heap allocation behind `state`.
-unsafe impl Send for Closure {}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Drop a heap-allocated `T`.
-///
-/// # Safety
-///
-/// `ptr` must have been created by `Box::into_raw(Box::new(..))` for type `T`.
-unsafe fn drop_fn<T>(ptr: *mut u8) {
-    unsafe { drop(Box::from_raw(ptr as *mut T)) };
-}
-
-/// Type-erased compute entry point, monomorphised per operator type.
-///
-/// # Safety
-///
-/// * Each `input_ptrs[i]` must point to a valid value of the type expected
-///   by `O::Inputs` at position `i`.
-/// * `output_ptr` must point to a valid `O::Output`.
-/// * `state_ptr` must point to a valid `O::State`.
-/// * `output_ptr` must not alias any `input_ptrs[i]`.
-unsafe fn compute_fn<O: Operator>(
-    input_ptrs: &[*const u8],
-    output_ptr: *mut u8,
-    state_ptr: *mut u8,
-    timestamp: i64,
-) -> bool {
-    unsafe {
-        let inputs = <O::Inputs as InputTypes>::from_ptrs(input_ptrs);
-        let output = &mut *(output_ptr as *mut O::Output);
-        let state = &mut *(state_ptr as *mut O::State);
-        O::compute(state, inputs, output, timestamp)
+impl Drop for OperatorState {
+    fn drop(&mut self) {
+        unsafe { (self.state_drop_fn)(self.state_ptr) };
     }
 }
+
+// SAFETY: `OperatorState` owns the heap allocation behind `state_ptr`, which
+// points to a type satisfying `Send`.
+unsafe impl Send for OperatorState {}

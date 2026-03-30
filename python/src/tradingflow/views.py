@@ -1,4 +1,4 @@
-"""Typed Python wrappers over the native `_ArrayView` and `_SeriesView`.
+"""Typed Python wrappers over the native `NativeArrayView` and `NativeSeriesView`.
 
 These classes provide LSP-visible type annotations, docstrings, and
 autocompletion for the underlying Rust `#[pyclass]` types. All methods
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from tradingflow._native import _ArrayView, _SeriesView
+from tradingflow._native import NativeArrayView, NativeSeriesView
 
 
 class ArrayView:
@@ -31,7 +31,7 @@ class ArrayView:
 
     __slots__ = ("_inner",)
 
-    def __init__(self, inner: _ArrayView) -> None:
+    def __init__(self, inner: NativeArrayView) -> None:
         self._inner = inner
 
     # -- Core access ----------------------------------------------------------
@@ -135,7 +135,7 @@ class SeriesView:
 
     __slots__ = ("_inner",)
 
-    def __init__(self, inner: _SeriesView) -> None:
+    def __init__(self, inner: NativeSeriesView) -> None:
         self._inner = inner
 
     # -- Core access ----------------------------------------------------------

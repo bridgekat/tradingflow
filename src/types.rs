@@ -8,8 +8,8 @@ use std::any::TypeId;
 ///
 /// Provides:
 ///
-/// * `Refs<'a>` — aggregated immutable references to input values
-///   (e.g. `(&'a ArrayD<f64>, &'a ArrayD<f64>)` for a binary operator).
+/// * [`Refs<'a>`](InputTypes::Refs) — aggregated immutable references to input
+///   values (e.g. `(&'a Array<f64>, &'a Array<f64>)` for a binary operator).
 /// * [`type_ids`](InputTypes::type_ids) — expected `TypeId`s for each input
 ///   position, enabling runtime validation without typed handles.
 ///
@@ -48,6 +48,20 @@ impl<T: Send + 'static> InputTypes for [T] {
     #[inline(always)]
     fn type_ids(arity: usize) -> Box<[TypeId]> {
         vec![TypeId::of::<T>(); arity].into()
+    }
+}
+
+// -- Empty input (0-arity) ---------------------------------------------------
+
+impl InputTypes for () {
+    type Refs<'a> = ();
+
+    #[inline(always)]
+    unsafe fn from_ptrs<'a>(_ptrs: &[*const u8]) -> Self::Refs<'a> {}
+
+    #[inline(always)]
+    fn type_ids(_arity: usize) -> Box<[TypeId]> {
+        Box::new([])
     }
 }
 

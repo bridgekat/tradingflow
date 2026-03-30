@@ -6,8 +6,8 @@
 use pyo3::PyResult;
 use pyo3::exceptions::PyTypeError;
 
-/// Normalise a numpy dtype string to a canonical form.
-pub fn normalise_dtype(dtype: &str) -> &str {
+/// normalize a numpy dtype string to a canonical form.
+pub fn normalize_dtype(dtype: &str) -> &str {
     match dtype {
         "bool" | "|b1" => "bool",
         "int8" | "|i1" => "int8",
@@ -26,23 +26,16 @@ pub fn normalise_dtype(dtype: &str) -> &str {
 
 /// Number of bytes per scalar element for a given dtype.
 pub fn dtype_element_bytes(dtype: &str) -> PyResult<usize> {
-    match dtype {
-        "bool" | "|b1" => Ok(1),
-        "int8" | "|i1" => Ok(1),
-        "int16" | "<i2" => Ok(2),
-        "int32" | "<i4" => Ok(4),
-        "int64" | "<i8" => Ok(8),
-        "uint8" | "|u1" => Ok(1),
-        "uint16" | "<u2" => Ok(2),
-        "uint32" | "<u4" => Ok(4),
-        "uint64" | "<u8" => Ok(8),
-        "float32" | "<f4" => Ok(4),
-        "float64" | "<f8" => Ok(8),
+    match normalize_dtype(dtype) {
+        "bool" | "int8" | "uint8" => Ok(1),
+        "int16" | "uint16" => Ok(2),
+        "int32" | "uint32" | "float32" => Ok(4),
+        "int64" | "uint64" | "float64" => Ok(8),
         other => Err(PyTypeError::new_err(format!("unsupported dtype: {other}"))),
     }
 }
 
-/// Dispatch on a normalised dtype string, calling a macro-rule with a concrete
+/// Dispatch on a normalized dtype string, calling a macro-rule with a concrete
 /// scalar type.
 ///
 /// Usage: `dispatch_dtype!(dtype_str, my_macro)` where `my_macro` is defined as
@@ -62,7 +55,7 @@ macro_rules! dispatch_dtype {
     // Internal: shared match body.
     (@match $dtype:expr, $action:ident, $label:literal,
         $($name:literal => $ty:ty),+ $(,)?) => {
-        match crate::bridge::dispatch::normalise_dtype($dtype) {
+        match crate::bridge::dispatch::normalize_dtype($dtype) {
             $($name => $action!($ty),)+
             other => {
                 return Err(pyo3::exceptions::PyTypeError::new_err(

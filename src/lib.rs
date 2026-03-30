@@ -23,10 +23,10 @@ pub mod types;
 pub mod utils;
 
 pub use array::{Array, Scalar};
-pub use operator::Operator;
+pub use operator::{ErasedOperator, Operator};
 pub use scenario::Scenario;
 pub use series::Series;
-pub use source::Source;
+pub use source::{ErasedSource, Source};
 pub use types::InputTypes;
 pub use utils::Schema;
 

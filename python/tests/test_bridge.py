@@ -17,7 +17,7 @@ class TestBridgeNativeOperator:
 
     def _make_source(self, sc: NativeScenario, timestamps: list[int], values: list[float]) -> int:
         """Helper: register a channel source, push historical events, close."""
-        idx, hist, live = sc.add_source_raw([], "float64")
+        idx, hist, live = sc.add_py_source([], "float64")
         for ts, val in zip(timestamps, values):
             hist.send(ts, np.array([val], dtype=np.float64))
         hist.close()
@@ -89,7 +89,7 @@ class TestBridgeStrided:
     """Tests with vector-valued (strided) arrays."""
 
     def _make_strided_source(self, sc: NativeScenario, timestamps: list[int], values: list[list[float]]) -> int:
-        idx, hist, live = sc.add_source_raw([len(values[0])], "float64")
+        idx, hist, live = sc.add_py_source([len(values[0])], "float64")
         for ts, val in zip(timestamps, values):
             hist.send(ts, np.array(val, dtype=np.float64))
         hist.close()
@@ -129,7 +129,7 @@ class TestBridgePyOperator:
     def test_py_operator_add_const(self) -> None:
         """Stateless Python operator that adds a constant."""
         sc = NativeScenario()
-        idx, hist, live = sc.add_source_raw([], "float64")
+        idx, hist, live = sc.add_py_source([], "float64")
         hist.send(1, np.array([10.0], dtype=np.float64))
         hist.send(2, np.array([20.0], dtype=np.float64))
         hist.close()
@@ -156,7 +156,7 @@ class TestBridgePyOperator:
     def test_py_operator_stateful(self) -> None:
         """Stateful Python operator that computes running sum."""
         sc = NativeScenario()
-        idx, hist, live = sc.add_source_raw([], "float64")
+        idx, hist, live = sc.add_py_source([], "float64")
         hist.send(1, np.array([10.0], dtype=np.float64))
         hist.send(2, np.array([20.0], dtype=np.float64))
         hist.send(3, np.array([30.0], dtype=np.float64))
@@ -185,7 +185,7 @@ class TestBridgePyOperator:
     def test_py_operator_filter(self) -> None:
         """Python operator that skips propagation by returning False."""
         sc = NativeScenario()
-        idx, hist, live = sc.add_source_raw([], "float64")
+        idx, hist, live = sc.add_py_source([], "float64")
         hist.send(1, np.array([1.0], dtype=np.float64))
         hist.send(2, np.array([5.0], dtype=np.float64))
         hist.send(3, np.array([2.0], dtype=np.float64))
@@ -220,7 +220,7 @@ class TestBridgeGetView:
 
     def test_array_view(self) -> None:
         sc = NativeScenario()
-        idx, hist, live = sc.add_source_raw([], "float64")
+        idx, hist, live = sc.add_py_source([], "float64")
         hist.send(1, np.array([42.0], dtype=np.float64))
         hist.close()
         live.close()
@@ -230,7 +230,7 @@ class TestBridgeGetView:
 
     def test_series_view(self) -> None:
         sc = NativeScenario()
-        idx, hist, live = sc.add_source_raw([], "float64")
+        idx, hist, live = sc.add_py_source([], "float64")
         hist.send(1, np.array([10.0], dtype=np.float64))
         hist.send(2, np.array([20.0], dtype=np.float64))
         hist.close()
@@ -249,7 +249,7 @@ class TestPythonViewWrappers:
         from tradingflow.views import ArrayView
 
         sc = NativeScenario()
-        idx, hist, live = sc.add_source_raw([], "float64")
+        idx, hist, live = sc.add_py_source([], "float64")
         hist.send(1, np.array([42.0], dtype=np.float64))
         hist.close()
         live.close()
@@ -264,7 +264,7 @@ class TestPythonViewWrappers:
         from tradingflow.views import SeriesView
 
         sc = NativeScenario()
-        idx, hist, live = sc.add_source_raw([], "float64")
+        idx, hist, live = sc.add_py_source([], "float64")
         hist.send(1, np.array([10.0], dtype=np.float64))
         hist.send(2, np.array([20.0], dtype=np.float64))
         hist.close()
@@ -285,7 +285,7 @@ class TestArrayViewEnhancements:
         from tradingflow.views import ArrayView
 
         sc = NativeScenario()
-        idx, hist, live = sc.add_source_raw([3], "float64")
+        idx, hist, live = sc.add_py_source([3], "float64")
         hist.send(1, np.array([1.0, 2.0, 3.0], dtype=np.float64))
         hist.close()
         live.close()
@@ -326,7 +326,7 @@ class TestSeriesViewEnhancements:
         from tradingflow.views import SeriesView
 
         sc = NativeScenario()
-        idx, hist, live = sc.add_source_raw([], "float64")
+        idx, hist, live = sc.add_py_source([], "float64")
         hist.send(100, np.array([10.0], dtype=np.float64))
         hist.send(200, np.array([20.0], dtype=np.float64))
         hist.send(300, np.array([30.0], dtype=np.float64))

@@ -172,52 +172,82 @@ pub type Recip<T> = Apply1<T, fn(T) -> T>;
 
 /// Element-wise natural logarithm.
 pub fn log<T: Scalar + Float>() -> Log<T> {
-    Apply1 { op: |x| x.ln(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.ln(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise base-2 logarithm.
 pub fn log2<T: Scalar + Float>() -> Log2<T> {
-    Apply1 { op: |x| x.log2(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.log2(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise base-10 logarithm.
 pub fn log10<T: Scalar + Float>() -> Log10<T> {
-    Apply1 { op: |x| x.log10(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.log10(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise exponential.
 pub fn exp<T: Scalar + Float>() -> Exp<T> {
-    Apply1 { op: |x| x.exp(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.exp(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise base-2 exponential.
 pub fn exp2<T: Scalar + Float>() -> Exp2<T> {
-    Apply1 { op: |x| x.exp2(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.exp2(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise square root.
 pub fn sqrt<T: Scalar + Float>() -> Sqrt<T> {
-    Apply1 { op: |x| x.sqrt(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.sqrt(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise ceiling.
 pub fn ceil<T: Scalar + Float>() -> Ceil<T> {
-    Apply1 { op: |x| x.ceil(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.ceil(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise floor.
 pub fn floor<T: Scalar + Float>() -> Floor<T> {
-    Apply1 { op: |x| x.floor(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.floor(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise rounding.
 pub fn round<T: Scalar + Float>() -> Round<T> {
-    Apply1 { op: |x| x.round(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.round(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise reciprocal (`1/x`).
 pub fn recip<T: Scalar + Float>() -> Recip<T> {
-    Apply1 { op: |x| x.recip(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.recip(),
+        _phantom: PhantomData,
+    }
 }
 
 // ===========================================================================
@@ -229,12 +259,18 @@ pub type Sign<T> = Apply1<T, fn(T) -> T>;
 
 /// Element-wise absolute value.
 pub fn abs<T: Scalar + Signed>() -> Abs<T> {
-    Apply1 { op: |x| x.abs(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.abs(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise signum (−1, 0, or +1).
 pub fn sign<T: Scalar + Signed>() -> Sign<T> {
-    Apply1 { op: |x| x.signum(), _phantom: PhantomData }
+    Apply1 {
+        op: |x| x.signum(),
+        _phantom: PhantomData,
+    }
 }
 
 // ===========================================================================
@@ -243,17 +279,30 @@ pub fn sign<T: Scalar + Signed>() -> Sign<T> {
 
 /// Element-wise power: `x.powf(n)`.
 pub fn pow<T: Scalar + Float>(n: T) -> Apply1<T, impl Fn(T) -> T + Send + 'static> {
-    Apply1 { op: move |x| x.powf(n), _phantom: PhantomData }
+    Apply1 {
+        op: move |x| x.powf(n),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise scale: `x * c`.
-pub fn scale<T: Scalar + ops::Mul<Output = T>>(c: T) -> Apply1<T, impl Fn(T) -> T + Send + 'static> {
-    Apply1 { op: move |x| x * c.clone(), _phantom: PhantomData }
+pub fn scale<T: Scalar + ops::Mul<Output = T>>(
+    c: T,
+) -> Apply1<T, impl Fn(T) -> T + Send + 'static> {
+    Apply1 {
+        op: move |x| x * c.clone(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise shift: `x + c`.
-pub fn shift<T: Scalar + ops::Add<Output = T>>(c: T) -> Apply1<T, impl Fn(T) -> T + Send + 'static> {
-    Apply1 { op: move |x| x + c.clone(), _phantom: PhantomData }
+pub fn shift<T: Scalar + ops::Add<Output = T>>(
+    c: T,
+) -> Apply1<T, impl Fn(T) -> T + Send + 'static> {
+    Apply1 {
+        op: move |x| x + c.clone(),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise clamp to `[lo, hi]`.
@@ -281,12 +330,18 @@ pub type Max<T> = Apply2<T, fn(T, T) -> T>;
 
 /// Element-wise minimum (IEEE 754: returns non-NaN if one operand is NaN).
 pub fn min<T: Scalar + Float>() -> Min<T> {
-    Apply2 { op: |a, b| a.min(b), _phantom: PhantomData }
+    Apply2 {
+        op: |a, b| a.min(b),
+        _phantom: PhantomData,
+    }
 }
 
 /// Element-wise maximum (IEEE 754: returns non-NaN if one operand is NaN).
 pub fn max<T: Scalar + Float>() -> Max<T> {
-    Apply2 { op: |a, b| a.max(b), _phantom: PhantomData }
+    Apply2 {
+        op: |a, b| a.max(b),
+        _phantom: PhantomData,
+    }
 }
 
 // ===========================================================================
