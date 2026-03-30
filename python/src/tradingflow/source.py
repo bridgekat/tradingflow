@@ -1,8 +1,8 @@
 """Source interface for data feeding into the computation graph.
 
 [`Source`][tradingflow.Source] is the abstract base for Python-implemented
-sources that produce events via async iterators. The Scenario registers them
-as channel-based sources on the Rust side.
+sources. [`NativeSource`][tradingflow.NativeSource] is a descriptor for
+Rust-implemented sources.
 """
 
 from __future__ import annotations
@@ -85,3 +85,49 @@ async def empty_live_gen() -> AsyncIterator[Any]:
     """Immediately-exhausting live async generator."""
     return
     yield
+
+
+class NativeSource:
+    """Descriptor for a Rust-implemented source.
+
+    Analogous to `NativeOperator` — carries `kind` + `params` and is
+    dispatched entirely on the native side. Not a `Source` subclass
+    (no Python async iterators).
+    """
+
+    __slots__ = ("_kind", "_dtype", "_shape", "_params", "_name")
+
+    def __init__(
+        self,
+        kind: str,
+        *,
+        dtype: str = "float64",
+        shape: tuple[int, ...] = (),
+        params: dict | None = None,
+        name: str | None = None,
+    ) -> None:
+        self._kind = kind
+        self._dtype = dtype
+        self._shape = shape
+        self._params = params or {}
+        self._name = name or kind
+
+    @property
+    def kind(self) -> str:
+        return self._kind
+
+    @property
+    def dtype(self) -> str:
+        return self._dtype
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self._shape
+
+    @property
+    def params(self) -> dict:
+        return self._params
+
+    @property
+    def name(self) -> str:
+        return self._name

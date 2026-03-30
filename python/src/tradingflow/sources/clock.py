@@ -7,53 +7,9 @@ and `monthly_clock` implementations via `Scenario.add_source`.
 
 from __future__ import annotations
 
+from ..source import NativeSource
+
 import numpy as np
-
-
-class NativeSource:
-    """Descriptor for a Rust-implemented source.
-
-    Analogous to `NativeOperator` — carries `kind` + `params` and is
-    dispatched entirely on the native side. Not a `Source` subclass
-    (no Python async iterators).
-    """
-
-    __slots__ = ("_kind", "_dtype", "_shape", "_params", "_name")
-
-    def __init__(
-        self,
-        kind: str,
-        *,
-        dtype: str = "float64",
-        shape: tuple[int, ...] = (),
-        params: dict | None = None,
-        name: str | None = None,
-    ) -> None:
-        self._kind = kind
-        self._dtype = dtype
-        self._shape = shape
-        self._params = params or {}
-        self._name = name or kind
-
-    @property
-    def kind(self) -> str:
-        return self._kind
-
-    @property
-    def dtype(self) -> str:
-        return self._dtype
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        return self._shape
-
-    @property
-    def params(self) -> dict:
-        return self._params
-
-    @property
-    def name(self) -> str:
-        return self._name
 
 
 def clock(timestamps: list[np.datetime64] | np.ndarray) -> NativeSource:
@@ -85,8 +41,8 @@ def daily_clock(
     tz
         IANA timezone name (e.g. `"Asia/Shanghai"`, `"US/Eastern"`).
     """
-    start_ns = int(np.datetime64(start, "ns").view("int64"))
-    end_ns = int(np.datetime64(end, "ns").view("int64"))
+    start_ns = int(start.astype("datetime64[ns]").view("int64"))
+    end_ns = int(end.astype("datetime64[ns]").view("int64"))
     return NativeSource("daily_clock", params={"start_ns": start_ns, "end_ns": end_ns, "tz": tz})
 
 
@@ -106,6 +62,6 @@ def monthly_clock(
     tz
         IANA timezone name (e.g. `"Asia/Shanghai"`, `"US/Eastern"`).
     """
-    start_ns = int(np.datetime64(start, "ns").view("int64"))
-    end_ns = int(np.datetime64(end, "ns").view("int64"))
+    start_ns = int(start.astype("datetime64[ns]").view("int64"))
+    end_ns = int(end.astype("datetime64[ns]").view("int64"))
     return NativeSource("monthly_clock", params={"start_ns": start_ns, "end_ns": end_ns, "tz": tz})

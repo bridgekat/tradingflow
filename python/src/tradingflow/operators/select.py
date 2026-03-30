@@ -7,7 +7,15 @@ from ..types import Handle
 
 
 def select(a: Handle, indices: list[int]) -> NativeOperator:
-    """Select elements by flat indices."""
+    """Select elements by flat indices.
+
+    Parameters
+    ----------
+    a
+        Handle to an Array node.
+    indices
+        Flat indices into the input array to select.
+    """
     return NativeOperator(
         kind="select",
         inputs=(a,),

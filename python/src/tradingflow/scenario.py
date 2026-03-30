@@ -12,9 +12,8 @@ from typing import Any
 
 import numpy as np
 
-from .operator import NativeOperator, Operator
-from .source import Source
-from .sources.clock import NativeSource
+from .operator import Operator, NativeOperator
+from .source import Source, NativeSource
 from .types import Handle
 
 from tradingflow._native import NativeScenario

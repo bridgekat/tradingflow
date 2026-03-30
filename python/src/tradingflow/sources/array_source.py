@@ -13,7 +13,7 @@ from typing import cast
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .clock import NativeSource
+from ..source import NativeSource
 
 
 class ArraySource(NativeSource):

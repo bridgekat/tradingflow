@@ -9,7 +9,18 @@ from ..types import Handle
 
 
 def stack(inputs: Sequence[Handle], *, axis: int = 0) -> NativeOperator:
-    """Stack N arrays along a new axis."""
+    """Stack N arrays along a new axis.
+
+    All inputs must have the same dtype and shape. The output shape
+    inserts a new dimension of size ``len(inputs)`` at *axis*.
+
+    Parameters
+    ----------
+    inputs
+        Sequence of upstream handles (at least one).
+    axis
+        Position of the new axis (default ``0``).
+    """
     if not inputs:
         raise ValueError("stack requires at least one input.")
     base_shape = list(inputs[0].shape)

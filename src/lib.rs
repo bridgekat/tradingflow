@@ -5,8 +5,8 @@
 //!
 //! * [`Array`] — dense, dynamically-shaped array.
 //! * [`Series`] — append-only time series.
-//! * [`Operator`] — trait for compute functions.
 //! * [`Source`] — trait for data sources.
+//! * [`Operator`] — trait for compute functions.
 //! * [`Scenario`] — DAG runtime with type-erased dispatch.
 //!
 //! When compiled with the `python` feature, the crate also produces a PyO3
@@ -27,7 +27,6 @@ pub use operator::{ErasedOperator, Operator};
 pub use scenario::Scenario;
 pub use series::Series;
 pub use source::{ErasedSource, Source};
-pub use types::InputTypes;
 pub use utils::Schema;
 
 #[cfg(feature = "python")]

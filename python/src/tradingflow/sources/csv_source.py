@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from ..schema import Schema
-from .clock import NativeSource
+from ..source import NativeSource
 
 
 class CSVSource(NativeSource):

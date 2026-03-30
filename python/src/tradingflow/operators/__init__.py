@@ -17,8 +17,11 @@ from .apply import (
     # Float binary math
     min, max,
 )
+from .cast import cast
 from .concat import concat
+from .const import const
 from .filter import Filter
+from .id import id
 from .lag import lag
 from .last import last
 from .record import record
@@ -49,8 +52,8 @@ __all__ = [
     # Float binary math
     "min", "max",
     # Structural
-    "concat", "stack", "select", "record",
-    "last", "lag",
+    "cast", "const", "concat", "stack", "select", "record",
+    "id", "last", "lag",
     # Rolling
     "rolling_sum", "rolling_mean", "rolling_variance", "rolling_covariance",
     "ema", "forward_fill",

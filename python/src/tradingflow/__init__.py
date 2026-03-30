@@ -4,6 +4,7 @@ Core classes:
 
 * [`Scenario`][tradingflow.Scenario] — async runtime for the DAG.
 * [`Source`][tradingflow.Source] — abstract base for Python data sources.
+* [`NativeSource`][tradingflow.NativeSource] — descriptor for Rust data sources.
 * [`Operator`][tradingflow.Operator] — abstract base for Python operators.
 * [`NativeOperator`][tradingflow.NativeOperator] — descriptor for Rust operators.
 * [`Handle`][tradingflow.Handle] — typed reference to a graph node.
@@ -20,18 +21,19 @@ View types (for Python operators reading/writing graph data):
 * [`SeriesView`][tradingflow.SeriesView] — view of a Rust `Series<T>` node.
 """
 
-from .operator import NativeOperator, Operator
+from .views import ArrayView, SeriesView
+from .source import Source, NativeSource
+from .operator import Operator, NativeOperator
+from .types import Array, Series, Handle
 from .scenario import Scenario
 from .schema import Schema
-from .source import Source
-from .types import Array, Handle, Series
-from .views import ArrayView, SeriesView
 
 __all__ = [
     "Array",
     "ArrayView",
     "Handle",
     "NativeOperator",
+    "NativeSource",
     "Operator",
     "Scenario",
     "Schema",
