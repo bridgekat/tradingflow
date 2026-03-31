@@ -53,7 +53,7 @@ def _run(sc: Scenario) -> None:
 def _scalar_scenario(values: list[float]) -> tuple[Scenario, Handle, Handle]:
     """Build a scenario with one scalar source and its recorded series."""
     sc = Scenario()
-    src = ArraySource.from_arrays(
+    src = ArraySource(
         timestamps=np.arange(1, len(values) + 1).astype("datetime64[ns]"),
         values=np.array(values, dtype=np.float64),
     )
@@ -79,7 +79,7 @@ class TestLast:
     def test_last_vector(self) -> None:
         """last works on vector-valued series."""
         sc = Scenario()
-        src = ArraySource.from_arrays(
+        src = ArraySource(
             timestamps=np.array([ts(1), ts(2)]),
             values=np.array([[1.0, 2.0], [3.0, 4.0]]),
         )
@@ -165,7 +165,7 @@ class TestRollingSum:
     def test_rolling_sum_vector(self) -> None:
         """Rolling sum with 2-element vectors and window=2."""
         sc = Scenario()
-        src = ArraySource.from_arrays(
+        src = ArraySource(
             timestamps=np.array([ts(1), ts(2), ts(3)]),
             values=np.array([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]]),
         )
@@ -235,7 +235,7 @@ class TestRollingCovariance:
     def test_rolling_covariance_shape(self) -> None:
         """Output shape is (K, K) for K-element input."""
         sc = Scenario()
-        src = ArraySource.from_arrays(
+        src = ArraySource(
             timestamps=np.array([ts(1), ts(2), ts(3)]),
             values=np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]),
         )
@@ -364,14 +364,18 @@ class TestForwardFill:
 class TestSubtract:
     def test_subtract_scalar(self) -> None:
         sc = Scenario()
-        a = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2)]),
-            values=np.array([10.0, 30.0]),
-        ))
-        b = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2)]),
-            values=np.array([3.0, 7.0]),
-        ))
+        a = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2)]),
+                values=np.array([10.0, 30.0]),
+            )
+        )
+        b = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2)]),
+                values=np.array([3.0, 7.0]),
+            )
+        )
         h = sc.add_operator(Subtract(a, b))
         s = sc.add_operator(Record(h))
         _run(sc)
@@ -386,14 +390,18 @@ class TestSubtract:
 class TestDivide:
     def test_divide_scalar(self) -> None:
         sc = Scenario()
-        a = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2)]),
-            values=np.array([20.0, 9.0]),
-        ))
-        b = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2)]),
-            values=np.array([4.0, 3.0]),
-        ))
+        a = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2)]),
+                values=np.array([20.0, 9.0]),
+            )
+        )
+        b = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2)]),
+                values=np.array([4.0, 3.0]),
+            )
+        )
         h = sc.add_operator(Divide(a, b))
         s = sc.add_operator(Record(h))
         _run(sc)
@@ -408,7 +416,7 @@ class TestDivide:
 class TestSelect:
     def test_select_flat(self) -> None:
         sc = Scenario()
-        src = ArraySource.from_arrays(
+        src = ArraySource(
             timestamps=np.array([ts(1), ts(2)]),
             values=np.array([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]]),
         )
@@ -429,14 +437,18 @@ class TestSelect:
 class TestConcat:
     def test_concat_axis0(self) -> None:
         sc = Scenario()
-        a = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1)]),
-            values=np.array([[1.0, 2.0]]),
-        ))
-        b = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1)]),
-            values=np.array([[3.0, 4.0]]),
-        ))
+        a = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1)]),
+                values=np.array([[1.0, 2.0]]),
+            )
+        )
+        b = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1)]),
+                values=np.array([[3.0, 4.0]]),
+            )
+        )
         h = sc.add_operator(Concat([a, b], axis=0))
         s = sc.add_operator(Record(h))
         _run(sc)
@@ -452,14 +464,18 @@ class TestConcat:
 class TestStack:
     def test_stack_axis0(self) -> None:
         sc = Scenario()
-        a = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1)]),
-            values=np.array([[1.0, 2.0]]),
-        ))
-        b = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1)]),
-            values=np.array([[3.0, 4.0]]),
-        ))
+        a = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1)]),
+                values=np.array([[1.0, 2.0]]),
+            )
+        )
+        b = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1)]),
+                values=np.array([[3.0, 4.0]]),
+            )
+        )
         h = sc.add_operator(Stack([a, b], axis=0))
         s = sc.add_operator(Record(h))
         _run(sc)
@@ -571,14 +587,18 @@ class TestParameterized:
 class TestBinaryMath:
     def test_min(self) -> None:
         sc = Scenario()
-        a = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2), ts(3)]),
-            values=np.array([1.0, 5.0, 3.0]),
-        ))
-        b = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2), ts(3)]),
-            values=np.array([2.0, 4.0, 6.0]),
-        ))
+        a = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2), ts(3)]),
+                values=np.array([1.0, 5.0, 3.0]),
+            )
+        )
+        b = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2), ts(3)]),
+                values=np.array([2.0, 4.0, 6.0]),
+            )
+        )
         h = sc.add_operator(Min(a, b))
         s = sc.add_operator(Record(h))
         _run(sc)
@@ -587,14 +607,18 @@ class TestBinaryMath:
 
     def test_max(self) -> None:
         sc = Scenario()
-        a = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2), ts(3)]),
-            values=np.array([1.0, 5.0, 3.0]),
-        ))
-        b = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2), ts(3)]),
-            values=np.array([2.0, 4.0, 6.0]),
-        ))
+        a = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2), ts(3)]),
+                values=np.array([1.0, 5.0, 3.0]),
+            )
+        )
+        b = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2), ts(3)]),
+                values=np.array([2.0, 4.0, 6.0]),
+            )
+        )
         h = sc.add_operator(Max(a, b))
         s = sc.add_operator(Record(h))
         _run(sc)
@@ -611,14 +635,18 @@ class TestChained:
     def test_log_ratio(self) -> None:
         """log(a / b) — the log-ratio pattern for factors like log(book/price)."""
         sc = Scenario()
-        a = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2)]),
-            values=np.array([np.e**2, np.e**3]),
-        ))
-        b = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2)]),
-            values=np.array([np.e, np.e]),
-        ))
+        a = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2)]),
+                values=np.array([np.e**2, np.e**3]),
+            )
+        )
+        b = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2)]),
+                values=np.array([np.e, np.e]),
+            )
+        )
         ratio = sc.add_operator(Divide(a, b))
         log_ratio = sc.add_operator(Log(ratio))
         s = sc.add_operator(Record(log_ratio))

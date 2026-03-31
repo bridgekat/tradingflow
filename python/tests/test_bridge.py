@@ -5,6 +5,7 @@ without the Python-level Scenario wrapper, to validate the bridge layer.
 """
 
 from __future__ import annotations
+from typing import Any
 
 import numpy as np
 import pytest
@@ -12,22 +13,44 @@ import pytest
 from tradingflow._native import NativeScenario
 
 
+def _make_source(
+    sc: NativeScenario,
+    timestamps: list[int],
+    values: list[Any],
+    shape: list[int] | None = None,
+) -> int:
+    """Helper: register a native array source."""
+    if shape is None:
+        shape = []
+    stride = 1
+    for s in shape:
+        stride *= s
+    flat = []
+    for v in values:
+        if isinstance(v, (list, np.ndarray)):
+            flat.extend(v)
+        else:
+            flat.append(v)
+    arr = np.ascontiguousarray(np.array(flat, dtype=np.float64))
+    return sc.add_native_source(
+        "array",
+        "float64",
+        shape,
+        {
+            "timestamps": timestamps,
+            "values": arr,
+            "stride": stride,
+        },
+    )
+
+
 class TestBridgeNativeOperator:
     """Native operator registration via add_native_operator."""
 
-    def _make_source(self, sc: NativeScenario, timestamps: list[int], values: list[float]) -> int:
-        """Helper: register a channel source, push historical events, close."""
-        idx, hist, live = sc.add_py_source([], "float64")
-        for ts, val in zip(timestamps, values):
-            hist.send(ts, np.array([val], dtype=np.float64))
-        hist.close()
-        live.close()
-        return idx
-
     def test_add_and_record(self) -> None:
         sc = NativeScenario()
-        ha = self._make_source(sc, [1, 2], [10.0, 20.0])
-        hb = self._make_source(sc, [1, 2], [1.0, 2.0])
+        ha = _make_source(sc, [1, 2], [10.0, 20.0])
+        hb = _make_source(sc, [1, 2], [1.0, 2.0])
         hc = sc.add_native_operator("add", "float64", [ha, hb], [], {})
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
@@ -40,8 +63,8 @@ class TestBridgeNativeOperator:
 
     def test_subtract(self) -> None:
         sc = NativeScenario()
-        ha = self._make_source(sc, [1], [10.0])
-        hb = self._make_source(sc, [1], [3.0])
+        ha = _make_source(sc, [1], [10.0])
+        hb = _make_source(sc, [1], [3.0])
         hc = sc.add_native_operator("subtract", "float64", [ha, hb], [], {})
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
@@ -49,8 +72,8 @@ class TestBridgeNativeOperator:
 
     def test_multiply(self) -> None:
         sc = NativeScenario()
-        ha = self._make_source(sc, [1], [4.0])
-        hb = self._make_source(sc, [1], [5.0])
+        ha = _make_source(sc, [1], [4.0])
+        hb = _make_source(sc, [1], [5.0])
         hc = sc.add_native_operator("multiply", "float64", [ha, hb], [], {})
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
@@ -58,7 +81,7 @@ class TestBridgeNativeOperator:
 
     def test_negate(self) -> None:
         sc = NativeScenario()
-        ha = self._make_source(sc, [1, 2], [10.0, -5.0])
+        ha = _make_source(sc, [1, 2], [10.0, -5.0])
         hc = sc.add_native_operator("negate", "float64", [ha], [], {})
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
@@ -66,8 +89,8 @@ class TestBridgeNativeOperator:
 
     def test_chained_operators(self) -> None:
         sc = NativeScenario()
-        ha = self._make_source(sc, [1, 2], [2.0, 5.0])
-        hb = self._make_source(sc, [1, 2], [3.0, 10.0])
+        ha = _make_source(sc, [1, 2], [2.0, 5.0])
+        hb = _make_source(sc, [1, 2], [3.0, 10.0])
         hab = sc.add_native_operator("add", "float64", [ha, hb], [], {})
         hout = sc.add_native_operator("multiply", "float64", [hab, ha], [], {})
         hs = sc.add_native_operator("record", "float64", [hout], [], {})
@@ -77,8 +100,8 @@ class TestBridgeNativeOperator:
 
     def test_interleaved_sources(self) -> None:
         sc = NativeScenario()
-        ha = self._make_source(sc, [1, 3], [10.0, 30.0])
-        hb = self._make_source(sc, [2, 3], [20.0, 40.0])
+        ha = _make_source(sc, [1, 3], [10.0, 30.0])
+        hb = _make_source(sc, [2, 3], [20.0, 40.0])
         hc = sc.add_native_operator("add", "float64", [ha, hb], [], {})
         hs = sc.add_native_operator("record", "float64", [hc], [], {})
         sc.run()
@@ -89,18 +112,10 @@ class TestBridgeNativeOperator:
 class TestBridgeStrided:
     """Tests with vector-valued (strided) arrays."""
 
-    def _make_strided_source(self, sc: NativeScenario, timestamps: list[int], values: list[list[float]]) -> int:
-        idx, hist, live = sc.add_py_source([len(values[0])], "float64")
-        for ts, val in zip(timestamps, values):
-            hist.send(ts, np.array(val, dtype=np.float64))
-        hist.close()
-        live.close()
-        return idx
-
     def test_strided_add(self) -> None:
         sc = NativeScenario()
-        ha = self._make_strided_source(sc, [1], [[1.0, 2.0]])
-        hb = self._make_strided_source(sc, [1], [[10.0, 20.0]])
+        ha = _make_source(sc, [1], [[1.0, 2.0]], shape=[2])
+        hb = _make_source(sc, [1], [[10.0, 20.0]], shape=[2])
         hc = sc.add_native_operator("add", "float64", [ha, hb], [2], {})
         hs = sc.add_native_operator("record", "float64", [hc], [2], {})
         sc.run()
@@ -108,7 +123,7 @@ class TestBridgeStrided:
 
     def test_select(self) -> None:
         sc = NativeScenario()
-        ha = self._make_strided_source(sc, [1], [[10.0, 20.0, 30.0]])
+        ha = _make_source(sc, [1], [[10.0, 20.0, 30.0]], shape=[3])
         hc = sc.add_native_operator("select", "float64", [ha], [2], {"indices": [0, 2]})
         hs = sc.add_native_operator("record", "float64", [hc], [2], {})
         sc.run()
@@ -116,8 +131,8 @@ class TestBridgeStrided:
 
     def test_concat(self) -> None:
         sc = NativeScenario()
-        ha = self._make_strided_source(sc, [1], [[1.0, 2.0]])
-        hb = self._make_strided_source(sc, [1], [[3.0, 4.0]])
+        ha = _make_source(sc, [1], [[1.0, 2.0]], shape=[2])
+        hb = _make_source(sc, [1], [[3.0, 4.0]], shape=[2])
         hc = sc.add_native_operator("concat", "float64", [ha, hb], [4], {"axis": 0})
         hs = sc.add_native_operator("record", "float64", [hc], [4], {})
         sc.run()
@@ -130,11 +145,7 @@ class TestBridgePyOperator:
     def test_py_operator_add_const(self) -> None:
         """Stateless Python operator that adds a constant."""
         sc = NativeScenario()
-        idx, hist, live = sc.add_py_source([], "float64")
-        hist.send(1, np.array([10.0], dtype=np.float64))
-        hist.send(2, np.array([20.0], dtype=np.float64))
-        hist.close()
-        live.close()
+        idx = _make_source(sc, [1, 2], [10.0, 20.0])
 
         class AddConst:
             def compute(self, timestamp, inputs, output, state):
@@ -157,12 +168,7 @@ class TestBridgePyOperator:
     def test_py_operator_stateful(self) -> None:
         """Stateful Python operator that computes running sum."""
         sc = NativeScenario()
-        idx, hist, live = sc.add_py_source([], "float64")
-        hist.send(1, np.array([10.0], dtype=np.float64))
-        hist.send(2, np.array([20.0], dtype=np.float64))
-        hist.send(3, np.array([30.0], dtype=np.float64))
-        hist.close()
-        live.close()
+        idx = _make_source(sc, [1, 2, 3], [10.0, 20.0, 30.0])
 
         class RunningSum:
             def compute(self, timestamp, inputs, output, state):
@@ -186,13 +192,7 @@ class TestBridgePyOperator:
     def test_py_operator_filter(self) -> None:
         """Python operator that skips propagation by returning False."""
         sc = NativeScenario()
-        idx, hist, live = sc.add_py_source([], "float64")
-        hist.send(1, np.array([1.0], dtype=np.float64))
-        hist.send(2, np.array([5.0], dtype=np.float64))
-        hist.send(3, np.array([2.0], dtype=np.float64))
-        hist.send(4, np.array([10.0], dtype=np.float64))
-        hist.close()
-        live.close()
+        idx = _make_source(sc, [1, 2, 3, 4], [1.0, 5.0, 2.0, 10.0])
 
         class FilterAbove3:
             def compute(self, timestamp, inputs, output, state):
@@ -222,21 +222,14 @@ class TestBridgeGetView:
 
     def test_array_view(self) -> None:
         sc = NativeScenario()
-        idx, hist, live = sc.add_py_source([], "float64")
-        hist.send(1, np.array([42.0], dtype=np.float64))
-        hist.close()
-        live.close()
+        idx = _make_source(sc, [1], [42.0])
         sc.run()
         view = sc.view(idx)
         np.testing.assert_array_almost_equal(view.value(), [42.0])
 
     def test_series_view(self) -> None:
         sc = NativeScenario()
-        idx, hist, live = sc.add_py_source([], "float64")
-        hist.send(1, np.array([10.0], dtype=np.float64))
-        hist.send(2, np.array([20.0], dtype=np.float64))
-        hist.close()
-        live.close()
+        idx = _make_source(sc, [1, 2], [10.0, 20.0])
         hs = sc.add_native_operator("record", "float64", [idx], [], {})
         sc.run()
         view = sc.view(hs)
@@ -251,10 +244,7 @@ class TestPythonViewWrappers:
         from tradingflow.views import ArrayView
 
         sc = NativeScenario()
-        idx, hist, live = sc.add_py_source([], "float64")
-        hist.send(1, np.array([42.0], dtype=np.float64))
-        hist.close()
-        live.close()
+        idx = _make_source(sc, [1], [42.0])
         sc.run()
         native_view = sc.view(idx)
         wrapper = ArrayView(native_view)
@@ -266,11 +256,7 @@ class TestPythonViewWrappers:
         from tradingflow.views import SeriesView
 
         sc = NativeScenario()
-        idx, hist, live = sc.add_py_source([], "float64")
-        hist.send(1, np.array([10.0], dtype=np.float64))
-        hist.send(2, np.array([20.0], dtype=np.float64))
-        hist.close()
-        live.close()
+        idx = _make_source(sc, [1, 2], [10.0, 20.0])
         hs = sc.add_native_operator("record", "float64", [idx], [], {})
         sc.run()
         native_view = sc.view(hs)
@@ -287,10 +273,7 @@ class TestArrayViewEnhancements:
         from tradingflow.views import ArrayView
 
         sc = NativeScenario()
-        idx, hist, live = sc.add_py_source([3], "float64")
-        hist.send(1, np.array([1.0, 2.0, 3.0], dtype=np.float64))
-        hist.close()
-        live.close()
+        idx = _make_source(sc, [1], [[1.0, 2.0, 3.0]], shape=[3])
         sc.run()
         return ArrayView(sc.view(idx)), sc
 
@@ -328,12 +311,7 @@ class TestSeriesViewEnhancements:
         from tradingflow.views import SeriesView
 
         sc = NativeScenario()
-        idx, hist, live = sc.add_py_source([], "float64")
-        hist.send(100, np.array([10.0], dtype=np.float64))
-        hist.send(200, np.array([20.0], dtype=np.float64))
-        hist.send(300, np.array([30.0], dtype=np.float64))
-        hist.close()
-        live.close()
+        idx = _make_source(sc, [100, 200, 300], [10.0, 20.0, 30.0])
         hs = sc.add_native_operator("record", "float64", [idx], [], {})
         sc.run()
         return SeriesView(sc.view(hs)), sc
@@ -385,3 +363,64 @@ class TestSeriesViewEnhancements:
         assert isinstance(df, pd.DataFrame)
         assert isinstance(df.index, pd.DatetimeIndex)
         assert len(df) == 3
+
+
+class TestPySourceBridge:
+    """Test Python source driven by Rust-side async driver tasks."""
+
+    def test_iter_source_basic(self) -> None:
+        """IterSource (Python source) produces correct events."""
+        from tradingflow import Scenario
+        from tradingflow.sources import IterSource
+        from tradingflow.operators import Record
+
+        sc = Scenario()
+        src = IterSource(
+            [(np.datetime64(1, "ns"), 10.0), (np.datetime64(2, "ns"), 20.0)],
+            shape=(),
+            dtype=np.float64,
+        )
+        h = sc.add_source(src)
+        hr = sc.add_operator(Record(h))
+        sc.run()
+        sv = sc.series_view(hr)
+        np.testing.assert_array_almost_equal(sv.values().flatten(), [10.0, 20.0])
+
+    def test_py_source_with_native_operator(self) -> None:
+        """Python source + native operator (Scale)."""
+        from tradingflow import Scenario
+        from tradingflow.sources import IterSource
+        from tradingflow.operators import Record, Scale
+
+        sc = Scenario()
+        src = IterSource(
+            [(np.datetime64(i, "ns"), float(i)) for i in range(1, 11)],
+            shape=(),
+            dtype=np.float64,
+        )
+        h = sc.add_source(src)
+        hs = sc.add_operator(Scale(h, 2.0))
+        hr = sc.add_operator(Record(hs))
+        sc.run()
+        sv = sc.series_view(hr)
+        expected = [float(i) * 2.0 for i in range(1, 11)]
+        np.testing.assert_array_almost_equal(sv.values().flatten(), expected)
+
+    def test_py_source_with_py_operator(self) -> None:
+        """Python source + Python operator (Filter): the former deadlock case."""
+        from tradingflow import Scenario
+        from tradingflow.sources import IterSource
+        from tradingflow.operators import Filter, Record
+
+        sc = Scenario()
+        src = IterSource(
+            [(np.datetime64(i, "ns"), float(i)) for i in range(1, 6)],
+            shape=(),
+            dtype=np.float64,
+        )
+        h = sc.add_source(src)
+        hf = sc.add_operator(Filter(h, lambda v: float(v.flat[0]) > 3.0))
+        hr = sc.add_operator(Record(hf))
+        sc.run()
+        sv = sc.series_view(hr)
+        np.testing.assert_array_almost_equal(sv.values().flatten(), [4.0, 5.0])

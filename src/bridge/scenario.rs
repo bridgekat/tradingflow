@@ -10,14 +10,44 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
-use crate::{Scenario, Series};
+use crate::Scenario;
 
-use super::dispatch::{dispatch_dtype, normalize_dtype};
-use super::sources::EventSender;
+use super::dispatch::normalize_dtype;
+use super::source::PySourceSpec;
 use super::views::{ViewKind, create_view};
-use super::{ErrorSlot, operator, operators, sources};
+use super::{ErrorSlot, operator, operators, source, sources};
 
 type PyObject = Py<PyAny>;
+
+// ---------------------------------------------------------------------------
+// DoneGuard — panic-safe asyncio Event signalling
+// ---------------------------------------------------------------------------
+
+/// Signals an `asyncio.Event` via `call_soon_threadsafe(event.set)` on drop.
+///
+/// Created on the POCQ background thread; fires on both normal return and
+/// panic (stack unwinding), ensuring the main thread's
+/// `run_until_complete(event.wait())` always unblocks.
+struct DoneGuard(Option<PyObject>, PyObject);
+
+impl Drop for DoneGuard {
+    fn drop(&mut self) {
+        if let Some(set_fn) = self.0.take() {
+            // Best-effort: if GIL acquisition or the call fails (e.g.
+            // interpreter shutting down), we silently ignore — the main
+            // thread will notice the join failure.
+            let _ = Python::attach(|py| -> PyResult<()> {
+                let loop_ = self.1.bind(py);
+                loop_.call_method1("call_soon_threadsafe", (&set_fn.bind(py),))?;
+                Ok(())
+            });
+        }
+    }
+}
+
+// SAFETY: PyObject is Send; the guard is created and dropped on the
+// background thread.
+unsafe impl Send for DoneGuard {}
 
 // ---------------------------------------------------------------------------
 // NativeScenario
@@ -25,8 +55,9 @@ type PyObject = Py<PyAny>;
 
 /// Python-visible wrapper around the Rust `Scenario` runtime.
 ///
-/// Owns a tokio runtime that is entered on construction, so sources
-/// can use [`tokio::spawn`] during `add_source`.
+/// Owns a tokio runtime used to drive the POCQ event loop and source
+/// driver tasks.  Registration methods enter the runtime so that
+/// sources can use [`tokio::spawn`] during `init`.
 #[pyclass]
 pub struct NativeScenario {
     scenario: Option<Scenario>,
@@ -37,6 +68,11 @@ pub struct NativeScenario {
     cached_views: Vec<Option<PyObject>>,
     /// Tokio runtime — kept alive for the scenario's lifetime.
     _rt: tokio::runtime::Runtime,
+    /// Asyncio event loop for Python source coroutines, created on first
+    /// `add_py_source`.  Runs on the **main thread** during `run()` for
+    /// proper signal handling; the tokio POCQ loop runs on a background
+    /// thread.
+    event_loop: Option<PyObject>,
 }
 
 unsafe impl Send for NativeScenario {}
@@ -65,6 +101,21 @@ impl NativeScenario {
         self.cached_views[node_index] = Some(view);
         Ok(())
     }
+
+    /// Ensure the asyncio event loop exists.
+    ///
+    /// Created lazily on the first `add_py_source` call.  The loop is
+    /// **not** started here — it runs on the main thread during `run()`.
+    fn ensure_event_loop(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+        if let Some(ref loop_) = self.event_loop {
+            return Ok(loop_.clone_ref(py));
+        }
+
+        let asyncio = py.import("asyncio")?;
+        let event_loop: PyObject = asyncio.call_method0("new_event_loop")?.unbind();
+        self.event_loop = Some(event_loop.clone_ref(py));
+        Ok(event_loop)
+    }
 }
 
 #[pymethods]
@@ -81,6 +132,7 @@ impl NativeScenario {
             node_info: Vec::new(),
             cached_views: Vec::new(),
             _rt: rt,
+            event_loop: None,
         }
     }
 
@@ -95,7 +147,6 @@ impl NativeScenario {
     }
 
     /// Register a Rust-native source by kind + dtype + params.
-    #[pyo3(signature = (kind, dtype, shape, params))]
     fn add_native_source(
         &mut self,
         py: Python<'_>,
@@ -139,22 +190,40 @@ impl NativeScenario {
         Ok(idx)
     }
 
-    /// Register a channel-based source (for async Python sources).
+    /// Register a Python source.
     ///
-    /// Returns `(node_index, hist_sender, live_sender)`.
+    /// Immediately creates the DAG node with channels.  A tokio driver task
+    /// is spawned that will call `source.init()` and iterate the returned
+    /// async iterators when the tokio runtime runs.
     fn add_py_source(
         &mut self,
         py: Python<'_>,
+        py_source: PyObject,
         shape: Vec<usize>,
         dtype: String,
-    ) -> PyResult<(usize, EventSender, EventSender)> {
+    ) -> PyResult<usize> {
         let _guard = self._rt.enter();
-        let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalize_dtype(&dtype).to_string();
-        let (node_index, hist_sender, live_sender) =
-            sources::register_channel_source(sc, &shape, &dtype_norm)?;
-        self.push_node(py, node_index, &dtype_norm, ViewKind::Array, &shape)?;
-        Ok((node_index, hist_sender, live_sender))
+
+        // Ensure asyncio event loop exists.
+        let event_loop = self.ensure_event_loop(py)?;
+
+        let spec = PySourceSpec {
+            py_source,
+            shape: shape.clone().into_boxed_slice(),
+            dtype: dtype_norm.clone(),
+        };
+
+        let sc = self.scenario.as_mut().unwrap();
+        let idx = source::register_py_source(
+            sc,
+            py,
+            spec,
+            event_loop,
+            self.error_slot.clone(),
+        )?;
+        self.push_node(py, idx, &dtype_norm, ViewKind::Array, &shape)?;
+        Ok(idx)
     }
 
     /// Register a Python operator via
@@ -241,61 +310,96 @@ impl NativeScenario {
     }
 
     /// Run the POCQ event loop.
+    ///
+    /// If Python sources have been registered, the asyncio event loop runs
+    /// on the **main thread** (for proper signal handling) while the tokio
+    /// POCQ loop runs on a background thread.  Driver tasks on the tokio
+    /// runtime iterate Python source async iterators by scheduling
+    /// coroutines on the main-thread asyncio loop via
+    /// `run_coroutine_threadsafe`.
     fn run(&mut self, py: Python<'_>) -> PyResult<()> {
         let mut scenario = self.scenario.take().ok_or_else(|| {
             PyRuntimeError::new_err("scenario already consumed by a previous run()")
         })?;
 
-        py.detach(|| {
-            self._rt.block_on(scenario.run());
+        // Two-thread model:
+        //   Background thread: tokio block_on(POCQ + driver tasks)
+        //   Main thread:       asyncio run_until_complete(done_event.wait())
+        //                      (if Python sources exist) or just wait (if not)
+        //
+        // The asyncio loop runs on the main thread for proper signal
+        // handling.  A Done guard on the background thread sets the
+        // asyncio.Event on both normal exit and panic (unwinding), so the
+        // main thread always unblocks.
+
+        // Temporarily take the runtime so we can move it into the
+        // background thread (std::thread::spawn requires 'static).
+        let rt = std::mem::replace(
+            &mut self._rt,
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap(),
+        );
+
+        let event_loop = self.event_loop.take();
+
+        // Create an asyncio.Event + its set callback for the Done guard.
+        let done_signal = event_loop.as_ref().map(|el| -> PyResult<_> {
+            let asyncio = py.import("asyncio")?;
+            let loop_ = el.bind(py);
+            asyncio.call_method1("set_event_loop", (loop_,))?;
+            let event: PyObject = asyncio.call_method0("Event")?.unbind();
+            // Pre-bind event.set so the guard only needs call_soon_threadsafe.
+            let set_fn: PyObject = event.getattr(py, "set")?;
+            let el_ref = el.clone_ref(py);
+            Ok((event, set_fn, el_ref))
+        }).transpose()?;
+
+        let done_guard_parts = done_signal.as_ref().map(|(_, set_fn, el_ref)| {
+            (set_fn.clone_ref(py), el_ref.clone_ref(py))
         });
 
-        self.scenario = Some(scenario);
+        // Spawn the POCQ + drivers on a background thread.
+        let bg_handle = {
+            let _guard = rt.enter();
+            std::thread::spawn(move || {
+                // Drop guard: signals the asyncio Event on both normal
+                // return and panic (stack unwinding).
+                let _done = done_guard_parts.map(|(set_fn, el)| DoneGuard(Some(set_fn), el));
+
+                rt.block_on(scenario.run());
+                (scenario, rt)
+            })
+        };
+
+        // Main thread: run the asyncio event loop until the Done guard
+        // fires, or just release GIL and wait if no event loop.
+        if let Some((event, _, _)) = done_signal {
+            let loop_ = event_loop.as_ref().unwrap().bind(py);
+            let wait_coro = event.call_method0(py, "wait")?;
+            loop_.call_method1("run_until_complete", (wait_coro.bind(py),))?;
+            loop_.call_method0("close")?;
+        }
+
+        // Join the background thread (release GIL so it can finish
+        // any pending Python::attach calls).
+        let join_result = py.detach(|| bg_handle.join());
+        match join_result {
+            Ok((scenario, rt)) => {
+                self.scenario = Some(scenario);
+                self._rt = rt;
+            }
+            Err(_) => {
+                return Err(PyRuntimeError::new_err(
+                    "POCQ background thread panicked",
+                ));
+            }
+        }
 
         if let Some(err) = self.error_slot.lock().unwrap().take() {
             Err(PyRuntimeError::new_err(err))
         } else {
             Ok(())
-        }
-    }
-
-    /// Run the POCQ event loop while executing a Python driver on a background thread.
-    ///
-    /// The driver callable is invoked with no arguments on a separate thread.
-    /// The scenario event loop runs on the current thread until completion.
-    fn run_with_driver(&mut self, py: Python<'_>, driver: PyObject) -> PyResult<()> {
-        let mut scenario = self.scenario.take().ok_or_else(|| {
-            PyRuntimeError::new_err("scenario already consumed by a previous run()")
-        })?;
-
-        let rt = &self._rt;
-        let (scenario, bg_result) = py.detach(move || {
-            let bg_handle = std::thread::spawn(move || -> Result<(), String> {
-                Python::attach(|py| {
-                    driver.call0(py).map_err(|e| e.to_string())?;
-                    Ok(())
-                })
-            });
-
-            rt.block_on(scenario.run());
-
-            let bg_result = bg_handle
-                .join()
-                .map_err(|_| "background thread panicked".to_string())
-                .and_then(|r| r);
-
-            (scenario, bg_result)
-        });
-
-        self.scenario = Some(scenario);
-
-        if let Some(err) = self.error_slot.lock().unwrap().take() {
-            return Err(PyRuntimeError::new_err(err));
-        }
-
-        match bg_result {
-            Ok(()) => Ok(()),
-            Err(msg) => Err(PyRuntimeError::new_err(msg)),
         }
     }
 }

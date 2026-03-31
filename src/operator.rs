@@ -39,12 +39,12 @@ pub trait Operator: 'static {
 
 /// Type-erased initialization closure for an operator.
 ///
-/// Parameters:
+/// # Parameters
 ///
 /// * `input_ptrs: &[*const u8]` — pointers to input node values.
 /// * `timestamp: i64` — initial timestamp.
 ///
-/// Returns:
+/// # Returns
 ///
 /// * `state_ptr: *mut u8` — from [`Box::into_raw`], points to `O::State`.
 /// * `output_ptr: *mut u8` — from [`Box::into_raw`], points to `O::Output`.
@@ -52,14 +52,14 @@ pub type InitFn = Box<dyn FnOnce(&[*const u8], i64) -> (*mut u8, *mut u8)>;
 
 /// Type-erased compute function pointer for an operator.
 ///
-/// Parameters:
+/// # Parameters
 ///
 /// * `state_ptr: *mut u8` — points to `O::State`.
 /// * `input_ptrs: &[*const u8]` — pointers to input node values.
 /// * `output_ptr: *mut u8` — points to `O::Output`.
 /// * `timestamp: i64` — current flush timestamp.
 ///
-/// Returns:
+/// # Returns
 ///
 /// * `true` if downstream propagation should occur.
 pub type ComputeFn = unsafe fn(*mut u8, &[*const u8], *mut u8, i64) -> bool;

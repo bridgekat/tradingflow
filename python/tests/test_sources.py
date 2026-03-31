@@ -20,7 +20,8 @@ class TestIterSource:
         sc = Scenario()
         src = IterSource(
             [(ts(1), 10.0), (ts(2), 20.0), (ts(3), 30.0)],
-            shape=(), dtype=np.float64,
+            shape=(),
+            dtype=np.float64,
         )
         h = sc.add_source(src)
         s = sc.add_operator(Record(h))
@@ -34,16 +35,15 @@ class TestIterSource:
         sc = Scenario()
         src = IterSource(
             [(ts(1), [1.0, 2.0]), (ts(2), [3.0, 4.0])],
-            shape=(2,), dtype=np.float64,
+            shape=(2,),
+            dtype=np.float64,
         )
         h = sc.add_source(src)
         s = sc.add_operator(Record(h))
         sc.run()
 
         assert len(sc.series_view(s)) == 2
-        np.testing.assert_array_almost_equal(
-            sc.series_view(s).values().flatten(), [1.0, 2.0, 3.0, 4.0]
-        )
+        np.testing.assert_array_almost_equal(sc.series_view(s).values().flatten(), [1.0, 2.0, 3.0, 4.0])
 
     def test_with_operator(self) -> None:
         """IterSource feeds into a native add operator."""
@@ -70,7 +70,8 @@ class TestIterSource:
         sc = Scenario()
         src = IterSource(
             ((ts(i), float(i * 10)) for i in range(1, 4)),
-            shape=(), dtype=np.float64,
+            shape=(),
+            dtype=np.float64,
         )
         h = sc.add_source(src)
         s = sc.add_operator(Record(h))
@@ -88,10 +89,12 @@ class TestClockSource:
     def test_clock_with_array_source(self) -> None:
         """Clock source coexists with data sources in the same scenario."""
         sc = Scenario()
-        data = sc.add_source(ArraySource.from_arrays(
-            timestamps=np.array([ts(1), ts(2), ts(3)]),
-            values=np.array([10.0, 20.0, 30.0]),
-        ))
+        data = sc.add_source(
+            ArraySource(
+                timestamps=np.array([ts(1), ts(2), ts(3)]),
+                values=np.array([10.0, 20.0, 30.0]),
+            )
+        )
         _clk = sc.add_source(Clock([ts(2)]))
         s = sc.add_operator(Record(data))
         sc.run()

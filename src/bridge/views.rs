@@ -98,7 +98,7 @@ unsafe impl Send for NativeArrayView {}
 unsafe impl Sync for NativeArrayView {}
 
 /// Create an [`NativeArrayView`] for a node holding `Array<T>`.
-pub fn make_array_view<T: PyScalar>(
+fn make_array_view<T: PyScalar>(
     ptr: *mut u8,
     shape: &[usize],
     dtype_str: &str,
@@ -142,20 +142,7 @@ impl NativeArrayView {
 
 // -- Numpy interop helper ---------------------------------------------------
 
-/// Make the input contiguous and extract its data pointer and shape.
-///
-/// The caller must keep the returned [`Bound`] alive while using the pointer.
-fn contiguous_numpy_data<'py>(
-    py: Python<'py>,
-    value: &Bound<'py, PyAny>,
-) -> PyResult<(Bound<'py, PyAny>, usize, Vec<usize>)> {
-    let np = py.import("numpy")?;
-    let arr = np.call_method1("ascontiguousarray", (value,))?;
-    let interface = arr.getattr("__array_interface__")?;
-    let ptr: usize = interface.get_item("data")?.get_item(0)?.extract()?;
-    let shape: Vec<usize> = interface.get_item("shape")?.extract()?;
-    Ok((arr, ptr, shape))
-}
+use super::dispatch::ContiguousArrayInfo;
 
 // -- Monomorphized helpers for ArrayView ------------------------------------
 
@@ -172,26 +159,22 @@ unsafe fn array_value<T: PyScalar>(
 
 unsafe fn array_write<T: PyScalar>(
     ptr: *mut u8,
-    py: Python<'_>,
+    _py: Python<'_>,
     value: &Bound<'_, PyAny>,
     shape: &[usize],
 ) -> PyResult<()> {
     let arr = unsafe { &mut *(ptr as *mut Array<T>) };
     let expected_len = arr.as_slice().len();
 
-    let (_contiguous, src_ptr, src_shape) = contiguous_numpy_data(py, value)?;
-    let src_len: usize = src_shape.iter().product();
-    if src_len != expected_len {
+    let src = ContiguousArrayInfo::try_from(value)?;
+    if src.len() != expected_len {
         return Err(PyValueError::new_err(format!(
             "shape mismatch: expected {} elements (shape {:?}), got {} (shape {:?})",
-            expected_len, shape, src_len, src_shape,
+            expected_len, shape, src.len(), src.shape,
         )));
     }
 
-    let dst = arr.as_slice_mut();
-    unsafe {
-        std::ptr::copy_nonoverlapping(src_ptr as *const T, dst.as_mut_ptr(), expected_len);
-    }
+    unsafe { src.clone_to_slice(arr.as_slice_mut()) };
     Ok(())
 }
 
@@ -243,7 +226,7 @@ unsafe impl Send for NativeSeriesView {}
 unsafe impl Sync for NativeSeriesView {}
 
 /// Create a [`NativeSeriesView`] for a node holding `Series<T>`.
-pub fn make_series_view<T: PyScalar>(
+fn make_series_view<T: PyScalar>(
     ptr: *mut u8,
     shape: &[usize],
     dtype_str: &str,
@@ -438,7 +421,7 @@ unsafe fn series_at<T: PyScalar>(
 
 unsafe fn series_push<T: PyScalar>(
     ptr: *mut u8,
-    py: Python<'_>,
+    _py: Python<'_>,
     value: &Bound<'_, PyAny>,
     shape: &[usize],
     timestamp: i64,
@@ -446,19 +429,16 @@ unsafe fn series_push<T: PyScalar>(
     let series = unsafe { &mut *(ptr as *mut Series<T>) };
     let stride: usize = shape.iter().product::<usize>();
 
-    let (_contiguous, src_ptr, src_shape) = contiguous_numpy_data(py, value)?;
-    let src_len: usize = src_shape.iter().product::<usize>();
-    if src_len != stride {
+    let src = ContiguousArrayInfo::try_from(value)?;
+    if src.len() != stride {
         return Err(PyValueError::new_err(format!(
             "push: expected {} elements (shape {:?}), got {} (shape {:?})",
-            stride, shape, src_len, src_shape,
+            stride, shape, src.len(), src.shape,
         )));
     }
 
     let mut buf = vec![T::default(); stride];
-    unsafe {
-        std::ptr::copy_nonoverlapping(src_ptr as *const T, buf.as_mut_ptr(), stride);
-    }
+    unsafe { src.clone_to_slice(&mut buf) };
     series.push(timestamp, &buf);
     Ok(())
 }

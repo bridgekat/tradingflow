@@ -3,9 +3,6 @@
 //! Provides normalisation of numpy dtype strings and a dispatch macro for
 //! calling monomorphised code based on a runtime dtype string.
 
-use pyo3::PyResult;
-use pyo3::exceptions::PyTypeError;
-
 /// Normalize a numpy dtype string to a canonical form.
 pub fn normalize_dtype(dtype: &str) -> &str {
     match dtype {
@@ -21,17 +18,6 @@ pub fn normalize_dtype(dtype: &str) -> &str {
         "float32" | "<f4" => "float32",
         "float64" | "<f8" => "float64",
         other => other,
-    }
-}
-
-/// Number of bytes per scalar element for a given dtype.
-pub fn dtype_element_bytes(dtype: &str) -> PyResult<usize> {
-    match normalize_dtype(dtype) {
-        "bool" | "int8" | "uint8" => Ok(1),
-        "int16" | "uint16" => Ok(2),
-        "int32" | "uint32" | "float32" => Ok(4),
-        "int64" | "uint64" | "float64" => Ok(8),
-        other => Err(PyTypeError::new_err(format!("unsupported dtype: {other}"))),
     }
 }
 
@@ -97,3 +83,85 @@ macro_rules! dispatch_dtype {
 }
 
 pub(crate) use dispatch_dtype;
+
+use pyo3::exceptions::PyValueError;
+use pyo3::types::PyAnyMethods;
+
+/// Validated C-contiguous numpy array metadata, read from
+/// `__array_interface__`.
+///
+/// Constructed via [`from_bound`](Self::from_bound), which checks that
+/// `strides` is `None` (C-contiguous) and extracts the data pointer and
+/// shape.  The caller (Python side) is responsible for ensuring contiguous
+/// layout before passing the array; this type only validates.
+pub struct ContiguousArrayInfo {
+    /// Raw data pointer (`__array_interface__["data"][0]`).
+    pub ptr: usize,
+    /// Array shape (`__array_interface__["shape"]`).
+    pub shape: Vec<usize>,
+}
+
+impl<'py> TryFrom<&pyo3::Bound<'py, pyo3::types::PyAny>> for ContiguousArrayInfo {
+    type Error = pyo3::PyErr;
+
+    /// Parse and validate `__array_interface__` from a Python object.
+    ///
+    /// Fails if `strides` is not `None`.
+    fn try_from(array: &pyo3::Bound<'py, pyo3::types::PyAny>) -> pyo3::PyResult<Self> {
+        let interface = array.getattr("__array_interface__")?;
+
+        let strides = interface.get_item("strides")?;
+        if !strides.is_none() {
+            return Err(PyValueError::new_err(
+                "numpy array is not C-contiguous (strides is not None)",
+            ));
+        }
+
+        let shape: Vec<usize> = interface.get_item("shape")?.extract()?;
+        let ptr: usize = interface.get_item("data")?.get_item(0)?.extract()?;
+
+        Ok(Self { ptr, shape })
+    }
+}
+
+impl ContiguousArrayInfo {
+
+    /// Total number of elements (product of shape dimensions).
+    pub fn len(&self) -> usize {
+        self.shape.iter().product()
+    }
+
+    /// Copy the array data into a `Vec<T>`.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be a numeric type where every bit pattern of size
+    /// `size_of::<T>()` is a valid value, and the array's dtype must
+    /// match `T` in element size.
+    pub unsafe fn to_vec<T>(&self) -> Vec<T> {
+        let n = self.len();
+        let mut result = Vec::with_capacity(n);
+        unsafe {
+            self.clone_to_slice(std::slice::from_raw_parts_mut(result.as_mut_ptr(), n));
+            result.set_len(n);
+        }
+        result
+    }
+
+    /// Copy the array data into an existing slice.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be a numeric type where every bit pattern is valid.
+    /// `dst` must have exactly `self.len()` elements.
+    pub unsafe fn clone_to_slice<T>(&self, dst: &mut [T]) {
+        let nbytes = dst.len() * std::mem::size_of::<T>();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.ptr as *const u8,
+                dst.as_mut_ptr() as *mut u8,
+                nbytes,
+            );
+        }
+    }
+}

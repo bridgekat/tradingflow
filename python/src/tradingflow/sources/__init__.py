@@ -6,7 +6,7 @@ categories:
 - **Native sources** -- [`NativeSource`][tradingflow.source.NativeSource] subclasses
   dispatched entirely to Rust (no Python async overhead).
 - **Python sources** -- [`Source`][tradingflow.source.Source] subclasses whose
-  `subscribe` method returns Python async iterators.
+  `init` method returns Python async iterators.
 
 ## Historical data sources
 

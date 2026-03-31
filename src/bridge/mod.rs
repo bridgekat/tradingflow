@@ -7,21 +7,19 @@
 //! * `add_native_source` — register a Rust-implemented source by kind string.
 //! * `add_native_operator` — register a Rust-implemented operator by kind
 //!   string + dtype + params.
-//! * `add_py_source` — register a channel-based source driven by Python async
-//!   iterators.  Returns a pair of [`EventSender`]s (historical and live).
+//! * `add_py_source` — register a Python source whose `init()` returns
+//!   async iterators.  Driver tasks on the tokio runtime iterate them and
+//!   feed events into bounded channels consumed by the POCQ event loop.
 //! * `add_py_operator` — register a Python-implemented operator whose
 //!   `compute()` is called via GIL during flush.
-//!
-//! Both native and Python operators are registered through
-//! [`Scenario::add_erased_operator`], the unified type-erased entry point.
 //!
 //! # Public types
 //!
 //! - [`NativeScenario`](scenario::NativeScenario) — the main pyclass.
 //! - [`NativeArrayView`] / [`NativeSeriesView`] — read-only Python views into
 //!   `Array<T>` and `Series<T>` node values, backed by raw pointers.
-//! - [`EventSender`] — pyclass wrapping a typed channel sender for pushing
-//!   events from Python into a channel-based source.
+//! - [`DoneCallback`](source::DoneCallback) — pyclass used internally to
+//!   bridge `concurrent.futures.Future` completion to tokio oneshot channels.
 //!
 //! # Sub-modules
 //!
@@ -30,14 +28,16 @@
 //!   `resolve_type_id`).
 //! - [`operators`] — native operator dispatch (`dispatch_native_operator`).
 //! - [`scenario`] — [`NativeScenario`](scenario::NativeScenario) pyclass.
-//! - [`sources`] — source registration (`dispatch_native_source`,
-//!   `register_channel_source`).
+//! - [`source`] — Python source machinery (`register_py_source`,
+//!   `DoneCallback`).
+//! - [`sources`] — native source dispatch (`dispatch_native_source`).
 //! - [`views`] — [`NativeArrayView`] and [`NativeSeriesView`] pyclasses.
 
 mod dispatch;
 mod operator;
 mod operators;
 mod scenario;
+mod source;
 mod sources;
 mod views;
 
@@ -45,7 +45,6 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 
-pub use sources::EventSender;
 pub use views::{NativeArrayView, NativeSeriesView};
 
 use scenario::NativeScenario;
@@ -71,6 +70,6 @@ pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_class::<NativeScenario>()?;
     m.add_class::<NativeArrayView>()?;
     m.add_class::<NativeSeriesView>()?;
-    m.add_class::<EventSender>()?;
+    m.add_class::<source::DoneCallback>()?;
     Ok(())
 }

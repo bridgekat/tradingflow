@@ -36,11 +36,11 @@ pub trait Source: 'static {
 
 /// Type-erased initialization closure for a source.
 ///
-/// Parameters:
+/// # Parameters
 ///
 /// * `timestamp: i64` — initial timestamp.
 ///
-/// Returns:
+/// # Returns
 ///
 /// * `hist_rx_ptr: *mut u8` — from [`Box::into_raw`], points to
 ///   [`PeekableReceiver<(i64, E)>`].
@@ -51,12 +51,12 @@ pub type InitFn = Box<dyn FnOnce(i64) -> (*mut u8, *mut u8, *mut u8)>;
 
 /// Type-erased poll function pointer for a source channel.
 ///
-/// Parameters:
+/// # Parameters
 ///
 /// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(i64, E)>`].
 /// * `cx: &mut Context<'_>` — async task context.
 ///
-/// Returns:
+/// # Returns
 ///
 /// * `Poll::Ready(Some(ts))` if an event is buffered with timestamp `ts`.
 /// * `Poll::Ready(None)` if the channel is closed.
@@ -65,13 +65,13 @@ pub type PollFn = unsafe fn(*mut u8, &mut Context<'_>) -> Poll<Option<i64>>;
 
 /// Type-erased write function pointer for a source.
 ///
-/// Parameters:
+/// # Parameters
 ///
 /// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(i64, E)>`].
 /// * `output_ptr: *mut u8` — points to `S::Output`.
 /// * `timestamp: i64` — coalesced batch timestamp (overrides event timestamp).
 ///
-/// Returns:
+/// # Returns
 ///
 /// * `true` if downstream propagation should occur.
 pub type WriteFn = unsafe fn(*mut u8, *mut u8, i64) -> bool;

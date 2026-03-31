@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .._utils import ensure_contiguous
 from ..operator import NativeOperator
 
 
@@ -20,11 +21,11 @@ class Const(NativeOperator):
     """
 
     def __init__(self, value: np.ndarray) -> None:
-        arr = np.ascontiguousarray(value).reshape(value.shape)
+        arr = ensure_contiguous(np.asarray(value))
         super().__init__(
             kind="const",
             inputs=(),
             shape=arr.shape,
             dtype=arr.dtype,
-            params={"shape": list(arr.shape), "value_bytes": arr.tobytes()},
+            params={"shape": list(arr.shape), "value": arr},
         )

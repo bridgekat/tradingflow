@@ -24,11 +24,35 @@ fn add_operator_from_indices(
     sc.add_erased_operator(erased, input_indices, trigger_index)
 }
 
-/// Register a Rust-native operator by `(kind, dtype)` and return the output
-/// node index together with the output node kind.
+/// Dispatch macro for zero-parameter operators.
 ///
-/// If `trigger_index` is `Some(idx)`, only the trigger node triggers.
-/// If `trigger_index` is `None`, all inputs are trigger edges.
+/// Usage: `dispatch_op!(dtype, operators::Add, subset, sc, inputs, trigger)`
+/// Expands to `dispatch_dtype!` + `Operator::<$T>::new()` + registration.
+macro_rules! dispatch_op {
+    ($dtype:expr, $Op:ident, $subset:ident, $sc:expr, $inputs:expr, $trigger:expr) => {{
+        macro_rules! go {
+            ($T:ty) => {
+                add_operator_from_indices($sc, operators::$Op::<$T>::new(), $inputs, $trigger)
+            };
+        }
+        dispatch_dtype!($dtype, go, $subset)
+    }};
+    // Two-level path: operators::rolling::Xxx
+    ($dtype:expr, rolling :: $Op:ident, $subset:ident, $sc:expr, $inputs:expr, $trigger:expr) => {{
+        macro_rules! go {
+            ($T:ty) => {
+                add_operator_from_indices($sc, operators::rolling::$Op::<$T>::new(), $inputs, $trigger)
+            };
+        }
+        dispatch_dtype!($dtype, go, $subset)
+    }};
+}
+
+/// Register a Rust-native operator by `(kind, dtype)` and return the output
+/// node index together with the output [`ViewKind`].
+///
+/// `trigger_index`: if `Some`, only that node triggers the operator;
+/// if `None`, all inputs are trigger edges.
 pub fn dispatch_native_operator(
     sc: &mut Scenario,
     kind: &str,
@@ -39,141 +63,56 @@ pub fn dispatch_native_operator(
 ) -> PyResult<(usize, ViewKind)> {
     let dtype = normalize_dtype(dtype);
 
-    macro_rules! go_add {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Add::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_sub {
-        ($T:ty) => {
-            add_operator_from_indices(
-                sc,
-                operators::Subtract::<$T>::new(),
-                input_indices,
-                trigger_index,
-            )
-        };
-    }
-    macro_rules! go_mul {
-        ($T:ty) => {
-            add_operator_from_indices(
-                sc,
-                operators::Multiply::<$T>::new(),
-                input_indices,
-                trigger_index,
-            )
-        };
-    }
-    macro_rules! go_div {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Divide::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_neg {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Negate::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_log {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Log::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_log2 {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Log2::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_log10 {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Log10::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_exp {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Exp::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_exp2 {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Exp2::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_sqrt {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Sqrt::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_ceil {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Ceil::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_floor {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Floor::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_round {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Round::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_recip {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Recip::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_abs {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Abs::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_sign {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Sign::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_min {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Min::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-    macro_rules! go_max {
-        ($T:ty) => {
-            add_operator_from_indices(sc, operators::Max::<$T>::new(), input_indices, trigger_index)
-        };
-    }
-
     match kind {
         // -- Binary arithmetic -----------------------------------------------
-        "add" => Ok((dispatch_dtype!(dtype, go_add, numeric), ViewKind::Array)),
-        "subtract" => Ok((dispatch_dtype!(dtype, go_sub, numeric), ViewKind::Array)),
-        "multiply" => Ok((dispatch_dtype!(dtype, go_mul, numeric), ViewKind::Array)),
-        "divide" => Ok((dispatch_dtype!(dtype, go_div, numeric), ViewKind::Array)),
+        "add" => Ok((dispatch_op!(dtype, Add, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
+        "subtract" => Ok((dispatch_op!(dtype, Subtract, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
+        "multiply" => Ok((dispatch_op!(dtype, Multiply, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
+        "divide" => Ok((dispatch_op!(dtype, Divide, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Unary arithmetic ------------------------------------------------
-        "negate" => Ok((dispatch_dtype!(dtype, go_neg, signed), ViewKind::Array)),
+        "negate" => Ok((dispatch_op!(dtype, Negate, signed, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Float unary math ------------------------------------------------
-        "log" => Ok((dispatch_dtype!(dtype, go_log, float), ViewKind::Array)),
-        "log2" => Ok((dispatch_dtype!(dtype, go_log2, float), ViewKind::Array)),
-        "log10" => Ok((dispatch_dtype!(dtype, go_log10, float), ViewKind::Array)),
-        "exp" => Ok((dispatch_dtype!(dtype, go_exp, float), ViewKind::Array)),
-        "exp2" => Ok((dispatch_dtype!(dtype, go_exp2, float), ViewKind::Array)),
-        "sqrt" => Ok((dispatch_dtype!(dtype, go_sqrt, float), ViewKind::Array)),
-        "ceil" => Ok((dispatch_dtype!(dtype, go_ceil, float), ViewKind::Array)),
-        "floor" => Ok((dispatch_dtype!(dtype, go_floor, float), ViewKind::Array)),
-        "round" => Ok((dispatch_dtype!(dtype, go_round, float), ViewKind::Array)),
-        "recip" => Ok((dispatch_dtype!(dtype, go_recip, float), ViewKind::Array)),
+        "log" => Ok((dispatch_op!(dtype, Log, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "log2" => Ok((dispatch_op!(dtype, Log2, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "log10" => Ok((dispatch_op!(dtype, Log10, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "exp" => Ok((dispatch_op!(dtype, Exp, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "exp2" => Ok((dispatch_op!(dtype, Exp2, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "sqrt" => Ok((dispatch_op!(dtype, Sqrt, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "ceil" => Ok((dispatch_op!(dtype, Ceil, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "floor" => Ok((dispatch_op!(dtype, Floor, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "round" => Ok((dispatch_op!(dtype, Round, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "recip" => Ok((dispatch_op!(dtype, Recip, float, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Signed unary math -----------------------------------------------
-        "abs" => Ok((dispatch_dtype!(dtype, go_abs, signed), ViewKind::Array)),
-        "sign" => Ok((dispatch_dtype!(dtype, go_sign, signed), ViewKind::Array)),
+        "abs" => Ok((dispatch_op!(dtype, Abs, signed, sc, input_indices, trigger_index), ViewKind::Array)),
+        "sign" => Ok((dispatch_op!(dtype, Sign, signed, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Float binary math -----------------------------------------------
-        "min" => Ok((dispatch_dtype!(dtype, go_min, float), ViewKind::Array)),
-        "max" => Ok((dispatch_dtype!(dtype, go_max, float), ViewKind::Array)),
+        "min" => Ok((dispatch_op!(dtype, Min, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "max" => Ok((dispatch_op!(dtype, Max, float, sc, input_indices, trigger_index), ViewKind::Array)),
+
+        // -- Record (Array → Series) -----------------------------------------
+        "record" => Ok((dispatch_op!(dtype, Record, numeric, sc, input_indices, trigger_index), ViewKind::Series)),
+
+        // -- Forward-fill (Series → Series, float only) ----------------------
+        "forward_fill" => Ok((dispatch_op!(dtype, rolling::ForwardFill, float, sc, input_indices, trigger_index), ViewKind::Series)),
+
+        // -- Identity (Array → Array) ----------------------------------------
+        "id" => {
+            macro_rules! go {
+                ($T:ty) => {
+                    add_operator_from_indices(
+                        sc,
+                        operators::Id::<crate::Array<$T>>::new(),
+                        input_indices,
+                        trigger_index,
+                    )
+                };
+            }
+            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+        }
 
         // -- Parameterized unary: pow ----------------------------------------
         "pow" => {
@@ -183,12 +122,7 @@ pub fn dispatch_native_operator(
                         .get_item("n")?
                         .ok_or_else(|| PyTypeError::new_err("pow requires 'n' param"))?
                         .extract()?;
-                    add_operator_from_indices(
-                        sc,
-                        operators::Pow::<$T>::new(n),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Pow::<$T>::new(n), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
@@ -202,12 +136,7 @@ pub fn dispatch_native_operator(
                         .get_item("c")?
                         .ok_or_else(|| PyTypeError::new_err("scale requires 'c' param"))?
                         .extract()?;
-                    add_operator_from_indices(
-                        sc,
-                        operators::Scale::<$T>::new(c),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Scale::<$T>::new(c), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, numeric), ViewKind::Array))
@@ -221,12 +150,7 @@ pub fn dispatch_native_operator(
                         .get_item("c")?
                         .ok_or_else(|| PyTypeError::new_err("shift requires 'c' param"))?
                         .extract()?;
-                    add_operator_from_indices(
-                        sc,
-                        operators::Shift::<$T>::new(c),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Shift::<$T>::new(c), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, numeric), ViewKind::Array))
@@ -244,18 +168,13 @@ pub fn dispatch_native_operator(
                         .get_item("hi")?
                         .ok_or_else(|| PyTypeError::new_err("clamp requires 'hi' param"))?
                         .extract()?;
-                    add_operator_from_indices(
-                        sc,
-                        operators::Clamp::<$T>::new(lo, hi),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Clamp::<$T>::new(lo, hi), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
         }
 
-        // -- Parameterized unary: nan_to_num ---------------------------------
+        // -- Parameterized unary: fillna (nan_to_num) ------------------------
         "nan_to_num" => {
             macro_rules! go {
                 ($T:ty) => {{
@@ -263,12 +182,7 @@ pub fn dispatch_native_operator(
                         .get_item("val")?
                         .ok_or_else(|| PyTypeError::new_err("nan_to_num requires 'val' param"))?
                         .extract()?;
-                    add_operator_from_indices(
-                        sc,
-                        operators::Fillna::<$T>::new(val),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Fillna::<$T>::new(val), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
@@ -282,12 +196,7 @@ pub fn dispatch_native_operator(
                 .extract()?;
             macro_rules! go {
                 ($T:ty) => {
-                    add_operator_from_indices(
-                        sc,
-                        operators::Select::<$T>::flat(indices.clone()),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Select::<$T>::flat(indices.clone()), input_indices, trigger_index)
                 };
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
@@ -301,12 +210,7 @@ pub fn dispatch_native_operator(
                 .extract()?;
             macro_rules! go {
                 ($T:ty) => {
-                    add_operator_from_indices(
-                        sc,
-                        operators::Concat::<$T>::new(axis),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Concat::<$T>::new(axis), input_indices, trigger_index)
                 };
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
@@ -318,26 +222,10 @@ pub fn dispatch_native_operator(
                 .extract()?;
             macro_rules! go {
                 ($T:ty) => {
-                    add_operator_from_indices(
-                        sc,
-                        operators::Stack::<$T>::new(axis),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Stack::<$T>::new(axis), input_indices, trigger_index)
                 };
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
-        }
-
-        // -- Record (Array → Series) -----------------------------------------
-        "record" => {
-            macro_rules! go {
-                ($T:ty) => {{
-                    use crate::operators::Record;
-                    add_operator_from_indices(sc, Record::<$T>::new(), input_indices, trigger_index)
-                }};
-            }
-            Ok((dispatch_dtype!(dtype, go), ViewKind::Series))
         }
 
         // -- Last (Series → Array) -------------------------------------------
@@ -349,12 +237,7 @@ pub fn dispatch_native_operator(
                         .map(|v| v.extract::<$T>())
                         .transpose()?
                         .unwrap_or_default();
-                    add_operator_from_indices(
-                        sc,
-                        operators::Last::<$T>::new(fill),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Last::<$T>::new(fill), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
@@ -373,12 +256,7 @@ pub fn dispatch_native_operator(
                         .map(|v| v.extract::<$T>())
                         .transpose()?
                         .unwrap_or_default();
-                    add_operator_from_indices(
-                        sc,
-                        operators::Lag::<$T>::new(offset, fill),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Lag::<$T>::new(offset, fill), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Series))
@@ -393,30 +271,10 @@ pub fn dispatch_native_operator(
             macro_rules! go {
                 ($T:ty) => {
                     match kind {
-                        "rolling_sum" => add_operator_from_indices(
-                            sc,
-                            operators::rolling::RollingSum::<$T>::new(window),
-                            input_indices,
-                            trigger_index,
-                        ),
-                        "rolling_mean" => add_operator_from_indices(
-                            sc,
-                            operators::rolling::RollingMean::<$T>::new(window),
-                            input_indices,
-                            trigger_index,
-                        ),
-                        "rolling_variance" => add_operator_from_indices(
-                            sc,
-                            operators::rolling::RollingVariance::<$T>::new(window),
-                            input_indices,
-                            trigger_index,
-                        ),
-                        "rolling_covariance" => add_operator_from_indices(
-                            sc,
-                            operators::rolling::RollingCovariance::<$T>::new(window),
-                            input_indices,
-                            trigger_index,
-                        ),
+                        "rolling_sum" => add_operator_from_indices(sc, operators::rolling::RollingSum::<$T>::new(window), input_indices, trigger_index),
+                        "rolling_mean" => add_operator_from_indices(sc, operators::rolling::RollingMean::<$T>::new(window), input_indices, trigger_index),
+                        "rolling_variance" => add_operator_from_indices(sc, operators::rolling::RollingVariance::<$T>::new(window), input_indices, trigger_index),
+                        "rolling_covariance" => add_operator_from_indices(sc, operators::rolling::RollingCovariance::<$T>::new(window), input_indices, trigger_index),
                         _ => unreachable!(),
                     }
                 };
@@ -446,36 +304,8 @@ pub fn dispatch_native_operator(
             }
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Series))
         }
-        "forward_fill" => {
-            macro_rules! go {
-                ($T:ty) => {
-                    add_operator_from_indices(
-                        sc,
-                        operators::rolling::ForwardFill::<$T>::default(),
-                        input_indices,
-                        trigger_index,
-                    )
-                };
-            }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Series))
-        }
 
-        // -- Identity (Array → Array) -------------------------------------------
-        "id" => {
-            macro_rules! go {
-                ($T:ty) => {
-                    add_operator_from_indices(
-                        sc,
-                        operators::Id::<crate::Array<$T>>::new(),
-                        input_indices,
-                        trigger_index,
-                    )
-                };
-            }
-            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
-        }
-
-        // -- Cast (Array<S> → Array<T>) ------------------------------------------
+        // -- Cast (Array<S> → Array<T>) --------------------------------------
         "cast" => {
             let from_dtype: String = params
                 .get_item("from_dtype")?
@@ -485,12 +315,7 @@ pub fn dispatch_native_operator(
                 ($S:ty) => {{
                     macro_rules! go_to {
                         ($T:ty) => {
-                            add_operator_from_indices(
-                                sc,
-                                operators::Cast::<$S, $T>::new(),
-                                input_indices,
-                                trigger_index,
-                            )
+                            add_operator_from_indices(sc, operators::Cast::<$S, $T>::new(), input_indices, trigger_index)
                         };
                     }
                     dispatch_dtype!(dtype, go_to, numeric)
@@ -502,31 +327,25 @@ pub fn dispatch_native_operator(
             ))
         }
 
-        // -- Const (0-input → Array) ---------------------------------------------
+        // -- Const (0-input → Array) -----------------------------------------
         "const" => {
             let shape: Vec<usize> = params
                 .get_item("shape")?
                 .ok_or_else(|| PyTypeError::new_err("const requires 'shape' param"))?
                 .extract()?;
-            let value_bytes: Option<Vec<u8>> = params
-                .get_item("value_bytes")?
-                .map(|v| v.extract())
-                .transpose()?;
+            let value = params.get_item("value")?;
             macro_rules! go {
                 ($T:ty) => {{
-                    let arr = match value_bytes {
-                        Some(ref bytes) => {
-                            let data = unsafe { super::sources::bytes_to_vec::<$T>(bytes) };
+                    let arr = match value {
+                        Some(ref v) => {
+                            let info = super::dispatch::ContiguousArrayInfo::try_from(v)?;
+                            // SAFETY: dispatch_dtype ensures $T is a numeric type.
+                            let data = unsafe { info.to_vec::<$T>() };
                             crate::Array::from_vec(&shape, data)
                         }
                         None => crate::Array::<$T>::zeros(&shape),
                     };
-                    add_operator_from_indices(
-                        sc,
-                        operators::Const::new(arr),
-                        input_indices,
-                        trigger_index,
-                    )
+                    add_operator_from_indices(sc, operators::Const::new(arr), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Array))

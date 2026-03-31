@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .._utils import ensure_contiguous
 from ..source import Source, empty_live_gen
 
 
@@ -23,7 +24,7 @@ class IterSource(Source):
         Iterable of `(datetime64, array_like)` pairs. Timestamps must be
         in non-decreasing order. The iterable is materialised into a list
         at construction time, so it can be replayed across multiple
-        `subscribe` calls.
+        `init` calls.
     shape
         Shape of each emitted value element.
     dtype
@@ -34,7 +35,7 @@ class IterSource(Source):
         Optional human-readable name.
     """
 
-    __slots__ = ("_iterable_factory",)
+    __slots__ = ("_iterable",)
 
     def __init__(
         self,
@@ -46,12 +47,14 @@ class IterSource(Source):
         name: str | None = None,
     ) -> None:
         super().__init__(shape, dtype, initial=initial, name=name)
-        # Store as a list so it can be iterated multiple times (repeated runs).
-        self._iterable_factory = list(iterable)
+        self._iterable = iterable
 
-    def subscribe(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[Any]]:
+    def init(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[tuple[np.datetime64, Any]]]:
         return self._historical_gen(), empty_live_gen()
 
     async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:
-        for ts, val in self._iterable_factory:
-            yield np.datetime64(ts, "ns"), val
+        for ts, val in self._iterable:
+            yield (
+                np.datetime64(ts, "ns"),
+                ensure_contiguous(np.asarray(val, dtype=self._dtype)),
+            )

@@ -9,7 +9,8 @@
 //!   Parameterised by a [`Scalar`] element type.
 //! * [`Series`] — append-only time series with temporal (as-of) lookups.
 //!   Each element is a uniformly-shaped `Array`-compatible slice.
-//! * [`Schema`] — bidirectional name↔position mapping for labelling array axes.
+//! * [`Schema`] — bidirectional name ↔ position mapping for labelling array
+//!   axes.
 //!
 //! # Traits
 //!

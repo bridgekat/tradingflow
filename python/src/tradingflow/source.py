@@ -46,11 +46,16 @@ class Source(ABC):
         self._name = name or type(self).__name__
 
     @abstractmethod
-    def subscribe(self) -> tuple[
+    def init(self) -> tuple[
         AsyncIterator[tuple[np.datetime64, ArrayLike]],
-        AsyncIterator[ArrayLike],
+        AsyncIterator[tuple[np.datetime64, ArrayLike]],
     ]:
-        """Return a `(historical, live)` async-iterator pair."""
+        """Return a ``(historical, live)`` async-iterator pair.
+
+        Both iterators yield ``(timestamp, value)`` tuples, matching the
+        Rust ``Source::init`` which returns two ``Receiver<(i64, Event)>``
+        channels.
+        """
         ...
 
     @property
@@ -80,7 +85,7 @@ async def empty_historical_gen() -> AsyncIterator[tuple[np.datetime64, Any]]:
     yield
 
 
-async def empty_live_gen() -> AsyncIterator[Any]:
+async def empty_live_gen() -> AsyncIterator[tuple[np.datetime64, Any]]:
     """Immediately-exhausting live async generator."""
     return
     yield
