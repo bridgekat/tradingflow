@@ -1,28 +1,16 @@
 //! Time series with append-only semantics and temporal lookups.
 
-use ndarray::{ArrayViewD, IxDyn};
+use ndarray::{ArrayViewD, ArrayViewMutD, IxDyn};
 
 use crate::Scalar;
 
-/// A time series of uniformly-shaped elements.
-///
-/// Backed by a flat `Vec<T>` with explicit capacity doubling.  The logical
-/// length is tracked by the timestamps vector.
-///
-/// The series is append-only and unbounded.  Users manage compaction
-/// externally if needed.
+/// A time series of N-dimensional arrays in row-major contiguous layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Series<T: Scalar> {
-    /// Flat scalar buffer.  Allocated length = `capacity * stride`.
-    /// Logical data occupies `0..len * stride`.
     data: Vec<T>,
-    /// Non-decreasing timestamps; `timestamps.len()` is the logical length.
     timestamps: Vec<i64>,
-    /// Element shape `[s0, s1, ...]` (without the time axis).
     shape: Box<[usize]>,
-    /// Cached product of shape dimensions (>= 1).
     stride: usize,
-    /// Number of allocated rows.
-    capacity: usize,
 }
 
 // ===========================================================================
@@ -38,19 +26,24 @@ impl<T: Scalar> Series<T> {
             timestamps: Vec::new(),
             shape: shape.into(),
             stride,
-            capacity: 0,
         }
     }
 
-    /// Create an empty series with pre-allocated capacity.
-    pub fn with_capacity(shape: &[usize], capacity: usize) -> Self {
+    /// Create a series from timestamp and flat value vectors.
+    pub fn from_vec(shape: &[usize], timestamps: Vec<i64>, values: Vec<T>) -> Self {
         let stride = shape.iter().product::<usize>();
+        assert_eq!(
+            values.len(),
+            timestamps.len() * stride,
+            "from_vec: expected values length {}, got {}",
+            timestamps.len() * stride,
+            values.len()
+        );
         Self {
-            data: vec![T::default(); capacity * stride],
-            timestamps: Vec::with_capacity(capacity),
+            data: values,
+            timestamps,
             shape: shape.into(),
             stride,
-            capacity,
         }
     }
 }
@@ -66,13 +59,19 @@ impl<T: Scalar> Series<T> {
         &self.shape
     }
 
+    /// Number of dimensions.
+    #[inline(always)]
+    pub fn ndim(&self) -> usize {
+        self.shape.len()
+    }
+
     /// Number of scalars per element (product of element shape dimensions).
     #[inline(always)]
     pub fn stride(&self) -> usize {
         self.stride
     }
 
-    /// Number of timestamped elements (logical length).
+    /// Number of elements.
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.timestamps.len()
@@ -83,48 +82,6 @@ impl<T: Scalar> Series<T> {
     pub fn is_empty(&self) -> bool {
         self.timestamps.is_empty()
     }
-
-    /// Current allocated row capacity.
-    #[inline(always)]
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-}
-
-// ===========================================================================
-// Append
-// ===========================================================================
-
-impl<T: Scalar> Series<T> {
-    /// Append an element with the given timestamp.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `value.len() != self.stride()`.
-    pub fn push(&mut self, timestamp: i64, value: &[T]) {
-        let stride = self.stride;
-        assert_eq!(
-            value.len(),
-            stride,
-            "push: expected {} scalars, got {}",
-            stride,
-            value.len(),
-        );
-        let len = self.len();
-        if len == self.capacity {
-            self.grow();
-        }
-        let offset = len * stride;
-        self.data[offset..offset + stride].clone_from_slice(value);
-        self.timestamps.push(timestamp);
-    }
-
-    /// Double the capacity.
-    fn grow(&mut self) {
-        let new_cap = self.capacity * 2 + 1;
-        self.data.resize(new_cap * self.stride, T::default());
-        self.capacity = new_cap;
-    }
 }
 
 // ===========================================================================
@@ -132,16 +89,28 @@ impl<T: Scalar> Series<T> {
 // ===========================================================================
 
 impl<T: Scalar> Series<T> {
-    /// All timestamps in the series.
+    /// Flat immutable slice of all timestamps.
     #[inline(always)]
     pub fn timestamps(&self) -> &[i64] {
         &self.timestamps
     }
 
-    /// Logical values as a flat scalar slice (length = `len × stride`).
+    /// Flat mutable slice of all timestamps.
+    #[inline(always)]
+    pub fn timestamps_mut(&mut self) -> &mut [i64] {
+        &mut self.timestamps
+    }
+
+    /// Flat immutable slice of all elements.
     #[inline(always)]
     pub fn values(&self) -> &[T] {
-        &self.data[..self.len() * self.stride]
+        &self.data
+    }
+
+    /// Flat mutable slice of all elements.
+    #[inline(always)]
+    pub fn values_mut(&mut self) -> &mut [T] {
+        &mut self.data
     }
 }
 
@@ -164,6 +133,22 @@ impl<T: Scalar> Series<T> {
         );
         let s = self.stride;
         &self.data[i * s..(i + 1) * s]
+    }
+
+    /// Element at positional index `i` (0-based) as a mutable flat slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= self.len()`.
+    #[inline(always)]
+    pub fn at_mut(&mut self, i: usize) -> &mut [T] {
+        assert!(
+            i < self.len(),
+            "index {i} out of bounds (len {})",
+            self.len()
+        );
+        let s = self.stride;
+        &mut self.data[i * s..(i + 1) * s]
     }
 
     /// The most recent element as a flat slice, or `None` if empty.
@@ -240,12 +225,17 @@ impl<T: Scalar> Series<T> {
 // ===========================================================================
 
 impl<T: Scalar> Series<T> {
-    /// Ndarray view of element at index `i`.
-    pub fn row(&self, i: usize) -> ArrayViewD<'_, T> {
-        ArrayViewD::from_shape(IxDyn(self.shape()), self.at(i)).unwrap()
+    /// Immutable ndarray view of element at index `i`.
+    pub fn view_at(&self, i: usize) -> ArrayViewD<'_, T> {
+        ArrayViewD::from_shape(IxDyn(&self.shape), self.at(i)).unwrap()
     }
 
-    /// Ndarray view of the logical series: shape `[len, s0, s1, ...]`.
+    /// Mutable ndarray view of element at index `i`.
+    pub fn view_at_mut(&mut self, i: usize) -> ArrayViewMutD<'_, T> {
+        ArrayViewMutD::from_shape(IxDyn(&self.shape), self.at_mut(i)).unwrap()
+    }
+
+    /// Immutable ndarray view of the logical series: shape `[len, s0, s1, ...]`.
     pub fn view(&self) -> ArrayViewD<'_, T> {
         let len = self.len();
         let mut full_shape = Vec::with_capacity(self.shape.len() + 1);
@@ -253,52 +243,63 @@ impl<T: Scalar> Series<T> {
         full_shape.extend_from_slice(&self.shape);
         ArrayViewD::from_shape(IxDyn(&full_shape), self.values()).unwrap()
     }
+
+    /// Mutable ndarray view of the logical series: shape `[len, s0, s1, ...]`.
+    pub fn view_mut(&mut self) -> ArrayViewMutD<'_, T> {
+        let len = self.len();
+        let mut full_shape = Vec::with_capacity(self.shape.len() + 1);
+        full_shape.push(len);
+        full_shape.extend_from_slice(&self.shape);
+        ArrayViewMutD::from_shape(IxDyn(&full_shape), self.values_mut()).unwrap()
+    }
 }
 
 // ===========================================================================
-// Iteration
+// Append
 // ===========================================================================
 
 impl<T: Scalar> Series<T> {
-    /// Iterate over `(timestamp, flat_element_slice)` pairs.
-    pub fn iter(&self) -> SeriesIter<'_, T> {
-        SeriesIter {
-            timestamps: &self.timestamps,
-            data: self.values(),
-            stride: self.stride,
-            pos: 0,
-        }
+    /// Append an element with the given timestamp.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value.len() != self.stride()`.
+    #[inline(always)]
+    pub fn push(&mut self, timestamp: i64, value: &[T]) {
+        assert_eq!(
+            value.len(),
+            self.stride(),
+            "push: expected {} scalars, got {}",
+            self.stride(),
+            value.len(),
+        );
+        self.data.extend_from_slice(value);
+        self.timestamps.push(timestamp);
     }
 }
 
-/// Iterator over `(i64, &[T])` pairs in a [`Series`].
-pub struct SeriesIter<'a, T> {
-    timestamps: &'a [i64],
-    data: &'a [T],
-    stride: usize,
-    pos: usize,
-}
+// ===========================================================================
+// Reshape
+// ===========================================================================
 
-impl<'a, T> Iterator for SeriesIter<'a, T> {
-    type Item = (i64, &'a [T]);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.pos >= self.timestamps.len() {
-            return None;
-        }
-        let i = self.pos;
-        self.pos += 1;
-        let s = self.stride;
-        Some((self.timestamps[i], &self.data[i * s..(i + 1) * s]))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.timestamps.len() - self.pos;
-        (remaining, Some(remaining))
+impl<T: Scalar> Series<T> {
+    /// Change the shape without reallocating.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new shape has a different stride.
+    pub fn reshape(&mut self, new_shape: &[usize]) {
+        let new_stride = new_shape.iter().product::<usize>();
+        assert_eq!(
+            self.stride(),
+            new_stride,
+            "reshape: current stride {} != new shape stride {}",
+            self.stride(),
+            new_stride,
+        );
+        self.shape = new_shape.into();
     }
 }
-
-impl<'a, T> ExactSizeIterator for SeriesIter<'a, T> {}
 
 // ===========================================================================
 // Tests
@@ -368,7 +369,7 @@ mod tests {
         s.push(1, &[1.0, 2.0, 3.0]);
         s.push(2, &[4.0, 5.0, 6.0]);
 
-        let row0 = s.row(0);
+        let row0 = s.view_at(0);
         assert_eq!(row0.shape(), &[3]);
         assert_eq!(row0.as_slice().unwrap(), &[1.0, 2.0, 3.0]);
 
@@ -385,21 +386,6 @@ mod tests {
     }
 
     // -- New method tests ----------------------------------------------------
-
-    #[test]
-    fn with_capacity() {
-        let mut s = Series::<f64>::with_capacity(&[2], 10);
-        assert_eq!(s.capacity(), 10);
-        assert!(s.is_empty());
-
-        // Push within capacity — no reallocation.
-        let cap_before = s.capacity();
-        for i in 0..10 {
-            s.push(i, &[i as f64, (i * 10) as f64]);
-        }
-        assert_eq!(s.capacity(), cap_before);
-        assert_eq!(s.len(), 10);
-    }
 
     #[test]
     fn last_timestamp() {
@@ -450,23 +436,11 @@ mod tests {
         s.push(200, &[2.0]);
         s.push(300, &[3.0]);
 
-        assert_eq!(s.search(50), 0);   // before all
-        assert_eq!(s.search(100), 0);  // exact first
-        assert_eq!(s.search(150), 1);  // between
-        assert_eq!(s.search(200), 1);  // exact second
-        assert_eq!(s.search(300), 2);  // exact last
-        assert_eq!(s.search(999), 3);  // after all
-    }
-
-    #[test]
-    fn iter() {
-        let mut s = Series::<f64>::new(&[2]);
-        s.push(100, &[1.0, 2.0]);
-        s.push(200, &[3.0, 4.0]);
-
-        let items: Vec<_> = s.iter().collect();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0], (100, [1.0, 2.0].as_slice()));
-        assert_eq!(items[1], (200, [3.0, 4.0].as_slice()));
+        assert_eq!(s.search(50), 0); // before all
+        assert_eq!(s.search(100), 0); // exact first
+        assert_eq!(s.search(150), 1); // between
+        assert_eq!(s.search(200), 1); // exact second
+        assert_eq!(s.search(300), 2); // exact last
+        assert_eq!(s.search(999), 3); // after all
     }
 }

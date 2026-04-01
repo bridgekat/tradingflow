@@ -63,7 +63,7 @@ impl<T: Scalar> Operator for Select<T> {
         _timestamp: i64,
     ) -> bool {
         let src = inputs.0.as_slice();
-        let dst = output.as_slice_mut();
+        let dst = output.as_mut_slice();
         for (dst_i, &src_i) in state.index_map.iter().enumerate() {
             dst[dst_i] = src[src_i].clone();
         }

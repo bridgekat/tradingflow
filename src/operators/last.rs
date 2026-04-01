@@ -41,9 +41,9 @@ impl<T: Scalar> Operator for Last<T> {
         _timestamp: i64,
     ) -> bool {
         if let Some(last) = inputs.0.last() {
-            output.as_slice_mut().clone_from_slice(last);
+            output.as_mut_slice().clone_from_slice(last);
         } else {
-            let out = output.as_slice_mut();
+            let out = output.as_mut_slice();
             for v in out.iter_mut() {
                 *v = state.clone();
             }

@@ -306,7 +306,10 @@ mod tests {
     #[tokio::test]
     async fn scenario_run_single_source() {
         let mut sc = Scenario::new();
-        let ha = sc.add_source(ArraySource::new(vec![1, 2, 3], vec![10.0, 20.0, 30.0], 1));
+        let ha = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![1, 2, 3], vec![10.0, 20.0, 30.0]),
+            Array::scalar(0.0),
+        ));
         let hseries = sc.add_operator(Record::<f64>::new(), (ha,), None);
 
         sc.run().await;
@@ -320,8 +323,14 @@ mod tests {
     #[tokio::test]
     async fn scenario_run_two_sources_add() {
         let mut sc = Scenario::new();
-        let ha = sc.add_source(ArraySource::new(vec![1, 3], vec![10.0, 30.0], 1));
-        let hb = sc.add_source(ArraySource::new(vec![2, 3], vec![20.0, 40.0], 1));
+        let ha = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![1, 3], vec![10.0, 30.0]),
+            Array::scalar(0.0),
+        ));
+        let hb = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![2, 3], vec![20.0, 40.0]),
+            Array::scalar(0.0),
+        ));
         let ho = sc.add_operator(Add::new(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
@@ -337,8 +346,14 @@ mod tests {
     #[tokio::test]
     async fn scenario_run_coalescing() {
         let mut sc = Scenario::new();
-        let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![10.0, 20.0], 1));
-        let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![100.0, 200.0], 1));
+        let ha = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![1, 2], vec![10.0, 20.0]),
+            Array::scalar(0.0),
+        ));
+        let hb = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![1, 2], vec![100.0, 200.0]),
+            Array::scalar(0.0),
+        ));
         let ho = sc.add_operator(Add::new(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
@@ -353,8 +368,14 @@ mod tests {
     #[tokio::test]
     async fn scenario_run_chained() {
         let mut sc = Scenario::new();
-        let ha = sc.add_source(ArraySource::new(vec![1, 2], vec![2.0, 5.0], 1));
-        let hb = sc.add_source(ArraySource::new(vec![1, 2], vec![3.0, 10.0], 1));
+        let ha = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![1, 2], vec![2.0, 5.0]),
+            Array::scalar(0.0),
+        ));
+        let hb = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![1, 2], vec![3.0, 10.0]),
+            Array::scalar(0.0),
+        ));
         let hab = sc.add_operator(Add::new(), (ha, hb), None);
 
         use crate::operators::Multiply;
@@ -373,9 +394,8 @@ mod tests {
     async fn scenario_run_filter() {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            vec![1, 2, 3, 4],
-            vec![1.0, 5.0, 2.0, 10.0],
-            1,
+            Series::from_vec(&[], vec![1, 2, 3, 4], vec![1.0, 5.0, 2.0, 10.0]),
+            Array::scalar(0.0),
         ));
         let ho = sc.add_operator(Filter::new(|v: &Array<f64>| v[0] > 3.0), (ha,), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
@@ -394,7 +414,10 @@ mod tests {
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
-        let ha = sc.add_source(ArraySource::new(vec![1, 2, 3], vec![10.0, 20.0, 30.0], 1));
+        let ha = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![1, 2, 3], vec![10.0, 20.0, 30.0]),
+            Array::scalar(0.0),
+        ));
         let hclock = sc.add_source(clock(vec![2]));
 
         let ho = sc.add_operator(Filter::new(|_: &Array<f64>| true), (ha,), Some(hclock));
@@ -413,8 +436,14 @@ mod tests {
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
-        let ha = sc.add_source(ArraySource::new(vec![1, 2, 3], vec![1.0, 2.0, 3.0], 1));
-        let hb = sc.add_source(ArraySource::new(vec![1, 3], vec![10.0, 30.0], 1));
+        let ha = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![1, 2, 3], vec![1.0, 2.0, 3.0]),
+            Array::scalar(0.0),
+        ));
+        let hb = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], vec![1, 3], vec![10.0, 30.0]),
+            Array::scalar(0.0),
+        ));
         let hclock = sc.add_source(clock(vec![2]));
 
         let ho = sc.add_operator(Add::new(), (ha, hb), Some(hclock));
@@ -434,9 +463,8 @@ mod tests {
 
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            vec![1, 2, 3, 4, 5],
-            vec![10.0, 20.0, 30.0, 40.0, 50.0],
-            1,
+            Series::from_vec(&[], vec![1, 2, 3, 4, 5], vec![10.0, 20.0, 30.0, 40.0, 50.0]),
+            Array::scalar(0.0),
         ));
         let hclock = sc.add_source(clock(vec![2, 4]));
 

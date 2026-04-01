@@ -12,8 +12,7 @@ use pyo3::types::{PyAny, PyDict};
 
 use crate::Scenario;
 
-use super::dispatch::normalize_dtype;
-use super::source::PySourceSpec;
+use super::dispatch::{normalize_dtype, resolve_type_id};
 use super::views::{ViewKind, create_view};
 use super::{ErrorSlot, operator, operators, source, sources};
 
@@ -195,34 +194,46 @@ impl NativeScenario {
     /// Immediately creates the DAG node with channels.  A tokio driver task
     /// is spawned that will call `source.init()` and iterate the returned
     /// async iterators when the tokio runtime runs.
+    #[pyo3(signature = (py_source, output_type, output_shape))]
     fn add_py_source(
         &mut self,
         py: Python<'_>,
         py_source: PyObject,
-        shape: Vec<usize>,
-        dtype: String,
+        output_type: (String, String),
+        output_shape: Vec<usize>,
     ) -> PyResult<usize> {
         let _guard = self._rt.enter();
-        let dtype_norm = normalize_dtype(&dtype).to_string();
+        let (out_kind_str, out_dtype_str) = &output_type;
+        let out_dtype = normalize_dtype(out_dtype_str).to_string();
+
+        let out_view_kind = match out_kind_str.as_str() {
+            "array" => ViewKind::Array,
+            "series" => ViewKind::Series,
+            other => {
+                return Err(PyTypeError::new_err(format!(
+                    "unsupported output kind: {other}"
+                )));
+            }
+        };
+
+        let output_type_id = resolve_type_id(out_kind_str, &out_dtype)?;
 
         // Ensure asyncio event loop exists.
         let event_loop = self.ensure_event_loop(py)?;
 
-        let spec = PySourceSpec {
-            py_source,
-            shape: shape.clone().into_boxed_slice(),
-            dtype: dtype_norm.clone(),
-        };
-
-        let sc = self.scenario.as_mut().unwrap();
-        let idx = source::register_py_source(
-            sc,
+        let erased = source::make_py_source(
             py,
-            spec,
+            output_type_id,
+            &out_dtype,
+            out_view_kind,
+            &output_shape,
+            py_source,
             event_loop,
             self.error_slot.clone(),
         )?;
-        self.push_node(py, idx, &dtype_norm, ViewKind::Array, &shape)?;
+        let sc = self.scenario.as_mut().unwrap();
+        let idx = sc.add_erased_source(erased);
+        self.push_node(py, idx, &out_dtype, out_view_kind, &output_shape)?;
         Ok(idx)
     }
 
@@ -265,9 +276,9 @@ impl NativeScenario {
         // 1. Resolve TypeIds from Python-declared types.
         let input_type_ids = input_types
             .iter()
-            .map(|(kind, dtype)| operator::resolve_type_id(kind, dtype))
+            .map(|(kind, dtype)| resolve_type_id(kind, dtype))
             .collect::<PyResult<Box<[_]>>>()?;
-        let output_type_id = operator::resolve_type_id(out_kind_str, &out_dtype)?;
+        let output_type_id = resolve_type_id(out_kind_str, &out_dtype)?;
 
         // 2. Build input views (input nodes already exist).
         let input_views: Vec<PyObject> = input_indices
@@ -290,13 +301,13 @@ impl NativeScenario {
             py,
             input_type_ids,
             output_type_id,
+            &out_dtype,
+            out_view_kind,
+            &output_shape,
             py_inputs,
             py_operator,
             py_state,
             self.error_slot.clone(),
-            &out_dtype,
-            out_view_kind,
-            &output_shape,
         )?;
 
         // 4. Register via the unified path (validates input TypeIds).
@@ -344,20 +355,23 @@ impl NativeScenario {
         let event_loop = self.event_loop.take();
 
         // Create an asyncio.Event + its set callback for the Done guard.
-        let done_signal = event_loop.as_ref().map(|el| -> PyResult<_> {
-            let asyncio = py.import("asyncio")?;
-            let loop_ = el.bind(py);
-            asyncio.call_method1("set_event_loop", (loop_,))?;
-            let event: PyObject = asyncio.call_method0("Event")?.unbind();
-            // Pre-bind event.set so the guard only needs call_soon_threadsafe.
-            let set_fn: PyObject = event.getattr(py, "set")?;
-            let el_ref = el.clone_ref(py);
-            Ok((event, set_fn, el_ref))
-        }).transpose()?;
+        let done_signal = event_loop
+            .as_ref()
+            .map(|el| -> PyResult<_> {
+                let asyncio = py.import("asyncio")?;
+                let loop_ = el.bind(py);
+                asyncio.call_method1("set_event_loop", (loop_,))?;
+                let event: PyObject = asyncio.call_method0("Event")?.unbind();
+                // Pre-bind event.set so the guard only needs call_soon_threadsafe.
+                let set_fn: PyObject = event.getattr(py, "set")?;
+                let el_ref = el.clone_ref(py);
+                Ok((event, set_fn, el_ref))
+            })
+            .transpose()?;
 
-        let done_guard_parts = done_signal.as_ref().map(|(_, set_fn, el_ref)| {
-            (set_fn.clone_ref(py), el_ref.clone_ref(py))
-        });
+        let done_guard_parts = done_signal
+            .as_ref()
+            .map(|(_, set_fn, el_ref)| (set_fn.clone_ref(py), el_ref.clone_ref(py)));
 
         // Spawn the POCQ + drivers on a background thread.
         let bg_handle = {
@@ -390,9 +404,7 @@ impl NativeScenario {
                 self._rt = rt;
             }
             Err(_) => {
-                return Err(PyRuntimeError::new_err(
-                    "POCQ background thread panicked",
-                ));
+                return Err(PyRuntimeError::new_err("POCQ background thread panicked"));
             }
         }
 

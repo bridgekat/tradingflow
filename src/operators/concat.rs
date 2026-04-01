@@ -61,7 +61,7 @@ pub(super) fn interleaved_copy<T: Scalar>(
     outer_count: usize,
     chunk_size: usize,
 ) {
-    let out = output.as_slice_mut();
+    let out = output.as_mut_slice();
     let mut offset = 0;
     for outer in 0..outer_count {
         for arr in inputs {

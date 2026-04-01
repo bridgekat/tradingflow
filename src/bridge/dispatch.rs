@@ -84,8 +84,27 @@ macro_rules! dispatch_dtype {
 
 pub(crate) use dispatch_dtype;
 
-use pyo3::exceptions::PyValueError;
+use std::any::TypeId;
+
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::types::PyAnyMethods;
+
+use crate::{Array, Series};
+
+/// Resolve a Python-side `(kind, dtype)` pair to a Rust [`TypeId`].
+pub fn resolve_type_id(kind: &str, dtype: &str) -> pyo3::PyResult<TypeId> {
+    let dtype = normalize_dtype(dtype);
+    macro_rules! resolve {
+        ($T:ty) => {
+            match kind {
+                "array" => Ok(TypeId::of::<Array<$T>>()),
+                "series" => Ok(TypeId::of::<Series<$T>>()),
+                other => Err(PyTypeError::new_err(format!("unknown node kind: {other}"))),
+            }
+        };
+    }
+    dispatch_dtype!(dtype, resolve)
+}
 
 /// Validated C-contiguous numpy array metadata, read from
 /// `__array_interface__`.
@@ -125,7 +144,6 @@ impl<'py> TryFrom<&pyo3::Bound<'py, pyo3::types::PyAny>> for ContiguousArrayInfo
 }
 
 impl ContiguousArrayInfo {
-
     /// Total number of elements (product of shape dimensions).
     pub fn len(&self) -> usize {
         self.shape.iter().product()
@@ -155,7 +173,7 @@ impl ContiguousArrayInfo {
     /// `T` must be a numeric type where every bit pattern is valid.
     /// `dst` must have exactly `self.len()` elements.
     pub unsafe fn clone_to_slice<T>(&self, dst: &mut [T]) {
-        let nbytes = dst.len() * std::mem::size_of::<T>();
+        let nbytes = std::mem::size_of_val(dst);
         unsafe {
             std::ptr::copy_nonoverlapping(
                 self.ptr as *const u8,

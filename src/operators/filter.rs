@@ -40,7 +40,7 @@ impl<T: Scalar, F: Fn(&Array<T>) -> bool + Send + 'static> Operator for Filter<T
         _timestamp: i64,
     ) -> bool {
         if (state.predicate)(inputs.0) {
-            output.as_slice_mut().clone_from_slice(inputs.0.as_slice());
+            output.as_mut_slice().clone_from_slice(inputs.0.as_slice());
             true
         } else {
             false

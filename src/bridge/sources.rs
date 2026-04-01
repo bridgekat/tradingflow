@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::sources::ArraySource;
-use crate::Scenario;
+use crate::{Array, Scenario, Series};
 
 use super::dispatch::{ContiguousArrayInfo, dispatch_dtype};
 
@@ -22,18 +22,17 @@ pub fn dispatch_native_source(
 ) -> PyResult<usize> {
     match kind {
         "array" => {
-            let timestamps: Vec<i64> = params
+            let timestamps = params
                 .get_item("timestamps")?
-                .ok_or_else(|| PyTypeError::new_err("array source requires 'timestamps'"))?
-                .extract()?;
+                .ok_or_else(|| PyTypeError::new_err("array source requires 'timestamps'"))?;
             let values = params
                 .get_item("values")?
                 .ok_or_else(|| PyTypeError::new_err("array source requires 'values'"))?;
-            let stride: usize = params
-                .get_item("stride")?
-                .ok_or_else(|| PyTypeError::new_err("array source requires 'stride'"))?
+            let shape: Vec<usize> = params
+                .get_item("shape")?
+                .ok_or_else(|| PyTypeError::new_err("array source requires 'shape'"))?
                 .extract()?;
-            register_array_source(sc, dtype, timestamps, &values, stride)
+            register_array_source(sc, dtype, &timestamps, &values, &shape)
         }
         "csv" => {
             let path: String = params
@@ -102,16 +101,20 @@ pub fn dispatch_native_source(
 fn register_array_source(
     sc: &mut Scenario,
     dtype: &str,
-    timestamps: Vec<i64>,
+    timestamps: &Bound<'_, pyo3::types::PyAny>,
     values: &Bound<'_, pyo3::types::PyAny>,
-    stride: usize,
+    shape: &[usize],
 ) -> PyResult<usize> {
     macro_rules! register {
         ($T:ty) => {{
+            let info = ContiguousArrayInfo::try_from(timestamps)?;
+            let timestamps = unsafe { info.to_vec::<i64>() };
             let info = ContiguousArrayInfo::try_from(values)?;
-            // SAFETY: dispatch_dtype ensures $T is a numeric type.
             let data = unsafe { info.to_vec::<$T>() };
-            let source = ArraySource::new(timestamps, data, stride);
+            let source = ArraySource::new(
+                Series::from_vec(shape, timestamps, data),
+                Array::<$T>::zeros(shape),
+            );
             sc.add_source(source).index()
         }};
     }

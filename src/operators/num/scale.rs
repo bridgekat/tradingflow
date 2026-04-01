@@ -34,7 +34,7 @@ impl<T: Scalar + ops::Mul<Output = T>> Operator for Scale<T> {
     ) -> bool {
         let c = state.clone();
         let a = inputs.0.as_slice();
-        let out = output.as_slice_mut();
+        let out = output.as_mut_slice();
         for i in 0..out.len() {
             out[i] = a[i].clone() * c.clone();
         }

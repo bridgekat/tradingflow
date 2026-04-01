@@ -28,3 +28,7 @@ rand = "0.8"
 [[bench]]
 name = "bench_add"
 harness = false
+
+[[bench]]
+name = "bench_scenario"
+harness = false

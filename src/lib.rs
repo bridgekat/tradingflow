@@ -28,12 +28,12 @@
 //!
 //! # Modules
 //!
-//! * [`array`] — `Array`, `Scalar`.
-//! * [`series`] — `Series`, `SeriesIter`.
-//! * [`source`] — `Source` trait, `ErasedSource`, `PeekableReceiver`.
+//! * [`array`] — `Array`.
+//! * [`series`] — `Series`.
+//! * [`source`] — `Source` trait, `ErasedSource`.
 //! * [`operator`] — `Operator` trait, `ErasedOperator`.
 //! * [`scenario`] — `Scenario`, `Handle`, `InputTypesHandles`.
-//! * [`types`] — `InputTypes` trait and tuple/slice implementations.
+//! * [`types`] — `Scalar`, `PeekableReceiver`, `InputTypes`.
 //! * [`operators`] — built-in operators: structural (`Const`, `Id`, `Filter`,
 //!   `Where`, `Select`, `Concat`, `Stack`, `Cast`), series (`Record`, `Last`,
 //!   `Lag`), element-wise numeric ([`operators::num`]), and rolling-window
@@ -57,11 +57,12 @@ pub mod sources;
 pub mod types;
 pub mod utils;
 
-pub use array::{Array, Scalar};
+pub use array::Array;
 pub use operator::{ErasedOperator, Operator};
 pub use scenario::Scenario;
 pub use series::Series;
 pub use source::{ErasedSource, Source};
+pub use types::{InputTypes, PeekableReceiver, Scalar};
 pub use utils::Schema;
 
 #[cfg(feature = "python")]

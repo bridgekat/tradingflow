@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..source import NativeSource
+from ..utils import coerce_timestamp
 
 
 class Clock(NativeSource):
@@ -41,8 +42,8 @@ class DailyClock(NativeSource):
         end: np.datetime64,
         tz: str = "UTC",
     ) -> None:
-        start_ns = int(start.astype("datetime64[ns]").view("int64"))
-        end_ns = int(end.astype("datetime64[ns]").view("int64"))
+        start_ns = coerce_timestamp(start)
+        end_ns = coerce_timestamp(end)
         super().__init__("daily_clock", params={"start_ns": start_ns, "end_ns": end_ns, "tz": tz})
 
 
@@ -65,6 +66,6 @@ class MonthlyClock(NativeSource):
         end: np.datetime64,
         tz: str = "UTC",
     ) -> None:
-        start_ns = int(start.astype("datetime64[ns]").view("int64"))
-        end_ns = int(end.astype("datetime64[ns]").view("int64"))
+        start_ns = coerce_timestamp(start)
+        end_ns = coerce_timestamp(end)
         super().__init__("monthly_clock", params={"start_ns": start_ns, "end_ns": end_ns, "tz": tz})

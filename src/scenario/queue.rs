@@ -462,7 +462,9 @@ mod tests {
 
     // -- Helpers ---------------------------------------------------------------
 
-    fn generate_events(rng: &mut StdRng, source_id: usize) -> (Vec<(i64, f64)>, Vec<(i64, f64)>) {
+    type EventVec = Vec<(i64, f64)>;
+
+    fn generate_events(rng: &mut StdRng, source_id: usize) -> (EventVec, EventVec) {
         let hist_count: usize = rng.gen_range(0..=15);
         let live_count: usize = rng.gen_range(0..=15);
 
@@ -657,7 +659,7 @@ mod tests {
 
             let mut sc = Scenario::new();
             let log = Arc::new(Mutex::new(Vec::new()));
-            let mut source_data: Vec<(Vec<(i64, f64)>, Vec<(i64, f64)>)> = Vec::new();
+            let mut source_data: Vec<(EventVec, EventVec)> = Vec::new();
             let mut records: Vec<Handle<Series<f64>>> = Vec::new();
 
             for i in 0..n_sources {

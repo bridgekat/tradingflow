@@ -7,7 +7,7 @@ from typing import cast
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .._utils import ensure_contiguous
+from ..utils import ensure_contiguous
 from ..source import NativeSource
 
 
@@ -38,7 +38,7 @@ class ArraySource(NativeSource):
         dtype: type | np.dtype | None = None,
         name: str | None = None,
     ) -> None:
-        ts = np.asarray(timestamps, dtype="datetime64[ns]")
+        ts = np.asarray(timestamps, dtype="datetime64[ns]").view("int64")
         raw = np.asarray(values)
         dt = np.dtype(dtype) if dtype is not None else raw.dtype
         vals = raw.astype(dt)
@@ -51,21 +51,19 @@ class ArraySource(NativeSource):
             raise ValueError(f"timestamps length {len(ts)} does not match values length {len(vals)}")
 
         # Validate non-decreasing timestamps.
-        ts_i64 = ts.view("int64")
-        if len(ts_i64) > 1 and np.any(np.diff(ts_i64) < 0):
+        if len(ts) > 1 and np.any(np.diff(ts) < 0):
             raise ValueError("timestamps must be non-decreasing")
 
-        shape = cast(tuple[int, ...], vals.shape[1:])
-        stride = int(np.prod(shape)) if shape else 1
+        shape = vals.shape[1:]
 
         super().__init__(
             "array",
             dtype=str(dt),
             shape=shape,
             params={
-                "timestamps": ts_i64.tolist(),
+                "timestamps": ensure_contiguous(ts),
                 "values": ensure_contiguous(vals),
-                "stride": stride,
+                "shape": list(shape),
             },
             name=name,
         )

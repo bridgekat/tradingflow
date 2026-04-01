@@ -39,7 +39,7 @@ impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
         _timestamp: i64,
     ) -> bool {
         let a = inputs.0.as_slice();
-        let out = output.as_slice_mut();
+        let out = output.as_mut_slice();
         for i in 0..out.len() {
             out[i] = if (state.condition)(a[i].clone()) {
                 a[i].clone()

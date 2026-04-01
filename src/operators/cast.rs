@@ -51,7 +51,7 @@ where
         _timestamp: i64,
     ) -> bool {
         let src = inputs.0.as_slice();
-        let dst = output.as_slice_mut();
+        let dst = output.as_mut_slice();
         for i in 0..dst.len() {
             dst[i] = src[i].as_();
         }

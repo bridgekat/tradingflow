@@ -13,16 +13,16 @@ use crate::source::Source;
 /// back-pressure.
 ///
 /// Requires a tokio runtime to be active when added to a scenario.
-pub struct IterSource<O: Send + 'static> {
-    iter: Box<dyn Iterator<Item = (i64, O)> + Send>,
-    default: O,
+pub struct IterSource<T: Send + 'static> {
+    iter: Box<dyn Iterator<Item = (i64, T)> + Send>,
+    default: T,
 }
 
-impl<O: Clone + Send + 'static> IterSource<O> {
+impl<T: Clone + Send + 'static> IterSource<T> {
     /// Create from an iterator and a default output value.
     ///
     /// Each iterator item is `(timestamp, value)`.
-    pub fn new(iter: impl Iterator<Item = (i64, O)> + Send + 'static, default: O) -> Self {
+    pub fn new(iter: impl Iterator<Item = (i64, T)> + Send + 'static, default: T) -> Self {
         Self {
             iter: Box::new(iter),
             default,
@@ -30,13 +30,11 @@ impl<O: Clone + Send + 'static> IterSource<O> {
     }
 }
 
-impl<O: Clone + Send + 'static> Source for IterSource<O> {
-    type Event = O;
-    type Output = O;
+impl<T: Clone + Send + 'static> Source for IterSource<T> {
+    type Event = T;
+    type Output = T;
 
-    fn init(self, _timestamp: i64) -> (mpsc::Receiver<(i64, O)>, mpsc::Receiver<(i64, O)>, O) {
-        let output = self.default;
-
+    fn init(self, _timestamp: i64) -> (mpsc::Receiver<(i64, T)>, mpsc::Receiver<(i64, T)>, T) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
 
@@ -48,10 +46,10 @@ impl<O: Clone + Send + 'static> Source for IterSource<O> {
             }
         });
 
-        (hist_rx, live_rx, output)
+        (hist_rx, live_rx, self.default)
     }
 
-    fn write(payload: O, output: &mut O, _timestamp: i64) -> bool {
+    fn write(payload: T, output: &mut T, _timestamp: i64) -> bool {
         *output = payload;
         true
     }

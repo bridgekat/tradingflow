@@ -8,6 +8,7 @@ use tradingflow::operator::Operator;
 use tradingflow::operators::{Add, Record};
 use tradingflow::scenario::Scenario;
 use tradingflow::series::Series;
+use tradingflow::sources::ArraySource;
 
 const N: usize = 10_000;
 
@@ -158,6 +159,61 @@ fn bench_scenario_operator_series(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario operator with async source (element-only)
+// ---------------------------------------------------------------------------
+
+fn bench_scenario_source(c: &mut Criterion) {
+    let (ts, a, b) = make_data();
+
+    c.bench_function("scenario_source", |bencher| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let series_a = Series::from_vec(&[], ts.clone(), a.clone());
+        let series_b = Series::from_vec(&[], ts.clone(), b.clone());
+        let default = Array::scalar(0.0_f64);
+        bencher.iter(|| {
+            let _guard = rt.enter();
+            let mut sc = Scenario::new();
+            let ha = sc.add_source(ArraySource::new(series_a.clone(), default.clone()));
+            let hb = sc.add_source(ArraySource::new(series_b.clone(), default.clone()));
+            let ho = sc.add_operator(Add::new(), (ha, hb), None);
+            rt.block_on(sc.run());
+            black_box(sc.value(ho)[0]);
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Scenario operator with async source (output to series)
+// ---------------------------------------------------------------------------
+
+fn bench_scenario_source_series(c: &mut Criterion) {
+    let (ts, a, b) = make_data();
+
+    c.bench_function("scenario_source_series", |bencher| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let series_a = Series::from_vec(&[], ts.clone(), a.clone());
+        let series_b = Series::from_vec(&[], ts.clone(), b.clone());
+        let default = Array::scalar(0.0_f64);
+        bencher.iter(|| {
+            let _guard = rt.enter();
+            let mut sc = Scenario::new();
+            let ha = sc.add_source(ArraySource::new(series_a.clone(), default.clone()));
+            let hb = sc.add_source(ArraySource::new(series_b.clone(), default.clone()));
+            let ho = sc.add_operator(Add::new(), (ha, hb), None);
+            let hos = sc.add_operator(Record::new(), (ho,), None);
+            rt.block_on(sc.run());
+            black_box(sc.value::<Series<f64>>(hos).last().unwrap()[0]);
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Scenario chain (depth operators)
 // ---------------------------------------------------------------------------
 
@@ -241,6 +297,8 @@ criterion_group!(
     bench_direct_compute_series,
     bench_scenario_operator,
     bench_scenario_operator_series,
+    bench_scenario_source,
+    bench_scenario_source_series,
     bench_scenario_chain,
     bench_scenario_sparse,
 );

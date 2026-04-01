@@ -2,7 +2,7 @@
 
 use tokio::sync::mpsc;
 
-use crate::{Array, Scalar, Source};
+use crate::{Array, Scalar, Series, Source};
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
 ///
@@ -12,22 +12,16 @@ use crate::{Array, Scalar, Source};
 ///
 /// Requires a tokio runtime to be active when added to a scenario.
 pub struct ArraySource<T: Scalar> {
-    timestamps: Vec<i64>,
-    values: Vec<T>,
-    stride: usize,
+    series: Series<T>,
+    default: Array<T>,
 }
 
 impl<T: Scalar> ArraySource<T> {
     /// Create from timestamp and flat value arrays.
     ///
     /// `values.len()` must equal `timestamps.len() * stride`.
-    pub fn new(timestamps: Vec<i64>, values: Vec<T>, stride: usize) -> Self {
-        debug_assert_eq!(values.len(), timestamps.len() * stride);
-        Self {
-            timestamps,
-            values,
-            stride,
-        }
+    pub fn new(series: Series<T>, default: Array<T>) -> Self {
+        Self { series, default }
     }
 }
 
@@ -43,37 +37,26 @@ impl<T: Scalar> Source for ArraySource<T> {
         mpsc::Receiver<(i64, Array<T>)>,
         Array<T>,
     ) {
-        let shape: Vec<usize> = if self.stride == 1 {
-            vec![]
-        } else {
-            vec![self.stride]
-        };
-        let output = Array::zeros(&shape);
-
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
 
-        let stride = self.stride;
         tokio::spawn(async move {
-            for (i, &ts) in self.timestamps.iter().enumerate() {
+            for (i, &ts) in self.series.timestamps().iter().enumerate() {
+                let stride = self.series.stride();
                 let start = i * stride;
-                let slice = &self.values[start..start + stride];
-                let arr = if stride == 1 {
-                    Array::scalar(slice[0].clone())
-                } else {
-                    Array::from_vec(&[stride], slice.to_vec())
-                };
+                let slice = &self.series.values()[start..start + stride];
+                let arr = Array::from_vec(self.series.shape(), slice.to_vec());
                 if hist_tx.send((ts, arr)).await.is_err() {
                     break;
                 }
             }
         });
 
-        (hist_rx, live_rx, output)
+        (hist_rx, live_rx, self.default)
     }
 
     fn write(payload: Array<T>, output: &mut Array<T>, _timestamp: i64) -> bool {
-        output.assign(&payload);
+        output.assign(payload.as_slice());
         true
     }
 }

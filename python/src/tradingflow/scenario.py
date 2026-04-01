@@ -65,8 +65,8 @@ class Scenario:
         else:
             idx = self._native.add_py_source(
                 source,
+                ("array", str(source.dtype)),
                 list(source.shape),
-                str(source.dtype),
             )
             return Handle(idx, source.shape, source.dtype)
 

@@ -6,7 +6,9 @@ import numpy as np
 import pandas as pd
 
 from tradingflow._native import NativeArrayView, NativeSeriesView
+
 from .schema import Schema
+from .utils import coerce_timestamp
 
 
 class ArrayView[T: np.generic]:
@@ -177,7 +179,7 @@ class SeriesView[T: np.generic]:
         """
         return self._inner.at(i)
 
-    def asof(self, timestamp) -> np.ndarray | None:
+    def asof(self, timestamp: np.datetime64) -> np.ndarray | None:
         """Value at or before `timestamp` (binary search).
 
         Delegates to Rust `Series::asof` via the bridge.
@@ -185,7 +187,8 @@ class SeriesView[T: np.generic]:
         Parameters
         ----------
         timestamp
-            `np.datetime64`, `int` (nanoseconds since epoch), or similar.
+            Timestamp to search for. Can be any `datetime64` precision; it
+            will be coerced to `datetime64[ns]` internally.
 
         Returns
         -------
@@ -193,9 +196,7 @@ class SeriesView[T: np.generic]:
             The most recent element with `ts <= timestamp`, or `None`
             if no element satisfies the condition.
         """
-        if hasattr(timestamp, "astype"):
-            timestamp = int(timestamp.astype("int64"))
-        result = self._inner.asof(timestamp)
+        result = self._inner.asof(coerce_timestamp(timestamp))
         return None if result is None else result
 
     def to_numpy(self) -> tuple[np.ndarray, np.ndarray]:

@@ -14,4 +14,11 @@ def ensure_contiguous(arr: np.ndarray) -> np.ndarray:
     """
     if arr.flags["C_CONTIGUOUS"]:
         return arr
-    return np.ascontiguousarray(arr).reshape(arr.shape)
+    else:
+        assert arr.ndim > 0
+        return np.ascontiguousarray(arr)
+
+
+def coerce_timestamp(ts: np.datetime64) -> np.int64:
+    """Coerce a timestamp to `datetime64[ns]` precision and return as `int64`."""
+    return ts.astype("datetime64[ns]").view("int64")

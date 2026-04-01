@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from tradingflow._utils import ensure_contiguous
+from tradingflow.utils import ensure_contiguous
 
 
 class TestEnsureContiguous:
     def test_scalar_array_preserves_shape(self) -> None:
         """0-d array must not be promoted to 1-d."""
-        a = np.float64(42.0)
+        a = np.array(42.0)
         assert a.ndim == 0
         b = ensure_contiguous(a)
         assert b.ndim == 0

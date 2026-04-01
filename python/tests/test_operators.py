@@ -54,7 +54,7 @@ def _scalar_scenario(values: list[float]) -> tuple[Scenario, Handle, Handle]:
     """Build a scenario with one scalar source and its recorded series."""
     sc = Scenario()
     src = ArraySource(
-        timestamps=np.arange(1, len(values) + 1).astype("datetime64[ns]"),
+        timestamps=np.arange(1, len(values) + 1),
         values=np.array(values, dtype=np.float64),
     )
     h = sc.add_source(src)

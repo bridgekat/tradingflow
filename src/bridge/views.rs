@@ -98,11 +98,7 @@ unsafe impl Send for NativeArrayView {}
 unsafe impl Sync for NativeArrayView {}
 
 /// Create an [`NativeArrayView`] for a node holding `Array<T>`.
-fn make_array_view<T: PyScalar>(
-    ptr: *mut u8,
-    shape: &[usize],
-    dtype_str: &str,
-) -> NativeArrayView {
+fn make_array_view<T: PyScalar>(ptr: *mut u8, shape: &[usize], dtype_str: &str) -> NativeArrayView {
     NativeArrayView {
         ptr,
         shape: shape.to_vec(),
@@ -170,11 +166,14 @@ unsafe fn array_write<T: PyScalar>(
     if src.len() != expected_len {
         return Err(PyValueError::new_err(format!(
             "shape mismatch: expected {} elements (shape {:?}), got {} (shape {:?})",
-            expected_len, shape, src.len(), src.shape,
+            expected_len,
+            shape,
+            src.len(),
+            src.shape,
         )));
     }
 
-    unsafe { src.clone_to_slice(arr.as_slice_mut()) };
+    unsafe { src.clone_to_slice(arr.as_mut_slice()) };
     Ok(())
 }
 
@@ -433,7 +432,10 @@ unsafe fn series_push<T: PyScalar>(
     if src.len() != stride {
         return Err(PyValueError::new_err(format!(
             "push: expected {} elements (shape {:?}), got {} (shape {:?})",
-            stride, shape, src.len(), src.shape,
+            stride,
+            shape,
+            src.len(),
+            src.shape,
         )));
     }
 

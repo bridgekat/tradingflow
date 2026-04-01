@@ -62,16 +62,12 @@ fn parse_timestamp(s: &str) -> Result<i64, String> {
 }
 
 /// Read and parse the CSV, returning sorted rows.
-fn read_csv(
-    path: &str,
-    time_column: &str,
-    value_columns: &[String],
-) -> Result<Vec<Row>, String> {
-    let mut rdr = csv::Reader::from_path(path)
-        .map_err(|e| format!("cannot open {path}: {e}"))?;
+fn read_csv(path: &str, time_column: &str, value_columns: &[String]) -> Result<Vec<Row>, String> {
+    let mut reader =
+        csv::Reader::from_path(path).map_err(|e| format!("cannot open {path}: {e}"))?;
 
     // Resolve column indices from headers.
-    let headers = rdr.headers().map_err(|e| e.to_string())?.clone();
+    let headers = reader.headers().map_err(|e| e.to_string())?.clone();
     let time_idx = headers
         .iter()
         .position(|h| h == time_column)
@@ -87,7 +83,7 @@ fn read_csv(
         .collect::<Result<_, _>>()?;
 
     let mut rows = Vec::new();
-    for result in rdr.records() {
+    for result in reader.records() {
         let record = result.map_err(|e| e.to_string())?;
         let ts = parse_timestamp(&record[time_idx])?;
         let mut values = Vec::with_capacity(value_indices.len());
@@ -124,14 +120,7 @@ impl Source for CsvSource {
         mpsc::Receiver<(i64, Array<f64>)>,
         Array<f64>,
     ) {
-        let stride = self.value_columns.len();
-        let shape: Vec<usize> = if stride == 1 {
-            vec![]
-        } else {
-            vec![stride]
-        };
-        let output = Array::zeros(&shape);
-
+        let num_columnss = self.value_columns.len();
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
 
@@ -144,22 +133,18 @@ impl Source for CsvSource {
                 }
             };
             for row in rows {
-                let arr = if stride == 1 {
-                    Array::scalar(row.values[0])
-                } else {
-                    Array::from_vec(&[stride], row.values)
-                };
+                let arr = Array::from_vec(&[num_columnss], row.values);
                 if hist_tx.send((row.timestamp, arr)).await.is_err() {
                     break;
                 }
             }
         });
 
-        (hist_rx, live_rx, output)
+        (hist_rx, live_rx, Array::zeros(&[num_columnss]))
     }
 
     fn write(payload: Array<f64>, output: &mut Array<f64>, _timestamp: i64) -> bool {
-        output.assign(&payload);
+        output.assign(payload.as_slice());
         true
     }
 }

@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .._utils import ensure_contiguous
+from ..utils import coerce_timestamp, ensure_contiguous
 from ..source import Source, empty_live_gen
 
 
@@ -54,7 +54,4 @@ class IterSource(Source):
 
     async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:
         for ts, val in self._iterable:
-            yield (
-                np.datetime64(ts, "ns"),
-                ensure_contiguous(np.asarray(val, dtype=self._dtype)),
-            )
+            yield ts, ensure_contiguous(np.asarray(val, dtype=self._dtype))

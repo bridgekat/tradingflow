@@ -42,7 +42,7 @@ macro_rules! define_unary_op {
                 _timestamp: i64,
             ) -> bool {
                 let a = inputs.0.as_slice();
-                let out = output.as_slice_mut();
+                let out = output.as_mut_slice();
                 for i in 0..out.len() {
                     let $x = a[i].clone();
                     out[i] = $body;
@@ -154,7 +154,7 @@ macro_rules! define_binary_op {
             ) -> bool {
                 let a_sl = inputs.0.as_slice();
                 let b_sl = inputs.1.as_slice();
-                let out = output.as_slice_mut();
+                let out = output.as_mut_slice();
                 for i in 0..out.len() {
                     let $a = a_sl[i].clone();
                     let $b = b_sl[i].clone();
@@ -213,7 +213,7 @@ mod tests {
         let a = Array::from_vec(&[input.len()], input.to_vec());
         let (mut s, mut o) = op.init((&a,), i64::MIN);
         O::compute(&mut s, (&a,), &mut o, 1);
-        o.into_vec()
+        o.as_slice().to_vec()
     }
 
     // -- Unary ---------------------------------------------------------------

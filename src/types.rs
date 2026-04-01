@@ -1,8 +1,64 @@
 use std::any::TypeId;
+use std::task::{Context, Poll};
+use tokio::sync::mpsc;
 
-// ===========================================================================
-// Generalized input system
-// ===========================================================================
+/// A permitted array scalar type.
+pub trait Scalar: Sized + Send + Sync + Clone + Default + 'static {}
+
+impl Scalar for () {}
+impl Scalar for bool {}
+impl Scalar for i8 {}
+impl Scalar for i16 {}
+impl Scalar for i32 {}
+impl Scalar for i64 {}
+impl Scalar for u8 {}
+impl Scalar for u16 {}
+impl Scalar for u32 {}
+impl Scalar for u64 {}
+impl Scalar for f32 {}
+impl Scalar for f64 {}
+impl Scalar for String {}
+
+/// Peekable wrapper around Tokio [`mpsc::Receiver`] with a one-slot pending
+/// buffer.
+///
+/// Supports a two-phase peek-then-consume protocol:
+/// [`poll_pending`](Self::poll_pending) peeks the next item without consuming
+/// it, and [`take_pending`](Self::take_pending) later extracts the buffered
+/// item.
+#[derive(Debug)]
+pub struct PeekableReceiver<T: Send + 'static> {
+    rx: mpsc::Receiver<T>,
+    pending: Option<T>,
+}
+
+impl<T: Send + 'static> PeekableReceiver<T> {
+    /// Create a new peekable receiver wrapping the given channel.
+    pub fn new(rx: mpsc::Receiver<T>) -> Self {
+        Self { rx, pending: None }
+    }
+
+    /// Poll for the next item without consuming it.
+    ///
+    /// If an item is already buffered, returns a reference to it immediately.
+    /// Otherwise polls the underlying receiver, buffering any received item
+    /// and returning a reference to it.
+    pub fn poll_pending(&mut self, cx: &mut Context<'_>) -> Poll<Option<&T>> {
+        if self.pending.is_none() {
+            match self.rx.poll_recv(cx) {
+                Poll::Ready(Some(item)) => self.pending = Some(item),
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        Poll::Ready(self.pending.as_ref())
+    }
+
+    /// Take the buffered item, if any.
+    pub fn take_pending(&mut self) -> Option<T> {
+        self.pending.take()
+    }
+}
 
 /// A collection of typed inputs for operators.
 ///

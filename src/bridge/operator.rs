@@ -10,19 +10,22 @@
 
 use std::any::TypeId;
 
-use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 
 use crate::operator::ErasedOperator;
 use crate::{Array, Series};
 
-use super::dispatch::{dispatch_dtype, normalize_dtype};
+use super::dispatch::dispatch_dtype;
 use super::views::{ViewKind, create_view};
 use super::{ErrorSlot, set_error};
 
 type PyObject = Py<PyAny>;
 
-/// Per-operator state for Python-implemented operators.
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+/// Per-operator state for the non-generic [`py_compute_fn`].
 ///
 /// Holds the Python callback, pre-built input/output views, mutable
 /// Python state, and an error slot shared with the scenario.
@@ -36,20 +39,9 @@ struct PyOperatorState {
 
 unsafe impl Send for PyOperatorState {}
 
-/// Resolve a Python-side `(kind, dtype)` pair to a Rust `TypeId`.
-pub fn resolve_type_id(kind: &str, dtype: &str) -> PyResult<TypeId> {
-    let dtype = normalize_dtype(dtype);
-    macro_rules! resolve {
-        ($T:ty) => {
-            match kind {
-                "array" => Ok(TypeId::of::<Array<$T>>()),
-                "series" => Ok(TypeId::of::<Series<$T>>()),
-                other => Err(PyTypeError::new_err(format!("unknown node kind: {other}"))),
-            }
-        };
-    }
-    dispatch_dtype!(dtype, resolve)
-}
+// ---------------------------------------------------------------------------
+// Construction
+// ---------------------------------------------------------------------------
 
 /// Construct an [`ErasedOperator`] for a Python-implemented operator.
 ///
@@ -60,25 +52,25 @@ pub fn make_py_operator(
     py: Python<'_>,
     input_type_ids: Box<[TypeId]>,
     output_type_id: TypeId,
+    out_dtype: &str,
+    out_view_kind: ViewKind,
+    output_shape: &[usize],
     py_inputs: PyObject,
     py_operator: PyObject,
     py_state: PyObject,
     error_slot: ErrorSlot,
-    out_dtype: &str,
-    out_view_kind: ViewKind,
-    output_shape: &[usize],
 ) -> PyResult<ErasedOperator> {
-    // Only the output allocation depends on the concrete scalar type.
+    // Allocate output (generic on T) and create its Python view.
     macro_rules! alloc_output {
         ($T:ty) => {
             match out_view_kind {
                 ViewKind::Array => (
                     Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
-                    erased_drop_fn::<Array<$T>> as unsafe fn(*mut u8),
+                    drop_fn::<Array<$T>> as unsafe fn(*mut u8),
                 ),
                 ViewKind::Series => (
                     Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
-                    erased_drop_fn::<Series<$T>> as unsafe fn(*mut u8),
+                    drop_fn::<Series<$T>> as unsafe fn(*mut u8),
                 ),
             }
         };
@@ -87,28 +79,32 @@ pub fn make_py_operator(
         dispatch_dtype!(out_dtype, alloc_output);
 
     let py_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
-    let state = PyOperatorState {
+    let state = Box::new(PyOperatorState {
         py_operator,
         py_inputs,
         py_output,
         py_state,
         error_slot,
-    };
-    let state_ptr = Box::into_raw(Box::new(state)) as *mut u8;
+    });
+
     // SAFETY: output_ptr is a valid Array<T> or Series<T>;
-    // state_ptr is a valid PyOperatorState; all fn ptrs match.
+    // state is a valid PyOperatorState; all fn ptrs match.
     Ok(unsafe {
         ErasedOperator::new(
             TypeId::of::<PyOperatorState>(),
             input_type_ids,
             output_type_id,
-            Box::new(move |_, _| (state_ptr, output_ptr)),
+            Box::new(move |_, _| (Box::into_raw(state) as *mut u8, output_ptr)),
             py_compute_fn,
-            erased_drop_fn::<PyOperatorState>,
+            drop_fn::<PyOperatorState>,
             output_drop_fn,
         )
     })
 }
+
+// ---------------------------------------------------------------------------
+// Non-generic function pointers
+// ---------------------------------------------------------------------------
 
 /// Compute function for Python operators.
 ///
@@ -159,7 +155,11 @@ unsafe fn py_compute_fn(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 /// Type-erased box drop function, monomorphised per value type.
-unsafe fn erased_drop_fn<T>(ptr: *mut u8) {
+unsafe fn drop_fn<T>(ptr: *mut u8) {
     unsafe { drop(Box::from_raw(ptr as *mut T)) };
 }

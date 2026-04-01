@@ -1,7 +1,8 @@
 use std::any::TypeId;
 use std::task::{Context, Poll};
-
 use tokio::sync::mpsc;
+
+use crate::PeekableReceiver;
 
 /// An asynchronous data source that receives events via channels and writes
 /// a typed output.
@@ -19,6 +20,7 @@ pub trait Source: 'static {
     type Output: Send + 'static;
 
     /// Consume the spec and produce channel receivers and initial output.
+    #[allow(clippy::type_complexity)]
     fn init(
         self,
         timestamp: i64,
@@ -207,43 +209,4 @@ unsafe fn erased_write_fn<S: Source>(rx_ptr: *mut u8, output_ptr: *mut u8, times
 /// Type-erased box drop function, monomorphised per value type.
 unsafe fn erased_drop_fn<T>(ptr: *mut u8) {
     unsafe { drop(Box::from_raw(ptr as *mut T)) };
-}
-
-/// Peekable wrapper around [`mpsc::Receiver`] with a one-slot pending buffer.
-///
-/// Supports a two-phase peek-then-consume protocol:
-/// [`poll_pending`](Self::poll_pending) peeks the next item without consuming
-/// it, and [`take_pending`](Self::take_pending) later extracts the buffered
-/// item.
-pub struct PeekableReceiver<T: Send + 'static> {
-    rx: mpsc::Receiver<T>,
-    pending: Option<T>,
-}
-
-impl<T: Send + 'static> PeekableReceiver<T> {
-    /// Create a new peekable receiver wrapping the given channel.
-    pub fn new(rx: mpsc::Receiver<T>) -> Self {
-        Self { rx, pending: None }
-    }
-
-    /// Poll for the next item without consuming it.
-    ///
-    /// If an item is already buffered, returns a reference to it immediately.
-    /// Otherwise polls the underlying receiver, buffering any received item
-    /// and returning a reference to it.
-    pub fn poll_pending(&mut self, cx: &mut Context<'_>) -> Poll<Option<&T>> {
-        if self.pending.is_none() {
-            match self.rx.poll_recv(cx) {
-                Poll::Ready(Some(item)) => self.pending = Some(item),
-                Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-        Poll::Ready(self.pending.as_ref())
-    }
-
-    /// Take the buffered item, if any.
-    pub fn take_pending(&mut self) -> Option<T> {
-        self.pending.take()
-    }
 }

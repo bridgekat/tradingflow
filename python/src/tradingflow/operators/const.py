@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .._utils import ensure_contiguous
+from ..utils import ensure_contiguous
 from ..operator import NativeOperator
 
 

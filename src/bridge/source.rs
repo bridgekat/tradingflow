@@ -1,14 +1,15 @@
 //! Python source machinery for the bridge.
 //!
-//! [`register_py_source`] constructs an [`ErasedSource`] for a
+//! [`make_py_source`] constructs an [`ErasedSource`] for a
 //! Python-implemented source.  A tokio driver task iterates the
 //! source's async iterators by scheduling each `__anext__()` coroutine
 //! on the main-thread asyncio event loop via `run_coroutine_threadsafe`
 //! and awaiting completion through a [`DoneCallback`].
 //!
-//! Channel events carry `(i64, PyObject)` — the raw Python value is
-//! converted to bytes and copied into the output `Array<T>` during the
-//! write step (which runs under GIL on the POCQ thread).
+//! The write function ([`py_write_fn`]) is **not** generic — it delegates
+//! to the Python output view's `write` method, mirroring the operator
+//! bridge pattern.  Dtype dispatch is only needed for output allocation
+//! and view creation.
 
 use std::any::TypeId;
 use std::sync::Mutex;
@@ -17,24 +18,34 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use tokio::sync::mpsc;
 
-use crate::source::{ErasedSource, PeekableReceiver, PollFn, WriteFn};
-use crate::{Array, Scalar, Scenario};
+use crate::{Array, ErasedSource, PeekableReceiver, Series};
 
 use super::dispatch::dispatch_dtype;
+use super::views::{ViewKind, create_view};
 use super::{ErrorSlot, set_error};
 
 type PyObject = Py<PyAny>;
 
 // ---------------------------------------------------------------------------
-// Public types
+// State
 // ---------------------------------------------------------------------------
 
-/// Stored state for a Python source.
-pub struct PySourceSpec {
-    pub py_source: PyObject,
-    pub shape: Box<[usize]>,
-    pub dtype: String,
+/// Per-channel receiver state for the non-generic [`py_write_fn`].
+///
+/// Holds the channel receiver, output view, and error slot — mirroring
+/// [`PyOperatorState`](super::operator) which stores views alongside
+/// the compute callback.
+struct PySourceState {
+    rx: PeekableReceiver<(i64, PyObject)>,
+    py_output: PyObject,
+    error_slot: ErrorSlot,
 }
+
+unsafe impl Send for PySourceState {}
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
 
 /// A Python-callable callback that signals a tokio oneshot channel when
 /// a `concurrent.futures.Future` completes.
@@ -53,131 +64,165 @@ impl DoneCallback {
 }
 
 // ---------------------------------------------------------------------------
-// Registration
+// Construction
 // ---------------------------------------------------------------------------
 
-/// Register a Python source and return the node index.
+/// Construct an [`ErasedSource`] for a Python-implemented source.
 ///
-/// Constructs an [`ErasedSource`] whose `init_fn` creates bounded channels
-/// and spawns a tokio driver task.  The driver iterates the source's async
-/// iterators by scheduling coroutines on `event_loop`.
-pub fn register_py_source(
-    sc: &mut Scenario,
+/// Allocates the output value, creates its Python view, and packages
+/// everything into a type-erased source.  The caller provides the
+/// resolved `output_type_id` and `out_view_kind`, mirroring how
+/// [`make_py_operator`](super::operator::make_py_operator) receives
+/// these from the scenario.  Dtype dispatch is only needed for the
+/// output allocation — the write function is non-generic.
+pub fn make_py_source(
     py: Python<'_>,
-    spec: PySourceSpec,
+    output_type_id: TypeId,
+    out_dtype: &str,
+    out_view_kind: ViewKind,
+    output_shape: &[usize],
+    py_source: PyObject,
     event_loop: PyObject,
     error_slot: ErrorSlot,
-) -> PyResult<usize> {
-    let dtype = spec.dtype.clone();
-    macro_rules! register {
-        ($T:ty) => {{
-            let erased = make_erased_source::<$T>(spec, event_loop, error_slot);
-            sc.add_erased_source(erased)
-        }};
+) -> PyResult<ErasedSource> {
+    // Allocate output (generic on T) and create its Python view.
+    macro_rules! alloc_output {
+        ($T:ty) => {
+            match out_view_kind {
+                ViewKind::Array => (
+                    Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
+                    drop_fn::<Array<$T>> as unsafe fn(*mut u8),
+                ),
+                ViewKind::Series => (
+                    Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
+                    drop_fn::<Series<$T>> as unsafe fn(*mut u8),
+                ),
+            }
+        };
     }
-    let node_index = dispatch_dtype!(&dtype, register, numeric);
-    let _ = py;
-    Ok(node_index)
-}
+    let (output_ptr, output_drop_fn): (*mut u8, unsafe fn(*mut u8)) =
+        dispatch_dtype!(out_dtype, alloc_output);
 
-// ---------------------------------------------------------------------------
-// ErasedSource construction
-// ---------------------------------------------------------------------------
+    let py_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
 
-/// Construct an [`ErasedSource`] for a Python source.
-///
-/// Channel events are `(i64, PyObject)` — the Python value object is kept
-/// alive until the write step, where it is converted to a C-contiguous
-/// numpy array and its bytes are copied into the output `Array<T>`.
-fn make_erased_source<T: Scalar + Copy>(
-    spec: PySourceSpec,
-    event_loop: PyObject,
-    error_slot: ErrorSlot,
-) -> ErasedSource {
-    let event_type_id = TypeId::of::<PyObject>();
-    let output_type_id = TypeId::of::<Array<T>>();
-
-    let poll_fn: PollFn = |state, cx| unsafe {
-        (&mut *(state as *mut PeekableReceiver<(i64, PyObject)>))
-            .poll_pending(cx)
-            .map(|opt| opt.map(|item| item.0))
-    };
-    let rx_drop_fn: unsafe fn(*mut u8) =
-        |ptr| unsafe { drop(Box::from_raw(ptr as *mut PeekableReceiver<(i64, PyObject)>)) };
+    // Clone the view for each receiver (hist + live share the same output).
+    let view_for_hist = py_output.clone_ref(py);
+    let view_for_live = py_output;
+    let error_for_driver = error_slot.clone();
 
     let init_fn: Box<dyn FnOnce(i64) -> (*mut u8, *mut u8, *mut u8)> =
         Box::new(move |_timestamp: i64| {
-            let output = Array::<T>::zeros(&spec.shape);
-
             let (hist_tx, hist_rx) = mpsc::channel(64);
             let (live_tx, live_rx) = mpsc::channel(64);
 
             tokio::spawn(drive_source(
-                spec.py_source,
+                py_source,
                 event_loop,
                 hist_tx,
                 live_tx,
-                error_slot,
+                error_for_driver,
             ));
 
-            let hist_ptr = Box::into_raw(Box::new(PeekableReceiver::new(hist_rx))) as *mut u8;
-            let live_ptr = Box::into_raw(Box::new(PeekableReceiver::new(live_rx))) as *mut u8;
-            let output_ptr = Box::into_raw(Box::new(output)) as *mut u8;
+            let hist_state = PySourceState {
+                rx: PeekableReceiver::new(hist_rx),
+                py_output: view_for_hist,
+                error_slot: error_slot.clone(),
+            };
+            let live_state = PySourceState {
+                rx: PeekableReceiver::new(live_rx),
+                py_output: view_for_live,
+                error_slot,
+            };
+
+            let hist_ptr = Box::into_raw(Box::new(hist_state)) as *mut u8;
+            let live_ptr = Box::into_raw(Box::new(live_state)) as *mut u8;
             (hist_ptr, live_ptr, output_ptr)
         });
 
-    // SAFETY: init_fn returns valid PeekableReceiver<(i64, PyObject)> pointers
-    // and a valid Array<T> output pointer; all function pointers match.
-    unsafe {
+    // SAFETY: init_fn returns valid PySourceState pointers and a valid
+    // output pointer.  poll/write/drop fn ptrs match the types.
+    Ok(unsafe {
         ErasedSource::new(
-            event_type_id,
+            TypeId::of::<PyObject>(),
             output_type_id,
             init_fn,
-            poll_fn,
-            write_fn::<T> as WriteFn,
-            rx_drop_fn,
-            drop_fn::<Array<T>>,
+            py_poll_fn,
+            py_write_fn,
+            drop_fn::<PySourceState>,
+            output_drop_fn,
         )
-    }
+    })
 }
 
-/// Write function: convert a pending `PyObject` value to a C-contiguous
-/// numpy array and copy its bytes into the output `Array<T>`.
+// ---------------------------------------------------------------------------
+// Non-generic function pointers
+// ---------------------------------------------------------------------------
+
+/// Poll function for Python source channels.
 ///
-/// Acquires the GIL to perform the numpy conversion.
+/// Not generic — delegates to the inner [`PeekableReceiver`].
 ///
 /// # Safety
 ///
-/// * `rx_ptr` must point to a valid `PeekableReceiver<(i64, PyObject)>`.
-/// * `out_ptr` must point to a valid `Array<T>`.
-unsafe fn write_fn<T: Scalar + Copy>(rx_ptr: *mut u8, out_ptr: *mut u8, _ts: i64) -> bool {
-    use super::dispatch::ContiguousArrayInfo;
+/// `state` must point to a valid `PySourceState`.
+unsafe fn py_poll_fn(
+    state: *mut u8,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<Option<i64>> {
+    let state = unsafe { &mut *(state as *mut PySourceState) };
+    state.rx.poll_pending(cx).map(|opt| opt.map(|item| item.0))
+}
 
-    let rx = unsafe { &mut *(rx_ptr as *mut PeekableReceiver<(i64, PyObject)>) };
-    if let Some((_ts, py_value)) = rx.take_pending() {
-        let output = unsafe { &mut *(out_ptr as *mut Array<T>) };
-        let expected = output.as_slice().len();
+/// Write function for Python source channels.
+///
+/// Delegates to the output view's `write` method, mirroring the operator
+/// bridge's [`py_compute_fn`](super::operator).  Not generic — works
+/// entirely through the Python view in [`PySourceState`].
+///
+/// # Safety
+///
+/// `state_ptr` must point to a valid `PySourceState`.
+unsafe fn py_write_fn(state_ptr: *mut u8, _output_ptr: *mut u8, _ts: i64) -> bool {
+    let state = unsafe { &mut *(state_ptr as *mut PySourceState) };
 
-        Python::attach(|py| {
-            let src = ContiguousArrayInfo::try_from(py_value.bind(py))
-                .expect("failed to read __array_interface__");
-            assert_eq!(
-                src.len(),
-                expected,
-                "numpy array element count mismatch: expected {expected}, got {}",
-                src.len(),
-            );
-            unsafe { src.clone_to_slice(output.as_slice_mut()) };
+    if state.error_slot.lock().unwrap().is_some() {
+        return false;
+    }
+
+    if let Some((_ts, py_value)) = state.rx.take_pending() {
+        let result = Python::attach(|py| -> PyResult<()> {
+            state
+                .py_output
+                .call_method1(py, "write", (py_value.bind(py),))
+                .map(|_| ())
         });
-
-        true
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                set_error(&state.error_slot, e.to_string());
+                false
+            }
+        }
     } else {
         false
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Type-erased box drop function, monomorphised per value type.
 unsafe fn drop_fn<T>(ptr: *mut u8) {
     unsafe { drop(Box::from_raw(ptr as *mut T)) };
+}
+
+/// Extract a numpy datetime64 as nanoseconds (i64).
+fn extract_timestamp_ns(py: Python<'_>, ts_obj: &Bound<'_, PyAny>) -> PyResult<i64> {
+    let np = py.import("numpy")?;
+    let dt = np.call_method1("datetime64", (ts_obj, "ns"))?;
+    let view = dt.call_method1("view", ("int64",))?;
+    view.extract()
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +243,7 @@ async fn drive_source(
             let tuple = result.bind(py);
             Ok((tuple.get_item(0)?.unbind(), tuple.get_item(1)?.unbind()))
         })
-        .map_err(|e| format!("source.init() failed: {e}"))?;
+        .map_err(|e| format!("Source.init() failed: {e}"))?;
 
         drive_async_iter(&hist_iter, &event_loop, &hist_tx).await?;
         drop(hist_tx);
@@ -228,10 +273,10 @@ async fn drive_async_iter(
 ) -> Result<(), String> {
     loop {
         // Acquire GIL: call __anext__(), schedule on asyncio, register callback.
-        let (cf_future, rx) = Python::attach(|py| -> PyResult<_> {
+        let (coro_future, rx_done) = Python::attach(|py| -> PyResult<_> {
             let coro = py_iter.call_method0(py, "__anext__")?;
             let asyncio = py.import("asyncio")?;
-            let cf_future = asyncio.call_method1(
+            let coro_future = asyncio.call_method1(
                 "run_coroutine_threadsafe",
                 (coro.bind(py), event_loop.bind(py)),
             )?;
@@ -242,17 +287,17 @@ async fn drive_async_iter(
                     tx: Mutex::new(Some(tx_done)),
                 },
             )?;
-            cf_future.call_method1("add_done_callback", (callback,))?;
-            Ok((cf_future.unbind(), rx_done))
+            coro_future.call_method1("add_done_callback", (callback,))?;
+            Ok((coro_future.unbind(), rx_done))
         })
-        .map_err(|e| format!("__anext__ scheduling failed: {e}"))?;
+        .map_err(|e| format!("__anext__() scheduling failed: {e}"))?;
 
         // Suspend until the coroutine completes (no GIL held).
-        let _ = rx.await;
+        let _ = rx_done.await;
 
         // Acquire GIL: extract (timestamp, value) or detect StopAsyncIteration.
         let event = Python::attach(|py| -> PyResult<Option<(i64, PyObject)>> {
-            match cf_future.call_method0(py, "result") {
+            match coro_future.call_method0(py, "result") {
                 Ok(value) => {
                     let tuple = value.bind(py);
                     let ts_ns = extract_timestamp_ns(py, &tuple.get_item(0)?)?;
@@ -260,7 +305,7 @@ async fn drive_async_iter(
                     Ok(Some((ts_ns, val)))
                 }
                 Err(e) => {
-                    if e.get_type(py).name()?.to_string() == "StopAsyncIteration" {
+                    if e.get_type(py).name()? == "StopAsyncIteration" {
                         Ok(None)
                     } else {
                         Err(e)
@@ -280,16 +325,4 @@ async fn drive_async_iter(
         }
     }
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Extract a numpy datetime64 as nanoseconds (i64).
-fn extract_timestamp_ns(py: Python<'_>, ts_obj: &Bound<'_, PyAny>) -> PyResult<i64> {
-    let np = py.import("numpy")?;
-    let dt = np.call_method1("datetime64", (ts_obj, "ns"))?;
-    let view = dt.call_method1("view", ("int64",))?;
-    view.extract()
 }

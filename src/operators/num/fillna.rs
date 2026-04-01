@@ -34,7 +34,7 @@ impl<T: Scalar + Float> Operator for Fillna<T> {
     ) -> bool {
         let val = *state;
         let a = inputs.0.as_slice();
-        let out = output.as_slice_mut();
+        let out = output.as_mut_slice();
         for i in 0..out.len() {
             out[i] = if a[i].is_nan() { val } else { a[i] };
         }
