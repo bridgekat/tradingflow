@@ -33,6 +33,11 @@ This file is kept short and concise. It provides initial context for all agentic
 - All Python docstrings should follow Markdown (not reStructuredText) for base syntax, [mkdocstrings](https://mkdocstrings.github.io/usage/) for cross-references syntax and [numpydoc](https://numpydoc.readthedocs.io/en/latest/format.html) only for sections style. This is supported by [Zensical](https://zensical.org/docs/), the new documentation generator we use.
 - Add Python 3.12+ type annotations except for overly complex types or overloads.
 
+## Examples
+
+- Examples live in [`python/examples/`](python/examples/) and use data from external sources.
+- Install optional dependencies for examples: `pip install -e ".[examples]"`.
+
 ## Scope
 
 - This project is in early stage, so breaking changes are allowed. Keep logical consistency throughout the codebase when introducing a breaking change.

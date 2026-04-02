@@ -13,7 +13,11 @@ dependencies = ["numpy>=2.4", "pandas>=3.0"]
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 docs = ["zensical", "mkdocstrings-python"]
-viz = ["matplotlib", "streamlit[charts]"]
+examples = [
+    "a-shares-crawler @ git+https://github.com/bridgekat/a-shares-crawler",
+    "matplotlib",
+    "streamlit[charts]",
+]
 
 [tool.maturin]
 features = ["pyo3/extension-module", "python"]
