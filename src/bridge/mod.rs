@@ -18,6 +18,9 @@
 //! - [`NativeScenario`](scenario::NativeScenario) — the main pyclass.
 //! - [`NativeArrayView`] / [`NativeSeriesView`] — read-only Python views into
 //!   `Array<T>` and `Series<T>` node values, backed by raw pointers.
+//! - [`NativeNotify`] — Python-visible wrapper around the Rust
+//!   [`Notify`](crate::operator::Notify) context, exposing per-input update
+//!   flags to Python operators during flush.
 //! - [`DoneCallback`](source::DoneCallback) — pyclass used internally to
 //!   bridge `concurrent.futures.Future` completion to tokio oneshot channels.
 //!
@@ -45,7 +48,7 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 
-pub use views::{NativeArrayView, NativeSeriesView};
+pub use views::{NativeArrayView, NativeNotify, NativeSeriesView};
 
 use scenario::NativeScenario;
 
@@ -70,6 +73,7 @@ pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_class::<NativeScenario>()?;
     m.add_class::<NativeArrayView>()?;
     m.add_class::<NativeSeriesView>()?;
+    m.add_class::<NativeNotify>()?;
     m.add_class::<source::DoneCallback>()?;
     Ok(())
 }

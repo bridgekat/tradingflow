@@ -1,7 +1,8 @@
 //! Built-in rolling (windowed) operators.
 //!
 //! Every operator in this module implements [`Operator`](crate::Operator) with
-//! [`Series<T>`](crate::Series) inputs and outputs (`T: Scalar + Float`). Each
+//! [`Series<T>`](crate::Series) input and [`Array<T>`](crate::Array) output
+//! (`T: Scalar + Float`). Each
 //! maintains incremental state so that per-tick cost is O(1) per element
 //! (O(K^2) for the covariance matrix where K is the vector dimension).
 //!

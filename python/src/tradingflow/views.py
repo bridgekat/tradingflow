@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from tradingflow._native import NativeArrayView, NativeSeriesView
+from tradingflow._native import NativeArrayView, NativeNotify, NativeSeriesView
 
 from .schema import Schema
 from .utils import coerce_timestamp
@@ -255,3 +255,25 @@ class SeriesView[T: np.generic]:
 
     def __repr__(self) -> str:
         return f"SeriesView(len={len(self)}, shape={self.shape}, dtype={self.dtype})"
+
+
+class Notify:
+    """Notification context for Python-implemented operators.
+
+    Provides [`input_produced`][tradingflow.Notify.input_produced] to check
+    whether a specific input produced new output in the current flush cycle.
+    If the operator ignores this object entirely, there is zero overhead.
+
+    Instances are created by the runtime and passed to
+    [`Operator.compute`][tradingflow.Operator.compute] — users do not construct
+    these directly.
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: NativeNotify) -> None:
+        self._inner = inner
+
+    def input_produced(self, pos: int) -> bool:
+        """Whether the input at *pos* produced new output this flush cycle."""
+        return self._inner.input_produced(pos)

@@ -2,6 +2,7 @@
 
 use std::marker::PhantomData;
 
+use crate::operator::Notify;
 use crate::Operator;
 
 /// Identity operator: clones input to output unchanged.
@@ -36,7 +37,7 @@ impl<T: Clone + Send + 'static> Operator for Id<T> {
     }
 
     #[inline(always)]
-    fn compute(_state: &mut (), inputs: (&T,), output: &mut T, _timestamp: i64) -> bool {
+    fn compute(_state: &mut (), inputs: (&T,), output: &mut T, _timestamp: i64, _notify: &Notify<'_>) -> bool {
         output.clone_from(inputs.0);
         true
     }
@@ -54,7 +55,7 @@ mod tests {
         let (mut s, mut o) = Id::<Array<f64>>::new().init((&a,), i64::MIN);
         assert_eq!(o.as_slice(), &[42.0]);
         let b = Array::scalar(99.0_f64);
-        assert!(Id::<Array<f64>>::compute(&mut s, (&b,), &mut o, 1));
+        assert!(Id::<Array<f64>>::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], &[])));
         assert_eq!(o.as_slice(), &[99.0]);
     }
 
@@ -64,7 +65,7 @@ mod tests {
         let (mut s, mut o) = Id::<String>::new().init((&a,), i64::MIN);
         assert_eq!(o, "hello");
         let b = String::from("world");
-        assert!(Id::<String>::compute(&mut s, (&b,), &mut o, 1));
+        assert!(Id::<String>::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], &[])));
         assert_eq!(o, "world");
     }
 }

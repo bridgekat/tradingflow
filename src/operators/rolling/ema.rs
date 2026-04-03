@@ -5,7 +5,8 @@
 
 use num_traits::Float;
 
-use crate::{Operator, Scalar, Series};
+use crate::operator::Notify;
+use crate::{Array, Operator, Scalar, Series};
 
 /// Exponential moving average.
 ///
@@ -71,9 +72,9 @@ pub struct EmaState<T: Scalar + Float> {
 impl<T: Scalar + Float> Operator for Ema<T> {
     type State = EmaState<T>;
     type Inputs = (Series<T>,);
-    type Output = Series<T>;
+    type Output = Array<T>;
 
-    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (EmaState<T>, Series<T>) {
+    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (EmaState<T>, Array<T>) {
         let stride = inputs.0.stride();
         let one_minus_alpha = T::one() - self.alpha;
         let mut decay_factor = T::one();
@@ -89,14 +90,15 @@ impl<T: Scalar + Float> Operator for Ema<T> {
             nan_count: vec![0; stride],
             fill_decay: T::one(),
         };
-        (state, Series::new(inputs.0.shape()))
+        (state, Array::zeros(inputs.0.shape()))
     }
 
     fn compute(
         state: &mut EmaState<T>,
         inputs: (&Series<T>,),
-        output: &mut Series<T>,
-        timestamp: i64,
+        output: &mut Array<T>,
+        _timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         let series = inputs.0;
         let len = series.len();
@@ -113,7 +115,7 @@ impl<T: Scalar + Float> Operator for Ema<T> {
             state.fill_decay
         };
 
-        let mut buf = vec![T::nan(); stride];
+        let out = output.as_mut_slice();
 
         for i in 0..stride {
             let x = row[i];
@@ -140,12 +142,13 @@ impl<T: Scalar + Float> Operator for Ema<T> {
             }
 
             // 4. Output: NaN if any NaN in window, else weighted average.
-            if state.nan_count[i] == 0 && weight_sum > T::zero() {
-                buf[i] = state.weighted_sum[i] / weight_sum;
-            }
+            out[i] = if state.nan_count[i] == 0 && weight_sum > T::zero() {
+                state.weighted_sum[i] / weight_sum
+            } else {
+                T::nan()
+            };
         }
 
-        output.push(timestamp, &buf);
         true
     }
 }
@@ -157,12 +160,12 @@ mod tests {
     fn push_compute(
         s: &mut Series<f64>,
         state: &mut EmaState<f64>,
-        out: &mut Series<f64>,
+        out: &mut Array<f64>,
         ts: i64,
         val: f64,
     ) {
         s.push(ts, &[val]);
-        Ema::compute(state, (s,), out, ts);
+        Ema::compute(state, (s,), out, ts, &Notify::new(&[], &[]));
     }
 
     #[test]
@@ -174,7 +177,7 @@ mod tests {
             push_compute(&mut s, &mut state, &mut out, i, 10.0);
         }
         // EMA of constant should converge to that constant
-        let last = out.last().unwrap()[0];
+        let last = out.as_slice()[0];
         assert!((last - 10.0).abs() < 1e-6, "expected ~10.0, got {last}");
     }
 
@@ -185,7 +188,7 @@ mod tests {
 
         push_compute(&mut s, &mut state, &mut out, 1, 100.0);
         // First value: only one weight, so EMA = value itself
-        assert_eq!(out.last().unwrap()[0], 100.0);
+        assert_eq!(out.as_slice()[0], 100.0);
     }
 
     #[test]
@@ -198,7 +201,7 @@ mod tests {
 
         // w0 = 0.5 (for x=20), w1 = 0.5*0.5=0.25 (for x=10)
         // EMA = (0.5*20 + 0.25*10) / (0.5 + 0.25) = 12.5 / 0.75 = 16.667
-        let last = out.last().unwrap()[0];
+        let last = out.as_slice()[0];
         let expected = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25);
         assert!(
             (last - expected).abs() < 1e-10,
@@ -213,22 +216,22 @@ mod tests {
         let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), i64::MIN);
 
         push_compute(&mut s, &mut state, &mut out, 1, 10.0);
-        assert_eq!(out.last().unwrap()[0], 10.0);
+        assert_eq!(out.as_slice()[0], 10.0);
 
         push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
-        assert!(out.last().unwrap()[0].is_nan());
+        assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 3, 20.0);
         // NaN still in window → NaN
-        assert!(out.last().unwrap()[0].is_nan());
+        assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 4, 30.0);
         // NaN still in window [NaN, 20, 30] → NaN
-        assert!(out.last().unwrap()[0].is_nan());
+        assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 5, 40.0);
         // NaN evicted, window [20, 30, 40] → valid
-        let val = out.last().unwrap()[0];
+        let val = out.as_slice()[0];
         assert!(!val.is_nan(), "expected valid output after NaN eviction");
         // weighted: 0.5*40 + 0.25*30 + 0.125*20 = 30
         // weight_sum: 1 - 0.5^3 = 0.875
@@ -251,7 +254,7 @@ mod tests {
         push_compute(&mut s, &mut state, &mut out, 4, 0.0);
 
         // After two 0.0 values with window=2, the 100.0s should be evicted
-        let last = out.last().unwrap()[0];
+        let last = out.as_slice()[0];
         assert!(
             last.abs() < 1e-10,
             "expected ~0.0 after window eviction, got {last}"
@@ -266,7 +269,7 @@ mod tests {
         // alpha = 2/(3+1) = 0.5
         push_compute(&mut s, &mut state, &mut out, 1, 10.0);
         push_compute(&mut s, &mut state, &mut out, 2, 20.0);
-        let last = out.last().unwrap()[0];
+        let last = out.as_slice()[0];
         let expected = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25);
         assert!((last - expected).abs() < 1e-10);
     }
@@ -277,12 +280,12 @@ mod tests {
         let (mut state, mut out) = Ema::<f64>::new(0.5, 10).init((&s,), i64::MIN);
 
         s.push(1, &[10.0, 100.0]);
-        Ema::compute(&mut state, (&s,), &mut out, 1);
-        assert_eq!(out.last().unwrap(), &[10.0, 100.0]);
+        Ema::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert_eq!(out.as_slice(), &[10.0, 100.0]);
 
         s.push(2, &[20.0, 200.0]);
-        Ema::compute(&mut state, (&s,), &mut out, 2);
-        let row = out.last().unwrap();
+        Ema::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        let row = out.as_slice();
         let expected_0 = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25);
         let expected_1 = (0.5 * 200.0 + 0.25 * 100.0) / (0.5 + 0.25);
         assert!((row[0] - expected_0).abs() < 1e-10);
@@ -295,15 +298,15 @@ mod tests {
         let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
 
         push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
-        assert!(out.last().unwrap()[0].is_nan());
+        assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 2, 10.0);
         // NaN still in window → NaN
-        assert!(out.last().unwrap()[0].is_nan());
+        assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 3, 20.0);
         // NaN evicted, window [10, 20]
-        let val = out.last().unwrap()[0];
+        let val = out.as_slice()[0];
         assert!(!val.is_nan());
     }
 
@@ -316,15 +319,15 @@ mod tests {
         push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
         push_compute(&mut s, &mut state, &mut out, 3, 10.0);
         // Two NaNs in window → NaN
-        assert!(out.last().unwrap()[0].is_nan());
+        assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 4, 20.0);
         // One NaN remains → NaN
-        assert!(out.last().unwrap()[0].is_nan());
+        assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 5, 30.0);
         // Both NaNs evicted → valid
-        assert!(!out.last().unwrap()[0].is_nan());
+        assert!(!out.as_slice()[0].is_nan());
     }
 
     #[test]
@@ -334,21 +337,21 @@ mod tests {
 
         // NaN only in element 0
         s.push(1, &[f64::NAN, 10.0]);
-        Ema::compute(&mut state, (&s,), &mut out, 1);
-        assert!(out.last().unwrap()[0].is_nan());
-        assert_eq!(out.last().unwrap()[1], 10.0);
+        Ema::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert!(out.as_slice()[0].is_nan());
+        assert_eq!(out.as_slice()[1], 10.0);
 
         s.push(2, &[5.0, 20.0]);
-        Ema::compute(&mut state, (&s,), &mut out, 2);
+        Ema::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
         // NaN still in window for element 0
-        assert!(out.last().unwrap()[0].is_nan());
-        assert!(!out.last().unwrap()[1].is_nan());
+        assert!(out.as_slice()[0].is_nan());
+        assert!(!out.as_slice()[1].is_nan());
 
         s.push(3, &[15.0, 30.0]);
-        Ema::compute(&mut state, (&s,), &mut out, 3);
+        Ema::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
         // NaN evicted for element 0
-        assert!(!out.last().unwrap()[0].is_nan());
-        assert!(!out.last().unwrap()[1].is_nan());
+        assert!(!out.as_slice()[0].is_nan());
+        assert!(!out.as_slice()[1].is_nan());
     }
 
     #[test]
@@ -359,11 +362,11 @@ mod tests {
 
         push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
         push_compute(&mut s, &mut state, &mut out, 2, 10.0);
-        assert!(out.last().unwrap()[0].is_nan()); // NaN still in window
+        assert!(out.as_slice()[0].is_nan()); // NaN still in window
 
         push_compute(&mut s, &mut state, &mut out, 3, 10.0);
         // NaN evicted, window [10, 10] → EMA of constant = 10
-        let val = out.last().unwrap()[0];
+        let val = out.as_slice()[0];
         assert!(
             (val - 10.0).abs() < 1e-10,
             "expected 10.0 after NaN eviction, got {val}"

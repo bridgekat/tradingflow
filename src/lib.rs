@@ -18,6 +18,9 @@
 //!   historical and live channels. Type-erased form: [`ErasedSource`].
 //! * [`Operator`] — synchronous computation node that reads typed inputs and
 //!   writes a typed output. Type-erased form: [`ErasedOperator`].
+//! * [`Notify`] — zero-cost notification context passed to
+//!   [`Operator::compute`], providing per-input update flags for the current
+//!   flush cycle.
 //!
 //! # Runtime
 //!
@@ -36,8 +39,8 @@
 //! * [`types`] — `Scalar`, `PeekableReceiver`, `InputTypes`.
 //! * [`operators`] — built-in operators: structural (`Const`, `Id`, `Filter`,
 //!   `Where`, `Select`, `Concat`, `Stack`, `Cast`), series (`Record`, `Last`,
-//!   `Lag`), element-wise numeric ([`operators::num`]), and rolling-window
-//!   ([`operators::rolling`]).
+//!   `Lag`), element-wise numeric ([`operators::num`]), rolling-window
+//!   ([`operators::rolling`]), and stock-specific ([`operators::stocks`]).
 //! * [`sources`] — built-in data sources: `ArraySource`, `CsvSource`,
 //!   `IterSource`, and clock sources (`clock`, `daily_clock`,
 //!   `monthly_clock`).
@@ -58,7 +61,7 @@ pub mod types;
 pub mod utils;
 
 pub use array::Array;
-pub use operator::{ErasedOperator, Operator};
+pub use operator::{ErasedOperator, Notify, Operator};
 pub use scenario::Scenario;
 pub use series::Series;
 pub use source::{ErasedSource, Source};

@@ -1,5 +1,6 @@
 //! Concat operator — concatenates N arrays along an existing axis.
 
+use crate::operator::Notify;
 use crate::{Array, Operator, Scalar};
 
 /// Concatenate N homogeneous arrays along an existing axis.
@@ -46,6 +47,7 @@ impl<T: Scalar> Operator for Concat<T> {
         inputs: Box<[&Array<T>]>,
         output: &mut Array<T>,
         _timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         interleaved_copy(output, &inputs, state.outer_count, state.chunk_size);
         true
@@ -100,7 +102,7 @@ mod tests {
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
         let (mut s, mut o) = Concat::<f64>::new(0).init(inputs.clone(), i64::MIN);
-        Concat::compute(&mut s, inputs, &mut o, 1);
+        Concat::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.shape(), &[4, 3, 2]);
         let expected: Vec<f64> = (1..=24).map(|x| x as f64).collect();
         assert_eq!(o.as_slice(), &expected[..]);
@@ -113,7 +115,7 @@ mod tests {
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
         let (mut s, mut o) = Concat::<f64>::new(1).init(inputs.clone(), i64::MIN);
-        Concat::compute(&mut s, inputs, &mut o, 1);
+        Concat::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.shape(), &[2, 6, 2]);
         // outer=0: a[0]=[1..6], b[0]=[13..18] → [1,2,3,4,5,6,13,14,15,16,17,18]
         // outer=1: a[1]=[7..12], b[1]=[19..24] → [7,8,9,10,11,12,19,20,21,22,23,24]
@@ -133,7 +135,7 @@ mod tests {
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
         let (mut s, mut o) = Concat::<f64>::new(2).init(inputs.clone(), i64::MIN);
-        Concat::compute(&mut s, inputs, &mut o, 1);
+        Concat::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.shape(), &[2, 3, 4]);
         // Each pair of 2-element chunks from a and b interleaved:
         // a[0][0]=[1,2], b[0][0]=[13,14] → [1,2,13,14]

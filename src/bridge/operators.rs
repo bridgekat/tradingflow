@@ -26,7 +26,7 @@ fn add_operator_from_indices(
 
 /// Dispatch macro for zero-parameter operators.
 ///
-/// Usage: `dispatch_op!(dtype, operators::Add, subset, sc, inputs, trigger)`
+/// Usage: `dispatch_op!(dtype, num::Add, subset, sc, inputs, trigger)`
 /// Expands to `dispatch_dtype!` + `Operator::<$T>::new()` + registration.
 macro_rules! dispatch_op {
     ($dtype:expr, $Op:ident, $subset:ident, $sc:expr, $inputs:expr, $trigger:expr) => {{
@@ -37,11 +37,11 @@ macro_rules! dispatch_op {
         }
         dispatch_dtype!($dtype, go, $subset)
     }};
-    // Two-level path: operators::rolling::Xxx
-    ($dtype:expr, rolling :: $Op:ident, $subset:ident, $sc:expr, $inputs:expr, $trigger:expr) => {{
+    // Two-level path: operators::sub::Xxx
+    ($dtype:expr, $sub:ident :: $Op:ident, $subset:ident, $sc:expr, $inputs:expr, $trigger:expr) => {{
         macro_rules! go {
             ($T:ty) => {
-                add_operator_from_indices($sc, operators::rolling::$Op::<$T>::new(), $inputs, $trigger)
+                add_operator_from_indices($sc, operators::$sub::$Op::<$T>::new(), $inputs, $trigger)
             };
         }
         dispatch_dtype!($dtype, go, $subset)
@@ -65,39 +65,39 @@ pub fn dispatch_native_operator(
 
     match kind {
         // -- Binary arithmetic -----------------------------------------------
-        "add" => Ok((dispatch_op!(dtype, Add, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
-        "subtract" => Ok((dispatch_op!(dtype, Subtract, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
-        "multiply" => Ok((dispatch_op!(dtype, Multiply, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
-        "divide" => Ok((dispatch_op!(dtype, Divide, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
+        "add" => Ok((dispatch_op!(dtype, num::Add, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
+        "subtract" => Ok((dispatch_op!(dtype, num::Subtract, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
+        "multiply" => Ok((dispatch_op!(dtype, num::Multiply, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
+        "divide" => Ok((dispatch_op!(dtype, num::Divide, numeric, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Unary arithmetic ------------------------------------------------
-        "negate" => Ok((dispatch_op!(dtype, Negate, signed, sc, input_indices, trigger_index), ViewKind::Array)),
+        "negate" => Ok((dispatch_op!(dtype, num::Negate, signed, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Float unary math ------------------------------------------------
-        "log" => Ok((dispatch_op!(dtype, Log, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "log2" => Ok((dispatch_op!(dtype, Log2, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "log10" => Ok((dispatch_op!(dtype, Log10, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "exp" => Ok((dispatch_op!(dtype, Exp, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "exp2" => Ok((dispatch_op!(dtype, Exp2, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "sqrt" => Ok((dispatch_op!(dtype, Sqrt, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "ceil" => Ok((dispatch_op!(dtype, Ceil, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "floor" => Ok((dispatch_op!(dtype, Floor, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "round" => Ok((dispatch_op!(dtype, Round, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "recip" => Ok((dispatch_op!(dtype, Recip, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "log" => Ok((dispatch_op!(dtype, num::Log, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "log2" => Ok((dispatch_op!(dtype, num::Log2, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "log10" => Ok((dispatch_op!(dtype, num::Log10, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "exp" => Ok((dispatch_op!(dtype, num::Exp, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "exp2" => Ok((dispatch_op!(dtype, num::Exp2, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "sqrt" => Ok((dispatch_op!(dtype, num::Sqrt, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "ceil" => Ok((dispatch_op!(dtype, num::Ceil, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "floor" => Ok((dispatch_op!(dtype, num::Floor, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "round" => Ok((dispatch_op!(dtype, num::Round, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "recip" => Ok((dispatch_op!(dtype, num::Recip, float, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Signed unary math -----------------------------------------------
-        "abs" => Ok((dispatch_op!(dtype, Abs, signed, sc, input_indices, trigger_index), ViewKind::Array)),
-        "sign" => Ok((dispatch_op!(dtype, Sign, signed, sc, input_indices, trigger_index), ViewKind::Array)),
+        "abs" => Ok((dispatch_op!(dtype, num::Abs, signed, sc, input_indices, trigger_index), ViewKind::Array)),
+        "sign" => Ok((dispatch_op!(dtype, num::Sign, signed, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Float binary math -----------------------------------------------
-        "min" => Ok((dispatch_op!(dtype, Min, float, sc, input_indices, trigger_index), ViewKind::Array)),
-        "max" => Ok((dispatch_op!(dtype, Max, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "min" => Ok((dispatch_op!(dtype, num::Min, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "max" => Ok((dispatch_op!(dtype, num::Max, float, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Record (Array → Series) -----------------------------------------
         "record" => Ok((dispatch_op!(dtype, Record, numeric, sc, input_indices, trigger_index), ViewKind::Series)),
 
-        // -- Forward-fill (Series → Series, float only) ----------------------
-        "forward_fill" => Ok((dispatch_op!(dtype, rolling::ForwardFill, float, sc, input_indices, trigger_index), ViewKind::Series)),
+        // -- Forward-fill (Series → Array, float only) ------------------------
+        "forward_fill" => Ok((dispatch_op!(dtype, rolling::ForwardFill, float, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Identity (Array → Array) ----------------------------------------
         "id" => {
@@ -122,7 +122,7 @@ pub fn dispatch_native_operator(
                         .get_item("n")?
                         .ok_or_else(|| PyTypeError::new_err("pow requires 'n' param"))?
                         .extract()?;
-                    add_operator_from_indices(sc, operators::Pow::<$T>::new(n), input_indices, trigger_index)
+                    add_operator_from_indices(sc, operators::num::Pow::<$T>::new(n), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
@@ -136,7 +136,7 @@ pub fn dispatch_native_operator(
                         .get_item("c")?
                         .ok_or_else(|| PyTypeError::new_err("scale requires 'c' param"))?
                         .extract()?;
-                    add_operator_from_indices(sc, operators::Scale::<$T>::new(c), input_indices, trigger_index)
+                    add_operator_from_indices(sc, operators::num::Scale::<$T>::new(c), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, numeric), ViewKind::Array))
@@ -150,7 +150,7 @@ pub fn dispatch_native_operator(
                         .get_item("c")?
                         .ok_or_else(|| PyTypeError::new_err("shift requires 'c' param"))?
                         .extract()?;
-                    add_operator_from_indices(sc, operators::Shift::<$T>::new(c), input_indices, trigger_index)
+                    add_operator_from_indices(sc, operators::num::Shift::<$T>::new(c), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, numeric), ViewKind::Array))
@@ -168,7 +168,7 @@ pub fn dispatch_native_operator(
                         .get_item("hi")?
                         .ok_or_else(|| PyTypeError::new_err("clamp requires 'hi' param"))?
                         .extract()?;
-                    add_operator_from_indices(sc, operators::Clamp::<$T>::new(lo, hi), input_indices, trigger_index)
+                    add_operator_from_indices(sc, operators::num::Clamp::<$T>::new(lo, hi), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
@@ -182,7 +182,7 @@ pub fn dispatch_native_operator(
                         .get_item("val")?
                         .ok_or_else(|| PyTypeError::new_err("nan_to_num requires 'val' param"))?
                         .extract()?;
-                    add_operator_from_indices(sc, operators::Fillna::<$T>::new(val), input_indices, trigger_index)
+                    add_operator_from_indices(sc, operators::num::Fillna::<$T>::new(val), input_indices, trigger_index)
                 }};
             }
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
@@ -262,7 +262,7 @@ pub fn dispatch_native_operator(
             Ok((dispatch_dtype!(dtype, go), ViewKind::Series))
         }
 
-        // -- Rolling operators (Series → Series, float only) -----------------
+        // -- Rolling operators (Series → Array, float only) ------------------
         "rolling_sum" | "rolling_mean" | "rolling_variance" | "rolling_covariance" => {
             let window: usize = params
                 .get_item("window")?
@@ -279,7 +279,7 @@ pub fn dispatch_native_operator(
                     }
                 };
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Series))
+            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
         }
         "ema" => {
             let window: usize = params
@@ -302,7 +302,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, op, input_indices, trigger_index)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Series))
+            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
         }
 
         // -- Cast (Array<S> → Array<T>) --------------------------------------
@@ -326,6 +326,17 @@ pub fn dispatch_native_operator(
                 ViewKind::Array,
             ))
         }
+
+        // -- Forward adjust (Array × Array → Array, f64 only) ----------------
+        "forward_adjust" => Ok((
+            add_operator_from_indices(
+                sc,
+                operators::stocks::ForwardAdjust::new(),
+                input_indices,
+                trigger_index,
+            ),
+            ViewKind::Array,
+        )),
 
         // -- Const (0-input → Array) -----------------------------------------
         "const" => {

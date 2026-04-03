@@ -68,7 +68,7 @@ use node::Node;
 ///
 /// ```
 /// use tradingflow::{Scenario, Array};
-/// use tradingflow::operators::Add;
+/// use tradingflow::operators::num::Add;
 ///
 /// let mut sc = Scenario::new();
 ///
@@ -185,7 +185,8 @@ impl Scenario {
             .iter()
             .map(|&idx| self.graph.nodes[idx].type_id)
             .collect();
-        let node = Node::from_erased_operator(erased, input_ptrs, &input_type_ids, i64::MIN);
+        let input_node_indices: Box<[usize]> = input_indices.into();
+        let node = Node::from_erased_operator(erased, input_ptrs, input_node_indices, &input_type_ids, i64::MIN);
         let output_idx = self.graph.add_node(node);
         match trigger_index {
             None => {
@@ -220,7 +221,8 @@ impl Default for Scenario {
 mod tests {
     use super::*;
     use crate::array::Array;
-    use crate::operators::{Add, Filter, Record};
+    use crate::operators::num::Add;
+    use crate::operators::{Filter, Record};
     use crate::series::Series;
     use crate::sources::ArraySource;
 
@@ -271,7 +273,7 @@ mod tests {
         let hb = sc.add_const(Array::scalar(3.0_f64));
         let hab = sc.add_operator(Add::new(), (ha, hb), None);
 
-        use crate::operators::Multiply;
+        use crate::operators::num::Multiply;
         let hout = sc.add_operator(Multiply::new(), (hab, ha), None);
 
         sc.flush(1, &[ha.index(), hb.index()]);
@@ -378,7 +380,7 @@ mod tests {
         ));
         let hab = sc.add_operator(Add::new(), (ha, hb), None);
 
-        use crate::operators::Multiply;
+        use crate::operators::num::Multiply;
         let hout = sc.add_operator(Multiply::new(), (hab, ha), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (hout,), None);
 

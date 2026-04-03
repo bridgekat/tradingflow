@@ -7,19 +7,8 @@ import pytest
 
 from tradingflow import Scenario
 from tradingflow.sources import ArraySource, IterSource
-from tradingflow.operators import (
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Negate,
-    Scale,
-    Record,
-    Filter,
-    Where,
-    Select,
-    Concat,
-)
+from tradingflow.operators import Record, Filter, Where, Select, Concat
+from tradingflow.operators.num import Add, Subtract, Multiply, Divide, Negate, Scale
 
 
 def ts(i: int) -> np.datetime64:

@@ -1,13 +1,11 @@
-"""Element-wise numeric operators."""
+"""Arithmetic and math operators."""
 
 from __future__ import annotations
 
-from ..operator import NativeOperator
-from ..types import Handle
+from ...operator import NativeOperator
+from ...types import Handle
 
-# =============================================================================
-# Arithmetic
-# =============================================================================
+# -- Binary arithmetic -------------------------------------------------------
 
 
 class Add(NativeOperator):
@@ -38,6 +36,9 @@ class Divide(NativeOperator):
         super().__init__(kind="divide", inputs=(a, b), shape=a.shape, dtype=a.dtype)
 
 
+# -- Unary arithmetic --------------------------------------------------------
+
+
 class Negate(NativeOperator):
     """Element-wise negation: `-a`."""
 
@@ -45,9 +46,7 @@ class Negate(NativeOperator):
         super().__init__(kind="negate", inputs=(a,), shape=a.shape, dtype=a.dtype)
 
 
-# =============================================================================
-# Float unary math
-# =============================================================================
+# -- Float unary math --------------------------------------------------------
 
 
 class Log(NativeOperator):
@@ -120,9 +119,7 @@ class Recip(NativeOperator):
         super().__init__(kind="recip", inputs=(a,), shape=a.shape, dtype=a.dtype)
 
 
-# =============================================================================
-# Signed unary math
-# =============================================================================
+# -- Signed unary math -------------------------------------------------------
 
 
 class Abs(NativeOperator):
@@ -139,49 +136,7 @@ class Sign(NativeOperator):
         super().__init__(kind="sign", inputs=(a,), shape=a.shape, dtype=a.dtype)
 
 
-# =============================================================================
-# Parameterized unary
-# =============================================================================
-
-
-class Pow(NativeOperator):
-    """Element-wise power: `a ** n`."""
-
-    def __init__(self, a: Handle, n: float) -> None:
-        super().__init__(kind="pow", inputs=(a,), shape=a.shape, dtype=a.dtype, params={"n": n})
-
-
-class Scale(NativeOperator):
-    """Element-wise scale: `a * c`."""
-
-    def __init__(self, a: Handle, c: float) -> None:
-        super().__init__(kind="scale", inputs=(a,), shape=a.shape, dtype=a.dtype, params={"c": c})
-
-
-class Shift(NativeOperator):
-    """Element-wise shift: `a + c`."""
-
-    def __init__(self, a: Handle, c: float) -> None:
-        super().__init__(kind="shift", inputs=(a,), shape=a.shape, dtype=a.dtype, params={"c": c})
-
-
-class Clamp(NativeOperator):
-    """Element-wise clamp to `[lo, hi]`."""
-
-    def __init__(self, a: Handle, lo: float, hi: float) -> None:
-        super().__init__(kind="clamp", inputs=(a,), shape=a.shape, dtype=a.dtype, params={"lo": lo, "hi": hi})
-
-
-class Fillna(NativeOperator):
-    """Replace NaN with `val`."""
-
-    def __init__(self, a: Handle, val: float) -> None:
-        super().__init__(kind="nan_to_num", inputs=(a,), shape=a.shape, dtype=a.dtype, params={"val": val})
-
-
-# =============================================================================
-# Float binary math
-# =============================================================================
+# -- Float binary math -------------------------------------------------------
 
 
 class Min(NativeOperator):

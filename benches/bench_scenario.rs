@@ -8,7 +8,8 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use tradingflow::array::Array;
-use tradingflow::operators::{Add, Multiply, Negate, Record};
+use tradingflow::operators::num::{Add, Multiply, Negate};
+use tradingflow::operators::Record;
 use tradingflow::scenario::Scenario;
 use tradingflow::series::Series;
 use tradingflow::sources::ArraySource;

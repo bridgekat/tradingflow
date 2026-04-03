@@ -4,8 +4,9 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use tradingflow::array::Array;
-use tradingflow::operator::Operator;
-use tradingflow::operators::{Add, Record};
+use tradingflow::operator::{Notify, Operator};
+use tradingflow::operators::num::Add;
+use tradingflow::operators::Record;
 use tradingflow::scenario::Scenario;
 use tradingflow::series::Series;
 use tradingflow::sources::ArraySource;
@@ -79,7 +80,7 @@ fn bench_direct_compute(c: &mut Criterion) {
             for i in 0..N {
                 arr_a[0] = a[i];
                 arr_b[0] = b[i];
-                Add::<f64>::compute(&mut state, (&arr_a, &arr_b), &mut arr_out, i as i64);
+                Add::<f64>::compute(&mut state, (&arr_a, &arr_b), &mut arr_out, i as i64, &Notify::new(&[], &[]));
             }
             black_box(arr_out[0]);
         });
@@ -103,8 +104,8 @@ fn bench_direct_compute_series(c: &mut Criterion) {
             for i in 0..N {
                 arr_a[0] = a[i];
                 arr_b[0] = b[i];
-                Add::<f64>::compute(&mut state, (&arr_a, &arr_b), &mut arr_out, i as i64);
-                Record::<f64>::compute(&mut (), (&arr_out,), &mut series_out, i as i64);
+                Add::<f64>::compute(&mut state, (&arr_a, &arr_b), &mut arr_out, i as i64, &Notify::new(&[], &[]));
+                Record::<f64>::compute(&mut (), (&arr_out,), &mut series_out, i as i64, &Notify::new(&[], &[]));
             }
             black_box(series_out.last().unwrap()[0]);
         });

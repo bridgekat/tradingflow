@@ -2,6 +2,7 @@
 
 use num_traits::Float;
 
+use crate::operator::Notify;
 use crate::{Array, Operator, Scalar};
 
 /// Element-wise NaN replacement: replaces each NaN with `val`.
@@ -31,6 +32,7 @@ impl<T: Scalar + Float> Operator for Fillna<T> {
         inputs: (&Array<T>,),
         output: &mut Array<T>,
         _timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         let val = *state;
         let a = inputs.0.as_slice();
@@ -50,7 +52,7 @@ mod tests {
     fn test_fillna() {
         let a = Array::from_vec(&[3], vec![1.0_f64, f64::NAN, 3.0]);
         let (mut s, mut o) = Fillna::new(0.0).init((&a,), i64::MIN);
-        Fillna::compute(&mut s, (&a,), &mut o, 1);
+        Fillna::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o[0], 1.0);
         assert_eq!(o[1], 0.0);
         assert_eq!(o[2], 3.0);

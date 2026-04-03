@@ -374,7 +374,7 @@ mod tests {
 
     use crate::Scenario;
     use crate::array::Array;
-    use crate::operator::Operator;
+    use crate::operator::{Notify, Operator};
     use crate::operators::Record;
     use crate::series::Series;
     use crate::source::Source;
@@ -454,6 +454,7 @@ mod tests {
             _inputs: (&Array<f64>,),
             _output: &mut (),
             timestamp: i64,
+            _notify: &Notify<'_>,
         ) -> bool {
             state.1.lock().unwrap().push((timestamp, state.0));
             false

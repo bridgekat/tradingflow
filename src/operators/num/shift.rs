@@ -2,6 +2,7 @@
 
 use std::ops;
 
+use crate::operator::Notify;
 use crate::{Array, Operator, Scalar};
 
 /// Element-wise shift: `x + c`.
@@ -31,6 +32,7 @@ impl<T: Scalar + ops::Add<Output = T>> Operator for Shift<T> {
         inputs: (&Array<T>,),
         output: &mut Array<T>,
         _timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         let c = state.clone();
         let a = inputs.0.as_slice();
@@ -50,7 +52,7 @@ mod tests {
     fn test_shift() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let (mut s, mut o) = Shift::new(10.0).init((&a,), i64::MIN);
-        Shift::compute(&mut s, (&a,), &mut o, 1);
+        Shift::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.as_slice(), &[11.0, 12.0, 13.0]);
     }
 }

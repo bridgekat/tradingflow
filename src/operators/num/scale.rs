@@ -2,6 +2,7 @@
 
 use std::ops;
 
+use crate::operator::Notify;
 use crate::{Array, Operator, Scalar};
 
 /// Element-wise scale: `x * c`.
@@ -31,6 +32,7 @@ impl<T: Scalar + ops::Mul<Output = T>> Operator for Scale<T> {
         inputs: (&Array<T>,),
         output: &mut Array<T>,
         _timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         let c = state.clone();
         let a = inputs.0.as_slice();
@@ -50,7 +52,7 @@ mod tests {
     fn test_scale() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let (mut s, mut o) = Scale::new(3.0).init((&a,), i64::MIN);
-        Scale::compute(&mut s, (&a,), &mut o, 1);
+        Scale::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.as_slice(), &[3.0, 6.0, 9.0]);
     }
 }

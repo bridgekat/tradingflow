@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from ..operator import Operator
+from ..operator import Operator, Notify
 from ..types import Array, Handle
 
 
@@ -64,6 +64,7 @@ class Where[T: np.generic](
         inputs: tuple,
         output: Any,
         state: Any,
+        notify: Notify,
     ) -> tuple[bool, Any]:
         value = inputs[0].value()
         cond_fn = np.vectorize(self._condition)

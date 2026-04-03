@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 from tradingflow import Scenario
-from tradingflow.operators import Add, Record
+from tradingflow.operators import Record
+from tradingflow.operators.num import Add
 from tradingflow.sources import ArraySource, IterSource, Clock
 
 

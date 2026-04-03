@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from .types import Handle, node_type_to_name
+from .views import Notify
 
 
 class Operator[Inputs, Output, State](ABC):
@@ -63,12 +64,33 @@ class Operator[Inputs, Output, State](ABC):
         inputs: Inputs,
         output: Output,
         state: State,
+        notify: Notify,
     ) -> tuple[bool, State]:
         """Compute the next output value.
 
-        Write into *output* via `output.write(value)`. Return
-        `(produced, new_state)` where *produced* is `True` if a value
-        was written and downstream propagation should proceed.
+        Write into *output* via `output.write(value)`.
+
+        Parameters
+        ----------
+        timestamp
+            Current event timestamp (nanoseconds since epoch).
+        inputs
+            Tuple of input views corresponding to the upstream handles.
+        output
+            Output view to write results into.
+        state
+            Mutable state carried from the previous invocation (or from
+            `init_state` on the first call).
+        notify
+            [`Notify`][tradingflow.Notify] context for checking which inputs
+            produced new output in the current flush cycle via
+            [`Notify.input_produced`][tradingflow.Notify.input_produced].
+
+        Returns
+        -------
+        tuple[bool, State]
+            `(produced, new_state)` where *produced* is `True` if a
+            value was written and downstream propagation should proceed.
         """
         ...
 

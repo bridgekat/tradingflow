@@ -2,6 +2,7 @@
 
 use std::marker::PhantomData;
 
+use crate::operator::Notify;
 use crate::{Array, Operator, Scalar};
 
 /// Select elements from an array along an axis.
@@ -61,6 +62,7 @@ impl<T: Scalar> Operator for Select<T> {
         inputs: (&Array<T>,),
         output: &mut Array<T>,
         _timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         let src = inputs.0.as_slice();
         let dst = output.as_mut_slice();
@@ -98,7 +100,7 @@ mod tests {
     fn flat() {
         let a = Array::from_vec(&[5], vec![10.0, 20.0, 30.0, 40.0, 50.0_f64]);
         let (mut s, mut o) = Select::<f64>::flat(vec![1, 3]).init((&a,), i64::MIN);
-        Select::compute(&mut s, (&a,), &mut o, 1);
+        Select::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.shape(), &[2]);
         assert_eq!(o.as_slice(), &[20.0, 40.0]);
     }
@@ -108,7 +110,7 @@ mod tests {
         // 2x3 matrix, select columns 0 and 2
         let a = Array::from_vec(&[2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0_f64]);
         let (mut s, mut o) = Select::<f64>::along_axis(vec![0, 2], 1).init((&a,), i64::MIN);
-        Select::compute(&mut s, (&a,), &mut o, 1);
+        Select::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.shape(), &[2, 2]);
         assert_eq!(o.as_slice(), &[1.0, 3.0, 4.0, 6.0]);
     }
@@ -117,7 +119,7 @@ mod tests {
     fn single_element() {
         let a = Array::from_vec(&[4], vec![10.0, 20.0, 30.0, 40.0_f64]);
         let (mut s, mut o) = Select::<f64>::flat(vec![2]).init((&a,), i64::MIN);
-        Select::compute(&mut s, (&a,), &mut o, 1);
+        Select::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.as_slice(), &[30.0]);
     }
 

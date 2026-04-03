@@ -12,7 +12,7 @@ use std::any::TypeId;
 
 use pyo3::prelude::*;
 
-use crate::operator::ErasedOperator;
+use crate::operator::{ErasedOperator, Notify};
 use crate::{Array, Series};
 
 use super::dispatch::dispatch_dtype;
@@ -28,11 +28,13 @@ type PyObject = Py<PyAny>;
 /// Per-operator state for the non-generic [`py_compute_fn`].
 ///
 /// Holds the Python callback, pre-built input/output views, mutable
-/// Python state, and an error slot shared with the scenario.
+/// Python state, a pre-allocated notify view, and an error slot shared
+/// with the scenario.
 struct PyOperatorState {
     py_operator: PyObject,
     py_inputs: PyObject,
     py_output: PyObject,
+    py_notify: PyObject,
     py_state: PyObject,
     error_slot: ErrorSlot,
 }
@@ -79,10 +81,12 @@ pub fn make_py_operator(
         dispatch_dtype!(out_dtype, alloc_output);
 
     let py_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
+    let py_notify = Py::new(py, super::views::NativeNotify::from_empty())?.into_any();
     let state = Box::new(PyOperatorState {
         py_operator,
         py_inputs,
         py_output,
+        py_notify,
         py_state,
         error_slot,
     });
@@ -108,8 +112,9 @@ pub fn make_py_operator(
 
 /// Compute function for Python operators.
 ///
-/// Calls `operator.compute(timestamp, inputs, output, state)` via GIL.
-/// Not generic — works entirely through Python views in [`PyOperatorState`].
+/// Calls `operator.compute(timestamp, inputs, output, state, notify)` via
+/// GIL.  Not generic — works entirely through Python views in
+/// [`PyOperatorState`].
 ///
 /// # Safety
 ///
@@ -119,6 +124,7 @@ unsafe fn py_compute_fn(
     _input_ptrs: &[*const u8],
     _output_ptr: *mut u8,
     timestamp: i64,
+    notify: &Notify,
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut PyOperatorState) };
 
@@ -127,6 +133,15 @@ unsafe fn py_compute_fn(
     }
 
     let result = Python::attach(|py| -> PyResult<bool> {
+        // Update the pre-allocated NativeNotify with current pointers.
+        {
+            let mut native_notify = state
+                .py_notify
+                .cast_bound::<super::views::NativeNotify>(py)?
+                .borrow_mut();
+            unsafe { native_notify.update_from(notify) };
+        }
+
         let result = state.py_operator.call_method1(
             py,
             "compute",
@@ -135,6 +150,7 @@ unsafe fn py_compute_fn(
                 &state.py_inputs,
                 &state.py_output,
                 &state.py_state,
+                &state.py_notify,
             ),
         )?;
 

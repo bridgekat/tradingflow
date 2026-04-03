@@ -2,7 +2,8 @@
 
 use num_traits::Float;
 
-use crate::{Operator, Scalar, Series};
+use crate::operator::Notify;
+use crate::{Array, Operator, Scalar, Series};
 
 /// Forward-fills NaN values element-wise.
 ///
@@ -30,33 +31,33 @@ impl<T: Scalar + Float> Default for ForwardFill<T> {
 impl<T: Scalar + Float> Operator for ForwardFill<T> {
     type State = Vec<T>;
     type Inputs = (Series<T>,);
-    type Output = Series<T>;
+    type Output = Array<T>;
 
-    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (Vec<T>, Series<T>) {
+    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (Vec<T>, Array<T>) {
         let stride = inputs.0.stride();
         let last_valid = vec![T::nan(); stride];
-        (last_valid, Series::new(inputs.0.shape()))
+        (last_valid, Array::zeros(inputs.0.shape()))
     }
 
     fn compute(
         state: &mut Vec<T>,
         inputs: (&Series<T>,),
-        output: &mut Series<T>,
-        timestamp: i64,
+        output: &mut Array<T>,
+        _timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         let series = inputs.0;
         let row = series.last().unwrap();
         let stride = state.len();
-        let mut buf = vec![T::nan(); stride];
+        let out = output.as_mut_slice();
 
         for i in 0..stride {
             if !row[i].is_nan() {
                 state[i] = row[i];
             }
-            buf[i] = state[i];
+            out[i] = state[i];
         }
 
-        output.push(timestamp, &buf);
         true
     }
 }
@@ -71,16 +72,16 @@ mod tests {
         let (mut state, mut out) = ForwardFill::<f64>::new().init((&s,), i64::MIN);
 
         s.push(1, &[10.0]);
-        ForwardFill::compute(&mut state, (&s,), &mut out, 1);
-        assert_eq!(out.last().unwrap()[0], 10.0);
+        ForwardFill::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert_eq!(out.as_slice()[0], 10.0);
 
         s.push(2, &[f64::NAN]);
-        ForwardFill::compute(&mut state, (&s,), &mut out, 2);
-        assert_eq!(out.last().unwrap()[0], 10.0); // forward-filled
+        ForwardFill::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert_eq!(out.as_slice()[0], 10.0); // forward-filled
 
         s.push(3, &[30.0]);
-        ForwardFill::compute(&mut state, (&s,), &mut out, 3);
-        assert_eq!(out.last().unwrap()[0], 30.0);
+        ForwardFill::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
+        assert_eq!(out.as_slice()[0], 30.0);
     }
 
     #[test]
@@ -89,12 +90,12 @@ mod tests {
         let (mut state, mut out) = ForwardFill::<f64>::new().init((&s,), i64::MIN);
 
         s.push(1, &[f64::NAN]);
-        ForwardFill::compute(&mut state, (&s,), &mut out, 1);
-        assert!(out.last().unwrap()[0].is_nan()); // no valid value yet
+        ForwardFill::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert!(out.as_slice()[0].is_nan()); // no valid value yet
 
         s.push(2, &[5.0]);
-        ForwardFill::compute(&mut state, (&s,), &mut out, 2);
-        assert_eq!(out.last().unwrap()[0], 5.0);
+        ForwardFill::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert_eq!(out.as_slice()[0], 5.0);
     }
 
     #[test]
@@ -103,16 +104,16 @@ mod tests {
         let (mut state, mut out) = ForwardFill::<f64>::new().init((&s,), i64::MIN);
 
         s.push(1, &[1.0, f64::NAN, 3.0]);
-        ForwardFill::compute(&mut state, (&s,), &mut out, 1);
-        assert_eq!(out.last().unwrap()[0], 1.0);
-        assert!(out.last().unwrap()[1].is_nan());
-        assert_eq!(out.last().unwrap()[2], 3.0);
+        ForwardFill::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert_eq!(out.as_slice()[0], 1.0);
+        assert!(out.as_slice()[1].is_nan());
+        assert_eq!(out.as_slice()[2], 3.0);
 
         // Element 1 gets filled from element 1's first valid value
         s.push(2, &[f64::NAN, 20.0, f64::NAN]);
-        ForwardFill::compute(&mut state, (&s,), &mut out, 2);
-        assert_eq!(out.last().unwrap()[0], 1.0); // ffill
-        assert_eq!(out.last().unwrap()[1], 20.0); // new value
-        assert_eq!(out.last().unwrap()[2], 3.0); // ffill
+        ForwardFill::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert_eq!(out.as_slice()[0], 1.0); // ffill
+        assert_eq!(out.as_slice()[1], 20.0); // new value
+        assert_eq!(out.as_slice()[2], 3.0); // ffill
     }
 }

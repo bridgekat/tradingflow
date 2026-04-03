@@ -1,8 +1,13 @@
 //! Type-erased DAG node and its source/operator state.
+//!
+//! Each [`Node`] owns a heap-allocated value and a [`NodeState`] classifying
+//! it as either a source or an operator.  [`OperatorState`] stores
+//! pre-collected input pointers, the monomorphised compute function, and
+//! `input_node_indices` used to construct [`Notify`] contexts during flush.
 
 use std::any::TypeId;
 
-use crate::operator::{ComputeFn, ErasedOperator};
+use crate::operator::{ComputeFn, ErasedOperator, Notify};
 use crate::source::{ErasedSource, PollFn, WriteFn};
 
 // ===========================================================================
@@ -67,6 +72,7 @@ impl Node {
     pub fn from_erased_operator(
         erased: ErasedOperator,
         input_ptrs: Box<[*const u8]>,
+        input_node_indices: Box<[usize]>,
         input_type_ids: &[TypeId],
         timestamp: i64,
     ) -> Self {
@@ -90,7 +96,7 @@ impl Node {
         let state_drop_fn = erased.state_drop_fn();
         let output_drop_fn = erased.output_drop_fn();
         let (state_ptr, output_ptr) = unsafe { erased.init(&input_ptrs, timestamp) };
-        let state = OperatorState::new(compute_fn, input_ptrs, state_ptr, state_drop_fn);
+        let state = OperatorState::new(compute_fn, input_ptrs, input_node_indices, state_ptr, state_drop_fn);
         Self {
             type_id: output_type_id,
             value_ptr: output_ptr,
@@ -209,6 +215,8 @@ pub(super) struct OperatorState {
     compute_fn: ComputeFn,
     /// Pre-collected pointers to input values.
     input_ptrs: Box<[*const u8]>,
+    /// Node indices of the operator's inputs (for [`Notify`]).
+    input_node_indices: Box<[usize]>,
     /// Heap-allocated operator state.
     pub(super) state_ptr: *mut u8,
     /// Drop the state.
@@ -220,15 +228,22 @@ impl OperatorState {
     fn new(
         compute_fn: ComputeFn,
         input_ptrs: Box<[*const u8]>,
+        input_node_indices: Box<[usize]>,
         state_ptr: *mut u8,
         state_drop_fn: unsafe fn(*mut u8),
     ) -> Self {
         Self {
             compute_fn,
             input_ptrs,
+            input_node_indices,
             state_ptr,
             state_drop_fn,
         }
+    }
+
+    /// The node indices of this operator's inputs.
+    pub fn input_node_indices(&self) -> &[usize] {
+        &self.input_node_indices
     }
 
     /// Invoke the compute function.
@@ -238,8 +253,16 @@ impl OperatorState {
     /// * Each `input_ptrs[i]` must point to a valid value of the expected type.
     /// * `output_ptr` must point to a valid output value.
     /// * `output_ptr` must not alias any `input_ptrs[i]`.
-    pub unsafe fn compute(&self, output_ptr: *mut u8, timestamp: i64) -> bool {
-        unsafe { (self.compute_fn)(self.state_ptr, &self.input_ptrs, output_ptr, timestamp) }
+    pub unsafe fn compute(&self, output_ptr: *mut u8, timestamp: i64, notify: &Notify<'_>) -> bool {
+        unsafe {
+            (self.compute_fn)(
+                self.state_ptr,
+                &self.input_ptrs,
+                output_ptr,
+                timestamp,
+                notify,
+            )
+        }
     }
 }
 

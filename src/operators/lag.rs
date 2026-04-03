@@ -1,5 +1,6 @@
 //! Lag operator — outputs the value from N steps ago.
 
+use crate::operator::Notify;
 use crate::{Operator, Scalar, Series};
 
 /// Lag operator: outputs the value from `offset` steps ago.
@@ -41,6 +42,7 @@ impl<T: Scalar> Operator for Lag<T> {
         inputs: (&Series<T>,),
         output: &mut Series<T>,
         timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         let series = inputs.0;
         let len = series.len();
@@ -65,19 +67,19 @@ mod tests {
         let (mut state, mut out) = Lag::new(2, f64::NAN).init((&s,), i64::MIN);
 
         s.push(1, &[10.0]);
-        Lag::compute(&mut state, (&s,), &mut out, 1);
+        Lag::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
         assert!(out.last().unwrap()[0].is_nan());
 
         s.push(2, &[20.0]);
-        Lag::compute(&mut state, (&s,), &mut out, 2);
+        Lag::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
         assert!(out.last().unwrap()[0].is_nan());
 
         s.push(3, &[30.0]);
-        Lag::compute(&mut state, (&s,), &mut out, 3);
+        Lag::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
         assert_eq!(out.last().unwrap()[0], 10.0);
 
         s.push(4, &[40.0]);
-        Lag::compute(&mut state, (&s,), &mut out, 4);
+        Lag::compute(&mut state, (&s,), &mut out, 4, &Notify::new(&[], &[]));
         assert_eq!(out.last().unwrap()[0], 20.0);
     }
 
@@ -87,11 +89,11 @@ mod tests {
         let (mut state, mut out) = Lag::new(1, f64::NAN).init((&s,), i64::MIN);
 
         s.push(1, &[1.0, 2.0]);
-        Lag::compute(&mut state, (&s,), &mut out, 1);
+        Lag::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
         assert!(out.last().unwrap()[0].is_nan());
 
         s.push(2, &[3.0, 4.0]);
-        Lag::compute(&mut state, (&s,), &mut out, 2);
+        Lag::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
         assert_eq!(out.last().unwrap(), &[1.0, 2.0]);
     }
 
@@ -101,11 +103,11 @@ mod tests {
         let (mut state, mut out) = Lag::new(1, -1).init((&s,), i64::MIN);
 
         s.push(1, &[100]);
-        Lag::compute(&mut state, (&s,), &mut out, 1);
+        Lag::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
         assert_eq!(out.last().unwrap()[0], -1);
 
         s.push(2, &[200]);
-        Lag::compute(&mut state, (&s,), &mut out, 2);
+        Lag::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
         assert_eq!(out.last().unwrap()[0], 100);
     }
 
@@ -115,9 +117,9 @@ mod tests {
         let (mut state, mut out) = Lag::new(1, 0.0).init((&s,), i64::MIN);
 
         s.push(100, &[1.0]);
-        Lag::compute(&mut state, (&s,), &mut out, 100);
+        Lag::compute(&mut state, (&s,), &mut out, 100, &Notify::new(&[], &[]));
         s.push(200, &[2.0]);
-        Lag::compute(&mut state, (&s,), &mut out, 200);
+        Lag::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], &[]));
 
         assert_eq!(out.timestamps(), &[100, 200]);
     }

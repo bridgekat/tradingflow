@@ -1,4 +1,14 @@
-//! Python-visible views for Array and Series nodes.
+//! Python-visible views for Array, Series, and Notify.
+//!
+//! - [`NativeArrayView`] — copy-in / copy-out view of a Rust `Array<T>` node.
+//! - [`NativeSeriesView`] — copy-out view (plus `push`) of a Rust `Series<T>`
+//!   node.
+//! - [`NativeNotify`] — thin wrapper exposing the Rust
+//!   [`Notify`](crate::operator::Notify) context to Python operators.
+//!
+//! All views hold raw pointers into graph-owned memory.  Reads copy data out
+//! and writes copy data in, so no reference to graph memory is ever exposed
+//! to Python.
 
 use numpy::ndarray::{Array1, ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn};
@@ -443,4 +453,61 @@ unsafe fn series_push<T: PyScalar>(
     unsafe { src.clone_to_slice(&mut buf) };
     series.push(timestamp, &buf);
     Ok(())
+}
+
+// ===========================================================================
+// NativeNotify
+// ===========================================================================
+
+/// Python-visible wrapper around the Rust [`Notify`](crate::operator::Notify)
+/// context.
+///
+/// Provides [`input_produced`](Self::input_produced) so Python operators can
+/// check which inputs produced new output in the current flush cycle.
+#[pyclass]
+pub struct NativeNotify {
+    produced: *const bool,
+    produced_len: usize,
+    input_node_indices: *const usize,
+    input_node_indices_len: usize,
+}
+
+unsafe impl Send for NativeNotify {}
+unsafe impl Sync for NativeNotify {}
+
+impl NativeNotify {
+    /// Construct an empty notify (no inputs, no produced flags).
+    pub fn from_empty() -> Self {
+        Self {
+            produced: std::ptr::null(),
+            produced_len: 0,
+            input_node_indices: std::ptr::null(),
+            input_node_indices_len: 0,
+        }
+    }
+
+    /// Update pointers from a [`Notify`](crate::operator::Notify) reference.
+    ///
+    /// # Safety
+    ///
+    /// The `NativeNotify` must not be accessed after the `Notify` it borrows
+    /// from is dropped.
+    pub unsafe fn update_from(&mut self, notify: &crate::operator::Notify<'_>) {
+        self.produced = notify.produced_ptr();
+        self.produced_len = notify.produced_len();
+        self.input_node_indices = notify.input_node_indices_ptr();
+        self.input_node_indices_len = notify.input_node_indices_len();
+    }
+}
+
+#[pymethods]
+impl NativeNotify {
+    /// Returns `True` if the input at position *pos* produced new output in
+    /// the current flush cycle.
+    fn input_produced(&self, pos: usize) -> bool {
+        assert!(pos < self.input_node_indices_len);
+        let node_idx = unsafe { *self.input_node_indices.add(pos) };
+        assert!(node_idx < self.produced_len);
+        unsafe { *self.produced.add(node_idx) }
+    }
 }

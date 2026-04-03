@@ -1,5 +1,6 @@
 //! Stack operator — stacks N arrays along a new axis.
 
+use crate::operator::Notify;
 use crate::{Array, Operator, Scalar};
 
 /// Stack N homogeneous arrays along a new axis.
@@ -48,6 +49,7 @@ impl<T: Scalar> Operator for Stack<T> {
         inputs: Box<[&Array<T>]>,
         output: &mut Array<T>,
         _timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         super::concat::interleaved_copy(output, &inputs, state.outer_count, state.chunk_size);
         true
@@ -79,7 +81,7 @@ mod tests {
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
         let (mut s, mut o) = Stack::<f64>::new(0).init(inputs.clone(), i64::MIN);
-        Stack::compute(&mut s, inputs, &mut o, 1);
+        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
             o.as_slice(),
@@ -94,7 +96,7 @@ mod tests {
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
         let (mut s, mut o) = Stack::<f64>::new(1).init(inputs.clone(), i64::MIN);
-        Stack::compute(&mut s, inputs, &mut o, 1);
+        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
             o.as_slice(),
@@ -109,7 +111,7 @@ mod tests {
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
         let (mut s, mut o) = Stack::<f64>::new(2).init(inputs.clone(), i64::MIN);
-        Stack::compute(&mut s, inputs, &mut o, 1);
+        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.shape(), &[2, 3, 2]);
         assert_eq!(
             o.as_slice(),

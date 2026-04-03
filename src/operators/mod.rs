@@ -30,26 +30,11 @@
 //! - [`Lag`] — outputs the value from N steps ago in a `Series<T>`, with a fill
 //!   value for insufficient history.
 //!
-//! # Element-wise numeric operators ([`num`])
+//! # Sub-modules
 //!
-//! Stateless, element-wise arithmetic and math on `Array<T>`:
-//!
-//! - Unary arithmetic: [`Negate`].
-//! - Binary arithmetic: [`Add`], [`Subtract`], [`Multiply`], [`Divide`].
-//! - Unary math (float): [`Log`], [`Log2`], [`Log10`], [`Exp`], [`Exp2`],
-//!   [`Sqrt`], [`Ceil`], [`Floor`], [`Round`], [`Recip`].
-//! - Unary math (signed): [`Abs`], [`Sign`].
-//! - Binary math (float): [`Min`], [`Max`].
-//! - Parameterized unary: [`Pow`], [`Scale`], [`Shift`], [`Clamp`], [`Fillna`].
-//!
-//! # Rolling (windowed) operators ([`rolling`])
-//!
-//! Stateful, incremental operators on `Series<T>` with O(1) per-tick cost:
-//!
-//! - [`rolling::RollingSum`], [`rolling::RollingMean`],
-//!   [`rolling::RollingVariance`], [`rolling::RollingCovariance`].
-//! - [`rolling::Ema`] — exponential moving average.
-//! - [`rolling::ForwardFill`] — replaces NaN with last valid observation.
+//! - [`num`] — element-wise numeric operators.
+//! - [`rolling`] — rolling (windowed) operators.
+//! - [`stocks`] — stock-specific operators.
 
 pub mod cast;
 pub mod concat;
@@ -63,6 +48,7 @@ pub mod record;
 pub mod rolling;
 pub mod select;
 pub mod stack;
+pub mod stocks;
 pub mod r#where;
 
 pub use cast::Cast;
@@ -72,10 +58,6 @@ pub use filter::Filter;
 pub use id::Id;
 pub use lag::Lag;
 pub use last::Last;
-pub use num::{
-    Abs, Add, Ceil, Clamp, Divide, Exp, Exp2, Fillna, Floor, Log, Log2, Log10, Max, Min, Multiply,
-    Negate, Pow, Recip, Round, Scale, Shift, Sign, Sqrt, Subtract,
-};
 pub use record::Record;
 pub use select::Select;
 pub use stack::Stack;

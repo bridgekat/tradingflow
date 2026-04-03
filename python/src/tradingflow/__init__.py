@@ -30,10 +30,13 @@ registration API.
 * [`Array`][tradingflow.Array] — marker for Rust `Array<T>` node value types.
 * [`Series`][tradingflow.Series] — marker for Rust `Series<T>` node value types.
 
-## Views (for reading/writing graph data inside Python operators)
+## Views and notifications (for reading/writing graph data inside Python operators)
 
 * [`ArrayView`][tradingflow.ArrayView] — view of a Rust `Array<T>` node.
 * [`SeriesView`][tradingflow.SeriesView] — view of a Rust `Series<T>` node.
+* [`Notify`][tradingflow.Notify] — notification context passed to
+  [`Operator.compute`][tradingflow.Operator.compute] indicating which inputs
+  produced new output in the current flush cycle.
 
 ## Utilities
 
@@ -41,7 +44,7 @@ registration API.
   labelling array axes.
 """
 
-from .views import ArrayView, SeriesView
+from .views import ArrayView, Notify, SeriesView
 from .source import Source, NativeSource
 from .operator import Operator, NativeOperator
 from .types import Array, Series, Handle
@@ -53,6 +56,7 @@ __all__ = [
     "ArrayView",
     "Handle",
     "NativeOperator",
+    "Notify",
     "NativeSource",
     "Operator",
     "Scenario",

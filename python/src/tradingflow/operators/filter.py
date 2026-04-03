@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from ..operator import Operator
+from ..operator import Operator, Notify
 from ..types import Array, Handle
 
 
@@ -60,6 +60,7 @@ class Filter[T: np.generic](
         inputs: tuple,
         output: Any,
         state: Any,
+        notify: Notify,
     ) -> tuple[bool, Any]:
         value = inputs[0].value()
         if self._predicate(value):

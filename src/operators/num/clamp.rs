@@ -2,6 +2,7 @@
 
 use num_traits::Float;
 
+use crate::operator::Notify;
 use crate::{Array, Operator, Scalar};
 
 /// Element-wise clamp to `[lo, hi]`.
@@ -32,6 +33,7 @@ impl<T: Scalar + Float> Operator for Clamp<T> {
         inputs: (&Array<T>,),
         output: &mut Array<T>,
         _timestamp: i64,
+        _notify: &Notify<'_>,
     ) -> bool {
         let (lo, hi) = *state;
         let a = inputs.0.as_slice();
@@ -51,7 +53,7 @@ mod tests {
     fn test_clamp() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 3.0, 7.0]);
         let (mut s, mut o) = Clamp::new(2.0, 5.0).init((&a,), i64::MIN);
-        Clamp::compute(&mut s, (&a,), &mut o, 1);
+        Clamp::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.as_slice(), &[2.0, 3.0, 5.0]);
     }
 }

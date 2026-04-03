@@ -1,6 +1,77 @@
+//! Operator trait, type-erased operator, and notification context.
+//!
+//! This module defines the [`Operator`] trait for synchronous computation
+//! nodes, the [`Notify`] context that provides zero-cost per-input update
+//! flags during a flush cycle, and the [`ErasedOperator`] wrapper for
+//! type-erased DAG dispatch.
+//!
+//! # Public items
+//!
+//! - [`Notify`] — zero-cost notification context for [`Operator::compute`].
+//! - [`Operator`] — synchronous computation trait with associated state,
+//!   input, and output types.
+//! - [`ErasedOperator`] — type-erased operator combining init/compute/drop
+//!   function pointers and `TypeId`s for runtime type checking.
+//! - [`InitFn`] / [`ComputeFn`] — type aliases for the erased function
+//!   pointer signatures.
+
 use std::any::TypeId;
 
 use super::types::InputTypes;
+
+/// Zero-cost notification context for [`Operator::compute`].
+///
+/// Provides [`input_produced`](Self::input_produced) to check whether a
+/// specific input produced new output in the current flush cycle.  If the
+/// operator ignores the `Notify` argument entirely, there is zero overhead.
+///
+/// Constructed by the graph flush machinery from the graph-wide `produced`
+/// flags and the operator's per-input node indices.
+pub struct Notify<'a> {
+    produced: &'a [bool],
+    input_node_indices: &'a [usize],
+}
+
+impl Notify<'_> {
+    /// Create a new notification context.
+    pub fn new<'a>(produced: &'a [bool], input_node_indices: &'a [usize]) -> Notify<'a> {
+        Notify {
+            produced,
+            input_node_indices,
+        }
+    }
+
+    /// Returns `true` if the input at position `pos` produced new output
+    /// in the current flush cycle.
+    #[inline(always)]
+    pub fn input_produced(&self, pos: usize) -> bool {
+        self.produced[self.input_node_indices[pos]]
+    }
+
+    /// Raw pointer to the `produced` flags slice.
+    #[inline(always)]
+    pub fn produced_ptr(&self) -> *const bool {
+        self.produced.as_ptr()
+    }
+
+    /// Length of the `produced` flags slice.
+    #[inline(always)]
+    pub fn produced_len(&self) -> usize {
+        self.produced.len()
+    }
+
+    /// Raw pointer to the input node indices slice.
+    #[inline(always)]
+    pub fn input_node_indices_ptr(&self) -> *const usize {
+        self.input_node_indices.as_ptr()
+    }
+
+    /// Length of the input node indices slice.
+    #[inline(always)]
+    pub fn input_node_indices_len(&self) -> usize {
+        self.input_node_indices.len()
+    }
+}
 
 /// A synchronous computation node that reads typed inputs and writes a
 /// typed output.
@@ -28,12 +99,16 @@ pub trait Operator: 'static {
 
     /// Update the output from inputs and current state.
     ///
+    /// The [`Notify`] context provides zero-cost access to which inputs
+    /// produced new output in the current flush cycle.
+    ///
     /// Returns `true` if downstream propagation should occur.
     fn compute(
         state: &mut Self::State,
         inputs: <Self::Inputs as InputTypes>::Refs<'_>,
         output: &mut Self::Output,
         timestamp: i64,
+        notify: &Notify<'_>,
     ) -> bool;
 }
 
@@ -58,11 +133,12 @@ pub type InitFn = Box<dyn FnOnce(&[*const u8], i64) -> (*mut u8, *mut u8)>;
 /// * `input_ptrs: &[*const u8]` — pointers to input node values.
 /// * `output_ptr: *mut u8` — points to `O::Output`.
 /// * `timestamp: i64` — current flush timestamp.
+/// * `notify: &Notify` — zero-cost notification context.
 ///
 /// # Returns
 ///
 /// * `true` if downstream propagation should occur.
-pub type ComputeFn = unsafe fn(*mut u8, &[*const u8], *mut u8, i64) -> bool;
+pub type ComputeFn = unsafe fn(*mut u8, &[*const u8], *mut u8, i64, &Notify) -> bool;
 
 /// Type-erased representation of an operator.
 ///
@@ -185,11 +261,12 @@ unsafe fn erased_compute_fn<O: Operator>(
     input_ptrs: &[*const u8],
     output_ptr: *mut u8,
     timestamp: i64,
+    notify: &Notify<'_>,
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut O::State) };
     let inputs = unsafe { <O::Inputs as InputTypes>::from_ptrs(input_ptrs) };
     let output = unsafe { &mut *(output_ptr as *mut O::Output) };
-    O::compute(state, inputs, output, timestamp)
+    O::compute(state, inputs, output, timestamp, notify)
 }
 
 /// Type-erased box drop function, monomorphised per value type.
