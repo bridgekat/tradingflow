@@ -2,8 +2,7 @@
 
 use num_traits::Float;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 /// Element-wise NaN replacement: replaces each NaN with `val`.
 pub struct Fillna<T: Scalar> {

@@ -1,7 +1,6 @@
 //! Stack operator — stacks N arrays along a new axis.
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 /// Stack N homogeneous arrays along a new axis.
 pub struct Stack<T: Scalar> {

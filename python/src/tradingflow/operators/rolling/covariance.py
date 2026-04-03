@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...operator import NativeOperator
-from ...types import Handle
+from ...types import Handle, NodeKind
 
 
 class RollingCovariance(NativeOperator):
@@ -19,9 +19,10 @@ class RollingCovariance(NativeOperator):
             raise ValueError("RollingCovariance requires 1-D input")
         k = a.shape[0]
         super().__init__(
-            kind="rolling_covariance",
+            native_id="rolling_covariance",
             inputs=(a,),
-            shape=(k, k),
+            kind=NodeKind.ARRAY,
             dtype=a.dtype,
+            shape=(k, k),
             params={"window": window},
         )

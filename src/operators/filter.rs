@@ -2,8 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 /// Filter operator: passes or drops the entire input array based on a predicate.
 ///
@@ -59,7 +58,13 @@ mod tests {
     fn passes() {
         let a = Array::scalar(5.0_f64);
         let (mut s, mut o) = Filter::new(|v: &Array<f64>| v[0] > 3.0).init((&a,), i64::MIN);
-        assert!(Filter::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[])));
+        assert!(Filter::compute(
+            &mut s,
+            (&a,),
+            &mut o,
+            1,
+            &Notify::new(&[], &[])
+        ));
         assert_eq!(o.as_slice(), &[5.0]);
     }
 
@@ -67,7 +72,13 @@ mod tests {
     fn drops() {
         let a = Array::scalar(1.0_f64);
         let (mut s, mut o) = Filter::new(|v: &Array<f64>| v[0] > 3.0).init((&a,), i64::MIN);
-        assert!(!Filter::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[])));
+        assert!(!Filter::compute(
+            &mut s,
+            (&a,),
+            &mut o,
+            1,
+            &Notify::new(&[], &[])
+        ));
     }
 
     #[test]
@@ -75,17 +86,41 @@ mod tests {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let (mut s, mut o) = Filter::new(|v: &Array<f64>| v.as_slice().iter().sum::<f64>() > 5.0)
             .init((&a,), i64::MIN);
-        assert!(Filter::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[])));
+        assert!(Filter::compute(
+            &mut s,
+            (&a,),
+            &mut o,
+            1,
+            &Notify::new(&[], &[])
+        ));
     }
 
     #[test]
     fn multi_step() {
         let a = Array::scalar(5.0_f64);
         let (mut s, mut o) = Filter::new(|v: &Array<f64>| v[0] > 3.0).init((&a,), i64::MIN);
-        assert!(Filter::compute(&mut s, (&Array::scalar(5.0),), &mut o, 1, &Notify::new(&[], &[])));
-        assert!(!Filter::compute(&mut s, (&Array::scalar(1.0),), &mut o, 2, &Notify::new(&[], &[])));
+        assert!(Filter::compute(
+            &mut s,
+            (&Array::scalar(5.0),),
+            &mut o,
+            1,
+            &Notify::new(&[], &[])
+        ));
+        assert!(!Filter::compute(
+            &mut s,
+            (&Array::scalar(1.0),),
+            &mut o,
+            2,
+            &Notify::new(&[], &[])
+        ));
         assert_eq!(o[0], 5.0);
-        assert!(Filter::compute(&mut s, (&Array::scalar(10.0),), &mut o, 3, &Notify::new(&[], &[])));
+        assert!(Filter::compute(
+            &mut s,
+            (&Array::scalar(10.0),),
+            &mut o,
+            3,
+            &Notify::new(&[], &[])
+        ));
         assert_eq!(o[0], 10.0);
     }
 }

@@ -1,7 +1,6 @@
 //! Lag operator — outputs the value from N steps ago.
 
-use crate::operator::Notify;
-use crate::{Operator, Scalar, Series};
+use crate::{Notify, Operator, Scalar, Series};
 
 /// Lag operator: outputs the value from `offset` steps ago.
 ///

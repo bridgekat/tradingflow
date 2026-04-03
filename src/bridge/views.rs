@@ -492,7 +492,7 @@ impl NativeNotify {
     ///
     /// The `NativeNotify` must not be accessed after the `Notify` it borrows
     /// from is dropped.
-    pub unsafe fn update_from(&mut self, notify: &crate::operator::Notify<'_>) {
+    pub unsafe fn update_from(&mut self, notify: &crate::Notify<'_>) {
         self.produced = notify.produced_ptr();
         self.produced_len = notify.produced_len();
         self.input_node_indices = notify.input_node_indices_ptr();

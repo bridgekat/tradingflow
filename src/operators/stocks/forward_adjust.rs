@@ -5,8 +5,7 @@
 //! forward-adjusted close price on every tick.  Uses [`Notify`] to detect
 //! when dividend data arrives.
 
-use crate::operator::Notify;
-use crate::{Array, Operator};
+use crate::{Array, Notify, Operator};
 
 /// Compute the forward-adjusted close price from a raw close price and
 /// dividend data for a single stock.

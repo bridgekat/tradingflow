@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from ...operator import NativeOperator
-from ...types import Handle
+from ...types import Handle, NodeKind
 
 
 class ForwardAdjust(NativeOperator):
@@ -27,8 +27,9 @@ class ForwardAdjust(NativeOperator):
 
     def __init__(self, close: Handle, dividends: Handle) -> None:
         super().__init__(
-            kind="forward_adjust",
+            native_id="forward_adjust",
             inputs=(close, dividends),
-            shape=(),
+            kind=NodeKind.ARRAY,
             dtype=np.float64,
+            shape=(),
         )

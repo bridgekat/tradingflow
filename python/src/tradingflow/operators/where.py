@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 from ..operator import Operator, Notify
-from ..types import Array, Handle
+from ..types import Array, Handle, NodeKind
+
+
+@dataclass
+class WhereState[T: np.generic]:
+    """State for [`Where`]."""
+
+    condition: Callable[[Any], bool]
+    fill: float | int
 
 
 class Where[T: np.generic](
     Operator[
         tuple[Handle[Array[T]]],
         Handle[Array[T]],
-        None,
+        WhereState[T],
     ]
 ):
     """Element-wise conditional: keeps values where `condition` is `True`,
@@ -50,25 +59,26 @@ class Where[T: np.generic](
         self._fill = fill
         super().__init__(
             inputs=(input,),
-            shape=input.shape,
+            kind=NodeKind.ARRAY,
             dtype=input.dtype,
+            shape=input.shape,
             name=name,
         )
 
-    def init_state(self) -> None:
-        return None
+    def init(self, inputs: tuple, timestamp: int) -> WhereState[T]:
+        return WhereState(condition=self._condition, fill=self._fill)
 
+    @staticmethod
     def compute(
-        self,
-        timestamp: int,
+        state: WhereState,
         inputs: tuple,
         output: Any,
-        state: Any,
+        timestamp: int,
         notify: Notify,
-    ) -> tuple[bool, Any]:
+    ) -> bool:
         value = inputs[0].value()
-        cond_fn = np.vectorize(self._condition)
+        cond_fn = np.vectorize(state.condition)
         mask = cond_fn(value)
-        result = np.where(mask, value, self._fill)
+        result = np.where(mask, value, state.fill)
         output.write(result)
-        return True, state
+        return True

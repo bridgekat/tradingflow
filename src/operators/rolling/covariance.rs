@@ -4,8 +4,7 @@
 
 use num_traits::Float;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar, Series};
+use crate::{Array, Notify, Operator, Scalar, Series};
 
 /// Pairwise rolling covariance matrix of last `window` values.
 ///
@@ -271,7 +270,10 @@ mod tests {
         RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
         // Window [[2,4],[4,8]] → NaN evicted
         let cov = out.as_slice();
-        assert!(!cov[0].is_nan(), "Var(x) should be valid after NaN eviction");
+        assert!(
+            !cov[0].is_nan(),
+            "Var(x) should be valid after NaN eviction"
+        );
         // Var([2,4]) = (4+16)/2 - (6/2)² = 10 - 9 = 1
         assert!((cov[0] - 1.0).abs() < 1e-10, "Var(x) = {}", cov[0]);
         // Cov([2,4],[4,8]) = E[xy]-E[x]E[y] = (8+32)/2 - 3*6 = 20 - 18 = 2
@@ -322,7 +324,10 @@ mod tests {
         // Window [[3,3],[5,5]] — all clean
         let cov = out.as_slice();
         for v in cov {
-            assert!(!v.is_nan(), "all entries should be valid after NaN eviction");
+            assert!(
+                !v.is_nan(),
+                "all entries should be valid after NaN eviction"
+            );
         }
         // Var([3,5]) = (9+25)/2 - (8/2)² = 17-16 = 1
         assert!((cov[0] - 1.0).abs() < 1e-10);

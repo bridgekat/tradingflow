@@ -35,7 +35,7 @@ from tradingflow.operators.rolling import (
     EMA,
     ForwardFill,
 )
-from tradingflow.types import Handle
+from tradingflow.types import Handle, NodeKind
 
 
 def ts(i: int) -> np.datetime64:
@@ -252,7 +252,7 @@ class TestRollingCovariance:
 
     def test_rolling_covariance_rejects_non_1d(self) -> None:
         """RollingCovariance raises for non-1D input."""
-        h = Handle(0, (2, 3), np.dtype("float64"))
+        h = Handle(0, NodeKind.ARRAY, np.dtype("float64"), (2, 3))
         with pytest.raises(ValueError, match="1-D"):
             RollingCovariance(h, window=3)
 
@@ -322,7 +322,7 @@ class TestEma:
 
     def test_ema_requires_exactly_one_param(self) -> None:
         """Providing zero or multiple smoothing params raises."""
-        h = Handle(0, (), np.dtype("float64"))
+        h = Handle(0, NodeKind.ARRAY, np.dtype("float64"), ())
         with pytest.raises(ValueError, match="exactly one"):
             EMA(h, window=10)
         with pytest.raises(ValueError, match="exactly one"):

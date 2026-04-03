@@ -12,8 +12,8 @@ use std::any::TypeId;
 
 use pyo3::prelude::*;
 
-use crate::operator::{ErasedOperator, Notify};
 use crate::{Array, Series};
+use crate::{ErasedOperator, Notify};
 
 use super::dispatch::dispatch_dtype;
 use super::views::{ViewKind, create_view};
@@ -59,7 +59,7 @@ pub fn make_py_operator(
     output_shape: &[usize],
     py_inputs: PyObject,
     py_operator: PyObject,
-    py_state: PyObject,
+    timestamp: i64,
     error_slot: ErrorSlot,
 ) -> PyResult<ErasedOperator> {
     // Allocate output (generic on T) and create its Python view.
@@ -82,6 +82,11 @@ pub fn make_py_operator(
 
     let py_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
     let py_notify = Py::new(py, super::views::NativeNotify::from_empty())?.into_any();
+
+    // Call operator.init(inputs, timestamp) to get initial state.
+    let py_state = py_operator
+        .call_method1(py, "init", (&py_inputs, timestamp))?;
+
     let state = Box::new(PyOperatorState {
         py_operator,
         py_inputs,
@@ -112,9 +117,9 @@ pub fn make_py_operator(
 
 /// Compute function for Python operators.
 ///
-/// Calls `operator.compute(timestamp, inputs, output, state, notify)` via
-/// GIL.  Not generic — works entirely through Python views in
-/// [`PyOperatorState`].
+/// Calls `operator.compute(state, inputs, output, timestamp, notify)` via
+/// GIL.  State is modified in-place by Python.  Not generic — works
+/// entirely through Python views in [`PyOperatorState`].
 ///
 /// # Safety
 ///
@@ -142,22 +147,20 @@ unsafe fn py_compute_fn(
             unsafe { native_notify.update_from(notify) };
         }
 
-        let result = state.py_operator.call_method1(
-            py,
-            "compute",
-            (
-                timestamp,
-                &state.py_inputs,
-                &state.py_output,
-                &state.py_state,
-                &state.py_notify,
-            ),
-        )?;
-
-        let tuple = result.bind(py);
-        let produced: bool = tuple.get_item(0)?.extract()?;
-        let new_state = tuple.get_item(1)?;
-        state.py_state = new_state.unbind();
+        let produced: bool = state
+            .py_operator
+            .call_method1(
+                py,
+                "compute",
+                (
+                    &state.py_state,
+                    &state.py_inputs,
+                    &state.py_output,
+                    timestamp,
+                    &state.py_notify,
+                ),
+            )?
+            .extract(py)?;
 
         Ok(produced)
     });

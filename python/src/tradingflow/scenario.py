@@ -10,7 +10,7 @@ from tradingflow._native import NativeArrayView, NativeSeriesView, NativeScenari
 from . import Array, Series, operators
 from .operator import Operator, NativeOperator
 from .source import Source, NativeSource
-from .types import Handle
+from .types import Handle, NodeKind
 from .views import ArrayView, SeriesView
 
 
@@ -56,19 +56,19 @@ class Scenario:
         """Register a source and return a handle to its output node."""
         if isinstance(source, NativeSource):
             idx = self._native.add_native_source(
-                source.kind,
+                source.native_id,
                 source.dtype,
                 list(source.shape),
                 source.params,
             )
-            return Handle(idx, source.shape, np.dtype(source.dtype))
+            return Handle(idx, NodeKind.ARRAY, np.dtype(source.dtype), source.shape)
         else:
             idx = self._native.add_py_source(
                 source,
                 ("array", str(source.dtype)),
                 list(source.shape),
             )
-            return Handle(idx, source.shape, source.dtype)
+            return Handle(idx, NodeKind.ARRAY, source.dtype, source.shape)
 
     def add_operator(
         self,
@@ -90,25 +90,26 @@ class Scenario:
         input_indices = [inp.index for inp in operator.inputs]
         if isinstance(operator, NativeOperator):
             idx = self._native.add_native_operator(
-                operator.kind,
+                operator.native_id,
                 str(operator.dtype),
                 input_indices,
                 list(operator.shape),
                 operator.params,
                 clock_index=clock.index if clock else None,
             )
+            kind = operator.kind
         else:
-            input_names, output_name = operator.get_io_types()
+            input_types, output_type = operator.get_io_types()
             idx = self._native.add_py_operator(
                 input_indices,
-                input_names,
-                output_name,
+                [(k.value, d) for k, d in input_types],
+                (output_type[0].value, output_type[1]),
                 list(operator.shape),
                 operator,
-                operator.init_state(),
                 clock_index=clock.index if clock else None,
             )
-        return Handle(idx, operator.shape, operator.dtype)
+            kind = output_type[0]
+        return Handle(idx, kind, operator.dtype, operator.shape)
 
     def run(self) -> None:
         """Execute the POCQ event loop.

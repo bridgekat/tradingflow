@@ -1,7 +1,6 @@
 //! Constant operator — a 0-input node holding a fixed initial value.
 
-use crate::operator::Notify;
-use crate::Operator;
+use crate::{Notify, Operator};
 
 /// A 0-input operator that holds a constant value.
 ///
@@ -29,7 +28,13 @@ impl<T: Send + 'static> Operator for Const<T> {
     }
 
     #[inline(always)]
-    fn compute(_state: &mut (), _inputs: (), _output: &mut T, _timestamp: i64, _notify: &Notify<'_>) -> bool {
+    fn compute(
+        _state: &mut (),
+        _inputs: (),
+        _output: &mut T,
+        _timestamp: i64,
+        _notify: &Notify<'_>,
+    ) -> bool {
         false
     }
 }
@@ -45,7 +50,13 @@ mod tests {
         let (mut s, o) = Const::new(Array::scalar(42.0_f64)).init((), i64::MIN);
         assert_eq!(o.as_slice(), &[42.0]);
         let mut o = o;
-        assert!(!Const::<Array<f64>>::compute(&mut s, (), &mut o, 1, &Notify::new(&[], &[])));
+        assert!(!Const::<Array<f64>>::compute(
+            &mut s,
+            (),
+            &mut o,
+            1,
+            &Notify::new(&[], &[])
+        ));
         assert_eq!(o.as_slice(), &[42.0]);
     }
 

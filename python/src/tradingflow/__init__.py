@@ -47,7 +47,7 @@ registration API.
 from .views import ArrayView, Notify, SeriesView
 from .source import Source, NativeSource
 from .operator import Operator, NativeOperator
-from .types import Array, Series, Handle
+from .types import Array, NodeKind, Series, Handle
 from .scenario import Scenario
 from .schema import Schema
 
@@ -56,6 +56,7 @@ __all__ = [
     "ArrayView",
     "Handle",
     "NativeOperator",
+    "NodeKind",
     "Notify",
     "NativeSource",
     "Operator",

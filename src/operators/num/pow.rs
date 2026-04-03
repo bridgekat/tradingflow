@@ -2,8 +2,7 @@
 
 use num_traits::Float;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 /// Element-wise power: `x.powf(n)`.
 pub struct Pow<T: Scalar> {

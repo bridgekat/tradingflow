@@ -4,8 +4,7 @@
 
 use num_traits::Float;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar, Series};
+use crate::{Array, Notify, Operator, Scalar, Series};
 
 /// Element-wise rolling mean of last `window` values.
 ///

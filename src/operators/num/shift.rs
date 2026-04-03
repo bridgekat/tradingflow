@@ -2,8 +2,7 @@
 
 use std::ops;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 /// Element-wise shift: `x + c`.
 pub struct Shift<T: Scalar> {

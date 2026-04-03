@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..operator import NativeOperator
-from ..types import Handle
+from ..types import Handle, NodeKind
 
 
 class Concat(NativeOperator):
@@ -25,9 +25,10 @@ class Concat(NativeOperator):
         out_shape = list(shapes[0])
         out_shape[axis] = sum(sh[axis] for sh in shapes)
         super().__init__(
-            kind="concat",
+            native_id="concat",
             inputs=tuple(inputs),
-            shape=tuple(out_shape),
+            kind=NodeKind.ARRAY,
             dtype=inputs[0].dtype,
+            shape=tuple(out_shape),
             params={"axis": axis},
         )

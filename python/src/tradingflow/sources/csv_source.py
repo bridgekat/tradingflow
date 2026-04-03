@@ -38,7 +38,7 @@ class CSVSource(NativeSource):
         shape = () if stride == 1 else (stride,)
 
         super().__init__(
-            "csv",
+            native_id="csv",
             dtype="float64",
             shape=shape,
             params={

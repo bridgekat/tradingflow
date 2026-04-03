@@ -1,7 +1,6 @@
 //! Concat operator — concatenates N arrays along an existing axis.
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 /// Concatenate N homogeneous arrays along an existing axis.
 pub struct Concat<T: Scalar> {

@@ -2,8 +2,7 @@
 
 use num_traits::Float;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar, Series};
+use crate::{Array, Notify, Operator, Scalar, Series};
 
 /// Forward-fills NaN values element-wise.
 ///

@@ -9,6 +9,7 @@
 //! - [`Const`] — 0-input node holding a fixed initial value; output can be
 //!   mutated externally via [`Scenario::value_mut`](crate::Scenario::value_mut).
 //! - [`Id`] — identity passthrough (`T → T`); useful as a trigger-gated node.
+//! - [`Map`] — applies a function `S → T` to transform input into output.
 //! - [`Filter`] — passes or drops the entire input `Array<T>` based on a
 //!   predicate closure.
 //! - [`Where`] — element-wise conditional replacement: keeps values where the
@@ -42,6 +43,7 @@ pub mod r#const;
 pub mod filter;
 pub mod id;
 pub mod lag;
+pub mod map;
 pub mod last;
 pub mod num;
 pub mod record;
@@ -57,6 +59,7 @@ pub use r#const::Const;
 pub use filter::Filter;
 pub use id::Id;
 pub use lag::Lag;
+pub use map::Map;
 pub use last::Last;
 pub use record::Record;
 pub use select::Select;

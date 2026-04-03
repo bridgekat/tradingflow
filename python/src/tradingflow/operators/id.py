@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..operator import NativeOperator
-from ..types import Handle
+from ..types import Handle, NodeKind
 
 
 class Id(NativeOperator):
@@ -18,4 +18,4 @@ class Id(NativeOperator):
     """
 
     def __init__(self, a: Handle) -> None:
-        super().__init__(kind="id", inputs=(a,), shape=a.shape, dtype=a.dtype)
+        super().__init__(native_id="id", inputs=(a,), kind=NodeKind.ARRAY, dtype=a.dtype, shape=a.shape)

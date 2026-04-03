@@ -4,8 +4,7 @@ use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 /// Element-wise type conversion: `out[i] = input[i] as T`.
 ///
@@ -73,7 +72,13 @@ mod tests {
         assert_eq!(o.as_slice(), &[1.0, 2.0, 3.0]);
 
         let b = Array::from_vec(&[3], vec![10_i32, 20, 30]);
-        assert!(Cast::<i32, f64>::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], &[])));
+        assert!(Cast::<i32, f64>::compute(
+            &mut s,
+            (&b,),
+            &mut o,
+            1,
+            &Notify::new(&[], &[])
+        ));
         assert_eq!(o.as_slice(), &[10.0, 20.0, 30.0]);
     }
 

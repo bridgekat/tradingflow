@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+import enum
 import typing
 
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# Node kind enum
+# ---------------------------------------------------------------------------
+
+
+class NodeKind(enum.Enum):
+    """Kind of a graph node's value."""
+
+    ARRAY = "array"
+    SERIES = "series"
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +62,7 @@ _SCALAR_NAMES: dict[type, str] = {
 }
 
 
-def node_type_to_name(tp: type) -> tuple[str, str]:
+def node_type_to_name(tp: type) -> tuple[NodeKind, str]:
     """Map a node type marker to `(kind, dtype)` for Rust TypeId resolution.
 
     Parameters
@@ -59,8 +72,8 @@ def node_type_to_name(tp: type) -> tuple[str, str]:
 
     Returns
     -------
-    tuple[str, str]
-        `(kind, dtype_str)`, e.g. `("array", "float64")`.
+    tuple[NodeKind, str]
+        `(kind, dtype_str)`, e.g. `(NodeKind.ARRAY, "float64")`.
 
     Raises
     ------
@@ -73,12 +86,12 @@ def node_type_to_name(tp: type) -> tuple[str, str]:
         dtype_str = _SCALAR_NAMES.get(args[0])
         if dtype_str is None:
             raise TypeError(f"Unsupported scalar type for Array: {args[0]}")
-        return ("array", dtype_str)
+        return (NodeKind.ARRAY, dtype_str)
     if origin is Series and args:
         dtype_str = _SCALAR_NAMES.get(args[0])
         if dtype_str is None:
             raise TypeError(f"Unsupported scalar type for Series: {args[0]}")
-        return ("series", dtype_str)
+        return (NodeKind.SERIES, dtype_str)
     raise TypeError(f"Cannot resolve node type: {tp}")
 
 
@@ -99,12 +112,19 @@ class Handle[T]:
     when the operator is registered.
     """
 
-    __slots__ = ("_index", "_shape", "_dtype")
+    __slots__ = ("_index", "_kind", "_dtype", "_shape")
 
-    def __init__(self, index: int, shape: tuple[int, ...], dtype: np.dtype) -> None:
+    def __init__(
+        self,
+        index: int,
+        kind: NodeKind,
+        dtype: np.dtype,
+        shape: tuple[int, ...],
+    ) -> None:
         self._index = index
-        self._shape = shape
+        self._kind = kind
         self._dtype = dtype
+        self._shape = shape
 
     @property
     def index(self) -> int:
@@ -112,11 +132,16 @@ class Handle[T]:
         return self._index
 
     @property
-    def shape(self) -> tuple[int, ...]:
-        """Element shape of the node's value."""
-        return self._shape
+    def kind(self) -> NodeKind:
+        """Node kind."""
+        return self._kind
 
     @property
     def dtype(self) -> np.dtype:
         """NumPy dtype of the node's value."""
         return self._dtype
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Element shape of the node's value."""
+        return self._shape

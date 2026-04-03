@@ -6,6 +6,7 @@ import numpy as np
 
 from ..utils import ensure_contiguous
 from ..operator import NativeOperator
+from ..types import NodeKind
 
 
 class Const(NativeOperator):
@@ -23,9 +24,10 @@ class Const(NativeOperator):
     def __init__(self, value: np.ndarray) -> None:
         arr = ensure_contiguous(np.asarray(value))
         super().__init__(
-            kind="const",
+            native_id="const",
             inputs=(),
-            shape=arr.shape,
+            kind=NodeKind.ARRAY,
             dtype=arr.dtype,
+            shape=arr.shape,
             params={"shape": list(arr.shape), "value": arr},
         )

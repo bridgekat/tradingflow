@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...operator import NativeOperator
-from ...types import Handle
+from ...types import Handle, NodeKind
 
 
 class RollingMean(NativeOperator):
@@ -15,9 +15,10 @@ class RollingMean(NativeOperator):
 
     def __init__(self, a: Handle, window: int) -> None:
         super().__init__(
-            kind="rolling_mean",
+            native_id="rolling_mean",
             inputs=(a,),
-            shape=a.shape,
+            kind=NodeKind.ARRAY,
             dtype=a.dtype,
+            shape=a.shape,
             params={"window": window},
         )

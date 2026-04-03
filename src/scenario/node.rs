@@ -7,8 +7,9 @@
 
 use std::any::TypeId;
 
-use crate::operator::{ComputeFn, ErasedOperator, Notify};
+use crate::operator::{ComputeFn, ErasedOperator};
 use crate::source::{ErasedSource, PollFn, WriteFn};
+use crate::types::Notify;
 
 // ===========================================================================
 // NodeState
@@ -96,7 +97,13 @@ impl Node {
         let state_drop_fn = erased.state_drop_fn();
         let output_drop_fn = erased.output_drop_fn();
         let (state_ptr, output_ptr) = unsafe { erased.init(&input_ptrs, timestamp) };
-        let state = OperatorState::new(compute_fn, input_ptrs, input_node_indices, state_ptr, state_drop_fn);
+        let state = OperatorState::new(
+            compute_fn,
+            input_ptrs,
+            input_node_indices,
+            state_ptr,
+            state_drop_fn,
+        );
         Self {
             type_id: output_type_id,
             value_ptr: output_ptr,

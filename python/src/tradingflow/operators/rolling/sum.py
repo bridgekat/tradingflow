@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...operator import NativeOperator
-from ...types import Handle
+from ...types import Handle, NodeKind
 
 
 class RollingSum(NativeOperator):
@@ -15,9 +15,10 @@ class RollingSum(NativeOperator):
 
     def __init__(self, a: Handle, window: int) -> None:
         super().__init__(
-            kind="rolling_sum",
+            native_id="rolling_sum",
             inputs=(a,),
-            shape=a.shape,
+            kind=NodeKind.ARRAY,
             dtype=a.dtype,
+            shape=a.shape,
             params={"window": window},
         )

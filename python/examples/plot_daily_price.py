@@ -20,7 +20,8 @@ from tradingflow.operators.stocks import ForwardAdjust
 
 PRICE_SCHEMA = Schema(["open", "close", "high", "low", "amount", "volume"])
 DIVIDEND_SCHEMA = Schema(["share_dividends", "cash_dividends"])
-WINDOW = 20
+WINDOW = 252
+MULTIPLE = 2
 
 
 def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
@@ -41,24 +42,24 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     adj_closes = sc.add_operator(ForwardAdjust(closes, dividends))
     adj_closes_series = sc.add_operator(Record(adj_closes))
 
-    # 20-day moving average on adjusted close (Series → Array).
+    # 252-day moving average. Shape: ().
     ma = sc.add_operator(RollingMean(adj_closes_series, window=WINDOW))
     ma_series = sc.add_operator(Record(ma))
 
-    # 20-day rolling std: sqrt(variance) (Series → Array).
+    # 252-day rolling standard deviation. Shape: ().
     var = sc.add_operator(RollingVariance(adj_closes_series, window=WINDOW))
     std = sc.add_operator(Sqrt(var))
 
-    # Bollinger band offset: 2 × std.
-    band = sc.add_operator(Scale(std, 2.0))
+    # Bollinger band offset: MULTIPLE × std. Shape: ().
+    band = sc.add_operator(Scale(std, MULTIPLE))
 
-    # Upper and lower bands: MA ± 2×std.
+    # Upper and lower bands: MA ± MULTIPLE × std. Shape: ().
     upper = sc.add_operator(Add(ma, band))
     lower = sc.add_operator(Subtract(ma, band))
     upper_series = sc.add_operator(Record(upper))
     lower_series = sc.add_operator(Record(lower))
 
-    # Record volume for the volume subplot.
+    # Record volume for the volume subplot. Shape: ().
     volume = sc.add_operator(Select(prices, [PRICE_SCHEMA.index("volume")]))
     volume_series = sc.add_operator(Record(volume))
 
@@ -112,7 +113,7 @@ if __name__ == "__main__":
         lower_df.values.ravel(),
         alpha=0.15,
         color="C1",
-        label=f"Bollinger ({WINDOW}, 2σ)",
+        label=f"Bollinger ({WINDOW}, {MULTIPLE}σ)",
     )
     ax1.set_ylabel("Price (CNY)")
     ax1.set_title(f"{symbol} forward-adjusted close with MA{WINDOW} & Bollinger Bands")

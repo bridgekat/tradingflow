@@ -5,8 +5,7 @@
 
 use num_traits::Float;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar, Series};
+use crate::{Array, Notify, Operator, Scalar, Series};
 
 /// Exponential moving average.
 ///
@@ -109,11 +108,12 @@ impl<T: Scalar + Float> Operator for Ema<T> {
 
         // Compute weight_sum analytically: 1 - (1-α)^min(len, window).
         state.fill_decay = state.fill_decay * one_minus_alpha;
-        let weight_sum = T::one() - if len >= state.window {
-            state.decay_factor
-        } else {
-            state.fill_decay
-        };
+        let weight_sum = T::one()
+            - if len >= state.window {
+                state.decay_factor
+            } else {
+                state.fill_decay
+            };
 
         let out = output.as_mut_slice();
 

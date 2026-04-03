@@ -1,7 +1,6 @@
 //! Last operator — extracts the most recent element from a Series.
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar, Series};
+use crate::{Array, Notify, Operator, Scalar, Series};
 
 /// Extract the most recent element from a `Series<T>` as an `Array<T>`.
 ///

@@ -9,7 +9,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use crate::operator::Notify;
+use crate::types::Notify;
 
 use super::node::Node;
 

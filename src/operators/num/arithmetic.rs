@@ -5,8 +5,7 @@ use std::ops;
 
 use num_traits::{Float, Signed};
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 // ===========================================================================
 // Unary

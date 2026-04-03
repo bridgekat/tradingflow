@@ -15,6 +15,7 @@ This module provides all shipped operators. They fall into two categories:
 - [`Stack`][tradingflow.operators.Stack] -- stack N arrays along a new axis
 - [`Select`][tradingflow.operators.Select] -- select elements by flat indices
 - [`Id`][tradingflow.operators.Id] -- identity passthrough
+- [`Map`][tradingflow.operators.Map] -- applies a function to transform array values
 
 ## Series operators
 
@@ -46,6 +47,7 @@ from .const import Const
 from .filter import Filter
 from .id import Id
 from .lag import Lag
+from .map import Map
 from .last import Last
 from .record import Record
 from .select import Select
@@ -62,6 +64,7 @@ __all__ = [
     "Stack",
     "Select",
     "Id",
+    "Map",
     "Record",
     "Last",
     "Lag",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..operator import NativeOperator
-from ..types import Handle
+from ..types import Handle, NodeKind
 
 
 class Cast(NativeOperator):
@@ -24,9 +24,10 @@ class Cast(NativeOperator):
     def __init__(self, a: Handle, dtype: type | np.dtype) -> None:
         target = np.dtype(dtype)
         super().__init__(
-            kind="cast",
+            native_id="cast",
             inputs=(a,),
-            shape=a.shape,
+            kind=NodeKind.ARRAY,
             dtype=target,
+            shape=a.shape,
             params={"from_dtype": str(a.dtype)},
         )

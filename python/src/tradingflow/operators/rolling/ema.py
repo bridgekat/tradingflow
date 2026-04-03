@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...operator import NativeOperator
-from ...types import Handle
+from ...types import Handle, NodeKind
 
 
 class EMA(NativeOperator):
@@ -47,9 +47,10 @@ class EMA(NativeOperator):
         else:
             params["half_life"] = half_life
         super().__init__(
-            kind="ema",
+            native_id="ema",
             inputs=(a,),
-            shape=a.shape,
+            kind=NodeKind.ARRAY,
             dtype=a.dtype,
+            shape=a.shape,
             params=params,
         )

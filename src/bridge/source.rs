@@ -111,7 +111,7 @@ pub fn make_py_source(
     let error_for_driver = error_slot.clone();
 
     let init_fn: Box<dyn FnOnce(i64) -> (*mut u8, *mut u8, *mut u8)> =
-        Box::new(move |_timestamp: i64| {
+        Box::new(move |timestamp: i64| {
             let (hist_tx, hist_rx) = mpsc::channel(64);
             let (live_tx, live_rx) = mpsc::channel(64);
 
@@ -121,6 +121,7 @@ pub fn make_py_source(
                 hist_tx,
                 live_tx,
                 error_for_driver,
+                timestamp,
             ));
 
             let hist_state = PySourceState {
@@ -236,10 +237,11 @@ async fn drive_source(
     hist_tx: mpsc::Sender<(i64, PyObject)>,
     live_tx: mpsc::Sender<(i64, PyObject)>,
     error_slot: ErrorSlot,
+    timestamp: i64,
 ) {
     let result = async {
         let (hist_iter, live_iter) = Python::attach(|py| -> PyResult<(PyObject, PyObject)> {
-            let result = py_source.call_method0(py, "init")?;
+            let result = py_source.call_method1(py, "init", (timestamp,))?;
             let tuple = result.bind(py);
             Ok((tuple.get_item(0)?.unbind(), tuple.get_item(1)?.unbind()))
         })

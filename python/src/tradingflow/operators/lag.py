@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..operator import NativeOperator
-from ..types import Handle
+from ..types import Handle, NodeKind
 
 
 class Lag(NativeOperator):
@@ -26,4 +26,4 @@ class Lag(NativeOperator):
         params: dict = {"offset": offset}
         if fill != 0:
             params["fill"] = fill
-        super().__init__(kind="lag", inputs=(a,), shape=a.shape, dtype=a.dtype, params=params)
+        super().__init__(native_id="lag", inputs=(a,), kind=NodeKind.SERIES, dtype=a.dtype, shape=a.shape, params=params)

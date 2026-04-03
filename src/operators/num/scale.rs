@@ -2,8 +2,7 @@
 
 use std::ops;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 /// Element-wise scale: `x * c`.
 pub struct Scale<T: Scalar> {

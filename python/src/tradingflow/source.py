@@ -15,28 +15,28 @@ class Source(ABC):
 
     Parameters
     ----------
-    shape
-        Shape of each emitted value element. Use `()` for scalars.
     dtype
         NumPy dtype for emitted values.
+    shape
+        Shape of each emitted value element. Use `()` for scalars.
     initial
         Initial value. Defaults to NaN for floats, zero otherwise.
     name
         Optional human-readable name.
     """
 
-    __slots__ = ("_shape", "_dtype", "_initial", "_name")
+    __slots__ = ("_dtype", "_shape", "_initial", "_name")
 
     def __init__(
         self,
-        shape: tuple[int, ...],
         dtype: type | np.dtype,
+        shape: tuple[int, ...],
         *,
         initial: ArrayLike | None = None,
         name: str | None = None,
     ) -> None:
-        self._shape = shape
         self._dtype = np.dtype(dtype)
+        self._shape = shape
         if initial is not None:
             self._initial = np.asarray(initial, dtype=self._dtype)
         elif np.issubdtype(self._dtype, np.floating):
@@ -46,7 +46,7 @@ class Source(ABC):
         self._name = name or type(self).__name__
 
     @abstractmethod
-    def init(self) -> tuple[
+    def init(self, timestamp: int) -> tuple[
         AsyncIterator[tuple[np.datetime64, ArrayLike]],
         AsyncIterator[tuple[np.datetime64, ArrayLike]],
     ]:
@@ -55,18 +55,23 @@ class Source(ABC):
         Both iterators yield ``(timestamp, value)`` tuples, matching the
         Rust ``Source::init`` which returns two ``Receiver<(i64, Event)>``
         channels.
+
+        Parameters
+        ----------
+        timestamp
+            Initial timestamp (nanoseconds since epoch).
         """
         ...
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        """Element shape of each emitted value."""
-        return self._shape
 
     @property
     def dtype(self) -> np.dtype:
         """NumPy dtype for emitted values."""
         return self._dtype
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Element shape of each emitted value."""
+        return self._shape
 
     @property
     def initial(self) -> np.ndarray:
@@ -95,13 +100,13 @@ class NativeSource:
     """Descriptor for a Rust-implemented source.
 
     Analogous to [`NativeOperator`][tradingflow.NativeOperator] -- carries
-    `kind` + `params` and is dispatched entirely on the native side. Not a
+    `native_id` + `params` and is dispatched entirely on the native side. Not a
     [`Source`][tradingflow.Source] subclass (no Python async iterators).
 
     Parameters
     ----------
-    kind
-        Source kind string dispatched on the Rust side.
+    native_id
+        Source native dispatch string on the Rust side.
     dtype
         NumPy dtype string (default `"float64"`).
     shape
@@ -109,30 +114,30 @@ class NativeSource:
     params
         Source-specific parameters.
     name
-        Optional human-readable name (defaults to *kind*).
+        Optional human-readable name (defaults to *native_id*).
     """
 
-    __slots__ = ("_kind", "_dtype", "_shape", "_params", "_name")
+    __slots__ = ("_native_id", "_dtype", "_shape", "_params", "_name")
 
     def __init__(
         self,
-        kind: str,
+        native_id: str,
         *,
         dtype: str = "float64",
         shape: tuple[int, ...] = (),
         params: dict | None = None,
         name: str | None = None,
     ) -> None:
-        self._kind = kind
+        self._native_id = native_id
         self._dtype = dtype
         self._shape = shape
         self._params = params or {}
-        self._name = name or kind
+        self._name = name or native_id
 
     @property
-    def kind(self) -> str:
-        """Source kind string."""
-        return self._kind
+    def native_id(self) -> str:
+        """Source native dispatch string."""
+        return self._native_id
 
     @property
     def dtype(self) -> str:

@@ -46,10 +46,10 @@ class IterSource(Source):
         initial: ArrayLike | None = None,
         name: str | None = None,
     ) -> None:
-        super().__init__(shape, dtype, initial=initial, name=name)
+        super().__init__(dtype, shape, initial=initial, name=name)
         self._iterable = iterable
 
-    def init(self) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[tuple[np.datetime64, Any]]]:
+    def init(self, timestamp: int) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[tuple[np.datetime64, Any]]]:
         return self._historical_gen(), empty_live_gen()
 
     async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:

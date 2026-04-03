@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 from ..operator import Operator, Notify
-from ..types import Array, Handle
+from ..types import Array, Handle, NodeKind
+
+
+@dataclass
+class FilterState[T: np.generic]:
+    """State for [`Filter`]."""
+
+    predicate: Callable[[np.ndarray], bool]
 
 
 class Filter[T: np.generic](
     Operator[
         tuple[Handle[Array[T]]],
         Handle[Array[T]],
-        None,
+        FilterState[T],
     ]
 ):
     """Passes or drops the entire element based on a predicate.
@@ -46,24 +54,25 @@ class Filter[T: np.generic](
         self._predicate = predicate
         super().__init__(
             inputs=(input,),
-            shape=input.shape,
+            kind=NodeKind.ARRAY,
             dtype=input.dtype,
+            shape=input.shape,
             name=name,
         )
 
-    def init_state(self) -> None:
-        return None
+    def init(self, inputs: tuple, timestamp: int) -> FilterState[T]:
+        return FilterState(predicate=self._predicate)
 
+    @staticmethod
     def compute(
-        self,
-        timestamp: int,
+        state: FilterState,
         inputs: tuple,
         output: Any,
-        state: Any,
+        timestamp: int,
         notify: Notify,
-    ) -> tuple[bool, Any]:
+    ) -> bool:
         value = inputs[0].value()
-        if self._predicate(value):
+        if state.predicate(value):
             output.write(value)
-            return True, state
-        return False, state
+            return True
+        return False

@@ -11,7 +11,7 @@ from tradingflow import Scenario, Operator, Notify
 from tradingflow.sources import ArraySource, IterSource
 from tradingflow.operators import Record
 from tradingflow.operators.stocks import ForwardAdjust
-from tradingflow.types import Array, Handle
+from tradingflow.types import Array, Series, Handle, NodeKind
 
 
 def ts(i: int) -> np.datetime64:
@@ -113,86 +113,137 @@ class TestForwardAdjust:
 
 
 # =========================================================================
-# Python operator using Notify
+# Python operator using Notify — message-queue semantics
 # =========================================================================
 
 
-class ConditionalAccumulator(
+class SelectiveRecorder(
     Operator[
         tuple[Handle[Array[np.float64]], Handle[Array[np.float64]]],
-        Handle[Array[np.float64]],
-        float,
+        Handle[Series[np.float64]],
+        None,
     ]
 ):
-    """Accumulates input 0 only when input 1 updates (uses Notify)."""
+    """Records input 1 into the output Series only when input 1 produces.
 
-    def __init__(self, data: Handle, trigger: Handle) -> None:
-        super().__init__(inputs=(data, trigger), shape=(), dtype=np.float64)
+    Input 0 is a "background" source that fires frequently but whose
+    values are ignored.  Input 1 is a sparse "message" source.  The
+    output Series should contain exactly the same elements as
+    ``Record(input_1)`` — regardless of how often input 0 fires.
+    """
 
-    def init_state(self) -> float:
-        return 0.0
+    def __init__(self, background: Handle, messages: Handle) -> None:
+        super().__init__(
+            inputs=(background, messages),
+            kind=NodeKind.SERIES,
+            dtype=messages.dtype,
+            shape=messages.shape,
+        )
 
+    def init(self, inputs: tuple, timestamp: int) -> None:
+        return None
+
+    @staticmethod
     def compute(
-        self,
-        timestamp: int,
+        state: None,
         inputs: tuple,
         output: Any,
-        state: float,
+        timestamp: int,
         notify: Any,
-    ) -> tuple[bool, float]:
+    ) -> bool:
         if notify.input_produced(1):
-            state += float(inputs[0].value().flat[0])
-        output.write(np.array(state))
-        return True, state
+            output.push(timestamp, inputs[1].value())
+            return True
+        return False
 
 
 class TestPythonNotify:
-    """Python-implemented operator that reads Notify."""
+    """Python-implemented operator that uses Notify for selective recording."""
 
-    def test_accumulates_only_on_trigger(self) -> None:
-        """ConditionalAccumulator only adds input 0 when input 1 fires."""
+    def test_selective_recorder_matches_record(self) -> None:
+        """SelectiveRecorder output equals Record applied to the message source."""
         sc = Scenario()
-        data = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2), ts(3), ts(4)],
-            values=np.array([10.0, 20.0, 30.0, 40.0]),
+
+        # Background fires every tick.
+        background = sc.add_source(ArraySource(
+            timestamps=[ts(1), ts(2), ts(3), ts(4), ts(5)],
+            values=np.array([100.0, 200.0, 300.0, 400.0, 500.0]),
         ))
-        trigger = sc.add_source(IterSource(
-            iterable=[(ts(2), np.array(1.0)), (ts(4), np.array(1.0))],
+
+        # Messages fire only at ts=2 and ts=4.
+        messages = sc.add_source(IterSource(
+            iterable=[(ts(2), np.array(10.0)), (ts(4), np.array(20.0))],
             shape=(),
             dtype=np.float64,
             initial=np.array(0.0),
         ))
-        acc = sc.add_operator(ConditionalAccumulator(data, trigger))
-        acc_s = sc.add_operator(Record(acc))
+
+        # SelectiveRecorder: should only record when messages fires.
+        sel = sc.add_operator(SelectiveRecorder(background, messages))
+
+        # Reference: plain Record on messages.
+        msg_series = sc.add_operator(Record(messages))
+
         sc.run()
 
-        vals = list(sc.series_view(acc_s).values())
-        # ts=1: only data fires → state stays 0
-        assert vals[0] == pytest.approx(0.0)
-        # ts=2: both fire → state = 0 + 20 = 20
-        assert vals[1] == pytest.approx(20.0)
-        # ts=3: only data fires → state stays 20
-        assert vals[2] == pytest.approx(20.0)
-        # ts=4: both fire → state = 20 + 40 = 60
-        assert vals[3] == pytest.approx(60.0)
+        sel_view = sc.series_view(sel)
+        ref_view = sc.series_view(msg_series)
 
-    def test_input_produced_false_when_not_updated(self) -> None:
-        """input_produced returns False for inputs that didn't fire."""
+        # Same number of elements.
+        assert len(sel_view) == len(ref_view)
+
+        # Same timestamps.
+        np.testing.assert_array_equal(
+            sel_view.timestamps(),
+            ref_view.timestamps(),
+        )
+
+        # Same values.
+        np.testing.assert_array_almost_equal(
+            sel_view.values(),
+            ref_view.values(),
+        )
+
+    def test_selective_recorder_no_messages(self) -> None:
+        """When the message source never fires, the output Series is empty."""
         sc = Scenario()
-        data = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2)],
-            values=np.array([1.0, 2.0]),
+
+        background = sc.add_source(ArraySource(
+            timestamps=[ts(1), ts(2), ts(3)],
+            values=np.array([1.0, 2.0, 3.0]),
         ))
-        trigger = sc.add_source(IterSource(
-            iterable=[(ts(2), np.array(1.0))],
+        messages = sc.add_source(IterSource(
+            iterable=[],
             shape=(),
             dtype=np.float64,
             initial=np.array(0.0),
         ))
-        acc = sc.add_operator(ConditionalAccumulator(data, trigger))
-        acc_s = sc.add_operator(Record(acc))
+
+        sel = sc.add_operator(SelectiveRecorder(background, messages))
         sc.run()
 
-        vals = list(sc.series_view(acc_s).values())
-        assert vals[0] == pytest.approx(0.0)
-        assert vals[1] == pytest.approx(2.0)
+        assert len(sc.series_view(sel)) == 0
+
+    def test_selective_recorder_coalesced_timestamps(self) -> None:
+        """When both sources fire at the same timestamp, the message is recorded."""
+        sc = Scenario()
+
+        # Both fire at every timestamp.
+        background = sc.add_source(ArraySource(
+            timestamps=[ts(1), ts(2), ts(3)],
+            values=np.array([100.0, 200.0, 300.0]),
+        ))
+        messages = sc.add_source(ArraySource(
+            timestamps=[ts(1), ts(2), ts(3)],
+            values=np.array([10.0, 20.0, 30.0]),
+        ))
+
+        sel = sc.add_operator(SelectiveRecorder(background, messages))
+        sc.run()
+
+        sel_view = sc.series_view(sel)
+        assert len(sel_view) == 3
+        np.testing.assert_array_almost_equal(
+            sel_view.values().flatten(),
+            [10.0, 20.0, 30.0],
+        )

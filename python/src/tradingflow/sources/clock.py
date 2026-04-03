@@ -20,7 +20,7 @@ class Clock(NativeSource):
     def __init__(self, timestamps: list[np.datetime64] | np.ndarray) -> None:
         ts_ns = np.asarray(timestamps, dtype="datetime64[ns]")
         ts_i64 = ts_ns.view("int64").tolist()
-        super().__init__("clock", params={"timestamps": ts_i64})
+        super().__init__(native_id="clock", params={"timestamps": ts_i64})
 
 
 class DailyClock(NativeSource):
@@ -44,7 +44,7 @@ class DailyClock(NativeSource):
     ) -> None:
         start_ns = coerce_timestamp(start)
         end_ns = coerce_timestamp(end)
-        super().__init__("daily_clock", params={"start_ns": start_ns, "end_ns": end_ns, "tz": tz})
+        super().__init__(native_id="daily_clock", params={"start_ns": start_ns, "end_ns": end_ns, "tz": tz})
 
 
 class MonthlyClock(NativeSource):
@@ -68,4 +68,4 @@ class MonthlyClock(NativeSource):
     ) -> None:
         start_ns = coerce_timestamp(start)
         end_ns = coerce_timestamp(end)
-        super().__init__("monthly_clock", params={"start_ns": start_ns, "end_ns": end_ns, "tz": tz})
+        super().__init__(native_id="monthly_clock", params={"start_ns": start_ns, "end_ns": end_ns, "tz": tz})

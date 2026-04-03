@@ -61,11 +61,11 @@ pub mod types;
 pub mod utils;
 
 pub use array::Array;
-pub use operator::{ErasedOperator, Notify, Operator};
+pub use operator::{ErasedOperator, Operator};
 pub use scenario::Scenario;
 pub use series::Series;
 pub use source::{ErasedSource, Source};
-pub use types::{InputTypes, PeekableReceiver, Scalar};
+pub use types::{InputTypes, Notify, PeekableReceiver, Scalar};
 pub use utils::Schema;
 
 #[cfg(feature = "python")]

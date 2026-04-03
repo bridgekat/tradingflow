@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..operator import NativeOperator
-from ..types import Handle
+from ..types import Handle, NodeKind
 
 
 class Select(NativeOperator):
@@ -19,9 +19,10 @@ class Select(NativeOperator):
 
     def __init__(self, a: Handle, indices: list[int]) -> None:
         super().__init__(
-            kind="select",
+            native_id="select",
             inputs=(a,),
-            shape=(len(indices),),
+            kind=NodeKind.ARRAY,
             dtype=a.dtype,
+            shape=(len(indices),),
             params={"indices": indices},
         )

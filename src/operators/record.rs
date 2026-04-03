@@ -1,7 +1,6 @@
 //! Record operator — records array values into a time series.
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar, Series};
+use crate::{Array, Notify, Operator, Scalar, Series};
 
 /// Record an array stream into a time series.
 ///

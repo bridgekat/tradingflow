@@ -372,12 +372,8 @@ mod tests {
     use rand::{Rng, SeedableRng};
     use tokio::sync::mpsc;
 
-    use crate::Scenario;
-    use crate::array::Array;
-    use crate::operator::{Notify, Operator};
     use crate::operators::Record;
-    use crate::series::Series;
-    use crate::source::Source;
+    use crate::{Array, Notify, Operator, Scenario, Series, Source};
 
     use super::super::handle::Handle;
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..operator import NativeOperator
-from ..types import Handle
+from ..types import Handle, NodeKind
 
 
 class Record(NativeOperator):
@@ -14,4 +14,4 @@ class Record(NativeOperator):
     """
 
     def __init__(self, a: Handle) -> None:
-        super().__init__(kind="record", inputs=(a,), shape=a.shape, dtype=a.dtype)
+        super().__init__(native_id="record", inputs=(a,), kind=NodeKind.SERIES, dtype=a.dtype, shape=a.shape)

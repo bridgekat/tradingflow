@@ -17,61 +17,7 @@
 
 use std::any::TypeId;
 
-use super::types::InputTypes;
-
-/// Zero-cost notification context for [`Operator::compute`].
-///
-/// Provides [`input_produced`](Self::input_produced) to check whether a
-/// specific input produced new output in the current flush cycle.  If the
-/// operator ignores the `Notify` argument entirely, there is zero overhead.
-///
-/// Constructed by the graph flush machinery from the graph-wide `produced`
-/// flags and the operator's per-input node indices.
-pub struct Notify<'a> {
-    produced: &'a [bool],
-    input_node_indices: &'a [usize],
-}
-
-impl Notify<'_> {
-    /// Create a new notification context.
-    pub fn new<'a>(produced: &'a [bool], input_node_indices: &'a [usize]) -> Notify<'a> {
-        Notify {
-            produced,
-            input_node_indices,
-        }
-    }
-
-    /// Returns `true` if the input at position `pos` produced new output
-    /// in the current flush cycle.
-    #[inline(always)]
-    pub fn input_produced(&self, pos: usize) -> bool {
-        self.produced[self.input_node_indices[pos]]
-    }
-
-    /// Raw pointer to the `produced` flags slice.
-    #[inline(always)]
-    pub fn produced_ptr(&self) -> *const bool {
-        self.produced.as_ptr()
-    }
-
-    /// Length of the `produced` flags slice.
-    #[inline(always)]
-    pub fn produced_len(&self) -> usize {
-        self.produced.len()
-    }
-
-    /// Raw pointer to the input node indices slice.
-    #[inline(always)]
-    pub fn input_node_indices_ptr(&self) -> *const usize {
-        self.input_node_indices.as_ptr()
-    }
-
-    /// Length of the input node indices slice.
-    #[inline(always)]
-    pub fn input_node_indices_len(&self) -> usize {
-        self.input_node_indices.len()
-    }
-}
+use super::types::{InputTypes, Notify};
 
 /// A synchronous computation node that reads typed inputs and writes a
 /// typed output.

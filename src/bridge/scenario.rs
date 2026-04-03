@@ -247,7 +247,7 @@ impl NativeScenario {
     ///
     /// Input type validation is performed by
     /// [`Scenario::add_erased_operator`].
-    #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator, py_state, clock_index=None))]
+    #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator, clock_index=None))]
     fn add_py_operator(
         &mut self,
         py: Python<'_>,
@@ -256,7 +256,6 @@ impl NativeScenario {
         output_type: (String, String),
         output_shape: Vec<usize>,
         py_operator: PyObject,
-        py_state: PyObject,
         clock_index: Option<usize>,
     ) -> PyResult<usize> {
         let _guard = self._rt.enter();
@@ -296,7 +295,7 @@ impl NativeScenario {
             .into_any()
             .unbind();
 
-        // 3. Construct the erased operator.
+        // 3. Construct the erased operator (calls operator.init internally).
         let erased = operator::make_py_operator(
             py,
             input_type_ids,
@@ -306,7 +305,7 @@ impl NativeScenario {
             &output_shape,
             py_inputs,
             py_operator,
-            py_state,
+            i64::MIN,
             self.error_slot.clone(),
         )?;
 

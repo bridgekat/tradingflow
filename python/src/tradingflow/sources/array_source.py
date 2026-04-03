@@ -57,7 +57,7 @@ class ArraySource(NativeSource):
         shape = vals.shape[1:]
 
         super().__init__(
-            "array",
+            native_id="array",
             dtype=str(dt),
             shape=shape,
             params={

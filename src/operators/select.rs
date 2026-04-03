@@ -2,8 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::operator::Notify;
-use crate::{Array, Operator, Scalar};
+use crate::{Array, Notify, Operator, Scalar};
 
 /// Select elements from an array along an axis.
 ///

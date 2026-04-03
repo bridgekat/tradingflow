@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...operator import NativeOperator
-from ...types import Handle
+from ...types import Handle, NodeKind
 
 
 class ForwardFill(NativeOperator):
@@ -15,8 +15,9 @@ class ForwardFill(NativeOperator):
 
     def __init__(self, a: Handle) -> None:
         super().__init__(
-            kind="forward_fill",
+            native_id="forward_fill",
             inputs=(a,),
-            shape=a.shape,
+            kind=NodeKind.ARRAY,
             dtype=a.dtype,
+            shape=a.shape,
         )

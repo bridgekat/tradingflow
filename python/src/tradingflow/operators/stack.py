@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..operator import NativeOperator
-from ..types import Handle
+from ..types import Handle, NodeKind
 
 
 class Stack(NativeOperator):
@@ -28,9 +28,10 @@ class Stack(NativeOperator):
         base_shape = list(inputs[0].shape)
         out_shape = base_shape[:axis] + [len(inputs)] + base_shape[axis:]
         super().__init__(
-            kind="stack",
+            native_id="stack",
             inputs=tuple(inputs),
-            shape=tuple(out_shape),
+            kind=NodeKind.ARRAY,
             dtype=inputs[0].dtype,
+            shape=tuple(out_shape),
             params={"axis": axis},
         )
