@@ -33,9 +33,10 @@ impl<T: Scalar + Float> Operator for ForwardFill<T> {
     type Output = Array<T>;
 
     fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (Vec<T>, Array<T>) {
+        let shape = inputs.0.shape();
         let stride = inputs.0.stride();
         let last_valid = vec![T::nan(); stride];
-        (last_valid, Array::zeros(inputs.0.shape()))
+        (last_valid, Array::from_vec(shape, vec![T::nan(); stride]))
     }
 
     fn compute(

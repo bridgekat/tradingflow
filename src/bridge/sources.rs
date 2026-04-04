@@ -51,6 +51,63 @@ pub fn dispatch_native_source(
             let source = CsvSource::new(path, time_column, value_columns);
             Ok(sc.add_source(source).index())
         }
+        "financial_report" => {
+            let path: String = params
+                .get_item("path")?
+                .ok_or_else(|| PyTypeError::new_err("financial_report source requires 'path'"))?
+                .extract()?;
+            let report_date_column: String = params
+                .get_item("report_date_column")?
+                .ok_or_else(|| {
+                    PyTypeError::new_err("financial_report source requires 'report_date_column'")
+                })?
+                .extract()?;
+            let notice_date_column: String = params
+                .get_item("notice_date_column")?
+                .ok_or_else(|| {
+                    PyTypeError::new_err("financial_report source requires 'notice_date_column'")
+                })?
+                .extract()?;
+            let value_columns: Vec<String> = params
+                .get_item("value_columns")?
+                .ok_or_else(|| {
+                    PyTypeError::new_err("financial_report source requires 'value_columns'")
+                })?
+                .extract()?;
+            let with_report_date: bool = params
+                .get_item("with_report_date")?
+                .ok_or_else(|| {
+                    PyTypeError::new_err("financial_report source requires 'with_report_date'")
+                })?
+                .extract()?;
+            let use_effective_date: bool = params
+                .get_item("use_effective_date")?
+                .ok_or_else(|| {
+                    PyTypeError::new_err(
+                        "financial_report source requires 'use_effective_date'",
+                    )
+                })?
+                .extract()?;
+            let notice_date_fallback_ns: i64 = params
+                .get_item("notice_date_fallback_ns")?
+                .ok_or_else(|| {
+                    PyTypeError::new_err(
+                        "financial_report source requires 'notice_date_fallback_ns'",
+                    )
+                })?
+                .extract()?;
+            use crate::sources::stocks::FinancialReportSource;
+            let source = FinancialReportSource::new(
+                path,
+                report_date_column,
+                notice_date_column,
+                value_columns,
+                with_report_date,
+                use_effective_date,
+                notice_date_fallback_ns,
+            );
+            Ok(sc.add_source(source).index())
+        }
         "clock" => {
             let timestamps: Vec<i64> = params
                 .get_item("timestamps")?

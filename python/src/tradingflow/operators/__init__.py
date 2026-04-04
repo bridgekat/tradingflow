@@ -16,6 +16,7 @@ This module provides all shipped operators. They fall into two categories:
 - [`Select`][tradingflow.operators.Select] -- select elements by flat indices
 - [`Id`][tradingflow.operators.Id] -- identity passthrough
 - [`Map`][tradingflow.operators.Map] -- applies a function to transform array values
+- [`MapInplace`][tradingflow.operators.MapInplace] -- applies a function in place on input and output arrays
 
 ## Series operators
 
@@ -47,7 +48,7 @@ from .const import Const
 from .filter import Filter
 from .id import Id
 from .lag import Lag
-from .map import Map
+from .map import Map, MapInplace
 from .last import Last
 from .record import Record
 from .select import Select
@@ -65,6 +66,7 @@ __all__ = [
     "Select",
     "Id",
     "Map",
+    "MapInplace",
     "Record",
     "Last",
     "Lag",

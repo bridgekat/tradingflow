@@ -139,13 +139,14 @@ class TestLag:
 
 class TestRollingSum:
     def test_rolling_sum_basic(self) -> None:
-        """Rolling sum with window=3."""
+        """Rolling sum with window=3. Only ticks >= window produce output."""
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0, 4.0])
         h_rs = sc.add_operator(RollingSum(s, window=3))
         h_rs_recorded = sc.add_operator(Record(h_rs))
         _run(sc)
         vals = list(sc.series_view(h_rs_recorded).values())
-        assert vals == pytest.approx([1.0, 3.0, 6.0, 9.0])
+        # First 2 ticks are warmup (no output), ticks 3 and 4 produce output.
+        assert vals == pytest.approx([6.0, 9.0])
 
     def test_rolling_sum_nan_propagation(self) -> None:
         """NaN in window propagates to output; eviction clears it."""
@@ -154,11 +155,14 @@ class TestRollingSum:
         h_rs_recorded = sc.add_operator(Record(h_rs))
         _run(sc)
         vals = list(sc.series_view(h_rs_recorded).values())
-        assert vals[0] == pytest.approx(1.0)
-        assert np.isnan(vals[1])  # [1, NaN]
-        assert np.isnan(vals[2])  # [1, NaN, 3]
-        assert np.isnan(vals[3])  # [NaN, 3, 4]
-        assert vals[4] == pytest.approx(12.0)  # [3, 4, 5]
+        # Ticks 1,2 are warmup → not recorded.
+        # Tick 3: [1, NaN, 3] → NaN
+        # Tick 4: [NaN, 3, 4] → NaN
+        # Tick 5: [3, 4, 5] → 12
+        assert len(vals) == 3
+        assert np.isnan(vals[0])  # [1, NaN, 3]
+        assert np.isnan(vals[1])  # [NaN, 3, 4]
+        assert vals[2] == pytest.approx(12.0)  # [3, 4, 5]
 
     def test_rolling_sum_vector(self) -> None:
         """Rolling sum with 2-element vectors and window=2."""
@@ -173,6 +177,8 @@ class TestRollingSum:
         h_rs_recorded = sc.add_operator(Record(h_rs))
         _run(sc)
         vals = sc.series_view(h_rs_recorded).values()
+        # Tick 1 is warmup → not recorded. Ticks 2,3 produce output.
+        assert len(vals) == 2
         np.testing.assert_array_almost_equal(vals[-1], [5.0, 50.0])  # 2+3, 20+30
 
 
@@ -183,16 +189,16 @@ class TestRollingSum:
 
 class TestRollingMean:
     def test_rolling_mean_basic(self) -> None:
-        """Rolling mean with window=3."""
+        """Rolling mean with window=3. Only ticks >= window produce output."""
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0, 6.0])
         h_rm = sc.add_operator(RollingMean(s, window=3))
         h_rm_recorded = sc.add_operator(Record(h_rm))
         _run(sc)
         vals = list(sc.series_view(h_rm_recorded).values())
-        assert vals[0] == pytest.approx(1.0)  # mean([1])
-        assert vals[1] == pytest.approx(1.5)  # mean([1,2])
-        assert vals[2] == pytest.approx(2.0)  # mean([1,2,3])
-        assert vals[3] == pytest.approx(11.0 / 3.0)  # mean([2,3,6])
+        # First 2 ticks are warmup → not recorded.
+        assert len(vals) == 2
+        assert vals[0] == pytest.approx(2.0)  # mean([1,2,3])
+        assert vals[1] == pytest.approx(11.0 / 3.0)  # mean([2,3,6])
 
     def test_rolling_mean_constant(self) -> None:
         """Mean of constant series equals the constant."""
@@ -201,6 +207,8 @@ class TestRollingMean:
         h_rm_recorded = sc.add_operator(Record(h_rm))
         _run(sc)
         vals = list(sc.series_view(h_rm_recorded).values())
+        # 4 warmup ticks, 6 output ticks.
+        assert len(vals) == 6
         assert vals[-1] == pytest.approx(7.0)
 
 
@@ -217,6 +225,8 @@ class TestRollingVariance:
         h_rv_recorded = sc.add_operator(Record(h_rv))
         _run(sc)
         vals = list(sc.series_view(h_rv_recorded).values())
+        # 2 warmup ticks, 3 output ticks.
+        assert len(vals) == 3
         assert vals[-1] == pytest.approx(0.0, abs=1e-10)
 
     def test_rolling_variance_known(self) -> None:
@@ -226,6 +236,8 @@ class TestRollingVariance:
         h_rv_recorded = sc.add_operator(Record(h_rv))
         _run(sc)
         vals = list(sc.series_view(h_rv_recorded).values())
+        # 1 warmup tick, 1 output tick.
+        assert len(vals) == 1
         assert vals[-1] == pytest.approx(1.0)
 
 
@@ -248,7 +260,8 @@ class TestRollingCovariance:
         h_rc_recorded = sc.add_operator(Record(h_rc))
         _run(sc)
         vals = sc.series_view(h_rc_recorded).values()
-        assert vals.shape == (3, 2, 2)
+        # 2 warmup ticks, 1 output tick.
+        assert vals.shape == (1, 2, 2)
 
     def test_rolling_covariance_rejects_non_1d(self) -> None:
         """RollingCovariance raises for non-1D input."""
@@ -266,49 +279,57 @@ class TestEma:
     def test_ema_constant(self) -> None:
         """EMA of constant series converges to the constant."""
         sc, _, s = _scalar_scenario([10.0] * 10)
-        h_ema = sc.add_operator(EMA(s, window=100, alpha=0.5))
+        h_ema = sc.add_operator(EMA(s, window=3, alpha=0.5))
         h_ema_recorded = sc.add_operator(Record(h_ema))
         _run(sc)
         vals = list(sc.series_view(h_ema_recorded).values())
+        # 2 warmup ticks, 8 output ticks.
+        assert len(vals) == 8
         assert vals[-1] == pytest.approx(10.0, abs=1e-6)
 
-    def test_ema_first_value(self) -> None:
-        """First EMA output equals the first input."""
+    def test_ema_first_value_window_1(self) -> None:
+        """With window=1, first EMA output equals the first input."""
         sc, _, s = _scalar_scenario([100.0, 200.0])
-        h_ema = sc.add_operator(EMA(s, window=10, alpha=0.5))
+        h_ema = sc.add_operator(EMA(s, window=1, alpha=0.5))
         h_ema_recorded = sc.add_operator(Record(h_ema))
         _run(sc)
         vals = list(sc.series_view(h_ema_recorded).values())
+        assert len(vals) == 2
         assert vals[0] == pytest.approx(100.0)
 
     def test_ema_two_values(self) -> None:
         """EMA of two values matches hand-computed result."""
         sc, _, s = _scalar_scenario([10.0, 20.0])
-        h_ema = sc.add_operator(EMA(s, window=10, alpha=0.5))
+        h_ema = sc.add_operator(EMA(s, window=2, alpha=0.5))
         h_ema_recorded = sc.add_operator(Record(h_ema))
         _run(sc)
         vals = list(sc.series_view(h_ema_recorded).values())
+        # 1 warmup tick, 1 output tick.
+        assert len(vals) == 1
         # w0=0.5 (for 20), w1=0.25 (for 10)
         expected = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25)
-        assert vals[1] == pytest.approx(expected)
+        assert vals[0] == pytest.approx(expected)
 
     def test_ema_with_span(self) -> None:
         """EMA(span=3) is equivalent to alpha=0.5."""
         sc, _, s = _scalar_scenario([10.0, 20.0])
-        h_ema = sc.add_operator(EMA(s, window=100, span=3))
+        h_ema = sc.add_operator(EMA(s, window=2, span=3))
         h_ema_recorded = sc.add_operator(Record(h_ema))
         _run(sc)
         vals = list(sc.series_view(h_ema_recorded).values())
+        # 1 warmup tick, 1 output tick.
+        assert len(vals) == 1
         expected = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25)
-        assert vals[1] == pytest.approx(expected)
+        assert vals[0] == pytest.approx(expected)
 
     def test_ema_with_half_life(self) -> None:
         """EMA(half_life=...) runs without error and produces values."""
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0])
-        h_ema = sc.add_operator(EMA(s, window=10, half_life=2.0))
+        h_ema = sc.add_operator(EMA(s, window=2, half_life=2.0))
         h_ema_recorded = sc.add_operator(Record(h_ema))
         _run(sc)
-        assert len(sc.series_view(h_ema_recorded)) == 3
+        # 1 warmup tick, 2 output ticks.
+        assert len(sc.series_view(h_ema_recorded)) == 2
 
     def test_ema_window_eviction(self) -> None:
         """Old values are evicted when they leave the window."""
@@ -317,6 +338,8 @@ class TestEma:
         h_ema_recorded = sc.add_operator(Record(h_ema))
         _run(sc)
         vals = list(sc.series_view(h_ema_recorded).values())
+        # 1 warmup tick, 3 output ticks.
+        assert len(vals) == 3
         # After two 0.0s with window=2, 100.0s are fully evicted
         assert vals[-1] == pytest.approx(0.0, abs=1e-10)
 

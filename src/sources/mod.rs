@@ -27,11 +27,16 @@
 //! - [`daily_clock`] — daily timestamps (midnight in a given IANA timezone).
 //! - [`monthly_clock`] — monthly timestamps (first of each month in a given
 //!   IANA timezone).
+//!
+//! # Sub-modules
+//!
+//! - [`stocks`] — stock-specific data sources.
 
 pub mod array_source;
 pub mod clock;
 pub mod csv_source;
 pub mod iter_source;
+pub mod stocks;
 
 pub use array_source::ArraySource;
 pub use clock::{clock, daily_clock, monthly_clock};

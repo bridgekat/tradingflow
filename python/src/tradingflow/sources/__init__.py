@@ -28,7 +28,13 @@ categories:
   given IANA timezone over a `[start, end]` range.
 - [`MonthlyClock`][tradingflow.sources.MonthlyClock] -- fires on the first day of
   each month in a given IANA timezone over a `[start, end]` range.
+
+## Sub-modules
+
+- [`stocks`][tradingflow.sources.stocks] -- stock-specific data sources.
 """
+
+from . import stocks
 
 from .array_source import ArraySource
 from .clock import Clock, DailyClock, MonthlyClock
@@ -36,6 +42,7 @@ from .csv_source import CSVSource
 from .iter_source import IterSource
 
 __all__ = [
+    "stocks",
     "ArraySource",
     "CSVSource",
     "Clock",

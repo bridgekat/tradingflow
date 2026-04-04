@@ -46,7 +46,9 @@ impl<T: Scalar + Float> Operator for RollingSum<T> {
             sum: vec![T::zero(); stride],
             nan_count: vec![0; stride],
         };
-        (state, Array::zeros(inputs.0.shape()))
+        let shape = inputs.0.shape();
+        let stride = shape.iter().product::<usize>();
+        (state, Array::from_vec(shape, vec![T::nan(); stride]))
     }
 
     fn compute(
@@ -58,12 +60,10 @@ impl<T: Scalar + Float> Operator for RollingSum<T> {
     ) -> bool {
         let series = inputs.0;
         let len = series.len();
-        let stride = state.sum.len();
 
         // Add new element.
         let new_row = series.at(len - 1);
-        for j in 0..stride {
-            let v = new_row[j];
+        for (j, &v) in new_row.iter().enumerate() {
             if v.is_nan() {
                 state.nan_count[j] += 1;
             } else {
@@ -74,8 +74,7 @@ impl<T: Scalar + Float> Operator for RollingSum<T> {
         // Evict oldest element if window is full.
         if len > state.window {
             let old_row = series.at(len - 1 - state.window);
-            for j in 0..stride {
-                let v = old_row[j];
+            for (j, &v) in old_row.iter().enumerate() {
                 if v.is_nan() {
                     state.nan_count[j] -= 1;
                 } else {
@@ -84,17 +83,20 @@ impl<T: Scalar + Float> Operator for RollingSum<T> {
             }
         }
 
-        // Produce output.
-        let out = output.as_mut_slice();
-        for j in 0..stride {
-            out[j] = if state.nan_count[j] > 0 {
-                T::nan()
-            } else {
-                state.sum[j]
-            };
+        // Produce output only when window is full.
+        if len < state.window {
+            false
+        } else {
+            let out = output.as_mut_slice();
+            for (j, v) in out.iter_mut().enumerate() {
+                *v = if state.nan_count[j] > 0 {
+                    T::nan()
+                } else {
+                    state.sum[j]
+                };
+            }
+            true
         }
-
-        true
     }
 }
 
@@ -108,9 +110,9 @@ mod tests {
         out: &mut Array<f64>,
         ts: i64,
         val: f64,
-    ) {
+    ) -> bool {
         s.push(ts, &[val]);
-        RollingSum::compute(state, (s,), out, ts, &Notify::new(&[], &[]));
+        RollingSum::compute(state, (s,), out, ts, &Notify::new(&[], &[]))
     }
 
     #[test]
@@ -118,16 +120,18 @@ mod tests {
         let mut s = Series::<f64>::new(&[]);
         let (mut state, mut out) = RollingSum::<f64>::new(3).init((&s,), i64::MIN);
 
-        push_compute(&mut s, &mut state, &mut out, 1, 1.0);
-        assert_eq!(out.as_slice()[0], 1.0);
+        // Warmup: returns false and output stays NaN.
+        assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
+        assert!(out.as_slice()[0].is_nan());
 
-        push_compute(&mut s, &mut state, &mut out, 2, 2.0);
-        assert_eq!(out.as_slice()[0], 3.0);
+        assert!(!push_compute(&mut s, &mut state, &mut out, 2, 2.0));
+        assert!(out.as_slice()[0].is_nan());
 
-        push_compute(&mut s, &mut state, &mut out, 3, 3.0);
+        // Window full: returns true.
+        assert!(push_compute(&mut s, &mut state, &mut out, 3, 3.0));
         assert_eq!(out.as_slice()[0], 6.0);
 
-        push_compute(&mut s, &mut state, &mut out, 4, 4.0);
+        assert!(push_compute(&mut s, &mut state, &mut out, 4, 4.0));
         assert_eq!(out.as_slice()[0], 9.0); // 2+3+4
     }
 
@@ -136,9 +140,9 @@ mod tests {
         let mut s = Series::<f64>::new(&[]);
         let (mut state, mut out) = RollingSum::<f64>::new(3).init((&s,), i64::MIN);
 
-        push_compute(&mut s, &mut state, &mut out, 1, 1.0);
-        push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
-        push_compute(&mut s, &mut state, &mut out, 3, 3.0);
+        assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
+        assert!(!push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
+        assert!(push_compute(&mut s, &mut state, &mut out, 3, 3.0));
         // Window contains NaN → output NaN
         assert!(out.as_slice()[0].is_nan());
 
@@ -157,15 +161,17 @@ mod tests {
         let (mut state, mut out) = RollingSum::<f64>::new(2).init((&s,), i64::MIN);
 
         s.push(1, &[1.0, 10.0]);
-        RollingSum::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
-        assert_eq!(out.as_slice(), &[1.0, 10.0]);
+        assert!(!RollingSum::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
+        // Output stays NaN during warmup.
+        assert!(out.as_slice()[0].is_nan());
+        assert!(out.as_slice()[1].is_nan());
 
         s.push(2, &[2.0, 20.0]);
-        RollingSum::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert!(RollingSum::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
         assert_eq!(out.as_slice(), &[3.0, 30.0]);
 
         s.push(3, &[3.0, 30.0]);
-        RollingSum::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
+        assert!(RollingSum::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[])));
         assert_eq!(out.as_slice(), &[5.0, 50.0]); // 2+3, 20+30
     }
 
@@ -174,10 +180,10 @@ mod tests {
         let mut s = Series::<f64>::new(&[]);
         let (mut state, mut out) = RollingSum::<f64>::new(2).init((&s,), i64::MIN);
 
-        push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
+        assert!(!push_compute(&mut s, &mut state, &mut out, 1, f64::NAN));
         assert!(out.as_slice()[0].is_nan());
 
-        push_compute(&mut s, &mut state, &mut out, 2, 5.0);
+        assert!(push_compute(&mut s, &mut state, &mut out, 2, 5.0));
         // Window [NaN, 5] → NaN
         assert!(out.as_slice()[0].is_nan());
 
@@ -191,9 +197,9 @@ mod tests {
         let mut s = Series::<f64>::new(&[]);
         let (mut state, mut out) = RollingSum::<f64>::new(3).init((&s,), i64::MIN);
 
-        push_compute(&mut s, &mut state, &mut out, 1, f64::NAN);
-        push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
-        push_compute(&mut s, &mut state, &mut out, 3, 1.0);
+        assert!(!push_compute(&mut s, &mut state, &mut out, 1, f64::NAN));
+        assert!(!push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
+        assert!(push_compute(&mut s, &mut state, &mut out, 3, 1.0));
         assert!(out.as_slice()[0].is_nan()); // two NaNs in window
 
         push_compute(&mut s, &mut state, &mut out, 4, 2.0);
@@ -211,12 +217,13 @@ mod tests {
         let (mut state, mut out) = RollingSum::<f64>::new(2).init((&s,), i64::MIN);
 
         s.push(1, &[f64::NAN, 10.0]);
-        RollingSum::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert!(!RollingSum::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
+        // Output stays NaN during warmup (both elements).
         assert!(out.as_slice()[0].is_nan());
-        assert_eq!(out.as_slice()[1], 10.0);
+        assert!(out.as_slice()[1].is_nan());
 
         s.push(2, &[5.0, 20.0]);
-        RollingSum::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert!(RollingSum::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
         assert!(out.as_slice()[0].is_nan()); // NaN still in window for elem 0
         assert_eq!(out.as_slice()[1], 30.0);
 
@@ -232,9 +239,11 @@ mod tests {
         let mut s = Series::<f64>::new(&[]);
         let (mut state, mut out) = RollingSum::<f64>::new(3).init((&s,), i64::MIN);
 
-        push_compute(&mut s, &mut state, &mut out, 1, 10.0);
-        push_compute(&mut s, &mut state, &mut out, 2, f64::NAN);
-        push_compute(&mut s, &mut state, &mut out, 3, 30.0);
+        assert!(!push_compute(&mut s, &mut state, &mut out, 1, 10.0));
+        assert!(!push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
+        assert!(push_compute(&mut s, &mut state, &mut out, 3, 30.0));
+        // Window [10, NaN, 30] → NaN
+        assert!(out.as_slice()[0].is_nan());
         push_compute(&mut s, &mut state, &mut out, 4, 40.0);
         // Window [NaN, 30, 40] → NaN
         assert!(out.as_slice()[0].is_nan());

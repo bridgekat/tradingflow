@@ -1,4 +1,7 @@
-//! Map operator — applies a function to transform input into output.
+//! Map operators — apply functions to transform inputs into outputs.
+//!
+//! - [`Map`] — allocating: `Fn(&S) -> T`.
+//! - [`MapInplace`] — in-place: `Fn(&S, &mut T) -> bool`.
 
 use crate::{Notify, Operator};
 
@@ -59,6 +62,66 @@ where
     }
 }
 
+/// In-place map operator: reads input `S`, writes into output `T` via
+/// a mutable reference, and returns whether to propagate.
+///
+/// Unlike [`Map`], the function does not allocate a new output — it
+/// receives `(&S, &mut T)` and mutates the existing output in place.
+/// The return value controls downstream propagation.
+pub struct MapInplace<S, T, F>
+where
+    S: Clone + Send + 'static,
+    T: Clone + Send + 'static,
+    F: Fn(&S, &mut T) -> bool + Send + 'static,
+{
+    f: F,
+    initial: T,
+    _phantom: std::marker::PhantomData<S>,
+}
+
+impl<S, T, F> MapInplace<S, T, F>
+where
+    S: Clone + Send + 'static,
+    T: Clone + Send + 'static,
+    F: Fn(&S, &mut T) -> bool + Send + 'static,
+{
+    pub fn new(f: F, initial: T) -> Self {
+        Self {
+            f,
+            initial,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<S, T, F> Operator for MapInplace<S, T, F>
+where
+    S: Clone + Send + 'static,
+    T: Clone + Send + 'static,
+    F: Fn(&S, &mut T) -> bool + Send + 'static,
+{
+    type State = Self;
+    type Inputs = (S,);
+    type Output = T;
+
+    fn init(self, inputs: (&S,), _timestamp: i64) -> (Self, T) {
+        let mut output = self.initial.clone();
+        (self.f)(inputs.0, &mut output);
+        (self, output)
+    }
+
+    #[inline(always)]
+    fn compute(
+        state: &mut Self,
+        inputs: (&S,),
+        output: &mut T,
+        _timestamp: i64,
+        _notify: &Notify<'_>,
+    ) -> bool {
+        (state.f)(inputs.0, output)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +169,64 @@ mod tests {
         let b = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
         Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], &[]));
         assert_eq!(o.as_slice(), &[60.0]);
+    }
+
+    #[test]
+    fn map_inplace_double() {
+        let a = Array::scalar(5.0_f64);
+        let (mut s, mut o) =
+            MapInplace::new(
+                |inp: &Array<f64>, out: &mut Array<f64>| {
+                    out[0] = inp[0] * 2.0;
+                    true
+                },
+                Array::scalar(0.0),
+            )
+            .init((&a,), i64::MIN);
+        assert_eq!(o.as_slice(), &[10.0]);
+
+        let b = Array::scalar(3.0);
+        MapInplace::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], &[]));
+        assert_eq!(o.as_slice(), &[6.0]);
+    }
+
+    #[test]
+    fn map_inplace_conditional() {
+        // Only propagate when input > 3.
+        let a = Array::scalar(1.0_f64);
+        let (mut s, mut o) =
+            MapInplace::new(
+                |inp: &Array<f64>, out: &mut Array<f64>| {
+                    if inp[0] > 3.0 {
+                        out[0] = inp[0];
+                        true
+                    } else {
+                        false
+                    }
+                },
+                Array::scalar(0.0),
+            )
+            .init((&a,), i64::MIN);
+
+        // Input <= 3 → returns false.
+        let b = Array::scalar(2.0);
+        assert!(!MapInplace::compute(
+            &mut s,
+            (&b,),
+            &mut o,
+            1,
+            &Notify::new(&[], &[])
+        ));
+
+        // Input > 3 → returns true.
+        let c = Array::scalar(5.0);
+        assert!(MapInplace::compute(
+            &mut s,
+            (&c,),
+            &mut o,
+            2,
+            &Notify::new(&[], &[])
+        ));
+        assert_eq!(o.as_slice(), &[5.0]);
     }
 }

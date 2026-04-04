@@ -338,6 +338,17 @@ pub fn dispatch_native_operator(
             ViewKind::Array,
         )),
 
+        // -- Annualize (Array → Array, f64 only) ----------------------------
+        "annualize" => Ok((
+            add_operator_from_indices(
+                sc,
+                operators::stocks::Annualize::new(),
+                input_indices,
+                trigger_index,
+            ),
+            ViewKind::Array,
+        )),
+
         // -- Const (0-input → Array) -----------------------------------------
         "const" => {
             let shape: Vec<usize> = params

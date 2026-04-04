@@ -62,7 +62,7 @@ impl<T: Scalar + Float> Operator for RollingCovariance<T> {
             sum_cross: vec![T::zero(); k * k],
             nan_count: vec![0; k],
         };
-        (state, Array::zeros(&[k, k]))
+        (state, Array::from_vec(&[k, k], vec![T::nan(); k * k]))
     }
 
     fn compute(
@@ -134,22 +134,25 @@ impl<T: Scalar + Float> Operator for RollingCovariance<T> {
             }
         }
 
-        // Produce output.
-        let count = T::from(len.min(state.window)).unwrap();
-        let out = output.as_mut_slice();
-        for i in 0..k {
-            for j in 0..k {
-                out[i * k + j] = if state.nan_count[i] == 0 && state.nan_count[j] == 0 {
-                    let mean_i = state.sum[i] / count;
-                    let mean_j = state.sum[j] / count;
-                    state.sum_cross[i * k + j] / count - mean_i * mean_j
-                } else {
-                    T::nan()
-                };
+        // Produce output only when window is full.
+        if len < state.window {
+            false
+        } else {
+            let count = T::from(len.min(state.window)).unwrap();
+            let out = output.as_mut_slice();
+            for i in 0..k {
+                for j in 0..k {
+                    out[i * k + j] = if state.nan_count[i] == 0 && state.nan_count[j] == 0 {
+                        let mean_i = state.sum[i] / count;
+                        let mean_j = state.sum[j] / count;
+                        state.sum_cross[i * k + j] / count - mean_i * mean_j
+                    } else {
+                        T::nan()
+                    };
+                }
             }
+            true
         }
-
-        true
     }
 }
 
@@ -167,11 +170,11 @@ mod tests {
         let (mut state, mut out) = RollingCovariance::<f64>::new(3).init((&s,), i64::MIN);
 
         s.push(1, &[1.0, 2.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
         s.push(2, &[2.0, 4.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
         s.push(3, &[3.0, 6.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
+        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[])));
 
         let cov = out.as_slice();
         assert_eq!(out.shape(), &[2, 2]);
@@ -210,13 +213,13 @@ mod tests {
         let (mut state, mut out) = RollingCovariance::<f64>::new(4).init((&s,), i64::MIN);
 
         s.push(1, &[1.0, 1.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
         s.push(2, &[-1.0, 1.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
         s.push(3, &[1.0, -1.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[])));
         s.push(4, &[-1.0, -1.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 4, &Notify::new(&[], &[]));
+        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 4, &Notify::new(&[], &[])));
 
         let cov = out.as_slice();
         assert!(
@@ -232,11 +235,11 @@ mod tests {
         let (mut state, mut out) = RollingCovariance::<f64>::new(3).init((&s,), i64::MIN);
 
         s.push(1, &[1.0, 2.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
         s.push(2, &[f64::NAN, 4.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
         s.push(3, &[3.0, 6.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
+        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[])));
 
         let cov = out.as_slice();
         // Element 0 has NaN in window → Var(x) and Cov(x,y) should be NaN
@@ -254,15 +257,16 @@ mod tests {
         let (mut state, mut out) = RollingCovariance::<f64>::new(2).init((&s,), i64::MIN);
 
         s.push(1, &[f64::NAN, 1.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
-        // Var(x) NaN, Cov NaN, Var(y) valid
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
+        // Output stays NaN during warmup.
         let cov = out.as_slice();
         assert!(cov[0].is_nan());
         assert!(cov[1].is_nan());
-        assert!(!cov[3].is_nan());
+        assert!(cov[2].is_nan());
+        assert!(cov[3].is_nan());
 
         s.push(2, &[2.0, 4.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
         // NaN still in window for elem 0
         assert!(out.as_slice()[0].is_nan());
 
@@ -287,11 +291,11 @@ mod tests {
         let (mut state, mut out) = RollingCovariance::<f64>::new(3).init((&s,), i64::MIN);
 
         s.push(1, &[1.0, 2.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
         s.push(2, &[f64::NAN, f64::NAN]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
         s.push(3, &[3.0, 6.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
+        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[])));
 
         // Both elements have NaN in window → entire matrix is NaN
         let cov = out.as_slice();
@@ -307,9 +311,12 @@ mod tests {
         let (mut state, mut out) = RollingCovariance::<f64>::new(2).init((&s,), i64::MIN);
 
         s.push(1, &[1.0, 1.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
+        // Output stays NaN during warmup.
+        assert!(out.as_slice()[0].is_nan());
+
         s.push(2, &[f64::NAN, 2.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
 
         let cov = out.as_slice();
         assert!(cov[0].is_nan()); // Var(x)

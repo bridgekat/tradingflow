@@ -7,6 +7,13 @@
 - **Composable modules:** trading strategies are computation graphs, whose nodes are either data sources or operators. Common sources and operators are provided out of the box, and new ones can be readily implemented in either Rust or Python.
 - **Agent-friendly codebase:** we maintain code-documentation consistency and a hierarchy of documented modules to facilitate AI code exploration and generation. When using AI coding agents (Claude Code, Codex, OpenCode, etc.), start every session by instructing the agent to read [AGENTS.md](AGENTS.md) and then describe your tasks.
 
+# Examples
+
+Examples require A-shares market data downloaded via the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler). Install optional dependencies with `pip install -e ".[examples]"`. Then run `python -m a_shares_crawler --help` for configuration and download instructions.
+
+- [Plot daily prices](python/examples/plot_daily_price.py) — loads daily price history, computes forward-adjusted prices, moving average and Bollinger Bands, and plots them.
+- [Plot financial data](python/examples/plot_financial_data.py) — loads equity structure, balance sheet, income statement and cash flow data, computes market cap and annualized financial metrics, and plots them.
+
 # Core Concepts
 
 ## Arrays and Series

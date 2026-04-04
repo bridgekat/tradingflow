@@ -29,11 +29,19 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
 
-    # Load daily price history from CSV. Shape: (6,).
+    # ------------------------------------------------------------------
+    # Sources
+    # ------------------------------------------------------------------
+
+    # Daily prices. Shape: (6,).
     prices = sc.add_source(CSVSource(history_dir / f"{symbol}.daily_prices.csv", PRICE_SCHEMA))
 
-    # Load dividend events from CSV. Shape: (2,).
+    # Dividend events. Shape: (2,).
     dividends = sc.add_source(CSVSource(history_dir / f"{symbol}.dividends.csv", DIVIDEND_SCHEMA))
+
+    # ------------------------------------------------------------------
+    # Operators
+    # ------------------------------------------------------------------
 
     # Extract scalar close price. Shape: ().
     closes = sc.add_operator(Select(prices, [PRICE_SCHEMA.index("close")]))
@@ -74,7 +82,7 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", type=str, required=True, help='stock symbol (e.g. "000001.SZ")')
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
     args = parser.parse_args()

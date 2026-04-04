@@ -3,13 +3,9 @@
 //! Run with: `cargo bench`
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use tradingflow::array::Array;
-use tradingflow::operator::{Notify, Operator};
-use tradingflow::operators::num::Add;
-use tradingflow::operators::Record;
-use tradingflow::scenario::Scenario;
-use tradingflow::series::Series;
+use tradingflow::operators::{Record, num::Add};
 use tradingflow::sources::ArraySource;
+use tradingflow::{Array, Notify, Operator, Scenario, Series};
 
 const N: usize = 10_000;
 
@@ -80,7 +76,13 @@ fn bench_direct_compute(c: &mut Criterion) {
             for i in 0..N {
                 arr_a[0] = a[i];
                 arr_b[0] = b[i];
-                Add::<f64>::compute(&mut state, (&arr_a, &arr_b), &mut arr_out, i as i64, &Notify::new(&[], &[]));
+                Add::<f64>::compute(
+                    &mut state,
+                    (&arr_a, &arr_b),
+                    &mut arr_out,
+                    i as i64,
+                    &Notify::new(&[], &[]),
+                );
             }
             black_box(arr_out[0]);
         });
@@ -104,8 +106,20 @@ fn bench_direct_compute_series(c: &mut Criterion) {
             for i in 0..N {
                 arr_a[0] = a[i];
                 arr_b[0] = b[i];
-                Add::<f64>::compute(&mut state, (&arr_a, &arr_b), &mut arr_out, i as i64, &Notify::new(&[], &[]));
-                Record::<f64>::compute(&mut (), (&arr_out,), &mut series_out, i as i64, &Notify::new(&[], &[]));
+                Add::<f64>::compute(
+                    &mut state,
+                    (&arr_a, &arr_b),
+                    &mut arr_out,
+                    i as i64,
+                    &Notify::new(&[], &[]),
+                );
+                Record::<f64>::compute(
+                    &mut (),
+                    (&arr_out,),
+                    &mut series_out,
+                    i as i64,
+                    &Notify::new(&[], &[]),
+                );
             }
             black_box(series_out.last().unwrap()[0]);
         });
