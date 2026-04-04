@@ -264,20 +264,27 @@ pub fn dispatch_native_operator(
 
         // -- Rolling operators (Series → Array, float only) ------------------
         "rolling_sum" | "rolling_mean" | "rolling_variance" | "rolling_covariance" => {
-            let window: usize = params
-                .get_item("window")?
-                .ok_or_else(|| PyTypeError::new_err(format!("{kind} requires 'window' param")))?
-                .extract()?;
+            let window = params.get_item("window")?.map(|v| v.extract::<usize>()).transpose()?;
+            let window_ns = params.get_item("window_ns")?.map(|v| v.extract::<i64>()).transpose()?;
             macro_rules! go {
-                ($T:ty) => {
+                ($T:ty) => {{
+                    macro_rules! make_op {
+                        ($Op:ty) => {
+                            match (window, window_ns) {
+                                (Some(w), None) => add_operator_from_indices(sc, <$Op>::count(w), input_indices, trigger_index),
+                                (None, Some(w)) => add_operator_from_indices(sc, <$Op>::time_delta(w), input_indices, trigger_index),
+                                _ => return Err(PyTypeError::new_err(format!("{kind} requires exactly one of 'window' or 'window_ns'"))),
+                            }
+                        };
+                    }
                     match kind {
-                        "rolling_sum" => add_operator_from_indices(sc, operators::rolling::RollingSum::<$T>::new(window), input_indices, trigger_index),
-                        "rolling_mean" => add_operator_from_indices(sc, operators::rolling::RollingMean::<$T>::new(window), input_indices, trigger_index),
-                        "rolling_variance" => add_operator_from_indices(sc, operators::rolling::RollingVariance::<$T>::new(window), input_indices, trigger_index),
-                        "rolling_covariance" => add_operator_from_indices(sc, operators::rolling::RollingCovariance::<$T>::new(window), input_indices, trigger_index),
+                        "rolling_sum" => make_op!(operators::rolling::RollingSum::<$T>),
+                        "rolling_mean" => make_op!(operators::rolling::RollingMean::<$T>),
+                        "rolling_variance" => make_op!(operators::rolling::RollingVariance::<$T>),
+                        "rolling_covariance" => make_op!(operators::rolling::RollingCovariance::<$T>),
                         _ => unreachable!(),
                     }
-                };
+                }};
             }
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
         }

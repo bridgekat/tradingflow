@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -111,12 +112,19 @@ class Scenario:
             kind = output_type[0]
         return Handle(idx, kind, operator.dtype, operator.shape)
 
-    def run(self) -> None:
+    def run(self, on_flush: Callable[[int], Any] | None = None) -> None:
         """Execute the POCQ event loop.
 
         Python sources are driven by Rust-side async tasks that iterate
         the source's async iterators via a background asyncio event loop.
         The GIL is acquired briefly per event, preventing deadlocks with
         Python operators.
+
+        Parameters
+        ----------
+        on_flush
+            Optional callback invoked after each timestamp batch is
+            flushed.  Receives the batch timestamp (nanoseconds since
+            epoch) as a single argument.  Useful for progress reporting.
         """
-        self._native.run()
+        self._native.run(on_flush)

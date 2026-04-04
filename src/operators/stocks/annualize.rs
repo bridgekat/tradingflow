@@ -1,13 +1,12 @@
 //! Annualize operator for YTD financial report data.
 //!
 //! [`Annualize`] converts year-to-date cumulative values into annualized
-//! quarterly values using days-based scaling.  It handles any reporting
-//! frequency (quarterly, semi-annual, annual) uniformly.
+//! values using days-based scaling.  It handles any reporting frequency
+//! (quarterly, semi-annual, annual) uniformly.
 
 use crate::{Array, Notify, Operator};
 
-/// Convert year-to-date (YTD) financial values into annualized quarterly
-/// values.
+/// Convert year-to-date (YTD) financial values into annualized values.
 ///
 /// # Input
 ///
@@ -25,16 +24,15 @@ use crate::{Array, Notify, Operator};
 ///
 /// On each report event:
 ///
-/// 1. Extract `year` and `day_of_year` from the input.
+/// 1. Extract `year: i64` and `day_of_year: f64` from the input.
 /// 2. If this is the first report or a new calendar year (`year ≠
-///    prev_year`), the quarterly value equals the YTD value and
-///    `days_elapsed = day_of_year`.
-/// 3. Otherwise, `quarterly = ytd − prev_ytd` and
+///    prev_year`), let `delta = ytd` and `days_elapsed = day_of_year`.
+/// 3. Otherwise, `delta = ytd − prev_ytd` and
 ///    `days_elapsed = day_of_year − prev_day_of_year`.
-/// 4. `annualized = quarterly × 365 / days_elapsed`.
+/// 4. `annualized = delta × 365 / days_elapsed`.
 ///
 /// For a standard Q2 report: `days_elapsed = 181 − 90 = 91`, so
-/// `annualized ≈ quarterly × 4.01`.
+/// `annualized ≈ delta × 4.01`.
 pub struct Annualize;
 
 impl Annualize {
@@ -52,7 +50,7 @@ impl Default for Annualize {
 /// Runtime state for the annualize operator.
 pub struct AnnualizeState {
     prev_ytd: Vec<f64>,
-    prev_year: f64,
+    prev_year: i64,
     prev_day: f64,
     initialized: bool,
 }
@@ -71,8 +69,8 @@ impl Operator for Annualize {
         let n = input_len - 2;
         let state = AnnualizeState {
             prev_ytd: vec![0.0; n],
-            prev_year: f64::NAN,
-            prev_day: f64::NAN,
+            prev_year: 0,
+            prev_day: 0.0,
             initialized: false,
         };
         (state, Array::zeros(&[n]))
@@ -86,34 +84,33 @@ impl Operator for Annualize {
         _notify: &Notify<'_>,
     ) -> bool {
         let input = inputs.0.as_slice();
-        let year = input[0];
+        let year = input[0].floor() as i64;
         let day = input[1];
         let ytd = &input[2..];
         let n = ytd.len();
         let out = output.as_mut_slice();
 
-        let (is_new_year, days_elapsed) =
-            if !state.initialized || (year as i32) != (state.prev_year as i32) {
-                // First report ever, or new calendar year.
-                (true, day)
-            } else {
-                (false, day - state.prev_day)
-            };
+        // Check if this is the first report for the year.
+        let (is_new_year, days_elapsed) = if !state.initialized || year != state.prev_year {
+            (true, day)
+        } else {
+            (false, day - state.prev_day)
+        };
 
+        // Guard against zero / negative elapsed days (data error).
         if days_elapsed <= 0.0 {
-            // Guard against zero / negative elapsed days (data error).
             for o in out.iter_mut() {
                 *o = f64::NAN;
             }
         } else {
             let scale = 365.0 / days_elapsed;
             for i in 0..n {
-                let quarterly = if is_new_year {
+                let delta = if is_new_year {
                     ytd[i]
                 } else {
                     ytd[i] - state.prev_ytd[i]
                 };
-                out[i] = quarterly * scale;
+                out[i] = delta * scale;
             }
         }
 
@@ -168,7 +165,7 @@ mod tests {
         let h1 = input(2024.0, 181.0, &[250.0, 55.0]);
         Annualize::compute(&mut s, (&h1,), &mut o, 2, &notify());
 
-        // quarterly = [150, 35], days_elapsed = 91.
+        // delta = [150, 35], days_elapsed = 91.
         let expected_rev = 150.0 * 365.0 / 91.0;
         let expected_ni = 35.0 * 365.0 / 91.0;
         assert!((o.as_slice()[0] - expected_rev).abs() < 1e-10);
@@ -186,7 +183,7 @@ mod tests {
         let q1 = input(2024.0, 91.0, &[300.0]);
         Annualize::compute(&mut s, (&q1,), &mut o, 2, &notify());
 
-        // New year → quarterly = ytd = 300, days_elapsed = 91.
+        // New year → delta = ytd = 300, days_elapsed = 91.
         let expected = 300.0 * 365.0 / 91.0;
         assert!((o.as_slice()[0] - expected).abs() < 1e-10);
     }
@@ -199,17 +196,17 @@ mod tests {
 
         let h1 = input(2024.0, 182.0, &[210.0]);
         Annualize::compute(&mut s, (&h1,), &mut o, 2, &notify());
-        // quarterly = 110, days = 91.
+        // delta = 110, days = 91.
         assert!((o.as_slice()[0] - 110.0 * 365.0 / 91.0).abs() < 1e-10);
 
         let q3 = input(2024.0, 274.0, &[330.0]);
         Annualize::compute(&mut s, (&q3,), &mut o, 3, &notify());
-        // quarterly = 120, days = 92.
+        // delta = 120, days = 92.
         assert!((o.as_slice()[0] - 120.0 * 365.0 / 92.0).abs() < 1e-10);
 
         let annual = input(2024.0, 366.0, &[460.0]);
         Annualize::compute(&mut s, (&annual,), &mut o, 4, &notify());
-        // quarterly = 130, days = 92.
+        // delta = 130, days = 92.
         assert!((o.as_slice()[0] - 130.0 * 365.0 / 92.0).abs() < 1e-10);
     }
 
@@ -237,7 +234,7 @@ mod tests {
         // Annual: day 366, YTD = [1100].
         let annual = input(2024.0, 366.0, &[1100.0]);
         Annualize::compute(&mut s, (&annual,), &mut o, 2, &notify());
-        // quarterly = 600, days = 184.
+        // delta = 600, days = 184.
         assert!((o.as_slice()[0] - 600.0 * 365.0 / 184.0).abs() < 1e-10);
     }
 

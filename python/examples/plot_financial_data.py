@@ -8,25 +8,27 @@ and download instructions.
 
 from pathlib import Path
 import argparse
+import numpy as np
 import matplotlib.pyplot as plt
 
-from a_shares_crawler.types import Schema as CrawlerSchema
+from a_shares_crawler.types import Schema as CSVSchema
 
 from tradingflow import Scenario, Schema
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Record, Select
-from tradingflow.operators.num import Multiply
+from tradingflow.operators import Map, Record, Select
+from tradingflow.operators.num import Divide, Multiply, Negate
+from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize
 
 
-PRICE_SCHEMA = Schema(["open", "close", "high", "low", "amount", "volume"])
-DIVIDEND_SCHEMA = Schema(["share_dividends", "cash_dividends"])
-EQUITY_SCHEMA = Schema(["total_shares", "circulating_shares"])
+PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
+EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
+DIVIDEND_SCHEMA = Schema(CSVSchema.dividends().iter_field_ids())
 
-BS_SCHEMA = Schema(CrawlerSchema.balance_sheet().iter_field_ids())
-INC_SCHEMA = Schema(CrawlerSchema.income_statement().iter_field_ids())
-CF_SCHEMA = Schema(CrawlerSchema.cash_flow_statement().iter_field_ids())
+BS_SCHEMA = Schema(CSVSchema.balance_sheet().iter_field_ids())
+INC_SCHEMA = Schema(CSVSchema.income_statement().iter_field_ids())
+CF_SCHEMA = Schema(CSVSchema.cash_flow_statement().iter_field_ids())
 
 
 def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
@@ -39,20 +41,29 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     # ------------------------------------------------------------------
 
     # Daily prices. Shape: (6,).
-    prices = sc.add_source(CSVSource(history_dir / f"{symbol}.daily_prices.csv", PRICE_SCHEMA))
+    prices = sc.add_source(
+        CSVSource(
+            history_dir / f"{symbol}.daily_prices.csv",
+            PRICE_SCHEMA,
+            time_column="date",
+        )
+    )
 
-    # Dividend events. Shape: (2,).
-    dividends = sc.add_source(CSVSource(history_dir / f"{symbol}.dividends.csv", DIVIDEND_SCHEMA))
-
-    # Equity structure (irregular updates). Shape: (2,).
-    # Uses FinancialReportSource for correct two-timestamp handling.
-    equity = sc.add_source(
-        FinancialReportSource(
+    # Equity structure events. Shape: (2,).
+    equity_structures = sc.add_source(
+        CSVSource(
             history_dir / f"{symbol}.equity_structures.csv",
             EQUITY_SCHEMA,
-            report_date_column="date",
-            notice_date_column="notice_date",
-            use_effective_date=False,
+            time_column="date",
+        )
+    )
+
+    # Dividend events. Shape: (2,).
+    dividends = sc.add_source(
+        CSVSource(
+            history_dir / f"{symbol}.dividends.csv",
+            DIVIDEND_SCHEMA,
+            time_column="date",
         )
     )
 
@@ -61,7 +72,7 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
         FinancialReportSource(
             history_dir / f"{symbol}.balance_sheets.csv",
             BS_SCHEMA,
-            report_date_column="report_date",
+            report_date_column="date",
             notice_date_column="notice_date",
             use_effective_date=False,
         )
@@ -72,7 +83,7 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
         FinancialReportSource(
             history_dir / f"{symbol}.income_statements.csv",
             INC_SCHEMA,
-            report_date_column="report_date",
+            report_date_column="date",
             notice_date_column="notice_date",
             with_report_date=True,
             use_effective_date=False,
@@ -84,7 +95,7 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
         FinancialReportSource(
             history_dir / f"{symbol}.cash_flow_statements.csv",
             CF_SCHEMA,
-            report_date_column="report_date",
+            report_date_column="date",
             notice_date_column="notice_date",
             with_report_date=True,
             use_effective_date=False,
@@ -100,40 +111,67 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     cf_ann = sc.add_operator(Annualize(cf_ytd))
 
     # Market cap = close price × total shares.
-    close = sc.add_operator(Select(prices, [PRICE_SCHEMA.index("close")]))
-    total_shares = sc.add_operator(Select(equity, [EQUITY_SCHEMA.index("total_shares")]))
+    close = sc.add_operator(Select(prices, [PRICE_SCHEMA.index("prices.close")]))
+    total_shares = sc.add_operator(Select(equity_structures, [EQUITY_SCHEMA.index("shares.total")]))
     market_cap = sc.add_operator(Multiply(close, total_shares))
 
-    # Balance sheet: select total assets and negative equity together.
-    bs_metrics = sc.add_operator(
+    # Balance sheet: total assets and equity.
+    assets = sc.add_operator(Select(balance, [BS_SCHEMA.index("balance_sheet.assets")]))
+    negative_equity = sc.add_operator(Select(balance, [BS_SCHEMA.index("balance_sheet.equity")]))
+    equity = sc.add_operator(Negate(negative_equity))
+
+    # Parent equity = sum of capital, reserves and parent interests.
+    negative_parent_equity_components = sc.add_operator(
         Select(
             balance,
-            BS_SCHEMA.indices(["balance_sheet.assets", "balance_sheet.equity"]),
+            BS_SCHEMA.indices(
+                [
+                    "balance_sheet.equity.capital",
+                    "balance_sheet.equity.reserves",
+                    "balance_sheet.equity.parent_interests",
+                ]
+            ),
+        )
+    )
+    parent_equity = sc.add_operator(
+        Map(
+            negative_parent_equity_components,
+            lambda x: -x.sum(),
+            shape=(),
+            dtype=np.float64,
         )
     )
 
     # Income statement (annualized): select income, expenses and net profit.
-    inc_metrics = sc.add_operator(
-        Select(
-            income_ann,
-            INC_SCHEMA.indices(["income_statement.profit.operating.income", "income_statement.profit"]),
-        )
-    )
+    op_income = sc.add_operator(Select(income_ann, [INC_SCHEMA.index("income_statement.profit.operating.income")]))
+    net_profit = sc.add_operator(Select(income_ann, [INC_SCHEMA.index("income_statement.profit")]))
 
     # Cash flow (annualized): select operating, investing, financing.
-    cf_metrics = sc.add_operator(
-        Select(
-            cf_ann,
-            CF_SCHEMA.indices(["cash_flow_statement.change"]),
-        )
-    )
+    cash_flow = sc.add_operator(Select(cf_ann, [CF_SCHEMA.index("cash_flow_statement.change")]))
+
+    # TTM net profit: rolling mean of annualized quarterly values over 365
+    # days on the report-date axis. For equal-length quarters this equals
+    # the sum of the last 4 quarterly values.
+    net_profit_series = sc.add_operator(Record(net_profit))
+    net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
+
+    # Valuation ratios.
+    ep_ratio = sc.add_operator(Divide(net_profit_ttm, market_cap))
+    bp_ratio = sc.add_operator(Divide(parent_equity, market_cap))
+    roe = sc.add_operator(Divide(net_profit_ttm, parent_equity))
 
     # Record into series for plotting.
     return sc, {
         "market_cap": sc.add_operator(Record(market_cap)),
-        "balance_sheet": sc.add_operator(Record(bs_metrics)),
-        "income": sc.add_operator(Record(inc_metrics)),
-        "cash_flow": sc.add_operator(Record(cf_metrics)),
+        "assets": sc.add_operator(Record(assets)),
+        "equity": sc.add_operator(Record(equity)),
+        "parent_equity": sc.add_operator(Record(parent_equity)),
+        "op_income": sc.add_operator(Record(op_income)),
+        "net_profit": sc.add_operator(Record(net_profit)),
+        "cash_flow": sc.add_operator(Record(cash_flow)),
+        "ep_ratio": sc.add_operator(Record(ep_ratio)),
+        "bp_ratio": sc.add_operator(Record(bp_ratio)),
+        "roe": sc.add_operator(Record(roe)),
     }
 
 
@@ -152,14 +190,21 @@ if __name__ == "__main__":
             "Run `python -m a_shares_crawler --help` for download instructions."
         )
 
+    # Run scenario.
     sc, handles = build_scenario(symbol, data_dir)
     sc.run()
 
     # Extract series as DataFrames.
-    market_cap_df = sc.series_view(handles["market_cap"]).to_dataframe(["market_cap"])
-    bs_df = sc.series_view(handles["balance_sheet"]).to_dataframe(["total_assets", "negative_equity"])
-    inc_df = sc.series_view(handles["income"]).to_dataframe(["operating_income", "net_profit"])
-    cf_df = sc.series_view(handles["cash_flow"]).to_dataframe(["change"])
+    market_cap_df = sc.series_view(handles["market_cap"]).to_dataframe()
+    assets_df = sc.series_view(handles["assets"]).to_dataframe()
+    equity_df = sc.series_view(handles["equity"]).to_dataframe()
+    parent_equity_df = sc.series_view(handles["parent_equity"]).to_dataframe()
+    op_income_df = sc.series_view(handles["op_income"]).to_dataframe()
+    net_profit_df = sc.series_view(handles["net_profit"]).to_dataframe()
+    cash_flow_df = sc.series_view(handles["cash_flow"]).to_dataframe()
+    ep_df = sc.series_view(handles["ep_ratio"]).to_dataframe()
+    bp_df = sc.series_view(handles["bp_ratio"]).to_dataframe()
+    roe_df = sc.series_view(handles["roe"]).to_dataframe()
 
     n = len(market_cap_df)
     if n == 0:
@@ -173,25 +218,47 @@ if __name__ == "__main__":
     # Plot
     # ------------------------------------------------------------------
 
-    fig, axes = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    plt.style.use(["fast"])
+    fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
 
     # Panel 1: Market cap, total assets, net assets (equity).
     ax = axes[0]
-    ax.plot(bs_df.index, bs_df["total_assets"] / 1e8, "o-", label="Total assets", markersize=3)
-    ax.plot(bs_df.index, -bs_df["negative_equity"] / 1e8, "s-", label="Net assets", markersize=3)
-    ax.plot(market_cap_df.index, market_cap_df["market_cap"] / 1e8, label="Market cap", linewidth=0.8)
+    ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
+    ax.plot(assets_df.index, assets_df / 1e8, label="Total assets", linewidth=0.8)
+    ax.plot(equity_df.index, equity_df / 1e8, label="Net assets", linewidth=0.8)
+    ax.plot(
+        parent_equity_df.index,
+        parent_equity_df / 1e8,
+        label="Parent equity",
+        color="orange",
+        linestyle="--",
+        linewidth=0.8,
+    )
+    ax.plot(market_cap_df.index, market_cap_df / 1e8, label="Market cap", linewidth=0.8)
     ax.set_ylabel("CNY (100M)")
     ax.set_title(f"{symbol} — Balance sheet & market cap")
     ax.legend(loc="upper left", fontsize=8)
 
     # Panel 2: Annualized income statement, cash flows.
     ax = axes[1]
-    ax.plot(inc_df.index, inc_df["operating_income"] / 1e8, "o-", label="Operating income", markersize=3)
-    ax.plot(inc_df.index, inc_df["net_profit"] / 1e8, "^-", label="Net profit", markersize=3)
-    ax.plot(cf_df.index, cf_df["change"] / 1e8, "o-", label="Cash flow", markersize=3)
+    ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
+    ax.plot(op_income_df.index, op_income_df / 1e8, label="Operating income", linewidth=0.8)
+    ax.plot(net_profit_df.index, net_profit_df / 1e8, label="Net profit", linewidth=0.8)
+    ax.plot(cash_flow_df.index, cash_flow_df / 1e8, label="Cash flow", linewidth=0.8)
     ax.set_ylabel("CNY (100M, annualized)")
     ax.set_title(f"{symbol} — Income & cash flow (annualized)")
     ax.legend(loc="upper left", fontsize=8)
+
+    # Panel 3: Valuation ratios.
+    ax = axes[2]
+    ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
+    ax.plot(ep_df.index, ep_df * 100, label="E/P (TTM)", linewidth=0.8)
+    ax.plot(bp_df.index, bp_df * 100, label="B/P", linewidth=0.8)
+    ax.plot(roe_df.index, roe_df * 100, label="ROE (TTM)", linewidth=0.8)
+    ax.set_ylabel("%")
+    ax.set_title(f"{symbol} — Valuation & profitability")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.set_xlabel("Date")
 
     fig.tight_layout()
     plt.show()

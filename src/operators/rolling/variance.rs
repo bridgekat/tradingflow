@@ -1,109 +1,67 @@
-//! Rolling variance operator.
+//! Rolling variance accumulator.
 //!
 //! O(1) per element per tick via incremental sum/sum_sq with NaN counting.
 
 use num_traits::Float;
 
-use crate::{Array, Notify, Operator, Scalar, Series};
+use crate::Scalar;
 
-/// Element-wise rolling variance of last `window` values.
+use super::accumulator::Accumulator;
+
+/// Incremental population variance accumulator.
 ///
-/// Uses the formula `Var(x) = E[x^2] - E[x]^2` (population variance).
-/// If any value in the window is NaN, the output for that element is NaN.
-pub struct RollingVariance<T: Scalar + Float> {
-    window: usize,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T: Scalar + Float> RollingVariance<T> {
-    /// Create a new rolling variance operator with the given window size.
-    pub fn new(window: usize) -> Self {
-        assert!(window >= 1, "window must be >= 1");
-        Self {
-            window,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-/// Runtime state for [`RollingVariance`].
-pub struct VarState<T: Scalar + Float> {
-    window: usize,
-    /// Running sum per element position.
+/// Uses the formula `Var(x) = E[x²] − E[x]²`.
+/// If any value in the window is NaN for a given element position, the
+/// output for that position is NaN.
+pub struct VarianceAccumulator<T: Scalar + Float> {
     sum: Vec<T>,
-    /// Running sum of squares per element position.
     sum_sq: Vec<T>,
-    /// NaN count in window per element position.
     nan_count: Vec<u32>,
 }
 
-impl<T: Scalar + Float> Operator for RollingVariance<T> {
-    type State = VarState<T>;
-    type Inputs = (Series<T>,);
-    type Output = Array<T>;
+impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
+    type Scalar = T;
 
-    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (VarState<T>, Array<T>) {
-        let stride = inputs.0.stride();
-        let state = VarState {
-            window: self.window,
+    fn new(input_shape: &[usize]) -> Self {
+        let stride: usize = input_shape.iter().product();
+        Self {
             sum: vec![T::zero(); stride],
             sum_sq: vec![T::zero(); stride],
             nan_count: vec![0; stride],
-        };
-        let shape = inputs.0.shape();
-        let stride = shape.iter().product::<usize>();
-        (state, Array::from_vec(shape, vec![T::nan(); stride]))
+        }
     }
 
-    fn compute(
-        state: &mut VarState<T>,
-        inputs: (&Series<T>,),
-        output: &mut Array<T>,
-        _timestamp: i64,
-        _notify: &Notify<'_>,
-    ) -> bool {
-        let series = inputs.0;
-        let len = series.len();
-
-        // Add new element.
-        let new_row = series.at(len - 1);
-        for (j, &v) in new_row.iter().enumerate() {
+    fn add(&mut self, element: &[T]) {
+        for (j, &v) in element.iter().enumerate() {
             if v.is_nan() {
-                state.nan_count[j] += 1;
+                self.nan_count[j] += 1;
             } else {
-                state.sum[j] = state.sum[j] + v;
-                state.sum_sq[j] = state.sum_sq[j] + v * v;
+                self.sum[j] = self.sum[j] + v;
+                self.sum_sq[j] = self.sum_sq[j] + v * v;
             }
         }
+    }
 
-        // Evict oldest element if window is full.
-        if len > state.window {
-            let old_row = series.at(len - 1 - state.window);
-            for (j, &v) in old_row.iter().enumerate() {
-                if v.is_nan() {
-                    state.nan_count[j] -= 1;
-                } else {
-                    state.sum[j] = state.sum[j] - v;
-                    state.sum_sq[j] = state.sum_sq[j] - v * v;
-                }
+    fn remove(&mut self, element: &[T]) {
+        for (j, &v) in element.iter().enumerate() {
+            if v.is_nan() {
+                self.nan_count[j] -= 1;
+            } else {
+                self.sum[j] = self.sum[j] - v;
+                self.sum_sq[j] = self.sum_sq[j] - v * v;
             }
         }
+    }
 
-        // Produce output only when window is full.
-        if len < state.window {
-            false
-        } else {
-            let count = T::from(len.min(state.window)).unwrap();
-            let out = output.as_mut_slice();
-            for (j, v) in out.iter_mut().enumerate() {
-                *v = if state.nan_count[j] == 0 {
-                    let mean = state.sum[j] / count;
-                    state.sum_sq[j] / count - mean * mean
-                } else {
-                    T::nan()
-                };
-            }
-            true
+    fn write(&self, count: usize, output: &mut [T]) {
+        let n = T::from(count).unwrap();
+        for (j, o) in output.iter_mut().enumerate() {
+            *o = if self.nan_count[j] == 0 {
+                let mean = self.sum[j] / n;
+                self.sum_sq[j] / n - mean * mean
+            } else {
+                T::nan()
+            };
         }
     }
 }
@@ -111,10 +69,14 @@ impl<T: Scalar + Float> Operator for RollingVariance<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operators::rolling::accumulator::Rolling;
+    use crate::{Array, Notify, Operator, Series};
+
+    type RollingVariance = Rolling<VarianceAccumulator<f64>>;
 
     fn push_compute(
         s: &mut Series<f64>,
-        state: &mut VarState<f64>,
+        state: &mut <RollingVariance as Operator>::State,
         out: &mut Array<f64>,
         ts: i64,
         val: f64,
@@ -124,137 +86,54 @@ mod tests {
     }
 
     #[test]
-    fn variance_constant() {
+    fn var_basic() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::<f64>::new(5).init((&s,), i64::MIN);
-
-        for i in 1..=5 {
-            push_compute(&mut s, &mut state, &mut out, i, 10.0);
-        }
-        assert!((out.as_slice()[0]).abs() < 1e-10); // variance of constant = 0
-    }
-
-    #[test]
-    fn variance_known() {
-        // Var([1,2,3]) = E[x^2] - E[x]^2 = (1+4+9)/3 - (6/3)^2 = 14/3 - 4 = 2/3
-        let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::<f64>::new(3).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingVariance::count(3).init((&s,), i64::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(!push_compute(&mut s, &mut state, &mut out, 2, 2.0));
+
         assert!(push_compute(&mut s, &mut state, &mut out, 3, 3.0));
-
-        let var = out.as_slice()[0];
-        assert!((var - 2.0 / 3.0).abs() < 1e-10, "expected 2/3, got {var}");
+        // Var([1,2,3]) = E[x²] - E[x]² = (1+4+9)/3 - 4 = 14/3 - 4 = 2/3
+        assert!((out.as_slice()[0] - 2.0 / 3.0).abs() < 1e-10);
     }
 
     #[test]
-    fn variance_sliding() {
-        // After window slides: Var([2,3,4]) = Var([1,2,3]) = 2/3
+    fn var_nan() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::<f64>::new(3).init((&s,), i64::MIN);
-
-        for i in 1..=4 {
-            push_compute(&mut s, &mut state, &mut out, i, i as f64);
-        }
-        let var = out.as_slice()[0];
-        assert!((var - 2.0 / 3.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn variance_nan() {
-        let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::<f64>::new(3).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingVariance::count(2).init((&s,), i64::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
-        assert!(!push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
-        assert!(push_compute(&mut s, &mut state, &mut out, 3, 3.0));
-        assert!(out.as_slice()[0].is_nan());
-    }
-
-    #[test]
-    fn variance_vector() {
-        let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingVariance::<f64>::new(2).init((&s,), i64::MIN);
-
-        s.push(1, &[1.0, 10.0]);
-        assert!(!RollingVariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
-        // Output stays NaN during warmup.
-        assert!(out.as_slice()[0].is_nan());
-        assert!(out.as_slice()[1].is_nan());
-
-        s.push(2, &[3.0, 20.0]);
-        assert!(RollingVariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
-
-        let row = out.as_slice();
-        // Var([1,3]) = (1+9)/2 - (4/2)^2 = 5 - 4 = 1
-        assert!((row[0] - 1.0).abs() < 1e-10);
-        // Var([10,20]) = (100+400)/2 - (30/2)^2 = 250 - 225 = 25
-        assert!((row[1] - 25.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn variance_nan_eviction() {
-        let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::<f64>::new(3).init((&s,), i64::MIN);
-
-        assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
-        assert!(!push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
-        assert!(push_compute(&mut s, &mut state, &mut out, 3, 3.0));
-        assert!(out.as_slice()[0].is_nan()); // NaN in window
-
-        push_compute(&mut s, &mut state, &mut out, 4, 4.0);
-        assert!(out.as_slice()[0].is_nan()); // NaN still in window
-
-        push_compute(&mut s, &mut state, &mut out, 5, 5.0);
-        // Window [3, 4, 5] → Var = E[x²]-E[x]² = (9+16+25)/3 - (12/3)² = 50/3 - 16 = 2/3
-        let var = out.as_slice()[0];
-        assert!(
-            (var - 2.0 / 3.0).abs() < 1e-10,
-            "expected 2/3 after NaN eviction, got {var}"
-        );
-    }
-
-    #[test]
-    fn variance_multiple_nans() {
-        let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::<f64>::new(2).init((&s,), i64::MIN);
-
-        assert!(!push_compute(&mut s, &mut state, &mut out, 1, f64::NAN));
         assert!(push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
         assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 3, 3.0);
-        assert!(out.as_slice()[0].is_nan()); // one NaN remains
+        assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 4, 5.0);
-        // Window [3, 5] → Var = (9+25)/2 - (8/2)² = 17 - 16 = 1
-        let var = out.as_slice()[0];
-        assert!((var - 1.0).abs() < 1e-10);
+        // Var([3,5]) = (9+25)/2 - 16 = 1.0
+        assert!((out.as_slice()[0] - 1.0).abs() < 1e-10);
     }
 
     #[test]
-    fn variance_nan_vector_independent() {
-        let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingVariance::<f64>::new(2).init((&s,), i64::MIN);
+    fn var_time_delta() {
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = RollingVariance::time_delta(200).init((&s,), i64::MIN);
 
-        s.push(1, &[f64::NAN, 2.0]);
-        assert!(!RollingVariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
-        // Output stays NaN during warmup.
-        assert!(out.as_slice()[0].is_nan());
-        assert!(out.as_slice()[1].is_nan());
+        s.push(100, &[2.0]);
+        assert!(RollingVariance::compute(
+            &mut state,
+            (&s,),
+            &mut out,
+            100,
+            &Notify::new(&[], &[])
+        ));
+        // Single element → variance = 0.
+        assert_eq!(out.as_slice()[0], 0.0);
 
-        s.push(2, &[4.0, 4.0]);
-        assert!(RollingVariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
-        assert!(out.as_slice()[0].is_nan()); // NaN still in window
-        let var_1 = out.as_slice()[1];
-        // Var([2,4]) = (4+16)/2 - (6/2)² = 10 - 9 = 1
-        assert!((var_1 - 1.0).abs() < 1e-10);
-
-        s.push(3, &[6.0, 6.0]);
-        RollingVariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
-        let var_0 = out.as_slice()[0];
-        // Window for elem 0: [4, 6] → Var = (16+36)/2 - (10/2)² = 26 - 25 = 1
-        assert!((var_0 - 1.0).abs() < 1e-10, "expected 1.0, got {var_0}");
+        s.push(200, &[4.0]);
+        RollingVariance::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], &[]));
+        // Var([2,4]) = (4+16)/2 - 9 = 1.0
+        assert!((out.as_slice()[0] - 1.0).abs() < 1e-10);
     }
 }

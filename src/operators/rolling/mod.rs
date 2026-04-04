@@ -1,34 +1,44 @@
 //! Built-in rolling (windowed) operators.
 //!
-//! Every operator in this module implements [`Operator`](crate::Operator) with
-//! [`Series<T>`](crate::Series) input and [`Array<T>`](crate::Array) output
-//! (`T: Scalar + Float`). Each
-//! maintains incremental state so that per-tick cost is O(1) per element
-//! (O(K^2) for the covariance matrix where K is the vector dimension).
+//! Rolling operators take a [`Series<T>`](crate::Series) input and produce an
+//! [`Array<T>`](crate::Array) output (`T: Scalar + Float`).  Each maintains
+//! incremental state so that per-tick cost is O(1) per element (O(K²) for
+//! the covariance matrix where K is the vector dimension).
 //!
-//! All rolling operators share the following invariants:
+//! # Architecture
 //!
-//! - **Window size**: set at construction (`window >= 1`). Before the window
-//!   is full, computation uses all values seen so far.
-//! - **NaN propagation**: if any value within the current window is NaN for a
-//!   given element position, the output for that element is NaN. Once the NaN
-//!   is evicted from the window, valid output resumes.
-//! - **Element independence**: for vector inputs, NaN in one element position
-//!   does not affect other positions.
+//! The [`Accumulator`](accumulator::Accumulator) trait defines the incremental
+//! `add` / `remove` / `write` interface.  The generic
+//! [`Rolling<A>`](accumulator::Rolling) operator pairs an accumulator with a
+//! [`Window`](accumulator::Window) strategy (count-based or time-delta-based)
+//! and implements [`Operator`](crate::Operator).
 //!
-//! # Operators
+//! # Window strategies
+//!
+//! - **Count-based** ([`Rolling::count`](accumulator::Rolling::count)) — the
+//!   window contains the last N elements.  Output is produced only once the
+//!   window is full.
+//! - **Time-delta-based** ([`Rolling::time_delta`](accumulator::Rolling::time_delta))
+//!   — the window contains all elements within a time range of the most
+//!   recent timestamp.  Output is produced as soon as at least one element is
+//!   in the window.
+//!
+//! # Rolling operators
 //!
 //! - [`RollingSum`] — incremental sum via add/subtract.
 //! - [`RollingMean`] — incremental mean via add/subtract.
-//! - [`RollingVariance`] — population variance via `E[x^2] - E[x]^2`.
+//! - [`RollingVariance`] — population variance via `E[x²] − E[x]²`.
 //! - [`RollingCovariance`] — pairwise covariance matrix of a 1D `[K]` input,
-//!   producing a `[K, K]` output. Uses incremental cross-product sums.
-//! - [`Ema`] — exponential moving average with window-bounded weights.
-//!   Constructors: [`Ema::new`] (explicit alpha), [`Ema::with_span`],
-//!   [`Ema::with_half_life`].
+//!   producing a `[K, K]` output.
+//!
+//! # Other operators
+//!
+//! - [`Ema`] — exponential moving average with window-bounded weights (does
+//!   not use the `Accumulator` abstraction).
 //! - [`ForwardFill`] — replaces NaN with the last valid observation per
-//!   element (no window parameter; stateful but not windowed).
+//!   element (stateful but not windowed).
 
+pub mod accumulator;
 pub mod covariance;
 pub mod ema;
 pub mod ffill;
@@ -36,9 +46,22 @@ pub mod mean;
 pub mod sum;
 pub mod variance;
 
-pub use covariance::RollingCovariance;
+pub use accumulator::{Accumulator, Rolling, Window};
+pub use covariance::CovarianceAccumulator;
 pub use ema::Ema;
 pub use ffill::ForwardFill;
-pub use mean::RollingMean;
-pub use sum::RollingSum;
-pub use variance::RollingVariance;
+pub use mean::MeanAccumulator;
+pub use sum::SumAccumulator;
+pub use variance::VarianceAccumulator;
+
+/// Element-wise rolling sum.
+pub type RollingSum<T> = Rolling<SumAccumulator<T>>;
+
+/// Element-wise rolling mean.
+pub type RollingMean<T> = Rolling<MeanAccumulator<T>>;
+
+/// Element-wise rolling population variance.
+pub type RollingVariance<T> = Rolling<VarianceAccumulator<T>>;
+
+/// Pairwise rolling covariance matrix (`[K] → [K, K]`).
+pub type RollingCovariance<T> = Rolling<CovarianceAccumulator<T>>;

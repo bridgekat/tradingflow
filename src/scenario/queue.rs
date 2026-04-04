@@ -207,7 +207,7 @@ impl Scenario {
     /// # Complexity
     ///
     /// O(log N) per event for N sources — no O(N) scans.
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self, mut on_flush: impl FnMut(i64)) {
         let n = self.source_indices.len();
         if n == 0 {
             return;
@@ -306,6 +306,7 @@ impl Scenario {
             {
                 self.graph.flush(qts, &queue_sources);
                 queue_sources.clear();
+                on_flush(qts);
             }
 
             // ----------------------------------------------------------------
@@ -354,7 +355,10 @@ impl Scenario {
 
         // Final flush for the last accumulated batch.
         if !queue_sources.is_empty() {
-            self.graph.flush(queue_ts.unwrap(), &queue_sources);
+            let qts = queue_ts.unwrap();
+            self.graph.flush(qts, &queue_sources);
+            queue_sources.clear();
+            on_flush(qts);
         }
     }
 }
@@ -587,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn pocq_empty_scenario() {
         let mut sc = Scenario::new();
-        sc.run().await;
+        sc.run(|_| {}).await;
     }
 
     /// A stale live event (ts=50) arriving after hist pushes current_ts to 100
@@ -639,7 +643,7 @@ mod tests {
             live_tx.send((50_i64, 2.0_f64)).await.unwrap();
         });
 
-        sc.run().await;
+        sc.run(|_| {}).await;
 
         let series: &Series<f64> = sc.value(hrec);
         assert_eq!(series.len(), 1);
@@ -674,7 +678,7 @@ mod tests {
                 source_data.push((hist, live));
             }
 
-            sc.run().await;
+            sc.run(|_| {}).await;
 
             for (i, (hr, (hist, live))) in records.iter().zip(source_data.iter()).enumerate() {
                 let series: &Series<f64> = sc.value(*hr);

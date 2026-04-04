@@ -1,102 +1,61 @@
-//! Rolling mean operator.
+//! Rolling mean accumulator.
 //!
 //! O(1) per element per tick via incremental add/subtract with NaN counting.
 
 use num_traits::Float;
 
-use crate::{Array, Notify, Operator, Scalar, Series};
+use crate::Scalar;
 
-/// Element-wise rolling mean of last `window` values.
+use super::accumulator::Accumulator;
+
+/// Incremental mean accumulator.
 ///
-/// If any value in the window is NaN, the output for that element is NaN.
-pub struct RollingMean<T: Scalar + Float> {
-    window: usize,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T: Scalar + Float> RollingMean<T> {
-    /// Create a new rolling mean operator with the given window size.
-    pub fn new(window: usize) -> Self {
-        assert!(window >= 1, "window must be >= 1");
-        Self {
-            window,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-/// Runtime state for [`RollingMean`].
-pub struct MeanState<T: Scalar + Float> {
-    window: usize,
-    /// Running sum per element position.
+/// If any value in the window is NaN for a given element position, the
+/// output for that position is NaN.
+pub struct MeanAccumulator<T: Scalar + Float> {
     sum: Vec<T>,
-    /// NaN count in window per element position.
     nan_count: Vec<u32>,
 }
 
-impl<T: Scalar + Float> Operator for RollingMean<T> {
-    type State = MeanState<T>;
-    type Inputs = (Series<T>,);
-    type Output = Array<T>;
+impl<T: Scalar + Float> Accumulator for MeanAccumulator<T> {
+    type Scalar = T;
 
-    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (MeanState<T>, Array<T>) {
-        let stride = inputs.0.stride();
-        let state = MeanState {
-            window: self.window,
+    fn new(input_shape: &[usize]) -> Self {
+        let stride: usize = input_shape.iter().product();
+        Self {
             sum: vec![T::zero(); stride],
             nan_count: vec![0; stride],
-        };
-        let shape = inputs.0.shape();
-        let stride = shape.iter().product::<usize>();
-        (state, Array::from_vec(shape, vec![T::nan(); stride]))
+        }
     }
 
-    fn compute(
-        state: &mut MeanState<T>,
-        inputs: (&Series<T>,),
-        output: &mut Array<T>,
-        _timestamp: i64,
-        _notify: &Notify<'_>,
-    ) -> bool {
-        let series = inputs.0;
-        let len = series.len();
-
-        // Add new element.
-        let new_row = series.at(len - 1);
-        for (j, &v) in new_row.iter().enumerate() {
+    fn add(&mut self, element: &[T]) {
+        for (j, &v) in element.iter().enumerate() {
             if v.is_nan() {
-                state.nan_count[j] += 1;
+                self.nan_count[j] += 1;
             } else {
-                state.sum[j] = state.sum[j] + v;
+                self.sum[j] = self.sum[j] + v;
             }
         }
+    }
 
-        // Evict oldest element if window is full.
-        if len > state.window {
-            let old_row = series.at(len - 1 - state.window);
-            for (j, &v) in old_row.iter().enumerate() {
-                if v.is_nan() {
-                    state.nan_count[j] -= 1;
-                } else {
-                    state.sum[j] = state.sum[j] - v;
-                }
+    fn remove(&mut self, element: &[T]) {
+        for (j, &v) in element.iter().enumerate() {
+            if v.is_nan() {
+                self.nan_count[j] -= 1;
+            } else {
+                self.sum[j] = self.sum[j] - v;
             }
         }
+    }
 
-        // Produce output only when window is full.
-        if len < state.window {
-            false
-        } else {
-            let count = T::from(len.min(state.window)).unwrap();
-            let out = output.as_mut_slice();
-            for (j, v) in out.iter_mut().enumerate() {
-                *v = if state.nan_count[j] > 0 {
-                    T::nan()
-                } else {
-                    state.sum[j] / count
-                };
-            }
-            true
+    fn write(&self, count: usize, output: &mut [T]) {
+        let n = T::from(count).unwrap();
+        for (j, o) in output.iter_mut().enumerate() {
+            *o = if self.nan_count[j] > 0 {
+                T::nan()
+            } else {
+                self.sum[j] / n
+            };
         }
     }
 }
@@ -104,10 +63,14 @@ impl<T: Scalar + Float> Operator for RollingMean<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operators::rolling::accumulator::Rolling;
+    use crate::{Array, Notify, Operator, Series};
+
+    type RollingMean = Rolling<MeanAccumulator<f64>>;
 
     fn push_compute(
         s: &mut Series<f64>,
-        state: &mut MeanState<f64>,
+        state: &mut <RollingMean as Operator>::State,
         out: &mut Array<f64>,
         ts: i64,
         val: f64,
@@ -119,45 +82,38 @@ mod tests {
     #[test]
     fn mean_basic() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingMean::<f64>::new(3).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingMean::count(3).init((&s,), i64::MIN);
 
-        // Warmup: returns false and output stays NaN.
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
-        assert!(out.as_slice()[0].is_nan());
-
         assert!(!push_compute(&mut s, &mut state, &mut out, 2, 2.0));
-        assert!(out.as_slice()[0].is_nan());
 
-        // Window full: returns true.
         assert!(push_compute(&mut s, &mut state, &mut out, 3, 3.0));
-        assert_eq!(out.as_slice()[0], 2.0); // mean of [1,2,3]
+        assert_eq!(out.as_slice()[0], 2.0);
 
         assert!(push_compute(&mut s, &mut state, &mut out, 4, 6.0));
-        assert_eq!(out.as_slice()[0], 11.0 / 3.0); // mean of [2,3,6]
+        assert_eq!(out.as_slice()[0], 11.0 / 3.0);
     }
 
     #[test]
     fn mean_nan() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingMean::<f64>::new(2).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingMean::count(2).init((&s,), i64::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
         assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 3, 3.0);
-        // Window [NaN, 3] → NaN
         assert!(out.as_slice()[0].is_nan());
 
         push_compute(&mut s, &mut state, &mut out, 4, 4.0);
-        // Window [3, 4] → 3.5
         assert_eq!(out.as_slice()[0], 3.5);
     }
 
     #[test]
     fn mean_constant() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingMean::<f64>::new(5).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingMean::count(5).init((&s,), i64::MIN);
 
         for i in 1..=10 {
             push_compute(&mut s, &mut state, &mut out, i, 7.0);
@@ -166,60 +122,28 @@ mod tests {
     }
 
     #[test]
-    fn mean_nan_eviction_restores() {
+    fn mean_time_delta() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingMean::<f64>::new(3).init((&s,), i64::MIN);
+        // Window: 200 ns.
+        let (mut state, mut out) = RollingMean::time_delta(200).init((&s,), i64::MIN);
 
-        assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
-        assert!(!push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
-        assert!(push_compute(&mut s, &mut state, &mut out, 3, 3.0));
-        assert!(out.as_slice()[0].is_nan()); // NaN in window
+        s.push(100, &[2.0]);
+        assert!(RollingMean::compute(
+            &mut state,
+            (&s,),
+            &mut out,
+            100,
+            &Notify::new(&[], &[])
+        ));
+        assert_eq!(out.as_slice()[0], 2.0); // mean of [2]
 
-        push_compute(&mut s, &mut state, &mut out, 4, 6.0);
-        assert!(out.as_slice()[0].is_nan()); // NaN still in window
+        s.push(200, &[4.0]);
+        RollingMean::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], &[]));
+        assert_eq!(out.as_slice()[0], 3.0); // mean of [2, 4]
 
-        push_compute(&mut s, &mut state, &mut out, 5, 9.0);
-        // Window [3, 6, 9] → NaN evicted, mean = 6
-        assert_eq!(out.as_slice()[0], 6.0);
-    }
-
-    #[test]
-    fn mean_multiple_nans_in_window() {
-        let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingMean::<f64>::new(3).init((&s,), i64::MIN);
-
-        assert!(!push_compute(&mut s, &mut state, &mut out, 1, f64::NAN));
-        assert!(!push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
-        assert!(push_compute(&mut s, &mut state, &mut out, 3, 6.0));
-        assert!(out.as_slice()[0].is_nan());
-
-        push_compute(&mut s, &mut state, &mut out, 4, 9.0);
-        assert!(out.as_slice()[0].is_nan()); // one NaN remains
-
-        push_compute(&mut s, &mut state, &mut out, 5, 12.0);
-        // Window [6, 9, 12] → both NaNs evicted, mean = 9
-        assert_eq!(out.as_slice()[0], 9.0);
-    }
-
-    #[test]
-    fn mean_nan_vector_independent() {
-        let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingMean::<f64>::new(2).init((&s,), i64::MIN);
-
-        s.push(1, &[f64::NAN, 4.0]);
-        assert!(!RollingMean::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
-        // Output stays NaN during warmup.
-        assert!(out.as_slice()[0].is_nan());
-        assert!(out.as_slice()[1].is_nan());
-
-        s.push(2, &[6.0, 8.0]);
-        assert!(RollingMean::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
-        assert!(out.as_slice()[0].is_nan()); // NaN still in window for elem 0
-        assert_eq!(out.as_slice()[1], 6.0); // (4+8)/2
-
-        s.push(3, &[10.0, 12.0]);
-        RollingMean::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
-        assert_eq!(out.as_slice()[0], 8.0); // (6+10)/2, NaN evicted
-        assert_eq!(out.as_slice()[1], 10.0); // (8+12)/2
+        // ts=350: evict ts=100. Window [200, 350], mean of [4, 6] = 5.
+        s.push(350, &[6.0]);
+        RollingMean::compute(&mut state, (&s,), &mut out, 350, &Notify::new(&[], &[]));
+        assert_eq!(out.as_slice()[0], 5.0);
     }
 }

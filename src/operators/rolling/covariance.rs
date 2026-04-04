@@ -1,157 +1,123 @@
-//! Rolling covariance matrix operator.
+//! Rolling covariance matrix accumulator.
 //!
 //! O(K²) per tick via incremental cross-product sums with NaN counting.
 
 use num_traits::Float;
 
-use crate::{Array, Notify, Operator, Scalar, Series};
+use crate::Scalar;
 
-/// Pairwise rolling covariance matrix of last `window` values.
+use super::accumulator::Accumulator;
+
+/// Incremental pairwise covariance matrix accumulator.
 ///
 /// Input must be 1D with shape `[K]`. Output has shape `[K, K]`.
 ///
-/// `Cov(i,j) = E[x_i * x_j] - E[x_i] * E[x_j]` over the window.
-/// If any value in the window is NaN for either element i or j,
-/// the output `Cov(i,j)` is NaN.
-pub struct RollingCovariance<T: Scalar + Float> {
-    window: usize,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T: Scalar + Float> RollingCovariance<T> {
-    /// Create a new rolling covariance operator with the given window size.
-    pub fn new(window: usize) -> Self {
-        assert!(window >= 1, "window must be >= 1");
-        Self {
-            window,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-/// Runtime state for [`RollingCovariance`].
-pub struct CovState<T: Scalar + Float> {
-    window: usize,
+/// `Cov(i,j) = E[x_i · x_j] − E[x_i] · E[x_j]` over the window.
+/// If any value in the window is NaN for either element `i` or `j`, the
+/// output `Cov(i,j)` is NaN.
+pub struct CovarianceAccumulator<T: Scalar + Float> {
     k: usize,
-    /// Running sum per element, shape `[K]`.
     sum: Vec<T>,
-    /// Running cross-product sums, shape `[K, K]` (flat).
     sum_cross: Vec<T>,
-    /// NaN count in window per element, shape `[K]`.
     nan_count: Vec<u32>,
 }
 
-impl<T: Scalar + Float> Operator for RollingCovariance<T> {
-    type State = CovState<T>;
-    type Inputs = (Series<T>,);
-    type Output = Array<T>;
+impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
+    type Scalar = T;
 
-    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (CovState<T>, Array<T>) {
-        let shape = inputs.0.shape();
+    fn new(input_shape: &[usize]) -> Self {
         assert_eq!(
-            shape.len(),
+            input_shape.len(),
             1,
-            "RollingCovariance requires 1D input, got shape {:?}",
-            shape,
+            "CovarianceAccumulator requires 1D input, got shape {input_shape:?}",
         );
-        let k = shape[0];
-        let state = CovState {
-            window: self.window,
+        let k = input_shape[0];
+        Self {
             k,
             sum: vec![T::zero(); k],
             sum_cross: vec![T::zero(); k * k],
             nan_count: vec![0; k],
-        };
-        (state, Array::from_vec(&[k, k], vec![T::nan(); k * k]))
+        }
     }
 
-    fn compute(
-        state: &mut CovState<T>,
-        inputs: (&Series<T>,),
-        output: &mut Array<T>,
-        _timestamp: i64,
-        _notify: &Notify<'_>,
-    ) -> bool {
-        let series = inputs.0;
-        let len = series.len();
-        let k = state.k;
+    fn output_shape(input_shape: &[usize]) -> Vec<usize> {
+        assert_eq!(
+            input_shape.len(),
+            1,
+            "CovarianceAccumulator requires 1D input, got shape {input_shape:?}",
+        );
+        vec![input_shape[0], input_shape[0]]
+    }
 
-        // Add new row.
-        let new_row = series.at(len - 1);
+    fn add(&mut self, element: &[T]) {
+        let k = self.k;
         for i in 0..k {
-            let xi = new_row[i];
+            let xi = element[i];
             if xi.is_nan() {
-                state.nan_count[i] += 1;
+                self.nan_count[i] += 1;
             } else {
-                state.sum[i] = state.sum[i] + xi;
+                self.sum[i] = self.sum[i] + xi;
             }
         }
         for i in 0..k {
-            let xi = new_row[i];
+            let xi = element[i];
             if xi.is_nan() {
                 continue;
             }
             for j in i..k {
-                let xj = new_row[j];
+                let xj = element[j];
                 if xj.is_nan() {
                     continue;
                 }
                 let prod = xi * xj;
-                state.sum_cross[i * k + j] = state.sum_cross[i * k + j] + prod;
+                self.sum_cross[i * k + j] = self.sum_cross[i * k + j] + prod;
                 if i != j {
-                    state.sum_cross[j * k + i] = state.sum_cross[j * k + i] + prod;
+                    self.sum_cross[j * k + i] = self.sum_cross[j * k + i] + prod;
                 }
             }
         }
+    }
 
-        // Evict oldest row if window is full.
-        if len > state.window {
-            let old_row = series.at(len - 1 - state.window);
-            for i in 0..k {
-                let xi = old_row[i];
-                if xi.is_nan() {
-                    state.nan_count[i] -= 1;
-                } else {
-                    state.sum[i] = state.sum[i] - xi;
-                }
+    fn remove(&mut self, element: &[T]) {
+        let k = self.k;
+        for i in 0..k {
+            let xi = element[i];
+            if xi.is_nan() {
+                self.nan_count[i] -= 1;
+            } else {
+                self.sum[i] = self.sum[i] - xi;
             }
-            for i in 0..k {
-                let xi = old_row[i];
-                if xi.is_nan() {
+        }
+        for i in 0..k {
+            let xi = element[i];
+            if xi.is_nan() {
+                continue;
+            }
+            for j in i..k {
+                let xj = element[j];
+                if xj.is_nan() {
                     continue;
                 }
-                for j in i..k {
-                    let xj = old_row[j];
-                    if xj.is_nan() {
-                        continue;
-                    }
-                    let prod = xi * xj;
-                    state.sum_cross[i * k + j] = state.sum_cross[i * k + j] - prod;
-                    if i != j {
-                        state.sum_cross[j * k + i] = state.sum_cross[j * k + i] - prod;
-                    }
+                let prod = xi * xj;
+                self.sum_cross[i * k + j] = self.sum_cross[i * k + j] - prod;
+                if i != j {
+                    self.sum_cross[j * k + i] = self.sum_cross[j * k + i] - prod;
                 }
             }
         }
+    }
 
-        // Produce output only when window is full.
-        if len < state.window {
-            false
-        } else {
-            let count = T::from(len.min(state.window)).unwrap();
-            let out = output.as_mut_slice();
-            for i in 0..k {
-                for j in 0..k {
-                    out[i * k + j] = if state.nan_count[i] == 0 && state.nan_count[j] == 0 {
-                        let mean_i = state.sum[i] / count;
-                        let mean_j = state.sum[j] / count;
-                        state.sum_cross[i * k + j] / count - mean_i * mean_j
-                    } else {
-                        T::nan()
-                    };
-                }
+    fn write(&self, count: usize, output: &mut [T]) {
+        let k = self.k;
+        let n = T::from(count).unwrap();
+        for i in 0..k {
+            for j in 0..k {
+                output[i * k + j] = if self.nan_count[i] == 0 && self.nan_count[j] == 0 {
+                    self.sum_cross[i * k + j] / n - (self.sum[i] / n) * (self.sum[j] / n)
+                } else {
+                    T::nan()
+                };
             }
-            true
         }
     }
 }
@@ -159,191 +125,102 @@ impl<T: Scalar + Float> Operator for RollingCovariance<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operators::rolling::accumulator::Rolling;
+    use crate::{Array, Notify, Operator, Series};
+
+    type RollingCovariance = Rolling<CovarianceAccumulator<f64>>;
 
     #[test]
-    fn cov_identity() {
-        // Two perfectly correlated variables: x = [1,2,3], y = [2,4,6]
-        // Cov(x,y) = E[xy] - E[x]E[y]
-        //   = (2+8+18)/3 - (6/3)(12/3) = 28/3 - 8 = 4/3
-        // Var(x) = 2/3, Var(y) = 8/3
+    fn cov_basic() {
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::<f64>::new(3).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingCovariance::count(3).init((&s,), i64::MIN);
 
-        s.push(1, &[1.0, 2.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
-        s.push(2, &[2.0, 4.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
-        s.push(3, &[3.0, 6.0]);
-        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[])));
-
-        let cov = out.as_slice();
         assert_eq!(out.shape(), &[2, 2]);
 
-        // Var(x) = 2/3
-        assert!((cov[0] - 2.0 / 3.0).abs() < 1e-10, "Var(x) = {}", cov[0]);
-        // Cov(x,y) = 4/3
-        assert!((cov[1] - 4.0 / 3.0).abs() < 1e-10, "Cov(x,y) = {}", cov[1]);
-        // Symmetric
-        assert!(
-            (cov[2] - cov[1]).abs() < 1e-10,
-            "Cov(y,x) should equal Cov(x,y)"
-        );
-        // Var(y) = 8/3
-        assert!((cov[3] - 8.0 / 3.0).abs() < 1e-10, "Var(y) = {}", cov[3]);
-    }
-
-    #[test]
-    fn cov_output_shape() {
-        let mut s = Series::<f64>::new(&[4]);
-        let (mut state, mut out) = RollingCovariance::<f64>::new(5).init((&s,), i64::MIN);
-
-        s.push(1, &[1.0, 2.0, 3.0, 4.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
-
-        assert_eq!(out.shape(), &[4, 4]);
-        assert_eq!(out.stride(), 16);
-    }
-
-    #[test]
-    fn cov_uncorrelated() {
-        // x = [1, -1, 1, -1], y = [1, 1, -1, -1]
-        // E[x] = 0, E[y] = 0, E[xy] = (1 + (-1) + (-1) + 1)/4 = 0
-        // Cov(x,y) = 0
-        let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::<f64>::new(4).init((&s,), i64::MIN);
-
-        s.push(1, &[1.0, 1.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
-        s.push(2, &[-1.0, 1.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
-        s.push(3, &[1.0, -1.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[])));
-        s.push(4, &[-1.0, -1.0]);
-        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 4, &Notify::new(&[], &[])));
-
-        let cov = out.as_slice();
-        assert!(
-            (cov[1]).abs() < 1e-10,
-            "Cov(x,y) should be 0, got {}",
-            cov[1]
-        );
-    }
-
-    #[test]
-    fn cov_nan() {
-        let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::<f64>::new(3).init((&s,), i64::MIN);
-
         s.push(1, &[1.0, 2.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
-        s.push(2, &[f64::NAN, 4.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
-        s.push(3, &[3.0, 6.0]);
-        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[])));
-
-        let cov = out.as_slice();
-        // Element 0 has NaN in window → Var(x) and Cov(x,y) should be NaN
-        assert!(cov[0].is_nan()); // Var(x)
-        assert!(cov[1].is_nan()); // Cov(x,y)
-        assert!(cov[2].is_nan()); // Cov(y,x)
-        // Var(y) should still be valid (no NaN in y)
-        assert!(!cov[3].is_nan());
-    }
-
-    #[test]
-    fn cov_nan_eviction() {
-        // NaN exits window → valid covariance resumes.
-        let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::<f64>::new(2).init((&s,), i64::MIN);
-
-        s.push(1, &[f64::NAN, 1.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
-        // Output stays NaN during warmup.
-        let cov = out.as_slice();
-        assert!(cov[0].is_nan());
-        assert!(cov[1].is_nan());
-        assert!(cov[2].is_nan());
-        assert!(cov[3].is_nan());
+        assert!(!RollingCovariance::compute(
+            &mut state,
+            (&s,),
+            &mut out,
+            1,
+            &Notify::new(&[], &[])
+        ));
 
         s.push(2, &[2.0, 4.0]);
-        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
-        // NaN still in window for elem 0
-        assert!(out.as_slice()[0].is_nan());
+        assert!(!RollingCovariance::compute(
+            &mut state,
+            (&s,),
+            &mut out,
+            2,
+            &Notify::new(&[], &[])
+        ));
 
-        s.push(3, &[4.0, 8.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
-        // Window [[2,4],[4,8]] → NaN evicted
-        let cov = out.as_slice();
-        assert!(
-            !cov[0].is_nan(),
-            "Var(x) should be valid after NaN eviction"
-        );
-        // Var([2,4]) = (4+16)/2 - (6/2)² = 10 - 9 = 1
-        assert!((cov[0] - 1.0).abs() < 1e-10, "Var(x) = {}", cov[0]);
-        // Cov([2,4],[4,8]) = E[xy]-E[x]E[y] = (8+32)/2 - 3*6 = 20 - 18 = 2
-        assert!((cov[1] - 2.0).abs() < 1e-10, "Cov(x,y) = {}", cov[1]);
-        assert!((cov[2] - cov[1]).abs() < 1e-10); // symmetric
-    }
-
-    #[test]
-    fn cov_nan_both_elements() {
-        let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::<f64>::new(3).init((&s,), i64::MIN);
-
-        s.push(1, &[1.0, 2.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
-        s.push(2, &[f64::NAN, f64::NAN]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
         s.push(3, &[3.0, 6.0]);
-        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[])));
+        assert!(RollingCovariance::compute(
+            &mut state,
+            (&s,),
+            &mut out,
+            3,
+            &Notify::new(&[], &[])
+        ));
 
-        // Both elements have NaN in window → entire matrix is NaN
+        // Perfect linear correlation: y = 2x.
+        // Var(x) = Var([1,2,3]) = 2/3. Cov(x,y) = 2 * Var(x) = 4/3.
         let cov = out.as_slice();
-        for v in cov {
-            assert!(v.is_nan());
-        }
+        assert!((cov[0] - 2.0 / 3.0).abs() < 1e-10); // Var(x)
+        assert!((cov[1] - 4.0 / 3.0).abs() < 1e-10); // Cov(x,y)
+        assert!((cov[2] - 4.0 / 3.0).abs() < 1e-10); // Cov(y,x)
+        assert!((cov[3] - 8.0 / 3.0).abs() < 1e-10); // Var(y)
     }
 
     #[test]
-    fn cov_nan_selective_recovery() {
-        // NaN only in element 0 at tick 2. After eviction, full matrix recovers.
+    #[should_panic(expected = "requires 1D")]
+    fn cov_rejects_scalar() {
+        let s = Series::<f64>::new(&[]);
+        RollingCovariance::count(3).init((&s,), i64::MIN);
+    }
+
+    #[test]
+    fn cov_nan_propagation() {
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::<f64>::new(2).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingCovariance::count(2).init((&s,), i64::MIN);
 
-        s.push(1, &[1.0, 1.0]);
-        assert!(!RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
-        // Output stays NaN during warmup.
-        assert!(out.as_slice()[0].is_nan());
+        s.push(1, &[f64::NAN, 1.0]);
+        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
 
-        s.push(2, &[f64::NAN, 2.0]);
-        assert!(RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
+        s.push(2, &[2.0, 2.0]);
+        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
 
         let cov = out.as_slice();
-        assert!(cov[0].is_nan()); // Var(x)
-        assert!(cov[1].is_nan()); // Cov(x,y) — x has NaN
-        assert!(!cov[3].is_nan()); // Var(y) — y is clean
-
-        s.push(3, &[3.0, 3.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
-        s.push(4, &[5.0, 5.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 4, &Notify::new(&[], &[]));
-
-        // Window [[3,3],[5,5]] — all clean
-        let cov = out.as_slice();
-        for v in cov {
-            assert!(
-                !v.is_nan(),
-                "all entries should be valid after NaN eviction"
-            );
-        }
-        // Var([3,5]) = (9+25)/2 - (8/2)² = 17-16 = 1
-        assert!((cov[0] - 1.0).abs() < 1e-10);
+        assert!(cov[0].is_nan()); // Var(x): NaN in x
+        assert!(cov[1].is_nan()); // Cov(x,y): NaN in x
+        assert!(cov[2].is_nan()); // Cov(y,x): NaN in x
+        assert!(!cov[3].is_nan()); // Var(y): no NaN in y
     }
 
     #[test]
-    #[should_panic(expected = "1D input")]
-    fn cov_rejects_2d() {
-        let s = Series::<f64>::new(&[2, 3]);
-        let _ = RollingCovariance::<f64>::new(5).init((&s,), i64::MIN);
+    fn cov_time_delta() {
+        let mut s = Series::<f64>::new(&[2]);
+        let (mut state, mut out) = RollingCovariance::time_delta(200).init((&s,), i64::MIN);
+
+        s.push(100, &[1.0, 2.0]);
+        assert!(RollingCovariance::compute(
+            &mut state,
+            (&s,),
+            &mut out,
+            100,
+            &Notify::new(&[], &[])
+        ));
+        // Single element → all covariances = 0.
+        assert_eq!(out.as_slice(), &[0.0, 0.0, 0.0, 0.0]);
+
+        s.push(200, &[3.0, 6.0]);
+        RollingCovariance::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], &[]));
+
+        // Cov([1,3], [2,6]): Var(x)=1, Cov(x,y)=2, Var(y)=4.
+        let cov = out.as_slice();
+        assert!((cov[0] - 1.0).abs() < 1e-10);
+        assert!((cov[1] - 2.0).abs() < 1e-10);
+        assert!((cov[3] - 4.0).abs() < 1e-10);
     }
 }

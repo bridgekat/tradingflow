@@ -48,7 +48,7 @@ from .const import Const
 from .filter import Filter
 from .id import Id
 from .lag import Lag
-from .map import Map, MapInplace
+from .map import Map
 from .last import Last
 from .record import Record
 from .select import Select
@@ -66,7 +66,6 @@ __all__ = [
     "Select",
     "Id",
     "Map",
-    "MapInplace",
     "Record",
     "Last",
     "Lag",

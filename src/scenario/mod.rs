@@ -314,7 +314,7 @@ mod tests {
         ));
         let hseries = sc.add_operator(Record::<f64>::new(), (ha,), None);
 
-        sc.run().await;
+        sc.run(|_| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         assert_eq!(series.len(), 3);
@@ -336,7 +336,7 @@ mod tests {
         let ho = sc.add_operator(Add::new(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run().await;
+        sc.run(|_| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         // ts=1: 10+0=10, ts=2: 10+20=30, ts=3: 30+40=70
@@ -359,7 +359,7 @@ mod tests {
         let ho = sc.add_operator(Add::new(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run().await;
+        sc.run(|_| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         assert_eq!(series.len(), 2);
@@ -384,7 +384,7 @@ mod tests {
         let hout = sc.add_operator(Multiply::new(), (hab, ha), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (hout,), None);
 
-        sc.run().await;
+        sc.run(|_| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         assert_eq!(series.len(), 2);
@@ -402,7 +402,7 @@ mod tests {
         let ho = sc.add_operator(Filter::new(|v: &Array<f64>| v[0] > 3.0), (ha,), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run().await;
+        sc.run(|_| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         // passes: ts=2(5.0), ts=4(10.0)
@@ -425,7 +425,7 @@ mod tests {
         let ho = sc.add_operator(Filter::new(|_: &Array<f64>| true), (ha,), Some(hclock));
         let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run().await;
+        sc.run(|_| {}).await;
 
         let series: &Series<f64> = sc.value(hs);
         assert_eq!(series.len(), 1);
@@ -451,7 +451,7 @@ mod tests {
         let ho = sc.add_operator(Add::new(), (ha, hb), Some(hclock));
         let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run().await;
+        sc.run(|_| {}).await;
 
         let series: &Series<f64> = sc.value(hs);
         assert_eq!(series.len(), 1);
@@ -473,7 +473,7 @@ mod tests {
         let ho = sc.add_operator(Filter::new(|_: &Array<f64>| true), (ha,), Some(hclock));
         let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run().await;
+        sc.run(|_| {}).await;
 
         let series: &Series<f64> = sc.value(hs);
         assert_eq!(series.len(), 2);

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from ..schema import Schema
 from ..source import NativeSource
 
@@ -22,6 +24,12 @@ class CSVSource(NativeSource):
         Column names to load as values (determines element shape and order).
     time_column
         Name of the timestamp column.
+    timestamp_offset
+        Constant offset added to every parsed timestamp before it is used
+        as the event timestamp.  Useful when the CSV contains low-precision
+        timestamps (e.g. dates at midnight) that would otherwise cause
+        forward-looking bias against higher-precision sources.  Defaults
+        to zero (no offset).
     name
         Optional source name.
     """
@@ -31,11 +39,14 @@ class CSVSource(NativeSource):
         path: str | Path,
         schema: Schema,
         *,
-        time_column: str = "date",
+        time_column: str,
+        timestamp_offset: np.timedelta64 = np.timedelta64(0, "ns"),
         name: str | None = None,
     ) -> None:
         stride = len(schema)
         shape = () if stride == 1 else (stride,)
+
+        offset_ns = int(np.timedelta64(timestamp_offset, "ns").astype(np.int64))
 
         super().__init__(
             native_id="csv",
@@ -45,6 +56,7 @@ class CSVSource(NativeSource):
                 "path": str(Path(path).resolve()),
                 "time_column": time_column,
                 "value_columns": schema.names,
+                "timestamp_offset_ns": offset_ns,
             },
             name=name,
         )

@@ -121,7 +121,7 @@ impl NativeScenario {
 impl NativeScenario {
     #[new]
     fn new() -> Self {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
@@ -327,7 +327,8 @@ impl NativeScenario {
     /// runtime iterate Python source async iterators by scheduling
     /// coroutines on the main-thread asyncio loop via
     /// `run_coroutine_threadsafe`.
-    fn run(&mut self, py: Python<'_>) -> PyResult<()> {
+    #[pyo3(signature = (on_flush=None))]
+    fn run(&mut self, py: Python<'_>, on_flush: Option<PyObject>) -> PyResult<()> {
         let mut scenario = self.scenario.take().ok_or_else(|| {
             PyRuntimeError::new_err("scenario already consumed by a previous run()")
         })?;
@@ -380,7 +381,15 @@ impl NativeScenario {
                 // return and panic (stack unwinding).
                 let _done = done_guard_parts.map(|(set_fn, el)| DoneGuard(Some(set_fn), el));
 
-                rt.block_on(scenario.run());
+                if let Some(cb) = on_flush {
+                    rt.block_on(scenario.run(|ts| {
+                        Python::attach(|py| {
+                            let _ = cb.call1(py, (ts,));
+                        });
+                    }));
+                } else {
+                    rt.block_on(scenario.run(|_| {}));
+                }
                 (scenario, rt)
             })
         };

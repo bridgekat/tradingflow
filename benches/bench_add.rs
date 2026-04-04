@@ -194,7 +194,7 @@ fn bench_scenario_source(c: &mut Criterion) {
             let ha = sc.add_source(ArraySource::new(series_a.clone(), default.clone()));
             let hb = sc.add_source(ArraySource::new(series_b.clone(), default.clone()));
             let ho = sc.add_operator(Add::new(), (ha, hb), None);
-            rt.block_on(sc.run());
+            rt.block_on(sc.run(|_| {}));
             black_box(sc.value(ho)[0]);
         });
     });
@@ -222,7 +222,7 @@ fn bench_scenario_source_series(c: &mut Criterion) {
             let hb = sc.add_source(ArraySource::new(series_b.clone(), default.clone()));
             let ho = sc.add_operator(Add::new(), (ha, hb), None);
             let hos = sc.add_operator(Record::new(), (ho,), None);
-            rt.block_on(sc.run());
+            rt.block_on(sc.run(|_| {}));
             black_box(sc.value::<Series<f64>>(hos).last().unwrap()[0]);
         });
     });

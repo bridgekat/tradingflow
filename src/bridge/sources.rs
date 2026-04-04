@@ -47,8 +47,13 @@ pub fn dispatch_native_source(
                 .get_item("value_columns")?
                 .ok_or_else(|| PyTypeError::new_err("csv source requires 'value_columns'"))?
                 .extract()?;
+            let timestamp_offset_ns: i64 = params
+                .get_item("timestamp_offset_ns")?
+                .map(|v| v.extract::<i64>())
+                .transpose()?
+                .unwrap_or(0);
             use crate::sources::CsvSource;
-            let source = CsvSource::new(path, time_column, value_columns);
+            let source = CsvSource::new(path, time_column, value_columns, timestamp_offset_ns);
             Ok(sc.add_source(source).index())
         }
         "financial_report" => {
