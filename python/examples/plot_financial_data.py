@@ -194,24 +194,24 @@ if __name__ == "__main__":
     sc, handles = build_scenario(symbol, data_dir)
     sc.run()
 
-    # Extract series as DataFrames.
-    market_cap_df = sc.series_view(handles["market_cap"]).to_dataframe()
-    assets_df = sc.series_view(handles["assets"]).to_dataframe()
-    equity_df = sc.series_view(handles["equity"]).to_dataframe()
-    parent_equity_df = sc.series_view(handles["parent_equity"]).to_dataframe()
-    op_income_df = sc.series_view(handles["op_income"]).to_dataframe()
-    net_profit_df = sc.series_view(handles["net_profit"]).to_dataframe()
-    cash_flow_df = sc.series_view(handles["cash_flow"]).to_dataframe()
-    ep_df = sc.series_view(handles["ep_ratio"]).to_dataframe()
-    bp_df = sc.series_view(handles["bp_ratio"]).to_dataframe()
-    roe_df = sc.series_view(handles["roe"]).to_dataframe()
+    # Extract results.
+    market_cap = sc.series_view(handles["market_cap"]).to_series()
+    assets = sc.series_view(handles["assets"]).to_series()
+    equity = sc.series_view(handles["equity"]).to_series()
+    parent_equity = sc.series_view(handles["parent_equity"]).to_series()
+    op_income = sc.series_view(handles["op_income"]).to_series()
+    net_profit = sc.series_view(handles["net_profit"]).to_series()
+    cash_flow = sc.series_view(handles["cash_flow"]).to_series()
+    ep = sc.series_view(handles["ep_ratio"]).to_series()
+    bp = sc.series_view(handles["bp_ratio"]).to_series()
+    roe = sc.series_view(handles["roe"]).to_series()
 
-    n = len(market_cap_df)
+    n = len(market_cap)
     if n == 0:
         raise SystemExit(f"No data found for {symbol}.")
 
-    first = market_cap_df.index[0].date()
-    last = market_cap_df.index[-1].date()
+    first = market_cap.index[0].date()
+    last = market_cap.index[-1].date()
     print(f"{symbol}: {n} trading days, {first} to {last}")
 
     # ------------------------------------------------------------------
@@ -224,17 +224,17 @@ if __name__ == "__main__":
     # Panel 1: Market cap, total assets, net assets (equity).
     ax = axes[0]
     ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
-    ax.plot(assets_df.index, assets_df / 1e8, label="Total assets", linewidth=0.8)
-    ax.plot(equity_df.index, equity_df / 1e8, label="Net assets", linewidth=0.8)
+    ax.plot(assets.index, assets / 1e8, label="Total assets", color="C0", linewidth=0.8)
+    ax.plot(equity.index, equity / 1e8, label="Net assets", color="C1", linewidth=0.8)
     ax.plot(
-        parent_equity_df.index,
-        parent_equity_df / 1e8,
+        parent_equity.index,
+        parent_equity / 1e8,
         label="Parent equity",
-        color="orange",
+        color="C1",
         linestyle="--",
         linewidth=0.8,
     )
-    ax.plot(market_cap_df.index, market_cap_df / 1e8, label="Market cap", linewidth=0.8)
+    ax.plot(market_cap.index, market_cap / 1e8, label="Market cap", color="C2", linewidth=0.8)
     ax.set_ylabel("CNY (100M)")
     ax.set_title(f"{symbol} — Balance sheet & market cap")
     ax.legend(loc="upper left", fontsize=8)
@@ -242,9 +242,9 @@ if __name__ == "__main__":
     # Panel 2: Annualized income statement, cash flows.
     ax = axes[1]
     ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
-    ax.plot(op_income_df.index, op_income_df / 1e8, label="Operating income", linewidth=0.8)
-    ax.plot(net_profit_df.index, net_profit_df / 1e8, label="Net profit", linewidth=0.8)
-    ax.plot(cash_flow_df.index, cash_flow_df / 1e8, label="Cash flow", linewidth=0.8)
+    ax.plot(op_income.index, op_income / 1e8, label="Operating income", color="C0", linewidth=0.8)
+    ax.plot(net_profit.index, net_profit / 1e8, label="Net profit", color="C1", linewidth=0.8)
+    ax.plot(cash_flow.index, cash_flow / 1e8, label="Cash flow", color="C2", linewidth=0.8)
     ax.set_ylabel("CNY (100M, annualized)")
     ax.set_title(f"{symbol} — Income & cash flow (annualized)")
     ax.legend(loc="upper left", fontsize=8)
@@ -252,9 +252,9 @@ if __name__ == "__main__":
     # Panel 3: Valuation ratios.
     ax = axes[2]
     ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
-    ax.plot(ep_df.index, ep_df * 100, label="E/P (TTM)", linewidth=0.8)
-    ax.plot(bp_df.index, bp_df * 100, label="B/P", linewidth=0.8)
-    ax.plot(roe_df.index, roe_df * 100, label="ROE (TTM)", linewidth=0.8)
+    ax.plot(ep.index, ep * 100, label="E/P (TTM)", color="C0", linewidth=0.8)
+    ax.plot(bp.index, bp * 100, label="B/P", color="C1", linewidth=0.8)
+    ax.plot(roe.index, roe * 100, label="ROE (TTM)", color="C2", linewidth=0.8)
     ax.set_ylabel("%")
     ax.set_title(f"{symbol} — Valuation & profitability")
     ax.legend(loc="upper left", fontsize=8)

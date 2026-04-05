@@ -17,8 +17,9 @@ class Proportional(MeanPortfolio):
         Handle to predicted returns array, shape ``(num_stocks,)``.
     """
 
-    def __init__(self, predicted_returns) -> None:
+    def __init__(self, universe, predicted_returns) -> None:
         super().__init__(
+            universe,
             predicted_returns,
             positions_fn=lambda state, predicted: _positions_fn(predicted),
         )

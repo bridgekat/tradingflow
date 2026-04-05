@@ -11,7 +11,6 @@ and download instructions.
 from pathlib import Path
 from tqdm import tqdm
 import argparse
-import csv
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -22,26 +21,12 @@ from tradingflow.sources import CSVSource
 from tradingflow.operators import Map, Record, Select, Stack
 from tradingflow.operators.num import Multiply
 
+from stocks import load_symbols
+
 
 DAY_NS = 86_400_000_000_000
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
-
-
-def load_symbols(data_dir: Path) -> list[str]:
-    """Read stock symbols from the symbol list CSV."""
-
-    symbol_list_path = data_dir / "symbol_list.csv"
-    if not symbol_list_path.exists():
-        raise SystemExit(f"Symbol list not found: {symbol_list_path}")
-
-    with symbol_list_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader)
-        i = header.index("symbol")
-        symbols = [row[i] for row in reader]
-
-    return symbols
 
 
 def build_scenario(
@@ -102,14 +87,14 @@ if __name__ == "__main__":
     sc.run(on_flush=lambda ts: progress.update((min(max(ts, first_ns), last_ns) - first_ns) // DAY_NS - progress.n))
     progress.close()
 
-    # Extract series as DataFrames.
-    total_market_cap_df = sc.series_view(handles["total_market_cap"]).to_dataframe()
+    # Extract results.
+    total_market_cap = sc.series_view(handles["total_market_cap"]).to_series()
 
-    n = len(total_market_cap_df)
+    n = len(total_market_cap)
     if n == 0:
         raise SystemExit("No data produced.")
 
-    print(f"{n} trading days, {total_market_cap_df.index[0].date()} to {total_market_cap_df.index[-1].date()}")
+    print(f"{n} trading days, {total_market_cap.index[0].date()} to {total_market_cap.index[-1].date()}")
 
     # ------------------------------------------------------------------
     # Plot
@@ -118,7 +103,7 @@ if __name__ == "__main__":
     plt.style.use(["fast"])
     fig, ax = plt.subplots(figsize=(14, 6))
 
-    ax.plot(total_market_cap_df.index, total_market_cap_df / 1e12, linewidth=0.8)
+    ax.plot(total_market_cap.index, total_market_cap / 1e12, linewidth=0.8)
     ax.set_ylabel("CNY (trillion)")
     ax.set_xlabel("Date")
     ax.set_title(f"A-shares total circulating market cap ({len(symbols)} stocks)")

@@ -56,13 +56,17 @@ use scenario::NativeScenario;
 // Error slot
 // ---------------------------------------------------------------------------
 
-type ErrorSlot = Arc<Mutex<Option<String>>>;
+type ErrorSlot = Arc<Mutex<Option<PyErr>>>;
 
-fn set_error(slot: &ErrorSlot, msg: String) {
+fn set_error(slot: &ErrorSlot, err: PyErr) {
     let mut guard = slot.lock().unwrap();
     if guard.is_none() {
-        *guard = Some(msg);
+        *guard = Some(err);
     }
+}
+
+fn set_error_msg(slot: &ErrorSlot, msg: String) {
+    set_error(slot, pyo3::exceptions::PyRuntimeError::new_err(msg));
 }
 
 // ---------------------------------------------------------------------------

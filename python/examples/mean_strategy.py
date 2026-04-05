@@ -22,12 +22,9 @@ via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
 and download instructions.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 from tqdm import tqdm
 import argparse
-import csv
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -38,10 +35,11 @@ from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Map, Record, Select, Stack, Last, Lag
-from tradingflow.operators.num import Subtract, Divide, Log, Multiply
+from tradingflow.operators import Map, Record, Select, Stack
+from tradingflow.operators.num import Divide, Log, Multiply
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
+from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.traders.simple import RandomTrader
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
 from tradingflow.operators.num import ForwardFill
@@ -49,38 +47,16 @@ from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.sources import MonthlyClock
 
+from stocks import load_symbols, calculate_index_weights
+
+
 DAY_NS = 86_400_000_000_000
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
 DIVIDEND_SCHEMA = Schema(CSVSchema.dividends().iter_field_ids())
 BS_SCHEMA = Schema(CSVSchema.balance_sheet().iter_field_ids())
 INC_SCHEMA = Schema(CSVSchema.income_statement().iter_field_ids())
-
-OHLCV_INDICES = PRICE_SCHEMA.indices(
-    [
-        "prices.open",
-        "prices.high",
-        "prices.low",
-        "prices.close",
-        "prices.volume",
-    ]
-)
-
-
-def load_symbols(data_dir: Path) -> list[str]:
-    """Read stock symbols from the symbol list CSV."""
-
-    symbol_list_path = data_dir / "symbol_list.csv"
-    if not symbol_list_path.exists():
-        raise SystemExit(f"Symbol list not found: {symbol_list_path}")
-
-    with symbol_list_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader)
-        i = header.index("symbol")
-        symbols = [row[i] for row in reader]
-
-    return symbols
+OHLCV_INDICES = PRICE_SCHEMA.indices(["prices.open", "prices.high", "prices.low", "prices.close", "prices.volume"])
 
 
 def build_scenario(
@@ -88,6 +64,7 @@ def build_scenario(
     data_dir: Path,
     rebalance_days: int,
     initial_cash: float,
+    index_size: int,
     start: np.datetime64,
     end: np.datetime64,
 ) -> tuple[Scenario, dict]:
@@ -195,8 +172,22 @@ def build_scenario(
     volume = sc.add_operator(Select(stacked["ohlcv"], 4, axis=1))
 
     # Market cap and log(market cap).
+    num_stocks = len(symbols)
     market_cap = sc.add_operator(Multiply(close, stacked["circ_shares"]))
     log_mcap = sc.add_operator(Log(market_cap))
+
+    # Stock index: top index_size companies by market cap, cap-weighted.
+    # Rebalanced monthly to avoid per-tick overhead.
+    monthly_clock = sc.add_source(MonthlyClock(start, end, tz="Asia/Shanghai"))
+    universe = sc.add_operator(
+        Map(
+            market_cap,
+            lambda m: calculate_index_weights(m, index_size),
+            shape=(num_stocks,),
+            dtype=np.float64,
+        ),
+        clock=monthly_clock,
+    )
 
     # log(B/P) = log(parent_equity / market_cap).
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
@@ -230,18 +221,48 @@ def build_scenario(
     # Strategy pipeline
     # ------------------------------------------------------------------
 
-    predicted = sc.add_operator(
+    predicted_returns = sc.add_operator(
         LinearRegression(
+            universe,
             stacked_features,
             stacked["adjusted_close"],
             rebalance_period=rebalance_days,
-            max_samples=100000,
+            max_samples=1000,
+            # verbose=True,
         )
     )
-    positions = sc.add_operator(RankLinear(predicted, top_fraction=0.1))
-    portfolio_value = sc.add_operator(
+
+    soft_positions = sc.add_operator(
+        RankLinear(
+            universe,
+            predicted_returns,
+            top_fraction=0.1,
+        )
+    )
+
+    index = sc.add_operator(
+        Benchmark(
+            universe,
+            stacked["ohlcv"],
+            stacked["adjusts"],
+            initial_cash=initial_cash,
+            use_adjusts=True,
+        )
+    )
+
+    strategy_frictionless = sc.add_operator(
+        Benchmark(
+            soft_positions,
+            stacked["ohlcv"],
+            stacked["adjusts"],
+            initial_cash=initial_cash,
+            use_adjusts=True,
+        )
+    )
+
+    strategy_actual = sc.add_operator(
         RandomTrader(
-            positions,
+            soft_positions,
             stacked["ohlcv"],
             stacked["adjusts"],
             portfolio_size=20,
@@ -252,21 +273,19 @@ def build_scenario(
         )
     )
 
-    # Total portfolio value = holdings + cash.
-    total_value = sc.add_operator(Map(portfolio_value, np.sum, shape=(), dtype=np.float64))
-
     # ------------------------------------------------------------------
     # Metrics (clock-driven, since inception)
     # ------------------------------------------------------------------
 
-    monthly_clock = sc.add_source(MonthlyClock(start, end, tz="Asia/Shanghai"))
-    sharpe = sc.add_operator(SharpeRatio(total_value), clock=monthly_clock)
-    compound_ret = sc.add_operator(CompoundReturn(total_value), clock=monthly_clock)
-    drawdown = sc.add_operator(Drawdown(total_value))  # Triggers on every update
+    actual_value = sc.add_operator(Map(strategy_actual, np.sum, shape=(), dtype=np.float64))
+    sharpe = sc.add_operator(SharpeRatio(actual_value), clock=monthly_clock)
+    compound_ret = sc.add_operator(CompoundReturn(actual_value), clock=monthly_clock)
+    drawdown = sc.add_operator(Drawdown(actual_value))  # Triggers on every update
 
     return sc, {
-        "trader": sc.add_operator(Record(portfolio_value)),
-        "total_value": sc.add_operator(Record(total_value)),
+        "index": sc.add_operator(Record(index)),
+        "strategy_frictionless": sc.add_operator(Record(strategy_frictionless)),
+        "strategy_actual": sc.add_operator(Record(strategy_actual)),
         "sharpe": sc.add_operator(Record(sharpe)),
         "compound_return": sc.add_operator(Record(compound_ret)),
         "drawdown": sc.add_operator(Record(drawdown)),
@@ -278,8 +297,9 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
     parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
-    parser.add_argument("--rebalance-days", type=int, default=20, help="rebalance every N trading days")
-    parser.add_argument("--initial-cash", type=float, default=100000.0, help="starting capital (CNY)")
+    parser.add_argument("--rebalance-days", type=int, default=120, help="rebalance every N trading days")
+    parser.add_argument("--initial-cash", type=float, default=1000000.0, help="starting capital (CNY)")
+    parser.add_argument("--index-size", type=int, default=300, help="number of stocks in the market-cap index")
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir
@@ -297,6 +317,7 @@ if __name__ == "__main__":
         data_dir,
         rebalance_days=args.rebalance_days,
         initial_cash=args.initial_cash,
+        index_size=args.index_size,
         start=args.begin,
         end=args.end,
     )
@@ -311,31 +332,32 @@ if __name__ == "__main__":
     progress.close()
 
     # Extract results.
-    trader_df = sc.series_view(handles["trader"]).to_dataframe(["holdings_value", "cash"])
-    total_df = sc.series_view(handles["total_value"]).to_dataframe(["total_value"])
-    sharpe_df = sc.series_view(handles["sharpe"]).to_dataframe(["sharpe"])
-    compound_ret_df = sc.series_view(handles["compound_return"]).to_dataframe(["compound_return"])
-    drawdown_df = sc.series_view(handles["drawdown"]).to_dataframe(["drawdown"])
+    index = sc.series_view(handles["index"]).to_dataframe(["holdings", "cash"])
+    strategy_frictionless = sc.series_view(handles["strategy_frictionless"]).to_dataframe(["holdings", "cash"])
+    strategy_actual = sc.series_view(handles["strategy_actual"]).to_dataframe(["holdings", "cash"])
+    sharpe = sc.series_view(handles["sharpe"]).to_series()
+    compound_return = sc.series_view(handles["compound_return"]).to_series()
+    drawdown = sc.series_view(handles["drawdown"]).to_series()
 
-    n = len(total_df)
+    n = len(index)
     if n == 0:
         raise SystemExit("No data produced.")
 
-    total_value = total_df["total_value"]
+    total_value = strategy_actual.sum(axis=1)
 
-    print(f"{n} trading days, {total_df.index[0].date()} to {total_df.index[-1].date()}")
+    print(f"{n} trading days, {index.index[0].date()} to {index.index[-1].date()}")
     print(f"Initial value: {total_value.iloc[0]:,.2f} CNY")
     print(f"Final value:   {total_value.iloc[-1]:,.2f} CNY")
     print()
 
-    if len(compound_ret_df) > 0:
-        compound_return_annualized = (compound_ret_df["compound_return"].iloc[-1] + 1) ** 12 - 1
+    if len(compound_return) > 0:
+        compound_return_annualized = (compound_return.iloc[-1] + 1) ** 12 - 1
         print(f"Compound return annualized: {compound_return_annualized:.2%}")
-    if len(sharpe_df) > 0:
-        monthly_sharpe_annualized = sharpe_df["sharpe"].iloc[-1] * np.sqrt(12)
+    if len(sharpe) > 0:
+        monthly_sharpe_annualized = sharpe.iloc[-1] * np.sqrt(12)
         print(f"Monthly Sharpe ratio annualized: {monthly_sharpe_annualized:.4f}")
-    if len(drawdown_df) > 0:
-        max_drawdown = drawdown_df["drawdown"].min()
+    if len(drawdown) > 0:
+        max_drawdown = drawdown.min()
         print(f"Max drawdown: {max_drawdown:.2%}")
     print()
 
@@ -347,24 +369,45 @@ if __name__ == "__main__":
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True, gridspec_kw={"height_ratios": [3, 1, 1]})
 
     ax = axes[0]
-    ax.set_title(f"Portfolio value ({len(symbols)} stocks, rebalance every {args.rebalance_days}d)")
+    ax.set_title(f"Portfolio value")
     ax.set_ylabel("CNY (10k)")
-    ax.axhline(args.initial_cash / 1e4, color="grey", linewidth=0.5, linestyle="--", label="Initial")
-    ax.plot(total_df.index, total_value / 1e4, linewidth=0.8, label="Total value")
-    ax.plot(trader_df.index, trader_df["cash"] / 1e4, linewidth=0.8, color="C2", alpha=0.7, label="Excess liquidity")
+    ax.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
+    ax.plot(
+        index.index,
+        index.sum(axis=1) / 1e4,
+        color="gray",
+        linestyle="--",
+        linewidth=0.8,
+        label=f"Index (top {args.index_size})",
+    )
+    ax.plot(
+        strategy_frictionless.index,
+        strategy_frictionless.sum(axis=1) / 1e4,
+        color="C0",
+        linestyle="--",
+        linewidth=0.8,
+        label="Strategy (frictionless)",
+    )
+    ax.plot(
+        strategy_actual.index,
+        strategy_actual.sum(axis=1) / 1e4,
+        color="C0",
+        linewidth=0.8,
+        label="Strategy (actual)",
+    )
     ax.legend(loc="upper left", fontsize=8)
 
     ax = axes[1]
     ax.set_title("Monthly Sharpe ratio annualized (since inception)")
     ax.set_ylabel("Sharpe ratio")
-    ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
-    ax.plot(sharpe_df.index, sharpe_df["sharpe"] * np.sqrt(12), linewidth=0.8, color="C1")
+    ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+    ax.plot(sharpe.index, sharpe * np.sqrt(12), color="C1")
 
     ax = axes[2]
     ax.set_title("Drawdown (since previous high)")
     ax.set_ylabel("Drawdown (%)")
     ax.set_xlabel("Date")
-    ax.fill_between(drawdown_df.index, drawdown_df["drawdown"] * 100, 0, alpha=0.4, color="C3", linewidth=0)
+    ax.fill_between(drawdown.index, drawdown * 100, 0, alpha=0.4, color="C3")
 
     fig.tight_layout()
     plt.show()

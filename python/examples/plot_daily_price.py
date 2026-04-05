@@ -110,19 +110,19 @@ if __name__ == "__main__":
     sc, handles = build_scenario(symbol, data_dir)
     sc.run()
 
-    # Extract series as DataFrames.
-    adj_close_df = sc.series_view(handles["adj_close"]).to_dataframe(["adj_close"])
-    ma_df = sc.series_view(handles["ma"]).to_dataframe()
-    upper_df = sc.series_view(handles["upper"]).to_dataframe()
-    lower_df = sc.series_view(handles["lower"]).to_dataframe()
-    volume_df = sc.series_view(handles["volume"]).to_dataframe(["volume"])
+    # Extract results.
+    adj_close = sc.series_view(handles["adj_close"]).to_series()
+    ma = sc.series_view(handles["ma"]).to_series()
+    upper = sc.series_view(handles["upper"]).to_series()
+    lower = sc.series_view(handles["lower"]).to_series()
+    volume = sc.series_view(handles["volume"]).to_series()
 
-    n = len(adj_close_df)
+    n = len(adj_close)
     if n == 0:
         raise SystemExit(f"No data found for {symbol}.")
 
-    first = adj_close_df.index[0].date()
-    last = adj_close_df.index[-1].date()
+    first = adj_close.index[0].date()
+    last = adj_close.index[-1].date()
     print(f"{symbol}: {n} trading days, {first} to {last}")
 
     # ------------------------------------------------------------------
@@ -133,12 +133,12 @@ if __name__ == "__main__":
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
 
     # Forward-adjusted close + MA + Bollinger Bands.
-    ax1.plot(adj_close_df.index, adj_close_df["adj_close"], linewidth=0.8, color="C0", label="Adjusted close")
-    ax1.plot(ma_df.index, ma_df, linewidth=0.8, color="C1", label=f"MA{WINDOW}")
+    ax1.plot(adj_close.index, adj_close, linewidth=0.8, color="C0", label="Adjusted close")
+    ax1.plot(ma.index, ma, linewidth=0.8, color="C1", label=f"MA{WINDOW}")
     ax1.fill_between(
-        upper_df.index,
-        upper_df.values.ravel(),
-        lower_df.values.ravel(),
+        upper.index,
+        upper.values.ravel(),
+        lower.values.ravel(),
         alpha=0.15,
         color="C1",
         label=f"Bollinger ({WINDOW}, {MULTIPLE}σ)",
@@ -148,7 +148,7 @@ if __name__ == "__main__":
     ax1.legend(loc="upper left", fontsize=8)
 
     # Volume.
-    ax2.fill_between(volume_df.index, volume_df["volume"] / 1e6, linewidth=0, color="C0", alpha=0.6)
+    ax2.fill_between(volume.index, volume / 1e6, linewidth=0, color="C0", alpha=0.6)
     ax2.set_ylabel("Volume (M)")
     ax2.set_xlabel("Date")
 

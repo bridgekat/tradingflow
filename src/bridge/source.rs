@@ -22,7 +22,7 @@ use crate::{Array, ErasedSource, PeekableReceiver, Series};
 
 use super::dispatch::dispatch_dtype;
 use super::views::{ViewKind, create_view};
-use super::{ErrorSlot, set_error};
+use super::{ErrorSlot, set_error, set_error_msg};
 
 type PyObject = Py<PyAny>;
 
@@ -201,7 +201,7 @@ unsafe fn py_write_fn(state_ptr: *mut u8, _output_ptr: *mut u8, _ts: i64) -> boo
         match result {
             Ok(()) => true,
             Err(e) => {
-                set_error(&state.error_slot, e.to_string());
+                set_error(&state.error_slot, e);
                 false
             }
         }
@@ -259,7 +259,7 @@ async fn drive_source(
     .await;
 
     if let Err(msg) = result {
-        set_error(&error_slot, msg);
+        set_error_msg(&error_slot, msg);
     }
 }
 

@@ -21,8 +21,9 @@ class RankLinear(MeanPortfolio):
         Fraction of positively-predicted stocks to include.
     """
 
-    def __init__(self, predicted_returns, *, top_fraction: float = 0.1) -> None:
+    def __init__(self, universe, predicted_returns, *, top_fraction: float = 0.1) -> None:
         super().__init__(
+            universe,
             predicted_returns,
             positions_fn=lambda state, predicted: _positions_fn(predicted, top_fraction),
         )

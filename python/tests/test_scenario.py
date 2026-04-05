@@ -277,17 +277,17 @@ class TestViews:
         np.testing.assert_array_almost_equal(sv[-1], [30.0])
         np.testing.assert_array_almost_equal(sv[1:3].flatten(), [20.0, 30.0])
 
-    def test_series_to_dataframe(self) -> None:
+    def test_series_to_series(self) -> None:
         import pandas as pd
 
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(100), ts(200), ts(300)], [10.0, 20.0, 30.0]))
         hs = sc.add_operator(Record(h))
         sc.run()
-        df = sc.series_view(hs).to_dataframe()
-        assert isinstance(df, pd.DataFrame)
-        assert isinstance(df.index, pd.DatetimeIndex)
-        assert len(df) == 3
+        s = sc.series_view(hs).to_series()
+        assert isinstance(s, pd.Series)
+        assert isinstance(s.index, pd.DatetimeIndex)
+        assert len(s) == 3
 
 
 # =========================================================================

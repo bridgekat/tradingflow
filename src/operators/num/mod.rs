@@ -37,7 +37,12 @@
 //! - [`Clamp`] (`T: Float`) — clamp to `[lo, hi]`.
 //! - [`Fillna`] (`T: Float`) — replace NaN with a constant.
 //! - [`ForwardFill`] (`T: Float`) — replace NaN with the last valid observation.
+//!
+//! # Index operators
+//!
+//! - [`ArgSort`] (`T: Float`) — indices that would sort the array (smallest first).
 
+mod argsort;
 mod arithmetic;
 mod clamp;
 mod ffill;
@@ -50,6 +55,7 @@ pub use arithmetic::{
     Abs, Add, Ceil, Divide, Exp, Exp2, Floor, Log, Log2, Log10, Max, Min, Multiply, Negate, Recip,
     Round, Sign, Sqrt, Subtract,
 };
+pub use argsort::ArgSort;
 pub use clamp::Clamp;
 pub use ffill::ForwardFill;
 pub use fillna::Fillna;

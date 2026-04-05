@@ -1,60 +1,41 @@
-"""Simple trading simulation operator."""
+"""Benchmark operator — frictionless ideal portfolio replication."""
 
 from __future__ import annotations
 
-from enum import IntEnum
-from typing import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from ...views import ArrayView
 from ...operator import Operator, Notify
 from ...types import Array, Handle, NodeKind
+from ..traders.simple_trader import OHLCV
 
 
 @dataclass(slots=True)
-class SimpleTraderState:
+class BenchmarkState:
     # Configuration.
     num_stocks: int
-    lot_size: float
-    fee_base: float
-    fee_rate: float
-    trade_fn: Callable[["SimpleTraderState", np.ndarray], np.ndarray]
-    verbose: bool
+    initial_cash: float
+    use_adjusts: bool
 
     # Portfolio state.
     cash: float = 0.0
     shares: np.ndarray = field(default_factory=lambda: np.empty(0))
     last_adjust: np.ndarray = field(default_factory=lambda: np.empty(0))
 
-    # Transient values set by compute() before calling trade_fn().
-    _current_value: float = 0.0
-    _exec_price: np.ndarray = field(default_factory=lambda: np.empty(0))
 
-
-class OHLCV(IntEnum):
-    """Column indices within the prices array of shape ``(num_stocks, 5)``."""
-
-    OPEN = 0
-    HIGH = 1
-    LOW = 2
-    CLOSE = 3
-    VOLUME = 4
-
-
-class SimpleTrader(
+class Benchmark(
     Operator[
         tuple[
             Handle[Array[np.float64]],  # soft positions (num_stocks,)
             Handle[Array[np.float64]],  # OHLCV prices (num_stocks, 5)
             Handle[Array[np.float64]],  # adjusts (num_stocks,)
         ],
-        Handle[Array[np.float64]],  # (position_value, excess_liquidity)
-        SimpleTraderState,
+        Handle[Array[np.float64]],  # (holdings_value, cash)
+        BenchmarkState,
     ]
 ):
-    """Simple trading simulation operator.
+    """Frictionless benchmark that replicates soft position weights exactly.
 
     On every tick:
 
@@ -87,29 +68,10 @@ class SimpleTrader(
         (positive for buy, negative for sell).
     initial_cash
         Starting capital.
-    lot_size
-        Minimum trade lot size (number of shares).
-    fee_base
-        Minimum transaction fee per trade.
-    fee_rate
-        Proportional transaction fee rate.
-    verbose
-        If `True`, print current positions after each rebalance.
-
-    Notes
-    -----
-
-    This operator uses a simplified market model:
-
-    - **Fixed market impact**: transaction costs are modelled as a flat
-        fee plus a proportional rate.  There is no slippage, spread, or
-        volume-dependent impact.
-    - **Immediate execution**: all trades execute instantly at the
-        opening price of the current tick.
-
-    These assumptions are a reasonable approximation when trading sizes
-    are small relative to market liquidity, but become inaccurate as
-    capital grows large or stocks are illiquid.
+    use_adjusts
+        If ``True``, account for dividend reinvestment via adjustment
+        factors (total return index).  If ``False``, use raw prices
+        (price index).
     """
 
     def __init__(
@@ -118,12 +80,8 @@ class SimpleTrader(
         prices: Handle,
         adjusts: Handle,
         *,
-        trade_fn: Callable[[SimpleTraderState, np.ndarray], np.ndarray],
         initial_cash: float,
-        lot_size: float,
-        fee_base: float,
-        fee_rate: float,
-        verbose: bool = False,
+        use_adjusts: bool,
     ) -> None:
         assert len(soft_positions.shape) == 1, "Soft positions input must have shape (num_stocks,)."
         assert (
@@ -134,12 +92,8 @@ class SimpleTrader(
         ), "Soft positions and prices must have the same number of stocks."
 
         self._num_stocks = soft_positions.shape[0]
-        self._trade_fn = trade_fn
         self._initial_cash = initial_cash
-        self._lot_size = lot_size
-        self._fee_base = fee_base
-        self._fee_rate = fee_rate
-        self._verbose = verbose
+        self._use_adjusts = use_adjusts
 
         super().__init__(
             inputs=(soft_positions, prices, adjusts),
@@ -149,15 +103,12 @@ class SimpleTrader(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> SimpleTraderState:
+    def init(self, inputs: tuple, timestamp: int) -> BenchmarkState:
         n = self._num_stocks
-        return SimpleTraderState(
+        return BenchmarkState(
             num_stocks=n,
-            lot_size=self._lot_size,
-            fee_base=self._fee_base,
-            fee_rate=self._fee_rate,
-            trade_fn=self._trade_fn,
-            verbose=self._verbose,
+            initial_cash=self._initial_cash,
+            use_adjusts=self._use_adjusts,
             cash=self._initial_cash,
             shares=np.zeros(n),
             last_adjust=np.ones(n),
@@ -165,9 +116,9 @@ class SimpleTrader(
 
     @staticmethod
     def compute(
-        state: SimpleTraderState,
-        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]],
-        output: ArrayView[np.float64],
+        state: BenchmarkState,
+        inputs: tuple,
+        output,
         timestamp: int,
         notify: Notify,
     ) -> bool:
@@ -179,52 +130,37 @@ class SimpleTrader(
         closes = prices[:, OHLCV.CLOSE]
 
         # Adjust shares for dividends (reinvesting all dividends).
-        valid_adjusts = np.isfinite(adjusts) & (adjusts > 0)
-        valid_last_adjusts = state.last_adjust > 0
-        adjust_mask = valid_adjusts & valid_last_adjusts
-        state.shares[adjust_mask] *= adjusts[adjust_mask] / state.last_adjust[adjust_mask]
-        state.last_adjust[valid_adjusts] = adjusts[valid_adjusts]
+        if state.use_adjusts:
+            valid_adjusts = np.isfinite(adjusts) & (adjusts > 0)
+            valid_last_adjusts = state.last_adjust > 0
+            adjust_mask = valid_adjusts & valid_last_adjusts
+            state.shares[adjust_mask] *= adjusts[adjust_mask] / state.last_adjust[adjust_mask]
+            state.last_adjust[valid_adjusts] = adjusts[valid_adjusts]
 
         # Compute portfolio market value.
         held = (state.shares != 0) & np.isfinite(closes)
-        state._current_value = state.cash + np.sum(state.shares[held] * closes[held])
+        current_value = state.cash + np.sum(state.shares[held] * closes[held])
 
         # Rebalance if soft positions input was updated.
         if notify.input_produced(0):
 
             # Execution price = open price.
-            state._exec_price = opens
+            exec_price = opens
 
-            # Ask trade_fn for lot counts.
-            trade_lots = state.trade_fn(state, soft_positions)
-
-            traded = False
             for i in range(N):
-                p = state._exec_price[i]
+                p = exec_price[i]
                 if not np.isfinite(p) or p <= 0:
                     continue
 
-                # Get share counts from lot counts.
-                trade_shares = trade_lots[i] * state.lot_size
+                # Calculate trade shares.
+                target_value = soft_positions[i] * current_value
+                target_shares = target_value / p
+                trade_shares = target_shares - state.shares[i]
 
-                # Liquidate sub-lot remnants.
-                if abs(state.shares[i] + trade_shares) < state.lot_size:
-                    trade_shares = -state.shares[i]
-
-                # Simulate trade.
-                if trade_shares != 0:
-                    trade_value = trade_shares * p
-                    state.cash -= trade_value
-                    fee = max(state.fee_base, abs(trade_value) * state.fee_rate)
-                    state.cash -= fee
-                    state.shares[i] += trade_shares
-                    traded = True
-
-            if traded and state.verbose:
-                held_mask = np.abs(state.shares) >= state.lot_size
-                if held_mask.any():
-                    idx = np.where(held_mask)[0]
-                    print(f"  positions: { {int(i): state.shares[i] for i in idx} }")
+                # Simulate frictionless trade.
+                trade_value = trade_shares * p
+                state.cash -= trade_value
+                state.shares[i] += trade_shares
 
         # Output (holdings_value, cash).  Total portfolio value = sum.
         held = (state.shares != 0) & np.isfinite(closes)

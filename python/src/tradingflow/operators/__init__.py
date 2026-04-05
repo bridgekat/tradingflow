@@ -17,6 +17,7 @@ This module provides all shipped operators. They fall into two categories:
 - [`Id`][tradingflow.operators.Id] -- identity passthrough
 - [`Map`][tradingflow.operators.Map] -- applies a function to transform array values
 - [`MapInplace`][tradingflow.operators.MapInplace] -- applies a function in place on input and output arrays
+- [`Apply`][tradingflow.operators.Apply] -- applies a function to multiple input arrays
 
 ## Series operators
 
@@ -50,6 +51,7 @@ from . import rolling
 from . import stocks
 from . import traders
 
+from .apply import Apply
 from .cast import Cast
 from .concat import Concat
 from .const import Const
@@ -71,6 +73,7 @@ __all__ = [
     "rolling",
     "stocks",
     "traders",
+    "Apply",
     "Cast",
     "Const",
     "Concat",

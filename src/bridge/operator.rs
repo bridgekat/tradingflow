@@ -168,7 +168,7 @@ unsafe fn py_compute_fn(
     match result {
         Ok(produced) => produced,
         Err(e) => {
-            set_error(&state.error_slot, e.to_string());
+            set_error(&state.error_slot, e);
             false
         }
     }

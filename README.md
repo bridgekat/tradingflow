@@ -14,7 +14,8 @@ Examples require A-shares market data downloaded via the [a-shares-crawler](http
 - [**Plotting daily prices**](python/examples/plot_daily_price.py) — loads daily price history, computes forward-adjusted prices, moving average and Bollinger Bands, and plots them.
 - [**Plotting financial data**](python/examples/plot_financial_data.py) — loads equity structure, balance sheet, income statement and cash flow data, computes market cap and annualized financial metrics, and plots them.
 - [**Plotting total market cap**](python/examples/plot_total_market_cap.py) — loads daily prices and equity structures for all stocks, computes per-stock circulating market cap, and plots the total across the entire market over time.
-- [**Trading strategy backtesting**](python/examples/mean_strategy.py) — loads daily prices, equity structures, dividends, and financial reports for all stocks, computes cross-sectional features, periodically fits a linear regression to predict stock returns, selects a portfolio from the top-predicted stocks with rank-linear weights, simulates trading with transaction costs, and plots portfolio value, rolling Sharpe ratio and drawdown.
+- [**Mean strategy backtesting**](python/examples/mean_strategy.py) — loads daily prices, equity structures, dividends, and financial reports for all stocks, computes cross-sectional features, periodically fits a linear regression to predict stock returns, selects a portfolio from the top-predicted stocks with rank-linear weights, simulates trading with transaction costs, and plots portfolio value, rolling Sharpe ratio and drawdown against a market-cap-weighted index.
+- [**Mean-variance strategy backtesting**](python/examples/mean_variance_strategy.py) — extends the mean strategy with Ledoit-Wolf shrinkage covariance estimation and Markowitz mean-variance portfolio optimisation (via CVXPY), comparing multiple risk-aversion levels against the index.
 
 # Core Concepts
 

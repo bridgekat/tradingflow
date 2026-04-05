@@ -414,6 +414,20 @@ pub fn dispatch_native_operator(
             Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
         }
 
+        // -- ArgSort (Array<T:Float> → Array<u64>) ----------------------------
+        "argsort" => {
+            let input_dtype: String = params
+                .get_item("input_dtype")?
+                .ok_or_else(|| PyTypeError::new_err("argsort requires 'input_dtype' param"))?
+                .extract()?;
+            macro_rules! go {
+                ($T:ty) => {
+                    add_operator_from_indices(sc, operators::num::ArgSort::<$T>::new(), input_indices, trigger_index)
+                };
+            }
+            Ok((dispatch_dtype!(input_dtype.as_str(), go, float), ViewKind::Array))
+        }
+
         other => Err(PyTypeError::new_err(format!(
             "unknown native operator kind: {other}"
         ))),

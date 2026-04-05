@@ -22,8 +22,9 @@ class Softmax(MeanPortfolio):
         towards the highest-predicted stocks.
     """
 
-    def __init__(self, predicted_returns, *, temperature: float = 1.0) -> None:
+    def __init__(self, universe, predicted_returns, *, temperature: float = 1.0) -> None:
         super().__init__(
+            universe,
             predicted_returns,
             positions_fn=lambda state, predicted: _positions_fn(predicted, temperature),
         )

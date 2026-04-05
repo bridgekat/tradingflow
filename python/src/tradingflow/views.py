@@ -217,6 +217,18 @@ class SeriesView[T: np.generic]:
         """Return `(timestamps_datetime64, values)` tuple."""
         return self.timestamps(), self.values()
 
+    def to_series(self, name=None) -> pd.Series:
+        """Convert to pandas Series with DatetimeIndex.
+
+        Parameters
+        ----------
+        name
+            Optional series name.
+        """
+        ts, vals = self.to_numpy()
+        assert vals.ndim == 1, "only 1D series can be converted to pandas Series"
+        return pd.Series(vals, index=pd.DatetimeIndex(ts), name=name)
+
     def to_dataframe(self, columns=None) -> pd.DataFrame:
         """Convert to pandas DataFrame with DatetimeIndex.
 
@@ -227,13 +239,8 @@ class SeriesView[T: np.generic]:
             [`Schema`][tradingflow.Schema].
             If `None`, uses integer column names.
         """
-        import pandas as pd
-
         ts, vals = self.to_numpy()
-        if vals.ndim == 1:
-            vals = vals.reshape(-1, 1)
-        elif vals.ndim > 2:
-            vals = vals.reshape(len(ts), -1)
+        assert vals.ndim == 2, "only 2D series can be converted to DataFrame"
         if isinstance(columns, Schema):
             columns = [columns.name(i) for i in range(vals.shape[1])]
         return pd.DataFrame(vals, index=pd.DatetimeIndex(ts), columns=columns)

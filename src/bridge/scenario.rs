@@ -396,6 +396,7 @@ impl NativeScenario {
 
         // Spawn the POCQ + drivers on a background thread.
         let shutdown = self.shutdown.clone();
+        let error_slot_for_bg = self.error_slot.clone();
         let bg_handle = {
             let _guard = rt.enter();
             std::thread::spawn(move || {
@@ -403,18 +404,26 @@ impl NativeScenario {
                 // return and panic (stack unwinding).
                 let _done = done_guard_parts.map(|(set_fn, el)| DoneGuard(Some(set_fn), el));
 
-                if let Some(cb) = on_flush {
-                    rt.block_on(scenario.run_with_shutdown(
-                        |ts| {
-                            Python::attach(|py| {
-                                let _ = cb.call1(py, (ts,));
-                            });
-                        },
-                        shutdown,
-                    ));
-                } else {
-                    rt.block_on(scenario.run_with_shutdown(|_| {}, shutdown));
-                }
+                let shutdown_ref = shutdown.clone();
+                let error_slot_ref = error_slot_for_bg.clone();
+
+                let on_flush_fn = move |ts: i64| {
+                    // Check if a Python operator/source already failed.
+                    if error_slot_ref.lock().unwrap().is_some() {
+                        shutdown_ref.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    if let Some(ref cb) = on_flush {
+                        Python::attach(|py| {
+                            if let Err(e) = cb.call1(py, (ts,)) {
+                                super::set_error(&error_slot_ref, e);
+                                shutdown_ref.store(true, Ordering::Relaxed);
+                            }
+                        });
+                    }
+                };
+
+                rt.block_on(scenario.run_with_shutdown(on_flush_fn, shutdown));
                 (scenario, rt)
             })
         };
@@ -457,7 +466,7 @@ impl NativeScenario {
         }
 
         if let Some(err) = self.error_slot.lock().unwrap().take() {
-            Err(PyRuntimeError::new_err(err))
+            Err(err)
         } else {
             Ok(())
         }

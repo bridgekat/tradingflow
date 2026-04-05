@@ -45,6 +45,7 @@ dispatched entirely to Rust.
   [`ForwardFill`][tradingflow.operators.num.ForwardFill]
 """
 
+from .argsort import ArgSort
 from .arithmetic import (
     Add,
     Subtract,
@@ -74,6 +75,7 @@ from .scale import Scale
 from .shift import Shift
 
 __all__ = [
+    "ArgSort",
     "Add",
     "Subtract",
     "Multiply",

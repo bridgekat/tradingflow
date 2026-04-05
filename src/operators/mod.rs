@@ -11,6 +11,9 @@
 //! - [`Id`] — identity passthrough (`T → T`); useful as a trigger-gated node.
 //! - [`Map`] — applies a function `S → T` to transform input into output.
 //! - [`MapInplace`] — applies a function `(&S, &mut T) → bool` in place.
+//! - [`Apply`] — applies a function `Inputs → T` to transform tuple inputs
+//!   into output.
+//! - [`ApplyInplace`] — applies a function `(Inputs, &mut T) → bool` in place.
 //! - [`Filter`] — passes or drops the entire input `Array<T>` based on a
 //!   predicate closure.
 //! - [`Where`] — element-wise conditional replacement: keeps values where the
@@ -39,6 +42,7 @@
 //! - [`rolling`] — rolling (windowed) operators.
 //! - [`stocks`] — stock-specific operators.
 
+pub mod apply;
 pub mod cast;
 pub mod concat;
 pub mod metrics;
@@ -62,6 +66,7 @@ pub use r#const::Const;
 pub use filter::Filter;
 pub use id::Id;
 pub use lag::Lag;
+pub use apply::{Apply, ApplyInplace};
 pub use map::{Map, MapInplace};
 pub use last::Last;
 pub use record::Record;

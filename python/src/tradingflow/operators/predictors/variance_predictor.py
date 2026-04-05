@@ -1,4 +1,4 @@
-"""Abstract mean-return predictor operator."""
+"""Abstract variance (covariance matrix) predictor operator."""
 
 from typing import Callable
 from dataclasses import dataclass, field
@@ -11,13 +11,13 @@ from ...types import Array, Handle, NodeKind
 
 
 @dataclass(slots=True)
-class MeanPredictorState[T]:
+class VariancePredictorState[T]:
     num_stocks: int
     num_features: int
     rebalance_period: int
     max_samples: int
     fit_fn: Callable[[np.ndarray, np.ndarray], T]
-    predict_fn: Callable[["MeanPredictorState[T]", np.ndarray, T], np.ndarray]
+    predict_fn: Callable[["VariancePredictorState[T]", np.ndarray, T], np.ndarray]
 
     tick_count: int = 0
     features_list: list[np.ndarray] = field(default_factory=list)
@@ -25,19 +25,24 @@ class MeanPredictorState[T]:
     rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng())
 
 
-class MeanPredictor[T](
+class VariancePredictor[T](
     Operator[
         tuple[Handle[Array[np.float64]], Handle[Array[np.float64]], Handle[Array[np.float64]]],
         Handle[Array[np.float64]],
-        MeanPredictorState[T],
+        VariancePredictorState[T],
     ]
 ):
-    """Abstract mean-return predictor.
+    """Abstract covariance matrix predictor.
 
-    Runs on every tick.  Accumulates per-tick cross-sectional feature
-    and price snapshots, and every ``rebalance_period`` ticks builds
-    a return matrix and feature array, subsamples time rows, calls
-    ``fit_fn`` and ``predict_fn``, and outputs predicted returns.
+    Runs on every tick.  Accumulates per-tick cross-sectional price and
+    feature snapshots, and every ``rebalance_period`` ticks builds a
+    return matrix, calls ``fit_fn`` and ``predict_fn``, and outputs the
+    predicted covariance matrix.
+
+    Unlike [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor]
+    which pools individual ``(time, stock)`` samples, this operator builds
+    **cross-sectional return vectors** — each row of the return matrix is
+    all stocks' returns at one time point.
 
     Parameters
     ----------
@@ -51,12 +56,10 @@ class MeanPredictor[T](
         ``(x, y) -> params``.  Feature array ``x`` of shape
         ``(T, N, F)`` and return matrix ``y`` of shape ``(T, N)``.
     predict_fn
-        ``(state, features, params) -> returns``.  Current features
+        ``(state, features, params) -> covariances``.  Current features
         of shape ``(N, F)`` and fitted params.
     rebalance_period
         Produce output every N ticks.
-    max_samples
-        Maximum number of time rows to feed to ``fit_fn``.
     """
 
     def __init__(
@@ -66,9 +69,9 @@ class MeanPredictor[T](
         adjusted_prices: Handle,
         *,
         fit_fn: Callable[[np.ndarray, np.ndarray], T],
-        predict_fn: Callable[[MeanPredictorState[T], np.ndarray, T], np.ndarray],
+        predict_fn: Callable[[VariancePredictorState[T], np.ndarray, T], np.ndarray],
         rebalance_period: int,
-        max_samples: int,
+        max_samples: int = 1000,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(features.shape) == 2
@@ -76,7 +79,7 @@ class MeanPredictor[T](
         assert universe.shape[0] == features.shape[0] == adjusted_prices.shape[0]
 
         self._num_stocks = features.shape[0]
-        self._num_features = features.shape[-1]
+        self._num_features = features.shape[1]
         self._fit_fn = fit_fn
         self._predict_fn = predict_fn
         self._rebalance_period = rebalance_period
@@ -86,23 +89,23 @@ class MeanPredictor[T](
             inputs=(universe, features, adjusted_prices),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
-            shape=(self._num_stocks,),
+            shape=(self._num_stocks, self._num_stocks),
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> MeanPredictorState[T]:
-        return MeanPredictorState(
+    def init(self, inputs: tuple, timestamp: int) -> VariancePredictorState[T]:
+        return VariancePredictorState(
             num_stocks=self._num_stocks,
             num_features=self._num_features,
-            fit_fn=self._fit_fn,
-            predict_fn=self._predict_fn,
             rebalance_period=self._rebalance_period,
             max_samples=self._max_samples,
+            fit_fn=self._fit_fn,
+            predict_fn=self._predict_fn,
         )
 
     @staticmethod
     def compute(
-        state: MeanPredictorState[T],
+        state: VariancePredictorState[T],
         inputs: tuple[ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]],
         output: ArrayView[np.float64],
         timestamp: int,
@@ -154,13 +157,13 @@ class MeanPredictor[T](
             p1 = state.prices_list[t + K][mask]
             y[i] = p1 / np.maximum(p0, 1e-10) - 1.0
 
-        # Fit and predict only for universe stocks with valid features.
+        # Fit and predict (symmetric with MeanPredictor: x first, y second).
         params = state.fit_fn(x, y)
-        mu_sub = state.predict_fn(state, features[mask], params)
+        sigma_sub = state.predict_fn(state, features[mask], params)
 
-        # Write back into full (N,) array.
-        mu = np.zeros(N, dtype=np.float64)
-        mu[mask] = mu_sub
+        # Write back into full (N, N) matrix.
+        sigma = np.zeros((N, N), dtype=np.float64)
+        sigma[np.ix_(mask, mask)] = sigma_sub
 
-        output.write(mu)
+        output.write(sigma)
         return True
