@@ -82,8 +82,8 @@ class Operator[Inputs, Output, State](ABC):
     @abstractmethod
     def compute(
         state: State,
-        inputs: Inputs,
-        output: Output,
+        inputs: Any,
+        output: Any,
         timestamp: int,
         notify: Notify,
     ) -> bool:

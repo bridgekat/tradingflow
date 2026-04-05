@@ -11,8 +11,10 @@
 
 Examples require A-shares market data downloaded via the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler). Install optional dependencies with `pip install -e ".[examples]"`. Then run `python -m a_shares_crawler --help` for configuration and download instructions.
 
-- [Plot daily prices](python/examples/plot_daily_price.py) — loads daily price history, computes forward-adjusted prices, moving average and Bollinger Bands, and plots them.
-- [Plot financial data](python/examples/plot_financial_data.py) — loads equity structure, balance sheet, income statement and cash flow data, computes market cap and annualized financial metrics, and plots them.
+- [**Plotting daily prices**](python/examples/plot_daily_price.py) — loads daily price history, computes forward-adjusted prices, moving average and Bollinger Bands, and plots them.
+- [**Plotting financial data**](python/examples/plot_financial_data.py) — loads equity structure, balance sheet, income statement and cash flow data, computes market cap and annualized financial metrics, and plots them.
+- [**Plotting total market cap**](python/examples/plot_total_market_cap.py) — loads daily prices and equity structures for all stocks, computes per-stock circulating market cap, and plots the total across the entire market over time.
+- [**Trading strategy backtesting**](python/examples/mean_strategy.py) — loads daily prices, equity structures, dividends, and financial reports for all stocks, computes cross-sectional features, periodically fits a linear regression to predict stock returns, selects a portfolio from the top-predicted stocks with rank-linear weights, simulates trading with transaction costs, and plots portfolio value, rolling Sharpe ratio and drawdown.
 
 # Core Concepts
 
@@ -43,11 +45,11 @@ An [operator](src/operator.rs) reads from one or more input nodes and writes dat
 
 Operators are the reusable building blocks of trading strategies. Examples include:
 
-- **Technical indicators** (e.g. 20-day moving average of instrument prices)
-- **Model predictions** (e.g. from a regression model predicting future instrument returns, periodically retrained on historical data)
-- **Target positions** (e.g. periodically recomputed by mean-variance portfolio optimization on some forecasted returns and covariances)
-- **Trading signals** (e.g. differences between target and actual positions)
-- **Performance metrics** (e.g. cumulative returns calculated from past positions)
+- [**Technical indicators**](src/operators/rolling/) (e.g. 20-day moving average of instrument prices)
+- [**Model predictions**](python/src/tradingflow/operators/predictors/) (e.g. from a regression model predicting future instrument returns, periodically retrained on historical data)
+- [**Target positions**](python/src/tradingflow/operators/portfolios/) (e.g. periodically recomputed by mean-variance portfolio optimization on some forecasted returns and covariances)
+- [**Trading simulators**](python/src/tradingflow/operators/traders/) (e.g. simulated execution of desired target positions with transaction costs, slippage, and other trading frictions)
+- [**Performance metrics**](src/operators/metrics/) (e.g. Sharpe ratios calculated from past portfolio values)
 
 ## Scenarios
 

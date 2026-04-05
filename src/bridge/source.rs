@@ -146,6 +146,7 @@ pub fn make_py_source(
         ErasedSource::new(
             TypeId::of::<PyObject>(),
             output_type_id,
+            (None, None), // Python sources don't provide time ranges
             init_fn,
             py_poll_fn,
             py_write_fn,

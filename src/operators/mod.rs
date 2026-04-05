@@ -34,12 +34,14 @@
 //!
 //! # Sub-modules
 //!
+//! - [`metrics`] — clock-driven financial metrics.
 //! - [`num`] — element-wise numeric operators.
 //! - [`rolling`] — rolling (windowed) operators.
 //! - [`stocks`] — stock-specific operators.
 
 pub mod cast;
 pub mod concat;
+pub mod metrics;
 pub mod r#const;
 pub mod filter;
 pub mod id;

@@ -52,6 +52,7 @@ mod node;
 mod queue;
 
 pub use handle::{Handle, InputTypesHandles};
+pub use queue::ShutdownFlag;
 
 use std::any::TypeId;
 
@@ -85,6 +86,7 @@ use node::Node;
 pub struct Scenario {
     graph: Graph,
     source_indices: Vec<usize>,
+    source_time_ranges: Vec<(Option<i64>, Option<i64>)>,
 }
 
 impl Scenario {
@@ -92,6 +94,7 @@ impl Scenario {
         Self {
             graph: Graph::new(),
             source_indices: Vec::new(),
+            source_time_ranges: Vec::new(),
         }
     }
 
@@ -158,9 +161,11 @@ impl Scenario {
 
     /// Register a type-erased source.
     pub fn add_erased_source(&mut self, erased: ErasedSource) -> usize {
+        let time_range = erased.time_range();
         let node = Node::from_erased_source(erased, i64::MIN);
         let output_idx = self.graph.add_node(node);
         self.source_indices.push(output_idx);
+        self.source_time_ranges.push(time_range);
         output_idx
     }
 
@@ -199,6 +204,28 @@ impl Scenario {
             }
         }
         output_idx
+    }
+
+    /// Return the aggregate time range across all sources.
+    ///
+    /// Returns `(Some(min_first), Some(max_last))` when **every** registered
+    /// source provides both bounds, otherwise `(None, None)`.
+    pub fn time_range(&self) -> (Option<i64>, Option<i64>) {
+        if self.source_time_ranges.is_empty() {
+            return (None, None);
+        }
+        let mut first: Option<i64> = None;
+        let mut last: Option<i64> = None;
+        for &(f, l) in &self.source_time_ranges {
+            match (f, l) {
+                (Some(f_val), Some(l_val)) => {
+                    first = Some(first.map_or(f_val, |prev: i64| prev.min(f_val)));
+                    last = Some(last.map_or(l_val, |prev: i64| prev.max(l_val)));
+                }
+                _ => return (None, None),
+            }
+        }
+        (first, last)
     }
 
     /// Propagate updates through the DAG.

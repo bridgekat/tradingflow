@@ -33,6 +33,7 @@ CF_SCHEMA = Schema(CSVSchema.cash_flow_statement().iter_field_ids())
 
 def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     """Build a scenario with market cap and annualized financial metrics."""
+
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
 
@@ -111,13 +112,13 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     cf_ann = sc.add_operator(Annualize(cf_ytd))
 
     # Market cap = close price × total shares.
-    close = sc.add_operator(Select(prices, [PRICE_SCHEMA.index("prices.close")]))
-    total_shares = sc.add_operator(Select(equity_structures, [EQUITY_SCHEMA.index("shares.total")]))
+    close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
+    total_shares = sc.add_operator(Select(equity_structures, EQUITY_SCHEMA.index("shares.total")))
     market_cap = sc.add_operator(Multiply(close, total_shares))
 
     # Balance sheet: total assets and equity.
-    assets = sc.add_operator(Select(balance, [BS_SCHEMA.index("balance_sheet.assets")]))
-    negative_equity = sc.add_operator(Select(balance, [BS_SCHEMA.index("balance_sheet.equity")]))
+    assets = sc.add_operator(Select(balance, BS_SCHEMA.index("balance_sheet.assets")))
+    negative_equity = sc.add_operator(Select(balance, BS_SCHEMA.index("balance_sheet.equity")))
     equity = sc.add_operator(Negate(negative_equity))
 
     # Parent equity = sum of capital, reserves and parent interests.
@@ -143,11 +144,11 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     )
 
     # Income statement (annualized): select income, expenses and net profit.
-    op_income = sc.add_operator(Select(income_ann, [INC_SCHEMA.index("income_statement.profit.operating.income")]))
-    net_profit = sc.add_operator(Select(income_ann, [INC_SCHEMA.index("income_statement.profit")]))
+    op_income = sc.add_operator(Select(income_ann, INC_SCHEMA.index("income_statement.profit.operating.income")))
+    net_profit = sc.add_operator(Select(income_ann, INC_SCHEMA.index("income_statement.profit")))
 
     # Cash flow (annualized): select operating, investing, financing.
-    cash_flow = sc.add_operator(Select(cf_ann, [CF_SCHEMA.index("cash_flow_statement.change")]))
+    cash_flow = sc.add_operator(Select(cf_ann, CF_SCHEMA.index("cash_flow_statement.change")))
 
     # TTM net profit: rolling mean of annualized quarterly values over 365
     # days on the report-date axis. For equal-length quarters this equals
@@ -183,7 +184,6 @@ if __name__ == "__main__":
 
     symbol: str = args.symbol
     data_dir: Path = args.data_dir
-
     if not data_dir.is_dir():
         raise SystemExit(
             f"Data directory not found: {data_dir}\n"

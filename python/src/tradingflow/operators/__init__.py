@@ -34,13 +34,21 @@ This module provides all shipped operators. They fall into two categories:
 ## Sub-modules
 
 - [`num`][tradingflow.operators.num] -- element-wise numeric operators
+- [`portfolios`][tradingflow.operators.portfolios] -- portfolio construction operators
+- [`predictors`][tradingflow.operators.predictors] -- cross-sectional return predictors
 - [`rolling`][tradingflow.operators.rolling] -- rolling window operators
+- [`metrics`][tradingflow.operators.metrics] -- clock-driven financial metrics
 - [`stocks`][tradingflow.operators.stocks] -- stock-specific operators
+- [`traders`][tradingflow.operators.traders] -- trading simulation operators
 """
 
+from . import metrics
 from . import num
+from . import portfolios
+from . import predictors
 from . import rolling
 from . import stocks
+from . import traders
 
 from .cast import Cast
 from .concat import Concat
@@ -56,9 +64,13 @@ from .stack import Stack
 from .where import Where
 
 __all__ = [
+    "metrics",
     "num",
+    "portfolios",
+    "predictors",
     "rolling",
     "stocks",
+    "traders",
     "Cast",
     "Const",
     "Concat",

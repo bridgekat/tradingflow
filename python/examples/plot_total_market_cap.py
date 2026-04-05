@@ -28,7 +28,7 @@ PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
 
 
-def discover_symbols(data_dir: Path) -> list[str]:
+def load_symbols(data_dir: Path) -> list[str]:
     """Read stock symbols from the symbol list CSV."""
 
     symbol_list_path = data_dir / "symbol_list.csv"
@@ -44,26 +44,12 @@ def discover_symbols(data_dir: Path) -> list[str]:
     return symbols
 
 
-def estimate_date_range_ns(data_dir: Path) -> tuple[int, int]:
-    """Estimate the historical date range by peeking at a sample CSV."""
-
-    history_dir = data_dir / "a_shares_history"
-    sample = next(history_dir.glob("*.daily_prices.csv"), None)
-    if sample is None:
-        raise SystemExit("No price CSV files found.")
-
-    with sample.open(newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader)
-        i = header.index("date")
-        dates = [row[i] for row in reader]
-
-    first_ns = int(np.datetime64(dates[0], "ns").view(np.int64))
-    last_ns = int(np.datetime64(dates[-1], "ns").view(np.int64))
-    return first_ns, last_ns
-
-
-def build_scenario(symbols: list[str], data_dir: Path) -> tuple[Scenario, dict]:
+def build_scenario(
+    symbols: list[str],
+    data_dir: Path,
+    start: np.datetime64,
+    end: np.datetime64,
+) -> tuple[Scenario, dict]:
     """Build a scenario that sums per-stock market caps."""
 
     history_dir = data_dir / "a_shares_history"
@@ -73,10 +59,10 @@ def build_scenario(symbols: list[str], data_dir: Path) -> tuple[Scenario, dict]:
     for symbol in tqdm(symbols, desc="Building scenario"):
         price_path = history_dir / f"{symbol}.daily_prices.csv"
         equity_path = history_dir / f"{symbol}.equity_structures.csv"
-        prices = sc.add_source(CSVSource(price_path, PRICE_SCHEMA, time_column="date"))
-        equity = sc.add_source(CSVSource(equity_path, EQUITY_SCHEMA, time_column="date"))
-        close = sc.add_operator(Select(prices, [PRICE_SCHEMA.index("prices.close")]))
-        shares = sc.add_operator(Select(equity, [EQUITY_SCHEMA.index("shares.circulating")]))
+        prices = sc.add_source(CSVSource(price_path, PRICE_SCHEMA, time_column="date", start=start, end=end))
+        equity = sc.add_source(CSVSource(equity_path, EQUITY_SCHEMA, time_column="date", start=start, end=end))
+        close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
+        shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
         market_cap = sc.add_operator(Multiply(close, shares))
         market_caps.append(market_cap)
 
@@ -90,30 +76,30 @@ def build_scenario(symbols: list[str], data_dir: Path) -> tuple[Scenario, dict]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
+    parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
+    parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir
-
     if not data_dir.is_dir():
         raise SystemExit(
             f"Data directory not found: {data_dir}\n"
             "Run `python -m a_shares_crawler --help` for download instructions."
         )
 
-    symbols = discover_symbols(data_dir)
+    symbols = load_symbols(data_dir)
     print(f"Discovered {len(symbols)} symbols.")
 
     # Run scenario.
-    first_ns, last_ns = estimate_date_range_ns(data_dir)
-    sc, handles = build_scenario(symbols, data_dir)
+    sc, handles = build_scenario(symbols, data_dir, start=args.begin, end=args.end)
+
+    first_ns_opt, last_ns_opt = sc.time_range()
+    assert first_ns_opt is not None and last_ns_opt is not None, "all sources must provide a time range"
+    first_ns, last_ns = first_ns_opt, last_ns_opt
+
     total_days = (last_ns - first_ns) // DAY_NS
     progress = tqdm(total=total_days, unit="d", desc="Running scenario")
-
-    def on_flush(ts_ns: int) -> None:
-        elapsed_days = (min(max(ts_ns, first_ns), last_ns) - first_ns) // DAY_NS
-        progress.update(elapsed_days - progress.n)
-
-    sc.run(on_flush=on_flush)
+    sc.run(on_flush=lambda ts: progress.update((min(max(ts, first_ns), last_ns) - first_ns) // DAY_NS - progress.n))
     progress.close()
 
     # Extract series as DataFrames.

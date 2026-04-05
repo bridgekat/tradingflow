@@ -112,6 +112,14 @@ class Scenario:
             kind = output_type[0]
         return Handle(idx, kind, operator.dtype, operator.shape)
 
+    def time_range(self) -> tuple[int | None, int | None]:
+        """Return the aggregate time range across all sources.
+
+        Returns `(first_ns, last_ns)` when every registered source provides
+        both bounds; otherwise returns `(None, None)`.
+        """
+        return self._native.time_range()
+
     def run(self, on_flush: Callable[[int], Any] | None = None) -> None:
         """Execute the POCQ event loop.
 

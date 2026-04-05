@@ -35,13 +35,10 @@
 //!
 //! - [`Ema`] — exponential moving average with window-bounded weights (does
 //!   not use the `Accumulator` abstraction).
-//! - [`ForwardFill`] — replaces NaN with the last valid observation per
-//!   element (stateful but not windowed).
 
 pub mod accumulator;
 pub mod covariance;
 pub mod ema;
-pub mod ffill;
 pub mod mean;
 pub mod sum;
 pub mod variance;
@@ -49,7 +46,6 @@ pub mod variance;
 pub use accumulator::{Accumulator, Rolling, Window};
 pub use covariance::CovarianceAccumulator;
 pub use ema::Ema;
-pub use ffill::ForwardFill;
 pub use mean::MeanAccumulator;
 pub use sum::SumAccumulator;
 pub use variance::VarianceAccumulator;

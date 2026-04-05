@@ -4,6 +4,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::future::poll_fn;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -12,6 +14,9 @@ use crate::source::PollFn;
 
 use super::Scenario;
 use super::node::{ChannelKind, SourceState};
+
+/// Shared shutdown flag for cooperative cancellation of the POCQ loop.
+pub type ShutdownFlag = Arc<AtomicBool>;
 
 // ---------------------------------------------------------------------------
 // recv_future — queue-specific extension on SourceState
@@ -207,7 +212,20 @@ impl Scenario {
     /// # Complexity
     ///
     /// O(log N) per event for N sources — no O(N) scans.
-    pub async fn run(&mut self, mut on_flush: impl FnMut(i64)) {
+    pub async fn run(&mut self, on_flush: impl FnMut(i64)) {
+        self.run_with_shutdown(on_flush, Arc::new(AtomicBool::new(false)))
+            .await;
+    }
+
+    /// Like [`run`](Self::run), but accepts a shared [`ShutdownFlag`].
+    ///
+    /// When the flag is set to `true`, the loop exits at the next flush
+    /// boundary.
+    pub async fn run_with_shutdown(
+        &mut self,
+        mut on_flush: impl FnMut(i64),
+        shutdown: ShutdownFlag,
+    ) {
         let n = self.source_indices.len();
         if n == 0 {
             return;
@@ -307,6 +325,9 @@ impl Scenario {
                 self.graph.flush(qts, &queue_sources);
                 queue_sources.clear();
                 on_flush(qts);
+                if shutdown.load(Ordering::Relaxed) {
+                    return;
+                }
             }
 
             // ----------------------------------------------------------------

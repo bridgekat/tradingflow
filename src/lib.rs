@@ -15,7 +15,8 @@
 //! # Traits
 //!
 //! * [`Source`] — asynchronous data source feeding events into the graph via
-//!   historical and live channels. Type-erased form: [`ErasedSource`].
+//!   historical and live channels. Provides an optional [`time_range`](Source::time_range)
+//!   method for declaring known data bounds. Type-erased form: [`ErasedSource`].
 //! * [`Operator`] — synchronous computation node that reads typed inputs and
 //!   writes a typed output. Type-erased form: [`ErasedOperator`].
 //! * [`Notify`] — zero-cost notification context passed to

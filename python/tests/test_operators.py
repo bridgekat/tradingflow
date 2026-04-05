@@ -27,13 +27,13 @@ from tradingflow.operators.num import (
     Min,
     Max,
 )
+from tradingflow.operators.num import ForwardFill
 from tradingflow.operators.rolling import (
     RollingSum,
     RollingMean,
     RollingVariance,
     RollingCovariance,
     EMA,
-    ForwardFill,
 )
 from tradingflow.types import Handle, NodeKind
 
@@ -360,8 +360,8 @@ class TestEma:
 class TestForwardFill:
     def test_forward_fill_replaces_nan(self) -> None:
         """NaN values are replaced with last valid observation."""
-        sc, _, s = _scalar_scenario([1.0, float("nan"), float("nan"), 4.0, float("nan")])
-        h_ff = sc.add_operator(ForwardFill(s))
+        sc, h, _ = _scalar_scenario([1.0, float("nan"), float("nan"), 4.0, float("nan")])
+        h_ff = sc.add_operator(ForwardFill(h))
         h_ff_recorded = sc.add_operator(Record(h_ff))
         _run(sc)
         vals = list(sc.series_view(h_ff_recorded).values())
@@ -373,8 +373,8 @@ class TestForwardFill:
 
     def test_forward_fill_leading_nan(self) -> None:
         """Leading NaN stays NaN until a valid value appears."""
-        sc, _, s = _scalar_scenario([float("nan"), float("nan"), 3.0])
-        h_ff = sc.add_operator(ForwardFill(s))
+        sc, h, _ = _scalar_scenario([float("nan"), float("nan"), 3.0])
+        h_ff = sc.add_operator(ForwardFill(h))
         h_ff_recorded = sc.add_operator(Record(h_ff))
         _run(sc)
         vals = list(sc.series_view(h_ff_recorded).values())
@@ -384,8 +384,8 @@ class TestForwardFill:
 
     def test_forward_fill_no_nan(self) -> None:
         """Clean data passes through unchanged."""
-        sc, _, s = _scalar_scenario([1.0, 2.0, 3.0])
-        h_ff = sc.add_operator(ForwardFill(s))
+        sc, h, _ = _scalar_scenario([1.0, 2.0, 3.0])
+        h_ff = sc.add_operator(ForwardFill(h))
         h_ff_recorded = sc.add_operator(Record(h_ff))
         _run(sc)
         vals = list(sc.series_view(h_ff_recorded).values())

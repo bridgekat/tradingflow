@@ -29,6 +29,15 @@ impl<T: Scalar> Source for ArraySource<T> {
     type Event = Array<T>;
     type Output = Array<T>;
 
+    fn time_range(&self) -> (Option<i64>, Option<i64>) {
+        let ts = self.series.timestamps();
+        if ts.is_empty() {
+            (None, None)
+        } else {
+            (Some(ts[0]), Some(*ts.last().unwrap()))
+        }
+    }
+
     fn init(
         self,
         _timestamp: i64,

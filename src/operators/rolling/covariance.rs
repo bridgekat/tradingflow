@@ -126,7 +126,7 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
 mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
-    use crate::{Array, Notify, Operator, Series};
+    use crate::{Notify, Operator, Series};
 
     type RollingCovariance = Rolling<CovarianceAccumulator<f64>>;
 

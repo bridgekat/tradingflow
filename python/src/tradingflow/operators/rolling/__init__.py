@@ -15,8 +15,6 @@ all elements within the given duration of the most recent timestamp).
   [`RollingCovariance`][tradingflow.operators.rolling.RollingCovariance]
 - [`EMA`][tradingflow.operators.rolling.EMA] -- window-normalized exponential
   moving average
-- [`ForwardFill`][tradingflow.operators.rolling.ForwardFill] -- forward-fill
-  NaN values
 """
 
 from .sum import RollingSum
@@ -24,7 +22,6 @@ from .mean import RollingMean
 from .variance import RollingVariance
 from .covariance import RollingCovariance
 from .ema import EMA
-from .ffill import ForwardFill
 
 __all__ = [
     "RollingSum",
@@ -32,5 +29,4 @@ __all__ = [
     "RollingVariance",
     "RollingCovariance",
     "EMA",
-    "ForwardFill",
 ]

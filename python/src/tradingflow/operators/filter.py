@@ -12,7 +12,7 @@ from ..operator import Operator, Notify
 from ..types import Array, Handle, NodeKind
 
 
-@dataclass
+@dataclass(slots=True)
 class FilterState[T: np.generic]:
     """State for [`Filter`]."""
 

@@ -49,6 +49,10 @@ pub struct FinancialReportSource {
     with_report_date: bool,
     use_effective_date: bool,
     notice_date_fallback_ns: i64,
+    /// Optional inclusive start bound (nanoseconds).
+    start_ns: Option<i64>,
+    /// Optional inclusive end bound (nanoseconds).
+    end_ns: Option<i64>,
 }
 
 impl FinancialReportSource {
@@ -77,7 +81,19 @@ impl FinancialReportSource {
             with_report_date,
             use_effective_date,
             notice_date_fallback_ns,
+            start_ns: None,
+            end_ns: None,
         }
+    }
+
+    /// Restrict the source to the given inclusive time range.
+    ///
+    /// Rows outside `[start_ns, end_ns]` are dropped.  The reported
+    /// [`time_range`](Source::time_range) is clamped accordingly.
+    pub fn with_time_range(mut self, start_ns: Option<i64>, end_ns: Option<i64>) -> Self {
+        self.start_ns = start_ns;
+        self.end_ns = end_ns;
+        self
     }
 }
 
@@ -90,10 +106,16 @@ struct Row {
     values: Vec<f64>,
 }
 
-/// Parse a date string (`YYYY-MM-DD`) to a [`NaiveDate`].
+/// Parse a date string (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS`) to a [`NaiveDate`].
 fn parse_date(s: &str) -> Result<NaiveDate, String> {
-    NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
-        .map_err(|e| format!("cannot parse date {s:?}: {e}"))
+    let s = s.trim();
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Ok(d);
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Ok(dt.date());
+    }
+    Err(format!("cannot parse date {s:?}"))
 }
 
 /// Convert a [`NaiveDate`] to nanoseconds since the UNIX epoch (midnight UTC).
@@ -222,6 +244,10 @@ impl Source for FinancialReportSource {
     type Event = Array<f64>;
     type Output = Array<f64>;
 
+    fn time_range(&self) -> (Option<i64>, Option<i64>) {
+        (self.start_ns, self.end_ns)
+    }
+
     fn init(
         self,
         _timestamp: i64,
@@ -255,7 +281,47 @@ impl Source for FinancialReportSource {
                     return;
                 }
             };
-            for row in rows {
+            let start_ns = self.start_ns;
+            let end_ns = self.end_ns;
+
+            // When start_ns is set, find the last row before the window
+            // and emit it at start_ns as the initial value.
+            let mut last_before_start: Option<&Row> = None;
+            let mut entered_window = start_ns.is_none();
+
+            for row in &rows {
+                if let Some(start) = start_ns {
+                    if row.event_ts < start {
+                        last_before_start = Some(row);
+                        continue;
+                    }
+                }
+
+                if !entered_window {
+                    entered_window = true;
+                    if let Some(init_row) = last_before_start.take() {
+                        let start = start_ns.unwrap();
+                        let data = if with_report_date {
+                            let mut v = Vec::with_capacity(2 + init_row.values.len());
+                            v.push(init_row.report_year);
+                            v.push(init_row.report_day_of_year);
+                            v.extend_from_slice(&init_row.values);
+                            v
+                        } else {
+                            init_row.values.clone()
+                        };
+                        let arr = Array::from_vec(&[output_len], data);
+                        if hist_tx.send((start, arr)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(end) = end_ns {
+                    if row.event_ts > end {
+                        break;
+                    }
+                }
                 let data = if with_report_date {
                     let mut v = Vec::with_capacity(2 + row.values.len());
                     v.push(row.report_year);
@@ -263,11 +329,30 @@ impl Source for FinancialReportSource {
                     v.extend_from_slice(&row.values);
                     v
                 } else {
-                    row.values
+                    row.values.clone()
                 };
                 let arr = Array::from_vec(&[output_len], data);
                 if hist_tx.send((row.event_ts, arr)).await.is_err() {
                     break;
+                }
+            }
+
+            // If all rows were before the start, emit the last one.
+            if !entered_window {
+                if let Some(init_row) = last_before_start {
+                    if let Some(start) = start_ns {
+                        let data = if with_report_date {
+                            let mut v = Vec::with_capacity(2 + init_row.values.len());
+                            v.push(init_row.report_year);
+                            v.push(init_row.report_day_of_year);
+                            v.extend_from_slice(&init_row.values);
+                            v
+                        } else {
+                            init_row.values.clone()
+                        };
+                        let arr = Array::from_vec(&[output_len], data);
+                        let _ = hist_tx.send((start, arr)).await;
+                    }
                 }
             }
         });

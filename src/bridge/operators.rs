@@ -97,7 +97,7 @@ pub fn dispatch_native_operator(
         "record" => Ok((dispatch_op!(dtype, Record, numeric, sc, input_indices, trigger_index), ViewKind::Series)),
 
         // -- Forward-fill (Series → Array, float only) ------------------------
-        "forward_fill" => Ok((dispatch_op!(dtype, rolling::ForwardFill, float, sc, input_indices, trigger_index), ViewKind::Array)),
+        "forward_fill" => Ok((dispatch_op!(dtype, num::ForwardFill, float, sc, input_indices, trigger_index), ViewKind::Array)),
 
         // -- Identity (Array → Array) ----------------------------------------
         "id" => {
@@ -194,9 +194,19 @@ pub fn dispatch_native_operator(
                 .get_item("indices")?
                 .ok_or_else(|| PyTypeError::new_err("select requires 'indices' param"))?
                 .extract()?;
+            let axis: usize = params
+                .get_item("axis")?
+                .map(|v| v.extract::<usize>())
+                .transpose()?
+                .unwrap_or(0);
+            let squeeze: bool = params
+                .get_item("squeeze")?
+                .map(|v| v.extract::<bool>())
+                .transpose()?
+                .unwrap_or(false);
             macro_rules! go {
                 ($T:ty) => {
-                    add_operator_from_indices(sc, operators::Select::<$T>::flat(indices.clone()), input_indices, trigger_index)
+                    add_operator_from_indices(sc, operators::Select::<$T>::new(indices.clone(), axis, squeeze), input_indices, trigger_index)
                 };
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
@@ -335,15 +345,22 @@ pub fn dispatch_native_operator(
         }
 
         // -- Forward adjust (Array × Array → Array, f64 only) ----------------
-        "forward_adjust" => Ok((
-            add_operator_from_indices(
-                sc,
-                operators::stocks::ForwardAdjust::new(),
-                input_indices,
-                trigger_index,
-            ),
-            ViewKind::Array,
-        )),
+        "forward_adjust" => {
+            let output_prices: bool = params
+                .get_item("output_prices")?
+                .map(|v| v.extract::<bool>())
+                .transpose()?
+                .unwrap_or(true);
+            Ok((
+                add_operator_from_indices(
+                    sc,
+                    operators::stocks::ForwardAdjust::new().with_output_prices(output_prices),
+                    input_indices,
+                    trigger_index,
+                ),
+                ViewKind::Array,
+            ))
+        }
 
         // -- Annualize (Array → Array, f64 only) ----------------------------
         "annualize" => Ok((
@@ -378,6 +395,23 @@ pub fn dispatch_native_operator(
                 }};
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+        }
+
+        // -- Metrics --------------------------------------------------------
+        "compound_return" | "average_return" | "volatility" | "sharpe_ratio" | "drawdown" => {
+            macro_rules! go {
+                ($T:ty) => {
+                    match kind {
+                        "compound_return" => add_operator_from_indices(sc, operators::metrics::CompoundReturn::<$T>::new(), input_indices, trigger_index),
+                        "average_return" => add_operator_from_indices(sc, operators::metrics::AverageReturn::<$T>::new(), input_indices, trigger_index),
+                        "volatility" => add_operator_from_indices(sc, operators::metrics::Volatility::<$T>::new(), input_indices, trigger_index),
+                        "sharpe_ratio" => add_operator_from_indices(sc, operators::metrics::SharpeRatio::<$T>::new(), input_indices, trigger_index),
+                        "drawdown" => add_operator_from_indices(sc, operators::metrics::Drawdown::<$T>::new(), input_indices, trigger_index),
+                        _ => unreachable!(),
+                    }
+                };
+            }
+            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
         }
 
         other => Err(PyTypeError::new_err(format!(

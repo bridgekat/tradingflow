@@ -41,7 +41,8 @@ dispatched entirely to Rust.
   [`Scale`][tradingflow.operators.num.Scale],
   [`Shift`][tradingflow.operators.num.Shift],
   [`Clamp`][tradingflow.operators.num.Clamp],
-  [`Fillna`][tradingflow.operators.num.Fillna]
+  [`Fillna`][tradingflow.operators.num.Fillna],
+  [`ForwardFill`][tradingflow.operators.num.ForwardFill]
 """
 
 from .arithmetic import (
@@ -66,6 +67,7 @@ from .arithmetic import (
     Max,
 )
 from .clamp import Clamp
+from .ffill import ForwardFill
 from .fillna import Fillna
 from .pow import Pow
 from .scale import Scale
@@ -95,5 +97,6 @@ __all__ = [
     "Scale",
     "Shift",
     "Clamp",
+    "ForwardFill",
     "Fillna",
 ]

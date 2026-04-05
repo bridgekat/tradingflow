@@ -52,8 +52,17 @@ pub fn dispatch_native_source(
                 .map(|v| v.extract::<i64>())
                 .transpose()?
                 .unwrap_or(0);
+            let start_ns: Option<i64> = params
+                .get_item("start_ns")?
+                .map(|v| v.extract::<i64>())
+                .transpose()?;
+            let end_ns: Option<i64> = params
+                .get_item("end_ns")?
+                .map(|v| v.extract::<i64>())
+                .transpose()?;
             use crate::sources::CsvSource;
-            let source = CsvSource::new(path, time_column, value_columns, timestamp_offset_ns);
+            let source = CsvSource::new(path, time_column, value_columns, timestamp_offset_ns)
+                .with_time_range(start_ns, end_ns);
             Ok(sc.add_source(source).index())
         }
         "financial_report" => {
@@ -101,6 +110,14 @@ pub fn dispatch_native_source(
                     )
                 })?
                 .extract()?;
+            let start_ns: Option<i64> = params
+                .get_item("start_ns")?
+                .map(|v| v.extract::<i64>())
+                .transpose()?;
+            let end_ns: Option<i64> = params
+                .get_item("end_ns")?
+                .map(|v| v.extract::<i64>())
+                .transpose()?;
             use crate::sources::stocks::FinancialReportSource;
             let source = FinancialReportSource::new(
                 path,
@@ -110,7 +127,8 @@ pub fn dispatch_native_source(
                 with_report_date,
                 use_effective_date,
                 notice_date_fallback_ns,
-            );
+            )
+            .with_time_range(start_ns, end_ns);
             Ok(sc.add_source(source).index())
         }
         "clock" => {

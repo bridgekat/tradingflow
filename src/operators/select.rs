@@ -7,29 +7,46 @@ use crate::{Array, Notify, Operator, Scalar};
 /// Select elements from an array along an axis.
 ///
 /// Precomputes a flat index mapping at init time from the actual input shape.
+///
+/// When `squeeze` is `true` and exactly one index is selected, the
+/// selected axis is removed from the output shape (e.g. selecting one
+/// element from a `[5]` array yields a scalar `[]` instead of `[1]`).
 pub struct Select<T: Scalar> {
     indices: Vec<usize>,
     axis: usize,
+    squeeze: bool,
     _phantom: PhantomData<T>,
 }
 
 impl<T: Scalar> Select<T> {
-    /// Select by flat indices (axis 0, 1-D inputs).
-    pub fn flat(indices: Vec<usize>) -> Self {
+    /// Create a new `Select` operator.
+    ///
+    /// * `indices` — positions to select along `axis`.
+    /// * `axis` — the axis to select from.
+    /// * `squeeze` — if `true` and `indices.len() == 1`, the selected
+    ///   axis is removed from the output shape.
+    pub fn new(indices: Vec<usize>, axis: usize, squeeze: bool) -> Self {
+        assert!(
+            !squeeze || indices.len() == 1,
+            "squeeze requires exactly one index, got {}",
+            indices.len(),
+        );
         Self {
             indices,
-            axis: 0,
+            axis,
+            squeeze,
             _phantom: PhantomData,
         }
     }
 
-    /// Select along a specific axis.
+    /// Select by flat indices (axis 0, 1-D inputs, no squeeze).
+    pub fn flat(indices: Vec<usize>) -> Self {
+        Self::new(indices, 0, false)
+    }
+
+    /// Select along a specific axis (no squeeze).
     pub fn along_axis(indices: Vec<usize>, axis: usize) -> Self {
-        Self {
-            indices,
-            axis,
-            _phantom: PhantomData,
-        }
+        Self::new(indices, axis, false)
     }
 }
 
@@ -51,6 +68,12 @@ impl<T: Scalar> Operator for Select<T> {
             output_shape = vec![self.indices.len()];
         } else {
             output_shape[self.axis] = self.indices.len();
+        }
+        // Squeeze: remove the axis when selecting exactly one element.
+        if self.squeeze && self.indices.len() == 1 {
+            if output_shape.len() > self.axis {
+                output_shape.remove(self.axis);
+            }
         }
         (SelectState { index_map }, Array::zeros(&output_shape))
     }

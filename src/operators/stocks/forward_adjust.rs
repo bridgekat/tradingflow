@@ -1,14 +1,13 @@
 //! Forward price adjustment operator for corporate actions.
 //!
 //! [`ForwardAdjust`] accumulates a multiplicative adjustment factor from
-//! share dividends (bonus shares) and cash dividends, producing a
-//! forward-adjusted stock price on every tick.  Uses [`Notify`] to detect
-//! when dividend data arrives.
+//! share dividends (bonus shares) and cash dividends, producing either a
+//! forward-adjusted stock price or the raw adjustment factor on every tick.
 
 use crate::{Array, Notify, Operator};
 
-/// Compute the forward-adjusted stock price from a raw stock price and
-/// dividend data for a single stock.
+/// Compute the forward-adjusted stock price (or adjustment factor) from
+/// a raw stock price and dividend data for a single stock.
 ///
 /// # Inputs
 ///
@@ -22,13 +21,25 @@ use crate::{Array, Notify, Operator};
 ///
 /// # Output
 ///
-/// Forward-adjusted stock price: scalar `Array<f64>` (shape `[]`), equal
-/// to `raw_stock * cumulative_factor`.
-pub struct ForwardAdjust;
+/// If `output_prices` is `true` (default): forward-adjusted stock price
+/// (`raw_price * factor`).  If `false`: the cumulative adjustment factor
+/// itself.
+pub struct ForwardAdjust {
+    output_prices: bool,
+}
 
 impl ForwardAdjust {
     pub fn new() -> Self {
-        Self
+        Self {
+            output_prices: true,
+        }
+    }
+
+    /// If `false`, output the cumulative adjustment factor instead of
+    /// the adjusted price.
+    pub fn with_output_prices(mut self, output_prices: bool) -> Self {
+        self.output_prices = output_prices;
+        self
     }
 }
 
@@ -41,6 +52,7 @@ impl Default for ForwardAdjust {
 pub struct ForwardAdjustState {
     prev_price: f64,
     factor: f64,
+    output_prices: bool,
 }
 
 impl Operator for ForwardAdjust {
@@ -62,8 +74,10 @@ impl Operator for ForwardAdjust {
         let state = ForwardAdjustState {
             prev_price: f64::NAN,
             factor: 1.0,
+            output_prices: self.output_prices,
         };
-        (state, Array::scalar(0.0))
+        let init_val = if self.output_prices { 0.0 } else { 1.0 };
+        (state, Array::scalar(init_val))
     }
 
     fn compute(
@@ -85,7 +99,11 @@ impl Operator for ForwardAdjust {
         }
         if notify.input_produced(0) {
             let price = inputs.0.as_slice()[0];
-            output.as_mut_slice()[0] = price * state.factor;
+            output.as_mut_slice()[0] = if state.output_prices {
+                price * state.factor
+            } else {
+                state.factor
+            };
             state.prev_price = price;
             true
         } else {
@@ -129,19 +147,15 @@ mod tests {
         let d0 = no_div();
         let (mut s, mut o) = ForwardAdjust::new().init((&p0, &d0), 0);
 
-        // Day 1: establish previous price.
         ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, 1, &notify_price());
         assert_eq!(o.as_slice(), &[10.0]);
 
-        // Day 2 (ex-date): price drops to 9.5, cash dividend = 0.5.
-        // Multiplier = (1 + 0.5 / (10.0 - 0.5)) * 1 = 1 + 0.5/9.5.
         let p1 = price(9.5);
         let d1 = div(0.0, 0.5);
         ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, 2, &notify_both());
 
         let factor = 1.0 + 0.5 / 9.5;
         assert!((o.as_slice()[0] - 9.5 * factor).abs() < 1e-12);
-        // Adjusted price ≈ previous unadjusted price (10.0).
         assert!((o.as_slice()[0] - 10.0).abs() < 1e-12);
     }
 
@@ -153,7 +167,6 @@ mod tests {
 
         ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, 1, &notify_price());
 
-        // 10% bonus shares: factor = 1.1.
         let p1 = price(18.18);
         let d1 = div(0.1, 0.0);
         ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, 2, &notify_both());
@@ -167,25 +180,37 @@ mod tests {
         let d0 = no_div();
         let (mut s, mut o) = ForwardAdjust::new().init((&p0, &d0), 0);
 
-        // Day 1.
         ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, 1, &notify_price());
 
-        // Day 2: cash dividend = 2.0 on price = 100.
         let p1 = price(98.0);
         let d1 = div(0.0, 2.0);
         ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, 2, &notify_both());
         let f1 = 1.0 + 2.0 / (100.0 - 2.0);
 
-        // Day 3: normal trading.
         let p2 = price(99.0);
         ForwardAdjust::compute(&mut s, (&p2, &d0), &mut o, 3, &notify_price());
         assert!((o.as_slice()[0] - 99.0 * f1).abs() < 1e-12);
 
-        // Day 4: another cash dividend = 1.0 on price = 99.
         let p3 = price(98.0);
         let d3 = div(0.0, 1.0);
         ForwardAdjust::compute(&mut s, (&p3, &d3), &mut o, 4, &notify_both());
         let f2 = f1 * (1.0 + 1.0 / (99.0 - 1.0));
         assert!((o.as_slice()[0] - 98.0 * f2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn output_factor() {
+        let p0 = price(100.0);
+        let d0 = no_div();
+        let (mut s, mut o) = ForwardAdjust::new().with_output_prices(false).init((&p0, &d0), 0);
+
+        ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, 1, &notify_price());
+        assert_eq!(o.as_slice()[0], 1.0);
+
+        let p1 = price(98.0);
+        let d1 = div(0.0, 2.0);
+        ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, 2, &notify_both());
+        let expected = 1.0 + 2.0 / (100.0 - 2.0);
+        assert!((o.as_slice()[0] - expected).abs() < 1e-12);
     }
 }

@@ -8,6 +8,7 @@ import numpy as np
 
 from ...schema import Schema
 from ...source import NativeSource
+from ...utils import coerce_timestamp
 
 
 class FinancialReportSource(NativeSource):
@@ -54,6 +55,12 @@ class FinancialReportSource(NativeSource):
         Offset added to the report date when the notice date is missing
         (only used when *use_effective_date* is `True`).  Defaults to
         90 days.
+    start
+        Optional inclusive start bound.  Rows before this timestamp are
+        dropped and the reported time range is clamped.
+    end
+        Optional inclusive end bound.  Rows after this timestamp are
+        dropped and the reported time range is clamped.
     name
         Optional source name.
     """
@@ -68,6 +75,8 @@ class FinancialReportSource(NativeSource):
         with_report_date: bool = False,
         use_effective_date: bool = True,
         notice_date_fallback: np.timedelta64 = np.timedelta64(90, "D"),
+        start: np.datetime64 | None = None,
+        end: np.datetime64 | None = None,
         name: str | None = None,
     ) -> None:
         stride = len(schema)
@@ -78,18 +87,24 @@ class FinancialReportSource(NativeSource):
 
         fallback_ns = int(np.timedelta64(notice_date_fallback, "ns").astype(np.int64))
 
+        params: dict = {
+            "path": str(Path(path).resolve()),
+            "report_date_column": report_date_column,
+            "notice_date_column": notice_date_column,
+            "value_columns": schema.names,
+            "with_report_date": with_report_date,
+            "use_effective_date": use_effective_date,
+            "notice_date_fallback_ns": fallback_ns,
+        }
+        if start is not None:
+            params["start_ns"] = int(coerce_timestamp(start))
+        if end is not None:
+            params["end_ns"] = int(coerce_timestamp(end))
+
         super().__init__(
             native_id="financial_report",
             dtype="float64",
             shape=shape,
-            params={
-                "path": str(Path(path).resolve()),
-                "report_date_column": report_date_column,
-                "notice_date_column": notice_date_column,
-                "value_columns": schema.names,
-                "with_report_date": with_report_date,
-                "use_effective_date": use_effective_date,
-                "notice_date_fallback_ns": fallback_ns,
-            },
+            params=params,
             name=name,
         )

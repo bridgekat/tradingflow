@@ -36,9 +36,11 @@
 //! - [`Shift`] (`T: Add`) — `x + c`.
 //! - [`Clamp`] (`T: Float`) — clamp to `[lo, hi]`.
 //! - [`Fillna`] (`T: Float`) — replace NaN with a constant.
+//! - [`ForwardFill`] (`T: Float`) — replace NaN with the last valid observation.
 
 mod arithmetic;
 mod clamp;
+mod ffill;
 mod fillna;
 mod pow;
 mod scale;
@@ -49,6 +51,7 @@ pub use arithmetic::{
     Round, Sign, Sqrt, Subtract,
 };
 pub use clamp::Clamp;
+pub use ffill::ForwardFill;
 pub use fillna::Fillna;
 pub use pow::Pow;
 pub use scale::Scale;

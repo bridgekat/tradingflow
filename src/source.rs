@@ -34,6 +34,17 @@ pub trait Source: 'static {
     ///
     /// Returns `true` if downstream propagation should occur.
     fn write(event: Self::Event, output: &mut Self::Output, timestamp: i64) -> bool;
+
+    /// Return the known time range `(first_timestamp, last_timestamp)` of this
+    /// source, if available.
+    ///
+    /// The default implementation returns `(None, None)`.  Historical sources
+    /// should override this to return the first and last timestamps of their
+    /// data (whenever cheaply available), enabling the scenario to determine
+    /// the overall time range when all sources provide it.
+    fn time_range(&self) -> (Option<i64>, Option<i64>) {
+        (None, None)
+    }
 }
 
 /// Type-erased initialization closure for a source.
@@ -78,6 +89,14 @@ pub type PollFn = unsafe fn(*mut u8, &mut Context<'_>) -> Poll<Option<i64>>;
 /// * `true` if downstream propagation should occur.
 pub type WriteFn = unsafe fn(*mut u8, *mut u8, i64) -> bool;
 
+/// Type-erased time-range function pointer for a source.
+///
+/// # Returns
+///
+/// * `(Option<i64>, Option<i64>)` — the first and last timestamps of the
+///   source's data, if known.
+pub type TimeRangeFn = fn(*const u8) -> (Option<i64>, Option<i64>);
+
 /// Type-erased representation of a source.
 ///
 /// # Lifecycle
@@ -90,6 +109,7 @@ pub type WriteFn = unsafe fn(*mut u8, *mut u8, i64) -> bool;
 pub struct ErasedSource {
     event_type_id: TypeId,
     output_type_id: TypeId,
+    time_range: (Option<i64>, Option<i64>),
     init_fn: InitFn,
     poll_fn: PollFn,
     write_fn: WriteFn,
@@ -100,9 +120,11 @@ pub struct ErasedSource {
 impl ErasedSource {
     /// Construct from a typed [`Source`].
     pub fn from_source<S: Source>(source: S) -> Self {
+        let time_range = source.time_range();
         Self {
             event_type_id: TypeId::of::<S::Event>(),
             output_type_id: TypeId::of::<S::Output>(),
+            time_range,
             init_fn: Box::new(move |timestamp: i64| {
                 let (hist, live, output) = source.init(timestamp);
                 let hist_rx_ptr = Box::into_raw(Box::new(PeekableReceiver::new(hist))) as *mut u8;
@@ -136,6 +158,7 @@ impl ErasedSource {
     pub unsafe fn new(
         event_type_id: TypeId,
         output_type_id: TypeId,
+        time_range: (Option<i64>, Option<i64>),
         init_fn: InitFn,
         poll_fn: PollFn,
         write_fn: WriteFn,
@@ -145,12 +168,18 @@ impl ErasedSource {
         Self {
             event_type_id,
             output_type_id,
+            time_range,
             init_fn,
             poll_fn,
             write_fn,
             rx_drop_fn,
             output_drop_fn,
         }
+    }
+
+    /// The known time range of this source, if available.
+    pub fn time_range(&self) -> (Option<i64>, Option<i64>) {
+        self.time_range
     }
 
     /// The [`TypeId`] of the source's event type.

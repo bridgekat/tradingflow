@@ -8,7 +8,7 @@ import pandas as pd
 from tradingflow._native import NativeArrayView, NativeNotify, NativeSeriesView
 
 from .schema import Schema
-from .utils import coerce_timestamp
+from .utils import ensure_contiguous, coerce_timestamp
 
 
 class ArrayView[T: np.generic]:
@@ -43,7 +43,7 @@ class ArrayView[T: np.generic]:
         value
             Array whose shape must match the view's shape.
         """
-        self._inner.write(value)
+        self._inner.write(ensure_contiguous(value))
 
     def to_numpy(self) -> np.ndarray:
         """Alias for `value`."""
@@ -162,6 +162,20 @@ class SeriesView[T: np.generic]:
             End index (exclusive). Defaults to the series length.
         """
         return self._inner.slice(start, end)
+
+    def push(self, timestamp: np.datetime64, value: np.ndarray) -> None:
+        """Append a new element to the series.
+
+        Parameters
+        ----------
+        timestamp
+            Timestamp of the new element. Can be any `datetime64` precision;
+            it will be coerced to `datetime64[ns]` internally.
+
+        value
+            Array whose shape must match the view's shape.
+        """
+        self._inner.push(coerce_timestamp(timestamp), ensure_contiguous(value))
 
     # -- New convenience methods ----------------------------------------------
 

@@ -8,6 +8,7 @@ import numpy as np
 
 from ..schema import Schema
 from ..source import NativeSource
+from ..utils import coerce_timestamp
 
 
 class CSVSource(NativeSource):
@@ -30,6 +31,12 @@ class CSVSource(NativeSource):
         timestamps (e.g. dates at midnight) that would otherwise cause
         forward-looking bias against higher-precision sources.  Defaults
         to zero (no offset).
+    start
+        Optional inclusive start bound.  Rows before this timestamp are
+        dropped and the reported time range is clamped.
+    end
+        Optional inclusive end bound.  Rows after this timestamp are
+        dropped and the reported time range is clamped.
     name
         Optional source name.
     """
@@ -41,6 +48,8 @@ class CSVSource(NativeSource):
         *,
         time_column: str,
         timestamp_offset: np.timedelta64 = np.timedelta64(0, "ns"),
+        start: np.datetime64 | None = None,
+        end: np.datetime64 | None = None,
         name: str | None = None,
     ) -> None:
         stride = len(schema)
@@ -48,15 +57,21 @@ class CSVSource(NativeSource):
 
         offset_ns = int(np.timedelta64(timestamp_offset, "ns").astype(np.int64))
 
+        params: dict = {
+            "path": str(Path(path).resolve()),
+            "time_column": time_column,
+            "value_columns": schema.names,
+            "timestamp_offset_ns": offset_ns,
+        }
+        if start is not None:
+            params["start_ns"] = int(coerce_timestamp(start))
+        if end is not None:
+            params["end_ns"] = int(coerce_timestamp(end))
+
         super().__init__(
             native_id="csv",
             dtype="float64",
             shape=shape,
-            params={
-                "path": str(Path(path).resolve()),
-                "time_column": time_column,
-                "value_columns": schema.names,
-                "timestamp_offset_ns": offset_ns,
-            },
+            params=params,
             name=name,
         )

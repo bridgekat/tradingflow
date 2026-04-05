@@ -4,6 +4,7 @@
 //! and provides registration entry points for sources and operators from
 //! both Rust and Python.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
@@ -11,6 +12,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
 use crate::Scenario;
+use crate::scenario::ShutdownFlag;
 
 use super::dispatch::{normalize_dtype, resolve_type_id};
 use super::views::{ViewKind, create_view};
@@ -72,10 +74,20 @@ pub struct NativeScenario {
     /// proper signal handling; the tokio POCQ loop runs on a background
     /// thread.
     event_loop: Option<PyObject>,
+    /// Cooperative shutdown flag — set on drop to stop the POCQ loop.
+    shutdown: ShutdownFlag,
 }
 
 unsafe impl Send for NativeScenario {}
 unsafe impl Sync for NativeScenario {}
+
+impl Drop for NativeScenario {
+    fn drop(&mut self) {
+        // Signal the POCQ background thread to exit so it doesn't keep
+        // the process alive after the Python object is garbage-collected.
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+}
 
 impl NativeScenario {
     /// Record a node's metadata and eagerly create + cache its Python view.
@@ -132,6 +144,7 @@ impl NativeScenario {
             cached_views: Vec::new(),
             _rt: rt,
             event_loop: None,
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -319,6 +332,14 @@ impl NativeScenario {
         Ok(output_idx)
     }
 
+    /// Return the aggregate time range across all sources.
+    ///
+    /// Returns `(first_ns, last_ns)` when every registered source provides
+    /// both bounds; otherwise returns `(None, None)`.
+    fn time_range(&self) -> (Option<i64>, Option<i64>) {
+        self.scenario.as_ref().map_or((None, None), |sc| sc.time_range())
+    }
+
     /// Run the POCQ event loop.
     ///
     /// If Python sources have been registered, the asyncio event loop runs
@@ -374,6 +395,7 @@ impl NativeScenario {
             .map(|(_, set_fn, el_ref)| (set_fn.clone_ref(py), el_ref.clone_ref(py)));
 
         // Spawn the POCQ + drivers on a background thread.
+        let shutdown = self.shutdown.clone();
         let bg_handle = {
             let _guard = rt.enter();
             std::thread::spawn(move || {
@@ -382,13 +404,16 @@ impl NativeScenario {
                 let _done = done_guard_parts.map(|(set_fn, el)| DoneGuard(Some(set_fn), el));
 
                 if let Some(cb) = on_flush {
-                    rt.block_on(scenario.run(|ts| {
-                        Python::attach(|py| {
-                            let _ = cb.call1(py, (ts,));
-                        });
-                    }));
+                    rt.block_on(scenario.run_with_shutdown(
+                        |ts| {
+                            Python::attach(|py| {
+                                let _ = cb.call1(py, (ts,));
+                            });
+                        },
+                        shutdown,
+                    ));
                 } else {
-                    rt.block_on(scenario.run(|_| {}));
+                    rt.block_on(scenario.run_with_shutdown(|_| {}, shutdown));
                 }
                 (scenario, rt)
             })
@@ -403,9 +428,24 @@ impl NativeScenario {
             loop_.call_method0("close")?;
         }
 
-        // Join the background thread (release GIL so it can finish
-        // any pending Python::attach calls).
-        let join_result = py.detach(|| bg_handle.join());
+        // Join the background thread, periodically reacquiring the GIL
+        // so Python can process signals (e.g. KeyboardInterrupt from
+        // Ctrl+C).  If interrupted, set the shutdown flag so the POCQ
+        // loop exits cooperatively.
+        let join_result = loop {
+            let is_finished = bg_handle.is_finished();
+            if is_finished {
+                break py.detach(|| bg_handle.join());
+            }
+            // Release GIL briefly, then check for Python signals.
+            py.detach(|| std::thread::sleep(std::time::Duration::from_millis(100)));
+            if let Err(e) = py.check_signals() {
+                self.shutdown.store(true, Ordering::Relaxed);
+                // Wait for the background thread to finish after shutdown.
+                let _ = py.detach(|| bg_handle.join());
+                return Err(e);
+            }
+        };
         match join_result {
             Ok((scenario, rt)) => {
                 self.scenario = Some(scenario);

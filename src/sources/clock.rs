@@ -6,7 +6,16 @@ use super::iter_source::IterSource;
 ///
 /// The output node holds `()` (zero-sized, purely a trigger).
 pub fn clock(timestamps: Vec<i64>) -> IterSource<()> {
-    IterSource::new(timestamps.into_iter().map(|ts| (ts, ())), ())
+    let time_range = if timestamps.is_empty() {
+        None
+    } else {
+        Some((timestamps[0], *timestamps.last().unwrap()))
+    };
+    let source = IterSource::new(timestamps.into_iter().map(|ts| (ts, ())), ());
+    match time_range {
+        Some((first, last)) => source.with_time_range(first, last),
+        None => source,
+    }
 }
 
 /// Generate daily timestamps (midnight in the given timezone) between

@@ -18,6 +18,12 @@ pub struct CsvSource {
     time_column: String,
     value_columns: Vec<String>,
     timestamp_offset_ns: i64,
+    /// Optional inclusive start bound (nanoseconds).  Rows before this
+    /// timestamp are dropped.
+    start_ns: Option<i64>,
+    /// Optional inclusive end bound (nanoseconds).  Rows after this
+    /// timestamp are dropped.
+    end_ns: Option<i64>,
 }
 
 impl CsvSource {
@@ -44,7 +50,19 @@ impl CsvSource {
             time_column,
             value_columns,
             timestamp_offset_ns,
+            start_ns: None,
+            end_ns: None,
         }
+    }
+
+    /// Restrict the source to the given inclusive time range.
+    ///
+    /// Rows outside `[start_ns, end_ns]` are dropped.  The reported
+    /// [`time_range`](Source::time_range) is clamped accordingly.
+    pub fn with_time_range(mut self, start_ns: Option<i64>, end_ns: Option<i64>) -> Self {
+        self.start_ns = start_ns;
+        self.end_ns = end_ns;
+        self
     }
 }
 
@@ -107,6 +125,10 @@ impl Source for CsvSource {
     type Event = Array<f64>;
     type Output = Array<f64>;
 
+    fn time_range(&self) -> (Option<i64>, Option<i64>) {
+        (self.start_ns, self.end_ns)
+    }
+
     fn init(
         self,
         _timestamp: i64,
@@ -150,6 +172,14 @@ impl Source for CsvSource {
                     }
                 };
 
+            let start_ns = self.start_ns;
+            let end_ns = self.end_ns;
+
+            // When `start_ns` is set, track the last row before the window
+            // so it can be emitted as the initial value at `start_ns`.
+            let mut last_before_start: Option<Vec<f64>> = None;
+            let mut entered_window = start_ns.is_none();
+
             let mut record = StringRecord::new();
             let mut prev_ts = i64::MIN;
             loop {
@@ -182,9 +212,47 @@ impl Source for CsvSource {
                         return;
                     }
                 };
+
+                // Before the start of the window: remember the last row.
+                if let Some(start) = start_ns {
+                    if ts < start {
+                        last_before_start = Some(values);
+                        continue;
+                    }
+                }
+
+                // First row at or after start: emit the carried-over
+                // initial value (if any) at the start timestamp.
+                if !entered_window {
+                    entered_window = true;
+                    if let Some(init_vals) = last_before_start.take() {
+                        let start = start_ns.unwrap();
+                        let arr = Array::from_vec(&[num_columns], init_vals);
+                        if hist_tx.send((start, arr)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(end) = end_ns {
+                    if ts > end {
+                        break;
+                    }
+                }
+
                 let arr = Array::from_vec(&[num_columns], values);
                 if hist_tx.send((ts, arr)).await.is_err() {
                     break;
+                }
+            }
+
+            // If the file had only pre-start rows, emit the last one.
+            if !entered_window {
+                if let Some(init_vals) = last_before_start.take() {
+                    if let Some(start) = start_ns {
+                        let arr = Array::from_vec(&[num_columns], init_vals);
+                        let _ = hist_tx.send((start, arr)).await;
+                    }
                 }
             }
         });

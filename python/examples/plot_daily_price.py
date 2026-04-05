@@ -28,6 +28,7 @@ MULTIPLE = 2
 
 def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     """Build a scenario with forward-adjusted prices, MA and Bollinger Bands."""
+
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
 
@@ -58,7 +59,7 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     # ------------------------------------------------------------------
 
     # Extract scalar close price. Shape: ().
-    closes = sc.add_operator(Select(prices, [PRICE_SCHEMA.index("prices.close")]))
+    closes = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
 
     # Forward-adjusted close price. Shape: ().
     adj_closes = sc.add_operator(ForwardAdjust(closes, dividends))
@@ -79,7 +80,7 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     lower = sc.add_operator(Subtract(ma, band))
 
     # Record volume for the volume subplot. Shape: ().
-    volume = sc.add_operator(Select(prices, [PRICE_SCHEMA.index("prices.volume")]))
+    volume = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.volume")))
 
     handles = {
         "adj_close": sc.add_operator(Record(adj_closes)),
@@ -99,7 +100,6 @@ if __name__ == "__main__":
 
     symbol: str = args.symbol
     data_dir: Path = args.data_dir
-
     if not data_dir.is_dir():
         raise SystemExit(
             f"Data directory not found: {data_dir}\n"
