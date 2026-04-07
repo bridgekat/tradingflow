@@ -79,6 +79,12 @@ def _fit_fn(x: np.ndarray, y: np.ndarray, *, verbose: bool = False) -> np.ndarra
     n = F
     x = np.column_stack([x, np.ones(m)])
     q, r = np.linalg.qr(x, mode="reduced")
+
+    if q.shape[1] < n + 1:
+        if verbose:
+            print(f"  regression: design matrix is rank-deficient (rank={q.shape[1]}, expected={n + 1})")
+        return np.zeros(n + 1)
+
     params = np.linalg.solve(r, q.T @ y)
 
     if not np.all(np.isfinite(params)):

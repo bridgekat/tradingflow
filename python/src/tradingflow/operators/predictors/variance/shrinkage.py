@@ -61,8 +61,6 @@ def _fit_fn(y: np.ndarray, *, verbose: bool = False) -> np.ndarray:
         Shrunk covariance matrix of shape ``(N, N)``.
     """
     T, N = y.shape
-    if T < 2:
-        return np.eye(N)
 
     # NaN-robust sample covariance (pairwise complete observations).
     mean = np.nanmean(y, axis=0)

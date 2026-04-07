@@ -155,7 +155,9 @@ class VariancePredictor[T](
             x[i] = state.features_list[t][mask]
             p0 = state.prices_list[t][mask]
             p1 = state.prices_list[t + K][mask]
-            y[i] = p1 / np.maximum(p0, 1e-10) - 1.0
+            p0[~(p0 > 0)] = np.nan
+            p1[~(p1 > 0)] = np.nan
+            y[i] = p1 / p0 - 1.0
 
         # Fit and predict (symmetric with MeanPredictor: x first, y second).
         params = state.fit_fn(x, y)

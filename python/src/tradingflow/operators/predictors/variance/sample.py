@@ -49,15 +49,12 @@ def _fit_fn(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Sample covariance of returns (NaN-robust). Ignores features."""
     # y: (T, N)
     T, N = y.shape
-    if T < 2:
-        return np.eye(N)
-    # Per-stock mean ignoring NaN.
+
+    # NaN-robust sample covariance (pairwise complete observations).
     mean = np.nanmean(y, axis=0)
     centered = y - mean
-    # Fill NaN with 0 so they contribute nothing to sums.
     finite = np.isfinite(centered)
     centered = np.where(finite, centered, 0.0)
-    # Pairwise valid observation counts.
     indicator = finite.astype(np.float64)
     counts = indicator.T @ indicator  # (N, N)
     return (centered.T @ centered) / np.maximum(counts - 1, 1.0)

@@ -19,6 +19,7 @@ and download instructions.
 """
 
 from pathlib import Path
+from statistics import LinearRegression
 from tqdm import tqdm
 import argparse
 
@@ -28,14 +29,13 @@ import matplotlib.pyplot as plt
 from a_shares_crawler.types import Schema as CSVSchema
 
 from tradingflow import Scenario, Schema
-from tradingflow.operators.predictors.variance.shrinkage import Shrinkage
 from tradingflow.types import Handle
 from tradingflow.sources import CSVSource, MonthlyClock
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Apply, Map, Record, Select, Stack
 from tradingflow.operators.num import Divide, ForwardFill, Log, Multiply
-from tradingflow.operators.predictors.mean import Sample as SampleMean
-from tradingflow.operators.predictors.variance import Sample as SampleVariance
+from tradingflow.operators.predictors.mean import LinearRegression
+from tradingflow.operators.predictors.variance import Sample, Shrinkage
 from tradingflow.operators.portfolios.mean_variance import Markowitz
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
@@ -167,7 +167,6 @@ def build_scenario(
     turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
     turnover_ma = sc.add_operator(RollingMean(turnover_series, window=rebalance_days))
-
     stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
 
     # ------------------------------------------------------------------
@@ -175,7 +174,7 @@ def build_scenario(
     # ------------------------------------------------------------------
 
     predicted_returns = sc.add_operator(
-        SampleMean(
+        LinearRegression(
             universe,
             stacked_features,
             stacked["adjusted_close"],
@@ -219,7 +218,7 @@ def build_scenario(
                 predicted_covariances,
                 risk_aversion=delta,
                 long_only=True,
-                # verbose=True,
+                verbose=True,
             )
         )
 
@@ -279,7 +278,8 @@ if __name__ == "__main__":
     data_dir: Path = args.data_dir
     if not data_dir.is_dir():
         raise SystemExit(
-            f"Data directory not found: {data_dir}\nRun `python -m a_shares_crawler --help` for download instructions."
+            f"Data directory not found: {data_dir}\n"
+            "Run `python -m a_shares_crawler --help` for download instructions."
         )
 
     symbols = load_symbols(data_dir)
