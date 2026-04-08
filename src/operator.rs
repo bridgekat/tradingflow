@@ -1,13 +1,13 @@
 //! Operator trait, type-erased operator, and notification context.
 //!
 //! This module defines the [`Operator`] trait for synchronous computation
-//! nodes, the [`Notify`] context that provides zero-cost per-input update
-//! flags during a flush cycle, and the [`ErasedOperator`] wrapper for
+//! nodes, the [`Notify`] context that reports which inputs produced new
+//! output during a flush cycle, and the [`ErasedOperator`] wrapper for
 //! type-erased DAG dispatch.
 //!
 //! # Public items
 //!
-//! - [`Notify`] — zero-cost notification context for [`Operator::compute`].
+//! - [`Notify`] — notification context for [`Operator::compute`].
 //! - [`Operator`] — synchronous computation trait with associated state,
 //!   input, and output types.
 //! - [`ErasedOperator`] — type-erased operator combining init/compute/drop
@@ -36,6 +36,18 @@ pub trait Operator: 'static {
     /// Output type.
     type Output: Send + 'static;
 
+    /// Whether this operator can be gated by a clock trigger.
+    ///
+    /// Operators that use message-passing semantics (relying on
+    /// [`Notify::produced_inputs`] to track which inputs produced)
+    /// should return `false` — they must be triggered by their data
+    /// inputs so they never miss a message.
+    ///
+    /// The default is `true` (clock-triggerable).
+    fn is_clock_triggerable(&self) -> bool {
+        true
+    }
+
     /// Consume the spec and produce initial state and output.
     fn init(
         self,
@@ -45,8 +57,9 @@ pub trait Operator: 'static {
 
     /// Update the output from inputs and current state.
     ///
-    /// The [`Notify`] context provides zero-cost access to which inputs
-    /// produced new output in the current flush cycle.
+    /// The [`Notify`] context reports which inputs produced new output
+    /// in the current flush cycle via [`Notify::produced`] (list of
+    /// positions) and [`Notify::input_produced`] (per-position booleans).
     ///
     /// Returns `true` if downstream propagation should occur.
     fn compute(
@@ -79,7 +92,7 @@ pub type InitFn = Box<dyn FnOnce(&[*const u8], i64) -> (*mut u8, *mut u8)>;
 /// * `input_ptrs: &[*const u8]` — pointers to input node values.
 /// * `output_ptr: *mut u8` — points to `O::Output`.
 /// * `timestamp: i64` — current flush timestamp.
-/// * `notify: &Notify` — zero-cost notification context.
+/// * `notify: &Notify` — notification context.
 ///
 /// # Returns
 ///
@@ -98,6 +111,7 @@ pub struct ErasedOperator {
     state_type_id: TypeId,
     input_type_ids: Box<[TypeId]>,
     output_type_id: TypeId,
+    is_clock_triggerable: bool,
     init_fn: InitFn,
     compute_fn: ComputeFn,
     state_drop_fn: unsafe fn(*mut u8),
@@ -123,6 +137,7 @@ impl ErasedOperator {
         state_type_id: TypeId,
         input_type_ids: Box<[TypeId]>,
         output_type_id: TypeId,
+        is_clock_triggerable: bool,
         init_fn: InitFn,
         compute_fn: ComputeFn,
         state_drop_fn: unsafe fn(*mut u8),
@@ -132,6 +147,7 @@ impl ErasedOperator {
             input_type_ids,
             output_type_id,
             state_type_id,
+            is_clock_triggerable,
             init_fn,
             compute_fn,
             state_drop_fn,
@@ -141,10 +157,12 @@ impl ErasedOperator {
 
     /// Construct from a typed [`Operator`].
     pub fn from_operator<O: Operator>(op: O, arity: usize) -> Self {
+        let is_clock_triggerable = op.is_clock_triggerable();
         Self {
             state_type_id: TypeId::of::<O::State>(),
             input_type_ids: <O::Inputs as InputTypes>::type_ids(arity),
             output_type_id: TypeId::of::<O::Output>(),
+            is_clock_triggerable,
             init_fn: Box::new(move |input_ptrs: &[*const u8], timestamp: i64| {
                 // SAFETY: call site guarantees `input_ptrs` point to valid objects of types
                 // matching `input_type_ids`.
@@ -158,6 +176,11 @@ impl ErasedOperator {
             state_drop_fn: erased_drop_fn::<O::State>,
             output_drop_fn: erased_drop_fn::<O::Output>,
         }
+    }
+
+    /// Whether this operator can be gated by a clock trigger.
+    pub fn is_clock_triggerable(&self) -> bool {
+        self.is_clock_triggerable
     }
 
     /// The [`TypeId`] of the operator's state type.

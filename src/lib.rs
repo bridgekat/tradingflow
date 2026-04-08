@@ -19,9 +19,9 @@
 //!   method for declaring known data bounds. Type-erased form: [`ErasedSource`].
 //! * [`Operator`] — synchronous computation node that reads typed inputs and
 //!   writes a typed output. Type-erased form: [`ErasedOperator`].
-//! * [`Notify`] — zero-cost notification context passed to
-//!   [`Operator::compute`], providing per-input update flags for the current
-//!   flush cycle.
+//! * [`Notify`] — notification context passed to [`Operator::compute`],
+//!   providing which inputs produced new output in the current flush cycle
+//!   via [`Notify::produced`] and [`Notify::input_produced`].
 //!
 //! # Runtime
 //!

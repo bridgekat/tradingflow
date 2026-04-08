@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[10.0]);
 
         let b = Array::scalar(3.0_f64);
-        Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], &[]));
+        Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[6.0]);
     }
 
@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(o, "42");
 
         let b = Array::scalar(99.0_f64);
-        Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], &[]));
+        Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o, "99");
     }
 
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[6.0]);
 
         let b = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
-        Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], &[]));
+        Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[60.0]);
     }
 
@@ -186,7 +186,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[10.0]);
 
         let b = Array::scalar(3.0);
-        MapInplace::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], &[]));
+        MapInplace::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[6.0]);
     }
 
@@ -215,7 +215,7 @@ mod tests {
             (&b,),
             &mut o,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
 
         // Input > 3 → returns true.
@@ -225,7 +225,7 @@ mod tests {
             (&c,),
             &mut o,
             2,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(o.as_slice(), &[5.0]);
     }

@@ -65,7 +65,7 @@ mod tests {
             (&b,),
             &mut o,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(o.as_slice(), &[99.0]);
     }
@@ -81,7 +81,7 @@ mod tests {
             (&b,),
             &mut o,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(o, "world");
     }

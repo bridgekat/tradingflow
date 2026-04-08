@@ -260,7 +260,7 @@ impl NativeScenario {
     ///
     /// Input type validation is performed by
     /// [`Scenario::add_erased_operator`].
-    #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator, clock_index=None))]
+    #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator, clock_index=None, is_clock_triggerable=true))]
     fn add_py_operator(
         &mut self,
         py: Python<'_>,
@@ -270,6 +270,7 @@ impl NativeScenario {
         output_shape: Vec<usize>,
         py_operator: PyObject,
         clock_index: Option<usize>,
+        is_clock_triggerable: bool,
     ) -> PyResult<usize> {
         let _guard = self._rt.enter();
         let (out_kind_str, out_dtype_str) = &output_type;
@@ -313,6 +314,7 @@ impl NativeScenario {
             py,
             input_type_ids,
             output_type_id,
+            is_clock_triggerable,
             &out_dtype,
             out_view_kind,
             &output_shape,

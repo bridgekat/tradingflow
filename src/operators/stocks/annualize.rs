@@ -136,7 +136,7 @@ mod tests {
     }
 
     fn notify() -> Notify<'static> {
-        Notify::new(&[true], &[0])
+        Notify::new(&[0], 1)
     }
 
     #[test]

@@ -170,12 +170,24 @@ impl Scenario {
     }
 
     /// Register a type-erased operator.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `trigger_index` is `Some` but the operator is not
+    /// clock-triggerable.
     pub fn add_erased_operator(
         &mut self,
         erased: ErasedOperator,
         input_indices: &[usize],
         trigger_index: Option<usize>,
     ) -> usize {
+        if trigger_index.is_some() {
+            assert!(
+                erased.is_clock_triggerable(),
+                "operator is not clock-triggerable: it uses message-passing \
+                 semantics and must be triggered by its data inputs, not a clock",
+            );
+        }
         for &idx in input_indices {
             assert!(
                 idx < self.graph.len(),
@@ -195,12 +207,12 @@ impl Scenario {
         let output_idx = self.graph.add_node(node);
         match trigger_index {
             None => {
-                for &input_idx in input_indices {
-                    self.graph.add_trigger_edge(input_idx, output_idx);
+                for (pos, &input_idx) in input_indices.iter().enumerate() {
+                    self.graph.add_trigger_edge(input_idx, output_idx, pos);
                 }
             }
             Some(trigger_idx) => {
-                self.graph.add_trigger_edge(trigger_idx, output_idx);
+                self.graph.add_trigger_edge(trigger_idx, output_idx, usize::MAX);
             }
         }
         output_idx

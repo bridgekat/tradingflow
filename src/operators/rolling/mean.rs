@@ -76,7 +76,7 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts, &[val]);
-        RollingMean::compute(state, (s,), out, ts, &Notify::new(&[], &[]))
+        RollingMean::compute(state, (s,), out, ts, &Notify::new(&[], 0))
     }
 
     #[test]
@@ -133,17 +133,17 @@ mod tests {
             (&s,),
             &mut out,
             100,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(out.as_slice()[0], 2.0); // mean of [2]
 
         s.push(200, &[4.0]);
-        RollingMean::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], &[]));
+        RollingMean::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], 0));
         assert_eq!(out.as_slice()[0], 3.0); // mean of [2, 4]
 
         // ts=350: evict ts=100. Window [200, 350], mean of [4, 6] = 5.
         s.push(350, &[6.0]);
-        RollingMean::compute(&mut state, (&s,), &mut out, 350, &Notify::new(&[], &[]));
+        RollingMean::compute(&mut state, (&s,), &mut out, 350, &Notify::new(&[], 0));
         assert_eq!(out.as_slice()[0], 5.0);
     }
 }

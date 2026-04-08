@@ -51,7 +51,7 @@ mod tests {
     fn test_pow() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let (mut s, mut o) = Pow::new(2.0).init((&a,), i64::MIN);
-        Pow::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
+        Pow::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[1.0, 4.0, 9.0]);
     }
 }

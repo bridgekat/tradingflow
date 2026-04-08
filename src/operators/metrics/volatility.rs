@@ -81,14 +81,14 @@ mod tests {
         let (mut s, mut o) = Volatility::new().init((&a,), 0);
 
         let mut a = Array::scalar(100.0);
-        Volatility::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
+        Volatility::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
 
         a[0] = 110.0; // r = 0.10
-        Volatility::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], &[]));
+        Volatility::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], 0));
         assert_eq!(o[0], 0.0); // single return => zero std
 
         a[0] = 99.0; // r = -0.10
-        Volatility::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], &[]));
+        Volatility::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], 0));
         // returns: 0.10, -0.10 => mean=0, var=0.01, std=0.10
         assert!((o[0] - 0.10).abs() < 1e-10);
     }

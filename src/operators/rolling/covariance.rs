@@ -143,7 +143,7 @@ mod tests {
             (&s,),
             &mut out,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
 
         s.push(2, &[2.0, 4.0]);
@@ -152,7 +152,7 @@ mod tests {
             (&s,),
             &mut out,
             2,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
 
         s.push(3, &[3.0, 6.0]);
@@ -161,7 +161,7 @@ mod tests {
             (&s,),
             &mut out,
             3,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
 
         // Perfect linear correlation: y = 2x.
@@ -186,10 +186,10 @@ mod tests {
         let (mut state, mut out) = RollingCovariance::count(2).init((&s,), i64::MIN);
 
         s.push(1, &[f64::NAN, 1.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0));
 
         s.push(2, &[2.0, 2.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[]));
+        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], 0));
 
         let cov = out.as_slice();
         assert!(cov[0].is_nan()); // Var(x): NaN in x
@@ -209,13 +209,13 @@ mod tests {
             (&s,),
             &mut out,
             100,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         // Single element → all covariances = 0.
         assert_eq!(out.as_slice(), &[0.0, 0.0, 0.0, 0.0]);
 
         s.push(200, &[3.0, 6.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], &[]));
+        RollingCovariance::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], 0));
 
         // Cov([1,3], [2,6]): Var(x)=1, Cov(x,y)=2, Var(y)=4.
         let cov = out.as_slice();

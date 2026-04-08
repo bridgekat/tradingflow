@@ -151,7 +151,7 @@ class SelectiveRecorder(
         timestamp: int,
         notify: Any,
     ) -> bool:
-        if notify.input_produced(1):
+        if notify.input_produced()[1]:
             output.push(timestamp, inputs[1].value())
             return True
         return False

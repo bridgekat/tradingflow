@@ -75,7 +75,7 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts, &[val]);
-        RollingSum::compute(state, (s,), out, ts, &Notify::new(&[], &[]))
+        RollingSum::compute(state, (s,), out, ts, &Notify::new(&[], 0))
     }
 
     #[test]
@@ -124,7 +124,7 @@ mod tests {
             (&s,),
             &mut out,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert!(out.as_slice()[0].is_nan());
         assert!(out.as_slice()[1].is_nan());
@@ -135,7 +135,7 @@ mod tests {
             (&s,),
             &mut out,
             2,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(out.as_slice(), &[3.0, 30.0]);
 
@@ -145,7 +145,7 @@ mod tests {
             (&s,),
             &mut out,
             3,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(out.as_slice(), &[5.0, 50.0]);
     }
@@ -179,7 +179,7 @@ mod tests {
             (&s,),
             &mut out,
             100,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(out.as_slice()[0], 1.0);
 
@@ -190,7 +190,7 @@ mod tests {
             (&s,),
             &mut out,
             200,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(out.as_slice()[0], 3.0);
 
@@ -201,7 +201,7 @@ mod tests {
             (&s,),
             &mut out,
             350,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(out.as_slice()[0], 5.0);
     }

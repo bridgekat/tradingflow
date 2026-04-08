@@ -55,7 +55,7 @@ mod tests {
             (),
             &mut o,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(o.as_slice(), &[42.0]);
     }

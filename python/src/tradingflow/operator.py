@@ -105,7 +105,10 @@ class Operator[Inputs, Output, State](ABC):
         notify
             [`Notify`][tradingflow.Notify] context for checking which inputs
             produced new output in the current flush cycle via
-            [`Notify.input_produced`][tradingflow.Notify.input_produced].
+            [`Notify.input_produced`][tradingflow.Notify.input_produced]
+            (per-position booleans) or
+            [`Notify.produced`][tradingflow.Notify.produced]
+            (list of positions).
 
         Returns
         -------
@@ -139,6 +142,19 @@ class Operator[Inputs, Output, State](ABC):
     def name(self) -> str:
         """Human-readable name."""
         return self._name
+
+    @property
+    def is_clock_triggerable(self) -> bool:
+        """Whether this operator can be gated by a clock trigger.
+
+        Operators that use message-passing semantics (relying on
+        ``Notify.produced()`` to track which inputs produced)
+        should return ``False`` — they must be triggered by their data
+        inputs so they never miss a message.
+
+        The default is ``True``.
+        """
+        return True
 
     def get_io_types(self) -> tuple[list[tuple[NodeKind, str]], tuple[NodeKind, str]]:
         """Return `(input_types, output_type)` for Rust TypeId validation.

@@ -90,20 +90,20 @@ mod tests {
         let (mut s, mut o) = SharpeRatio::new().init((&a,), 0);
 
         let mut a = Array::scalar(100.0);
-        SharpeRatio::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
+        SharpeRatio::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
 
         a[0] = 110.0; // r = 0.10
-        SharpeRatio::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], &[]));
+        SharpeRatio::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], 0));
         // single return with zero variance => NaN
         assert!(o[0].is_nan());
 
         a[0] = 121.0; // r = 0.10
-        SharpeRatio::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], &[]));
+        SharpeRatio::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], 0));
         // returns: 0.10, 0.10 => mean=0.10, std=0 => NaN
         assert!(o[0].is_nan());
 
         a[0] = 115.0; // r ≈ -0.0496
-        SharpeRatio::compute(&mut s, (&a,), &mut o, 4, &Notify::new(&[], &[]));
+        SharpeRatio::compute(&mut s, (&a,), &mut o, 4, &Notify::new(&[], 0));
         // returns: 0.10, 0.10, -0.0496 => mean>0, std>0 => finite
         assert!(o[0].is_finite());
         assert!(o[0] > 0.0); // positive mean, positive Sharpe

@@ -281,9 +281,13 @@ class SeriesView[T: np.generic]:
 class Notify:
     """Notification context for Python-implemented operators.
 
-    Provides [`input_produced`][tradingflow.Notify.input_produced] to check
-    whether a specific input produced new output in the current flush cycle.
-    If the operator ignores this object entirely, there is zero overhead.
+    Provides two views of which inputs produced new output in the current
+    flush cycle:
+
+    - [`input_produced`][tradingflow.Notify.input_produced] — ``list[bool]``
+      indexed by input position (O(1) per-position check via indexing).
+    - [`produced`][tradingflow.Notify.produced] — ``list[int]`` of input
+      positions that produced (O(n_messages) iteration).
 
     Instances are created by the runtime and passed to
     [`Operator.compute`][tradingflow.Operator.compute] — users do not construct
@@ -295,6 +299,18 @@ class Notify:
     def __init__(self, inner: NativeNotify) -> None:
         self._inner = inner
 
-    def input_produced(self, pos: int) -> bool:
-        """Whether the input at *pos* produced new output this flush cycle."""
-        return self._inner.input_produced(pos)
+    def input_produced(self) -> list[bool]:
+        """Per-position booleans: ``True`` if that input produced this cycle.
+
+        Usage: ``notify.input_produced()[0]`` to check whether the first
+        input produced.
+        """
+        return self._inner.input_produced()
+
+    def produced(self) -> list[int]:
+        """Input positions that produced new output this flush cycle.
+
+        For message-passing operators, this allows efficient iteration
+        over only the inputs that actually changed.
+        """
+        return self._inner.produced()

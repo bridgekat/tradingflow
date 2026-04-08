@@ -87,7 +87,7 @@ impl Operator for ForwardAdjust {
         _timestamp: i64,
         notify: &Notify<'_>,
     ) -> bool {
-        if notify.input_produced(1) {
+        if notify.input_produced()[1] {
             let share_dividends = inputs.1.as_slice()[0];
             let cash_dividends = inputs.1.as_slice()[1];
             let prev_price = state.prev_price;
@@ -97,7 +97,7 @@ impl Operator for ForwardAdjust {
                 state.factor *= 1.0 + share_dividends;
             }
         }
-        if notify.input_produced(0) {
+        if notify.input_produced()[0] {
             let price = inputs.0.as_slice()[0];
             output.as_mut_slice()[0] = if state.output_prices {
                 price * state.factor
@@ -126,10 +126,10 @@ mod tests {
         div(0.0, 0.0)
     }
     fn notify_price() -> Notify<'static> {
-        Notify::new(&[true, false], &[0, 1])
+        Notify::new(&[0], 2)
     }
     fn notify_both() -> Notify<'static> {
-        Notify::new(&[true, true], &[0, 1])
+        Notify::new(&[0, 1], 2)
     }
 
     #[test]

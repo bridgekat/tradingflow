@@ -51,7 +51,7 @@ mod tests {
     fn test_fillna() {
         let a = Array::from_vec(&[3], vec![1.0_f64, f64::NAN, 3.0]);
         let (mut s, mut o) = Fillna::new(0.0).init((&a,), i64::MIN);
-        Fillna::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
+        Fillna::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o[0], 1.0);
         assert_eq!(o[1], 0.0);
         assert_eq!(o[2], 3.0);

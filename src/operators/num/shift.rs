@@ -51,7 +51,7 @@ mod tests {
     fn test_shift() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let (mut s, mut o) = Shift::new(10.0).init((&a,), i64::MIN);
-        Shift::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
+        Shift::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[11.0, 12.0, 13.0]);
     }
 }

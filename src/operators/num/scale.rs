@@ -51,7 +51,7 @@ mod tests {
     fn test_scale() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let (mut s, mut o) = Scale::new(3.0).init((&a,), i64::MIN);
-        Scale::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
+        Scale::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[3.0, 6.0, 9.0]);
     }
 }

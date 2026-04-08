@@ -84,7 +84,7 @@ class MeanPortfolio(
         notify: Notify,
     ) -> bool:
         # Changes in universe only should not trigger recomputation.
-        if not notify.input_produced(1):
+        if not notify.input_produced()[1]:
             return False
 
         universe = inputs[0].value()

@@ -19,8 +19,8 @@
 //! - [`NativeArrayView`] / [`NativeSeriesView`] — read-only Python views into
 //!   `Array<T>` and `Series<T>` node values, backed by raw pointers.
 //! - [`NativeNotify`] — Python-visible wrapper around the Rust
-//!   [`Notify`](crate::operator::Notify) context, exposing per-input update
-//!   flags to Python operators during flush.
+//!   [`Notify`](crate::operator::Notify) context, exposing which inputs
+//!   produced new output to Python operators during flush.
 //! - [`DoneCallback`](source::DoneCallback) — pyclass used internally to
 //!   bridge `concurrent.futures.Future` completion to tokio oneshot channels.
 //!

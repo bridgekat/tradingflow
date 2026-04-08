@@ -80,7 +80,7 @@ mod tests {
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
         let (mut s, mut o) = Stack::<f64>::new(0).init(inputs.clone(), i64::MIN);
-        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], &[]));
+        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
             o.as_slice(),
@@ -95,7 +95,7 @@ mod tests {
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
         let (mut s, mut o) = Stack::<f64>::new(1).init(inputs.clone(), i64::MIN);
-        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], &[]));
+        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
             o.as_slice(),
@@ -110,7 +110,7 @@ mod tests {
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
         let (mut s, mut o) = Stack::<f64>::new(2).init(inputs.clone(), i64::MIN);
-        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], &[]));
+        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.shape(), &[2, 3, 2]);
         assert_eq!(
             o.as_slice(),

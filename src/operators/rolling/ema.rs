@@ -171,7 +171,7 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts, &[val]);
-        Ema::compute(state, (s,), out, ts, &Notify::new(&[], &[]))
+        Ema::compute(state, (s,), out, ts, &Notify::new(&[], 0))
     }
 
     #[test]
@@ -306,13 +306,13 @@ mod tests {
         let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
 
         s.push(1, &[10.0, 100.0]);
-        assert!(!Ema::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
+        assert!(!Ema::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0)));
         // Output stays NaN during warmup.
         assert!(out.as_slice()[0].is_nan());
         assert!(out.as_slice()[1].is_nan());
 
         s.push(2, &[20.0, 200.0]);
-        assert!(Ema::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
+        assert!(Ema::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], 0)));
         let row = out.as_slice();
         let expected_0 = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25);
         let expected_1 = (0.5 * 200.0 + 0.25 * 100.0) / (0.5 + 0.25);
@@ -365,19 +365,19 @@ mod tests {
 
         // NaN only in element 0
         s.push(1, &[f64::NAN, 10.0]);
-        assert!(!Ema::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[])));
+        assert!(!Ema::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0)));
         // Output stays NaN during warmup.
         assert!(out.as_slice()[0].is_nan());
         assert!(out.as_slice()[1].is_nan());
 
         s.push(2, &[5.0, 20.0]);
-        assert!(Ema::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], &[])));
+        assert!(Ema::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], 0)));
         // NaN still in window for element 0
         assert!(out.as_slice()[0].is_nan());
         assert!(!out.as_slice()[1].is_nan());
 
         s.push(3, &[15.0, 30.0]);
-        Ema::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], &[]));
+        Ema::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], 0));
         // NaN evicted for element 0
         assert!(!out.as_slice()[0].is_nan());
         assert!(!out.as_slice()[1].is_nan());

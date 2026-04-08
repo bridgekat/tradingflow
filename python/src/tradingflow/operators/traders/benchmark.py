@@ -142,7 +142,7 @@ class Benchmark(
         current_value = state.cash + np.sum(state.shares[held] * closes[held])
 
         # Rebalance if soft positions input was updated.
-        if notify.input_produced(0):
+        if notify.input_produced()[0]:
 
             # Execution price = open price.
             exec_price = opens

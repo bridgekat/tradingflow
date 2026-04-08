@@ -52,7 +52,7 @@ mod tests {
     fn test_clamp() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 3.0, 7.0]);
         let (mut s, mut o) = Clamp::new(2.0, 5.0).init((&a,), i64::MIN);
-        Clamp::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
+        Clamp::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[2.0, 3.0, 5.0]);
     }
 }

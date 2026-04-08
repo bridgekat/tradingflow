@@ -3,7 +3,8 @@
 //! Each [`Node`] owns a heap-allocated value and a [`NodeState`] classifying
 //! it as either a source or an operator.  [`OperatorState`] stores
 //! pre-collected input pointers, the monomorphised compute function, and
-//! `input_node_indices` used to construct [`Notify`] contexts during flush.
+//! `input_node_indices` used to determine the input count for [`Notify`]
+//! contexts during flush.
 
 use std::any::TypeId;
 
@@ -35,8 +36,9 @@ pub(super) struct Node {
     pub value_ptr: *mut u8,
     /// Node classification and attached state.
     pub state: NodeState,
-    /// Downstream node indices that are triggered when this node updates.
-    pub trigger_edges: Vec<usize>,
+    /// Downstream `(node_index, input_position)` pairs triggered when this
+    /// node updates.
+    pub trigger_edges: Vec<(usize, usize)>,
     /// Drop the value: `drop(Box::from_raw(ptr as *mut T))`.
     value_drop_fn: unsafe fn(*mut u8),
 }

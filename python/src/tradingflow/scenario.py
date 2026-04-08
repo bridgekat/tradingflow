@@ -108,6 +108,7 @@ class Scenario:
                 list(operator.shape),
                 operator,
                 clock_index=clock.index if clock else None,
+                is_clock_triggerable=operator.is_clock_triggerable,
             )
             kind = output_type[0]
         return Handle(idx, kind, operator.dtype, operator.shape)

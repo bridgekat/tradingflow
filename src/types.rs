@@ -154,56 +154,75 @@ impl_input_types_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I
 impl_input_types_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K);
 impl_input_types_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);
 
-/// Zero-cost notification context for [`Operator::compute`].
+/// Notification context for [`Operator::compute`].
 ///
-/// Provides [`input_produced`](Self::input_produced) to check whether a
-/// specific input produced new output in the current flush cycle.  If the
-/// operator ignores the `Notify` argument entirely, there is zero overhead.
+/// Provides two views of which inputs produced new output in the current
+/// flush cycle:
 ///
-/// Constructed by the graph flush machinery from the graph-wide `produced`
-/// flags and the operator's per-input node indices.
+/// * [`produced`](Self::produced) — `&[usize]` list of input positions
+///   that produced (O(n_messages) to iterate).
+/// * [`input_produced`](Self::input_produced) — `Box<[bool]>` indexed by
+///   input position (O(1) per-position check via indexing).  Computed
+///   lazily on first call.
+///
+/// Construction is zero-cost: no allocation until [`input_produced`] is
+/// called.
 pub struct Notify<'a> {
-    produced: &'a [bool],
-    input_node_indices: &'a [usize],
+    incoming: &'a [usize],
+    num_inputs: usize,
 }
 
 impl Notify<'_> {
-    /// Create a new notification context.
-    pub fn new<'a>(produced: &'a [bool], input_node_indices: &'a [usize]) -> Notify<'a> {
+    /// Create a new notification context (zero-cost).
+    ///
+    /// `incoming` lists the input positions that produced.
+    /// `num_inputs` is the total number of inputs for the operator.
+    #[inline(always)]
+    pub fn new(incoming: &[usize], num_inputs: usize) -> Notify<'_> {
         Notify {
-            produced,
-            input_node_indices,
+            incoming,
+            num_inputs,
         }
     }
 
-    /// Returns `true` if the input at position `pos` produced new output
-    /// in the current flush cycle.
+    /// Returns the input positions that produced new output in the
+    /// current flush cycle.
     #[inline(always)]
-    pub fn input_produced(&self, pos: usize) -> bool {
-        self.produced[self.input_node_indices[pos]]
+    pub fn produced(&self) -> &[usize] {
+        self.incoming
     }
 
-    /// Raw pointer to the `produced` flags slice.
-    #[inline(always)]
-    pub fn produced_ptr(&self) -> *const bool {
-        self.produced.as_ptr()
+    /// Returns a boolean slice indexed by input position: `true` if
+    /// that input produced new output in the current flush cycle.
+    ///
+    /// Allocates on each call.  For hot paths that only need to check a
+    /// few positions, prefer iterating [`produced`](Self::produced)
+    /// instead.
+    pub fn input_produced(&self) -> Box<[bool]> {
+        let mut flags = vec![false; self.num_inputs].into_boxed_slice();
+        for &pos in self.incoming {
+            if pos < self.num_inputs {
+                flags[pos] = true;
+            }
+        }
+        flags
     }
 
-    /// Length of the `produced` flags slice.
+    /// Raw pointer to the incoming input positions slice (for Python bridge).
     #[inline(always)]
-    pub fn produced_len(&self) -> usize {
-        self.produced.len()
+    pub fn incoming_ptr(&self) -> *const usize {
+        self.incoming.as_ptr()
     }
 
-    /// Raw pointer to the input node indices slice.
+    /// Length of the incoming input positions slice (for Python bridge).
     #[inline(always)]
-    pub fn input_node_indices_ptr(&self) -> *const usize {
-        self.input_node_indices.as_ptr()
+    pub fn incoming_len(&self) -> usize {
+        self.incoming.len()
     }
 
-    /// Length of the input node indices slice.
+    /// Number of inputs (for Python bridge).
     #[inline(always)]
-    pub fn input_node_indices_len(&self) -> usize {
-        self.input_node_indices.len()
+    pub fn num_inputs(&self) -> usize {
+        self.num_inputs
     }
 }

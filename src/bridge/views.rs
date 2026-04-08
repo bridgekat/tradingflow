@@ -3,7 +3,7 @@
 //! - [`NativeArrayView`] — copy-in / copy-out view of a Rust `Array<T>` node.
 //! - [`NativeSeriesView`] — copy-out view (plus `push`) of a Rust `Series<T>`
 //!   node.
-//! - [`NativeNotify`] — thin wrapper exposing the Rust
+//! - [`NativeNotify`] — wrapper exposing the Rust
 //!   [`Notify`](crate::operator::Notify) context to Python operators.
 //!
 //! All views hold raw pointers into graph-owned memory.  Reads copy data out
@@ -462,27 +462,26 @@ unsafe fn series_push<T: PyScalar>(
 /// Python-visible wrapper around the Rust [`Notify`](crate::operator::Notify)
 /// context.
 ///
-/// Provides [`input_produced`](Self::input_produced) so Python operators can
-/// check which inputs produced new output in the current flush cycle.
+/// Provides [`input_produced`](Self::input_produced) (per-position booleans)
+/// and [`produced`](Self::produced) (list of positions) so Python operators
+/// can check which inputs produced new output in the current flush cycle.
 #[pyclass]
 pub struct NativeNotify {
-    produced: *const bool,
-    produced_len: usize,
-    input_node_indices: *const usize,
-    input_node_indices_len: usize,
+    incoming: *const usize,
+    incoming_len: usize,
+    num_inputs: usize,
 }
 
 unsafe impl Send for NativeNotify {}
 unsafe impl Sync for NativeNotify {}
 
 impl NativeNotify {
-    /// Construct an empty notify (no inputs, no produced flags).
+    /// Construct an empty notify.
     pub fn from_empty() -> Self {
         Self {
-            produced: std::ptr::null(),
-            produced_len: 0,
-            input_node_indices: std::ptr::null(),
-            input_node_indices_len: 0,
+            incoming: std::ptr::null(),
+            incoming_len: 0,
+            num_inputs: 0,
         }
     }
 
@@ -493,21 +492,42 @@ impl NativeNotify {
     /// The `NativeNotify` must not be accessed after the `Notify` it borrows
     /// from is dropped.
     pub unsafe fn update_from(&mut self, notify: &crate::Notify<'_>) {
-        self.produced = notify.produced_ptr();
-        self.produced_len = notify.produced_len();
-        self.input_node_indices = notify.input_node_indices_ptr();
-        self.input_node_indices_len = notify.input_node_indices_len();
+        self.incoming = notify.incoming_ptr();
+        self.incoming_len = notify.incoming_len();
+        self.num_inputs = notify.num_inputs();
     }
 }
 
 #[pymethods]
 impl NativeNotify {
-    /// Returns `True` if the input at position *pos* produced new output in
-    /// the current flush cycle.
-    fn input_produced(&self, pos: usize) -> bool {
-        assert!(pos < self.input_node_indices_len);
-        let node_idx = unsafe { *self.input_node_indices.add(pos) };
-        assert!(node_idx < self.produced_len);
-        unsafe { *self.produced.add(node_idx) }
+    /// Returns a list of bools indexed by input position: `True` if
+    /// that input produced new output in the current flush cycle.
+    ///
+    /// Computed on each call from the incoming positions list.
+    fn input_produced<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        let mut flags = vec![false; self.num_inputs];
+        if !self.incoming.is_null() {
+            let incoming =
+                unsafe { std::slice::from_raw_parts(self.incoming, self.incoming_len) };
+            for &pos in incoming {
+                if pos < self.num_inputs {
+                    flags[pos] = true;
+                }
+            }
+        }
+        let list = pyo3::types::PyList::new(py, &flags)?;
+        Ok(list.into_any().unbind())
+    }
+
+    /// Returns the input positions that produced new output in the
+    /// current flush cycle.
+    fn produced<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        let slice = if self.incoming.is_null() || self.incoming_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.incoming, self.incoming_len) }
+        };
+        let list = pyo3::types::PyList::new(py, slice)?;
+        Ok(list.into_any().unbind())
     }
 }

@@ -86,15 +86,15 @@ mod tests {
         let (mut s, mut o) = CompoundReturn::new().init((&a,), 0);
 
         let mut a = Array::scalar(100.0);
-        CompoundReturn::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], &[]));
+        CompoundReturn::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o[0], 0.0); // first tick
 
         a[0] = 110.0;
-        CompoundReturn::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], &[]));
+        CompoundReturn::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], 0));
         assert!((o[0] - 0.10).abs() < 1e-10); // 1 period: 10%
 
         a[0] = 121.0;
-        CompoundReturn::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], &[]));
+        CompoundReturn::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], 0));
         // 2 periods: (121/100)^(1/2) - 1 = 0.10
         assert!((o[0] - 0.10).abs() < 1e-10);
     }

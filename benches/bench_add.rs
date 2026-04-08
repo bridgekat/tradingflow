@@ -81,7 +81,7 @@ fn bench_direct_compute(c: &mut Criterion) {
                     (&arr_a, &arr_b),
                     &mut arr_out,
                     i as i64,
-                    &Notify::new(&[], &[]),
+                    &Notify::new(&[], 0),
                 );
             }
             black_box(arr_out[0]);
@@ -111,14 +111,14 @@ fn bench_direct_compute_series(c: &mut Criterion) {
                     (&arr_a, &arr_b),
                     &mut arr_out,
                     i as i64,
-                    &Notify::new(&[], &[]),
+                    &Notify::new(&[], 0),
                 );
                 Record::<f64>::compute(
                     &mut (),
                     (&arr_out,),
                     &mut series_out,
                     i as i64,
-                    &Notify::new(&[], &[]),
+                    &Notify::new(&[], 0),
                 );
             }
             black_box(series_out.last().unwrap()[0]);

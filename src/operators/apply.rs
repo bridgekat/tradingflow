@@ -150,7 +150,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[11.0, 22.0, 33.0]);
 
         let a2 = Array::from_vec(&[3], vec![100.0, 200.0, 300.0]);
-        Apply::compute(&mut s, (&a2, &b), &mut o, 1, &Notify::new(&[], &[]));
+        Apply::compute(&mut s, (&a2, &b), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[110.0, 220.0, 330.0]);
     }
 
@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[10.0]); // 2*3 + 4
 
         let a2 = Array::scalar(5.0);
-        Apply::compute(&mut s, (&a2, &b, &c), &mut o, 1, &Notify::new(&[], &[]));
+        Apply::compute(&mut s, (&a2, &b, &c), &mut o, 1, &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[19.0]); // 5*3 + 4
     }
 
@@ -195,7 +195,7 @@ mod tests {
             (&a2, &b),
             &mut o,
             1,
-            &Notify::new(&[], &[]),
+            &Notify::new(&[], 0),
         ));
         assert_eq!(o.as_slice(), &[13.0]);
     }
@@ -226,7 +226,7 @@ mod tests {
             (&a2, &b),
             &mut o,
             1,
-            &Notify::new(&[], &[]),
+            &Notify::new(&[], 0),
         ));
 
         // 10 + 2 = 12 > 5 → true
@@ -236,7 +236,7 @@ mod tests {
             (&a3, &b),
             &mut o,
             2,
-            &Notify::new(&[], &[]),
+            &Notify::new(&[], 0),
         ));
         assert_eq!(o.as_slice(), &[12.0]);
     }

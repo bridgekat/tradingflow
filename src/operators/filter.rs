@@ -63,7 +63,7 @@ mod tests {
             (&a,),
             &mut o,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(o.as_slice(), &[5.0]);
     }
@@ -77,7 +77,7 @@ mod tests {
             (&a,),
             &mut o,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
     }
 
@@ -91,7 +91,7 @@ mod tests {
             (&a,),
             &mut o,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
     }
 
@@ -104,14 +104,14 @@ mod tests {
             (&Array::scalar(5.0),),
             &mut o,
             1,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert!(!Filter::compute(
             &mut s,
             (&Array::scalar(1.0),),
             &mut o,
             2,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(o[0], 5.0);
         assert!(Filter::compute(
@@ -119,7 +119,7 @@ mod tests {
             (&Array::scalar(10.0),),
             &mut o,
             3,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         assert_eq!(o[0], 10.0);
     }

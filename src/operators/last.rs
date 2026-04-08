@@ -67,7 +67,7 @@ mod tests {
         assert_eq!(out.as_slice(), &[3.0, 4.0]);
 
         s.push(300, &[5.0, 6.0]);
-        Last::compute(&mut state, (&s,), &mut out, 300, &Notify::new(&[], &[]));
+        Last::compute(&mut state, (&s,), &mut out, 300, &Notify::new(&[], 0));
         assert_eq!(out.as_slice(), &[5.0, 6.0]);
     }
 
@@ -80,7 +80,7 @@ mod tests {
         assert!(out[2].is_nan());
 
         // Still empty on compute
-        Last::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        Last::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0));
         assert!(out[0].is_nan());
     }
 
@@ -96,8 +96,8 @@ mod tests {
         for i in 1..=10 {
             let v = i as f64 * 7.0;
             a[0] = v;
-            Record::compute(&mut rec_s, (&a,), &mut series, i, &Notify::new(&[], &[]));
-            Last::compute(&mut last_s, (&series,), &mut out, i, &Notify::new(&[], &[]));
+            Record::compute(&mut rec_s, (&a,), &mut series, i, &Notify::new(&[], 0));
+            Last::compute(&mut last_s, (&series,), &mut out, i, &Notify::new(&[], 0));
             assert_eq!(out[0], v, "mismatch at step {i}");
         }
     }
@@ -114,8 +114,8 @@ mod tests {
         for i in 1..=10 {
             let v = i as f64 * 7.0;
             s.push(i, &[v]);
-            Last::compute(&mut last_a, (&s,), &mut arr, i, &Notify::new(&[], &[]));
-            Record::compute(&mut rec_a, (&arr,), &mut out, i, &Notify::new(&[], &[]));
+            Last::compute(&mut last_a, (&s,), &mut arr, i, &Notify::new(&[], 0));
+            Record::compute(&mut rec_a, (&arr,), &mut out, i, &Notify::new(&[], 0));
             assert_eq!(s.len(), out.len(), "mismatch at step {i}");
             for j in 0..s.len() {
                 assert_eq!(out.at(j), s.at(j), "mismatch at step {i}, index {j}");
@@ -128,7 +128,7 @@ mod tests {
         let mut s = Series::<f64>::new(&[]);
         s.push(1, &[42.0]);
         let (mut state, mut out) = Last::new(0.0).init((&s,), i64::MIN);
-        Last::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], &[]));
+        Last::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0));
         assert_eq!(out[0], 42.0);
     }
 }

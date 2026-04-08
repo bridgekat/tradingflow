@@ -82,7 +82,7 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts, &[val]);
-        RollingVariance::compute(state, (s,), out, ts, &Notify::new(&[], &[]))
+        RollingVariance::compute(state, (s,), out, ts, &Notify::new(&[], 0))
     }
 
     #[test]
@@ -126,13 +126,13 @@ mod tests {
             (&s,),
             &mut out,
             100,
-            &Notify::new(&[], &[])
+            &Notify::new(&[], 0)
         ));
         // Single element → variance = 0.
         assert_eq!(out.as_slice()[0], 0.0);
 
         s.push(200, &[4.0]);
-        RollingVariance::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], &[]));
+        RollingVariance::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], 0));
         // Var([2,4]) = (4+16)/2 - 9 = 1.0
         assert!((out.as_slice()[0] - 1.0).abs() < 1e-10);
     }

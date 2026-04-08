@@ -57,3 +57,28 @@ Operators are the reusable building blocks of trading strategies. Examples inclu
 A [scenario](src/scenario/mod.rs) stores and runs the acyclic computation graph. Each node is associated with either a source or an operator.
 
 The scenario provides a `run()` method which consumes all source streams (historical and real-time) and puts them in a queue, coalesces events at the same timestamp, and for each batch propagates updates through the graph in topological order. It makes sure that update timestamps are strictly increasing each batch.
+
+## Notification Semantics
+
+When a source emits or an operator produces output, its downstream operators are scheduled. Each downstream operator receives a `Notify` context that reports *which* of its inputs produced new output in the current flush cycle. This enables two complementary semantics:
+
+### Time-series semantics
+
+Each node's output array always holds a value (the most recent one written). An operator reads `inputs[i].value()` to get the latest snapshot, regardless of whether input `i` produced this cycle. This is the natural model for state that persists over time: prices, positions, factor values.
+
+Most operators use time-series semantics and ignore the `Notify` context entirely — they simply recompute from the latest values whenever triggered.
+
+### Message-passing semantics
+
+A notification is treated as a *message* whose payload is the value written into the corresponding node. If an input did not produce this cycle, there is no message from it. Operators inspect `Notify` to distinguish "input updated" from "input is stale":
+
+- [`Notify.produced()`](src/types.rs) returns the list of input positions that produced — for efficient O(n_messages) iteration over only the inputs that changed.
+- [`Notify.input_produced()`](src/types.rs) returns a per-position boolean slice — for O(1) checks like `notify.input_produced()[i]`.
+
+Message-passing semantics are useful when an operator must react differently depending on *which* inputs changed. For example, the [ForwardAdjust](src/operators/stocks/forward_adjust.rs) operator only updates its cumulative dividend factor when the dividend input produces, and only emits an adjusted price when the price input produces.
+
+### Clock-triggerable operators
+
+Operators may optionally be registered with a *clock* trigger instead of being triggered by their data inputs. A clock-triggered operator only runs when the clock fires, reading the latest values from its data inputs at that point.
+
+Operators that rely on message-passing semantics must **not** be clock-triggered, since they would miss messages between clock ticks. The `Operator` trait provides an [`is_clock_triggerable()`](src/operator.rs) method (default `true`) that operators can override to return `false`, preventing accidental registration with a clock.

@@ -90,7 +90,7 @@ class MeanVariancePortfolio(
         notify: Notify,
     ) -> bool:
         # Changes in universe only should not trigger recomputation.
-        if not notify.input_produced(1) or not notify.input_produced(2):
+        if not notify.input_produced()[1] or not notify.input_produced()[2]:
             return False
 
         universe = inputs[0].value()
