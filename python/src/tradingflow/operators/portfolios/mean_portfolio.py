@@ -26,8 +26,8 @@ class MeanPortfolio(
 ):
     """Abstract portfolio constructor from predicted returns.
 
-    On each tick, reads predicted returns (and optionally a universe
-    mask), delegates to ``positions_fn`` to compute position weights.
+    On each tick, reads predicted returns, delegates to ``positions_fn``
+    to compute position weights.
 
     Only stocks with positive universe weights are passed to
     ``positions_fn``; the result is scattered back to the full dimension
@@ -35,11 +35,11 @@ class MeanPortfolio(
 
     Parameters
     ----------
+    universe
+        Handle to universe weights, shape ``(num_stocks,)``.
+        Stocks with positive values are included in the optimization.
     predicted_returns
         Handle to predicted returns array, shape ``(num_stocks,)``.
-    universe
-        Optional handle to universe weights, shape ``(num_stocks,)``.
-        Stocks with positive values are included in the optimisation.
     positions_fn
         ``(state, predicted) -> positions``.  Receives only the
         subset of stocks in the universe (or all stocks if no universe).
@@ -83,6 +83,10 @@ class MeanPortfolio(
         timestamp: int,
         notify: Notify,
     ) -> bool:
+        # Changes in universe only should not trigger recomputation.
+        if not notify.input_produced(1):
+            return False
+
         universe = inputs[0].value()
         predicted = inputs[1].value()
 

@@ -28,24 +28,22 @@ class MeanVariancePortfolio(
 ):
     """Abstract portfolio constructor from predicted returns and covariance.
 
-    On each tick, reads predicted returns, covariance matrix, and
-    optionally a universe mask.  Delegates to ``positions_fn`` to
-    compute position weights.
+    On each tick, reads predicted returns and covariance matrix, delegates to
+    ``positions_fn`` to compute position weights.
 
-    When ``universe`` is provided, only stocks with positive universe
-    weights are passed to ``positions_fn`` (with the covariance matrix
-    sub-selected accordingly); the result is scattered back to the full
-    dimension with zeros elsewhere.
+    Only stocks with positive universe weights are passed to
+    ``positions_fn``; the result is scattered back to the full dimension
+    with zeros elsewhere.
 
     Parameters
     ----------
+    universe
+        Handle to universe weights, shape ``(num_stocks,)``.
+        Stocks with positive values are included in the optimization.
     predicted_returns
         Handle to predicted returns array, shape ``(num_stocks,)``.
     predicted_covariances
         Handle to predicted covariance matrix, shape ``(num_stocks, num_stocks)``.
-    universe
-        Optional handle to universe weights, shape ``(num_stocks,)``.
-        Stocks with positive values are included in the optimisation.
     positions_fn
         ``(state, mu, Sigma) -> weights``.  Receives only the subset.
     """
@@ -91,6 +89,10 @@ class MeanVariancePortfolio(
         timestamp: int,
         notify: Notify,
     ) -> bool:
+        # Changes in universe only should not trigger recomputation.
+        if not notify.input_produced(1) or not notify.input_produced(2):
+            return False
+
         universe = inputs[0].value()
         mu = inputs[1].value()
         sigma = inputs[2].value()
