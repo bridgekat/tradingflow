@@ -15,7 +15,7 @@ class Markowitz(MeanVariancePortfolio):
     Solves the following optimization problem:
 
         maximize  mu' x  -  delta * sqrt(x' Sigma x)
-        subject to  1' x = 1
+        subject to  1' x <= 1
                     x >= 0   (if long_only)
 
     Parameters
@@ -72,7 +72,7 @@ def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, ver
     # Construct the problem.
     x = cp.Variable(N)
     objective = cp.Maximize(mu @ x - delta * cp.norm(L.T @ x))
-    constraints: list[Any] = [cp.sum(x) == 1]
+    constraints: list[Any] = [cp.sum(x) <= 1]
     if long_only:
         constraints.append(x >= 0)
 
