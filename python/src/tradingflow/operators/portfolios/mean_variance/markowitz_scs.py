@@ -127,8 +127,7 @@ def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, ver
     sol = solver.solve()
 
     if sol["info"]["status"] not in ("solved", "solved_inaccurate"):
-        if verbose:
-            print(f"  markowitz_scs: solver failed, using equal weights")
+        print(f"  markowitz_scs: solver failed, using equal weights")
         return np.full(N, 1.0 / N)
 
     weights = sol["x"][:N].copy()

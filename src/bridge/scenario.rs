@@ -68,7 +68,7 @@ pub struct NativeScenario {
     /// Cached Python view objects, indexed by node index.
     cached_views: Vec<Option<PyObject>>,
     /// Tokio runtime — kept alive for the scenario's lifetime.
-    _rt: tokio::runtime::Runtime,
+    runtime: tokio::runtime::Runtime,
     /// Asyncio event loop for Python source coroutines, created on first
     /// `add_py_source`.  Runs on the **main thread** during `run()` for
     /// proper signal handling; the tokio POCQ loop runs on a background
@@ -133,7 +133,7 @@ impl NativeScenario {
 impl NativeScenario {
     #[new]
     fn new() -> Self {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
@@ -142,7 +142,7 @@ impl NativeScenario {
             error_slot: Arc::new(Mutex::new(None)),
             node_info: Vec::new(),
             cached_views: Vec::new(),
-            _rt: rt,
+            runtime,
             event_loop: None,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
@@ -167,7 +167,7 @@ impl NativeScenario {
         shape: Vec<usize>,
         params: &Bound<'_, PyDict>,
     ) -> PyResult<usize> {
-        let _guard = self._rt.enter();
+        let _guard = self.runtime.enter();
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalize_dtype(dtype).to_string();
         let idx = sources::dispatch_native_source(sc, kind, &dtype_norm, params)?;
@@ -187,7 +187,7 @@ impl NativeScenario {
         params: &Bound<'_, PyDict>,
         clock_index: Option<usize>,
     ) -> PyResult<usize> {
-        let _guard = self._rt.enter();
+        let _guard = self.runtime.enter();
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalize_dtype(dtype).to_string();
         let (idx, view_kind) = operators::dispatch_native_operator(
@@ -215,7 +215,7 @@ impl NativeScenario {
         output_type: (String, String),
         output_shape: Vec<usize>,
     ) -> PyResult<usize> {
-        let _guard = self._rt.enter();
+        let _guard = self.runtime.enter();
         let (out_kind_str, out_dtype_str) = &output_type;
         let out_dtype = normalize_dtype(out_dtype_str).to_string();
 
@@ -272,7 +272,7 @@ impl NativeScenario {
         clock_index: Option<usize>,
         is_clock_triggerable: bool,
     ) -> PyResult<usize> {
-        let _guard = self._rt.enter();
+        let _guard = self.runtime.enter();
         let (out_kind_str, out_dtype_str) = &output_type;
         let out_dtype = normalize_dtype(out_dtype_str).to_string();
 
@@ -294,15 +294,28 @@ impl NativeScenario {
         let output_type_id = resolve_type_id(out_kind_str, &out_dtype)?;
 
         // 2. Build input views (input nodes already exist).
+        //    Wrap NativeArrayView / NativeSeriesView in their Python-side
+        //    wrappers (ArrayView / SeriesView) so Python operators receive
+        //    the high-level types.
+        let views_mod = py.import("tradingflow.views")?;
+        let array_view_cls = views_mod.getattr("ArrayView")?;
+        let series_view_cls = views_mod.getattr("SeriesView")?;
+
         let input_views: Vec<PyObject> = input_indices
             .iter()
             .map(|&idx| {
-                self.cached_views[idx]
+                let native = self.cached_views[idx]
                     .as_ref()
                     .map(|v| v.clone_ref(py))
                     .ok_or_else(|| {
                         PyRuntimeError::new_err(format!("node {idx} has no cached view"))
-                    })
+                    })?;
+                let (_, kind) = &self.node_info[idx];
+                let wrapped: PyObject = match kind {
+                    ViewKind::Array => array_view_cls.call1((native.bind(py),))?.unbind(),
+                    ViewKind::Series => series_view_cls.call1((native.bind(py),))?.unbind(),
+                };
+                Ok(wrapped)
             })
             .collect::<PyResult<_>>()?;
         let py_inputs: PyObject = pyo3::types::PyTuple::new(py, &input_views)?
@@ -339,7 +352,9 @@ impl NativeScenario {
     /// Returns `(first_ns, last_ns)` when every registered source provides
     /// both bounds; otherwise returns `(None, None)`.
     fn time_range(&self) -> (Option<i64>, Option<i64>) {
-        self.scenario.as_ref().map_or((None, None), |sc| sc.time_range())
+        self.scenario
+            .as_ref()
+            .map_or((None, None), |sc| sc.time_range())
     }
 
     /// Run the POCQ event loop.
@@ -369,7 +384,7 @@ impl NativeScenario {
         // Temporarily take the runtime so we can move it into the
         // background thread (std::thread::spawn requires 'static).
         let rt = std::mem::replace(
-            &mut self._rt,
+            &mut self.runtime,
             tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap(),
@@ -460,7 +475,7 @@ impl NativeScenario {
         match join_result {
             Ok((scenario, rt)) => {
                 self.scenario = Some(scenario);
-                self._rt = rt;
+                self.runtime = rt;
             }
             Err(_) => {
                 return Err(PyRuntimeError::new_err("POCQ background thread panicked"));

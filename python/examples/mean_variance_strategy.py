@@ -53,7 +53,7 @@ BS_SCHEMA = Schema(CSVSchema.balance_sheet().iter_field_ids())
 INC_SCHEMA = Schema(CSVSchema.income_statement().iter_field_ids())
 OHLCV_INDICES = PRICE_SCHEMA.indices(["prices.open", "prices.high", "prices.low", "prices.close", "prices.volume"])
 
-RISK_AVERSIONS = [0.0, 0.5, 1.0, 2.0, 5.0]
+RISK_AVERSIONS = np.linspace(0.0, 5.0, 11).round(2).tolist()
 
 
 def build_scenario(
@@ -169,6 +169,10 @@ def build_scenario(
     turnover_ma = sc.add_operator(RollingMean(turnover_series, window=rebalance_days))
     stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
 
+    # Record feature and price history for predictors.
+    features_series = sc.add_operator(Record(stacked_features))
+    adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
+
     # ------------------------------------------------------------------
     # Shared predictors
     # ------------------------------------------------------------------
@@ -176,18 +180,20 @@ def build_scenario(
     predicted_returns = sc.add_operator(
         LinearRegression(
             universe,
-            stacked_features,
-            stacked["adjusted_close"],
+            features_series,
+            adjusted_prices_series,
             rebalance_period=rebalance_days,
             max_samples=1000,
+            min_samples=100,
+            verbose=True,
         )
     )
 
     predicted_covariances = sc.add_operator(
         Shrinkage(
             universe,
-            stacked_features,
-            stacked["adjusted_close"],
+            features_series,
+            adjusted_prices_series,
             rebalance_period=rebalance_days,
             max_samples=1000,
         )
@@ -272,7 +278,7 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=120, help="rebalance every N trading days")
     parser.add_argument("--initial-cash", type=float, default=1000000.0, help="starting capital (CNY)")
-    parser.add_argument("--index-size", type=int, default=50, help="number of stocks in the market-cap index")
+    parser.add_argument("--index-size", type=int, default=300, help="number of stocks in the market-cap index")
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir

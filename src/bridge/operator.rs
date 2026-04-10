@@ -81,8 +81,22 @@ pub fn make_py_operator(
     let (output_ptr, output_drop_fn): (*mut u8, unsafe fn(*mut u8)) =
         dispatch_dtype!(out_dtype, alloc_output);
 
-    let py_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
-    let py_notify = Py::new(py, super::views::NativeNotify::from_empty())?.into_any();
+    let native_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
+    let native_notify = Py::new(py, super::views::NativeNotify::from_empty())?.into_any();
+
+    // Wrap native views in Python-side wrappers (ArrayView/SeriesView/Notify).
+    let views_mod = py.import("tradingflow.views")?;
+    let out_wrapper_cls = match out_view_kind {
+        ViewKind::Array => views_mod.getattr("ArrayView")?,
+        ViewKind::Series => views_mod.getattr("SeriesView")?,
+    };
+    let py_output: PyObject = out_wrapper_cls
+        .call1((native_output.bind(py),))?
+        .unbind();
+    let notify_cls = views_mod.getattr("Notify")?;
+    let py_notify: PyObject = notify_cls
+        .call1((native_notify.bind(py),))?
+        .unbind();
 
     // Call operator.init(inputs, timestamp) to get initial state.
     let py_state = py_operator
@@ -140,11 +154,13 @@ unsafe fn py_compute_fn(
     }
 
     let result = Python::attach(|py| -> PyResult<bool> {
-        // Update the pre-allocated NativeNotify with current pointers.
+        // Update the pre-allocated NativeNotify (inside the Python Notify
+        // wrapper) with current pointers.
         {
-            let mut native_notify = state
-                .py_notify
-                .cast_bound::<super::views::NativeNotify>(py)?
+            let inner = state.py_notify.getattr(py, "_inner")?;
+            let mut native_notify = inner
+                .bind(py)
+                .downcast::<super::views::NativeNotify>()?
                 .borrow_mut();
             unsafe { native_notify.update_from(notify) };
         }

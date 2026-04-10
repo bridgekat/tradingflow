@@ -14,34 +14,30 @@ class Sample(MeanPredictor[np.ndarray]):
     ----------
     universe
         Universe weights, shape ``(num_stocks,)``.
-    features
-        Stacked features, shape ``(num_stocks, num_features)``.
+    features_series
+        Recorded features series, element shape ``(num_stocks, num_features)``.
         Passed through but not used.
-    adjusted_prices
-        Stacked forward-adjusted close prices, shape ``(num_stocks,)``.
-    rebalance_period
-        Produce output every N ticks.
-    max_samples
-        Maximum number of time rows.
+    adjusted_prices_series
+        Recorded forward-adjusted close prices series, element shape
+        ``(num_stocks,)``.
+    **kwargs
+        Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor].
     """
 
     def __init__(
         self,
         universe,
-        features,
-        adjusted_prices,
-        *,
-        rebalance_period: int,
-        max_samples: int,
+        features_series,
+        adjusted_prices_series,
+        **kwargs,
     ) -> None:
         super().__init__(
             universe,
-            features,
-            adjusted_prices,
+            features_series,
+            adjusted_prices_series,
             fit_fn=_fit_fn,
             predict_fn=_predict_fn,
-            rebalance_period=rebalance_period,
-            max_samples=max_samples,
+            **kwargs,
         )
 
 

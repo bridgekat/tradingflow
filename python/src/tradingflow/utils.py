@@ -19,6 +19,11 @@ def ensure_contiguous(arr: np.ndarray) -> np.ndarray:
         return np.ascontiguousarray(arr)
 
 
-def coerce_timestamp(ts: np.datetime64) -> np.int64:
-    """Coerce a timestamp to `datetime64[ns]` precision and return as `int64`."""
+def coerce_timestamp(ts: np.datetime64 | int | np.integer) -> np.int64:
+    """Coerce a timestamp to nanoseconds-since-epoch `int64`.
+
+    Accepts `datetime64` (any precision), plain `int`, or `np.integer`.
+    """
+    if isinstance(ts, (int, np.integer)):
+        return np.int64(ts)
     return ts.astype("datetime64[ns]").view("int64")

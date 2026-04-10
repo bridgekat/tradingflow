@@ -217,6 +217,10 @@ def build_scenario(
     # Stack features into (num_stocks, num_features).
     stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
 
+    # Record feature and price history for predictors.
+    features_series = sc.add_operator(Record(stacked_features))
+    adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
+
     # ------------------------------------------------------------------
     # Strategy pipeline
     # ------------------------------------------------------------------
@@ -224,11 +228,12 @@ def build_scenario(
     predicted_returns = sc.add_operator(
         LinearRegression(
             universe,
-            stacked_features,
-            stacked["adjusted_close"],
+            features_series,
+            adjusted_prices_series,
             rebalance_period=rebalance_days,
             max_samples=1000,
-            # verbose=True,
+            min_samples=100,
+            verbose=True,
         )
     )
 

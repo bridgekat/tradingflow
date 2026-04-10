@@ -38,12 +38,11 @@ pub trait Operator: 'static {
 
     /// Whether this operator can be gated by a clock trigger.
     ///
-    /// Operators that use message-passing semantics (relying on
-    /// [`Notify::produced_inputs`] to track which inputs produced)
-    /// should return `false` — they must be triggered by their data
-    /// inputs so they never miss a message.
+    /// In general, operators assuming time-series semantics return `true`,
+    /// while those assuming message-passing semantics return `false`
+    /// so that messages are not accidentally dropped.
     ///
-    /// The default is `true` (clock-triggerable).
+    /// The default is `true`.
     fn is_clock_triggerable(&self) -> bool {
         true
     }

@@ -31,9 +31,11 @@ class MeanVariancePortfolio(
     On each tick, reads predicted returns and covariance matrix, delegates to
     ``positions_fn`` to compute position weights.
 
-    Only stocks with positive universe weights are passed to
-    ``positions_fn``; the result is scattered back to the full dimension
-    with zeros elsewhere.
+    Only stocks with positive universe weights, finite predicted returns,
+    and finite diagonal covariance entries are passed to ``positions_fn``;
+    the result is scattered back to the full dimension with zeros elsewhere.
+    The sub-covariance-matrix of the remaining stocks must not contain
+    non-finite entries.
 
     Parameters
     ----------
@@ -97,14 +99,15 @@ class MeanVariancePortfolio(
         mu = inputs[1].value()
         sigma = inputs[2].value()
 
-        mask = universe > 0
-        if not mask.any():
-            output.write(np.zeros_like(universe, dtype=np.float64))
-            return True
+        mask = (universe > 0) & np.isfinite(mu) & np.isfinite(np.diag(sigma))
+        sub_mu = mu[mask]
+        sub_sigma = sigma[np.ix_(mask, mask)]
+        if not np.all(np.isfinite(sub_sigma)):
+            raise ValueError("sub-covariance matrix contains non-finite entries")
 
-        subset_weights = state.positions_fn(state, mu[mask], sigma[np.ix_(mask, mask)])
         positions = np.zeros_like(universe, dtype=np.float64)
-        positions[mask] = subset_weights
+        if mask.any():
+            positions[mask] = state.positions_fn(state, sub_mu, sub_sigma)
 
         output.write(positions)
         return True

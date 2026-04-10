@@ -29,9 +29,9 @@ class MeanPortfolio(
     On each tick, reads predicted returns, delegates to ``positions_fn``
     to compute position weights.
 
-    Only stocks with positive universe weights are passed to
-    ``positions_fn``; the result is scattered back to the full dimension
-    with zeros elsewhere.
+    Only stocks with positive universe weights and finite predicted
+    returns are passed to ``positions_fn``; the result is scattered back
+    to the full dimension with zeros elsewhere.
 
     Parameters
     ----------
@@ -41,8 +41,8 @@ class MeanPortfolio(
     predicted_returns
         Handle to predicted returns array, shape ``(num_stocks,)``.
     positions_fn
-        ``(state, predicted) -> positions``.  Receives only the
-        subset of stocks in the universe (or all stocks if no universe).
+        ``(state, mu) -> positions``.  Receives only the subset of
+        stocks with positive universe weights and finite predictions.
     """
 
     def __init__(
@@ -57,7 +57,6 @@ class MeanPortfolio(
         assert predicted_returns.shape[0] == universe.shape[0]
 
         self._num_stocks = predicted_returns.shape[0]
-        self._has_universe = True
         self._positions_fn = positions_fn
 
         inputs = (universe, predicted_returns)
@@ -88,16 +87,14 @@ class MeanPortfolio(
             return False
 
         universe = inputs[0].value()
-        predicted = inputs[1].value()
+        mu = inputs[1].value()
 
-        mask = universe > 0
-        if not mask.any():
-            output.write(np.zeros_like(universe, dtype=np.float64))
-            return True
+        mask = (universe > 0) & np.isfinite(mu)
+        sub_mu = mu[mask]
 
-        subset_weights = state.positions_fn(state, predicted[mask])
         positions = np.zeros_like(universe, dtype=np.float64)
-        positions[mask] = subset_weights
+        if mask.any():
+            positions[mask] = state.positions_fn(state, sub_mu)
 
         output.write(positions)
         return True

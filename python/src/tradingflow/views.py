@@ -247,16 +247,14 @@ class SeriesView[T: np.generic]:
 
     # -- Indexing -------------------------------------------------------------
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: int | slice) -> np.ndarray:
         """Positional indexing: `int` for single element, `slice` for range."""
-        if isinstance(key, int):
-            return self.at(key)
         if isinstance(key, slice):
             start, stop, step = key.indices(len(self))
             if step != 1:
                 raise ValueError("only contiguous slices supported")
             return self.values(start, stop)
-        raise TypeError(f"unsupported index type: {type(key).__name__}")
+        return self.at(key)
 
     # -- Properties -----------------------------------------------------------
 

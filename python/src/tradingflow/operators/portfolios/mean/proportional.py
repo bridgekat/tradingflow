@@ -13,6 +13,8 @@ class Proportional(MeanPortfolio):
 
     Parameters
     ----------
+    universe
+        Handle to universe weights, shape ``(num_stocks,)``.
     predicted_returns
         Handle to predicted returns array, shape ``(num_stocks,)``.
     """

@@ -1,8 +1,9 @@
 """Cross-sectional return and covariance predictors.
 
-Predictor operators accumulate per-tick cross-sectional feature and price
-snapshots, periodically fit a model on historical data, and output
-predictions for every stock.
+Predictor operators read accumulated feature and price history from
+upstream ``Series`` inputs (produced by ``Record`` operators),
+periodically fit a model on historical data, and output predictions
+for every stock.
 
 All operators in this module are [`Operator`][tradingflow.Operator]
 subclasses whose [`compute`][tradingflow.Operator.compute] method runs in

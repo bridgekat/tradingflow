@@ -81,13 +81,11 @@ def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, ver
     try:
         prob.solve(solver=cp.SCS)
     except cp.SolverError as e:
-        if verbose:
-            print(f"  markowitz: solver failed ({e}), using equal weights")
+        print(f"  markowitz: solver failed ({e}), using equal weights")
         return np.full(N, 1.0 / N)
 
     if x.value is None:
-        if verbose:
-            print(f"  markowitz: no solution (status={prob.status})")
+        print(f"  markowitz: no solution (status={prob.status})")
         return np.full(N, 1.0 / N)
 
     weights = np.array(x.value, dtype=np.float64)

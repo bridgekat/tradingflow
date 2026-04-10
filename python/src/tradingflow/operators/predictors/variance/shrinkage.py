@@ -15,35 +15,36 @@ class Shrinkage(VariancePredictor[np.ndarray]):
 
     Parameters
     ----------
-    features
-        Stacked features, shape ``(num_stocks, num_features)``.
+    universe
+        Universe weights, shape ``(num_stocks,)``.
+    features_series
+        Recorded features series, element shape ``(num_stocks, num_features)``.
         Passed through but not used by this estimator.
-    adjusted_prices
-        Stacked forward-adjusted close prices, shape ``(num_stocks,)``.
-    rebalance_period
-        Produce output every N ticks.
+    adjusted_prices_series
+        Recorded forward-adjusted close prices series, element shape
+        ``(num_stocks,)``.
     verbose
         If ``True``, print shrinkage diagnostics to stdout.
+    **kwargs
+        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
     """
 
     def __init__(
         self,
         universe,
-        features,
-        adjusted_prices,
+        features_series,
+        adjusted_prices_series,
         *,
-        rebalance_period: int,
-        max_samples: int,
         verbose: bool = False,
+        **kwargs,
     ) -> None:
         super().__init__(
             universe,
-            features,
-            adjusted_prices,
+            features_series,
+            adjusted_prices_series,
             fit_fn=lambda x, y: _fit_fn(y, verbose=verbose),
             predict_fn=lambda state, x, params: params,
-            max_samples=max_samples,
-            rebalance_period=rebalance_period,
+            **kwargs,
         )
 
 
