@@ -65,7 +65,8 @@ def build_scenario(
     rebalance_days: int,
     initial_cash: float,
     index_size: int,
-    start: np.datetime64,
+    data_start: np.datetime64,
+    trading_start: np.datetime64,
     end: np.datetime64,
 ) -> tuple[Scenario, dict]:
     """Build the full backtesting scenario."""
@@ -94,13 +95,13 @@ def build_scenario(
         # ------------------------------------------------------------------
 
         prices = sc.add_source(
-            CSVSource(f"{h}.daily_prices.csv", PRICE_SCHEMA, time_column="date", start=start, end=end)
+            CSVSource(f"{h}.daily_prices.csv", PRICE_SCHEMA, time_column="date", start=data_start, end=end)
         )
         equity = sc.add_source(
-            CSVSource(f"{h}.equity_structures.csv", EQUITY_SCHEMA, time_column="date", start=start, end=end)
+            CSVSource(f"{h}.equity_structures.csv", EQUITY_SCHEMA, time_column="date", start=data_start, end=end)
         )
         dividends = sc.add_source(
-            CSVSource(f"{h}.dividends.csv", DIVIDEND_SCHEMA, time_column="date", start=start, end=end)
+            CSVSource(f"{h}.dividends.csv", DIVIDEND_SCHEMA, time_column="date", start=data_start, end=end)
         )
         balance = sc.add_source(
             FinancialReportSource(
@@ -109,7 +110,7 @@ def build_scenario(
                 report_date_column="date",
                 notice_date_column="notice_date",
                 use_effective_date=False,
-                start=start,
+                start=data_start,
                 end=end,
             )
         )
@@ -121,7 +122,7 @@ def build_scenario(
                 notice_date_column="notice_date",
                 with_report_date=True,
                 use_effective_date=False,
-                start=start,
+                start=data_start,
                 end=end,
             )
         )
@@ -178,7 +179,7 @@ def build_scenario(
 
     # Stock index: top index_size companies by market cap, cap-weighted.
     # Rebalanced monthly to avoid per-tick overhead.
-    monthly_clock = sc.add_source(MonthlyClock(start, end, tz="Asia/Shanghai"))
+    monthly_clock = sc.add_source(MonthlyClock(data_start, end, tz="Asia/Shanghai"))
     universe = sc.add_operator(
         Map(
             market_cap,
@@ -233,6 +234,7 @@ def build_scenario(
             rebalance_period=rebalance_days,
             max_samples=1000,
             min_samples=100,
+            trading_start=trading_start,
             verbose=True,
         )
     )
@@ -242,6 +244,7 @@ def build_scenario(
             universe,
             predicted_returns,
             top_fraction=0.1,
+            trading_start=trading_start,
         )
     )
 
@@ -252,6 +255,7 @@ def build_scenario(
             stacked["adjusts"],
             initial_cash=initial_cash,
             use_adjusts=True,
+            trading_start=trading_start,
         )
     )
 
@@ -262,6 +266,7 @@ def build_scenario(
             stacked["adjusts"],
             initial_cash=initial_cash,
             use_adjusts=True,
+            trading_start=trading_start,
         )
     )
 
@@ -275,6 +280,7 @@ def build_scenario(
             lot_size=100.0,
             fee_base=5.0,
             fee_rate=0.001,
+            trading_start=trading_start,
         )
     )
 
@@ -300,7 +306,8 @@ def build_scenario(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
+    parser.add_argument("--data-begin", type=np.datetime64, default=np.datetime64("1990-01-01"), help="data start date")
+    parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="trading start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=120, help="rebalance every N trading days")
     parser.add_argument("--initial-cash", type=float, default=1000000.0, help="starting capital (CNY)")
@@ -323,18 +330,33 @@ if __name__ == "__main__":
         rebalance_days=args.rebalance_days,
         initial_cash=args.initial_cash,
         index_size=args.index_size,
-        start=args.begin,
+        data_start=min(args.data_begin, args.begin),
+        trading_start=args.begin,
         end=args.end,
     )
 
-    first_ns_opt, last_ns_opt = sc.time_range()
-    assert first_ns_opt is not None and last_ns_opt is not None, "all sources must provide a time range"
-    first_ns, last_ns = first_ns_opt, last_ns_opt
+    first_ns, last_ns = sc.time_range()
+    assert first_ns is not None and last_ns is not None
 
-    total_days = (last_ns - first_ns) // DAY_NS
-    progress = tqdm(total=total_days, unit="d", desc="Running scenario")
-    sc.run(on_flush=lambda ts: progress.update((min(max(ts, first_ns), last_ns) - first_ns) // DAY_NS - progress.n))
-    progress.close()
+    first, mid, last = np.datetime64(first_ns, "ns"), args.begin, np.datetime64(last_ns, "ns")
+    preload_days = (mid - first) / np.timedelta64(1, "D")
+    trading_days = (last - mid) / np.timedelta64(1, "D")
+
+    preload_bar = tqdm(total=preload_days, unit="d", desc="Loading samples")
+    trading_bar = tqdm(total=trading_days, unit="d", desc="Running strategy")
+
+    def on_flush(ts: int) -> None:
+        dt = np.datetime64(ts, "ns")
+        if dt <= mid:
+            current_days = (dt - first) / np.timedelta64(1, "D")
+            preload_bar.update(current_days - preload_bar.n)
+        else:
+            current_days = (dt - mid) / np.timedelta64(1, "D")
+            trading_bar.update(current_days - trading_bar.n)
+
+    sc.run(on_flush=on_flush)
+    preload_bar.close()
+    trading_bar.close()
 
     # Extract results.
     index = sc.series_view(handles["index"]).to_dataframe(["holdings", "cash"])

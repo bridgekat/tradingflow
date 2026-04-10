@@ -20,13 +20,16 @@ class Softmax(MeanPortfolio):
     temperature
         Softmax temperature.  Lower values sharpen the distribution
         towards the highest-predicted stocks.
+    **kwargs
+        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio].
     """
 
-    def __init__(self, universe, predicted_returns, *, temperature: float = 1.0) -> None:
+    def __init__(self, universe, predicted_returns, *, temperature: float = 1.0, **kwargs) -> None:
         super().__init__(
             universe,
             predicted_returns,
             positions_fn=lambda state, predicted: _positions_fn(predicted, temperature),
+            **kwargs,
         )
 
 

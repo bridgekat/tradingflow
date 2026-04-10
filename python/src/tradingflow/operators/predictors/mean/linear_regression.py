@@ -57,37 +57,40 @@ def _fit_fn(x: np.ndarray, y: np.ndarray, *, verbose: bool = False) -> np.ndarra
     Parameters
     ----------
     x
-        Feature tensor of shape ``(T, N, F)``.
+        Feature tensor of shape ``(M, N, F)``.
     y
-        Return matrix of shape ``(T, N)``.
+        Return matrix of shape ``(M, N)``.
 
     Returns coefficient vector ``(num_features + 1,)`` (intercept last),
     or a zero vector if the design matrix is rank-deficient.
     """
 
     # Flatten cross-sectional structure for pooled regression.
-    T, N, F = x.shape
-    x = x.reshape(T * N, F)
-    y = y.reshape(T * N)
+    M, N, F = x.shape
+    x = x.reshape(M * N, F)
+    y = y.reshape(M * N)
 
     # Drop non-finite samples.
     valid = np.isfinite(x).all(axis=1) & np.isfinite(y)
     x, y = x[valid], y[valid]
 
+    if verbose:
+        print(f"  regression: x has shape {x.shape} and range [{x.min():.4f}, {x.max():.4f}]")
+        print(f"  regression: y has shape {y.shape} and range [{y.min():.4f}, {y.max():.4f}]")
+
     m = len(y)
-    n = F
     x = np.column_stack([x, np.ones(m)])
     q, r = np.linalg.qr(x, mode="reduced")
 
-    if q.shape[1] < n + 1:
-        print(f"  regression: design matrix is rank-deficient (rank={q.shape[1]}, expected={n + 1})")
-        return np.zeros(n + 1)
+    if q.shape[1] < F + 1:
+        print(f"  regression: design matrix is rank-deficient (rank={q.shape[1]}, expected={F + 1})")
+        return np.zeros(F + 1)
 
     params = np.linalg.solve(r, q.T @ y)
 
     if not np.all(np.isfinite(params)):
         print(f"  regression: non-finite parameters encountered (params={params})")
-        return np.zeros(n + 1)
+        return np.zeros(F + 1)
 
     if verbose:
         rss = np.sum((y - x @ params) ** 2)

@@ -20,13 +20,16 @@ class RankEqual(MeanPortfolio):
         Handle to predicted returns array, shape ``(num_stocks,)``.
     top_fraction
         Fraction of positively-predicted stocks to include.
+    **kwargs
+        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio].
     """
 
-    def __init__(self, universe, predicted_returns, *, top_fraction: float = 0.1) -> None:
+    def __init__(self, universe, predicted_returns, *, top_fraction: float = 0.1, **kwargs) -> None:
         super().__init__(
             universe,
             predicted_returns,
             positions_fn=lambda state, predicted: _positions_fn(predicted, top_fraction),
+            **kwargs,
         )
 
 

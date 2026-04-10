@@ -41,6 +41,8 @@ class MarkowitzSCS(MeanVariancePortfolio):
         If `True` (default), enforce `x >= 0`.
     verbose
         If `True`, print optimization diagnostics to stdout.
+    **kwargs
+        Forwarded to [`MeanVariancePortfolio`][tradingflow.operators.portfolios.MeanVariancePortfolio].
     """
 
     def __init__(
@@ -52,12 +54,14 @@ class MarkowitzSCS(MeanVariancePortfolio):
         risk_aversion: float = 1.0,
         long_only: bool = True,
         verbose: bool = False,
+        **kwargs,
     ) -> None:
         super().__init__(
             universe,
             predicted_returns,
             covariance,
             positions_fn=lambda state, mu, sigma: _solve(mu, sigma, risk_aversion, long_only, verbose),
+            **kwargs,
         )
 
 
@@ -71,8 +75,8 @@ def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, ver
     N = len(mu)
 
     if verbose:
-        print(f"  markowitz_scs: mu contains data in range [{mu.min():.4f}, {mu.max():.4f}]")
-        print(f"  markowitz_scs: sigma contains data in range [{sigma.min():.4f}, {sigma.max():.4f}]")
+        print(f"  markowitz_scs: mu has shape {mu.shape} and range [{mu.min():.4f}, {mu.max():.4f}]")
+        print(f"  markowitz_scs: sigma has shape {sigma.shape} and range [{sigma.min():.4f}, {sigma.max():.4f}]")
 
     # LDL decomposition: sigma = L @ D @ L.T, where D diagonal and L[perm, :] lower-triangular.
     L, D, perm = sp.linalg.ldl(sigma)
@@ -80,7 +84,7 @@ def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, ver
 
     if verbose:
         error = np.max(np.abs(sigma - L @ L.T))
-        print(f"  markowitz_scs: L contains data in range [{L.min():.4f}, {L.max():.4f}]")
+        print(f"  markowitz_scs: L has shape {L.shape} and range [{L.min():.4f}, {L.max():.4f}]")
         print(f"  markowitz_scs: LDL max error {error:.4} (non-zero may indicate non-positive-semidefinite sigma)")
 
     # Decision variables: [x, t].

@@ -17,13 +17,16 @@ class Proportional(MeanPortfolio):
         Handle to universe weights, shape ``(num_stocks,)``.
     predicted_returns
         Handle to predicted returns array, shape ``(num_stocks,)``.
+    **kwargs
+        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio].
     """
 
-    def __init__(self, universe, predicted_returns) -> None:
+    def __init__(self, universe, predicted_returns, **kwargs) -> None:
         super().__init__(
             universe,
             predicted_returns,
             positions_fn=lambda state, predicted: _positions_fn(predicted),
+            **kwargs,
         )
 
 

@@ -8,6 +8,7 @@ import numpy as np
 from ...views import ArrayView, SeriesView
 from ...operator import Operator, Notify
 from ...types import Array, Series, Handle, NodeKind
+from ...utils import coerce_timestamp
 
 
 @dataclass(slots=True)
@@ -17,6 +18,7 @@ class MeanPredictorState[T]:
     rebalance_period: int
     max_samples: int
     min_samples: int
+    trading_start: int | None
     fit_fn: Callable[[np.ndarray, np.ndarray], T]
     predict_fn: Callable[["MeanPredictorState[T]", np.ndarray, T], np.ndarray]
 
@@ -61,6 +63,10 @@ class MeanPredictor[T](
         Minimum number of valid observations per stock.  Stocks with
         fewer valid (all-finite features and finite return) observations
         across the sampled time rows receive ``NaN`` in the output.
+    trading_start
+        If set, the predictor suppresses output (returns ``False``)
+        before this timestamp, allowing upstream data to accumulate
+        without triggering downstream trading.
     """
 
     def __init__(
@@ -74,6 +80,7 @@ class MeanPredictor[T](
         rebalance_period: int,
         max_samples: int,
         min_samples: int = 1,
+        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(features_series.shape) == 2
@@ -87,6 +94,7 @@ class MeanPredictor[T](
         self._rebalance_period = rebalance_period
         self._max_samples = max_samples
         self._min_samples = min_samples
+        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         super().__init__(
             inputs=(universe, features_series, adjusted_prices_series),
@@ -105,6 +113,7 @@ class MeanPredictor[T](
             rebalance_period=self._rebalance_period,
             max_samples=self._max_samples,
             min_samples=self._min_samples,
+            trading_start=self._trading_start,
         )
 
     @staticmethod
@@ -124,6 +133,10 @@ class MeanPredictor[T](
         if state.tick_count < state.rebalance_period:
             return False
         state.tick_count = 0
+
+        # Suppress output before trading start.
+        if state.trading_start is not None and timestamp < state.trading_start:
+            return False
 
         universe, features_series, prices_series = inputs
 

@@ -25,16 +25,8 @@ class RandomTrader(SimpleTrader):
         Stacked forward adjustment factors, shape ``(num_stocks,)``.
     portfolio_size
         Number of stocks to hold.
-    initial_cash
-        Starting capital.
-    lot_size
-        Minimum trade lot size (number of shares).
-    fee_base
-        Minimum transaction fee per trade.
-    fee_rate
-        Proportional transaction fee rate.
-    verbose
-        If ``True``, print current positions after each rebalance.
+    **kwargs
+        Forwarded to [`SimpleTrader`][tradingflow.operators.traders.SimpleTrader].
     """
 
     def __init__(
@@ -44,11 +36,7 @@ class RandomTrader(SimpleTrader):
         adjusts,
         *,
         portfolio_size: int = 20,
-        initial_cash: float,
-        lot_size: float,
-        fee_base: float,
-        fee_rate: float,
-        verbose: bool = False,
+        **kwargs,
     ) -> None:
         rng = np.random.default_rng()
         super().__init__(
@@ -56,11 +44,7 @@ class RandomTrader(SimpleTrader):
             prices,
             adjusts,
             trade_fn=lambda state, sp: _trade_fn(state, sp, portfolio_size, rng),
-            initial_cash=initial_cash,
-            lot_size=lot_size,
-            fee_base=fee_base,
-            fee_rate=fee_rate,
-            verbose=verbose,
+            **kwargs,
         )
 
 
