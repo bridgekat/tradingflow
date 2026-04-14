@@ -1,6 +1,7 @@
 //! Rolling sum accumulator.
 //!
-//! O(1) per element per tick via incremental add/subtract with NaN counting.
+//! O(1) per element per tick via incremental add/subtract with non-finite
+//! counting.
 
 use num_traits::Float;
 
@@ -10,11 +11,13 @@ use super::accumulator::Accumulator;
 
 /// Incremental sum accumulator.
 ///
-/// If any value in the window is NaN for a given element position, the
-/// output for that position is NaN.
+/// Non-finite values (NaN, ±inf) are skipped and counted separately rather
+/// than added to the running sum, since `inf − inf` would corrupt the sum
+/// to NaN on eviction.  If any value in the window is non-finite for a
+/// given element position, the output for that position is NaN.
 pub struct SumAccumulator<T: Scalar + Float> {
     sum: Vec<T>,
-    nan_count: Vec<u32>,
+    nonfinite_count: Vec<u32>,
 }
 
 impl<T: Scalar + Float> Accumulator for SumAccumulator<T> {
@@ -24,14 +27,14 @@ impl<T: Scalar + Float> Accumulator for SumAccumulator<T> {
         let stride: usize = input_shape.iter().product();
         Self {
             sum: vec![T::zero(); stride],
-            nan_count: vec![0; stride],
+            nonfinite_count: vec![0; stride],
         }
     }
 
     fn add(&mut self, element: &[T]) {
         for (j, &v) in element.iter().enumerate() {
-            if v.is_nan() {
-                self.nan_count[j] += 1;
+            if !v.is_finite() {
+                self.nonfinite_count[j] += 1;
             } else {
                 self.sum[j] = self.sum[j] + v;
             }
@@ -40,8 +43,8 @@ impl<T: Scalar + Float> Accumulator for SumAccumulator<T> {
 
     fn remove(&mut self, element: &[T]) {
         for (j, &v) in element.iter().enumerate() {
-            if v.is_nan() {
-                self.nan_count[j] -= 1;
+            if !v.is_finite() {
+                self.nonfinite_count[j] -= 1;
             } else {
                 self.sum[j] = self.sum[j] - v;
             }
@@ -50,7 +53,7 @@ impl<T: Scalar + Float> Accumulator for SumAccumulator<T> {
 
     fn write(&self, _count: usize, output: &mut [T]) {
         for (j, o) in output.iter_mut().enumerate() {
-            *o = if self.nan_count[j] > 0 {
+            *o = if self.nonfinite_count[j] > 0 {
                 T::nan()
             } else {
                 self.sum[j]

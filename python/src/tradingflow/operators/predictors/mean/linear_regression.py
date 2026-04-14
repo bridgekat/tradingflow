@@ -9,8 +9,8 @@ class LinearRegression(MeanPredictor[np.ndarray]):
     """Mean predictor using pooled OLS regression.
 
     Fits ``y = X @ beta + intercept`` via QR decomposition on each
-    rebalance tick, where ``y`` is the forward return over
-    ``rebalance_period`` ticks and ``X`` is the feature matrix.
+    rebalance tick, where ``y`` is the 1-period forward return and
+    ``X`` is the feature matrix.
 
     Parameters
     ----------

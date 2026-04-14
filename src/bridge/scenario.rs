@@ -133,7 +133,7 @@ impl NativeScenario {
 impl NativeScenario {
     #[new]
     fn new() -> Self {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();

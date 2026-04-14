@@ -1,6 +1,7 @@
 //! Rolling covariance matrix accumulator.
 //!
-//! O(K²) per tick via incremental cross-product sums with NaN counting.
+//! O(K²) per tick via incremental cross-product sums with non-finite
+//! counting.
 
 use num_traits::Float;
 
@@ -13,13 +14,15 @@ use super::accumulator::Accumulator;
 /// Input must be 1D with shape `[K]`. Output has shape `[K, K]`.
 ///
 /// `Cov(i,j) = E[x_i · x_j] − E[x_i] · E[x_j]` over the window.
-/// If any value in the window is NaN for either element `i` or `j`, the
-/// output `Cov(i,j)` is NaN.
+/// Non-finite values (NaN, ±inf) are skipped and counted separately rather
+/// than added to the running sums, since `inf − inf` would corrupt the
+/// sums to NaN on eviction.  If any value in the window is non-finite for
+/// either element `i` or `j`, the output `Cov(i,j)` is NaN.
 pub struct CovarianceAccumulator<T: Scalar + Float> {
     k: usize,
     sum: Vec<T>,
     sum_cross: Vec<T>,
-    nan_count: Vec<u32>,
+    nonfinite_count: Vec<u32>,
 }
 
 impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
@@ -36,7 +39,7 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
             k,
             sum: vec![T::zero(); k],
             sum_cross: vec![T::zero(); k * k],
-            nan_count: vec![0; k],
+            nonfinite_count: vec![0; k],
         }
     }
 
@@ -53,20 +56,20 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
         let k = self.k;
         for i in 0..k {
             let xi = element[i];
-            if xi.is_nan() {
-                self.nan_count[i] += 1;
+            if !xi.is_finite() {
+                self.nonfinite_count[i] += 1;
             } else {
                 self.sum[i] = self.sum[i] + xi;
             }
         }
         for i in 0..k {
             let xi = element[i];
-            if xi.is_nan() {
+            if !xi.is_finite() {
                 continue;
             }
             for j in i..k {
                 let xj = element[j];
-                if xj.is_nan() {
+                if !xj.is_finite() {
                     continue;
                 }
                 let prod = xi * xj;
@@ -82,20 +85,20 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
         let k = self.k;
         for i in 0..k {
             let xi = element[i];
-            if xi.is_nan() {
-                self.nan_count[i] -= 1;
+            if !xi.is_finite() {
+                self.nonfinite_count[i] -= 1;
             } else {
                 self.sum[i] = self.sum[i] - xi;
             }
         }
         for i in 0..k {
             let xi = element[i];
-            if xi.is_nan() {
+            if !xi.is_finite() {
                 continue;
             }
             for j in i..k {
                 let xj = element[j];
-                if xj.is_nan() {
+                if !xj.is_finite() {
                     continue;
                 }
                 let prod = xi * xj;
@@ -112,7 +115,8 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
         let n = T::from(count).unwrap();
         for i in 0..k {
             for j in 0..k {
-                output[i * k + j] = if self.nan_count[i] == 0 && self.nan_count[j] == 0 {
+                output[i * k + j] = if self.nonfinite_count[i] == 0 && self.nonfinite_count[j] == 0
+                {
                     self.sum_cross[i * k + j] / n - (self.sum[i] / n) * (self.sum[j] / n)
                 } else {
                     T::nan()

@@ -1,6 +1,7 @@
 //! Rolling variance accumulator.
 //!
-//! O(1) per element per tick via incremental sum/sum_sq with NaN counting.
+//! O(1) per element per tick via incremental sum/sum_sq with non-finite
+//! counting.
 
 use num_traits::Float;
 
@@ -11,12 +12,14 @@ use super::accumulator::Accumulator;
 /// Incremental population variance accumulator.
 ///
 /// Uses the formula `Var(x) = E[x²] − E[x]²`.
-/// If any value in the window is NaN for a given element position, the
-/// output for that position is NaN.
+/// Non-finite values (NaN, ±inf) are skipped and counted separately rather
+/// than added to the running sums, since `inf − inf` would corrupt the
+/// sums to NaN on eviction.  If any value in the window is non-finite for
+/// a given element position, the output for that position is NaN.
 pub struct VarianceAccumulator<T: Scalar + Float> {
     sum: Vec<T>,
     sum_sq: Vec<T>,
-    nan_count: Vec<u32>,
+    nonfinite_count: Vec<u32>,
 }
 
 impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
@@ -27,14 +30,14 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
         Self {
             sum: vec![T::zero(); stride],
             sum_sq: vec![T::zero(); stride],
-            nan_count: vec![0; stride],
+            nonfinite_count: vec![0; stride],
         }
     }
 
     fn add(&mut self, element: &[T]) {
         for (j, &v) in element.iter().enumerate() {
-            if v.is_nan() {
-                self.nan_count[j] += 1;
+            if !v.is_finite() {
+                self.nonfinite_count[j] += 1;
             } else {
                 self.sum[j] = self.sum[j] + v;
                 self.sum_sq[j] = self.sum_sq[j] + v * v;
@@ -44,8 +47,8 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
 
     fn remove(&mut self, element: &[T]) {
         for (j, &v) in element.iter().enumerate() {
-            if v.is_nan() {
-                self.nan_count[j] -= 1;
+            if !v.is_finite() {
+                self.nonfinite_count[j] -= 1;
             } else {
                 self.sum[j] = self.sum[j] - v;
                 self.sum_sq[j] = self.sum_sq[j] - v * v;
@@ -56,7 +59,7 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
     fn write(&self, count: usize, output: &mut [T]) {
         let n = T::from(count).unwrap();
         for (j, o) in output.iter_mut().enumerate() {
-            *o = if self.nan_count[j] == 0 {
+            *o = if self.nonfinite_count[j] == 0 {
                 let mean = self.sum[j] / n;
                 self.sum_sq[j] / n - mean * mean
             } else {

@@ -2,11 +2,14 @@
 
 - [`Sample`][tradingflow.operators.predictors.mean.Sample]
   -- sample mean of historical returns (baseline).
+- [`SingleFeature`][tradingflow.operators.predictors.mean.SingleFeature]
+  -- pass-through: returns one feature column unchanged.
 - [`LinearRegression`][tradingflow.operators.predictors.mean.LinearRegression]
   -- pooled OLS via QR decomposition.
 """
 
 from .sample import Sample
+from .single_feature import SingleFeature
 from .linear_regression import LinearRegression
 
-__all__ = ["Sample", "LinearRegression"]
+__all__ = ["Sample", "SingleFeature", "LinearRegression"]

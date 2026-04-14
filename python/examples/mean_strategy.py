@@ -47,7 +47,7 @@ from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.sources import MonthlyClock
 
-from stocks import load_symbols, calculate_index_weights
+from stocks import load_symbols, calculate_index_weights, resolve_data_start
 
 
 DAY_NS = 86_400_000_000_000
@@ -194,22 +194,6 @@ def build_scenario(
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
     log_bp = sc.add_operator(Log(bp))
 
-    # # TTM net profit via 365-day rolling mean of annualized net profit.
-    # net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
-    # net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
-
-    # # TTM E/P and TTM ROE.
-    # ttm_ep = sc.add_operator(Divide(net_profit_ttm, market_cap))
-    # ttm_roe = sc.add_operator(Divide(net_profit_ttm, stacked["parent_equity"]))
-
-    # # Momentum MA (-day MA of daily log-returns of adjusted_close).
-    # log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
-    # log_adj_series = sc.add_operator(Record(log_adj))
-    # log_adj_lag = sc.add_operator(Last(sc.add_operator(Lag(log_adj_series, 1, fill=np.float64(np.nan)))))
-    # daily_ret = sc.add_operator(Subtract(log_adj, log_adj_lag))
-    # daily_ret_series = sc.add_operator(Record(daily_ret))
-    # momentum_ma = sc.add_operator(RollingMean(daily_ret_series, window=rebalance_days))
-
     # Turnover MA.
     turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
@@ -231,9 +215,9 @@ def build_scenario(
             universe,
             features_series,
             adjusted_prices_series,
-            rebalance_period=rebalance_days,
-            max_samples=1000,
-            min_samples=100,
+            universe_size=index_size,
+            rebalance_periods=rebalance_days,
+            min_periods=100,
             trading_start=trading_start,
             verbose=True,
         )
@@ -306,7 +290,12 @@ def build_scenario(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument("--data-begin", type=np.datetime64, default=np.datetime64("1990-01-01"), help="data start date")
+    parser.add_argument(
+        "--data-begin",
+        type=np.datetime64,
+        default=None,
+        help="data start date (default: trading begin minus --rebalance-days calendar days)",
+    )
     parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="trading start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=120, help="rebalance every N trading days")
@@ -330,7 +319,7 @@ if __name__ == "__main__":
         rebalance_days=args.rebalance_days,
         initial_cash=args.initial_cash,
         index_size=args.index_size,
-        data_start=min(args.data_begin, args.begin),
+        data_start=resolve_data_start(args.data_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
         end=args.end,
     )

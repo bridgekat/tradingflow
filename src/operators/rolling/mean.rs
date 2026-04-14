@@ -1,6 +1,7 @@
 //! Rolling mean accumulator.
 //!
-//! O(1) per element per tick via incremental add/subtract with NaN counting.
+//! O(1) per element per tick via incremental add/subtract with non-finite
+//! counting.
 
 use num_traits::Float;
 
@@ -10,11 +11,13 @@ use super::accumulator::Accumulator;
 
 /// Incremental mean accumulator.
 ///
-/// If any value in the window is NaN for a given element position, the
-/// output for that position is NaN.
+/// Non-finite values (NaN, ±inf) are skipped and counted separately rather
+/// than added to the running sum, since `inf − inf` would corrupt the sum
+/// to NaN on eviction.  If any value in the window is non-finite for a
+/// given element position, the output for that position is NaN.
 pub struct MeanAccumulator<T: Scalar + Float> {
     sum: Vec<T>,
-    nan_count: Vec<u32>,
+    nonfinite_count: Vec<u32>,
 }
 
 impl<T: Scalar + Float> Accumulator for MeanAccumulator<T> {
@@ -24,14 +27,14 @@ impl<T: Scalar + Float> Accumulator for MeanAccumulator<T> {
         let stride: usize = input_shape.iter().product();
         Self {
             sum: vec![T::zero(); stride],
-            nan_count: vec![0; stride],
+            nonfinite_count: vec![0; stride],
         }
     }
 
     fn add(&mut self, element: &[T]) {
         for (j, &v) in element.iter().enumerate() {
-            if v.is_nan() {
-                self.nan_count[j] += 1;
+            if !v.is_finite() {
+                self.nonfinite_count[j] += 1;
             } else {
                 self.sum[j] = self.sum[j] + v;
             }
@@ -40,8 +43,8 @@ impl<T: Scalar + Float> Accumulator for MeanAccumulator<T> {
 
     fn remove(&mut self, element: &[T]) {
         for (j, &v) in element.iter().enumerate() {
-            if v.is_nan() {
-                self.nan_count[j] -= 1;
+            if !v.is_finite() {
+                self.nonfinite_count[j] -= 1;
             } else {
                 self.sum[j] = self.sum[j] - v;
             }
@@ -51,7 +54,7 @@ impl<T: Scalar + Float> Accumulator for MeanAccumulator<T> {
     fn write(&self, count: usize, output: &mut [T]) {
         let n = T::from(count).unwrap();
         for (j, o) in output.iter_mut().enumerate() {
-            *o = if self.nan_count[j] > 0 {
+            *o = if self.nonfinite_count[j] > 0 {
                 T::nan()
             } else {
                 self.sum[j] / n
@@ -108,6 +111,32 @@ mod tests {
 
         push_compute(&mut s, &mut state, &mut out, 4, 4.0);
         assert_eq!(out.as_slice()[0], 3.5);
+    }
+
+    #[test]
+    fn mean_inf() {
+        // Regression: inf should be treated like NaN, not added to sum,
+        // because `inf - inf` on eviction would corrupt the running sum
+        // to NaN forever.
+        let mut s = Series::<f64>::new(&[]);
+        let (mut state, mut out) = RollingMean::count(2).init((&s,), i64::MIN);
+
+        push_compute(&mut s, &mut state, &mut out, 1, f64::INFINITY);
+        push_compute(&mut s, &mut state, &mut out, 2, 2.0);
+        // Window [inf, 2.0] → mean is NaN (one non-finite present).
+        assert!(out.as_slice()[0].is_nan());
+
+        // Window [2.0, 3.0] → inf evicted, mean should be 2.5.
+        push_compute(&mut s, &mut state, &mut out, 3, 3.0);
+        assert_eq!(out.as_slice()[0], 2.5);
+
+        // Same for -inf.
+        push_compute(&mut s, &mut state, &mut out, 4, f64::NEG_INFINITY);
+        assert!(out.as_slice()[0].is_nan());
+
+        push_compute(&mut s, &mut state, &mut out, 5, 5.0);
+        push_compute(&mut s, &mut state, &mut out, 6, 6.0);
+        assert_eq!(out.as_slice()[0], 5.5);
     }
 
     #[test]

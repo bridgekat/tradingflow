@@ -1,9 +1,7 @@
-"""Clock-driven financial metrics operators.
+"""Financial metrics operators.
 
-Each operator takes a scalar Array input and produces a scalar Array
-output.  Intended to be triggered by a clock source so that each tick
-represents one period (e.g. monthly).  All metrics are since-inception
-(not rolling).
+Clock-driven since-inception metrics that take a scalar Array input and
+produce a scalar Array output:
 
 - [`CompoundReturn`][tradingflow.operators.metrics.CompoundReturn]
   -- `(current / first)^(1/n) - 1`
@@ -15,6 +13,15 @@ represents one period (e.g. monthly).  All metrics are since-inception
   -- mean / std of period returns
 - [`Drawdown`][tradingflow.operators.metrics.Drawdown]
   -- `(current - running_max) / running_max`
+
+Predictor evaluation metrics:
+
+- [`InformationCoefficient`][tradingflow.operators.metrics.InformationCoefficient]
+  -- cross-sectional IC or RankIC between predicted scores and
+  realized forward returns, for evaluating mean-return predictions
+- [`MinimumVariance`][tradingflow.operators.metrics.MinimumVariance]
+  -- realized variance of the global minimum variance portfolio,
+  for evaluating covariance matrix predictions
 """
 
 from .compound_return import CompoundReturn
@@ -22,6 +29,8 @@ from .average_return import AverageReturn
 from .volatility import Volatility
 from .sharpe_ratio import SharpeRatio
 from .drawdown import Drawdown
+from .information_coefficient import InformationCoefficient
+from .minimum_variance import MinimumVariance
 
 __all__ = [
     "CompoundReturn",
@@ -29,4 +38,6 @@ __all__ = [
     "Volatility",
     "SharpeRatio",
     "Drawdown",
+    "InformationCoefficient",
+    "MinimumVariance",
 ]

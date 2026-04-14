@@ -42,7 +42,7 @@ from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 
-from stocks import load_symbols, calculate_index_weights
+from stocks import load_symbols, calculate_index_weights, resolve_data_start
 
 
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
@@ -182,9 +182,9 @@ def build_scenario(
             universe,
             features_series,
             adjusted_prices_series,
-            rebalance_period=rebalance_days,
-            max_samples=1000,
-            min_samples=100,
+            universe_size=index_size,
+            rebalance_periods=rebalance_days,
+            min_periods=100,
             trading_start=trading_start,
             verbose=True,
         )
@@ -195,8 +195,10 @@ def build_scenario(
             universe,
             features_series,
             adjusted_prices_series,
-            rebalance_period=rebalance_days,
-            max_samples=1000,
+            universe_size=index_size,
+            rebalance_periods=rebalance_days,
+            max_periods=100,
+            min_periods=50,
             trading_start=trading_start,
         )
     )
@@ -279,7 +281,12 @@ def build_scenario(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument("--data-begin", type=np.datetime64, default=np.datetime64("1990-01-01"), help="data start date")
+    parser.add_argument(
+        "--data-begin",
+        type=np.datetime64,
+        default=None,
+        help="data start date (default: trading begin minus --rebalance-days calendar days)",
+    )
     parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="trading start date (e.g. 2024-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=120, help="rebalance every N trading days")
@@ -304,7 +311,7 @@ if __name__ == "__main__":
         rebalance_days=args.rebalance_days,
         initial_cash=args.initial_cash,
         index_size=args.index_size,
-        data_start=min(args.data_begin, args.begin),
+        data_start=resolve_data_start(args.data_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
         end=args.end,
     )

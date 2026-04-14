@@ -15,8 +15,11 @@ use crate::{Array, Notify, Operator, Scalar, Series};
 /// ```
 /// where `w_i = alpha * (1 - alpha)^i`.
 ///
-/// NaN handling: if any value in the window is NaN for an element, the
-/// output for that element is NaN (same as the other rolling operators).
+/// Non-finite handling: non-finite values (NaN, ±inf) are skipped and
+/// counted separately rather than added to the running sum, since
+/// `inf − inf` would corrupt the sum to NaN on eviction.  If any value
+/// in the window is non-finite for an element, the output for that
+/// element is NaN (same as the other rolling operators).
 pub struct Ema<T: Scalar + Float> {
     alpha: T,
     window: usize,
@@ -62,8 +65,9 @@ pub struct EmaState<T: Scalar + Float> {
     window: usize,
     /// Per-element weighted sum of values in the window.
     weighted_sum: Vec<T>,
-    /// Count of NaN values in the window, per element position.
-    nan_count: Vec<u32>,
+    /// Count of non-finite (NaN or ±inf) values in the window, per element
+    /// position.
+    nonfinite_count: Vec<u32>,
     /// Tracks `(1-α)^len` during fill-up for computing weight_sum.
     fill_decay: T,
 }
@@ -86,7 +90,7 @@ impl<T: Scalar + Float> Operator for Ema<T> {
             decay_factor,
             window: self.window,
             weighted_sum: vec![T::zero(); stride],
-            nan_count: vec![0; stride],
+            nonfinite_count: vec![0; stride],
             fill_decay: T::one(),
         };
         let shape = inputs.0.shape();
@@ -123,9 +127,9 @@ impl<T: Scalar + Float> Operator for Ema<T> {
             // 1. Decay existing accumulator.
             state.weighted_sum[i] = state.weighted_sum[i] * one_minus_alpha;
 
-            // 2. Add new value (NaN contributes zero weight).
-            if x.is_nan() {
-                state.nan_count[i] += 1;
+            // 2. Add new value (non-finite contributes zero weight).
+            if !x.is_finite() {
+                state.nonfinite_count[i] += 1;
             } else {
                 state.weighted_sum[i] = state.weighted_sum[i] + alpha * x;
             }
@@ -133,8 +137,8 @@ impl<T: Scalar + Float> Operator for Ema<T> {
             // 3. Evict oldest value if window is full.
             if len > state.window {
                 let x_old = series.at(len - 1 - state.window)[i];
-                if x_old.is_nan() {
-                    state.nan_count[i] -= 1;
+                if !x_old.is_finite() {
+                    state.nonfinite_count[i] -= 1;
                 } else {
                     let evict_weight = alpha * state.decay_factor;
                     state.weighted_sum[i] = state.weighted_sum[i] - evict_weight * x_old;
@@ -148,7 +152,7 @@ impl<T: Scalar + Float> Operator for Ema<T> {
         } else {
             let out = output.as_mut_slice();
             for i in 0..stride {
-                out[i] = if state.nan_count[i] == 0 && weight_sum > T::zero() {
+                out[i] = if state.nonfinite_count[i] == 0 && weight_sum > T::zero() {
                     state.weighted_sum[i] / weight_sum
                 } else {
                     T::nan()

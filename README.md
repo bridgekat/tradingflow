@@ -16,6 +16,8 @@ Examples require A-shares market data downloaded via the [a-shares-crawler](http
 - [**Plotting total market cap**](python/examples/plot_total_market_cap.py) — loads daily prices and equity structures for all stocks, computes per-stock circulating market cap, and plots the total across the entire market over time.
 - [**Mean strategy backtesting**](python/examples/mean_strategy.py) — loads daily prices, equity structures, dividends, and financial reports for all stocks, computes cross-sectional features, periodically fits a linear regression to predict stock returns, selects a portfolio from the top-predicted stocks with rank-linear weights, simulates trading with transaction costs, and plots portfolio value, rolling Sharpe ratio and drawdown against a market-cap-weighted index.
 - [**Mean-variance strategy backtesting**](python/examples/mean_variance_strategy.py) — extends the mean strategy with Ledoit-Wolf shrinkage covariance estimation and Markowitz mean-variance portfolio optimisation (via CVXPY), comparing multiple risk-aversion levels against the index.
+- [**Mean factor evaluation**](python/examples/factor_ic.py) — computes daily cross-sectional factors (log market cap, log book-to-price, turnover MA), evaluates each factor's predictive power via Information Coefficient (Pearson or Spearman), and plots cumulative IC curves.
+- [**Covariance estimator comparison**](python/examples/covariance_gmv.py) — compares sample covariance and Ledoit-Wolf shrinkage estimators by measuring the realized variance of their respective Global Minimum Variance portfolios over time.
 
 # Core Concepts
 
