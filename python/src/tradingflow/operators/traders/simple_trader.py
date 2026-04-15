@@ -11,7 +11,6 @@ import numpy as np
 from ...views import ArrayView
 from ...operator import Operator, Notify
 from ...types import Array, Handle, NodeKind
-from ...utils import coerce_timestamp
 
 
 @dataclass(slots=True)
@@ -23,7 +22,6 @@ class SimpleTraderState:
     fee_rate: float
     trade_fn: Callable[["SimpleTraderState", np.ndarray], np.ndarray]
     verbose: bool
-    trading_start: int | None
 
     # Portfolio state.
     cash: float = 0.0
@@ -97,8 +95,10 @@ class SimpleTrader(
         Proportional transaction fee rate.
     verbose
         If `True`, print current positions after each rebalance.
-    trading_start
-        If set, rebalance signals before this timestamp are ignored.
+
+    The rebalance cadence is controlled by upstream: the trader
+    rebalances exactly when the soft-positions input produces (which in
+    turn is driven by the predictor's clock trigger).
 
     Notes
     -----
@@ -128,7 +128,6 @@ class SimpleTrader(
         fee_base: float,
         fee_rate: float,
         verbose: bool = False,
-        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(soft_positions.shape) == 1, "Soft positions input must have shape (num_stocks,)."
         assert (
@@ -145,7 +144,6 @@ class SimpleTrader(
         self._fee_base = fee_base
         self._fee_rate = fee_rate
         self._verbose = verbose
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         super().__init__(
             inputs=(soft_positions, prices, adjusts),
@@ -164,7 +162,6 @@ class SimpleTrader(
             fee_rate=self._fee_rate,
             trade_fn=self._trade_fn,
             verbose=self._verbose,
-            trading_start=self._trading_start,
             cash=self._initial_cash,
             shares=np.zeros(n),
             last_adjust=np.ones(n),
@@ -198,8 +195,6 @@ class SimpleTrader(
 
         # Rebalance if soft positions input was updated.
         rebalance = notify.input_produced()[0]
-        if state.trading_start is not None and timestamp < state.trading_start:
-            rebalance = False
         if rebalance:
 
             # Execution price = open price.

@@ -30,8 +30,8 @@ from a_shares_crawler.types import Schema as CSVSchema
 
 from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
-from tradingflow.sources import CSVSource, MonthlyClock
-from tradingflow.operators import Map, Record, Select, Stack
+from tradingflow.sources import Clock, CSVSource, MonthlyClock
+from tradingflow.operators import Const, Map, Record, Select, Stack
 from tradingflow.operators.num import ForwardFill, Multiply
 from tradingflow.operators.stocks import ForwardAdjust
 from tradingflow.operators.predictors.variance import Sample, Shrinkage
@@ -131,11 +131,20 @@ def build_scenario(
     # GMV evaluation
     # ------------------------------------------------------------------
 
-    predictor_kwargs = dict(
-        universe_size=index_size,
-        rebalance_periods=rebalance_days,
-        trading_start=eval_start,
+    # Rebalance clock fires every `rebalance_days` calendar days from
+    # `eval_start` to `end`.  A Const operator clocked by it produces
+    # an Array[float64] rebalance signal that the predictors consume
+    # as a regular input (observing every data tick but emitting only
+    # on rebalance).
+    rebalance_dates = np.arange(
+        eval_start,
+        end + np.timedelta64(1, "D"),
+        np.timedelta64(rebalance_days, "D"),
     )
+    rebalance_clock = sc.add_source(Clock(rebalance_dates))
+    rebalance = sc.add_operator(Const(np.array(np.nan, dtype=np.float64)), clock=rebalance_clock)
+
+    predictor_kwargs = dict(universe_size=index_size, rebalance=rebalance)
 
     estimators = {
         "sample": sc.add_operator(
@@ -145,7 +154,7 @@ def build_scenario(
                 adjusted_prices_series,
                 max_periods=rebalance_days,
                 **predictor_kwargs,
-            )
+            ),
         ),
         "shrinkage": sc.add_operator(
             Shrinkage(
@@ -155,7 +164,7 @@ def build_scenario(
                 verbose=False,
                 max_periods=rebalance_days,
                 **predictor_kwargs,
-            )
+            ),
         ),
     }
 
@@ -167,7 +176,6 @@ def build_scenario(
             MinimumVariance(
                 predictions_series,
                 adjusted_prices_series,
-                trading_start=eval_start,
             )
         )
         eval_handles[name] = sc.add_operator(Record(metric))
@@ -213,28 +221,18 @@ if __name__ == "__main__":
         end=args.end,
     )
 
-    first_ns, last_ns = sc.time_range()
-    assert first_ns is not None and last_ns is not None
+    mid = args.begin
+    progress = tqdm(total=sc.estimated_event_count(), unit=" events", desc="Loading data")
 
-    first, mid, last = np.datetime64(first_ns, "ns"), args.begin, np.datetime64(last_ns, "ns")
-    preload_days = (mid - first) / np.timedelta64(1, "D")
-    eval_days = (last - mid) / np.timedelta64(1, "D")
-
-    preload_bar = tqdm(total=preload_days, unit="d", desc="Loading data")
-    eval_bar = tqdm(total=eval_days, unit="d", desc="Evaluating GMV")
-
-    def on_flush(ts: int) -> None:
-        dt = np.datetime64(ts, "ns")
-        if dt <= mid:
-            current_days = (dt - first) / np.timedelta64(1, "D")
-            preload_bar.update(current_days - preload_bar.n)
-        else:
-            current_days = (dt - mid) / np.timedelta64(1, "D")
-            eval_bar.update(current_days - eval_bar.n)
+    def on_flush(ts_ns: int, events: int, total: int | None) -> None:
+        if np.datetime64(ts_ns, "ns") > mid:
+            progress.set_description("Evaluating GMV")
+        if total != progress.total:
+            progress.total = total
+        progress.update(events - progress.n)
 
     sc.run(on_flush=on_flush)
-    preload_bar.close()
-    eval_bar.close()
+    progress.close()
 
     # ------------------------------------------------------------------
     # Extract results with prediction timestamps

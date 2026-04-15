@@ -333,7 +333,7 @@ impl NativeScenario {
             &output_shape,
             py_inputs,
             py_operator,
-            i64::MIN,
+            crate::time::Instant::MIN,
             self.error_slot.clone(),
         )?;
 
@@ -347,14 +347,12 @@ impl NativeScenario {
         Ok(output_idx)
     }
 
-    /// Return the aggregate time range across all sources.
+    /// Return the aggregate estimated event count across all sources.
     ///
-    /// Returns `(first_ns, last_ns)` when every registered source provides
-    /// both bounds; otherwise returns `(None, None)`.
-    fn time_range(&self) -> (Option<i64>, Option<i64>) {
-        self.scenario
-            .as_ref()
-            .map_or((None, None), |sc| sc.time_range())
+    /// Returns `Some(total)` only when every registered source provides an
+    /// estimate; otherwise `None`.
+    fn estimated_event_count(&self) -> Option<usize> {
+        self.scenario.as_ref().and_then(|sc| sc.estimated_event_count())
     }
 
     /// Run the POCQ event loop.
@@ -424,7 +422,9 @@ impl NativeScenario {
                 let shutdown_ref = shutdown.clone();
                 let error_slot_ref = error_slot_for_bg.clone();
 
-                let on_flush_fn = move |ts: i64| {
+                let on_flush_fn = move |ts: crate::time::Instant,
+                                        events_so_far: usize,
+                                        total_estimate: Option<usize>| {
                     // Check if a Python operator/source already failed.
                     if error_slot_ref.lock().unwrap().is_some() {
                         shutdown_ref.store(true, Ordering::Relaxed);
@@ -432,7 +432,10 @@ impl NativeScenario {
                     }
                     if let Some(ref cb) = on_flush {
                         Python::attach(|py| {
-                            if let Err(e) = cb.call1(py, (ts,)) {
+                            // Wire format is TAI ns (matches numpy naive
+                            // `datetime64[ns]` arithmetic).
+                            let args = (ts.as_nanos(), events_so_far, total_estimate);
+                            if let Err(e) = cb.call1(py, args) {
                                 super::set_error(&error_slot_ref, e);
                                 shutdown_ref.store(true, Ordering::Relaxed);
                             }

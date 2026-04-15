@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar};
 
 /// Drawdown from the running maximum: `(current - max) / max`.
@@ -30,7 +31,7 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
     type Inputs = (Array<T>,);
     type Output = Array<T>;
 
-    fn init(self, _inputs: (&Array<T>,), _timestamp: i64) -> (Self::State, Array<T>) {
+    fn init(self, _inputs: (&Array<T>,), _timestamp: Instant) -> (Self::State, Array<T>) {
         (
             DrawdownState {
                 running_max: T::nan(),
@@ -43,7 +44,7 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
         state: &mut DrawdownState<T>,
         inputs: (&Array<T>,),
         output: &mut Array<T>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         let current = inputs.0[0];
@@ -71,27 +72,27 @@ mod tests {
     #[test]
     fn basic() {
         let a = Array::scalar(0.0_f64);
-        let (mut s, mut o) = Drawdown::new().init((&a,), 0);
+        let (mut s, mut o) = Drawdown::new().init((&a,), Instant::from_nanos(0));
 
         let mut a = Array::scalar(100.0);
-        Drawdown::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
+        Drawdown::compute(&mut s, (&a,), &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o[0], 0.0); // first value = max
 
         a[0] = 120.0;
-        Drawdown::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], 0));
+        Drawdown::compute(&mut s, (&a,), &mut o, Instant::from_nanos(2), &Notify::new(&[], 0));
         assert_eq!(o[0], 0.0); // new high
 
         a[0] = 90.0;
-        Drawdown::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], 0));
+        Drawdown::compute(&mut s, (&a,), &mut o, Instant::from_nanos(3), &Notify::new(&[], 0));
         assert!((o[0] - (-0.25)).abs() < 1e-10); // (90-120)/120
 
         a[0] = 110.0;
-        Drawdown::compute(&mut s, (&a,), &mut o, 4, &Notify::new(&[], 0));
+        Drawdown::compute(&mut s, (&a,), &mut o, Instant::from_nanos(4), &Notify::new(&[], 0));
         // still below 120 high
         assert!((o[0] - (-1.0 / 12.0)).abs() < 1e-10);
 
         a[0] = 130.0;
-        Drawdown::compute(&mut s, (&a,), &mut o, 5, &Notify::new(&[], 0));
+        Drawdown::compute(&mut s, (&a,), &mut o, Instant::from_nanos(5), &Notify::new(&[], 0));
         assert_eq!(o[0], 0.0); // new high
     }
 }

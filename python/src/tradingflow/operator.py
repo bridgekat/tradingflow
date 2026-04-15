@@ -68,7 +68,9 @@ class Operator[Inputs, Output, State](ABC):
         inputs
             Tuple of input views (same views passed to `compute`).
         timestamp
-            Initial timestamp (nanoseconds since epoch).
+            Initial timestamp in **TAI nanoseconds** (`int64` since the
+            PTP epoch 1970-01-01 00:00:00 TAI — matches numpy
+            `datetime64[ns]` numerically).
 
         Returns
         -------
@@ -101,7 +103,9 @@ class Operator[Inputs, Output, State](ABC):
         output
             Output view to write results into.
         timestamp
-            Current event timestamp (nanoseconds since epoch).
+            Current event timestamp in **TAI nanoseconds** (`int64`
+            since the PTP epoch 1970-01-01 00:00:00 TAI — matches numpy
+            `datetime64[ns]` numerically).
         notify
             [`Notify`][tradingflow.Notify] context for checking which inputs
             produced new output in the current flush cycle via

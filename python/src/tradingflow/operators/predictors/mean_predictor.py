@@ -8,7 +8,6 @@ import numpy as np
 from ...views import ArrayView, SeriesView
 from ...operator import Operator, Notify
 from ...types import Array, Series, Handle, NodeKind
-from ...utils import coerce_timestamp
 
 
 @dataclass(slots=True)
@@ -16,31 +15,39 @@ class MeanPredictorState[T]:
     num_stocks: int
     num_features: int
     universe_size: int
-    rebalance_periods: int
     max_periods: int | None
     min_periods: int | None
-    trading_start: int | None
     fit_fn: Callable[[np.ndarray, np.ndarray], T]
     predict_fn: Callable[["MeanPredictorState[T]", np.ndarray, T], np.ndarray]
-
-    tick_count: int = 0
 
 
 class MeanPredictor[T](
     Operator[
-        tuple[Handle[Array[np.float64]], Handle[Series[np.float64]], Handle[Series[np.float64]]],
+        tuple[
+            Handle[Array[np.float64]],
+            Handle[Series[np.float64]],
+            Handle[Series[np.float64]],
+            Handle[Array[np.float64]],
+        ],
         Handle[Array[np.float64]],
         MeanPredictorState[T],
     ]
 ):
     """Abstract mean-return predictor.
 
-    Runs on every tick.  Every ``rebalance_periods`` ticks after
-    ``trading_start``, reads the last ``max_periods`` feature and
-    price entries from upstream ``Series`` inputs, builds a
-    **1-period** return matrix (at sampling frequency), calls
-    ``fit_fn`` and ``predict_fn``, and outputs predicted returns.
-    The first tick after ``trading_start`` always triggers a rebalance.
+    On every upstream tick, the predictor is invoked so subclasses can
+    observe each new sample (a future incremental-fit hook can accumulate
+    running statistics here — the current base class refits from scratch
+    on rebalance, so non-rebalance ticks simply return without work).
+    On each **rebalance** tick (signalled by the `rebalance` input
+    producing), reads the last ``max_periods`` feature and price entries
+    from the upstream `Series` inputs, builds a 1-period return matrix,
+    calls `fit_fn` and `predict_fn`, and emits predicted returns.
+
+    The rebalance cadence is controlled by the caller: construct the
+    `rebalance` handle from a clock-triggered source — typically
+    ``sc.add_operator(Const(...), clock=rebalance_clock)`` — and pass
+    its handle as the `rebalance` parameter.
 
     Parameters
     ----------
@@ -52,6 +59,10 @@ class MeanPredictor[T](
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
         ``(num_stocks,)``.
+    rebalance
+        Handle to a scalar `Array[float64]` source that produces on
+        every rebalance date.  The value is irrelevant; only the
+        production signal matters.
     fit_fn
         ``(x, y) -> params``.  Feature array ``x`` of shape
         ``(T, N, F)`` and 1-period return matrix ``y`` of shape
@@ -64,9 +75,6 @@ class MeanPredictor[T](
         Upper bound on the number of nonzero entries in the universe
         array.  Passed through to ``predict_fn`` via state for
         pre-allocation.
-    rebalance_periods
-        Produce output every N ticks (controls refit cadence, not
-        the prediction target horizon).
     max_periods
         Maximum number of most-recent time rows to feed to
         ``fit_fn``.  ``None`` uses all available history.
@@ -75,9 +83,6 @@ class MeanPredictor[T](
         fewer valid (all-finite features and finite return) observations
         across the time rows receive ``NaN`` in the output.  ``None``
         disables per-stock filtering.
-    trading_start
-        If set, suppress output before this timestamp.  The first
-        tick at or after this timestamp always triggers a rebalance.
     """
 
     def __init__(
@@ -86,13 +91,12 @@ class MeanPredictor[T](
         features_series: Handle,
         adjusted_prices_series: Handle,
         *,
+        rebalance: Handle,
         fit_fn: Callable[[np.ndarray, np.ndarray], T],
         predict_fn: Callable[[MeanPredictorState[T], np.ndarray, T], np.ndarray],
         universe_size: int,
-        rebalance_periods: int,
         max_periods: int | None = None,
         min_periods: int | None = None,
-        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(features_series.shape) == 2
@@ -104,18 +108,23 @@ class MeanPredictor[T](
         self._universe_size = universe_size
         self._fit_fn = fit_fn
         self._predict_fn = predict_fn
-        self._rebalance_periods = rebalance_periods
         self._max_periods = max_periods
         self._min_periods = min_periods
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         super().__init__(
-            inputs=(universe, features_series, adjusted_prices_series),
+            inputs=(universe, features_series, adjusted_prices_series, rebalance),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
             shape=(self._num_stocks,),
             name=type(self).__name__,
         )
+
+    @property
+    def is_clock_triggerable(self) -> bool:
+        # Uses message-passing semantics: distinguishes rebalance ticks
+        # (emit) from data ticks (accumulate / no-op).  Must not be
+        # gated by the Scenario's clock trigger.
+        return False
 
     def init(self, inputs: tuple, timestamp: int) -> MeanPredictorState[T]:
         return MeanPredictorState(
@@ -124,36 +133,31 @@ class MeanPredictor[T](
             universe_size=self._universe_size,
             fit_fn=self._fit_fn,
             predict_fn=self._predict_fn,
-            rebalance_periods=self._rebalance_periods,
             max_periods=self._max_periods,
             min_periods=self._min_periods,
-            trading_start=self._trading_start,
         )
 
     @staticmethod
     def compute(
         state: MeanPredictorState[T],
-        inputs: tuple[ArrayView[np.float64], SeriesView[np.float64], SeriesView[np.float64]],
+        inputs: tuple[
+            ArrayView[np.float64],
+            SeriesView[np.float64],
+            SeriesView[np.float64],
+            ArrayView[np.float64],
+        ],
         output: ArrayView[np.float64],
         timestamp: int,
         notify: Notify,
     ) -> bool:
-        # Changes in universe only should not trigger recomputation.
-        if not notify.input_produced()[1] and not notify.input_produced()[2]:
+        # Emit only on rebalance ticks.  Other invocations are reserved
+        # for subclasses that want to incrementally accumulate per-tick
+        # statistics — the base class refits from scratch on rebalance
+        # and has no per-tick state, so it returns immediately.
+        if not notify.input_produced()[3]:
             return False
 
-        # Suppress output before trading start.
-        if state.trading_start is not None and timestamp < state.trading_start:
-            return False
-
-        # Rebalance every rebalance_periods ticks after trading_start.
-        # First tick after trading_start always triggers (tick_count == 0).
-        if state.tick_count > 0 and state.tick_count < state.rebalance_periods:
-            state.tick_count += 1
-            return False
-        state.tick_count = 1
-
-        universe, features_series, prices_series = inputs
+        universe, features_series, prices_series, _rebalance = inputs
 
         # Bulk-read the last max_periods entries from both series.
         n_available = max(0, len(prices_series) - 1)

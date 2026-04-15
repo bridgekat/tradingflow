@@ -10,6 +10,7 @@ use std::any::TypeId;
 
 use crate::operator::{ComputeFn, ErasedOperator};
 use crate::source::{ErasedSource, PollFn, WriteFn};
+use crate::time::Instant;
 use crate::types::Notify;
 
 // ===========================================================================
@@ -51,7 +52,7 @@ impl Node {
     /// Create a source node from an [`ErasedSource`].
     ///
     /// Calls the deferred init and attaches the channel state.
-    pub fn from_erased_source(erased: ErasedSource, timestamp: i64) -> Self {
+    pub fn from_erased_source(erased: ErasedSource, timestamp: Instant) -> Self {
         let output_type_id = erased.output_type_id();
         let poll_fn = erased.poll_fn();
         let write_fn = erased.write_fn();
@@ -77,7 +78,7 @@ impl Node {
         input_ptrs: Box<[*const u8]>,
         input_node_indices: Box<[usize]>,
         input_type_ids: &[TypeId],
-        timestamp: i64,
+        timestamp: Instant,
     ) -> Self {
         assert_eq!(
             input_type_ids.len(),
@@ -262,7 +263,7 @@ impl OperatorState {
     /// * Each `input_ptrs[i]` must point to a valid value of the expected type.
     /// * `output_ptr` must point to a valid output value.
     /// * `output_ptr` must not alias any `input_ptrs[i]`.
-    pub unsafe fn compute(&self, output_ptr: *mut u8, timestamp: i64, notify: &Notify<'_>) -> bool {
+    pub unsafe fn compute(&self, output_ptr: *mut u8, timestamp: Instant, notify: &Notify<'_>) -> bool {
         unsafe {
             (self.compute_fn)(
                 self.state_ptr,

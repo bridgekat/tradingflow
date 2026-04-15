@@ -9,7 +9,6 @@ import numpy as np
 
 from ...operator import Operator, Notify
 from ...types import Array, Handle, NodeKind
-from ...utils import coerce_timestamp
 
 
 @dataclass(slots=True)
@@ -17,7 +16,6 @@ class MeanVariancePortfolioState:
     """Mutable state for [`MeanVariancePortfolio`] subclasses."""
 
     num_stocks: int
-    trading_start: int | None
     positions_fn: Callable[["MeanVariancePortfolioState", np.ndarray, np.ndarray], np.ndarray]
 
 
@@ -30,14 +28,17 @@ class MeanVariancePortfolio(
 ):
     """Abstract portfolio constructor from predicted returns and covariance.
 
-    On each tick, reads predicted returns and covariance matrix, delegates to
-    ``positions_fn`` to compute position weights.
+    Triggered by new predicted mean or covariance from upstream.
+    Delegates to ``positions_fn`` to compute position weights.  Only
+    stocks with positive universe weights, finite predicted returns, and
+    finite diagonal covariance entries are passed to ``positions_fn``;
+    the result is scattered back to the full dimension with zeros
+    elsewhere.  The sub-covariance-matrix of the remaining stocks must
+    not contain non-finite entries.
 
-    Only stocks with positive universe weights, finite predicted returns,
-    and finite diagonal covariance entries are passed to ``positions_fn``;
-    the result is scattered back to the full dimension with zeros elsewhere.
-    The sub-covariance-matrix of the remaining stocks must not contain
-    non-finite entries.
+    The rebalance cadence is inherited from upstream: when the
+    predictors are clock-triggered at rebalance dates, this operator
+    runs at the same cadence.
 
     Parameters
     ----------
@@ -50,8 +51,6 @@ class MeanVariancePortfolio(
         Handle to predicted covariance matrix, shape ``(num_stocks, num_stocks)``.
     positions_fn
         ``(state, mu, Sigma) -> weights``.  Receives only the subset.
-    trading_start
-        If set, outputs zero weights before this timestamp.
     """
 
     def __init__(
@@ -61,7 +60,6 @@ class MeanVariancePortfolio(
         predicted_covariances: Handle,
         *,
         positions_fn: Callable[[MeanVariancePortfolioState, np.ndarray, np.ndarray], np.ndarray],
-        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(predicted_returns.shape) == 1
@@ -72,7 +70,6 @@ class MeanVariancePortfolio(
 
         self._num_stocks = predicted_returns.shape[0]
         self._positions_fn = positions_fn
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         inputs = (universe, predicted_returns, predicted_covariances)
         super().__init__(
@@ -86,7 +83,6 @@ class MeanVariancePortfolio(
     def init(self, inputs: tuple, timestamp: int) -> MeanVariancePortfolioState:
         return MeanVariancePortfolioState(
             num_stocks=self._num_stocks,
-            trading_start=self._trading_start,
             positions_fn=self._positions_fn,
         )
 
@@ -100,10 +96,6 @@ class MeanVariancePortfolio(
     ) -> bool:
         # Changes in universe only should not trigger recomputation.
         if not notify.input_produced()[1] or not notify.input_produced()[2]:
-            return False
-
-        # Output zeros before trading start.
-        if state.trading_start is not None and timestamp < state.trading_start:
             return False
 
         universe = inputs[0].value()

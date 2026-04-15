@@ -169,8 +169,11 @@ class SeriesView[T: np.generic]:
         Parameters
         ----------
         timestamp
-            Timestamp of the new element. Can be any `datetime64` precision;
-            it will be coerced to `datetime64[ns]` internally.
+            Timestamp of the new element in the TradingFlow convention
+            (TAI ns since PTP epoch).  Any `datetime64` precision is
+            accepted and reinterpreted as int64 without leap-second
+            math.  Use [`utc_to_tai`][tradingflow.utils.utc_to_tai] if
+            the value came from a UTC-convention source.
 
         value
             Array whose shape must match the view's shape.
@@ -180,9 +183,15 @@ class SeriesView[T: np.generic]:
     # -- New convenience methods ----------------------------------------------
 
     def timestamps(self, start: int = 0, end: int | None = None) -> np.ndarray:
-        """Timestamps as `datetime64[ns]` array.
+        """Timestamps as `datetime64[ns]` array in the TradingFlow
+        (TAI) convention.
 
-        Wraps `slice` with a view cast to `datetime64[ns]`.
+        Wraps `slice` with a view cast to `datetime64[ns]`.  The Rust
+        core stores TAI `Instant`s and the bridge reinterprets them
+        directly — the returned int64 values are TAI ns since the PTP
+        epoch.  For plotting against UTC wall-clock axes, pass the
+        result through [`tai_to_utc`][tradingflow.utils.tai_to_utc]
+        first.
         """
         return self.slice(start, end).view("datetime64[ns]")
 
@@ -201,8 +210,10 @@ class SeriesView[T: np.generic]:
         Parameters
         ----------
         timestamp
-            Timestamp to search for. Can be any `datetime64` precision; it
-            will be coerced to `datetime64[ns]` internally.
+            Timestamp to search for in the TradingFlow convention (TAI
+            ns since PTP epoch).  Any `datetime64` precision is
+            accepted and reinterpreted as int64 without leap-second
+            math.
 
         Returns
         -------

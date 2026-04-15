@@ -8,13 +8,11 @@ import scipy as sp
 from ...views import ArrayView, SeriesView
 from ...operator import Operator, Notify
 from ...types import Array, Series, Handle, NodeKind
-from ...utils import coerce_timestamp
 
 
 @dataclass(slots=True)
 class MinimumVarianceState:
     num_stocks: int
-    trading_start: int | None
     initialized: bool = False
     weights: np.ndarray | None = None
     sum_r: float = 0.0
@@ -63,16 +61,12 @@ class MinimumVariance(
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
         ``(N,)``.
-    trading_start
-        If set, suppress output before this timestamp.
     """
 
     def __init__(
         self,
         predictions_series: Handle,
         adjusted_prices_series: Handle,
-        *,
-        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(predictions_series.shape) == 2
         assert predictions_series.shape[0] == predictions_series.shape[1]
@@ -80,7 +74,6 @@ class MinimumVariance(
         assert predictions_series.shape[0] == adjusted_prices_series.shape[0]
 
         self._num_stocks = predictions_series.shape[0]
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         super().__init__(
             inputs=(predictions_series, adjusted_prices_series),
@@ -93,7 +86,6 @@ class MinimumVariance(
     def init(self, inputs: tuple, timestamp: int) -> MinimumVarianceState:
         return MinimumVarianceState(
             num_stocks=self._num_stocks,
-            trading_start=self._trading_start,
         )
 
     @staticmethod
@@ -134,10 +126,6 @@ class MinimumVariance(
 
         # Gate: new prediction?
         if not predictions_produced:
-            return False
-
-        # Suppress output before trading start.
-        if state.trading_start is not None and timestamp < state.trading_start:
             return False
 
         # First prediction stores scores without emitting.

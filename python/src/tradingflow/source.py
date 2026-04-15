@@ -52,14 +52,16 @@ class Source(ABC):
     ]:
         """Return a ``(historical, live)`` async-iterator pair.
 
-        Both iterators yield ``(timestamp, value)`` tuples, matching the
-        Rust ``Source::init`` which returns two ``Receiver<(i64, Event)>``
-        channels.
+        Both iterators yield ``(timestamp, value)`` tuples.  Timestamps
+        are `int64` TAI nanoseconds since the PTP epoch (1970-01-01
+        00:00:00 TAI) — the same convention NumPy `datetime64[ns]` uses
+        numerically.  The bridge reinterprets them directly; no
+        leap-second math runs here.
 
         Parameters
         ----------
         timestamp
-            Initial timestamp (nanoseconds since epoch).
+            Initial timestamp (TAI nanoseconds since the PTP epoch).
         """
         ...
 

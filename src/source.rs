@@ -3,6 +3,7 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
 use crate::PeekableReceiver;
+use crate::time::Instant;
 
 /// An asynchronous data source that receives events via channels and writes
 /// a typed output.
@@ -23,27 +24,26 @@ pub trait Source: 'static {
     #[allow(clippy::type_complexity)]
     fn init(
         self,
-        timestamp: i64,
+        timestamp: Instant,
     ) -> (
-        mpsc::Receiver<(i64, Self::Event)>,
-        mpsc::Receiver<(i64, Self::Event)>,
+        mpsc::Receiver<(Instant, Self::Event)>,
+        mpsc::Receiver<(Instant, Self::Event)>,
         Self::Output,
     );
 
     /// Update the output with a received event.
     ///
     /// Returns `true` if downstream propagation should occur.
-    fn write(event: Self::Event, output: &mut Self::Output, timestamp: i64) -> bool;
+    fn write(event: Self::Event, output: &mut Self::Output, timestamp: Instant) -> bool;
 
-    /// Return the known time range `(first_timestamp, last_timestamp)` of this
-    /// source, if available.
+    /// Estimated total number of events this source will emit over its
+    /// lifetime.  `None` for live / unbounded sources.
     ///
-    /// The default implementation returns `(None, None)`.  Historical sources
-    /// should override this to return the first and last timestamps of their
-    /// data (whenever cheaply available), enabling the scenario to determine
-    /// the overall time range when all sources provide it.
-    fn time_range(&self) -> (Option<i64>, Option<i64>) {
-        (None, None)
+    /// Used only for progress reporting via
+    /// [`Scenario::run`](crate::Scenario::run)'s `on_flush` callback —
+    /// treated as advisory.  The default returns `None`.
+    fn estimated_event_count(&self) -> Option<usize> {
+        None
     }
 }
 
@@ -51,22 +51,22 @@ pub trait Source: 'static {
 ///
 /// # Parameters
 ///
-/// * `timestamp: i64` — initial timestamp.
+/// * `timestamp: Instant` — initial timestamp.
 ///
 /// # Returns
 ///
 /// * `hist_rx_ptr: *mut u8` — from [`Box::into_raw`], points to
-///   [`PeekableReceiver<(i64, E)>`].
+///   [`PeekableReceiver<(Instant, E)>`].
 /// * `live_rx_ptr: *mut u8` — from [`Box::into_raw`], points to
-///   [`PeekableReceiver<(i64, E)>`].
+///   [`PeekableReceiver<(Instant, E)>`].
 /// * `output_ptr: *mut u8` — from [`Box::into_raw`], points to `S::Output`.
-pub type InitFn = Box<dyn FnOnce(i64) -> (*mut u8, *mut u8, *mut u8)>;
+pub type InitFn = Box<dyn FnOnce(Instant) -> (*mut u8, *mut u8, *mut u8)>;
 
 /// Type-erased poll function pointer for a source channel.
 ///
 /// # Parameters
 ///
-/// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(i64, E)>`].
+/// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(Instant, E)>`].
 /// * `cx: &mut Context<'_>` — async task context.
 ///
 /// # Returns
@@ -74,28 +74,20 @@ pub type InitFn = Box<dyn FnOnce(i64) -> (*mut u8, *mut u8, *mut u8)>;
 /// * `Poll::Ready(Some(ts))` if an event is buffered with timestamp `ts`.
 /// * `Poll::Ready(None)` if the channel is closed.
 /// * `Poll::Pending` if no event ready; waker registered.
-pub type PollFn = unsafe fn(*mut u8, &mut Context<'_>) -> Poll<Option<i64>>;
+pub type PollFn = unsafe fn(*mut u8, &mut Context<'_>) -> Poll<Option<Instant>>;
 
 /// Type-erased write function pointer for a source.
 ///
 /// # Parameters
 ///
-/// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(i64, E)>`].
+/// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(Instant, E)>`].
 /// * `output_ptr: *mut u8` — points to `S::Output`.
-/// * `timestamp: i64` — coalesced batch timestamp (overrides event timestamp).
+/// * `timestamp: Instant` — coalesced batch timestamp (overrides event timestamp).
 ///
 /// # Returns
 ///
 /// * `true` if downstream propagation should occur.
-pub type WriteFn = unsafe fn(*mut u8, *mut u8, i64) -> bool;
-
-/// Type-erased time-range function pointer for a source.
-///
-/// # Returns
-///
-/// * `(Option<i64>, Option<i64>)` — the first and last timestamps of the
-///   source's data, if known.
-pub type TimeRangeFn = fn(*const u8) -> (Option<i64>, Option<i64>);
+pub type WriteFn = unsafe fn(*mut u8, *mut u8, Instant) -> bool;
 
 /// Type-erased representation of a source.
 ///
@@ -109,7 +101,7 @@ pub type TimeRangeFn = fn(*const u8) -> (Option<i64>, Option<i64>);
 pub struct ErasedSource {
     event_type_id: TypeId,
     output_type_id: TypeId,
-    time_range: (Option<i64>, Option<i64>),
+    estimated_event_count: Option<usize>,
     init_fn: InitFn,
     poll_fn: PollFn,
     write_fn: WriteFn,
@@ -120,12 +112,12 @@ pub struct ErasedSource {
 impl ErasedSource {
     /// Construct from a typed [`Source`].
     pub fn from_source<S: Source>(source: S) -> Self {
-        let time_range = source.time_range();
+        let estimated_event_count = source.estimated_event_count();
         Self {
             event_type_id: TypeId::of::<S::Event>(),
             output_type_id: TypeId::of::<S::Output>(),
-            time_range,
-            init_fn: Box::new(move |timestamp: i64| {
+            estimated_event_count,
+            init_fn: Box::new(move |timestamp: Instant| {
                 let (hist, live, output) = source.init(timestamp);
                 let hist_rx_ptr = Box::into_raw(Box::new(PeekableReceiver::new(hist))) as *mut u8;
                 let live_rx_ptr = Box::into_raw(Box::new(PeekableReceiver::new(live))) as *mut u8;
@@ -134,7 +126,7 @@ impl ErasedSource {
             }),
             poll_fn: erased_poll_fn::<S>,
             write_fn: erased_write_fn::<S>,
-            rx_drop_fn: erased_drop_fn::<PeekableReceiver<(i64, S::Event)>>,
+            rx_drop_fn: erased_drop_fn::<PeekableReceiver<(Instant, S::Event)>>,
             output_drop_fn: erased_drop_fn::<S::Output>,
         }
     }
@@ -145,20 +137,21 @@ impl ErasedSource {
     ///
     /// * `init_fn` must return valid `(hist_rx_ptr, live_rx_ptr, output_ptr)`
     ///   from [`Box::into_raw`] pointing to objects of types
-    ///   [`PeekableReceiver<(i64, E)>`], [`PeekableReceiver<(i64, E)>`], and
-    ///   `output_type_id` respectively, where `E` has type ID `event_type_id`.
-    /// * `poll_fn` must correctly poll the [`PeekableReceiver<(i64, E)>`].
+    ///   [`PeekableReceiver<(Instant, E)>`], [`PeekableReceiver<(Instant, E)>`],
+    ///   and `output_type_id` respectively, where `E` has type ID
+    ///   `event_type_id`.
+    /// * `poll_fn` must correctly poll the [`PeekableReceiver<(Instant, E)>`].
     /// * `write_fn` must correctly interpret `rx_ptr` and `output_ptr` as
-    ///   pointers to objects of types [`PeekableReceiver<(i64, E)>`] and
+    ///   pointers to objects of types [`PeekableReceiver<(Instant, E)>`] and
     ///   `output_type_id` respectively.
     /// * `rx_drop_fn` must correctly drop [`Box::from_raw`] pointing to
-    ///   an object of type [`PeekableReceiver<(i64, E)>`].
+    ///   an object of type [`PeekableReceiver<(Instant, E)>`].
     /// * `output_drop_fn` must correctly drop [`Box::from_raw`] pointing to
     ///   an object of type `output_type_id`.
     pub unsafe fn new(
         event_type_id: TypeId,
         output_type_id: TypeId,
-        time_range: (Option<i64>, Option<i64>),
+        estimated_event_count: Option<usize>,
         init_fn: InitFn,
         poll_fn: PollFn,
         write_fn: WriteFn,
@@ -168,7 +161,7 @@ impl ErasedSource {
         Self {
             event_type_id,
             output_type_id,
-            time_range,
+            estimated_event_count,
             init_fn,
             poll_fn,
             write_fn,
@@ -177,9 +170,9 @@ impl ErasedSource {
         }
     }
 
-    /// The known time range of this source, if available.
-    pub fn time_range(&self) -> (Option<i64>, Option<i64>) {
-        self.time_range
+    /// Estimated total number of events this source will emit, if known.
+    pub fn estimated_event_count(&self) -> Option<usize> {
+        self.estimated_event_count
     }
 
     /// The [`TypeId`] of the source's event type.
@@ -213,20 +206,27 @@ impl ErasedSource {
     }
 
     /// Consume the init closure, producing `(hist_rx_ptr, live_rx_ptr, output_ptr)`.
-    pub fn init(self, timestamp: i64) -> (*mut u8, *mut u8, *mut u8) {
+    pub fn init(self, timestamp: Instant) -> (*mut u8, *mut u8, *mut u8) {
         (self.init_fn)(timestamp)
     }
 }
 
 /// Type-erased poll function, monomorphised per event type.
-unsafe fn erased_poll_fn<S: Source>(rx_ptr: *mut u8, ctx: &mut Context<'_>) -> Poll<Option<i64>> {
-    let rx = unsafe { &mut *(rx_ptr as *mut PeekableReceiver<(i64, S::Event)>) };
+unsafe fn erased_poll_fn<S: Source>(
+    rx_ptr: *mut u8,
+    ctx: &mut Context<'_>,
+) -> Poll<Option<Instant>> {
+    let rx = unsafe { &mut *(rx_ptr as *mut PeekableReceiver<(Instant, S::Event)>) };
     rx.poll_pending(ctx).map(|opt| opt.map(|item| item.0))
 }
 
 /// Type-erased write function, monomorphised per source type.
-unsafe fn erased_write_fn<S: Source>(rx_ptr: *mut u8, output_ptr: *mut u8, timestamp: i64) -> bool {
-    let rx = unsafe { &mut *(rx_ptr as *mut PeekableReceiver<(i64, S::Event)>) };
+unsafe fn erased_write_fn<S: Source>(
+    rx_ptr: *mut u8,
+    output_ptr: *mut u8,
+    timestamp: Instant,
+) -> bool {
+    let rx = unsafe { &mut *(rx_ptr as *mut PeekableReceiver<(Instant, S::Event)>) };
     let output = unsafe { &mut *(output_ptr as *mut S::Output) };
     if let Some(item) = rx.take_pending() {
         S::write(item.1, output, timestamp)

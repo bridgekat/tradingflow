@@ -8,7 +8,6 @@ import numpy as np
 
 from ...operator import Operator, Notify
 from ...types import Array, Handle, NodeKind
-from ...utils import coerce_timestamp
 from ..traders.simple_trader import OHLCV
 
 
@@ -18,7 +17,6 @@ class BenchmarkState:
     num_stocks: int
     initial_cash: float
     use_adjusts: bool
-    trading_start: int | None
 
     # Portfolio state.
     cash: float = 0.0
@@ -74,8 +72,9 @@ class Benchmark(
         If ``True``, account for dividend reinvestment via adjustment
         factors (total return index).  If ``False``, use raw prices
         (price index).
-    trading_start
-        If set, rebalance signals before this timestamp are ignored.
+
+    The rebalance cadence is controlled by upstream: the benchmark
+    rebalances exactly when the soft-positions input produces.
     """
 
     def __init__(
@@ -86,7 +85,6 @@ class Benchmark(
         *,
         initial_cash: float,
         use_adjusts: bool,
-        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(soft_positions.shape) == 1, "Soft positions input must have shape (num_stocks,)."
         assert (
@@ -99,7 +97,6 @@ class Benchmark(
         self._num_stocks = soft_positions.shape[0]
         self._initial_cash = initial_cash
         self._use_adjusts = use_adjusts
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         super().__init__(
             inputs=(soft_positions, prices, adjusts),
@@ -115,7 +112,6 @@ class Benchmark(
             num_stocks=n,
             initial_cash=self._initial_cash,
             use_adjusts=self._use_adjusts,
-            trading_start=self._trading_start,
             cash=self._initial_cash,
             shares=np.zeros(n),
             last_adjust=np.ones(n),
@@ -150,8 +146,6 @@ class Benchmark(
 
         # Rebalance if soft positions input was updated.
         rebalance = notify.input_produced()[0]
-        if state.trading_start is not None and timestamp < state.trading_start:
-            rebalance = False
         if rebalance:
 
             # Execution price = open price.

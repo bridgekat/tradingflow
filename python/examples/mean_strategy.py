@@ -35,7 +35,7 @@ from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Map, Record, Select, Stack
+from tradingflow.operators import Const, Map, Record, Select, Stack
 from tradingflow.operators.num import Divide, Log, Multiply
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
@@ -45,7 +45,7 @@ from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
 from tradingflow.operators.num import ForwardFill
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
-from tradingflow.sources import MonthlyClock
+from tradingflow.sources import Clock, MonthlyClock
 
 from stocks import load_symbols, calculate_index_weights, resolve_data_start
 
@@ -210,17 +210,28 @@ def build_scenario(
     # Strategy pipeline
     # ------------------------------------------------------------------
 
+    # Rebalance clock fires every `rebalance_days` from trading_start
+    # onward.  A Const operator clocked by it produces an Array[float64]
+    # rebalance signal, routed as a regular input into the predictor so
+    # it observes every data tick and emits only on rebalance.
+    rebalance_dates = np.arange(
+        trading_start,
+        end + np.timedelta64(1, "D"),
+        np.timedelta64(rebalance_days, "D"),
+    )
+    rebalance_clock = sc.add_source(Clock(rebalance_dates))
+    rebalance = sc.add_operator(Const(np.array(np.nan, dtype=np.float64)), clock=rebalance_clock)
+
     predicted_returns = sc.add_operator(
         LinearRegression(
             universe,
             features_series,
             adjusted_prices_series,
+            rebalance=rebalance,
             universe_size=index_size,
-            rebalance_periods=rebalance_days,
             min_periods=100,
-            trading_start=trading_start,
             verbose=True,
-        )
+        ),
     )
 
     soft_positions = sc.add_operator(
@@ -228,7 +239,6 @@ def build_scenario(
             universe,
             predicted_returns,
             top_fraction=0.1,
-            trading_start=trading_start,
         )
     )
 
@@ -239,7 +249,6 @@ def build_scenario(
             stacked["adjusts"],
             initial_cash=initial_cash,
             use_adjusts=True,
-            trading_start=trading_start,
         )
     )
 
@@ -250,7 +259,6 @@ def build_scenario(
             stacked["adjusts"],
             initial_cash=initial_cash,
             use_adjusts=True,
-            trading_start=trading_start,
         )
     )
 
@@ -264,7 +272,6 @@ def build_scenario(
             lot_size=100.0,
             fee_base=5.0,
             fee_rate=0.001,
-            trading_start=trading_start,
         )
     )
 
@@ -324,28 +331,18 @@ if __name__ == "__main__":
         end=args.end,
     )
 
-    first_ns, last_ns = sc.time_range()
-    assert first_ns is not None and last_ns is not None
+    mid = args.begin
+    progress = tqdm(total=sc.estimated_event_count(), unit=" events", desc="Loading samples")
 
-    first, mid, last = np.datetime64(first_ns, "ns"), args.begin, np.datetime64(last_ns, "ns")
-    preload_days = (mid - first) / np.timedelta64(1, "D")
-    trading_days = (last - mid) / np.timedelta64(1, "D")
-
-    preload_bar = tqdm(total=preload_days, unit="d", desc="Loading samples")
-    trading_bar = tqdm(total=trading_days, unit="d", desc="Running strategy")
-
-    def on_flush(ts: int) -> None:
-        dt = np.datetime64(ts, "ns")
-        if dt <= mid:
-            current_days = (dt - first) / np.timedelta64(1, "D")
-            preload_bar.update(current_days - preload_bar.n)
-        else:
-            current_days = (dt - mid) / np.timedelta64(1, "D")
-            trading_bar.update(current_days - trading_bar.n)
+    def on_flush(ts_ns: int, events: int, total: int | None) -> None:
+        if np.datetime64(ts_ns, "ns") > mid:
+            progress.set_description("Running strategy")
+        if total != progress.total:
+            progress.total = total
+        progress.update(events - progress.n)
 
     sc.run(on_flush=on_flush)
-    preload_bar.close()
-    trading_bar.close()
+    progress.close()
 
     # Extract results.
     index = sc.series_view(handles["index"]).to_dataframe(["holdings", "cash"])

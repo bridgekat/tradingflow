@@ -113,15 +113,20 @@ class Scenario:
             kind = output_type[0]
         return Handle(idx, kind, operator.dtype, operator.shape)
 
-    def time_range(self) -> tuple[int | None, int | None]:
-        """Return the aggregate time range across all sources.
+    def estimated_event_count(self) -> int | None:
+        """Sum of estimated event counts across all sources.
 
-        Returns `(first_ns, last_ns)` when every registered source provides
-        both bounds; otherwise returns `(None, None)`.
+        Returns `None` if any registered source is unable to produce an
+        estimate (e.g. live / unbounded sources).  CSV-backed sources
+        estimate rows by sampling the first kilobytes of the file, so the
+        result is approximate.
         """
-        return self._native.time_range()
+        return self._native.estimated_event_count()
 
-    def run(self, on_flush: Callable[[int], Any] | None = None) -> None:
+    def run(
+        self,
+        on_flush: Callable[[int, int, int | None], Any] | None = None,
+    ) -> None:
         """Execute the POCQ event loop.
 
         Python sources are driven by Rust-side async tasks that iterate
@@ -133,7 +138,12 @@ class Scenario:
         ----------
         on_flush
             Optional callback invoked after each timestamp batch is
-            flushed.  Receives the batch timestamp (nanoseconds since
-            epoch) as a single argument.  Useful for progress reporting.
+            flushed.  Receives ``(timestamp_ns, events_so_far,
+            total_estimate)`` where `timestamp_ns` is the batch
+            timestamp in TAI ns since the PTP epoch (re-view as
+            `datetime64[ns]` to display), `events_so_far` is the
+            running count of consumed source events, and
+            `total_estimate` is the aggregate estimate (re-read per
+            flush) or `None` when any source cannot estimate.
         """
         self._native.run(on_flush)

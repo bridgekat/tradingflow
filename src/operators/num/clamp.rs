@@ -2,6 +2,7 @@
 
 use num_traits::Float;
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar};
 
 /// Element-wise clamp to `[lo, hi]`.
@@ -22,7 +23,7 @@ impl<T: Scalar + Float> Operator for Clamp<T> {
     type Inputs = (Array<T>,);
     type Output = Array<T>;
 
-    fn init(self, inputs: (&Array<T>,), _timestamp: i64) -> ((T, T), Array<T>) {
+    fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> ((T, T), Array<T>) {
         ((self.lo, self.hi), Array::zeros(inputs.0.shape()))
     }
 
@@ -31,7 +32,7 @@ impl<T: Scalar + Float> Operator for Clamp<T> {
         state: &mut (T, T),
         inputs: (&Array<T>,),
         output: &mut Array<T>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         let (lo, hi) = *state;
@@ -51,8 +52,8 @@ mod tests {
     #[test]
     fn test_clamp() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 3.0, 7.0]);
-        let (mut s, mut o) = Clamp::new(2.0, 5.0).init((&a,), i64::MIN);
-        Clamp::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Clamp::new(2.0, 5.0).init((&a,), Instant::MIN);
+        Clamp::compute(&mut s, (&a,), &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[2.0, 3.0, 5.0]);
     }
 }

@@ -5,12 +5,12 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use tradingflow::operators::{Record, num::Add};
 use tradingflow::sources::ArraySource;
-use tradingflow::{Array, Notify, Operator, Scenario, Series};
+use tradingflow::{Array, Instant, Notify, Operator, Scenario, Series};
 
 const N: usize = 10_000;
 
-fn make_data() -> (Vec<i64>, Vec<f64>, Vec<f64>) {
-    let ts: Vec<i64> = (0..N as i64).collect();
+fn make_data() -> (Vec<Instant>, Vec<f64>, Vec<f64>) {
+    let ts: Vec<Instant> = (0..N as i64).map(Instant::from_nanos).collect();
     let a: Vec<f64> = (0..N).map(|i| i as f64 * 0.1).collect();
     let b: Vec<f64> = (0..N).map(|i| i as f64 * 0.2).collect();
     (ts, a, b)
@@ -72,7 +72,7 @@ fn bench_direct_compute(c: &mut Criterion) {
             let mut arr_a = Array::scalar(0.0_f64);
             let mut arr_b = Array::scalar(0.0_f64);
             let mut arr_out = Array::scalar(0.0_f64);
-            let (mut state, _) = Add::new().init((&arr_a, &arr_b), i64::MIN);
+            let (mut state, _) = Add::new().init((&arr_a, &arr_b), Instant::MIN);
             for i in 0..N {
                 arr_a[0] = a[i];
                 arr_b[0] = b[i];
@@ -80,7 +80,7 @@ fn bench_direct_compute(c: &mut Criterion) {
                     &mut state,
                     (&arr_a, &arr_b),
                     &mut arr_out,
-                    i as i64,
+                    Instant::from_nanos(i as i64),
                     &Notify::new(&[], 0),
                 );
             }
@@ -101,7 +101,7 @@ fn bench_direct_compute_series(c: &mut Criterion) {
             let mut arr_a = Array::scalar(0.0_f64);
             let mut arr_b = Array::scalar(0.0_f64);
             let mut arr_out = Array::scalar(0.0_f64);
-            let (mut state, _) = Add::new().init((&arr_a, &arr_b), i64::MIN);
+            let (mut state, _) = Add::new().init((&arr_a, &arr_b), Instant::MIN);
             let mut series_out = Series::new(&[]);
             for i in 0..N {
                 arr_a[0] = a[i];
@@ -110,14 +110,13 @@ fn bench_direct_compute_series(c: &mut Criterion) {
                     &mut state,
                     (&arr_a, &arr_b),
                     &mut arr_out,
-                    i as i64,
+                    Instant::from_nanos(i as i64),
                     &Notify::new(&[], 0),
                 );
                 Record::<f64>::compute(
                     &mut (),
                     (&arr_out,),
-                    &mut series_out,
-                    i as i64,
+                    &mut series_out, Instant::from_nanos(i as i64),
                     &Notify::new(&[], 0),
                 );
             }
@@ -194,7 +193,7 @@ fn bench_scenario_source(c: &mut Criterion) {
             let ha = sc.add_source(ArraySource::new(series_a.clone(), default.clone()));
             let hb = sc.add_source(ArraySource::new(series_b.clone(), default.clone()));
             let ho = sc.add_operator(Add::new(), (ha, hb), None);
-            rt.block_on(sc.run(|_| {}));
+            rt.block_on(sc.run(|_, _, _| {}));
             black_box(sc.value(ho)[0]);
         });
     });
@@ -222,7 +221,7 @@ fn bench_scenario_source_series(c: &mut Criterion) {
             let hb = sc.add_source(ArraySource::new(series_b.clone(), default.clone()));
             let ho = sc.add_operator(Add::new(), (ha, hb), None);
             let hos = sc.add_operator(Record::new(), (ho,), None);
-            rt.block_on(sc.run(|_| {}));
+            rt.block_on(sc.run(|_, _, _| {}));
             black_box(sc.value::<Series<f64>>(hos).last().unwrap()[0]);
         });
     });

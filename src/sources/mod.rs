@@ -23,10 +23,10 @@
 //! Clock sources emit `()` events at specified timestamps and are used as
 //! triggers for periodic operators.
 //!
-//! - [`clock`] — clock from explicit timestamps.
-//! - [`daily_clock`] — daily timestamps (midnight in a given IANA timezone).
-//! - [`monthly_clock`] — monthly timestamps (first of each month in a given
-//!   IANA timezone).
+//! - [`clock`] — clock from explicit timestamps.  Calendar-aligned schedules
+//!   (daily / monthly in a given timezone) are constructed in Python via
+//!   `zoneinfo` and passed in as a pre-computed list, keeping the Rust core
+//!   free of timezone data.
 //!
 //! # Sub-modules
 //!
@@ -39,6 +39,6 @@ pub mod iter_source;
 pub mod stocks;
 
 pub use array_source::ArraySource;
-pub use clock::{clock, daily_clock, monthly_clock};
+pub use clock::clock;
 pub use csv_source::CsvSource;
 pub use iter_source::IterSource;

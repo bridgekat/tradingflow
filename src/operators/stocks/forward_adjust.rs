@@ -4,6 +4,7 @@
 //! share dividends (bonus shares) and cash dividends, producing either a
 //! forward-adjusted stock price or the raw adjustment factor on every tick.
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator};
 
 /// Compute the forward-adjusted stock price (or adjustment factor) from
@@ -63,7 +64,7 @@ impl Operator for ForwardAdjust {
     fn init(
         self,
         inputs: (&Array<f64>, &Array<f64>),
-        _timestamp: i64,
+        _timestamp: Instant,
     ) -> (ForwardAdjustState, Array<f64>) {
         assert_eq!(inputs.0.as_slice().len(), 1, "stock price must be scalar");
         assert_eq!(
@@ -84,7 +85,7 @@ impl Operator for ForwardAdjust {
         state: &mut ForwardAdjustState,
         inputs: (&Array<f64>, &Array<f64>),
         output: &mut Array<f64>,
-        _timestamp: i64,
+        _timestamp: Instant,
         notify: &Notify<'_>,
     ) -> bool {
         let input_produced = notify.input_produced();
@@ -133,12 +134,16 @@ mod tests {
         Notify::new(&[0, 1], 2)
     }
 
+    fn ts(n: i64) -> Instant {
+        Instant::from_nanos(n)
+    }
+
     #[test]
     fn no_dividends() {
         let p = price(10.0);
         let d = no_div();
-        let (mut s, mut o) = ForwardAdjust::new().init((&p, &d), 0);
-        ForwardAdjust::compute(&mut s, (&p, &d), &mut o, 1, &notify_price());
+        let (mut s, mut o) = ForwardAdjust::new().init((&p, &d), ts(0));
+        ForwardAdjust::compute(&mut s, (&p, &d), &mut o, ts(1), &notify_price());
         assert_eq!(o.as_slice(), &[10.0]);
     }
 
@@ -146,14 +151,14 @@ mod tests {
     fn cash_dividend() {
         let p0 = price(10.0);
         let d0 = no_div();
-        let (mut s, mut o) = ForwardAdjust::new().init((&p0, &d0), 0);
+        let (mut s, mut o) = ForwardAdjust::new().init((&p0, &d0), ts(0));
 
-        ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, 1, &notify_price());
+        ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, ts(1), &notify_price());
         assert_eq!(o.as_slice(), &[10.0]);
 
         let p1 = price(9.5);
         let d1 = div(0.0, 0.5);
-        ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, 2, &notify_both());
+        ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, ts(2), &notify_both());
 
         let factor = 1.0 + 0.5 / 9.5;
         assert!((o.as_slice()[0] - 9.5 * factor).abs() < 1e-12);
@@ -164,13 +169,13 @@ mod tests {
     fn share_dividend() {
         let p0 = price(20.0);
         let d0 = no_div();
-        let (mut s, mut o) = ForwardAdjust::new().init((&p0, &d0), 0);
+        let (mut s, mut o) = ForwardAdjust::new().init((&p0, &d0), ts(0));
 
-        ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, 1, &notify_price());
+        ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, ts(1), &notify_price());
 
         let p1 = price(18.18);
         let d1 = div(0.1, 0.0);
-        ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, 2, &notify_both());
+        ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, ts(2), &notify_both());
 
         assert!((o.as_slice()[0] - 18.18 * 1.1).abs() < 1e-12);
     }
@@ -179,22 +184,22 @@ mod tests {
     fn cumulative_dividends() {
         let p0 = price(100.0);
         let d0 = no_div();
-        let (mut s, mut o) = ForwardAdjust::new().init((&p0, &d0), 0);
+        let (mut s, mut o) = ForwardAdjust::new().init((&p0, &d0), ts(0));
 
-        ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, 1, &notify_price());
+        ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, ts(1), &notify_price());
 
         let p1 = price(98.0);
         let d1 = div(0.0, 2.0);
-        ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, 2, &notify_both());
+        ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, ts(2), &notify_both());
         let f1 = 1.0 + 2.0 / (100.0 - 2.0);
 
         let p2 = price(99.0);
-        ForwardAdjust::compute(&mut s, (&p2, &d0), &mut o, 3, &notify_price());
+        ForwardAdjust::compute(&mut s, (&p2, &d0), &mut o, ts(3), &notify_price());
         assert!((o.as_slice()[0] - 99.0 * f1).abs() < 1e-12);
 
         let p3 = price(98.0);
         let d3 = div(0.0, 1.0);
-        ForwardAdjust::compute(&mut s, (&p3, &d3), &mut o, 4, &notify_both());
+        ForwardAdjust::compute(&mut s, (&p3, &d3), &mut o, ts(4), &notify_both());
         let f2 = f1 * (1.0 + 1.0 / (99.0 - 1.0));
         assert!((o.as_slice()[0] - 98.0 * f2).abs() < 1e-12);
     }
@@ -205,14 +210,14 @@ mod tests {
         let d0 = no_div();
         let (mut s, mut o) = ForwardAdjust::new()
             .with_output_prices(false)
-            .init((&p0, &d0), 0);
+            .init((&p0, &d0), ts(0));
 
-        ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, 1, &notify_price());
+        ForwardAdjust::compute(&mut s, (&p0, &d0), &mut o, ts(1), &notify_price());
         assert_eq!(o.as_slice()[0], 1.0);
 
         let p1 = price(98.0);
         let d1 = div(0.0, 2.0);
-        ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, 2, &notify_both());
+        ForwardAdjust::compute(&mut s, (&p1, &d1), &mut o, ts(2), &notify_both());
         let expected = 1.0 + 2.0 / (100.0 - 2.0);
         assert!((o.as_slice()[0] - expected).abs() < 1e-12);
     }

@@ -3,12 +3,16 @@
 use ndarray::{ArrayViewD, ArrayViewMutD, IxDyn};
 
 use crate::Scalar;
+use crate::time::Instant;
 
 /// A time series of N-dimensional arrays in row-major contiguous layout.
+///
+/// Timestamps are [`Instant`]s (SI nanoseconds since the PTP epoch) in
+/// non-decreasing order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Series<T: Scalar> {
     data: Vec<T>,
-    timestamps: Vec<i64>,
+    timestamps: Vec<Instant>,
     shape: Box<[usize]>,
     stride: usize,
 }
@@ -30,7 +34,7 @@ impl<T: Scalar> Series<T> {
     }
 
     /// Create a series from timestamp and flat value vectors.
-    pub fn from_vec(shape: &[usize], timestamps: Vec<i64>, values: Vec<T>) -> Self {
+    pub fn from_vec(shape: &[usize], timestamps: Vec<Instant>, values: Vec<T>) -> Self {
         let stride = shape.iter().product::<usize>();
         assert_eq!(
             values.len(),
@@ -91,13 +95,13 @@ impl<T: Scalar> Series<T> {
 impl<T: Scalar> Series<T> {
     /// Flat immutable slice of all timestamps.
     #[inline(always)]
-    pub fn timestamps(&self) -> &[i64] {
+    pub fn timestamps(&self) -> &[Instant] {
         &self.timestamps
     }
 
     /// Flat mutable slice of all timestamps.
     #[inline(always)]
-    pub fn timestamps_mut(&mut self) -> &mut [i64] {
+    pub fn timestamps_mut(&mut self) -> &mut [Instant] {
         &mut self.timestamps
     }
 
@@ -163,7 +167,7 @@ impl<T: Scalar> Series<T> {
 
     /// Most recent timestamp, or `None` if empty.
     #[inline(always)]
-    pub fn last_timestamp(&self) -> Option<i64> {
+    pub fn last_timestamp(&self) -> Option<Instant> {
         self.timestamps.last().copied()
     }
 
@@ -186,7 +190,7 @@ impl<T: Scalar> Series<T> {
     /// Last `n` elements as `(timestamps, flat_values)`.
     ///
     /// Returns `min(n, len)` elements.
-    pub fn tail(&self, n: usize) -> (&[i64], &[T]) {
+    pub fn tail(&self, n: usize) -> (&[Instant], &[T]) {
         let len = self.len();
         let n = n.min(len);
         let start = len - n;
@@ -203,7 +207,7 @@ impl<T: Scalar> Series<T> {
     /// As-of lookup: find the most recent element with `ts <= query_ts`.
     ///
     /// Returns `None` if no element satisfies the condition.
-    pub fn asof(&self, query_ts: i64) -> Option<&[T]> {
+    pub fn asof(&self, query_ts: Instant) -> Option<&[T]> {
         let idx = self.timestamps.partition_point(|&ts| ts <= query_ts);
         if idx == 0 {
             None
@@ -215,7 +219,7 @@ impl<T: Scalar> Series<T> {
     /// Index of first timestamp `>= query_ts` (binary search).
     ///
     /// Returns `len` if all timestamps are less than `query_ts`.
-    pub fn search(&self, query_ts: i64) -> usize {
+    pub fn search(&self, query_ts: Instant) -> usize {
         self.timestamps.partition_point(|&ts| ts < query_ts)
     }
 }
@@ -265,7 +269,7 @@ impl<T: Scalar> Series<T> {
     ///
     /// Panics if `value.len() != self.stride()`.
     #[inline(always)]
-    pub fn push(&mut self, timestamp: i64, value: &[T]) {
+    pub fn push(&mut self, timestamp: Instant, value: &[T]) {
         assert_eq!(
             value.len(),
             self.stride(),
@@ -309,18 +313,22 @@ impl<T: Scalar> Series<T> {
 mod tests {
     use super::*;
 
+    fn ts(n: i64) -> Instant {
+        Instant::from_nanos(n)
+    }
+
     #[test]
     fn series_push_and_access() {
         let mut s = Series::<f64>::new(&[2]);
         assert!(s.is_empty());
 
-        s.push(100, &[1.0, 2.0]);
-        s.push(200, &[3.0, 4.0]);
-        s.push(300, &[5.0, 6.0]);
+        s.push(ts(100), &[1.0, 2.0]);
+        s.push(ts(200), &[3.0, 4.0]);
+        s.push(ts(300), &[5.0, 6.0]);
 
         assert_eq!(s.len(), 3);
         assert_eq!(s.stride(), 2);
-        assert_eq!(s.timestamps(), &[100, 200, 300]);
+        assert_eq!(s.timestamps(), &[ts(100), ts(200), ts(300)]);
         assert_eq!(s.values(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         assert_eq!(s.last(), Some([5.0, 6.0].as_slice()));
         assert_eq!(s.at(0), &[1.0, 2.0]);
@@ -332,8 +340,8 @@ mod tests {
         let mut s = Series::<f64>::new(&[]);
         assert_eq!(s.stride(), 1);
 
-        s.push(1, &[10.0]);
-        s.push(2, &[20.0]);
+        s.push(ts(1), &[10.0]);
+        s.push(ts(2), &[20.0]);
 
         assert_eq!(s.len(), 2);
         assert_eq!(s.at(0), &[10.0]);
@@ -343,31 +351,31 @@ mod tests {
     #[test]
     fn series_asof() {
         let mut s = Series::<f64>::new(&[]);
-        s.push(100, &[1.0]);
-        s.push(200, &[2.0]);
-        s.push(300, &[3.0]);
+        s.push(ts(100), &[1.0]);
+        s.push(ts(200), &[2.0]);
+        s.push(ts(300), &[3.0]);
 
-        assert_eq!(s.asof(50), None);
-        assert_eq!(s.asof(100), Some([1.0].as_slice()));
-        assert_eq!(s.asof(150), Some([1.0].as_slice()));
-        assert_eq!(s.asof(200), Some([2.0].as_slice()));
-        assert_eq!(s.asof(250), Some([2.0].as_slice()));
-        assert_eq!(s.asof(300), Some([3.0].as_slice()));
-        assert_eq!(s.asof(999), Some([3.0].as_slice()));
+        assert_eq!(s.asof(ts(50)), None);
+        assert_eq!(s.asof(ts(100)), Some([1.0].as_slice()));
+        assert_eq!(s.asof(ts(150)), Some([1.0].as_slice()));
+        assert_eq!(s.asof(ts(200)), Some([2.0].as_slice()));
+        assert_eq!(s.asof(ts(250)), Some([2.0].as_slice()));
+        assert_eq!(s.asof(ts(300)), Some([3.0].as_slice()));
+        assert_eq!(s.asof(ts(999)), Some([3.0].as_slice()));
     }
 
     #[test]
     #[should_panic(expected = "push: expected 2 scalars, got 3")]
     fn series_push_wrong_size() {
         let mut s = Series::<f64>::new(&[2]);
-        s.push(1, &[1.0, 2.0, 3.0]);
+        s.push(ts(1), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn series_ndarray_view() {
         let mut s = Series::<f64>::new(&[3]);
-        s.push(1, &[1.0, 2.0, 3.0]);
-        s.push(2, &[4.0, 5.0, 6.0]);
+        s.push(ts(1), &[1.0, 2.0, 3.0]);
+        s.push(ts(2), &[4.0, 5.0, 6.0]);
 
         let row0 = s.view_at(0);
         assert_eq!(row0.shape(), &[3]);
@@ -392,19 +400,19 @@ mod tests {
         let mut s = Series::<f64>::new(&[]);
         assert_eq!(s.last_timestamp(), None);
 
-        s.push(100, &[1.0]);
-        assert_eq!(s.last_timestamp(), Some(100));
+        s.push(ts(100), &[1.0]);
+        assert_eq!(s.last_timestamp(), Some(ts(100)));
 
-        s.push(200, &[2.0]);
-        assert_eq!(s.last_timestamp(), Some(200));
+        s.push(ts(200), &[2.0]);
+        assert_eq!(s.last_timestamp(), Some(ts(200)));
     }
 
     #[test]
     fn values_range() {
         let mut s = Series::<f64>::new(&[2]);
-        s.push(100, &[1.0, 2.0]);
-        s.push(200, &[3.0, 4.0]);
-        s.push(300, &[5.0, 6.0]);
+        s.push(ts(100), &[1.0, 2.0]);
+        s.push(ts(200), &[3.0, 4.0]);
+        s.push(ts(300), &[5.0, 6.0]);
 
         assert_eq!(s.values_range(0, 2), &[1.0, 2.0, 3.0, 4.0]);
         assert_eq!(s.values_range(1, 3), &[3.0, 4.0, 5.0, 6.0]);
@@ -415,32 +423,32 @@ mod tests {
     #[test]
     fn tail() {
         let mut s = Series::<f64>::new(&[]);
-        s.push(100, &[1.0]);
-        s.push(200, &[2.0]);
-        s.push(300, &[3.0]);
+        s.push(ts(100), &[1.0]);
+        s.push(ts(200), &[2.0]);
+        s.push(ts(300), &[3.0]);
 
-        let (ts, vals) = s.tail(2);
-        assert_eq!(ts, &[200, 300]);
+        let (tss, vals) = s.tail(2);
+        assert_eq!(tss, &[ts(200), ts(300)]);
         assert_eq!(vals, &[2.0, 3.0]);
 
         // n > len returns all
-        let (ts, vals) = s.tail(100);
-        assert_eq!(ts, &[100, 200, 300]);
+        let (tss, vals) = s.tail(100);
+        assert_eq!(tss, &[ts(100), ts(200), ts(300)]);
         assert_eq!(vals, &[1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn search() {
         let mut s = Series::<f64>::new(&[]);
-        s.push(100, &[1.0]);
-        s.push(200, &[2.0]);
-        s.push(300, &[3.0]);
+        s.push(ts(100), &[1.0]);
+        s.push(ts(200), &[2.0]);
+        s.push(ts(300), &[3.0]);
 
-        assert_eq!(s.search(50), 0); // before all
-        assert_eq!(s.search(100), 0); // exact first
-        assert_eq!(s.search(150), 1); // between
-        assert_eq!(s.search(200), 1); // exact second
-        assert_eq!(s.search(300), 2); // exact last
-        assert_eq!(s.search(999), 3); // after all
+        assert_eq!(s.search(ts(50)), 0); // before all
+        assert_eq!(s.search(ts(100)), 0); // exact first
+        assert_eq!(s.search(ts(150)), 1); // between
+        assert_eq!(s.search(ts(200)), 1); // exact second
+        assert_eq!(s.search(ts(300)), 2); // exact last
+        assert_eq!(s.search(ts(999)), 3); // after all
     }
 }

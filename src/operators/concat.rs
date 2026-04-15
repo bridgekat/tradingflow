@@ -1,5 +1,6 @@
 //! Concat operator — concatenates N arrays along an existing axis.
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar};
 
 /// Concatenate N homogeneous arrays along an existing axis.
@@ -28,7 +29,7 @@ impl<T: Scalar> Operator for Concat<T> {
     type Inputs = [Array<T>];
     type Output = Array<T>;
 
-    fn init(self, inputs: Box<[&Array<T>]>, _timestamp: i64) -> (ConcatState, Array<T>) {
+    fn init(self, inputs: Box<[&Array<T>]>, _timestamp: Instant) -> (ConcatState, Array<T>) {
         let first = inputs[0].shape();
         assert!(self.axis < first.len(), "axis out of bounds");
         let state = ConcatState {
@@ -45,7 +46,7 @@ impl<T: Scalar> Operator for Concat<T> {
         state: &mut ConcatState,
         inputs: Box<[&Array<T>]>,
         output: &mut Array<T>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         interleaved_copy(output, &inputs, state.outer_count, state.chunk_size);
@@ -100,8 +101,8 @@ mod tests {
         // Just sequential: all of a, then all of b.
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
-        let (mut s, mut o) = Concat::<f64>::new(0).init(inputs.clone(), i64::MIN);
-        Concat::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Concat::<f64>::new(0).init(inputs.clone(), Instant::MIN);
+        Concat::compute(&mut s, inputs, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o.shape(), &[4, 3, 2]);
         let expected: Vec<f64> = (1..=24).map(|x| x as f64).collect();
         assert_eq!(o.as_slice(), &expected[..]);
@@ -113,8 +114,8 @@ mod tests {
         // For each of the 2 outer slices, interleave 3×2 chunks.
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
-        let (mut s, mut o) = Concat::<f64>::new(1).init(inputs.clone(), i64::MIN);
-        Concat::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Concat::<f64>::new(1).init(inputs.clone(), Instant::MIN);
+        Concat::compute(&mut s, inputs, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o.shape(), &[2, 6, 2]);
         // outer=0: a[0]=[1..6], b[0]=[13..18] → [1,2,3,4,5,6,13,14,15,16,17,18]
         // outer=1: a[1]=[7..12], b[1]=[19..24] → [7,8,9,10,11,12,19,20,21,22,23,24]
@@ -133,8 +134,8 @@ mod tests {
         // For each of the 2×3=6 outer positions, interleave 2-element chunks.
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
-        let (mut s, mut o) = Concat::<f64>::new(2).init(inputs.clone(), i64::MIN);
-        Concat::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Concat::<f64>::new(2).init(inputs.clone(), Instant::MIN);
+        Concat::compute(&mut s, inputs, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o.shape(), &[2, 3, 4]);
         // Each pair of 2-element chunks from a and b interleaved:
         // a[0][0]=[1,2], b[0][0]=[13,14] → [1,2,13,14]
@@ -154,6 +155,6 @@ mod tests {
     fn scalar_panics() {
         let a = Array::scalar(1.0_f64);
         let inputs: Box<[&Array<f64>]> = vec![&a].into_boxed_slice();
-        Concat::<f64>::new(0).init(inputs, i64::MIN);
+        Concat::<f64>::new(0).init(inputs, Instant::MIN);
     }
 }

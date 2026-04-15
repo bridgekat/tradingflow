@@ -5,6 +5,7 @@
 
 use num_traits::Float;
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar, Series};
 
 /// Exponential moving average.
@@ -77,7 +78,7 @@ impl<T: Scalar + Float> Operator for Ema<T> {
     type Inputs = (Series<T>,);
     type Output = Array<T>;
 
-    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (EmaState<T>, Array<T>) {
+    fn init(self, inputs: (&Series<T>,), _timestamp: Instant) -> (EmaState<T>, Array<T>) {
         let stride = inputs.0.stride();
         let one_minus_alpha = T::one() - self.alpha;
         let mut decay_factor = T::one();
@@ -102,7 +103,7 @@ impl<T: Scalar + Float> Operator for Ema<T> {
         state: &mut EmaState<T>,
         inputs: (&Series<T>,),
         output: &mut Array<T>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         let series = inputs.0;
@@ -166,23 +167,26 @@ impl<T: Scalar + Float> Operator for Ema<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Instant;
+
+    fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
     fn push_compute(
         s: &mut Series<f64>,
         state: &mut EmaState<f64>,
         out: &mut Array<f64>,
-        ts: i64,
+        t: i64,
         val: f64,
     ) -> bool {
-        s.push(ts, &[val]);
-        Ema::compute(state, (s,), out, ts, &Notify::new(&[], 0))
+        s.push(ts(t), &[val]);
+        Ema::compute(state, (s,), out, ts(t), &Notify::new(&[], 0))
     }
 
     #[test]
     fn ema_constant_input() {
         // Use window=3 so that we can reach it with 10 values.
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), Instant::MIN);
 
         for i in 1..=10 {
             push_compute(&mut s, &mut state, &mut out, i, 10.0);
@@ -196,7 +200,7 @@ mod tests {
     fn ema_first_value_with_window_1() {
         // With window=1, the first tick is immediately the full window.
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 1).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 1).init((&s,), Instant::MIN);
 
         assert!(push_compute(&mut s, &mut state, &mut out, 1, 100.0));
         assert_eq!(out.as_slice()[0], 100.0);
@@ -206,7 +210,7 @@ mod tests {
     fn ema_warmup() {
         // With window=3, first 2 ticks return false.
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 10.0));
         assert!(out.as_slice()[0].is_nan());
@@ -222,7 +226,7 @@ mod tests {
     fn ema_two_values() {
         // Use window=2 so output is produced at tick 2.
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 10.0));
         assert!(push_compute(&mut s, &mut state, &mut out, 2, 20.0));
@@ -241,7 +245,7 @@ mod tests {
     fn ema_nan_propagation() {
         // NaN in window → NaN output, until NaN is evicted.
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 10.0));
         assert!(out.as_slice()[0].is_nan());
@@ -274,7 +278,7 @@ mod tests {
     fn ema_window_bounds() {
         // With window=2, only last 2 values should matter
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 100.0));
         assert!(push_compute(&mut s, &mut state, &mut out, 2, 100.0));
@@ -293,7 +297,7 @@ mod tests {
     fn ema_with_span() {
         // Use window=2 so output is produced at tick 2.
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::with_span(3, 2).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::with_span(3, 2).init((&s,), Instant::MIN);
 
         // alpha = 2/(3+1) = 0.5
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 10.0));
@@ -307,16 +311,16 @@ mod tests {
     fn ema_vector() {
         // Use window=2 so output is produced at tick 2.
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), Instant::MIN);
 
-        s.push(1, &[10.0, 100.0]);
-        assert!(!Ema::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0)));
+        s.push(ts(1), &[10.0, 100.0]);
+        assert!(!Ema::compute(&mut state, (&s,), &mut out, ts(1), &Notify::new(&[], 0)));
         // Output stays NaN during warmup.
         assert!(out.as_slice()[0].is_nan());
         assert!(out.as_slice()[1].is_nan());
 
-        s.push(2, &[20.0, 200.0]);
-        assert!(Ema::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], 0)));
+        s.push(ts(2), &[20.0, 200.0]);
+        assert!(Ema::compute(&mut state, (&s,), &mut out, ts(2), &Notify::new(&[], 0)));
         let row = out.as_slice();
         let expected_0 = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25);
         let expected_1 = (0.5 * 200.0 + 0.25 * 100.0) / (0.5 + 0.25);
@@ -327,7 +331,7 @@ mod tests {
     #[test]
     fn ema_nan_at_start() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, f64::NAN));
         assert!(out.as_slice()[0].is_nan());
@@ -345,7 +349,7 @@ mod tests {
     #[test]
     fn ema_multiple_nans() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 3).init((&s,), Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, f64::NAN));
         assert!(!push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
@@ -365,23 +369,23 @@ mod tests {
     #[test]
     fn ema_nan_vector_independent() {
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), Instant::MIN);
 
         // NaN only in element 0
-        s.push(1, &[f64::NAN, 10.0]);
-        assert!(!Ema::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0)));
+        s.push(ts(1), &[f64::NAN, 10.0]);
+        assert!(!Ema::compute(&mut state, (&s,), &mut out, ts(1), &Notify::new(&[], 0)));
         // Output stays NaN during warmup.
         assert!(out.as_slice()[0].is_nan());
         assert!(out.as_slice()[1].is_nan());
 
-        s.push(2, &[5.0, 20.0]);
-        assert!(Ema::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], 0)));
+        s.push(ts(2), &[5.0, 20.0]);
+        assert!(Ema::compute(&mut state, (&s,), &mut out, ts(2), &Notify::new(&[], 0)));
         // NaN still in window for element 0
         assert!(out.as_slice()[0].is_nan());
         assert!(!out.as_slice()[1].is_nan());
 
-        s.push(3, &[15.0, 30.0]);
-        Ema::compute(&mut state, (&s,), &mut out, 3, &Notify::new(&[], 0));
+        s.push(ts(3), &[15.0, 30.0]);
+        Ema::compute(&mut state, (&s,), &mut out, ts(3), &Notify::new(&[], 0));
         // NaN evicted for element 0
         assert!(!out.as_slice()[0].is_nan());
         assert!(!out.as_slice()[1].is_nan());
@@ -391,7 +395,7 @@ mod tests {
     fn ema_nan_eviction_restores_correct_value() {
         // After NaN exits, the weighted average uses only valid values.
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), i64::MIN);
+        let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init((&s,), Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, f64::NAN));
         assert!(push_compute(&mut s, &mut state, &mut out, 2, 10.0));

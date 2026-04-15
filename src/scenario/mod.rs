@@ -59,6 +59,7 @@ use std::any::TypeId;
 use crate::operator::{ErasedOperator, Operator};
 use crate::operators::Const;
 use crate::source::{ErasedSource, Source};
+use crate::time::Instant;
 
 use graph::Graph;
 use node::Node;
@@ -71,6 +72,8 @@ use node::Node;
 /// use tradingflow::{Scenario, Array};
 /// use tradingflow::operators::num::Add;
 ///
+/// use tradingflow::Instant;
+///
 /// let mut sc = Scenario::new();
 ///
 /// let ha = sc.add_const(Array::scalar(0.0));
@@ -79,14 +82,17 @@ use node::Node;
 ///
 /// sc.value_mut(ha)[0] = 10.0;
 /// sc.value_mut(hb)[0] = 3.0;
-/// sc.flush(1, &[ha.index(), hb.index()]);
+/// sc.flush(Instant::from_nanos(1), &[ha.index(), hb.index()]);
 ///
 /// assert_eq!(sc.value(hc).as_slice(), &[13.0]);
 /// ```
 pub struct Scenario {
     graph: Graph,
     source_indices: Vec<usize>,
-    source_time_ranges: Vec<(Option<i64>, Option<i64>)>,
+    /// Cumulative estimated event count across all registered sources.
+    /// Updated incrementally in [`Scenario::add_erased_source`]; becomes
+    /// `None` and stays `None` as soon as any source reports `None`.
+    estimated_event_count: Option<usize>,
 }
 
 impl Scenario {
@@ -94,7 +100,7 @@ impl Scenario {
         Self {
             graph: Graph::new(),
             source_indices: Vec::new(),
-            source_time_ranges: Vec::new(),
+            estimated_event_count: Some(0),
         }
     }
 
@@ -161,11 +167,14 @@ impl Scenario {
 
     /// Register a type-erased source.
     pub fn add_erased_source(&mut self, erased: ErasedSource) -> usize {
-        let time_range = erased.time_range();
-        let node = Node::from_erased_source(erased, i64::MIN);
+        let estimate = erased.estimated_event_count();
+        let node = Node::from_erased_source(erased, Instant::MIN);
         let output_idx = self.graph.add_node(node);
         self.source_indices.push(output_idx);
-        self.source_time_ranges.push(time_range);
+        self.estimated_event_count = match (self.estimated_event_count, estimate) {
+            (Some(acc), Some(n)) => Some(acc.saturating_add(n)),
+            _ => None,
+        };
         output_idx
     }
 
@@ -203,7 +212,7 @@ impl Scenario {
             .map(|&idx| self.graph.nodes[idx].type_id)
             .collect();
         let input_node_indices: Box<[usize]> = input_indices.into();
-        let node = Node::from_erased_operator(erased, input_ptrs, input_node_indices, &input_type_ids, i64::MIN);
+        let node = Node::from_erased_operator(erased, input_ptrs, input_node_indices, &input_type_ids, Instant::MIN);
         let output_idx = self.graph.add_node(node);
         match trigger_index {
             None => {
@@ -218,30 +227,19 @@ impl Scenario {
         output_idx
     }
 
-    /// Return the aggregate time range across all sources.
+    /// Sum of estimated event counts across all sources.
     ///
-    /// Returns `(Some(min_first), Some(max_last))` when **every** registered
-    /// source provides both bounds, otherwise `(None, None)`.
-    pub fn time_range(&self) -> (Option<i64>, Option<i64>) {
-        if self.source_time_ranges.is_empty() {
-            return (None, None);
-        }
-        let mut first: Option<i64> = None;
-        let mut last: Option<i64> = None;
-        for &(f, l) in &self.source_time_ranges {
-            match (f, l) {
-                (Some(f_val), Some(l_val)) => {
-                    first = Some(first.map_or(f_val, |prev: i64| prev.min(f_val)));
-                    last = Some(last.map_or(l_val, |prev: i64| prev.max(l_val)));
-                }
-                _ => return (None, None),
-            }
-        }
-        (first, last)
+    /// Returns `Some(total)` only when **every** registered source provides
+    /// an estimate; otherwise `None`.  Cached — updated incrementally as
+    /// sources are registered.  Used by
+    /// [`Scenario::run`](crate::Scenario::run) to report progress.
+    #[inline]
+    pub fn estimated_event_count(&self) -> Option<usize> {
+        self.estimated_event_count
     }
 
     /// Propagate updates through the DAG.
-    pub fn flush(&mut self, timestamp: i64, updated_sources: &[usize]) {
+    pub fn flush(&mut self, timestamp: Instant, updated_sources: &[usize]) {
         self.graph.flush(timestamp, updated_sources);
     }
 }
@@ -264,6 +262,14 @@ mod tests {
     use crate::operators::{Filter, Record};
     use crate::series::Series;
     use crate::sources::ArraySource;
+
+    fn ts(n: i64) -> Instant {
+        Instant::from_nanos(n)
+    }
+
+    fn tss(xs: &[i64]) -> Vec<Instant> {
+        xs.iter().copied().map(Instant::from_nanos).collect()
+    }
 
     // -- Basic tests ----------------------------------------------------------
 
@@ -289,7 +295,7 @@ mod tests {
 
         sc.value_mut(ha)[0] = 10.0;
         sc.value_mut(hb)[0] = 3.0;
-        sc.flush(1, &[ha.index(), hb.index()]);
+        sc.flush(ts(1), &[ha.index(), hb.index()]);
 
         assert_eq!(sc.value(hc).as_slice(), &[13.0]);
     }
@@ -301,7 +307,7 @@ mod tests {
         let hb = sc.add_const(Array::from_vec(&[2], vec![10.0_f64, 20.0]));
         let hc = sc.add_operator(Add::new(), (ha, hb), None);
 
-        sc.flush(1, &[ha.index(), hb.index()]);
+        sc.flush(ts(1), &[ha.index(), hb.index()]);
         assert_eq!(sc.value(hc).as_slice(), &[11.0, 22.0]);
     }
 
@@ -315,7 +321,7 @@ mod tests {
         use crate::operators::num::Multiply;
         let hout = sc.add_operator(Multiply::new(), (hab, ha), None);
 
-        sc.flush(1, &[ha.index(), hb.index()]);
+        sc.flush(ts(1), &[ha.index(), hb.index()]);
         // (2+3) * 2 = 10
         assert_eq!(sc.value(hout).as_slice(), &[10.0]);
     }
@@ -330,15 +336,15 @@ mod tests {
 
         sc.value_mut(ha)[0] = 10.0;
         sc.value_mut(hb)[0] = 3.0;
-        sc.flush(1, &[ha.index(), hb.index()]);
+        sc.flush(ts(1), &[ha.index(), hb.index()]);
 
         sc.value_mut(ha)[0] = 20.0;
         sc.value_mut(hb)[0] = 7.0;
-        sc.flush(2, &[ha.index(), hb.index()]);
+        sc.flush(ts(2), &[ha.index(), hb.index()]);
 
         let series: &Series<f64> = sc.value(hseries);
         assert_eq!(series.len(), 2);
-        assert_eq!(series.timestamps(), &[1, 2]);
+        assert_eq!(series.timestamps(), tss(&[1, 2]).as_slice());
         assert_eq!(series.values(), &[13.0, 27.0]);
     }
 
@@ -348,16 +354,16 @@ mod tests {
     async fn scenario_run_single_source() {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 2, 3], vec![10.0, 20.0, 30.0]),
+            Series::from_vec(&[], tss(&[1, 2, 3]), vec![10.0, 20.0, 30.0]),
             Array::scalar(0.0),
         ));
         let hseries = sc.add_operator(Record::<f64>::new(), (ha,), None);
 
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         assert_eq!(series.len(), 3);
-        assert_eq!(series.timestamps(), &[1, 2, 3]);
+        assert_eq!(series.timestamps(), tss(&[1, 2, 3]).as_slice());
         assert_eq!(series.values(), &[10.0, 20.0, 30.0]);
     }
 
@@ -365,22 +371,22 @@ mod tests {
     async fn scenario_run_two_sources_add() {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 3], vec![10.0, 30.0]),
+            Series::from_vec(&[], tss(&[1, 3]), vec![10.0, 30.0]),
             Array::scalar(0.0),
         ));
         let hb = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![2, 3], vec![20.0, 40.0]),
+            Series::from_vec(&[], tss(&[2, 3]), vec![20.0, 40.0]),
             Array::scalar(0.0),
         ));
         let ho = sc.add_operator(Add::new(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         // ts=1: 10+0=10, ts=2: 10+20=30, ts=3: 30+40=70
         assert_eq!(series.len(), 3);
-        assert_eq!(series.timestamps(), &[1, 2, 3]);
+        assert_eq!(series.timestamps(), tss(&[1, 2, 3]).as_slice());
         assert_eq!(series.values(), &[10.0, 30.0, 70.0]);
     }
 
@@ -388,21 +394,21 @@ mod tests {
     async fn scenario_run_coalescing() {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 2], vec![10.0, 20.0]),
+            Series::from_vec(&[], tss(&[1, 2]), vec![10.0, 20.0]),
             Array::scalar(0.0),
         ));
         let hb = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 2], vec![100.0, 200.0]),
+            Series::from_vec(&[], tss(&[1, 2]), vec![100.0, 200.0]),
             Array::scalar(0.0),
         ));
         let ho = sc.add_operator(Add::new(), (ha, hb), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         assert_eq!(series.len(), 2);
-        assert_eq!(series.timestamps(), &[1, 2]);
+        assert_eq!(series.timestamps(), tss(&[1, 2]).as_slice());
         assert_eq!(series.values(), &[110.0, 220.0]);
     }
 
@@ -410,11 +416,11 @@ mod tests {
     async fn scenario_run_chained() {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 2], vec![2.0, 5.0]),
+            Series::from_vec(&[], tss(&[1, 2]), vec![2.0, 5.0]),
             Array::scalar(0.0),
         ));
         let hb = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 2], vec![3.0, 10.0]),
+            Series::from_vec(&[], tss(&[1, 2]), vec![3.0, 10.0]),
             Array::scalar(0.0),
         ));
         let hab = sc.add_operator(Add::new(), (ha, hb), None);
@@ -423,7 +429,7 @@ mod tests {
         let hout = sc.add_operator(Multiply::new(), (hab, ha), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (hout,), None);
 
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         assert_eq!(series.len(), 2);
@@ -435,18 +441,18 @@ mod tests {
     async fn scenario_run_filter() {
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 2, 3, 4], vec![1.0, 5.0, 2.0, 10.0]),
+            Series::from_vec(&[], tss(&[1, 2, 3, 4]), vec![1.0, 5.0, 2.0, 10.0]),
             Array::scalar(0.0),
         ));
         let ho = sc.add_operator(Filter::new(|v: &Array<f64>| v[0] > 3.0), (ha,), None);
         let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
 
         let series: &Series<f64> = sc.value(hseries);
         // passes: ts=2(5.0), ts=4(10.0)
         assert_eq!(series.len(), 2);
-        assert_eq!(series.timestamps(), &[2, 4]);
+        assert_eq!(series.timestamps(), tss(&[2, 4]).as_slice());
         assert_eq!(series.values(), &[5.0, 10.0]);
     }
 
@@ -456,19 +462,19 @@ mod tests {
 
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 2, 3], vec![10.0, 20.0, 30.0]),
+            Series::from_vec(&[], tss(&[1, 2, 3]), vec![10.0, 20.0, 30.0]),
             Array::scalar(0.0),
         ));
-        let hclock = sc.add_source(clock(vec![2]));
+        let hclock = sc.add_source(clock(tss(&[2])));
 
         let ho = sc.add_operator(Filter::new(|_: &Array<f64>| true), (ha,), Some(hclock));
         let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
 
         let series: &Series<f64> = sc.value(hs);
         assert_eq!(series.len(), 1);
-        assert_eq!(series.timestamps(), &[2]);
+        assert_eq!(series.timestamps(), tss(&[2]).as_slice());
         assert_eq!(series.values(), &[20.0]);
     }
 
@@ -478,23 +484,23 @@ mod tests {
 
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 2, 3], vec![1.0, 2.0, 3.0]),
+            Series::from_vec(&[], tss(&[1, 2, 3]), vec![1.0, 2.0, 3.0]),
             Array::scalar(0.0),
         ));
         let hb = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 3], vec![10.0, 30.0]),
+            Series::from_vec(&[], tss(&[1, 3]), vec![10.0, 30.0]),
             Array::scalar(0.0),
         ));
-        let hclock = sc.add_source(clock(vec![2]));
+        let hclock = sc.add_source(clock(tss(&[2])));
 
         let ho = sc.add_operator(Add::new(), (ha, hb), Some(hclock));
         let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
 
         let series: &Series<f64> = sc.value(hs);
         assert_eq!(series.len(), 1);
-        assert_eq!(series.timestamps(), &[2]);
+        assert_eq!(series.timestamps(), tss(&[2]).as_slice());
         assert_eq!(series.values(), &[12.0]);
     }
 
@@ -504,19 +510,19 @@ mod tests {
 
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], vec![1, 2, 3, 4, 5], vec![10.0, 20.0, 30.0, 40.0, 50.0]),
+            Series::from_vec(&[], tss(&[1, 2, 3, 4, 5]), vec![10.0, 20.0, 30.0, 40.0, 50.0]),
             Array::scalar(0.0),
         ));
-        let hclock = sc.add_source(clock(vec![2, 4]));
+        let hclock = sc.add_source(clock(tss(&[2, 4])));
 
         let ho = sc.add_operator(Filter::new(|_: &Array<f64>| true), (ha,), Some(hclock));
         let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
 
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
 
         let series: &Series<f64> = sc.value(hs);
         assert_eq!(series.len(), 2);
-        assert_eq!(series.timestamps(), &[2, 4]);
+        assert_eq!(series.timestamps(), tss(&[2, 4]).as_slice());
         assert_eq!(series.values(), &[20.0, 40.0]);
     }
 }

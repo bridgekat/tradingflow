@@ -12,6 +12,7 @@ use std::any::TypeId;
 
 use pyo3::prelude::*;
 
+use crate::time::Instant;
 use crate::{Array, Series};
 use crate::{ErasedOperator, Notify};
 
@@ -60,7 +61,7 @@ pub fn make_py_operator(
     output_shape: &[usize],
     py_inputs: PyObject,
     py_operator: PyObject,
-    timestamp: i64,
+    timestamp: Instant,
     error_slot: ErrorSlot,
 ) -> PyResult<ErasedOperator> {
     // Allocate output (generic on T) and create its Python view.
@@ -99,8 +100,9 @@ pub fn make_py_operator(
         .unbind();
 
     // Call operator.init(inputs, timestamp) to get initial state.
+    // Wire format is TAI ns (matches numpy naive `datetime64[ns]`).
     let py_state = py_operator
-        .call_method1(py, "init", (&py_inputs, timestamp))?;
+        .call_method1(py, "init", (&py_inputs, timestamp.as_nanos()))?;
 
     let state = Box::new(PyOperatorState {
         py_operator,
@@ -144,7 +146,7 @@ unsafe fn py_compute_fn(
     state_ptr: *mut u8,
     _input_ptrs: &[*const u8],
     _output_ptr: *mut u8,
-    timestamp: i64,
+    timestamp: Instant,
     notify: &Notify,
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut PyOperatorState) };
@@ -174,7 +176,7 @@ unsafe fn py_compute_fn(
                     &state.py_state,
                     &state.py_inputs,
                     &state.py_output,
-                    timestamp,
+                    timestamp.as_nanos(),
                     &state.py_notify,
                 ),
             )?

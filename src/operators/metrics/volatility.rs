@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar};
 
 /// Population standard deviation of period returns since inception.
@@ -31,7 +32,7 @@ impl<T: Scalar + Float> Operator for Volatility<T> {
     type Inputs = (Array<T>,);
     type Output = Array<T>;
 
-    fn init(self, _inputs: (&Array<T>,), _timestamp: i64) -> (Self::State, Array<T>) {
+    fn init(self, _inputs: (&Array<T>,), _timestamp: Instant) -> (Self::State, Array<T>) {
         (
             VolatilityState {
                 prev: T::nan(),
@@ -47,7 +48,7 @@ impl<T: Scalar + Float> Operator for Volatility<T> {
         state: &mut VolatilityState<T>,
         inputs: (&Array<T>,),
         output: &mut Array<T>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         let current = inputs.0[0];
@@ -75,20 +76,24 @@ impl<T: Scalar + Float> Operator for Volatility<T> {
 mod tests {
     use super::*;
 
+    fn ts(n: i64) -> Instant {
+        Instant::from_nanos(n)
+    }
+
     #[test]
     fn basic() {
         let a = Array::scalar(0.0_f64);
-        let (mut s, mut o) = Volatility::new().init((&a,), 0);
+        let (mut s, mut o) = Volatility::new().init((&a,), ts(0));
 
         let mut a = Array::scalar(100.0);
-        Volatility::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
+        Volatility::compute(&mut s, (&a,), &mut o, ts(1), &Notify::new(&[], 0));
 
         a[0] = 110.0; // r = 0.10
-        Volatility::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], 0));
+        Volatility::compute(&mut s, (&a,), &mut o, ts(2), &Notify::new(&[], 0));
         assert_eq!(o[0], 0.0); // single return => zero std
 
         a[0] = 99.0; // r = -0.10
-        Volatility::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], 0));
+        Volatility::compute(&mut s, (&a,), &mut o, ts(3), &Notify::new(&[], 0));
         // returns: 0.10, -0.10 => mean=0, var=0.01, std=0.10
         assert!((o[0] - 0.10).abs() < 1e-10);
     }

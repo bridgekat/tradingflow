@@ -8,6 +8,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
+use crate::time::Instant;
 use crate::types::Notify;
 
 use super::node::Node;
@@ -73,7 +74,7 @@ impl Graph {
     /// onto a min-heap keyed by node index (= topological order).  Each
     /// operator is invoked with a [`Notify`] context; if it produces output,
     /// its downstream nodes are scheduled in turn.
-    pub fn flush(&mut self, timestamp: i64, updated_sources: &[usize]) {
+    pub fn flush(&mut self, timestamp: Instant, updated_sources: &[usize]) {
         let Self {
             nodes,
             incoming,

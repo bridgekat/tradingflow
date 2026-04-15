@@ -1,187 +1,30 @@
-//! Clock sources — emit `()` events at calendar-aligned timestamps.
+//! Clock source — emits `()` events at supplied timestamps.
+//!
+//! Calendar-aligned schedules (daily / monthly in a given timezone) are
+//! generated on the Python side via `zoneinfo` and passed to [`clock`] as a
+//! pre-computed list.  Keeping calendar/timezone logic in Python lets the
+//! Rust core stay free of `chrono` / `chrono-tz`.
+//!
+//! A clock source can be used two ways:
+//!
+//! 1. As the sole trigger of a time-series-semantics operator, via the
+//!    `trigger` argument of
+//!    [`Scenario::add_operator`](crate::Scenario::add_operator).
+//! 2. To drive a regular Array-valued input on a message-passing operator
+//!    (e.g. a predictor that distinguishes rebalance ticks from data
+//!    ticks), route the clock through a trivial
+//!    [`Const`](crate::operators::Const) operator clocked by it; the
+//!    `Const`'s output is an `Array<f64>` handle that can be wired as a
+//!    normal input.
+
+use crate::time::Instant;
 
 use super::iter_source::IterSource;
 
-/// Create a clock source from explicit timestamps (nanoseconds since epoch).
+/// Create a clock source from explicit timestamps.
 ///
 /// The output node holds `()` (zero-sized, purely a trigger).
-pub fn clock(timestamps: Vec<i64>) -> IterSource<()> {
-    let time_range = if timestamps.is_empty() {
-        None
-    } else {
-        Some((timestamps[0], *timestamps.last().unwrap()))
-    };
-    let source = IterSource::new(timestamps.into_iter().map(|ts| (ts, ())), ());
-    match time_range {
-        Some((first, last)) => source.with_time_range(first, last),
-        None => source,
-    }
-}
-
-/// Generate daily timestamps (midnight in the given timezone) between
-/// `start_ns` and `end_ns` (inclusive bounds, nanoseconds since epoch).
-///
-/// `tz`: IANA timezone name (e.g. `"Asia/Shanghai"`, `"US/Eastern"`).
-///
-/// # Panics
-///
-/// Panics if `tz` is not a valid IANA timezone name.
-pub fn daily_clock(start_ns: i64, end_ns: i64, tz: &str) -> IterSource<()> {
-    let timestamps = generate_calendar_timestamps(start_ns, end_ns, tz, CalendarFreq::Daily);
-    clock(timestamps)
-}
-
-/// Generate monthly timestamps (midnight on the first day of each month
-/// in the given timezone) between `start_ns` and `end_ns`.
-///
-/// # Panics
-///
-/// Panics if `tz` is not a valid IANA timezone name.
-pub fn monthly_clock(start_ns: i64, end_ns: i64, tz: &str) -> IterSource<()> {
-    let timestamps = generate_calendar_timestamps(start_ns, end_ns, tz, CalendarFreq::Monthly);
-    clock(timestamps)
-}
-
-// ---------------------------------------------------------------------------
-// Calendar timestamp generation
-// ---------------------------------------------------------------------------
-
-enum CalendarFreq {
-    Daily,
-    Monthly,
-}
-
-fn generate_calendar_timestamps(
-    start_ns: i64,
-    end_ns: i64,
-    tz: &str,
-    freq: CalendarFreq,
-) -> Vec<i64> {
-    use chrono::{DateTime, Datelike, TimeZone};
-    use chrono_tz::Tz;
-
-    let tz: Tz = tz
-        .parse()
-        .unwrap_or_else(|_| panic!("invalid timezone: {tz}"));
-
-    let start_utc = DateTime::from_timestamp_nanos(start_ns);
-    let end_utc = DateTime::from_timestamp_nanos(end_ns);
-
-    let start_local = start_utc.with_timezone(&tz);
-    let end_local = end_utc.with_timezone(&tz);
-
-    let mut timestamps = Vec::new();
-    let mut date = start_local.date_naive();
-    let end_date = end_local.date_naive();
-
-    // Align to frequency boundary.
-    match freq {
-        CalendarFreq::Monthly => {
-            // Advance to the first day of the current or next month.
-            if date.day() != 1 {
-                date = if date.month() == 12 {
-                    chrono::NaiveDate::from_ymd_opt(date.year() + 1, 1, 1).unwrap()
-                } else {
-                    chrono::NaiveDate::from_ymd_opt(date.year(), date.month() + 1, 1).unwrap()
-                };
-            }
-        }
-        CalendarFreq::Daily => {} // already aligned
-    }
-
-    while date <= end_date {
-        // Convert local midnight to UTC nanoseconds.
-        let midnight = date.and_hms_opt(0, 0, 0).unwrap();
-        if let Some(utc) = tz.from_local_datetime(&midnight).earliest() {
-            let ns = utc.timestamp_nanos_opt().unwrap();
-            if ns >= start_ns && ns <= end_ns {
-                timestamps.push(ns);
-            }
-        }
-
-        // Advance.
-        match freq {
-            CalendarFreq::Daily => {
-                date = date.succ_opt().unwrap();
-            }
-            CalendarFreq::Monthly => {
-                date = if date.month() == 12 {
-                    chrono::NaiveDate::from_ymd_opt(date.year() + 1, 1, 1).unwrap()
-                } else {
-                    chrono::NaiveDate::from_ymd_opt(date.year(), date.month() + 1, 1).unwrap()
-                };
-            }
-        }
-    }
-
-    timestamps
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn daily_clock_generates_days() {
-        // 2024-01-01 00:00 UTC+8 to 2024-01-05 00:00 UTC+8
-        let start = chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let end = chrono::NaiveDate::from_ymd_opt(2024, 1, 5)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-
-        use chrono::TimeZone;
-        let tz: chrono_tz::Tz = "Asia/Shanghai".parse().unwrap();
-        let start_ns = tz
-            .from_local_datetime(&start)
-            .unwrap()
-            .timestamp_nanos_opt()
-            .unwrap();
-        let end_ns = tz
-            .from_local_datetime(&end)
-            .unwrap()
-            .timestamp_nanos_opt()
-            .unwrap();
-
-        let ts =
-            generate_calendar_timestamps(start_ns, end_ns, "Asia/Shanghai", CalendarFreq::Daily);
-        assert_eq!(ts.len(), 5); // Jan 1,2,3,4,5
-    }
-
-    #[test]
-    fn monthly_clock_generates_months() {
-        use chrono::TimeZone;
-        let tz: chrono_tz::Tz = "Asia/Shanghai".parse().unwrap();
-
-        let start = chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let end = chrono::NaiveDate::from_ymd_opt(2024, 6, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-
-        let start_ns = tz
-            .from_local_datetime(&start)
-            .unwrap()
-            .timestamp_nanos_opt()
-            .unwrap();
-        let end_ns = tz
-            .from_local_datetime(&end)
-            .unwrap()
-            .timestamp_nanos_opt()
-            .unwrap();
-
-        let ts =
-            generate_calendar_timestamps(start_ns, end_ns, "Asia/Shanghai", CalendarFreq::Monthly);
-        assert_eq!(ts.len(), 6); // Jan, Feb, Mar, Apr, May, Jun
-    }
+pub fn clock(timestamps: Vec<Instant>) -> IterSource<()> {
+    let count = timestamps.len();
+    IterSource::new(timestamps.into_iter().map(|ts| (ts, ())), ()).with_estimated_count(count)
 }

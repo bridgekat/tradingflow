@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
+use crate::time::{Duration, Instant};
 use crate::{Array, Notify, Operator, Scalar, Series};
 
 // ===========================================================================
@@ -60,9 +61,9 @@ pub trait Accumulator: Send + 'static {
 pub enum Window {
     /// Fixed number of most recent elements.
     Count(usize),
-    /// All elements whose timestamp is within `window_ns` nanoseconds of
+    /// All elements whose timestamp is within the given duration of
     /// the most recent element's timestamp.
-    TimeDelta(i64),
+    TimeDelta(Duration),
 }
 
 // ===========================================================================
@@ -95,12 +96,12 @@ impl<A: Accumulator> Rolling<A> {
     /// Create a time-delta-based rolling operator.
     ///
     /// The window contains all elements whose timestamp is within
-    /// `window_ns` nanoseconds of the most recent element's timestamp.
+    /// `window` of the most recent element's timestamp.
     /// Output is produced as soon as at least one element is in the window.
-    pub fn time_delta(window_ns: i64) -> Self {
-        assert!(window_ns >= 0, "window_ns must be >= 0");
+    pub fn time_delta(window: Duration) -> Self {
+        assert!(window.as_nanos() >= 0, "window must be non-negative");
         Self {
-            window: Window::TimeDelta(window_ns),
+            window: Window::TimeDelta(window),
             _phantom: PhantomData,
         }
     }
@@ -124,7 +125,7 @@ impl<A: Accumulator> Operator for Rolling<A> {
     fn init(
         self,
         inputs: (&Series<A::Scalar>,),
-        _timestamp: i64,
+        _timestamp: Instant,
     ) -> (RollingState<A>, Array<A::Scalar>) {
         let input_shape = inputs.0.shape();
         let output_shape = A::output_shape(input_shape);
@@ -145,7 +146,7 @@ impl<A: Accumulator> Operator for Rolling<A> {
         state: &mut RollingState<A>,
         inputs: (&Series<A::Scalar>,),
         output: &mut Array<A::Scalar>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         let series = inputs.0;
@@ -168,9 +169,9 @@ impl<A: Accumulator> Operator for Rolling<A> {
                     return false;
                 }
             }
-            Window::TimeDelta(w_ns) => {
+            Window::TimeDelta(w) => {
                 let current_ts = series.timestamps()[len - 1];
-                let cutoff = current_ts - w_ns;
+                let cutoff = current_ts - w;
                 while state.start < len && series.timestamps()[state.start] < cutoff {
                     state.accumulator.remove(series.at(state.start));
                     state.start += 1;

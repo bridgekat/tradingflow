@@ -2,6 +2,7 @@
 
 use std::marker::PhantomData;
 
+use crate::time::Instant;
 use crate::{Notify, Operator};
 
 /// Identity operator: clones input to output unchanged.
@@ -31,7 +32,7 @@ impl<T: Clone + Send + 'static> Operator for Id<T> {
     type Inputs = (T,);
     type Output = T;
 
-    fn init(self, inputs: (&T,), _timestamp: i64) -> ((), T) {
+    fn init(self, inputs: (&T,), _timestamp: Instant) -> ((), T) {
         ((), inputs.0.clone())
     }
 
@@ -40,7 +41,7 @@ impl<T: Clone + Send + 'static> Operator for Id<T> {
         _state: &mut (),
         inputs: (&T,),
         output: &mut T,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         output.clone_from(inputs.0);
@@ -57,14 +58,14 @@ mod tests {
     #[test]
     fn id_array() {
         let a = Array::scalar(42.0_f64);
-        let (mut s, mut o) = Id::<Array<f64>>::new().init((&a,), i64::MIN);
+        let (mut s, mut o) = Id::<Array<f64>>::new().init((&a,), Instant::MIN);
         assert_eq!(o.as_slice(), &[42.0]);
         let b = Array::scalar(99.0_f64);
         assert!(Id::<Array<f64>>::compute(
             &mut s,
             (&b,),
             &mut o,
-            1,
+            Instant::from_nanos(1),
             &Notify::new(&[], 0)
         ));
         assert_eq!(o.as_slice(), &[99.0]);
@@ -73,14 +74,14 @@ mod tests {
     #[test]
     fn id_string() {
         let a = String::from("hello");
-        let (mut s, mut o) = Id::<String>::new().init((&a,), i64::MIN);
+        let (mut s, mut o) = Id::<String>::new().init((&a,), Instant::MIN);
         assert_eq!(o, "hello");
         let b = String::from("world");
         assert!(Id::<String>::compute(
             &mut s,
             (&b,),
             &mut o,
-            1,
+            Instant::from_nanos(1),
             &Notify::new(&[], 0)
         ));
         assert_eq!(o, "world");

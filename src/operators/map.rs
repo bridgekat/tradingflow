@@ -3,6 +3,7 @@
 //! - [`Map`] — allocating: `Fn(&S) -> T`.
 //! - [`MapInplace`] — in-place: `Fn(&S, &mut T) -> bool`.
 
+use crate::time::Instant;
 use crate::{Notify, Operator};
 
 /// Map operator: applies a function `S → T` to the input on each tick.
@@ -44,7 +45,7 @@ where
     type Inputs = (S,);
     type Output = T;
 
-    fn init(self, inputs: (&S,), _timestamp: i64) -> (Self, T) {
+    fn init(self, inputs: (&S,), _timestamp: Instant) -> (Self, T) {
         let output = (self.f)(inputs.0);
         (self, output)
     }
@@ -54,7 +55,7 @@ where
         state: &mut Self,
         inputs: (&S,),
         output: &mut T,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         *output = (state.f)(inputs.0);
@@ -104,7 +105,7 @@ where
     type Inputs = (S,);
     type Output = T;
 
-    fn init(self, inputs: (&S,), _timestamp: i64) -> (Self, T) {
+    fn init(self, inputs: (&S,), _timestamp: Instant) -> (Self, T) {
         let mut output = self.initial.clone();
         (self.f)(inputs.0, &mut output);
         (self, output)
@@ -115,7 +116,7 @@ where
         state: &mut Self,
         inputs: (&S,),
         output: &mut T,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         (state.f)(inputs.0, output)
@@ -127,6 +128,9 @@ mod tests {
     use super::*;
     use crate::array::Array;
     use crate::operator::Operator;
+    use crate::time::Instant;
+
+    fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
     #[test]
     fn map_scalar_double() {
@@ -136,11 +140,11 @@ mod tests {
             out[0] *= 2.0;
             out
         })
-        .init((&a,), i64::MIN);
+        .init((&a,), Instant::MIN);
         assert_eq!(o.as_slice(), &[10.0]);
 
         let b = Array::scalar(3.0_f64);
-        Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], 0));
+        Map::compute(&mut s, (&b,), &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[6.0]);
     }
 
@@ -149,11 +153,11 @@ mod tests {
         // Array<f64> → String
         let a = Array::scalar(42.0_f64);
         let (mut s, mut o) =
-            Map::new(|a: &Array<f64>| format!("{:.0}", a[0])).init((&a,), i64::MIN);
+            Map::new(|a: &Array<f64>| format!("{:.0}", a[0])).init((&a,), Instant::MIN);
         assert_eq!(o, "42");
 
         let b = Array::scalar(99.0_f64);
-        Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], 0));
+        Map::compute(&mut s, (&b,), &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o, "99");
     }
 
@@ -163,11 +167,11 @@ mod tests {
         let (mut s, mut o) = Map::new(|a: &Array<f64>| {
             Array::scalar(a.as_slice().iter().sum::<f64>())
         })
-        .init((&a,), i64::MIN);
+        .init((&a,), Instant::MIN);
         assert_eq!(o.as_slice(), &[6.0]);
 
         let b = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
-        Map::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], 0));
+        Map::compute(&mut s, (&b,), &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[60.0]);
     }
 
@@ -182,11 +186,11 @@ mod tests {
                 },
                 Array::scalar(0.0),
             )
-            .init((&a,), i64::MIN);
+            .init((&a,), Instant::MIN);
         assert_eq!(o.as_slice(), &[10.0]);
 
         let b = Array::scalar(3.0);
-        MapInplace::compute(&mut s, (&b,), &mut o, 1, &Notify::new(&[], 0));
+        MapInplace::compute(&mut s, (&b,), &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[6.0]);
     }
 
@@ -206,7 +210,7 @@ mod tests {
                 },
                 Array::scalar(0.0),
             )
-            .init((&a,), i64::MIN);
+            .init((&a,), Instant::MIN);
 
         // Input <= 3 → returns false.
         let b = Array::scalar(2.0);
@@ -214,7 +218,7 @@ mod tests {
             &mut s,
             (&b,),
             &mut o,
-            1,
+            ts(1),
             &Notify::new(&[], 0)
         ));
 
@@ -224,7 +228,7 @@ mod tests {
             &mut s,
             (&c,),
             &mut o,
-            2,
+            ts(2),
             &Notify::new(&[], 0)
         ));
         assert_eq!(o.as_slice(), &[5.0]);

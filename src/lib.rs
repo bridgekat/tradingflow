@@ -37,14 +37,16 @@
 //! * [`source`] — `Source` trait, `ErasedSource`.
 //! * [`operator`] — `Operator` trait, `ErasedOperator`.
 //! * [`scenario`] — `Scenario`, `Handle`, `InputTypesHandles`.
+//! * [`time`] — `Instant` (SI nanoseconds since 1970-01-01 00:00:00 TAI) and
+//!   `Duration` (SI nanoseconds).
 //! * [`types`] — `Scalar`, `PeekableReceiver`, `InputTypes`.
 //! * [`operators`] — built-in operators: structural (`Const`, `Id`, `Filter`,
 //!   `Where`, `Select`, `Concat`, `Stack`, `Cast`), series (`Record`, `Last`,
 //!   `Lag`), element-wise numeric ([`operators::num`]), rolling-window
 //!   ([`operators::rolling`]), and stock-specific ([`operators::stocks`]).
 //! * [`sources`] — built-in data sources: `ArraySource`, `CsvSource`,
-//!   `IterSource`, and clock sources (`clock`, `daily_clock`,
-//!   `monthly_clock`).
+//!   `IterSource`, and the `clock` trigger source.  Calendar-aligned
+//!   clock schedules live in the Python wrapper.
 //! * [`utils`] — `Schema`.
 //! * [`bridge`] — PyO3 bindings (behind the `python` feature).
 //!
@@ -58,6 +60,7 @@ pub mod scenario;
 pub mod series;
 pub mod source;
 pub mod sources;
+pub mod time;
 pub mod types;
 pub mod utils;
 
@@ -66,6 +69,7 @@ pub use operator::{ErasedOperator, Operator};
 pub use scenario::Scenario;
 pub use series::Series;
 pub use source::{ErasedSource, Source};
+pub use time::{Duration, Instant, tai_to_utc, utc_to_tai};
 pub use types::{InputTypes, Notify, PeekableReceiver, Scalar};
 pub use utils::Schema;
 

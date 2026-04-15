@@ -55,6 +55,14 @@ class FinancialReportSource(NativeSource):
         Offset added to the report date when the notice date is missing
         (only used when *use_effective_date* is `True`).  Defaults to
         90 days.
+    is_utc
+        If `True` (default), date strings are interpreted as UTC
+        wall-clock instants and converted to this crate's TAI timeline
+        via the IERS leap-second table.  If `False`, date strings are
+        treated as TAI wall-clock directly.
+    tz_offset
+        Offset of the date-string timezone from the reference timescale.
+        Defaults to zero.
     start
         Optional inclusive start bound.  Rows before this timestamp are
         dropped and the reported time range is clamped.
@@ -75,6 +83,8 @@ class FinancialReportSource(NativeSource):
         with_report_date: bool = False,
         use_effective_date: bool = True,
         notice_date_fallback: np.timedelta64 = np.timedelta64(90, "D"),
+        is_utc: bool = True,
+        tz_offset: np.timedelta64 = np.timedelta64(0, "ns"),
         start: np.datetime64 | None = None,
         end: np.datetime64 | None = None,
         name: str | None = None,
@@ -86,6 +96,7 @@ class FinancialReportSource(NativeSource):
             shape = () if stride == 1 else (stride,)
 
         fallback_ns = int(np.timedelta64(notice_date_fallback, "ns").astype(np.int64))
+        tz_offset_ns = int(np.timedelta64(tz_offset, "ns").astype(np.int64))
 
         params: dict = {
             "path": str(Path(path).resolve()),
@@ -95,6 +106,8 @@ class FinancialReportSource(NativeSource):
             "with_report_date": with_report_date,
             "use_effective_date": use_effective_date,
             "notice_date_fallback_ns": fallback_ns,
+            "is_utc": is_utc,
+            "tz_offset_ns": tz_offset_ns,
         }
         if start is not None:
             params["start_ns"] = int(coerce_timestamp(start))

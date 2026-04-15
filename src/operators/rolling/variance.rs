@@ -5,6 +5,7 @@
 
 use num_traits::Float;
 
+
 use crate::Scalar;
 
 use super::accumulator::Accumulator;
@@ -73,25 +74,28 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
 mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
+    use crate::time::{Duration, Instant};
     use crate::{Array, Notify, Operator, Series};
 
     type RollingVariance = Rolling<VarianceAccumulator<f64>>;
+
+    fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
     fn push_compute(
         s: &mut Series<f64>,
         state: &mut <RollingVariance as Operator>::State,
         out: &mut Array<f64>,
-        ts: i64,
+        t: i64,
         val: f64,
     ) -> bool {
-        s.push(ts, &[val]);
-        RollingVariance::compute(state, (s,), out, ts, &Notify::new(&[], 0))
+        s.push(ts(t), &[val]);
+        RollingVariance::compute(state, (s,), out, ts(t), &Notify::new(&[], 0))
     }
 
     #[test]
     fn var_basic() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::count(3).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingVariance::count(3).init((&s,), Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(!push_compute(&mut s, &mut state, &mut out, 2, 2.0));
@@ -104,7 +108,7 @@ mod tests {
     #[test]
     fn var_nan() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::count(2).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingVariance::count(2).init((&s,), Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
@@ -121,21 +125,21 @@ mod tests {
     #[test]
     fn var_time_delta() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::time_delta(200).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingVariance::time_delta(Duration::from_nanos(200)).init((&s,), Instant::MIN);
 
-        s.push(100, &[2.0]);
+        s.push(ts(100), &[2.0]);
         assert!(RollingVariance::compute(
             &mut state,
             (&s,),
             &mut out,
-            100,
+            ts(100),
             &Notify::new(&[], 0)
         ));
         // Single element → variance = 0.
         assert_eq!(out.as_slice()[0], 0.0);
 
-        s.push(200, &[4.0]);
-        RollingVariance::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], 0));
+        s.push(ts(200), &[4.0]);
+        RollingVariance::compute(&mut state, (&s,), &mut out, ts(200), &Notify::new(&[], 0));
         // Var([2,4]) = (4+16)/2 - 9 = 1.0
         assert!((out.as_slice()[0] - 1.0).abs() < 1e-10);
     }

@@ -2,6 +2,7 @@
 
 use num_traits::Float;
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar};
 
 /// Element-wise NaN replacement: replaces each NaN with `val`.
@@ -21,7 +22,7 @@ impl<T: Scalar + Float> Operator for Fillna<T> {
     type Inputs = (Array<T>,);
     type Output = Array<T>;
 
-    fn init(self, inputs: (&Array<T>,), _timestamp: i64) -> (T, Array<T>) {
+    fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> (T, Array<T>) {
         (self.val, Array::zeros(inputs.0.shape()))
     }
 
@@ -30,7 +31,7 @@ impl<T: Scalar + Float> Operator for Fillna<T> {
         state: &mut T,
         inputs: (&Array<T>,),
         output: &mut Array<T>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         let val = *state;
@@ -50,8 +51,8 @@ mod tests {
     #[test]
     fn test_fillna() {
         let a = Array::from_vec(&[3], vec![1.0_f64, f64::NAN, 3.0]);
-        let (mut s, mut o) = Fillna::new(0.0).init((&a,), i64::MIN);
-        Fillna::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Fillna::new(0.0).init((&a,), Instant::MIN);
+        Fillna::compute(&mut s, (&a,), &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o[0], 1.0);
         assert_eq!(o[1], 0.0);
         assert_eq!(o[2], 3.0);

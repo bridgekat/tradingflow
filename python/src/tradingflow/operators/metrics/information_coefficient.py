@@ -7,14 +7,12 @@ import numpy as np
 from ...views import ArrayView, SeriesView
 from ...operator import Operator, Notify
 from ...types import Array, Series, Handle, NodeKind
-from ...utils import coerce_timestamp
 
 
 @dataclass(slots=True)
 class InformationCoefficientState:
     ranking: bool
     num_stocks: int
-    trading_start: int | None
     initialized: bool = False
     predictions: np.ndarray | None = None
     sum_ic: float = 0.0
@@ -61,8 +59,6 @@ class InformationCoefficient(
     ranking
         If ``False`` (default), compute Pearson IC.  If ``True``,
         rank-transform both inputs first to compute Spearman RankIC.
-    trading_start
-        If set, suppress output before this timestamp.
     min_valid
         Minimum number of non-NaN cross-sectional pairs required to
         compute a valid daily IC.  Days below threshold are skipped.
@@ -77,7 +73,6 @@ class InformationCoefficient(
         adjusted_prices_series: Handle,
         *,
         ranking: bool = False,
-        trading_start: np.datetime64 | None = None,
         min_valid: int = 10,
         min_periods: int = 1,
     ) -> None:
@@ -87,7 +82,6 @@ class InformationCoefficient(
 
         self._ranking = ranking
         self._num_stocks = predictions_series.shape[0]
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         super().__init__(
             inputs=(predictions_series, adjusted_prices_series),
@@ -101,7 +95,6 @@ class InformationCoefficient(
         return InformationCoefficientState(
             ranking=self._ranking,
             num_stocks=self._num_stocks,
-            trading_start=self._trading_start,
         )
 
     @staticmethod
@@ -132,10 +125,6 @@ class InformationCoefficient(
 
         # Gate: new prediction?
         if not predictions_produced:
-            return False
-
-        # Suppress output before trading start.
-        if state.trading_start is not None and timestamp < state.trading_start:
             return False
 
         # First prediction stores scores without emitting.

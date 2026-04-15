@@ -17,6 +17,7 @@
 
 use std::any::TypeId;
 
+use super::time::Instant;
 use super::types::{InputTypes, Notify};
 
 /// A synchronous computation node that reads typed inputs and writes a
@@ -51,7 +52,7 @@ pub trait Operator: 'static {
     fn init(
         self,
         inputs: <Self::Inputs as InputTypes>::Refs<'_>,
-        timestamp: i64,
+        timestamp: Instant,
     ) -> (Self::State, Self::Output);
 
     /// Update the output from inputs and current state.
@@ -65,7 +66,7 @@ pub trait Operator: 'static {
         state: &mut Self::State,
         inputs: <Self::Inputs as InputTypes>::Refs<'_>,
         output: &mut Self::Output,
-        timestamp: i64,
+        timestamp: Instant,
         notify: &Notify<'_>,
     ) -> bool;
 }
@@ -81,7 +82,7 @@ pub trait Operator: 'static {
 ///
 /// * `state_ptr: *mut u8` — from [`Box::into_raw`], points to `O::State`.
 /// * `output_ptr: *mut u8` — from [`Box::into_raw`], points to `O::Output`.
-pub type InitFn = Box<dyn FnOnce(&[*const u8], i64) -> (*mut u8, *mut u8)>;
+pub type InitFn = Box<dyn FnOnce(&[*const u8], Instant) -> (*mut u8, *mut u8)>;
 
 /// Type-erased compute function pointer for an operator.
 ///
@@ -90,13 +91,13 @@ pub type InitFn = Box<dyn FnOnce(&[*const u8], i64) -> (*mut u8, *mut u8)>;
 /// * `state_ptr: *mut u8` — points to `O::State`.
 /// * `input_ptrs: &[*const u8]` — pointers to input node values.
 /// * `output_ptr: *mut u8` — points to `O::Output`.
-/// * `timestamp: i64` — current flush timestamp.
+/// * `timestamp: Instant` — current flush timestamp.
 /// * `notify: &Notify` — notification context.
 ///
 /// # Returns
 ///
 /// * `true` if downstream propagation should occur.
-pub type ComputeFn = unsafe fn(*mut u8, &[*const u8], *mut u8, i64, &Notify) -> bool;
+pub type ComputeFn = unsafe fn(*mut u8, &[*const u8], *mut u8, Instant, &Notify) -> bool;
 
 /// Type-erased representation of an operator.
 ///
@@ -162,7 +163,7 @@ impl ErasedOperator {
             input_type_ids: <O::Inputs as InputTypes>::type_ids(arity),
             output_type_id: TypeId::of::<O::Output>(),
             is_clock_triggerable,
-            init_fn: Box::new(move |input_ptrs: &[*const u8], timestamp: i64| {
+            init_fn: Box::new(move |input_ptrs: &[*const u8], timestamp: Instant| {
                 // SAFETY: call site guarantees `input_ptrs` point to valid objects of types
                 // matching `input_type_ids`.
                 let inputs = unsafe { <O::Inputs as InputTypes>::from_ptrs(input_ptrs) };
@@ -218,7 +219,7 @@ impl ErasedOperator {
     ///
     /// * `input_ptrs` must point to valid objects whose types match with
     ///   [`self.input_type_ids`](Self::input_type_ids).
-    pub unsafe fn init(self, input_ptrs: &[*const u8], timestamp: i64) -> (*mut u8, *mut u8) {
+    pub unsafe fn init(self, input_ptrs: &[*const u8], timestamp: Instant) -> (*mut u8, *mut u8) {
         (self.init_fn)(input_ptrs, timestamp)
     }
 }
@@ -228,7 +229,7 @@ unsafe fn erased_compute_fn<O: Operator>(
     state_ptr: *mut u8,
     input_ptrs: &[*const u8],
     output_ptr: *mut u8,
-    timestamp: i64,
+    timestamp: Instant,
     notify: &Notify<'_>,
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut O::State) };

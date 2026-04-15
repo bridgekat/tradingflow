@@ -1,5 +1,6 @@
 //! Stack operator — stacks N arrays along a new axis.
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar};
 
 /// Stack N homogeneous arrays along a new axis.
@@ -28,7 +29,7 @@ impl<T: Scalar> Operator for Stack<T> {
     type Inputs = [Array<T>];
     type Output = Array<T>;
 
-    fn init(self, inputs: Box<[&Array<T>]>, _timestamp: i64) -> (StackState, Array<T>) {
+    fn init(self, inputs: Box<[&Array<T>]>, _timestamp: Instant) -> (StackState, Array<T>) {
         let first = inputs[0].shape();
         assert!(self.axis <= first.len(), "axis out of bounds");
         let state = StackState {
@@ -47,7 +48,7 @@ impl<T: Scalar> Operator for Stack<T> {
         state: &mut StackState,
         inputs: Box<[&Array<T>]>,
         output: &mut Array<T>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         super::concat::interleaved_copy(output, &inputs, state.outer_count, state.chunk_size);
@@ -79,8 +80,8 @@ mod tests {
         // [[[1,2,3],[4,5,6]], [[7,8,9],[10,11,12]]]
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
-        let (mut s, mut o) = Stack::<f64>::new(0).init(inputs.clone(), i64::MIN);
-        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Stack::<f64>::new(0).init(inputs.clone(), Instant::MIN);
+        Stack::compute(&mut s, inputs, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
             o.as_slice(),
@@ -94,8 +95,8 @@ mod tests {
         // [[[1,2,3],[7,8,9]], [[4,5,6],[10,11,12]]]
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
-        let (mut s, mut o) = Stack::<f64>::new(1).init(inputs.clone(), i64::MIN);
-        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Stack::<f64>::new(1).init(inputs.clone(), Instant::MIN);
+        Stack::compute(&mut s, inputs, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
             o.as_slice(),
@@ -109,8 +110,8 @@ mod tests {
         // [[[1,7],[2,8],[3,9]], [[4,10],[5,11],[6,12]]]
         let (a, b) = ab();
         let inputs: Box<[&Array<f64>]> = vec![&a, &b].into_boxed_slice();
-        let (mut s, mut o) = Stack::<f64>::new(2).init(inputs.clone(), i64::MIN);
-        Stack::compute(&mut s, inputs, &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Stack::<f64>::new(2).init(inputs.clone(), Instant::MIN);
+        Stack::compute(&mut s, inputs, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o.shape(), &[2, 3, 2]);
         assert_eq!(
             o.as_slice(),

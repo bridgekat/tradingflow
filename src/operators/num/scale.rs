@@ -2,6 +2,7 @@
 
 use std::ops;
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar};
 
 /// Element-wise scale: `x * c`.
@@ -21,7 +22,7 @@ impl<T: Scalar + ops::Mul<Output = T>> Operator for Scale<T> {
     type Inputs = (Array<T>,);
     type Output = Array<T>;
 
-    fn init(self, inputs: (&Array<T>,), _timestamp: i64) -> (T, Array<T>) {
+    fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> (T, Array<T>) {
         (self.c, Array::zeros(inputs.0.shape()))
     }
 
@@ -30,7 +31,7 @@ impl<T: Scalar + ops::Mul<Output = T>> Operator for Scale<T> {
         state: &mut T,
         inputs: (&Array<T>,),
         output: &mut Array<T>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         let c = state.clone();
@@ -50,8 +51,8 @@ mod tests {
     #[test]
     fn test_scale() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
-        let (mut s, mut o) = Scale::new(3.0).init((&a,), i64::MIN);
-        Scale::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Scale::new(3.0).init((&a,), Instant::MIN);
+        Scale::compute(&mut s, (&a,), &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[3.0, 6.0, 9.0]);
     }
 }

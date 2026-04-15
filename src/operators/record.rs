@@ -1,5 +1,6 @@
 //! Record operator — records array values into a time series.
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar, Series};
 
 /// Record an array stream into a time series.
@@ -28,7 +29,7 @@ impl<T: Scalar> Operator for Record<T> {
     type Inputs = (Array<T>,);
     type Output = Series<T>;
 
-    fn init(self, inputs: (&Array<T>,), _timestamp: i64) -> ((), Series<T>) {
+    fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> ((), Series<T>) {
         ((), Series::new(inputs.0.shape()))
     }
 
@@ -36,7 +37,7 @@ impl<T: Scalar> Operator for Record<T> {
         _state: &mut (),
         inputs: (&Array<T>,),
         output: &mut Series<T>,
-        timestamp: i64,
+        timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         output.push(timestamp, inputs.0.as_slice());
@@ -48,25 +49,28 @@ impl<T: Scalar> Operator for Record<T> {
 mod tests {
     use super::*;
     use crate::operator::Operator;
+    use crate::time::Instant;
+
+    fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
     #[test]
     fn scalar() {
         let a = Array::scalar(10.0_f64);
-        let (mut s, mut o) = Record::<f64>::new().init((&a,), i64::MIN);
-        Record::compute(&mut s, (&a,), &mut o, 100, &Notify::new(&[], 0));
+        let (mut s, mut o) = Record::<f64>::new().init((&a,), Instant::MIN);
+        Record::compute(&mut s, (&a,), &mut o, ts(100), &Notify::new(&[], 0));
         let mut a2 = a.clone();
         a2[0] = 20.0;
-        Record::compute(&mut s, (&a2,), &mut o, 200, &Notify::new(&[], 0));
+        Record::compute(&mut s, (&a2,), &mut o, ts(200), &Notify::new(&[], 0));
         assert_eq!(o.len(), 2);
-        assert_eq!(o.timestamps(), &[100, 200]);
+        assert_eq!(o.timestamps(), &[ts(100), ts(200)]);
         assert_eq!(o.values(), &[10.0, 20.0]);
     }
 
     #[test]
     fn vector() {
         let a = Array::from_vec(&[2], vec![1.0, 2.0_f64]);
-        let (mut s, mut o) = Record::<f64>::new().init((&a,), i64::MIN);
-        Record::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
+        let (mut s, mut o) = Record::<f64>::new().init((&a,), Instant::MIN);
+        Record::compute(&mut s, (&a,), &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o.len(), 1);
         assert_eq!(o.shape(), &[2]);
         assert_eq!(o.at(0), &[1.0, 2.0]);
@@ -75,7 +79,7 @@ mod tests {
     #[test]
     fn init_empty_series() {
         let a = Array::from_vec(&[2, 3], vec![0.0_f64; 6]);
-        let (_, o) = Record::<f64>::new().init((&a,), i64::MIN);
+        let (_, o) = Record::<f64>::new().init((&a,), Instant::MIN);
         assert_eq!(o.shape(), &[2, 3]);
         assert_eq!(o.len(), 0);
     }

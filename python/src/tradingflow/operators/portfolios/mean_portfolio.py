@@ -9,13 +9,11 @@ import numpy as np
 
 from ...operator import Operator, Notify
 from ...types import Array, Handle, NodeKind
-from ...utils import coerce_timestamp
 
 
 @dataclass(slots=True)
 class MeanPortfolioState:
     num_stocks: int
-    trading_start: int | None
     positions_fn: Callable[["MeanPortfolioState", np.ndarray], np.ndarray]
 
 
@@ -28,12 +26,14 @@ class MeanPortfolio(
 ):
     """Abstract portfolio constructor from predicted returns.
 
-    On each tick, reads predicted returns, delegates to ``positions_fn``
-    to compute position weights.
+    Triggered by new predicted returns from upstream.  Delegates to
+    ``positions_fn`` to compute position weights from the subset of
+    stocks with positive universe weights and finite predictions.  The
+    result is scattered back to the full dimension with zeros elsewhere.
 
-    Only stocks with positive universe weights and finite predicted
-    returns are passed to ``positions_fn``; the result is scattered back
-    to the full dimension with zeros elsewhere.
+    The rebalance cadence is inherited from upstream: when the predictor
+    is clock-triggered at rebalance dates, this operator runs at the
+    same cadence (driven by the predictor's input-production signal).
 
     Parameters
     ----------
@@ -45,8 +45,6 @@ class MeanPortfolio(
     positions_fn
         ``(state, mu) -> positions``.  Receives only the subset of
         stocks with positive universe weights and finite predictions.
-    trading_start
-        If set, outputs zero weights before this timestamp.
     """
 
     def __init__(
@@ -55,7 +53,6 @@ class MeanPortfolio(
         predicted_returns: Handle,
         *,
         positions_fn: Callable[[MeanPortfolioState, np.ndarray], np.ndarray],
-        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(predicted_returns.shape) == 1
@@ -63,7 +60,6 @@ class MeanPortfolio(
 
         self._num_stocks = predicted_returns.shape[0]
         self._positions_fn = positions_fn
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         inputs = (universe, predicted_returns)
         super().__init__(
@@ -77,7 +73,6 @@ class MeanPortfolio(
     def init(self, inputs: tuple, timestamp: int) -> MeanPortfolioState:
         return MeanPortfolioState(
             num_stocks=self._num_stocks,
-            trading_start=self._trading_start,
             positions_fn=self._positions_fn,
         )
 
@@ -91,10 +86,6 @@ class MeanPortfolio(
     ) -> bool:
         # Changes in universe only should not trigger recomputation.
         if not notify.input_produced()[1]:
-            return False
-
-        # Output zeros before trading start.
-        if state.trading_start is not None and timestamp < state.trading_start:
             return False
 
         universe = inputs[0].value()

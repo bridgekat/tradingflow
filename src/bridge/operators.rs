@@ -282,7 +282,7 @@ pub fn dispatch_native_operator(
                         ($Op:ty) => {
                             match (window, window_ns) {
                                 (Some(w), None) => add_operator_from_indices(sc, <$Op>::count(w), input_indices, trigger_index),
-                                (None, Some(w)) => add_operator_from_indices(sc, <$Op>::time_delta(w), input_indices, trigger_index),
+                                (None, Some(w)) => add_operator_from_indices(sc, <$Op>::time_delta(crate::time::Duration::from_nanos(w)), input_indices, trigger_index),
                                 _ => return Err(PyTypeError::new_err(format!("{kind} requires exactly one of 'window' or 'window_ns'"))),
                             }
                         };

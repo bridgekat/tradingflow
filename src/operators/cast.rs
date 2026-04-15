@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
+use crate::time::Instant;
 use crate::{Array, Notify, Operator, Scalar};
 
 /// Element-wise type conversion: `out[i] = input[i] as T`.
@@ -37,7 +38,7 @@ where
     type Inputs = (Array<S>,);
     type Output = Array<T>;
 
-    fn init(self, inputs: (&Array<S>,), _timestamp: i64) -> ((), Array<T>) {
+    fn init(self, inputs: (&Array<S>,), _timestamp: Instant) -> ((), Array<T>) {
         let src = inputs.0.as_slice();
         let data: Vec<T> = src.iter().map(|&v| v.as_()).collect();
         ((), Array::from_vec(inputs.0.shape(), data))
@@ -48,7 +49,7 @@ where
         _state: &mut (),
         inputs: (&Array<S>,),
         output: &mut Array<T>,
-        _timestamp: i64,
+        _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         let src = inputs.0.as_slice();
@@ -64,11 +65,12 @@ where
 mod tests {
     use super::*;
     use crate::operator::Operator;
+    use crate::time::Instant;
 
     #[test]
     fn cast_i32_to_f64() {
         let a = Array::from_vec(&[3], vec![1_i32, 2, 3]);
-        let (mut s, mut o) = Cast::<i32, f64>::new().init((&a,), i64::MIN);
+        let (mut s, mut o) = Cast::<i32, f64>::new().init((&a,), Instant::MIN);
         assert_eq!(o.as_slice(), &[1.0, 2.0, 3.0]);
 
         let b = Array::from_vec(&[3], vec![10_i32, 20, 30]);
@@ -76,7 +78,7 @@ mod tests {
             &mut s,
             (&b,),
             &mut o,
-            1,
+            Instant::from_nanos(1),
             &Notify::new(&[], 0)
         ));
         assert_eq!(o.as_slice(), &[10.0, 20.0, 30.0]);
@@ -85,7 +87,7 @@ mod tests {
     #[test]
     fn cast_f64_to_i32() {
         let a = Array::from_vec(&[2], vec![1.9_f64, -2.7]);
-        let (_, o) = Cast::<f64, i32>::new().init((&a,), i64::MIN);
+        let (_, o) = Cast::<f64, i32>::new().init((&a,), Instant::MIN);
         assert_eq!(o.as_slice(), &[1, -2]); // truncation
     }
 }

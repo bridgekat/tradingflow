@@ -79,5 +79,19 @@ pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_class::<NativeSeriesView>()?;
     m.add_class::<NativeNotify>()?;
     m.add_class::<source::DoneCallback>()?;
+    m.add_function(pyo3::wrap_pyfunction!(py_utc_to_tai, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(py_tai_to_utc, m)?)?;
     Ok(())
+}
+
+/// Convert a UTC timestamp in nanoseconds to a TAI timestamp in nanoseconds.
+#[pyo3::pyfunction(name = "utc_to_tai")]
+fn py_utc_to_tai(utc_ns: i64) -> i64 {
+    crate::time::utc_to_tai(utc_ns)
+}
+
+/// Convert a TAI timestamp in nanoseconds to a UTC timestamp in nanoseconds.
+#[pyo3::pyfunction(name = "tai_to_utc")]
+fn py_tai_to_utc(tai_ns: i64) -> i64 {
+    crate::time::tai_to_utc(tai_ns)
 }

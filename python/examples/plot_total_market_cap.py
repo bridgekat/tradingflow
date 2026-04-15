@@ -24,7 +24,6 @@ from tradingflow.operators.num import Multiply
 from stocks import load_symbols
 
 
-DAY_NS = 86_400_000_000_000
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
 
@@ -78,13 +77,14 @@ if __name__ == "__main__":
     # Run scenario.
     sc, handles = build_scenario(symbols, data_dir, start=args.begin, end=args.end)
 
-    first_ns_opt, last_ns_opt = sc.time_range()
-    assert first_ns_opt is not None and last_ns_opt is not None, "all sources must provide a time range"
-    first_ns, last_ns = first_ns_opt, last_ns_opt
+    progress = tqdm(total=sc.estimated_event_count(), unit=" events", desc="Running scenario")
 
-    total_days = (last_ns - first_ns) // DAY_NS
-    progress = tqdm(total=total_days, unit="d", desc="Running scenario")
-    sc.run(on_flush=lambda ts: progress.update((min(max(ts, first_ns), last_ns) - first_ns) // DAY_NS - progress.n))
+    def on_flush(_ts: int, events: int, total: int | None) -> None:
+        if total != progress.total:
+            progress.total = total
+        progress.update(events - progress.n)
+
+    sc.run(on_flush=on_flush)
     progress.close()
 
     # Extract results.
