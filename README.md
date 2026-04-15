@@ -23,9 +23,9 @@ Examples require A-shares market data downloaded via the [a-shares-crawler](http
 
 ## Arrays and Series
 
-A [multi-dimensional array](src/array.rs) contains uniformly-typed [scalars](src/types.rs). It is backed by a flat `Vec<T>` scalar buffer, guaranteeing contiguous layout.
+A [multi-dimensional array](src/data/array.rs) contains uniformly-typed [scalars](src/data/mod.rs). It is backed by a flat `Vec<T>` scalar buffer, guaranteeing contiguous layout.
 
-A [time series](src/series.rs) contains uniformly-shaped array elements. It is backed by a flat `Vec<T>` scalar buffer and a parallel `Vec<i64>` of non-decreasing timestamps (each representing nanoseconds since the UNIX epoch).
+A [time series](src/data/series.rs) contains uniformly-shaped array elements. It is backed by a flat `Vec<T>` scalar buffer and a parallel `Vec<Instant>` of non-decreasing timestamps. [`Instant`](src/data/time.rs) is a `#[repr(transparent)]` `i64` counting SI nanoseconds since the PTP epoch (1970-01-01 00:00:00 TAI).
 
 Most nodes in the computation graph hold either arrays or series as their output values. They can be converted back and forth by a pair of inverse operators, assuming series elements are pushed one-by-one:
 
@@ -74,8 +74,8 @@ Most operators use time-series semantics and ignore the `Notify` context entirel
 
 A notification is treated as a *message* whose payload is the value written into the corresponding node. If an input did not produce this cycle, there is no message from it. Operators inspect `Notify` to distinguish "input updated" from "input is stale":
 
-- [`Notify.produced()`](src/types.rs) returns the list of input positions that produced — for efficient O(n_messages) iteration over only the inputs that changed.
-- [`Notify.input_produced()`](src/types.rs) returns a per-position boolean slice — for O(1) checks like `notify.input_produced()[i]`.
+- [`Notify.produced()`](src/data/mod.rs) returns the list of input positions that produced — for efficient O(n_messages) iteration over only the inputs that changed.
+- [`Notify.input_produced()`](src/data/mod.rs) returns a per-position boolean slice — for O(1) checks like `notify.input_produced()[i]`.
 
 Message-passing semantics are useful when an operator must react differently depending on *which* inputs changed. For example, the [ForwardAdjust](src/operators/stocks/forward_adjust.rs) operator only updates its cumulative dividend factor when the dividend input produces, and only emits an adjusted price when the price input produces.
 

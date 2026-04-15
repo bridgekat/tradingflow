@@ -10,8 +10,8 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::time::{Duration, Instant};
-use crate::{Array, Notify, Operator, Scalar, Series};
+use crate::data::{Duration, Instant};
+use crate::{Array, Input, Notify, Operator, Scalar, Series};
 
 // ===========================================================================
 // Accumulator trait
@@ -119,7 +119,7 @@ pub struct RollingState<A: Accumulator> {
 
 impl<A: Accumulator> Operator for Rolling<A> {
     type State = RollingState<A>;
-    type Inputs = (Series<A::Scalar>,);
+    type Inputs = (Input<Series<A::Scalar>>,);
     type Output = Array<A::Scalar>;
 
     fn init(

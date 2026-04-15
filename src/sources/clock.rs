@@ -17,7 +17,7 @@
 //!    `Const`'s output is an `Array<f64>` handle that can be wired as a
 //!    normal input.
 
-use crate::time::Instant;
+use crate::data::Instant;
 
 use super::iter_source::IterSource;
 

@@ -15,8 +15,9 @@
 //! # Traits
 //!
 //! * [`Source`] — asynchronous data source feeding events into the graph via
-//!   historical and live channels. Provides an optional [`time_range`](Source::time_range)
-//!   method for declaring known data bounds. Type-erased form: [`ErasedSource`].
+//!   historical and live channels. Provides an optional
+//!   [`estimated_event_count`](Source::estimated_event_count) method for
+//!   progress reporting. Type-erased form: [`ErasedSource`].
 //! * [`Operator`] — synchronous computation node that reads typed inputs and
 //!   writes a typed output. Type-erased form: [`ErasedOperator`].
 //! * [`Notify`] — notification context passed to [`Operator::compute`],
@@ -32,14 +33,17 @@
 //!
 //! # Modules
 //!
-//! * [`array`] — `Array`.
-//! * [`series`] — `Series`.
+//! * [`data`] — primitive data types and operator-input trait machinery:
+//!   * [`data::array`] — `Array`.
+//!   * [`data::series`] — `Series`.
+//!   * [`data::time`] — `Instant` (SI nanoseconds since 1970-01-01 00:00:00
+//!     TAI) and `Duration` (SI nanoseconds).
+//!   * [`data::inputs`] — `InputTypes`, `Input<T>`, `Slice<T>`, flat
+//!     readers/writers, and related machinery.
+//!   * Flat: `Scalar`, `PeekableReceiver`, `Notify`.
 //! * [`source`] — `Source` trait, `ErasedSource`.
 //! * [`operator`] — `Operator` trait, `ErasedOperator`.
 //! * [`scenario`] — `Scenario`, `Handle`, `InputTypesHandles`.
-//! * [`time`] — `Instant` (SI nanoseconds since 1970-01-01 00:00:00 TAI) and
-//!   `Duration` (SI nanoseconds).
-//! * [`types`] — `Scalar`, `PeekableReceiver`, `InputTypes`.
 //! * [`operators`] — built-in operators: structural (`Const`, `Id`, `Filter`,
 //!   `Where`, `Select`, `Concat`, `Stack`, `Cast`), series (`Record`, `Last`,
 //!   `Lag`), element-wise numeric ([`operators::num`]), rolling-window
@@ -53,24 +57,22 @@
 //! When compiled with the `python` feature, the crate also produces a PyO3
 //! `cdylib` exposing the runtime to Python.
 
-pub mod array;
+pub mod data;
 pub mod operator;
 pub mod operators;
 pub mod scenario;
-pub mod series;
 pub mod source;
 pub mod sources;
-pub mod time;
-pub mod types;
 pub mod utils;
 
-pub use array::Array;
+pub use data::{
+    tai_to_utc, utc_to_tai, Array, Duration, FlatRead, FlatShapeFromArity, FlatWrite, Input,
+    InputTypes, Instant, Notify, PeekableReceiver, Scalar, Series, Slice, SliceProduced,
+    SliceRefs, SliceShape,
+};
 pub use operator::{ErasedOperator, Operator};
 pub use scenario::Scenario;
-pub use series::Series;
 pub use source::{ErasedSource, Source};
-pub use time::{Duration, Instant, tai_to_utc, utc_to_tai};
-pub use types::{InputTypes, Notify, PeekableReceiver, Scalar};
 pub use utils::Schema;
 
 #[cfg(feature = "python")]

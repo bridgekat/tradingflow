@@ -59,7 +59,7 @@ use std::any::TypeId;
 use crate::operator::{ErasedOperator, Operator};
 use crate::operators::Const;
 use crate::source::{ErasedSource, Source};
-use crate::time::Instant;
+use crate::data::Instant;
 
 use graph::Graph;
 use node::Node;
@@ -159,9 +159,16 @@ impl Scenario {
     where
         O::Inputs: InputTypesHandles,
     {
-        let input_indices = <O::Inputs as InputTypesHandles>::node_indices(&inputs.into());
+        let handles = inputs.into();
+        let arity = <O::Inputs as InputTypesHandles>::arity(&handles);
+        let mut input_indices: Vec<usize> = vec![0usize; arity];
+        {
+            let mut writer = crate::data::FlatWrite::new(&mut input_indices);
+            <O::Inputs as InputTypesHandles>::write_node_indices(&handles, &mut writer);
+        }
+        let shape = <O::Inputs as InputTypesHandles>::shape(&handles);
         let trigger_index = trigger.map(|c| c.index());
-        let erased = ErasedOperator::from_operator(operator, input_indices.len());
+        let erased = ErasedOperator::from_operator(operator, shape);
         Handle::new(self.add_erased_operator(erased, &input_indices, trigger_index))
     }
 
@@ -257,10 +264,10 @@ impl Default for Scenario {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::Array;
+    use crate::data::Array;
     use crate::operators::num::Add;
     use crate::operators::{Filter, Record};
-    use crate::series::Series;
+    use crate::data::Series;
     use crate::sources::ArraySource;
 
     fn ts(n: i64) -> Instant {

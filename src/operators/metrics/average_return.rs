@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Average (arithmetic mean) of period returns since inception.
 pub struct AverageReturn<T: Scalar + Float> {
@@ -28,7 +28,7 @@ pub struct AverageReturnState<T: Scalar + Float> {
 
 impl<T: Scalar + Float> Operator for AverageReturn<T> {
     type State = AverageReturnState<T>;
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Array<T>;
 
     fn init(self, _inputs: (&Array<T>,), _timestamp: Instant) -> (Self::State, Array<T>) {

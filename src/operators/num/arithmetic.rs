@@ -5,8 +5,8 @@ use std::ops;
 
 use num_traits::{Float, Signed};
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 // ===========================================================================
 // Unary
@@ -28,7 +28,7 @@ macro_rules! define_unary_op {
 
         impl<T: Scalar + $($bounds)*> Operator for $Name<T> {
             type State = ();
-            type Inputs = (Array<T>,);
+            type Inputs = (Input<Array<T>>,);
             type Output = Array<T>;
 
             fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> ((), Array<T>) {
@@ -140,7 +140,7 @@ macro_rules! define_binary_op {
 
         impl<T: Scalar + $($bounds)*> Operator for $Name<T> {
             type State = ();
-            type Inputs = (Array<T>, Array<T>);
+            type Inputs = (Input<Array<T>>, Input<Array<T>>);
             type Output = Array<T>;
 
             fn init(self, inputs: (&Array<T>, &Array<T>), _timestamp: Instant) -> ((), Array<T>) {
@@ -206,13 +206,13 @@ define_binary_op!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::Array;
+    use crate::data::Array;
     use crate::operator::Operator;
-    use crate::time::Instant;
+    use crate::data::Instant;
 
     fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
-    fn unary_values<O: Operator<Inputs = (Array<f64>,), Output = Array<f64>, State = ()>>(
+    fn unary_values<O: Operator<Inputs = (Input<Array<f64>>,), Output = Array<f64>, State = ()>>(
         op: O,
         input: &[f64],
     ) -> Vec<f64> {

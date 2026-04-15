@@ -3,7 +3,7 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
 use crate::PeekableReceiver;
-use crate::time::Instant;
+use crate::data::Instant;
 
 /// An asynchronous data source that receives events via channels and writes
 /// a typed output.

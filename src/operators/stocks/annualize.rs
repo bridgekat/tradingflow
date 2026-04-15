@@ -4,8 +4,8 @@
 //! values using days-based scaling.  It handles any reporting frequency
 //! (quarterly, semi-annual, annual) uniformly.
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator};
 
 /// Convert year-to-date (YTD) financial values into annualized values.
 ///
@@ -58,7 +58,7 @@ pub struct AnnualizeState {
 
 impl Operator for Annualize {
     type State = AnnualizeState;
-    type Inputs = (Array<f64>,);
+    type Inputs = (Input<Array<f64>>,);
     type Output = Array<f64>;
 
     fn init(self, inputs: (&Array<f64>,), _timestamp: Instant) -> (AnnualizeState, Array<f64>) {

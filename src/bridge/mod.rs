@@ -19,7 +19,7 @@
 //! - [`NativeArrayView`] / [`NativeSeriesView`] — read-only Python views into
 //!   `Array<T>` and `Series<T>` node values, backed by raw pointers.
 //! - [`NativeNotify`] — Python-visible wrapper around the Rust
-//!   [`Notify`](crate::operator::Notify) context, exposing which inputs
+//!   [`Notify`](crate::data::Notify) context, exposing which inputs
 //!   produced new output to Python operators during flush.
 //! - [`DoneCallback`](source::DoneCallback) — pyclass used internally to
 //!   bridge `concurrent.futures.Future` completion to tokio oneshot channels.
@@ -87,11 +87,11 @@ pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
 /// Convert a UTC timestamp in nanoseconds to a TAI timestamp in nanoseconds.
 #[pyo3::pyfunction(name = "utc_to_tai")]
 fn py_utc_to_tai(utc_ns: i64) -> i64 {
-    crate::time::utc_to_tai(utc_ns)
+    crate::data::utc_to_tai(utc_ns)
 }
 
 /// Convert a TAI timestamp in nanoseconds to a UTC timestamp in nanoseconds.
 #[pyo3::pyfunction(name = "tai_to_utc")]
 fn py_tai_to_utc(tai_ns: i64) -> i64 {
-    crate::time::tai_to_utc(tai_ns)
+    crate::data::tai_to_utc(tai_ns)
 }

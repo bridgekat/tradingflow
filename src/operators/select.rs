@@ -2,8 +2,8 @@
 
 use std::marker::PhantomData;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Select elements from an array along an axis.
 ///
@@ -58,7 +58,7 @@ pub struct SelectState {
 
 impl<T: Scalar> Operator for Select<T> {
     type State = SelectState;
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Array<T>;
 
     fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> (SelectState, Array<T>) {

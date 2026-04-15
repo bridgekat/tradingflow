@@ -4,8 +4,8 @@
 //! share dividends (bonus shares) and cash dividends, producing either a
 //! forward-adjusted stock price or the raw adjustment factor on every tick.
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator};
 
 /// Compute the forward-adjusted stock price (or adjustment factor) from
 /// a raw stock price and dividend data for a single stock.
@@ -58,7 +58,7 @@ pub struct ForwardAdjustState {
 
 impl Operator for ForwardAdjust {
     type State = ForwardAdjustState;
-    type Inputs = (Array<f64>, Array<f64>);
+    type Inputs = (Input<Array<f64>>, Input<Array<f64>>);
     type Output = Array<f64>;
 
     fn init(

@@ -2,8 +2,8 @@
 
 use std::marker::PhantomData;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Filter operator: passes or drops the entire input array based on a predicate.
 ///
@@ -26,7 +26,7 @@ impl<T: Scalar, F: Fn(&Array<T>) -> bool> Filter<T, F> {
 
 impl<T: Scalar, F: Fn(&Array<T>) -> bool + Send + 'static> Operator for Filter<T, F> {
     type State = Self;
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Array<T>;
 
     fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> (Self, Array<T>) {
@@ -54,7 +54,7 @@ impl<T: Scalar, F: Fn(&Array<T>) -> bool + Send + 'static> Operator for Filter<T
 mod tests {
     use super::*;
     use crate::operator::Operator;
-    use crate::time::Instant;
+    use crate::data::Instant;
 
     fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 

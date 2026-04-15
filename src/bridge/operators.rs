@@ -14,13 +14,16 @@ use crate::{ErasedOperator, Operator};
 use super::dispatch::{dispatch_dtype, normalize_dtype};
 use super::views::ViewKind;
 
-fn add_operator_from_indices(
+fn add_operator_from_indices<O: Operator>(
     sc: &mut Scenario,
-    operator: impl Operator,
+    operator: O,
     input_indices: &[usize],
     trigger_index: Option<usize>,
-) -> usize {
-    let erased = ErasedOperator::from_operator(operator, input_indices.len());
+) -> usize
+where
+    <O::Inputs as crate::InputTypes>::Shape: crate::FlatShapeFromArity,
+{
+    let erased = ErasedOperator::from_flat_operator(operator, input_indices.len());
     sc.add_erased_operator(erased, input_indices, trigger_index)
 }
 
@@ -282,7 +285,7 @@ pub fn dispatch_native_operator(
                         ($Op:ty) => {
                             match (window, window_ns) {
                                 (Some(w), None) => add_operator_from_indices(sc, <$Op>::count(w), input_indices, trigger_index),
-                                (None, Some(w)) => add_operator_from_indices(sc, <$Op>::time_delta(crate::time::Duration::from_nanos(w)), input_indices, trigger_index),
+                                (None, Some(w)) => add_operator_from_indices(sc, <$Op>::time_delta(crate::data::Duration::from_nanos(w)), input_indices, trigger_index),
                                 _ => return Err(PyTypeError::new_err(format!("{kind} requires exactly one of 'window' or 'window_ns'"))),
                             }
                         };

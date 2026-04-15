@@ -8,8 +8,8 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use crate::time::Instant;
-use crate::types::Notify;
+use crate::data::Instant;
+use crate::data::Notify;
 
 use super::node::Node;
 

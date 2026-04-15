@@ -74,7 +74,7 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
 mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
-    use crate::time::{Duration, Instant};
+    use crate::data::{Duration, Instant};
     use crate::{Array, Notify, Operator, Series};
 
     type RollingVariance = Rolling<VarianceAccumulator<f64>>;

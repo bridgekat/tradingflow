@@ -1,17 +1,15 @@
 //! Constant operator — a 0-input node holding a fixed initial value.
 
-use crate::time::Instant;
+use crate::data::Instant;
 use crate::{Notify, Operator};
 
 /// A 0-input operator that holds a constant value.
 ///
 /// The output is set once at init and never changes.  Compute returns
-/// `true` so that, when the operator is bound to a clock, each clock tick
-/// propagates a production signal downstream — the canonical pattern for
-/// using a clock as a regular `Array`-typed input (e.g. as the rebalance
-/// signal of a message-passing predictor).
+/// `true` so that, when the operator is bound to a clock trigger, each
+/// clock tick propagates a production signal downstream.
 ///
-/// Without a clock the operator has no triggers and compute is never
+/// Without a trigger the operator has no triggers and compute is never
 /// invoked, so the return value is inert.  The value can still be mutated
 /// externally via [`Scenario::value_mut`](crate::Scenario::value_mut).
 pub struct Const<T: Send + 'static> {
@@ -48,7 +46,7 @@ impl<T: Send + 'static> Operator for Const<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::Array;
+    use crate::data::Array;
     use crate::operator::Operator;
 
     #[test]

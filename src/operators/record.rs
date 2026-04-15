@@ -1,7 +1,7 @@
 //! Record operator — records array values into a time series.
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar, Series};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar, Series};
 
 /// Record an array stream into a time series.
 ///
@@ -26,7 +26,7 @@ impl<T: Scalar> Default for Record<T> {
 
 impl<T: Scalar> Operator for Record<T> {
     type State = ();
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Series<T>;
 
     fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> ((), Series<T>) {
@@ -49,7 +49,7 @@ impl<T: Scalar> Operator for Record<T> {
 mod tests {
     use super::*;
     use crate::operator::Operator;
-    use crate::time::Instant;
+    use crate::data::Instant;
 
     fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 

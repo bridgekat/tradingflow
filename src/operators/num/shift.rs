@@ -2,8 +2,8 @@
 
 use std::ops;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Element-wise shift: `x + c`.
 pub struct Shift<T: Scalar> {
@@ -19,7 +19,7 @@ impl<T: Scalar + ops::Add<Output = T>> Shift<T> {
 
 impl<T: Scalar + ops::Add<Output = T>> Operator for Shift<T> {
     type State = T;
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Array<T>;
 
     fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> (T, Array<T>) {

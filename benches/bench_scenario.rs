@@ -8,11 +8,11 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use tradingflow::Instant;
-use tradingflow::array::Array;
+use tradingflow::data::array::Array;
 use tradingflow::operators::Record;
 use tradingflow::operators::num::{Add, Multiply, Negate};
 use tradingflow::scenario::Scenario;
-use tradingflow::series::Series;
+use tradingflow::data::series::Series;
 use tradingflow::sources::ArraySource;
 
 const N: usize = 10_000;

@@ -333,7 +333,7 @@ impl NativeScenario {
             &output_shape,
             py_inputs,
             py_operator,
-            crate::time::Instant::MIN,
+            crate::data::Instant::MIN,
             self.error_slot.clone(),
         )?;
 
@@ -422,7 +422,7 @@ impl NativeScenario {
                 let shutdown_ref = shutdown.clone();
                 let error_slot_ref = error_slot_for_bg.clone();
 
-                let on_flush_fn = move |ts: crate::time::Instant,
+                let on_flush_fn = move |ts: crate::data::Instant,
                                         events_so_far: usize,
                                         total_estimate: Option<usize>| {
                     // Check if a Python operator/source already failed.

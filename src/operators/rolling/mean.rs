@@ -68,7 +68,7 @@ impl<T: Scalar + Float> Accumulator for MeanAccumulator<T> {
 mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
-    use crate::time::{Duration, Instant};
+    use crate::data::{Duration, Instant};
     use crate::{Array, Notify, Operator, Series};
 
     type RollingMean = Rolling<MeanAccumulator<f64>>;

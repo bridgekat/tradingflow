@@ -2,8 +2,8 @@
 
 use std::marker::PhantomData;
 
-use crate::time::Instant;
-use crate::{Notify, Operator};
+use crate::data::Instant;
+use crate::{Input, Notify, Operator};
 
 /// Identity operator: clones input to output unchanged.
 ///
@@ -29,7 +29,7 @@ impl<T: Clone + Send + 'static> Default for Id<T> {
 
 impl<T: Clone + Send + 'static> Operator for Id<T> {
     type State = ();
-    type Inputs = (T,);
+    type Inputs = (Input<T>,);
     type Output = T;
 
     fn init(self, inputs: (&T,), _timestamp: Instant) -> ((), T) {
@@ -52,7 +52,7 @@ impl<T: Clone + Send + 'static> Operator for Id<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::Array;
+    use crate::data::Array;
     use crate::operator::Operator;
 
     #[test]

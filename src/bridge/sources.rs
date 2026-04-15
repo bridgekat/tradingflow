@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::sources::ArraySource;
-use crate::time::{Duration, Instant};
+use crate::data::{Duration, Instant};
 use crate::{Array, Scenario, Series};
 
 use super::dispatch::{ContiguousArrayInfo, dispatch_dtype};

@@ -1,7 +1,7 @@
 //! Last operator — extracts the most recent element from a Series.
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar, Series};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar, Series};
 
 /// Extract the most recent element from a `Series<T>` as an `Array<T>`.
 ///
@@ -22,7 +22,7 @@ impl<T: Scalar> Last<T> {
 
 impl<T: Scalar> Operator for Last<T> {
     type State = T;
-    type Inputs = (Series<T>,);
+    type Inputs = (Input<Series<T>>,);
     type Output = Array<T>;
 
     fn init(self, inputs: (&Series<T>,), _timestamp: Instant) -> (T, Array<T>) {
@@ -57,7 +57,7 @@ impl<T: Scalar> Operator for Last<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::Instant;
+    use crate::data::Instant;
 
     fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 

@@ -8,11 +8,11 @@
 //! entirely through Python views stored in [`PyOperatorState`].  Dtype
 //! dispatch is only needed for output allocation and view creation.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 
 use pyo3::prelude::*;
 
-use crate::time::Instant;
+use crate::data::Instant;
 use crate::{Array, Series};
 use crate::{ErasedOperator, Notify};
 
@@ -113,15 +113,21 @@ pub fn make_py_operator(
         error_slot,
     });
 
+    // Python operators don't consume structural shape (their compute path
+    // does not build nested Refs).  Store a unit shape as a placeholder.
+    let shape: Box<dyn Any + Send> = Box::new(());
+
     // SAFETY: output_ptr is a valid Array<T> or Series<T>;
-    // state is a valid PyOperatorState; all fn ptrs match.
+    // state is a valid PyOperatorState; all fn ptrs match; shape is
+    // ignored by py_compute_fn.
     Ok(unsafe {
         ErasedOperator::new(
             TypeId::of::<PyOperatorState>(),
             input_type_ids,
             output_type_id,
             is_clock_triggerable,
-            Box::new(move |_, _| (Box::into_raw(state) as *mut u8, output_ptr)),
+            shape,
+            Box::new(move |_, _, _| (Box::into_raw(state) as *mut u8, output_ptr)),
             py_compute_fn,
             drop_fn::<PyOperatorState>,
             output_drop_fn,
@@ -148,6 +154,7 @@ unsafe fn py_compute_fn(
     _output_ptr: *mut u8,
     timestamp: Instant,
     notify: &Notify,
+    _shape: &(dyn Any + Send),
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut PyOperatorState) };
 

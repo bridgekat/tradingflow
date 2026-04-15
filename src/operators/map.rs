@@ -3,8 +3,8 @@
 //! - [`Map`] — allocating: `Fn(&S) -> T`.
 //! - [`MapInplace`] — in-place: `Fn(&S, &mut T) -> bool`.
 
-use crate::time::Instant;
-use crate::{Notify, Operator};
+use crate::data::Instant;
+use crate::{Input, Notify, Operator};
 
 /// Map operator: applies a function `S → T` to the input on each tick.
 ///
@@ -42,7 +42,7 @@ where
     F: Fn(&S) -> T + Send + 'static,
 {
     type State = Self;
-    type Inputs = (S,);
+    type Inputs = (Input<S>,);
     type Output = T;
 
     fn init(self, inputs: (&S,), _timestamp: Instant) -> (Self, T) {
@@ -102,7 +102,7 @@ where
     F: Fn(&S, &mut T) -> bool + Send + 'static,
 {
     type State = Self;
-    type Inputs = (S,);
+    type Inputs = (Input<S>,);
     type Output = T;
 
     fn init(self, inputs: (&S,), _timestamp: Instant) -> (Self, T) {
@@ -126,9 +126,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::Array;
+    use crate::data::Array;
     use crate::operator::Operator;
-    use crate::time::Instant;
+    use crate::data::Instant;
 
     fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 

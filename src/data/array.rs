@@ -4,7 +4,7 @@ use std::ops;
 
 use ndarray::{ArrayViewD, ArrayViewMutD, IxDyn};
 
-use crate::Scalar;
+use super::Scalar;
 
 /// An N-dimensional array in row-major contiguous layout.
 #[derive(Debug, Clone, PartialEq, Eq)]

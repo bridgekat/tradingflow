@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Compound return: `(current / first)^(1/n) - 1` where `n` is the
 /// number of periods elapsed.
@@ -28,7 +28,7 @@ pub struct CompoundReturnState<T: Scalar + Float> {
 
 impl<T: Scalar + Float> Operator for CompoundReturn<T> {
     type State = CompoundReturnState<T>;
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Array<T>;
 
     fn init(self, _inputs: (&Array<T>,), _timestamp: Instant) -> (Self::State, Array<T>) {

@@ -8,7 +8,7 @@
 
 use std::marker::PhantomData;
 
-use crate::time::Instant;
+use crate::data::Instant;
 use crate::{InputTypes, Notify, Operator};
 
 /// Apply operator: applies a function to tuple inputs on each tick.
@@ -132,8 +132,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::Array;
-    use crate::time::Instant;
+    use crate::data::Array;
+    use crate::data::Instant;
+    use crate::Input;
 
     fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
@@ -142,7 +143,7 @@ mod tests {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let b = Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0]);
 
-        let (mut s, mut o) = Apply::<(Array<f64>, Array<f64>), _, _>::new(|(a, b)| {
+        let (mut s, mut o) = Apply::<(Input<Array<f64>>, Input<Array<f64>>), _, _>::new(|(a, b)| {
             let mut out = a.clone();
             for (o, &v) in out.as_mut_slice().iter_mut().zip(b.as_slice()) {
                 *o += v;
@@ -165,7 +166,7 @@ mod tests {
         let c = Array::scalar(4.0_f64);
 
         let (mut s, mut o) =
-            Apply::<(Array<f64>, Array<f64>, Array<f64>), _, _>::new(|(a, b, c)| {
+            Apply::<(Input<Array<f64>>, Input<Array<f64>>, Input<Array<f64>>), _, _>::new(|(a, b, c)| {
                 Array::scalar(a[0] * b[0] + c[0])
             })
             .init((&a, &b, &c), Instant::MIN);
@@ -182,7 +183,7 @@ mod tests {
         let a = Array::scalar(5.0_f64);
         let b = Array::scalar(3.0_f64);
 
-        let (mut s, mut o) = ApplyInplace::<(Array<f64>, Array<f64>), _, _>::new(
+        let (mut s, mut o) = ApplyInplace::<(Input<Array<f64>>, Input<Array<f64>>), _, _>::new(
             |(a, b), out| {
                 out[0] = a[0] + b[0];
                 true
@@ -209,7 +210,7 @@ mod tests {
         let a = Array::scalar(1.0_f64);
         let b = Array::scalar(2.0_f64);
 
-        let (mut s, mut o) = ApplyInplace::<(Array<f64>, Array<f64>), _, _>::new(
+        let (mut s, mut o) = ApplyInplace::<(Input<Array<f64>>, Input<Array<f64>>), _, _>::new(
             |(a, b), out| {
                 let sum = a[0] + b[0];
                 if sum > 5.0 {

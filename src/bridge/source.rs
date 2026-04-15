@@ -18,7 +18,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use tokio::sync::mpsc;
 
-use crate::time::Instant;
+use crate::data::Instant;
 use crate::{Array, ErasedSource, PeekableReceiver, Series};
 
 use super::dispatch::dispatch_dtype;

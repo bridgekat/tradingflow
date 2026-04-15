@@ -390,7 +390,7 @@ unsafe fn series_index<T: PyScalar>(
     let end = end.min(n);
     // Wire format is TAI ns (matches numpy naive `datetime64[ns]`
     // arithmetic).  Reinterpret the `Instant` slice as `i64`.
-    let slice = crate::time::Instant::as_nanos_slice(&series.timestamps()[start..end]);
+    let slice = crate::data::Instant::as_nanos_slice(&series.timestamps()[start..end]);
     let arr = Array1::from(slice.to_vec());
     Ok(PyArray1::from_owned_array(py, arr).into_any().unbind())
 }
@@ -407,7 +407,7 @@ unsafe fn series_asof<T: PyScalar>(
     timestamp: i64,
 ) -> PyResult<PyObject> {
     let series = unsafe { &*(ptr as *const Series<T>) };
-    match series.asof(crate::time::Instant::from_nanos(timestamp)) {
+    match series.asof(crate::data::Instant::from_nanos(timestamp)) {
         Some(slice) => {
             let nd = ArrayD::from_shape_vec(IxDyn(shape), slice.to_vec())
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -453,7 +453,7 @@ unsafe fn series_push<T: PyScalar>(
 
     let mut buf = vec![T::default(); stride];
     unsafe { src.clone_to_slice(&mut buf) };
-    series.push(crate::time::Instant::from_nanos(timestamp), &buf);
+    series.push(crate::data::Instant::from_nanos(timestamp), &buf);
     Ok(())
 }
 

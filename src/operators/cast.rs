@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Element-wise type conversion: `out[i] = input[i] as T`.
 ///
@@ -35,7 +35,7 @@ where
     T: Scalar + Copy + 'static,
 {
     type State = ();
-    type Inputs = (Array<S>,);
+    type Inputs = (Input<Array<S>>,);
     type Output = Array<T>;
 
     fn init(self, inputs: (&Array<S>,), _timestamp: Instant) -> ((), Array<T>) {
@@ -65,7 +65,7 @@ where
 mod tests {
     use super::*;
     use crate::operator::Operator;
-    use crate::time::Instant;
+    use crate::data::Instant;
 
     #[test]
     fn cast_i32_to_f64() {

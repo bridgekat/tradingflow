@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Produces the indices that would sort a 1-D array from smallest to
 /// largest.  Output is `Array<u64>` of the same length as the input.
@@ -31,7 +31,7 @@ impl<T: Scalar + Float> Default for ArgSort<T> {
 
 impl<T: Scalar + Float> Operator for ArgSort<T> {
     type State = Vec<usize>;
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Array<u64>;
 
     fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> (Vec<usize>, Array<u64>) {

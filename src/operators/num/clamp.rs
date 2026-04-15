@@ -2,8 +2,8 @@
 
 use num_traits::Float;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Element-wise clamp to `[lo, hi]`.
 pub struct Clamp<T: Scalar> {
@@ -20,7 +20,7 @@ impl<T: Scalar + Float> Clamp<T> {
 
 impl<T: Scalar + Float> Operator for Clamp<T> {
     type State = (T, T);
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Array<T>;
 
     fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> ((T, T), Array<T>) {

@@ -11,7 +11,7 @@ use std::task::Poll;
 use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::source::PollFn;
-use crate::time::Instant;
+use crate::data::Instant;
 
 use super::Scenario;
 use super::node::{ChannelKind, SourceState};
@@ -417,8 +417,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::operators::Record;
-    use crate::time::Instant;
-    use crate::{Array, Notify, Operator, Scenario, Series, Source};
+    use crate::data::Instant;
+    use crate::{Array, Input, Notify, Operator, Scenario, Series, Source};
 
     use super::super::handle::Handle;
 
@@ -483,7 +483,7 @@ mod tests {
 
     impl Operator for GlobalLogger {
         type State = (usize, Arc<Mutex<Vec<(Instant, usize)>>>);
-        type Inputs = (Array<f64>,);
+        type Inputs = (Input<Array<f64>>,);
         type Output = ();
 
         fn init(

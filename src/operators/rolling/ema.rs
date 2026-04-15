@@ -5,8 +5,8 @@
 
 use num_traits::Float;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar, Series};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar, Series};
 
 /// Exponential moving average.
 ///
@@ -75,7 +75,7 @@ pub struct EmaState<T: Scalar + Float> {
 
 impl<T: Scalar + Float> Operator for Ema<T> {
     type State = EmaState<T>;
-    type Inputs = (Series<T>,);
+    type Inputs = (Input<Series<T>>,);
     type Output = Array<T>;
 
     fn init(self, inputs: (&Series<T>,), _timestamp: Instant) -> (EmaState<T>, Array<T>) {
@@ -167,7 +167,7 @@ impl<T: Scalar + Float> Operator for Ema<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::Instant;
+    use crate::data::Instant;
 
     fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 

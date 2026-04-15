@@ -2,8 +2,8 @@
 
 use num_traits::Float;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Forward-fills NaN values element-wise.
 ///
@@ -30,7 +30,7 @@ impl<T: Scalar + Float> Default for ForwardFill<T> {
 
 impl<T: Scalar + Float> Operator for ForwardFill<T> {
     type State = ();
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Array<T>;
 
     fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> ((), Array<T>) {

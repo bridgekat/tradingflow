@@ -2,8 +2,8 @@
 
 use ndarray::{ArrayViewD, ArrayViewMutD, IxDyn};
 
-use crate::Scalar;
-use crate::time::Instant;
+use super::time::Instant;
+use super::Scalar;
 
 /// A time series of N-dimensional arrays in row-major contiguous layout.
 ///

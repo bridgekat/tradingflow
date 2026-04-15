@@ -2,8 +2,8 @@
 
 use num_traits::Float;
 
-use crate::time::Instant;
-use crate::{Array, Notify, Operator, Scalar};
+use crate::data::Instant;
+use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Element-wise NaN replacement: replaces each NaN with `val`.
 pub struct Fillna<T: Scalar> {
@@ -19,7 +19,7 @@ impl<T: Scalar + Float> Fillna<T> {
 
 impl<T: Scalar + Float> Operator for Fillna<T> {
     type State = T;
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>,);
     type Output = Array<T>;
 
     fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> (T, Array<T>) {

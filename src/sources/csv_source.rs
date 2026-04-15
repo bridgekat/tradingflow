@@ -4,7 +4,7 @@ use csv_async::StringRecord;
 use hifitime::Epoch;
 use tokio::sync::mpsc;
 
-use crate::time::{Duration, Instant};
+use crate::data::{Duration, Instant};
 use crate::{Array, Source};
 
 /// Historical-only source backed by a CSV file.

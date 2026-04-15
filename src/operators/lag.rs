@@ -1,7 +1,7 @@
 //! Lag operator — outputs the value from N steps ago.
 
-use crate::time::Instant;
-use crate::{Notify, Operator, Scalar, Series};
+use crate::data::Instant;
+use crate::{Input, Notify, Operator, Scalar, Series};
 
 /// Lag operator: outputs the value from `offset` steps ago.
 ///
@@ -26,7 +26,7 @@ pub struct LagState<T: Scalar> {
 
 impl<T: Scalar> Operator for Lag<T> {
     type State = LagState<T>;
-    type Inputs = (Series<T>,);
+    type Inputs = (Input<Series<T>>,);
     type Output = Series<T>;
 
     fn init(self, inputs: (&Series<T>,), _timestamp: Instant) -> (LagState<T>, Series<T>) {
@@ -60,7 +60,7 @@ impl<T: Scalar> Operator for Lag<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::Instant;
+    use crate::data::Instant;
 
     fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
