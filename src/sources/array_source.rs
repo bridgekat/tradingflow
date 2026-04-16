@@ -2,7 +2,7 @@
 
 use tokio::sync::mpsc;
 
-use crate::data::Instant;
+use crate::Instant;
 use crate::{Array, Scalar, Series, Source};
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.

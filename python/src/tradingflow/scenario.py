@@ -62,20 +62,21 @@ class Scenario:
                 list(source.shape),
                 source.params,
             )
-            return Handle(idx, NodeKind.ARRAY, np.dtype(source.dtype), source.shape)
+            # ViewKind is determined by Rust; reflect it back into the Handle.
+            dtype = np.dtype("void") if source.kind == NodeKind.UNIT else np.dtype(source.dtype)
+            return Handle(idx, source.kind, dtype, source.shape)
         else:
             idx = self._native.add_py_source(
                 source,
-                ("array", str(source.dtype)),
+                source.kind.value,
+                str(source.dtype),
                 list(source.shape),
             )
-            return Handle(idx, NodeKind.ARRAY, source.dtype, source.shape)
+            return Handle(idx, source.kind, source.dtype, source.shape)
 
     def add_operator(
         self,
         operator: NativeOperator | Operator,
-        *,
-        clock: Handle | None = None,
     ) -> Handle:
         """Register an operator and return a handle to its output node.
 
@@ -83,10 +84,6 @@ class Scenario:
         ----------
         operator
             The operator to register (native or Python).
-        clock
-            Optional clock handle. If provided, the operator is triggered
-            by the clock instead of its inputs. The clock is not an input —
-            the operator does not read its value.
         """
         input_indices = [inp.index for inp in operator.inputs]
         if isinstance(operator, NativeOperator):
@@ -96,7 +93,6 @@ class Scenario:
                 input_indices,
                 list(operator.shape),
                 operator.params,
-                clock_index=clock.index if clock else None,
             )
             kind = operator.kind
         else:
@@ -107,8 +103,6 @@ class Scenario:
                 (output_type[0].value, output_type[1]),
                 list(operator.shape),
                 operator,
-                clock_index=clock.index if clock else None,
-                is_clock_triggerable=operator.is_clock_triggerable,
             )
             kind = output_type[0]
         return Handle(idx, kind, operator.dtype, operator.shape)

@@ -31,7 +31,7 @@ from a_shares_crawler.types import Schema as CSVSchema
 from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import Clock, CSVSource, MonthlyClock
-from tradingflow.operators import Const, Map, Record, Select, Stack
+from tradingflow.operators import Clocked, Map, Record, Select, Stack
 from tradingflow.operators.num import ForwardFill, Multiply
 from tradingflow.operators.stocks import ForwardAdjust
 from tradingflow.operators.predictors.variance import Sample, Shrinkage
@@ -118,13 +118,15 @@ def build_scenario(
     # Universe: top stocks by market cap.
     monthly_clock = sc.add_source(MonthlyClock(data_start, end, tz="Asia/Shanghai"))
     universe = sc.add_operator(
-        Map(
-            market_cap,
-            lambda m: calculate_index_weights(m, index_size),
-            shape=(num_stocks,),
-            dtype=np.float64,
-        ),
-        clock=monthly_clock,
+        Clocked(
+            monthly_clock,
+            Map(
+                market_cap,
+                lambda m: calculate_index_weights(m, index_size),
+                shape=(num_stocks,),
+                dtype=np.float64,
+            ),
+        )
     )
 
     # ------------------------------------------------------------------
@@ -142,7 +144,7 @@ def build_scenario(
         np.timedelta64(rebalance_days, "D"),
     )
     rebalance_clock = sc.add_source(Clock(rebalance_dates))
-    rebalance = sc.add_operator(Const(np.array(np.nan, dtype=np.float64)), clock=rebalance_clock)
+    rebalance = rebalance_clock
 
     predictor_kwargs = dict(universe_size=index_size, rebalance=rebalance)
 

@@ -294,9 +294,16 @@ class Notify:
     flush cycle:
 
     - [`input_produced`][tradingflow.Notify.input_produced] — ``list[bool]``
-      indexed by input position (O(1) per-position check via indexing).
-    - [`produced`][tradingflow.Notify.produced] — ``list[int]`` of input
-      positions that produced (O(n_messages) iteration).
+      indexed by **local** input position.
+    - [`produced`][tradingflow.Notify.produced] — ``list[int]`` of **local**
+      input positions that produced.
+
+    Positions are always relative to the operator's own input layout
+    (`0..num_inputs`), regardless of any transformer wrapping.
+
+    Operator transformers (e.g. [`Clocked`][tradingflow.operators.Clocked])
+    call [`skip_leading`][tradingflow.Notify.skip_leading] to pass a
+    correctly remapped notification to the inner operator.
 
     Instances are created by the runtime and passed to
     [`Operator.compute`][tradingflow.Operator.compute] — users do not construct
@@ -308,18 +315,38 @@ class Notify:
     def __init__(self, inner: NativeNotify) -> None:
         self._inner = inner
 
+    @property
+    def num_inputs(self) -> int:
+        """Total number of inputs visible to this operator."""
+        return self._inner.num_inputs
+
     def input_produced(self) -> list[bool]:
         """Per-position booleans: ``True`` if that input produced this cycle.
 
-        Usage: ``notify.input_produced()[0]`` to check whether the first
-        input produced.
+        Positions are local (0-based relative to this operator's input layout).
         """
         return self._inner.input_produced()
 
     def produced(self) -> list[int]:
-        """Input positions that produced new output this flush cycle.
+        """Local input positions that produced new output this flush cycle.
 
-        For message-passing operators, this allows efficient iteration
-        over only the inputs that actually changed.
+        Positions are local (0-based relative to this operator's input layout).
         """
         return self._inner.produced()
+
+    def skip_leading(self, n: int) -> Notify:
+        """Return a view for an inner operator, skipping the first ``n`` inputs.
+
+        Zero-allocation: shares the same underlying incoming buffer with an
+        incremented offset.  Mirrors Rust's ``Notify::skip_leading``.
+
+        Used by operator transformers to pass a correctly remapped
+        notification to the inner operator:
+
+        ```python
+        # Clock is at position 0; pass positions 1.. to the inner operator.
+        inner_notify = notify.skip_leading(1)
+        inner.compute(state, inputs[1:], output, timestamp, inner_notify)
+        ```
+        """
+        return Notify(self._inner.skip_leading(n))

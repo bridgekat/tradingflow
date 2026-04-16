@@ -2,7 +2,7 @@
 
 use std::ops;
 
-use crate::data::Instant;
+use crate::Instant;
 use crate::{Array, Input, Notify, Operator, Scalar};
 
 /// Element-wise shift: `x + c`.
@@ -19,23 +19,23 @@ impl<T: Scalar + ops::Add<Output = T>> Shift<T> {
 
 impl<T: Scalar + ops::Add<Output = T>> Operator for Shift<T> {
     type State = T;
-    type Inputs = (Input<Array<T>>,);
+    type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> (T, Array<T>) {
-        (self.c, Array::zeros(inputs.0.shape()))
+    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (T, Array<T>) {
+        (self.c, Array::zeros(inputs.shape()))
     }
 
     #[inline(always)]
     fn compute(
         state: &mut T,
-        inputs: (&Array<T>,),
+        inputs: &Array<T>,
         output: &mut Array<T>,
         _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
         let c = state.clone();
-        let a = inputs.0.as_slice();
+        let a = inputs.as_slice();
         let out = output.as_mut_slice();
         for i in 0..out.len() {
             out[i] = a[i].clone() + c.clone();
@@ -51,8 +51,8 @@ mod tests {
     #[test]
     fn test_shift() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
-        let (mut s, mut o) = Shift::new(10.0).init((&a,), Instant::MIN);
-        Shift::compute(&mut s, (&a,), &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
+        let (mut s, mut o) = Shift::new(10.0).init(&a, Instant::MIN);
+        Shift::compute(&mut s, &a, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[11.0, 12.0, 13.0]);
     }
 }

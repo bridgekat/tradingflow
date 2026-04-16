@@ -10,6 +10,8 @@
 //! and writes copy data in, so no reference to graph memory is ever exposed
 //! to Python.
 
+use std::sync::Arc;
+
 use numpy::ndarray::{Array1, ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn};
 use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
@@ -49,10 +51,14 @@ pub enum ViewKind {
     Array,
     /// A time-indexed append-only series.
     Series,
+    /// The unit type `()` — carries no data, only a trigger signal.
+    Unit,
 }
 
-/// Create a Python view ([`NativeArrayView`] or [`NativeSeriesView`]) for a
-/// node, dispatching on its kind and dtype.
+/// Create a Python view for a node, dispatching on its kind and dtype.
+///
+/// Returns `None` (Python `None`) for [`ViewKind::Unit`] nodes since they
+/// carry no data.
 pub fn create_view(
     py: Python<'_>,
     ptr: *mut u8,
@@ -60,6 +66,9 @@ pub fn create_view(
     dtype: &str,
     kind: ViewKind,
 ) -> PyResult<PyObject> {
+    if kind == ViewKind::Unit {
+        return Ok(py.None());
+    }
     macro_rules! make_view {
         ($T:ty) => {
             match kind {
@@ -71,6 +80,7 @@ pub fn create_view(
                     let v = make_series_view::<$T>(ptr, shape, dtype);
                     Ok(Py::new(py, v)?.into_any())
                 }
+                ViewKind::Unit => unreachable!(),
             }
         };
     }
@@ -461,59 +471,72 @@ unsafe fn series_push<T: PyScalar>(
 // NativeNotify
 // ===========================================================================
 
-/// Python-visible wrapper around the Rust [`Notify`](crate::operator::Notify)
+/// Python-visible owned snapshot of a Rust [`Notify`](crate::operator::Notify)
 /// context.
 ///
-/// Provides [`input_produced`](Self::input_produced) (per-position booleans)
-/// and [`produced`](Self::produced) (list of positions) so Python operators
-/// can check which inputs produced new output in the current flush cycle.
+/// Unlike the Rust [`Notify`], which borrows directly from the graph's
+/// per-flush incoming buffer, `NativeNotify` owns its data via an
+/// [`Arc<[usize]>`](Arc).  This means a Python operator that
+/// accidentally stores a reference to the `Notify` wrapper beyond the scope
+/// of `compute` will see a valid, stable snapshot rather than a dangling
+/// pointer — at the cost of one allocation per compute call to copy the
+/// typically-tiny incoming slice.
+///
+/// [`skip_leading`](Self::skip_leading) creates an inner `NativeNotify` that
+/// shares the same `Arc` allocation (reference-count increment only, no data
+/// copy), so transformers like Python `Clocked` remain cheap.
 #[pyclass]
 pub struct NativeNotify {
-    incoming: *const usize,
-    incoming_len: usize,
+    /// Owned copy of the raw global incoming positions.
+    incoming: Arc<[usize]>,
+    /// Local input count (positions 0..num_inputs are visible).
     num_inputs: usize,
+    /// Maps global → local: local = global − offset.
+    /// Zero for top-level operators; non-zero inside transformers.
+    offset: usize,
 }
 
-unsafe impl Send for NativeNotify {}
-unsafe impl Sync for NativeNotify {}
+// Arc<[usize]>: Send + Sync, so NativeNotify is too — no unsafe impls needed.
 
 impl NativeNotify {
-    /// Construct an empty notify.
+    /// Construct an empty notify (no positions produced, offset = 0).
     pub fn from_empty() -> Self {
         Self {
-            incoming: std::ptr::null(),
-            incoming_len: 0,
+            incoming: Arc::from(&[][..]),
             num_inputs: 0,
+            offset: 0,
         }
     }
 
-    /// Update pointers from a [`Notify`](crate::operator::Notify) reference.
+    /// Copy the current incoming positions from a Rust
+    /// [`Notify`](crate::Notify) into an owned `Arc`.
     ///
-    /// # Safety
-    ///
-    /// The `NativeNotify` must not be accessed after the `Notify` it borrows
-    /// from is dropped.
-    pub unsafe fn update_from(&mut self, notify: &crate::Notify<'_>) {
-        self.incoming = notify.incoming_ptr();
-        self.incoming_len = notify.incoming_len();
+    /// One small allocation per compute call; the slice is typically 0–5
+    /// elements.  After this call, `NativeNotify` is safe to hold beyond
+    /// the `compute` scope.
+    pub fn update_from(&mut self, notify: &crate::Notify<'_>) {
+        self.incoming = Arc::from(notify.produced_raw());
         self.num_inputs = notify.num_inputs();
+        self.offset = 0;
     }
 }
 
 #[pymethods]
 impl NativeNotify {
-    /// Returns a list of bools indexed by input position: `True` if
-    /// that input produced new output in the current flush cycle.
-    ///
-    /// Computed on each call from the incoming positions list.
+    /// Total number of inputs visible to this operator.
+    #[getter]
+    fn num_inputs(&self) -> usize {
+        self.num_inputs
+    }
+
+    /// Returns a list of **local** booleans indexed by input position.
     fn input_produced<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
         let mut flags = vec![false; self.num_inputs];
-        if !self.incoming.is_null() {
-            let incoming =
-                unsafe { std::slice::from_raw_parts(self.incoming, self.incoming_len) };
-            for &pos in incoming {
-                if pos < self.num_inputs {
-                    flags[pos] = true;
+        for &pos in self.incoming.iter() {
+            if pos >= self.offset {
+                let local = pos - self.offset;
+                if local < self.num_inputs {
+                    flags[local] = true;
                 }
             }
         }
@@ -521,15 +544,34 @@ impl NativeNotify {
         Ok(list.into_any().unbind())
     }
 
-    /// Returns the input positions that produced new output in the
-    /// current flush cycle.
+    /// Returns the **local** input positions that produced this cycle.
     fn produced<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        let slice = if self.incoming.is_null() || self.incoming_len == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(self.incoming, self.incoming_len) }
-        };
-        let list = pyo3::types::PyList::new(py, slice)?;
+        let local_positions: Vec<usize> = self
+            .incoming
+            .iter()
+            .filter_map(|&pos| {
+                if pos >= self.offset {
+                    let local = pos - self.offset;
+                    (local < self.num_inputs).then_some(local)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let list = pyo3::types::PyList::new(py, &local_positions)?;
         Ok(list.into_any().unbind())
+    }
+
+    /// Create a view for an inner operator, skipping the first `n` inputs.
+    ///
+    /// Shares the [`Arc`](Arc) (reference-count increment only —
+    /// no data copy).  Safe to hold beyond the compute scope.
+    fn skip_leading(&self, py: Python<'_>, n: usize) -> PyResult<PyObject> {
+        let inner = NativeNotify {
+            incoming: Arc::clone(&self.incoming),
+            num_inputs: self.num_inputs.saturating_sub(n),
+            offset: self.offset + n,
+        };
+        Ok(Py::new(py, inner)?.into_any())
     }
 }

@@ -44,10 +44,8 @@ class MeanPredictor[T](
     from the upstream `Series` inputs, builds a 1-period return matrix,
     calls `fit_fn` and `predict_fn`, and emits predicted returns.
 
-    The rebalance cadence is controlled by the caller: construct the
-    `rebalance` handle from a clock-triggered source — typically
-    ``sc.add_operator(Const(...), clock=rebalance_clock)`` — and pass
-    its handle as the `rebalance` parameter.
+    The rebalance cadence is controlled by the caller: pass a clock
+    source handle as the `rebalance` parameter.
 
     Parameters
     ----------
@@ -60,9 +58,8 @@ class MeanPredictor[T](
         Recorded forward-adjusted close prices series, element shape
         ``(num_stocks,)``.
     rebalance
-        Handle to a scalar `Array[float64]` source that produces on
-        every rebalance date.  The value is irrelevant; only the
-        production signal matters.
+        Clock source handle that fires on each rebalance date.
+        Pass the clock source directly (e.g. `rebalance_clock`).
     fit_fn
         ``(x, y) -> params``.  Feature array ``x`` of shape
         ``(T, N, F)`` and 1-period return matrix ``y`` of shape
@@ -118,13 +115,6 @@ class MeanPredictor[T](
             shape=(self._num_stocks,),
             name=type(self).__name__,
         )
-
-    @property
-    def is_clock_triggerable(self) -> bool:
-        # Uses message-passing semantics: distinguishes rebalance ticks
-        # (emit) from data ticks (accumulate / no-op).  Must not be
-        # gated by the Scenario's clock trigger.
-        return False
 
     def init(self, inputs: tuple, timestamp: int) -> MeanPredictorState[T]:
         return MeanPredictorState(

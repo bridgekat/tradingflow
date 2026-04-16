@@ -53,6 +53,7 @@ from . import traders
 
 from .apply import Apply
 from .cast import Cast
+from .clocked import Clocked
 from .concat import Concat
 from .const import Const
 from .filter import Filter
@@ -75,6 +76,7 @@ __all__ = [
     "traders",
     "Apply",
     "Cast",
+    "Clocked",
     "Const",
     "Concat",
     "Stack",

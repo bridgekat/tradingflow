@@ -2,8 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::data::Instant;
-use crate::{Input, Notify, Operator};
+use crate::{Input, Instant, Notify, Operator};
 
 /// Identity operator: clones input to output unchanged.
 ///
@@ -29,22 +28,22 @@ impl<T: Clone + Send + 'static> Default for Id<T> {
 
 impl<T: Clone + Send + 'static> Operator for Id<T> {
     type State = ();
-    type Inputs = (Input<T>,);
+    type Inputs = Input<T>;
     type Output = T;
 
-    fn init(self, inputs: (&T,), _timestamp: Instant) -> ((), T) {
-        ((), inputs.0.clone())
+    fn init(self, inputs: &T, _timestamp: Instant) -> ((), T) {
+        ((), inputs.clone())
     }
 
     #[inline(always)]
     fn compute(
         _state: &mut (),
-        inputs: (&T,),
+        inputs: &T,
         output: &mut T,
         _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
-        output.clone_from(inputs.0);
+        output.clone_from(inputs);
         true
     }
 }
@@ -52,18 +51,18 @@ impl<T: Clone + Send + 'static> Operator for Id<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Array;
+    use crate::Array;
     use crate::operator::Operator;
 
     #[test]
     fn id_array() {
         let a = Array::scalar(42.0_f64);
-        let (mut s, mut o) = Id::<Array<f64>>::new().init((&a,), Instant::MIN);
+        let (mut s, mut o) = Id::<Array<f64>>::new().init(&a, Instant::MIN);
         assert_eq!(o.as_slice(), &[42.0]);
         let b = Array::scalar(99.0_f64);
         assert!(Id::<Array<f64>>::compute(
             &mut s,
-            (&b,),
+            &b,
             &mut o,
             Instant::from_nanos(1),
             &Notify::new(&[], 0)
@@ -74,12 +73,12 @@ mod tests {
     #[test]
     fn id_string() {
         let a = String::from("hello");
-        let (mut s, mut o) = Id::<String>::new().init((&a,), Instant::MIN);
+        let (mut s, mut o) = Id::<String>::new().init(&a, Instant::MIN);
         assert_eq!(o, "hello");
         let b = String::from("world");
         assert!(Id::<String>::compute(
             &mut s,
-            (&b,),
+            &b,
             &mut o,
             Instant::from_nanos(1),
             &Notify::new(&[], 0)

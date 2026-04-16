@@ -35,7 +35,7 @@ from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Const, Map, Record, Select, Stack
+from tradingflow.operators import Clocked, Map, Record, Select, Stack
 from tradingflow.operators.num import Divide, Log, Multiply
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
@@ -181,13 +181,15 @@ def build_scenario(
     # Rebalanced monthly to avoid per-tick overhead.
     monthly_clock = sc.add_source(MonthlyClock(data_start, end, tz="Asia/Shanghai"))
     universe = sc.add_operator(
-        Map(
-            market_cap,
-            lambda m: calculate_index_weights(m, index_size),
-            shape=(num_stocks,),
-            dtype=np.float64,
-        ),
-        clock=monthly_clock,
+        Clocked(
+            monthly_clock,
+            Map(
+                market_cap,
+                lambda m: calculate_index_weights(m, index_size),
+                shape=(num_stocks,),
+                dtype=np.float64,
+            ),
+        )
     )
 
     # log(B/P) = log(parent_equity / market_cap).
@@ -220,7 +222,7 @@ def build_scenario(
         np.timedelta64(rebalance_days, "D"),
     )
     rebalance_clock = sc.add_source(Clock(rebalance_dates))
-    rebalance = sc.add_operator(Const(np.array(np.nan, dtype=np.float64)), clock=rebalance_clock)
+    rebalance = rebalance_clock
 
     predicted_returns = sc.add_operator(
         LinearRegression(
@@ -280,8 +282,8 @@ def build_scenario(
     # ------------------------------------------------------------------
 
     actual_value = sc.add_operator(Map(strategy_actual, np.sum, shape=(), dtype=np.float64))
-    sharpe = sc.add_operator(SharpeRatio(actual_value), clock=monthly_clock)
-    compound_ret = sc.add_operator(CompoundReturn(actual_value), clock=monthly_clock)
+    sharpe = sc.add_operator(SharpeRatio(actual_value, monthly_clock))
+    compound_ret = sc.add_operator(CompoundReturn(actual_value, monthly_clock))
     drawdown = sc.add_operator(Drawdown(actual_value))  # Triggers on every update
 
     return sc, {

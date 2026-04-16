@@ -31,7 +31,8 @@ class Clock(NativeSource):
     def __init__(self, timestamps: list[np.datetime64] | np.ndarray) -> None:
         ts_ns = np.asarray(timestamps, dtype="datetime64[ns]")
         ts_i64 = ts_ns.view("int64").tolist()
-        super().__init__(native_id="clock", params={"timestamps": ts_i64})
+        from ..types import NodeKind
+        super().__init__(native_id="clock", kind=NodeKind.UNIT, dtype="", params={"timestamps": ts_i64})
 
 
 class DailyClock(Clock):

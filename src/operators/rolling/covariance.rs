@@ -131,7 +131,7 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
 mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
-    use crate::data::{Duration, Instant};
+    use crate::{Duration, Instant};
     use crate::{Notify, Operator, Series};
 
     type RollingCovariance = Rolling<CovarianceAccumulator<f64>>;
@@ -141,14 +141,14 @@ mod tests {
     #[test]
     fn cov_basic() {
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::count(3).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingCovariance::count(3).init(&s, Instant::MIN);
 
         assert_eq!(out.shape(), &[2, 2]);
 
         s.push(ts(1), &[1.0, 2.0]);
         assert!(!RollingCovariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
             ts(1),
             &Notify::new(&[], 0)
@@ -157,7 +157,7 @@ mod tests {
         s.push(ts(2), &[2.0, 4.0]);
         assert!(!RollingCovariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
             ts(2),
             &Notify::new(&[], 0)
@@ -166,7 +166,7 @@ mod tests {
         s.push(ts(3), &[3.0, 6.0]);
         assert!(RollingCovariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
             ts(3),
             &Notify::new(&[], 0)
@@ -185,19 +185,19 @@ mod tests {
     #[should_panic(expected = "requires 1D")]
     fn cov_rejects_scalar() {
         let s = Series::<f64>::new(&[]);
-        RollingCovariance::count(3).init((&s,), Instant::MIN);
+        RollingCovariance::count(3).init(&s, Instant::MIN);
     }
 
     #[test]
     fn cov_nan_propagation() {
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::count(2).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingCovariance::count(2).init(&s, Instant::MIN);
 
         s.push(ts(1), &[f64::NAN, 1.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, ts(1), &Notify::new(&[], 0));
+        RollingCovariance::compute(&mut state, &s, &mut out, ts(1), &Notify::new(&[], 0));
 
         s.push(ts(2), &[2.0, 2.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, ts(2), &Notify::new(&[], 0));
+        RollingCovariance::compute(&mut state, &s, &mut out, ts(2), &Notify::new(&[], 0));
 
         let cov = out.as_slice();
         assert!(cov[0].is_nan()); // Var(x): NaN in x
@@ -209,12 +209,12 @@ mod tests {
     #[test]
     fn cov_time_delta() {
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::time_delta(Duration::from_nanos(200)).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingCovariance::time_delta(Duration::from_nanos(200)).init(&s, Instant::MIN);
 
         s.push(ts(100), &[1.0, 2.0]);
         assert!(RollingCovariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
             ts(100),
             &Notify::new(&[], 0)
@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(out.as_slice(), &[0.0, 0.0, 0.0, 0.0]);
 
         s.push(ts(200), &[3.0, 6.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, ts(200), &Notify::new(&[], 0));
+        RollingCovariance::compute(&mut state, &s, &mut out, ts(200), &Notify::new(&[], 0));
 
         // Cov([1,3], [2,6]): Var(x)=1, Cov(x,y)=2, Var(y)=4.
         let cov = out.as_slice();

@@ -11,7 +11,7 @@
 
 use tokio::sync::mpsc;
 
-use crate::data::{Duration, Instant};
+use crate::{Duration, Instant};
 use crate::{Array, Source};
 
 /// Historical-only source backed by a financial report CSV file.

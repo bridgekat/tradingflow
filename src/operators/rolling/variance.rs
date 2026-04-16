@@ -74,7 +74,7 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
 mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
-    use crate::data::{Duration, Instant};
+    use crate::{Duration, Instant};
     use crate::{Array, Notify, Operator, Series};
 
     type RollingVariance = Rolling<VarianceAccumulator<f64>>;
@@ -89,13 +89,13 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts(t), &[val]);
-        RollingVariance::compute(state, (s,), out, ts(t), &Notify::new(&[], 0))
+        RollingVariance::compute(state, s, out, ts(t), &Notify::new(&[], 0))
     }
 
     #[test]
     fn var_basic() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::count(3).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingVariance::count(3).init(&s, Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(!push_compute(&mut s, &mut state, &mut out, 2, 2.0));
@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn var_nan() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::count(2).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingVariance::count(2).init(&s, Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
@@ -125,12 +125,12 @@ mod tests {
     #[test]
     fn var_time_delta() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::time_delta(Duration::from_nanos(200)).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingVariance::time_delta(Duration::from_nanos(200)).init(&s, Instant::MIN);
 
         s.push(ts(100), &[2.0]);
         assert!(RollingVariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
             ts(100),
             &Notify::new(&[], 0)
@@ -139,7 +139,7 @@ mod tests {
         assert_eq!(out.as_slice()[0], 0.0);
 
         s.push(ts(200), &[4.0]);
-        RollingVariance::compute(&mut state, (&s,), &mut out, ts(200), &Notify::new(&[], 0));
+        RollingVariance::compute(&mut state, &s, &mut out, ts(200), &Notify::new(&[], 0));
         // Var([2,4]) = (4+16)/2 - 9 = 1.0
         assert!((out.as_slice()[0] - 1.0).abs() < 1e-10);
     }

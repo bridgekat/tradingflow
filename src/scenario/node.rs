@@ -6,12 +6,12 @@
 //! `input_node_indices` used to determine the input count for [`Notify`]
 //! contexts during flush.
 
-use std::any::{Any, TypeId};
+use std::any::TypeId;
 
 use crate::operator::{ComputeFn, ErasedOperator};
 use crate::source::{ErasedSource, PollFn, WriteFn};
-use crate::data::Instant;
-use crate::data::Notify;
+use crate::Instant;
+use crate::Notify;
 
 // ===========================================================================
 // NodeState
@@ -99,14 +99,13 @@ impl Node {
         let compute_fn = erased.compute_fn();
         let state_drop_fn = erased.state_drop_fn();
         let output_drop_fn = erased.output_drop_fn();
-        let (state_ptr, output_ptr, shape) = unsafe { erased.init(&input_ptrs, timestamp) };
+        let (state_ptr, output_ptr) = unsafe { erased.init(&input_ptrs, timestamp) };
         let state = OperatorState::new(
             compute_fn,
             input_ptrs,
             input_node_indices,
             state_ptr,
             state_drop_fn,
-            shape,
         );
         Self {
             type_id: output_type_id,
@@ -220,34 +219,24 @@ unsafe impl Send for SourceState {}
 /// Per-operator computation state and function pointers.
 ///
 /// Owns the heap-allocated [`Operator::State`](crate::Operator::State),
-/// pre-collected input pointers, the monomorphised compute function, and
-/// the erased runtime shape used to build nested `Refs` at compute time.
+/// pre-collected input pointers, and the monomorphised compute function.
+/// No shape field: the cursor-based traversal in `erased_compute_fn<O>`
+/// needs no runtime descriptor.
 pub(super) struct OperatorState {
-    /// Monomorphised compute function.
     compute_fn: ComputeFn,
-    /// Pre-collected pointers to input values.
     input_ptrs: Box<[*const u8]>,
-    /// Node indices of the operator's inputs (for [`Notify`]).
     input_node_indices: Box<[usize]>,
-    /// Heap-allocated operator state.
     pub(super) state_ptr: *mut u8,
-    /// Drop the state.
     state_drop_fn: unsafe fn(*mut u8),
-    /// Erased input-tree shape; concrete type is
-    /// `<O::Inputs as InputTypes>::Shape`.  Forwarded to `compute_fn`
-    /// so the monomorphized body can downcast and build nested `Refs`.
-    shape: Box<dyn Any + Send>,
 }
 
 impl OperatorState {
-    /// Create from raw components.
     fn new(
         compute_fn: ComputeFn,
         input_ptrs: Box<[*const u8]>,
         input_node_indices: Box<[usize]>,
         state_ptr: *mut u8,
         state_drop_fn: unsafe fn(*mut u8),
-        shape: Box<dyn Any + Send>,
     ) -> Self {
         Self {
             compute_fn,
@@ -255,7 +244,6 @@ impl OperatorState {
             input_node_indices,
             state_ptr,
             state_drop_fn,
-            shape,
         }
     }
 
@@ -284,7 +272,6 @@ impl OperatorState {
                 output_ptr,
                 timestamp,
                 notify,
-                &*self.shape,
             )
         }
     }

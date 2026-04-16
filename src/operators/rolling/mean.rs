@@ -68,7 +68,7 @@ impl<T: Scalar + Float> Accumulator for MeanAccumulator<T> {
 mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
-    use crate::data::{Duration, Instant};
+    use crate::{Duration, Instant};
     use crate::{Array, Notify, Operator, Series};
 
     type RollingMean = Rolling<MeanAccumulator<f64>>;
@@ -83,13 +83,13 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts(t), &[val]);
-        RollingMean::compute(state, (s,), out, ts(t), &Notify::new(&[], 0))
+        RollingMean::compute(state, s, out, ts(t), &Notify::new(&[], 0))
     }
 
     #[test]
     fn mean_basic() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingMean::count(3).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingMean::count(3).init(&s, Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(!push_compute(&mut s, &mut state, &mut out, 2, 2.0));
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn mean_nan() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingMean::count(2).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingMean::count(2).init(&s, Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
@@ -123,7 +123,7 @@ mod tests {
         // because `inf - inf` on eviction would corrupt the running sum
         // to NaN forever.
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingMean::count(2).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingMean::count(2).init(&s, Instant::MIN);
 
         push_compute(&mut s, &mut state, &mut out, 1, f64::INFINITY);
         push_compute(&mut s, &mut state, &mut out, 2, 2.0);
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn mean_constant() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingMean::count(5).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingMean::count(5).init(&s, Instant::MIN);
 
         for i in 1..=10 {
             push_compute(&mut s, &mut state, &mut out, i, 7.0);
@@ -158,12 +158,12 @@ mod tests {
     fn mean_time_delta() {
         let mut s = Series::<f64>::new(&[]);
         // Window: 200 ns.
-        let (mut state, mut out) = RollingMean::time_delta(Duration::from_nanos(200)).init((&s,), Instant::MIN);
+        let (mut state, mut out) = RollingMean::time_delta(Duration::from_nanos(200)).init(&s, Instant::MIN);
 
         s.push(ts(100), &[2.0]);
         assert!(RollingMean::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
             ts(100),
             &Notify::new(&[], 0)
@@ -171,12 +171,12 @@ mod tests {
         assert_eq!(out.as_slice()[0], 2.0); // mean of [2]
 
         s.push(ts(200), &[4.0]);
-        RollingMean::compute(&mut state, (&s,), &mut out, ts(200), &Notify::new(&[], 0));
+        RollingMean::compute(&mut state, &s, &mut out, ts(200), &Notify::new(&[], 0));
         assert_eq!(out.as_slice()[0], 3.0); // mean of [2, 4]
 
         // ts=350: evict ts=100. Window [200, 350], mean of [4, 6] = 5.
         s.push(ts(350), &[6.0]);
-        RollingMean::compute(&mut state, (&s,), &mut out, ts(350), &Notify::new(&[], 0));
+        RollingMean::compute(&mut state, &s, &mut out, ts(350), &Notify::new(&[], 0));
         assert_eq!(out.as_slice()[0], 5.0);
     }
 }

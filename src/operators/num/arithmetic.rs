@@ -5,7 +5,7 @@ use std::ops;
 
 use num_traits::{Float, Signed};
 
-use crate::data::Instant;
+use crate::Instant;
 use crate::{Array, Input, Notify, Operator, Scalar};
 
 // ===========================================================================
@@ -28,22 +28,22 @@ macro_rules! define_unary_op {
 
         impl<T: Scalar + $($bounds)*> Operator for $Name<T> {
             type State = ();
-            type Inputs = (Input<Array<T>>,);
+            type Inputs = Input<Array<T>>;
             type Output = Array<T>;
 
-            fn init(self, inputs: (&Array<T>,), _timestamp: Instant) -> ((), Array<T>) {
-                ((), Array::zeros(inputs.0.shape()))
+            fn init(self, inputs: &Array<T>, _timestamp: Instant) -> ((), Array<T>) {
+                ((), Array::zeros(inputs.shape()))
             }
 
             #[inline(always)]
             fn compute(
                 _state: &mut (),
-                inputs: (&Array<T>,),
+                inputs: &Array<T>,
                 output: &mut Array<T>,
                 _timestamp: Instant,
                 _notify: &Notify<'_>,
             ) -> bool {
-                let a = inputs.0.as_slice();
+                let a = inputs.as_slice();
                 let out = output.as_mut_slice();
                 for i in 0..out.len() {
                     let $x = a[i].clone();
@@ -206,19 +206,19 @@ define_binary_op!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Array;
+    use crate::Array;
     use crate::operator::Operator;
-    use crate::data::Instant;
+    use crate::Instant;
 
     fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
-    fn unary_values<O: Operator<Inputs = (Input<Array<f64>>,), Output = Array<f64>, State = ()>>(
+    fn unary_values<O: Operator<Inputs = Input<Array<f64>>, Output = Array<f64>, State = ()>>(
         op: O,
         input: &[f64],
     ) -> Vec<f64> {
         let a = Array::from_vec(&[input.len()], input.to_vec());
-        let (mut s, mut o) = op.init((&a,), Instant::MIN);
-        O::compute(&mut s, (&a,), &mut o, ts(1), &Notify::new(&[], 0));
+        let (mut s, mut o) = op.init(&a, Instant::MIN);
+        O::compute(&mut s, &a, &mut o, ts(1), &Notify::new(&[], 0));
         o.as_slice().to_vec()
     }
 
@@ -227,8 +227,8 @@ mod tests {
     #[test]
     fn negate_vector() {
         let a = Array::from_vec(&[3], vec![1.0_f64, -2.0, 3.0]);
-        let (mut s, mut o) = Negate::<f64>::new().init((&a,), Instant::MIN);
-        Negate::compute(&mut s, (&a,), &mut o, ts(1), &Notify::new(&[], 0));
+        let (mut s, mut o) = Negate::<f64>::new().init(&a, Instant::MIN);
+        Negate::compute(&mut s, &a, &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[-1.0, 2.0, -3.0]);
     }
 
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn preserves_shape() {
         let a = Array::from_vec(&[2, 3], vec![0.0_f64; 6]);
-        let (_, o) = Negate::<f64>::new().init((&a,), Instant::MIN);
+        let (_, o) = Negate::<f64>::new().init(&a, Instant::MIN);
         assert_eq!(o.shape(), &[2, 3]);
         let (_, o) = Add::<f64>::new().init((&a, &a), Instant::MIN);
         assert_eq!(o.shape(), &[2, 3]);

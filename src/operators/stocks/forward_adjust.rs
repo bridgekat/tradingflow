@@ -4,7 +4,7 @@
 //! share dividends (bonus shares) and cash dividends, producing either a
 //! forward-adjusted stock price or the raw adjustment factor on every tick.
 
-use crate::data::Instant;
+use crate::Instant;
 use crate::{Array, Input, Notify, Operator};
 
 /// Compute the forward-adjusted stock price (or adjustment factor) from

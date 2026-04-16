@@ -18,6 +18,7 @@ class NodeKind(enum.Enum):
 
     ARRAY = "array"
     SERIES = "series"
+    UNIT = "unit"
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +39,16 @@ class Series[T: np.generic]:
     """Marker for a Rust `Series<T>` node value type.
 
     Not instantiated — used only as a generic type parameter.
+    """
+
+    pass
+
+
+class Unit:
+    """Marker for a Rust `()` (unit) node value type.
+
+    Used for clock sources and operators that carry no data — only a
+    trigger signal.  Not instantiated; used only as a type parameter.
     """
 
     pass
@@ -92,6 +103,8 @@ def node_type_to_name(tp: type) -> tuple[NodeKind, str]:
         if dtype_str is None:
             raise TypeError(f"Unsupported scalar type for Series: {args[0]}")
         return (NodeKind.SERIES, dtype_str)
+    if tp is Unit:
+        return (NodeKind.UNIT, "")
     raise TypeError(f"Cannot resolve node type: {tp}")
 
 

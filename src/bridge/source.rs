@@ -18,7 +18,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use tokio::sync::mpsc;
 
-use crate::data::Instant;
+use crate::Instant;
 use crate::{Array, ErasedSource, PeekableReceiver, Series};
 
 use super::dispatch::dispatch_dtype;
@@ -86,23 +86,28 @@ pub fn make_py_source(
     event_loop: PyObject,
     error_slot: ErrorSlot,
 ) -> PyResult<ErasedSource> {
-    // Allocate output (generic on T) and create its Python view.
-    macro_rules! alloc_output {
-        ($T:ty) => {
-            match out_view_kind {
-                ViewKind::Array => (
-                    Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
-                    drop_fn::<Array<$T>> as unsafe fn(*mut u8),
-                ),
-                ViewKind::Series => (
-                    Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
-                    drop_fn::<Series<$T>> as unsafe fn(*mut u8),
-                ),
-            }
-        };
-    }
+    // Allocate output and create its Python view.
     let (output_ptr, output_drop_fn): (*mut u8, unsafe fn(*mut u8)) =
-        dispatch_dtype!(out_dtype, alloc_output);
+        if out_view_kind == ViewKind::Unit {
+            (Box::into_raw(Box::new(())) as *mut u8, drop_fn::<()>)
+        } else {
+            macro_rules! alloc_output {
+                ($T:ty) => {
+                    match out_view_kind {
+                        ViewKind::Array => (
+                            Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
+                            drop_fn::<Array<$T>> as unsafe fn(*mut u8),
+                        ),
+                        ViewKind::Series => (
+                            Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
+                            drop_fn::<Series<$T>> as unsafe fn(*mut u8),
+                        ),
+                        ViewKind::Unit => unreachable!(),
+                    }
+                };
+            }
+            dispatch_dtype!(out_dtype, alloc_output)
+        };
 
     let py_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
 
@@ -193,6 +198,12 @@ unsafe fn py_write_fn(state_ptr: *mut u8, _output_ptr: *mut u8, _ts: Instant) ->
     }
 
     if let Some((_ts, py_value)) = state.rx.take_pending() {
+        // Unit outputs carry no data — just consume the event and signal
+        // downstream propagation without calling .write().
+        let is_none = Python::attach(|py| state.py_output.is_none(py));
+        if is_none {
+            return true;
+        }
         let result = Python::attach(|py| -> PyResult<()> {
             state
                 .py_output

@@ -93,6 +93,9 @@ use crate::{Array, Series};
 
 /// Resolve a Python-side `(kind, dtype)` pair to a Rust [`TypeId`].
 pub fn resolve_type_id(kind: &str, dtype: &str) -> pyo3::PyResult<TypeId> {
+    if kind == "unit" {
+        return Ok(TypeId::of::<()>());
+    }
     let dtype = normalize_dtype(dtype);
     macro_rules! resolve {
         ($T:ty) => {

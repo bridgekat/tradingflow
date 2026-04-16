@@ -106,8 +106,9 @@ class TestLag:
         """lag(offset=2) outputs value from 2 steps ago, fill=0 for early steps."""
         sc, _, s = _scalar_scenario([10.0, 20.0, 30.0, 40.0])
         h_lag = sc.add_operator(Lag(s, offset=2))
+        h_lag_rec = sc.add_operator(Record(h_lag))
         _run(sc)
-        vals = list(sc.series_view(h_lag).values())
+        vals = list(sc.series_view(h_lag_rec).values())
         # steps 1,2: not enough history → fill=0
         # step 3: value from step 1 → 10.0
         # step 4: value from step 2 → 20.0
@@ -117,17 +118,19 @@ class TestLag:
         """Default offset=1 returns previous value."""
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0])
         h_lag = sc.add_operator(Lag(s))
+        h_lag_rec = sc.add_operator(Record(h_lag))
         _run(sc)
-        vals = list(sc.series_view(h_lag).values())
+        vals = list(sc.series_view(h_lag_rec).values())
         assert vals == pytest.approx([0.0, 1.0, 2.0])
 
     def test_lag_timestamps_match(self) -> None:
-        """Lag output has same timestamps as input."""
+        """Lag output ticks every step; recorded timestamps match input series."""
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0])
         h_lag = sc.add_operator(Lag(s))
+        h_lag_rec = sc.add_operator(Record(h_lag))
         _run(sc)
         np.testing.assert_array_equal(
-            sc.series_view(h_lag).timestamps(),
+            sc.series_view(h_lag_rec).timestamps(),
             sc.series_view(s).timestamps(),
         )
 

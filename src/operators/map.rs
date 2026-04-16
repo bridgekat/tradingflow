@@ -3,8 +3,7 @@
 //! - [`Map`] — allocating: `Fn(&S) -> T`.
 //! - [`MapInplace`] — in-place: `Fn(&S, &mut T) -> bool`.
 
-use crate::data::Instant;
-use crate::{Input, Notify, Operator};
+use crate::{Input, Instant, Notify, Operator};
 
 /// Map operator: applies a function `S → T` to the input on each tick.
 ///
@@ -42,23 +41,23 @@ where
     F: Fn(&S) -> T + Send + 'static,
 {
     type State = Self;
-    type Inputs = (Input<S>,);
+    type Inputs = Input<S>;
     type Output = T;
 
-    fn init(self, inputs: (&S,), _timestamp: Instant) -> (Self, T) {
-        let output = (self.f)(inputs.0);
+    fn init(self, inputs: &S, _timestamp: Instant) -> (Self, T) {
+        let output = (self.f)(inputs);
         (self, output)
     }
 
     #[inline(always)]
     fn compute(
         state: &mut Self,
-        inputs: (&S,),
+        inputs: &S,
         output: &mut T,
         _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
-        *output = (state.f)(inputs.0);
+        *output = (state.f)(inputs);
         true
     }
 }
@@ -102,35 +101,37 @@ where
     F: Fn(&S, &mut T) -> bool + Send + 'static,
 {
     type State = Self;
-    type Inputs = (Input<S>,);
+    type Inputs = Input<S>;
     type Output = T;
 
-    fn init(self, inputs: (&S,), _timestamp: Instant) -> (Self, T) {
+    fn init(self, inputs: &S, _timestamp: Instant) -> (Self, T) {
         let mut output = self.initial.clone();
-        (self.f)(inputs.0, &mut output);
+        (self.f)(inputs, &mut output);
         (self, output)
     }
 
     #[inline(always)]
     fn compute(
         state: &mut Self,
-        inputs: (&S,),
+        inputs: &S,
         output: &mut T,
         _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
-        (state.f)(inputs.0, output)
+        (state.f)(inputs, output)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Array;
+    use crate::Array;
+    use crate::Instant;
     use crate::operator::Operator;
-    use crate::data::Instant;
 
-    fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
+    fn ts(n: i64) -> Instant {
+        Instant::from_nanos(n)
+    }
 
     #[test]
     fn map_scalar_double() {
@@ -140,11 +141,11 @@ mod tests {
             out[0] *= 2.0;
             out
         })
-        .init((&a,), Instant::MIN);
+        .init(&a, Instant::MIN);
         assert_eq!(o.as_slice(), &[10.0]);
 
         let b = Array::scalar(3.0_f64);
-        Map::compute(&mut s, (&b,), &mut o, ts(1), &Notify::new(&[], 0));
+        Map::compute(&mut s, &b, &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[6.0]);
     }
 
@@ -153,44 +154,42 @@ mod tests {
         // Array<f64> → String
         let a = Array::scalar(42.0_f64);
         let (mut s, mut o) =
-            Map::new(|a: &Array<f64>| format!("{:.0}", a[0])).init((&a,), Instant::MIN);
+            Map::new(|a: &Array<f64>| format!("{:.0}", a[0])).init(&a, Instant::MIN);
         assert_eq!(o, "42");
 
         let b = Array::scalar(99.0_f64);
-        Map::compute(&mut s, (&b,), &mut o, ts(1), &Notify::new(&[], 0));
+        Map::compute(&mut s, &b, &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o, "99");
     }
 
     #[test]
     fn map_vector_sum() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
-        let (mut s, mut o) = Map::new(|a: &Array<f64>| {
-            Array::scalar(a.as_slice().iter().sum::<f64>())
-        })
-        .init((&a,), Instant::MIN);
+        let (mut s, mut o) =
+            Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>()))
+                .init(&a, Instant::MIN);
         assert_eq!(o.as_slice(), &[6.0]);
 
         let b = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
-        Map::compute(&mut s, (&b,), &mut o, ts(1), &Notify::new(&[], 0));
+        Map::compute(&mut s, &b, &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[60.0]);
     }
 
     #[test]
     fn map_inplace_double() {
         let a = Array::scalar(5.0_f64);
-        let (mut s, mut o) =
-            MapInplace::new(
-                |inp: &Array<f64>, out: &mut Array<f64>| {
-                    out[0] = inp[0] * 2.0;
-                    true
-                },
-                Array::scalar(0.0),
-            )
-            .init((&a,), Instant::MIN);
+        let (mut s, mut o) = MapInplace::new(
+            |inp: &Array<f64>, out: &mut Array<f64>| {
+                out[0] = inp[0] * 2.0;
+                true
+            },
+            Array::scalar(0.0),
+        )
+        .init(&a, Instant::MIN);
         assert_eq!(o.as_slice(), &[10.0]);
 
         let b = Array::scalar(3.0);
-        MapInplace::compute(&mut s, (&b,), &mut o, ts(1), &Notify::new(&[], 0));
+        MapInplace::compute(&mut s, &b, &mut o, ts(1), &Notify::new(&[], 0));
         assert_eq!(o.as_slice(), &[6.0]);
     }
 
@@ -198,25 +197,24 @@ mod tests {
     fn map_inplace_conditional() {
         // Only propagate when input > 3.
         let a = Array::scalar(1.0_f64);
-        let (mut s, mut o) =
-            MapInplace::new(
-                |inp: &Array<f64>, out: &mut Array<f64>| {
-                    if inp[0] > 3.0 {
-                        out[0] = inp[0];
-                        true
-                    } else {
-                        false
-                    }
-                },
-                Array::scalar(0.0),
-            )
-            .init((&a,), Instant::MIN);
+        let (mut s, mut o) = MapInplace::new(
+            |inp: &Array<f64>, out: &mut Array<f64>| {
+                if inp[0] > 3.0 {
+                    out[0] = inp[0];
+                    true
+                } else {
+                    false
+                }
+            },
+            Array::scalar(0.0),
+        )
+        .init(&a, Instant::MIN);
 
         // Input <= 3 → returns false.
         let b = Array::scalar(2.0);
         assert!(!MapInplace::compute(
             &mut s,
-            (&b,),
+            &b,
             &mut o,
             ts(1),
             &Notify::new(&[], 0)
@@ -226,7 +224,7 @@ mod tests {
         let c = Array::scalar(5.0);
         assert!(MapInplace::compute(
             &mut s,
-            (&c,),
+            &c,
             &mut o,
             ts(2),
             &Notify::new(&[], 0)

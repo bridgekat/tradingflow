@@ -56,10 +56,10 @@ pub use queue::ShutdownFlag;
 
 use std::any::TypeId;
 
+use crate::Instant;
 use crate::operator::{ErasedOperator, Operator};
 use crate::operators::Const;
 use crate::source::{ErasedSource, Source};
-use crate::data::Instant;
 
 use graph::Graph;
 use node::Node;
@@ -78,7 +78,7 @@ use node::Node;
 ///
 /// let ha = sc.add_const(Array::scalar(0.0));
 /// let hb = sc.add_const(Array::scalar(0.0));
-/// let hc = sc.add_operator(Add::new(), (ha, hb), None);
+/// let hc = sc.add_operator(Add::new(), (ha, hb));
 ///
 /// sc.value_mut(ha)[0] = 10.0;
 /// sc.value_mut(hb)[0] = 3.0;
@@ -135,9 +135,15 @@ impl Scenario {
         self.graph.nodes[index].value_ptr
     }
 
+    /// The output `TypeId` of a node.  Used by the Python bridge to build the
+    /// type-id list for operators with `!Sized` `Inputs` (e.g. Stack/Concat).
+    pub(crate) fn node_type_id(&self, index: usize) -> TypeId {
+        self.graph.nodes[index].type_id
+    }
+
     /// Register a constant node with an initial value.
     pub fn add_const<T: Send + 'static>(&mut self, value: T) -> Handle<T> {
-        self.add_operator(Const::new(value), (), None)
+        self.add_operator(Const::new(value), ())
     }
 
     /// Register a [`Source`], creating the output node.
@@ -154,7 +160,6 @@ impl Scenario {
         &mut self,
         operator: O,
         inputs: impl Into<<O::Inputs as InputTypesHandles>::Handles>,
-        trigger: Option<Handle<()>>,
     ) -> Handle<O::Output>
     where
         O::Inputs: InputTypesHandles,
@@ -166,10 +171,19 @@ impl Scenario {
             let mut writer = crate::data::FlatWrite::new(&mut input_indices);
             <O::Inputs as InputTypesHandles>::write_node_indices(&handles, &mut writer);
         }
-        let shape = <O::Inputs as InputTypesHandles>::shape(&handles);
-        let trigger_index = trigger.map(|c| c.index());
-        let erased = ErasedOperator::from_operator(operator, shape);
-        Handle::new(self.add_erased_operator(erased, &input_indices, trigger_index))
+
+        // Pre-size the type-id buffer using the handles arity (accounts for
+        // runtime slice lengths).  Then call type_ids_to_flat — for Sized
+        // inputs it fills the whole buffer; for a trailing [T] slice it
+        // fills the remaining space using the buffer length as the count.
+        let mut type_ids = vec![std::any::TypeId::of::<()>(); arity];
+        {
+            let mut writer = crate::data::FlatWrite::new(&mut type_ids);
+            <O::Inputs as crate::data::InputTypes>::type_ids_to_flat(&mut writer);
+        }
+        let erased =
+            ErasedOperator::from_operator_with_type_ids(operator, type_ids.into_boxed_slice());
+        Handle::new(self.add_erased_operator(erased, &input_indices))
     }
 
     /// Register a type-erased source.
@@ -186,24 +200,11 @@ impl Scenario {
     }
 
     /// Register a type-erased operator.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `trigger_index` is `Some` but the operator is not
-    /// clock-triggerable.
     pub fn add_erased_operator(
         &mut self,
         erased: ErasedOperator,
         input_indices: &[usize],
-        trigger_index: Option<usize>,
     ) -> usize {
-        if trigger_index.is_some() {
-            assert!(
-                erased.is_clock_triggerable(),
-                "operator is not clock-triggerable: it uses message-passing \
-                 semantics and must be triggered by its data inputs, not a clock",
-            );
-        }
         for &idx in input_indices {
             assert!(
                 idx < self.graph.len(),
@@ -219,17 +220,16 @@ impl Scenario {
             .map(|&idx| self.graph.nodes[idx].type_id)
             .collect();
         let input_node_indices: Box<[usize]> = input_indices.into();
-        let node = Node::from_erased_operator(erased, input_ptrs, input_node_indices, &input_type_ids, Instant::MIN);
+        let node = Node::from_erased_operator(
+            erased,
+            input_ptrs,
+            input_node_indices,
+            &input_type_ids,
+            Instant::MIN,
+        );
         let output_idx = self.graph.add_node(node);
-        match trigger_index {
-            None => {
-                for (pos, &input_idx) in input_indices.iter().enumerate() {
-                    self.graph.add_trigger_edge(input_idx, output_idx, pos);
-                }
-            }
-            Some(trigger_idx) => {
-                self.graph.add_trigger_edge(trigger_idx, output_idx, usize::MAX);
-            }
+        for (pos, &input_idx) in input_indices.iter().enumerate() {
+            self.graph.add_trigger_edge(input_idx, output_idx, pos);
         }
         output_idx
     }
@@ -264,10 +264,10 @@ impl Default for Scenario {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Array;
+    use crate::Array;
+    use crate::Series;
     use crate::operators::num::Add;
     use crate::operators::{Filter, Record};
-    use crate::data::Series;
     use crate::sources::ArraySource;
 
     fn ts(n: i64) -> Instant {
@@ -298,7 +298,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_const(Array::scalar(0.0_f64));
         let hb = sc.add_const(Array::scalar(0.0_f64));
-        let hc = sc.add_operator(Add::new(), (ha, hb), None);
+        let hc = sc.add_operator(Add::new(), (ha, hb));
 
         sc.value_mut(ha)[0] = 10.0;
         sc.value_mut(hb)[0] = 3.0;
@@ -312,7 +312,7 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_const(Array::from_vec(&[2], vec![1.0_f64, 2.0]));
         let hb = sc.add_const(Array::from_vec(&[2], vec![10.0_f64, 20.0]));
-        let hc = sc.add_operator(Add::new(), (ha, hb), None);
+        let hc = sc.add_operator(Add::new(), (ha, hb));
 
         sc.flush(ts(1), &[ha.index(), hb.index()]);
         assert_eq!(sc.value(hc).as_slice(), &[11.0, 22.0]);
@@ -323,10 +323,10 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_const(Array::scalar(2.0_f64));
         let hb = sc.add_const(Array::scalar(3.0_f64));
-        let hab = sc.add_operator(Add::new(), (ha, hb), None);
+        let hab = sc.add_operator(Add::new(), (ha, hb));
 
         use crate::operators::num::Multiply;
-        let hout = sc.add_operator(Multiply::new(), (hab, ha), None);
+        let hout = sc.add_operator(Multiply::new(), (hab, ha));
 
         sc.flush(ts(1), &[ha.index(), hb.index()]);
         // (2+3) * 2 = 10
@@ -338,8 +338,8 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_const(Array::scalar(0.0_f64));
         let hb = sc.add_const(Array::scalar(0.0_f64));
-        let hsum = sc.add_operator(Add::new(), (ha, hb), None);
-        let hseries = sc.add_operator(Record::<f64>::new(), (hsum,), None);
+        let hsum = sc.add_operator(Add::new(), (ha, hb));
+        let hseries = sc.add_operator(Record::<f64>::new(), hsum);
 
         sc.value_mut(ha)[0] = 10.0;
         sc.value_mut(hb)[0] = 3.0;
@@ -364,7 +364,7 @@ mod tests {
             Series::from_vec(&[], tss(&[1, 2, 3]), vec![10.0, 20.0, 30.0]),
             Array::scalar(0.0),
         ));
-        let hseries = sc.add_operator(Record::<f64>::new(), (ha,), None);
+        let hseries = sc.add_operator(Record::<f64>::new(), ha);
 
         sc.run(|_, _, _| {}).await;
 
@@ -385,8 +385,8 @@ mod tests {
             Series::from_vec(&[], tss(&[2, 3]), vec![20.0, 40.0]),
             Array::scalar(0.0),
         ));
-        let ho = sc.add_operator(Add::new(), (ha, hb), None);
-        let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
+        let ho = sc.add_operator(Add::new(), (ha, hb));
+        let hseries = sc.add_operator(Record::<f64>::new(), ho);
 
         sc.run(|_, _, _| {}).await;
 
@@ -408,8 +408,8 @@ mod tests {
             Series::from_vec(&[], tss(&[1, 2]), vec![100.0, 200.0]),
             Array::scalar(0.0),
         ));
-        let ho = sc.add_operator(Add::new(), (ha, hb), None);
-        let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
+        let ho = sc.add_operator(Add::new(), (ha, hb));
+        let hseries = sc.add_operator(Record::<f64>::new(), ho);
 
         sc.run(|_, _, _| {}).await;
 
@@ -430,11 +430,11 @@ mod tests {
             Series::from_vec(&[], tss(&[1, 2]), vec![3.0, 10.0]),
             Array::scalar(0.0),
         ));
-        let hab = sc.add_operator(Add::new(), (ha, hb), None);
+        let hab = sc.add_operator(Add::new(), (ha, hb));
 
         use crate::operators::num::Multiply;
-        let hout = sc.add_operator(Multiply::new(), (hab, ha), None);
-        let hseries = sc.add_operator(Record::<f64>::new(), (hout,), None);
+        let hout = sc.add_operator(Multiply::new(), (hab, ha));
+        let hseries = sc.add_operator(Record::<f64>::new(), hout);
 
         sc.run(|_, _, _| {}).await;
 
@@ -451,8 +451,8 @@ mod tests {
             Series::from_vec(&[], tss(&[1, 2, 3, 4]), vec![1.0, 5.0, 2.0, 10.0]),
             Array::scalar(0.0),
         ));
-        let ho = sc.add_operator(Filter::new(|v: &Array<f64>| v[0] > 3.0), (ha,), None);
-        let hseries = sc.add_operator(Record::<f64>::new(), (ho,), None);
+        let ho = sc.add_operator(Filter::new(|v: &Array<f64>| v[0] > 3.0), ha);
+        let hseries = sc.add_operator(Record::<f64>::new(), ho);
 
         sc.run(|_, _, _| {}).await;
 
@@ -465,6 +465,7 @@ mod tests {
 
     #[tokio::test]
     async fn scenario_run_periodic_single_input() {
+        use crate::operators::Clocked;
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
@@ -474,8 +475,11 @@ mod tests {
         ));
         let hclock = sc.add_source(clock(tss(&[2])));
 
-        let ho = sc.add_operator(Filter::new(|_: &Array<f64>| true), (ha,), Some(hclock));
-        let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
+        let ho = sc.add_operator(
+            Clocked::new(Filter::new(|_: &Array<f64>| true)),
+            (hclock, ha),
+        );
+        let hs = sc.add_operator(Record::<f64>::new(), ho);
 
         sc.run(|_, _, _| {}).await;
 
@@ -487,6 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn scenario_run_periodic_two_inputs() {
+        use crate::operators::Clocked;
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
@@ -500,8 +505,8 @@ mod tests {
         ));
         let hclock = sc.add_source(clock(tss(&[2])));
 
-        let ho = sc.add_operator(Add::new(), (ha, hb), Some(hclock));
-        let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
+        let ho = sc.add_operator(Clocked::new(Add::new()), (hclock, (ha, hb)));
+        let hs = sc.add_operator(Record::<f64>::new(), ho);
 
         sc.run(|_, _, _| {}).await;
 
@@ -513,17 +518,25 @@ mod tests {
 
     #[tokio::test]
     async fn scenario_run_periodic_multiple_ticks() {
+        use crate::operators::Clocked;
         use crate::sources::clock;
 
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
-            Series::from_vec(&[], tss(&[1, 2, 3, 4, 5]), vec![10.0, 20.0, 30.0, 40.0, 50.0]),
+            Series::from_vec(
+                &[],
+                tss(&[1, 2, 3, 4, 5]),
+                vec![10.0, 20.0, 30.0, 40.0, 50.0],
+            ),
             Array::scalar(0.0),
         ));
         let hclock = sc.add_source(clock(tss(&[2, 4])));
 
-        let ho = sc.add_operator(Filter::new(|_: &Array<f64>| true), (ha,), Some(hclock));
-        let hs = sc.add_operator(Record::<f64>::new(), (ho,), None);
+        let ho = sc.add_operator(
+            Clocked::new(Filter::new(|_: &Array<f64>| true)),
+            (hclock, ha),
+        );
+        let hs = sc.add_operator(Record::<f64>::new(), ho);
 
         sc.run(|_, _, _| {}).await;
 

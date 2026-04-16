@@ -11,7 +11,7 @@ use std::task::Poll;
 use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::source::PollFn;
-use crate::data::Instant;
+use crate::Instant;
 
 use super::Scenario;
 use super::node::{ChannelKind, SourceState};
@@ -417,7 +417,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::operators::Record;
-    use crate::data::Instant;
+    use crate::Instant;
     use crate::{Array, Input, Notify, Operator, Scenario, Series, Source};
 
     use super::super::handle::Handle;
@@ -483,12 +483,12 @@ mod tests {
 
     impl Operator for GlobalLogger {
         type State = (usize, Arc<Mutex<Vec<(Instant, usize)>>>);
-        type Inputs = (Input<Array<f64>>,);
+        type Inputs = Input<Array<f64>>;
         type Output = ();
 
         fn init(
             self,
-            _inputs: (&Array<f64>,),
+            _inputs: &Array<f64>,
             _ts: Instant,
         ) -> ((usize, Arc<Mutex<Vec<(Instant, usize)>>>), ()) {
             ((self.source_id, self.log), ())
@@ -496,7 +496,7 @@ mod tests {
 
         fn compute(
             state: &mut (usize, Arc<Mutex<Vec<(Instant, usize)>>>),
-            _inputs: (&Array<f64>,),
+            _inputs: &Array<f64>,
             _output: &mut (),
             timestamp: Instant,
             _notify: &Notify<'_>,
@@ -682,7 +682,7 @@ mod tests {
 
         let mut sc = Scenario::new();
         let hs = sc.add_source(ManualChannel { hist_rx, live_rx });
-        let hrec = sc.add_operator(Record::<f64>::new(), (hs,), None);
+        let hrec = sc.add_operator(Record::<f64>::new(), hs);
 
         tokio::spawn(async move {
             live_tx.send((ts(50), 2.0_f64)).await.unwrap();
@@ -711,14 +711,13 @@ mod tests {
             for i in 0..n_sources {
                 let (hist, live) = generate_events(&mut rng, i);
                 let h = sc.add_source(make_source(&hist, &live));
-                records.push(sc.add_operator(Record::<f64>::new(), (h,), None));
+                records.push(sc.add_operator(Record::<f64>::new(), h));
                 sc.add_operator(
                     GlobalLogger {
                         source_id: i,
                         log: log.clone(),
                     },
-                    (h,),
-                    None,
+                    h,
                 );
                 source_data.push((hist, live));
             }

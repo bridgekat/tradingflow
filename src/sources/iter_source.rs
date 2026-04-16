@@ -3,7 +3,7 @@
 use tokio::sync::mpsc;
 
 use crate::source::Source;
-use crate::data::Instant;
+use crate::Instant;
 
 /// A source driven by an iterator of `(timestamp, event)` pairs.
 ///

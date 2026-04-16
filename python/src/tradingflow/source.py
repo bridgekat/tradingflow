@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .types import NodeKind
+
 
 class Source(ABC):
     """Abstract base for data sources.
@@ -16,27 +18,31 @@ class Source(ABC):
     Parameters
     ----------
     dtype
-        NumPy dtype for emitted values.
+        NumPy dtype for emitted values (ignored for unit sources).
     shape
         Shape of each emitted value element. Use `()` for scalars.
+    kind
+        Output node kind (default [`NodeKind.ARRAY`]).
     initial
         Initial value. Defaults to NaN for floats, zero otherwise.
     name
         Optional human-readable name.
     """
 
-    __slots__ = ("_dtype", "_shape", "_initial", "_name")
+    __slots__ = ("_dtype", "_shape", "_kind", "_initial", "_name")
 
     def __init__(
         self,
         dtype: type | np.dtype,
         shape: tuple[int, ...],
         *,
+        kind: NodeKind = NodeKind.ARRAY,
         initial: ArrayLike | None = None,
         name: str | None = None,
     ) -> None:
         self._dtype = np.dtype(dtype)
         self._shape = shape
+        self._kind = kind
         if initial is not None:
             self._initial = np.asarray(initial, dtype=self._dtype)
         elif np.issubdtype(self._dtype, np.floating):
@@ -64,6 +70,11 @@ class Source(ABC):
             Initial timestamp (TAI nanoseconds since the PTP epoch).
         """
         ...
+
+    @property
+    def kind(self) -> NodeKind:
+        """Output node kind."""
+        return self._kind
 
     @property
     def dtype(self) -> np.dtype:
@@ -109,8 +120,10 @@ class NativeSource:
     ----------
     native_id
         Source native dispatch string on the Rust side.
+    kind
+        Output node kind (default [`NodeKind.ARRAY`]).
     dtype
-        NumPy dtype string (default `"float64"`).
+        NumPy dtype string (default `"float64"`; ignored for `NodeKind.UNIT`).
     shape
         Element shape (default `()`).
     params
@@ -119,18 +132,20 @@ class NativeSource:
         Optional human-readable name (defaults to *native_id*).
     """
 
-    __slots__ = ("_native_id", "_dtype", "_shape", "_params", "_name")
+    __slots__ = ("_native_id", "_kind", "_dtype", "_shape", "_params", "_name")
 
     def __init__(
         self,
         native_id: str,
         *,
+        kind: NodeKind = NodeKind.ARRAY,
         dtype: str = "float64",
         shape: tuple[int, ...] = (),
         params: dict | None = None,
         name: str | None = None,
     ) -> None:
         self._native_id = native_id
+        self._kind = kind
         self._dtype = dtype
         self._shape = shape
         self._params = params or {}
@@ -140,6 +155,11 @@ class NativeSource:
     def native_id(self) -> str:
         """Source native dispatch string."""
         return self._native_id
+
+    @property
+    def kind(self) -> NodeKind:
+        """Output node kind."""
+        return self._kind
 
     @property
     def dtype(self) -> str:

@@ -147,19 +147,6 @@ class Operator[Inputs, Output, State](ABC):
         """Human-readable name."""
         return self._name
 
-    @property
-    def is_clock_triggerable(self) -> bool:
-        """Whether this operator can be gated by a clock trigger.
-
-        Operators that use message-passing semantics (relying on
-        ``Notify.produced()`` to track which inputs produced)
-        should return ``False`` — they must be triggered by their data
-        inputs so they never miss a message.
-
-        The default is ``True``.
-        """
-        return True
-
     def get_io_types(self) -> tuple[list[tuple[NodeKind, str]], tuple[NodeKind, str]]:
         """Return `(input_types, output_type)` for Rust TypeId validation.
 
@@ -170,8 +157,11 @@ class Operator[Inputs, Output, State](ABC):
         result = _try_extract_io_types(type(self))
         if result is not None:
             return result
-        input_names = [(inp.kind, str(inp.dtype)) for inp in self._inputs]
-        output_name = (self._kind, str(self._dtype))
+        input_names = [
+            (inp.kind, "" if inp.kind == NodeKind.UNIT else str(inp.dtype))
+            for inp in self._inputs
+        ]
+        output_name = (self._kind, "" if self._kind == NodeKind.UNIT else str(self._dtype))
         return input_names, output_name
 
 

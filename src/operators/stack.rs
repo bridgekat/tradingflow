@@ -1,7 +1,6 @@
 //! Stack operator — stacks N arrays along a new axis.
 
-use crate::data::Instant;
-use crate::{Array, Input, Notify, Operator, Scalar, Slice, SliceRefs};
+use crate::{Array, Input, Instant, Notify, Operator, Scalar, SliceRefs};
 
 /// Stack N homogeneous arrays along a new axis.
 pub struct Stack<T: Scalar> {
@@ -27,7 +26,7 @@ pub struct StackState {
 
 impl<T: Scalar> Operator for Stack<T> {
     type State = StackState;
-    type Inputs = Slice<Input<Array<T>>>;
+    type Inputs = [Input<Array<T>>];
     type Output = Array<T>;
 
     fn init(
@@ -72,27 +71,20 @@ impl<T: Scalar> Operator for Stack<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Array;
+    use crate::Array;
     use crate::operator::Operator;
-    use crate::data::{InputTypes, SliceShape};
+    use crate::{FlatRead, InputTypes};
 
-    fn make_slice<'a, T: Scalar>(
-        arrays: &'a [&'a Array<T>],
-    ) -> (Vec<*const u8>, SliceShape<Input<Array<T>>>) {
-        let ptrs: Vec<*const u8> = arrays
+    fn make_ptrs<'a, T: Scalar>(arrays: &'a [&'a Array<T>]) -> Vec<*const u8> {
+        arrays
             .iter()
             .map(|&a| a as *const Array<T> as *const u8)
-            .collect();
-        let shape = SliceShape::new(vec![(); arrays.len()].into_boxed_slice());
-        (ptrs, shape)
+            .collect()
     }
 
-    fn refs<'a, T: Scalar>(
-        ptrs: &'a [*const u8],
-        shape: &'a SliceShape<Input<Array<T>>>,
-    ) -> SliceRefs<'a, Input<Array<T>>> {
-        let mut reader = crate::data::FlatRead::new(ptrs);
-        unsafe { <Slice<Input<Array<T>>> as InputTypes>::refs_from_flat(&mut reader, shape) }
+    fn refs<'a, T: Scalar>(ptrs: &'a [*const u8]) -> SliceRefs<'a, Input<Array<T>>> {
+        let mut reader = FlatRead::new(ptrs);
+        unsafe { <[Input<Array<T>>] as InputTypes>::refs_from_flat(&mut reader) }
     }
 
     // Two 2×3 matrices stacked along each possible axis.
@@ -113,11 +105,11 @@ mod tests {
         // [[[1,2,3],[4,5,6]], [[7,8,9],[10,11,12]]]
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
-        let (ptrs, shape) = make_slice(&arrays);
-        let (mut s, mut o) = Stack::<f64>::new(0).init(refs(&ptrs, &shape), Instant::MIN);
+        let ptrs = make_ptrs(&arrays);
+        let (mut s, mut o) = Stack::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
         Stack::compute(
             &mut s,
-            refs(&ptrs, &shape),
+            refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
             &Notify::new(&[], 0),
@@ -135,11 +127,11 @@ mod tests {
         // [[[1,2,3],[7,8,9]], [[4,5,6],[10,11,12]]]
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
-        let (ptrs, shape) = make_slice(&arrays);
-        let (mut s, mut o) = Stack::<f64>::new(1).init(refs(&ptrs, &shape), Instant::MIN);
+        let ptrs = make_ptrs(&arrays);
+        let (mut s, mut o) = Stack::<f64>::new(1).init(refs(&ptrs), Instant::MIN);
         Stack::compute(
             &mut s,
-            refs(&ptrs, &shape),
+            refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
             &Notify::new(&[], 0),
@@ -157,11 +149,11 @@ mod tests {
         // [[[1,7],[2,8],[3,9]], [[4,10],[5,11],[6,12]]]
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
-        let (ptrs, shape) = make_slice(&arrays);
-        let (mut s, mut o) = Stack::<f64>::new(2).init(refs(&ptrs, &shape), Instant::MIN);
+        let ptrs = make_ptrs(&arrays);
+        let (mut s, mut o) = Stack::<f64>::new(2).init(refs(&ptrs), Instant::MIN);
         Stack::compute(
             &mut s,
-            refs(&ptrs, &shape),
+            refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
             &Notify::new(&[], 0),

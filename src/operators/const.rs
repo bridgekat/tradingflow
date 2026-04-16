@@ -1,7 +1,6 @@
 //! Constant operator — a 0-input node holding a fixed initial value.
 
-use crate::data::Instant;
-use crate::{Notify, Operator};
+use crate::{Instant, Notify, Operator};
 
 /// A 0-input operator that holds a constant value.
 ///
@@ -46,7 +45,7 @@ impl<T: Send + 'static> Operator for Const<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Array;
+    use crate::Array;
     use crate::operator::Operator;
 
     #[test]

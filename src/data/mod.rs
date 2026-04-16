@@ -30,10 +30,7 @@ pub mod series;
 pub mod time;
 
 pub use array::Array;
-pub use inputs::{
-    FlatRead, FlatShapeFromArity, FlatWrite, Input, InputTypes, Slice, SliceProduced, SliceRefs,
-    SliceShape,
-};
+pub use inputs::{FlatRead, FlatWrite, Input, InputTypes, SliceProduced, SliceRefs};
 pub use series::Series;
 pub use time::{Duration, Instant, tai_to_utc, utc_to_tai};
 
@@ -103,68 +100,110 @@ impl<T: Send + 'static> PeekableReceiver<T> {
 /// Provides two views of which inputs produced new output in the current
 /// flush cycle:
 ///
-/// * [`produced`](Self::produced) — `&[usize]` list of input positions
-///   that produced (O(n_messages) to iterate).
+/// * [`produced`](Self::produced) — zero-alloc lazy iterator over **local**
+///   input positions (0-based relative to this operator) that produced.
 /// * [`input_produced`](Self::input_produced) — `Box<[bool]>` indexed by
-///   input position (O(1) per-position check via indexing).  Computed
-///   lazily on first call.
+///   local position (O(1) per-position check).  Allocates on first call.
 ///
-/// Construction is zero-cost: no allocation until [`input_produced`] is
-/// called.
+/// # Offset and operator transformers
+///
+/// [`Notify`] carries an `offset` that maps global flat positions (as stored
+/// in the graph) to local positions seen by the operator.  For all top-level
+/// operators `offset = 0` — there is no overhead.  Operator transformers
+/// such as [`Clocked<O>`](crate::operators::Clocked) use
+/// [`skip_leading`](Self::skip_leading) to create an inner `Notify` with
+/// an incremented offset so the wrapped operator sees correctly remapped
+/// positions — with zero allocation.
+///
+/// Operators that never call `produced()` or `input_produced()` pay zero
+/// cost regardless of the offset value.
 pub struct Notify<'a> {
     incoming: &'a [usize],
     num_inputs: usize,
+    /// Maps global flat position → local position: local = global − offset.
+    /// Zero for all top-level operators; non-zero only inside transformers.
+    offset: usize,
 }
 
-impl Notify<'_> {
-    /// Create a new notification context (zero-cost).
+impl<'a> Notify<'a> {
+    /// Create a top-level notification context (zero-cost, offset = 0).
     ///
-    /// `incoming` lists the input positions that produced.
+    /// `incoming` lists the flat global input positions that produced.
     /// `num_inputs` is the total number of inputs for the operator.
     #[inline(always)]
-    pub fn new(incoming: &[usize], num_inputs: usize) -> Notify<'_> {
-        Notify {
-            incoming,
-            num_inputs,
-        }
+    pub fn new(incoming: &'a [usize], num_inputs: usize) -> Self {
+        Notify { incoming, num_inputs, offset: 0 }
     }
 
-    /// Returns the input positions that produced new output in the
-    /// current flush cycle.
+    /// Zero-allocation lazy iterator over **local** positions that produced.
+    ///
+    /// Yields positions in `0..num_inputs`, filtering and remapping the raw
+    /// global positions using the internal offset.  For top-level operators
+    /// (offset = 0) this is equivalent to iterating the raw slice.
+    ///
+    /// Prefer this over [`input_produced`](Self::input_produced) on hot paths
+    /// that only need to check a small number of positions.
     #[inline(always)]
-    pub fn produced(&self) -> &[usize] {
+    pub fn produced(&self) -> impl Iterator<Item = usize> + '_ {
+        let (off, n) = (self.offset, self.num_inputs);
+        self.incoming.iter().filter_map(move |&p| {
+            (p >= off && p - off < n).then_some(p - off)
+        })
+    }
+
+    /// Raw global positions slice — for the Python bridge only.
+    ///
+    /// Returns the unshifted flat positions stored in the graph.  Prefer
+    /// [`produced`](Self::produced) for operator logic.
+    #[inline(always)]
+    pub fn produced_raw(&self) -> &[usize] {
         self.incoming
     }
 
-    /// Returns a boolean slice indexed by input position: `true` if
-    /// that input produced new output in the current flush cycle.
+    /// Returns a boolean slice indexed by **local** position: `true` if
+    /// that input produced this cycle.
     ///
-    /// Allocates on each call.  For hot paths that only need to check a
-    /// few positions, prefer iterating [`produced`](Self::produced)
-    /// instead.
+    /// Allocates on each call.  For hot paths, prefer
+    /// [`produced`](Self::produced).
     pub fn input_produced(&self) -> Box<[bool]> {
         let mut flags = vec![false; self.num_inputs].into_boxed_slice();
-        for &pos in self.incoming {
-            if pos < self.num_inputs {
-                flags[pos] = true;
-            }
+        for p in self.produced() {
+            flags[p] = true;
         }
         flags
     }
 
-    /// Raw pointer to the incoming input positions slice (for Python bridge).
+    /// Create an inner [`Notify`] for a wrapped operator, skipping the
+    /// first `n` inputs of the current operator.
+    ///
+    /// Used by operator transformers (e.g.
+    /// [`Clocked<O>`](crate::operators::Clocked)) to pass a correctly
+    /// remapped notification to the inner operator without allocating.
+    ///
+    /// The inner `Notify` covers positions `n..num_inputs` of the current
+    /// operator, re-mapped to `0..(num_inputs - n)`.
+    #[inline(always)]
+    pub fn skip_leading(&self, n: usize) -> Notify<'a> {
+        Notify {
+            incoming: self.incoming,
+            num_inputs: self.num_inputs.saturating_sub(n),
+            offset: self.offset + n,
+        }
+    }
+
+    /// Raw pointer to the incoming positions slice (for Python bridge).
     #[inline(always)]
     pub fn incoming_ptr(&self) -> *const usize {
         self.incoming.as_ptr()
     }
 
-    /// Length of the incoming input positions slice (for Python bridge).
+    /// Length of the incoming positions slice (for Python bridge).
     #[inline(always)]
     pub fn incoming_len(&self) -> usize {
         self.incoming.len()
     }
 
-    /// Number of inputs (for Python bridge).
+    /// Total number of inputs (for Python bridge).
     #[inline(always)]
     pub fn num_inputs(&self) -> usize {
         self.num_inputs

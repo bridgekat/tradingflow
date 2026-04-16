@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::data::{Duration, Instant};
+use crate::{Duration, Instant};
 use crate::{Array, Input, Notify, Operator, Scalar, Series};
 
 // ===========================================================================
@@ -119,15 +119,15 @@ pub struct RollingState<A: Accumulator> {
 
 impl<A: Accumulator> Operator for Rolling<A> {
     type State = RollingState<A>;
-    type Inputs = (Input<Series<A::Scalar>>,);
+    type Inputs = Input<Series<A::Scalar>>;
     type Output = Array<A::Scalar>;
 
     fn init(
         self,
-        inputs: (&Series<A::Scalar>,),
+        inputs: &Series<A::Scalar>,
         _timestamp: Instant,
     ) -> (RollingState<A>, Array<A::Scalar>) {
-        let input_shape = inputs.0.shape();
+        let input_shape = inputs.shape();
         let output_shape = A::output_shape(input_shape);
         let output_stride: usize = output_shape.iter().product();
         let state = RollingState {
@@ -144,12 +144,12 @@ impl<A: Accumulator> Operator for Rolling<A> {
 
     fn compute(
         state: &mut RollingState<A>,
-        inputs: (&Series<A::Scalar>,),
+        inputs: &Series<A::Scalar>,
         output: &mut Array<A::Scalar>,
         _timestamp: Instant,
         _notify: &Notify<'_>,
     ) -> bool {
-        let series = inputs.0;
+        let series = inputs;
         let len = series.len();
 
         // Add the newest element.

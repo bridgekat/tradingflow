@@ -1,7 +1,6 @@
 //! Concat operator — concatenates N arrays along an existing axis.
 
-use crate::data::Instant;
-use crate::{Array, Input, Notify, Operator, Scalar, Slice, SliceRefs};
+use crate::{Array, Input, Instant, Notify, Operator, Scalar, SliceRefs};
 
 /// Concatenate N homogeneous arrays along an existing axis.
 pub struct Concat<T: Scalar> {
@@ -27,7 +26,7 @@ pub struct ConcatState {
 
 impl<T: Scalar> Operator for Concat<T> {
     type State = ConcatState;
-    type Inputs = Slice<Input<Array<T>>>;
+    type Inputs = [Input<Array<T>>];
     type Output = Array<T>;
 
     fn init(
@@ -97,26 +96,19 @@ pub(super) fn interleaved_copy<'a, T: Scalar>(
 mod tests {
     use super::*;
     use crate::operator::Operator;
-    use crate::data::{InputTypes, SliceShape};
+    use crate::{FlatRead, InputTypes};
 
-    /// Build a flat pointer buffer and shape for a slice of Array refs.
-    fn make_slice<'a, T: Scalar>(
-        arrays: &'a [&'a Array<T>],
-    ) -> (Vec<*const u8>, SliceShape<Input<Array<T>>>) {
-        let ptrs: Vec<*const u8> = arrays
+    /// Build a flat pointer buffer for a slice of Array refs.
+    fn make_ptrs<'a, T: Scalar>(arrays: &'a [&'a Array<T>]) -> Vec<*const u8> {
+        arrays
             .iter()
             .map(|&a| a as *const Array<T> as *const u8)
-            .collect();
-        let shape = SliceShape::new(vec![(); arrays.len()].into_boxed_slice());
-        (ptrs, shape)
+            .collect()
     }
 
-    fn refs<'a, T: Scalar>(
-        ptrs: &'a [*const u8],
-        shape: &'a SliceShape<Input<Array<T>>>,
-    ) -> SliceRefs<'a, Input<Array<T>>> {
-        let mut reader = crate::data::FlatRead::new(ptrs);
-        unsafe { <Slice<Input<Array<T>>> as InputTypes>::refs_from_flat(&mut reader, shape) }
+    fn refs<'a, T: Scalar>(ptrs: &'a [*const u8]) -> SliceRefs<'a, Input<Array<T>>> {
+        let mut reader = FlatRead::new(ptrs);
+        unsafe { <[Input<Array<T>>] as InputTypes>::refs_from_flat(&mut reader) }
     }
 
     // Two 2×3×2 arrays concatenated along each axis.
@@ -139,11 +131,11 @@ mod tests {
         // Just sequential: all of a, then all of b.
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
-        let (ptrs, shape) = make_slice(&arrays);
-        let (mut s, mut o) = Concat::<f64>::new(0).init(refs(&ptrs, &shape), Instant::MIN);
+        let ptrs = make_ptrs(&arrays);
+        let (mut s, mut o) = Concat::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
         Concat::compute(
             &mut s,
-            refs(&ptrs, &shape),
+            refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
             &Notify::new(&[], 0),
@@ -158,11 +150,11 @@ mod tests {
         // [2,3,2] concat [2,3,2] along axis 1 → [2,6,2]
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
-        let (ptrs, shape) = make_slice(&arrays);
-        let (mut s, mut o) = Concat::<f64>::new(1).init(refs(&ptrs, &shape), Instant::MIN);
+        let ptrs = make_ptrs(&arrays);
+        let (mut s, mut o) = Concat::<f64>::new(1).init(refs(&ptrs), Instant::MIN);
         Concat::compute(
             &mut s,
-            refs(&ptrs, &shape),
+            refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
             &Notify::new(&[], 0),
@@ -182,11 +174,11 @@ mod tests {
         // [2,3,2] concat [2,3,2] along axis 2 → [2,3,4]
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
-        let (ptrs, shape) = make_slice(&arrays);
-        let (mut s, mut o) = Concat::<f64>::new(2).init(refs(&ptrs, &shape), Instant::MIN);
+        let ptrs = make_ptrs(&arrays);
+        let (mut s, mut o) = Concat::<f64>::new(2).init(refs(&ptrs), Instant::MIN);
         Concat::compute(
             &mut s,
-            refs(&ptrs, &shape),
+            refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
             &Notify::new(&[], 0),
@@ -206,7 +198,7 @@ mod tests {
     fn scalar_panics() {
         let a = Array::scalar(1.0_f64);
         let arrays: [&Array<f64>; 1] = [&a];
-        let (ptrs, shape) = make_slice(&arrays);
-        Concat::<f64>::new(0).init(refs(&ptrs, &shape), Instant::MIN);
+        let ptrs = make_ptrs(&arrays);
+        Concat::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
     }
 }

@@ -8,11 +8,11 @@
 //! entirely through Python views stored in [`PyOperatorState`].  Dtype
 //! dispatch is only needed for output allocation and view creation.
 
-use std::any::{Any, TypeId};
+use std::any::TypeId;
 
 use pyo3::prelude::*;
 
-use crate::data::Instant;
+use crate::Instant;
 use crate::{Array, Series};
 use crate::{ErasedOperator, Notify};
 
@@ -55,7 +55,6 @@ pub fn make_py_operator(
     py: Python<'_>,
     input_type_ids: Box<[TypeId]>,
     output_type_id: TypeId,
-    is_clock_triggerable: bool,
     out_dtype: &str,
     out_view_kind: ViewKind,
     output_shape: &[usize],
@@ -64,36 +63,48 @@ pub fn make_py_operator(
     timestamp: Instant,
     error_slot: ErrorSlot,
 ) -> PyResult<ErasedOperator> {
-    // Allocate output (generic on T) and create its Python view.
-    macro_rules! alloc_output {
-        ($T:ty) => {
-            match out_view_kind {
-                ViewKind::Array => (
-                    Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
-                    drop_fn::<Array<$T>> as unsafe fn(*mut u8),
-                ),
-                ViewKind::Series => (
-                    Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
-                    drop_fn::<Series<$T>> as unsafe fn(*mut u8),
-                ),
-            }
-        };
-    }
+    // Allocate output and create its Python view.
+    // Unit outputs carry no data — use a 1-byte dummy allocation that is
+    // never written to or read from; the Python operator receives None.
     let (output_ptr, output_drop_fn): (*mut u8, unsafe fn(*mut u8)) =
-        dispatch_dtype!(out_dtype, alloc_output);
+        if out_view_kind == ViewKind::Unit {
+            (Box::into_raw(Box::new(())) as *mut u8, drop_fn::<()>)
+        } else {
+            macro_rules! alloc_output {
+                ($T:ty) => {
+                    match out_view_kind {
+                        ViewKind::Array => (
+                            Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
+                            drop_fn::<Array<$T>> as unsafe fn(*mut u8),
+                        ),
+                        ViewKind::Series => (
+                            Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
+                            drop_fn::<Series<$T>> as unsafe fn(*mut u8),
+                        ),
+                        ViewKind::Unit => unreachable!(),
+                    }
+                };
+            }
+            dispatch_dtype!(out_dtype, alloc_output)
+        };
 
     let native_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
     let native_notify = Py::new(py, super::views::NativeNotify::from_empty())?.into_any();
 
     // Wrap native views in Python-side wrappers (ArrayView/SeriesView/Notify).
+    // Unit output: pass None directly to the Python operator.
     let views_mod = py.import("tradingflow.views")?;
-    let out_wrapper_cls = match out_view_kind {
-        ViewKind::Array => views_mod.getattr("ArrayView")?,
-        ViewKind::Series => views_mod.getattr("SeriesView")?,
+    let py_output: PyObject = match out_view_kind {
+        ViewKind::Array => {
+            let cls = views_mod.getattr("ArrayView")?;
+            cls.call1((native_output.bind(py),))?.unbind()
+        }
+        ViewKind::Series => {
+            let cls = views_mod.getattr("SeriesView")?;
+            cls.call1((native_output.bind(py),))?.unbind()
+        }
+        ViewKind::Unit => py.None(),
     };
-    let py_output: PyObject = out_wrapper_cls
-        .call1((native_output.bind(py),))?
-        .unbind();
     let notify_cls = views_mod.getattr("Notify")?;
     let py_notify: PyObject = notify_cls
         .call1((native_notify.bind(py),))?
@@ -113,21 +124,14 @@ pub fn make_py_operator(
         error_slot,
     });
 
-    // Python operators don't consume structural shape (their compute path
-    // does not build nested Refs).  Store a unit shape as a placeholder.
-    let shape: Box<dyn Any + Send> = Box::new(());
-
     // SAFETY: output_ptr is a valid Array<T> or Series<T>;
-    // state is a valid PyOperatorState; all fn ptrs match; shape is
-    // ignored by py_compute_fn.
+    // state is a valid PyOperatorState; all fn ptrs match.
     Ok(unsafe {
         ErasedOperator::new(
             TypeId::of::<PyOperatorState>(),
             input_type_ids,
             output_type_id,
-            is_clock_triggerable,
-            shape,
-            Box::new(move |_, _, _| (Box::into_raw(state) as *mut u8, output_ptr)),
+            Box::new(move |_, _| (Box::into_raw(state) as *mut u8, output_ptr)),
             py_compute_fn,
             drop_fn::<PyOperatorState>,
             output_drop_fn,
@@ -154,7 +158,6 @@ unsafe fn py_compute_fn(
     _output_ptr: *mut u8,
     timestamp: Instant,
     notify: &Notify,
-    _shape: &(dyn Any + Send),
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut PyOperatorState) };
 
@@ -171,7 +174,7 @@ unsafe fn py_compute_fn(
                 .bind(py)
                 .downcast::<super::views::NativeNotify>()?
                 .borrow_mut();
-            unsafe { native_notify.update_from(notify) };
+            native_notify.update_from(notify);
         }
 
         let produced: bool = state

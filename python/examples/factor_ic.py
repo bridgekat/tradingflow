@@ -38,7 +38,7 @@ from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import Clock, CSVSource, MonthlyClock
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Const, Lag, Last, Map, Record, Select, Stack
+from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack
 from tradingflow.operators.num import Divide, ForwardFill, Log, Multiply, Subtract
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
@@ -176,7 +176,7 @@ def build_scenario(
     # Momentum MA (rolling mean of daily log-returns of adjusted close).
     log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
     log_adj_series = sc.add_operator(Record(log_adj))
-    log_adj_lag = sc.add_operator(Last(sc.add_operator(Lag(log_adj_series, 1, fill=np.float64(np.nan)))))
+    log_adj_lag = sc.add_operator(Lag(log_adj_series, 1, fill=np.float64(np.nan)))
     daily_ret = sc.add_operator(Subtract(log_adj, log_adj_lag))
     daily_ret_series = sc.add_operator(Record(daily_ret))
     momentum_ma = sc.add_operator(RollingMean(daily_ret_series, window=rebalance_days))
@@ -189,13 +189,15 @@ def build_scenario(
     # Universe: top stocks by market cap.
     monthly_clock = sc.add_source(MonthlyClock(data_start, end, tz="Asia/Shanghai"))
     universe = sc.add_operator(
-        Map(
-            market_cap,
-            lambda m: calculate_index_weights(m, index_size),
-            shape=(num_stocks,),
-            dtype=np.float64,
-        ),
-        clock=monthly_clock,
+        Clocked(
+            monthly_clock,
+            Map(
+                market_cap,
+                lambda m: calculate_index_weights(m, index_size),
+                shape=(num_stocks,),
+                dtype=np.float64,
+            ),
+        )
     )
 
     # ------------------------------------------------------------------
@@ -214,7 +216,7 @@ def build_scenario(
         np.timedelta64(rebalance_days, "D"),
     )
     rebalance_clock = sc.add_source(Clock(rebalance_dates))
-    rebalance = sc.add_operator(Const(np.array(np.nan, dtype=np.float64)), clock=rebalance_clock)
+    rebalance = rebalance_clock
 
     predictor_kwargs = dict(universe_size=index_size, rebalance=rebalance)
 

@@ -101,14 +101,19 @@ impl NativeScenario {
     ) -> PyResult<()> {
         // Ensure vectors are sized to accommodate node_index.
         while self.node_info.len() <= node_index {
-            self.node_info.push((String::new(), ViewKind::Array));
+            self.node_info.push((String::new(), ViewKind::Unit)); // placeholder; overwritten below
             self.cached_views.push(None);
         }
         self.node_info[node_index] = (dtype.to_string(), kind);
 
-        let sc = self.scenario.as_ref().unwrap();
-        let ptr = sc.value_ptr(node_index);
-        let view = create_view(py, ptr, shape, dtype, kind)?;
+        // Unit nodes carry no data; store Python None as the view.
+        let view = if kind == ViewKind::Unit {
+            py.None()
+        } else {
+            let sc = self.scenario.as_ref().unwrap();
+            let ptr = sc.value_ptr(node_index);
+            create_view(py, ptr, shape, dtype, kind)?
+        };
         self.cached_views[node_index] = Some(view);
         Ok(())
     }
@@ -158,11 +163,15 @@ impl NativeScenario {
         }
     }
 
-    /// Register a Rust-native source by kind + dtype + params.
+    /// Register a Rust-native source by `(source_kind, dtype)` + params.
+    ///
+    /// The output [`ViewKind`] is determined by the Rust source type — the
+    /// Python caller does not need to specify it.
+    #[pyo3(signature = (source_kind, dtype, shape, params))]
     fn add_native_source(
         &mut self,
         py: Python<'_>,
-        kind: &str,
+        source_kind: &str,
         dtype: &str,
         shape: Vec<usize>,
         params: &Bound<'_, PyDict>,
@@ -170,13 +179,14 @@ impl NativeScenario {
         let _guard = self.runtime.enter();
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalize_dtype(dtype).to_string();
-        let idx = sources::dispatch_native_source(sc, kind, &dtype_norm, params)?;
-        self.push_node(py, idx, &dtype_norm, ViewKind::Array, &shape)?;
+        let (idx, view_kind) =
+            sources::dispatch_native_source(sc, source_kind, &dtype_norm, params)?;
+        self.push_node(py, idx, &dtype_norm, view_kind, &shape)?;
         Ok(idx)
     }
 
     /// Register a Rust-native operator by kind + dtype + params.
-    #[pyo3(signature = (kind, dtype, input_indices, shape, params, clock_index=None))]
+    #[pyo3(signature = (kind, dtype, input_indices, shape, params))]
     fn add_native_operator(
         &mut self,
         py: Python<'_>,
@@ -185,19 +195,12 @@ impl NativeScenario {
         input_indices: Vec<usize>,
         shape: Vec<usize>,
         params: &Bound<'_, PyDict>,
-        clock_index: Option<usize>,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
         let sc = self.scenario.as_mut().unwrap();
         let dtype_norm = normalize_dtype(dtype).to_string();
-        let (idx, view_kind) = operators::dispatch_native_operator(
-            sc,
-            kind,
-            &dtype_norm,
-            &input_indices,
-            clock_index,
-            params,
-        )?;
+        let (idx, view_kind) =
+            operators::dispatch_native_operator(sc, kind, &dtype_norm, &input_indices, params)?;
         self.push_node(py, idx, &dtype_norm, view_kind, &shape)?;
         Ok(idx)
     }
@@ -207,21 +210,22 @@ impl NativeScenario {
     /// Immediately creates the DAG node with channels.  A tokio driver task
     /// is spawned that will call `source.init()` and iterate the returned
     /// async iterators when the tokio runtime runs.
-    #[pyo3(signature = (py_source, output_type, output_shape))]
+    #[pyo3(signature = (py_source, output_kind, dtype, output_shape))]
     fn add_py_source(
         &mut self,
         py: Python<'_>,
         py_source: PyObject,
-        output_type: (String, String),
+        output_kind: &str,
+        dtype: &str,
         output_shape: Vec<usize>,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
-        let (out_kind_str, out_dtype_str) = &output_type;
-        let out_dtype = normalize_dtype(out_dtype_str).to_string();
+        let out_dtype = normalize_dtype(dtype).to_string();
 
-        let out_view_kind = match out_kind_str.as_str() {
+        let out_view_kind = match output_kind {
             "array" => ViewKind::Array,
             "series" => ViewKind::Series,
+            "unit" => ViewKind::Unit,
             other => {
                 return Err(PyTypeError::new_err(format!(
                     "unsupported output kind: {other}"
@@ -229,7 +233,7 @@ impl NativeScenario {
             }
         };
 
-        let output_type_id = resolve_type_id(out_kind_str, &out_dtype)?;
+        let output_type_id = resolve_type_id(output_kind, &out_dtype)?;
 
         // Ensure asyncio event loop exists.
         let event_loop = self.ensure_event_loop(py)?;
@@ -260,7 +264,7 @@ impl NativeScenario {
     ///
     /// Input type validation is performed by
     /// [`Scenario::add_erased_operator`].
-    #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator, clock_index=None, is_clock_triggerable=true))]
+    #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator))]
     fn add_py_operator(
         &mut self,
         py: Python<'_>,
@@ -269,8 +273,6 @@ impl NativeScenario {
         output_type: (String, String),
         output_shape: Vec<usize>,
         py_operator: PyObject,
-        clock_index: Option<usize>,
-        is_clock_triggerable: bool,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
         let (out_kind_str, out_dtype_str) = &output_type;
@@ -279,6 +281,7 @@ impl NativeScenario {
         let out_view_kind = match out_kind_str.as_str() {
             "array" => ViewKind::Array,
             "series" => ViewKind::Series,
+            "unit" => ViewKind::Unit,
             other => {
                 return Err(PyTypeError::new_err(format!(
                     "unsupported output kind: {other}"
@@ -314,6 +317,8 @@ impl NativeScenario {
                 let wrapped: PyObject = match kind {
                     ViewKind::Array => array_view_cls.call1((native.bind(py),))?.unbind(),
                     ViewKind::Series => series_view_cls.call1((native.bind(py),))?.unbind(),
+                    // Unit inputs carry no data — pass None to the Python operator.
+                    ViewKind::Unit => py.None(),
                 };
                 Ok(wrapped)
             })
@@ -327,7 +332,6 @@ impl NativeScenario {
             py,
             input_type_ids,
             output_type_id,
-            is_clock_triggerable,
             &out_dtype,
             out_view_kind,
             &output_shape,
@@ -339,7 +343,7 @@ impl NativeScenario {
 
         // 4. Register via the unified path (validates input TypeIds).
         let sc = self.scenario.as_mut().unwrap();
-        let output_idx = sc.add_erased_operator(erased, &input_indices, clock_index);
+        let output_idx = sc.add_erased_operator(erased, &input_indices);
 
         // 5. Cache output node metadata and view.
         self.push_node(py, output_idx, &out_dtype, out_view_kind, &output_shape)?;
@@ -352,7 +356,9 @@ impl NativeScenario {
     /// Returns `Some(total)` only when every registered source provides an
     /// estimate; otherwise `None`.
     fn estimated_event_count(&self) -> Option<usize> {
-        self.scenario.as_ref().and_then(|sc| sc.estimated_event_count())
+        self.scenario
+            .as_ref()
+            .and_then(|sc| sc.estimated_event_count())
     }
 
     /// Run the POCQ event loop.
@@ -422,26 +428,27 @@ impl NativeScenario {
                 let shutdown_ref = shutdown.clone();
                 let error_slot_ref = error_slot_for_bg.clone();
 
-                let on_flush_fn = move |ts: crate::data::Instant,
-                                        events_so_far: usize,
-                                        total_estimate: Option<usize>| {
-                    // Check if a Python operator/source already failed.
-                    if error_slot_ref.lock().unwrap().is_some() {
-                        shutdown_ref.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                    if let Some(ref cb) = on_flush {
-                        Python::attach(|py| {
-                            // Wire format is TAI ns (matches numpy naive
-                            // `datetime64[ns]` arithmetic).
-                            let args = (ts.as_nanos(), events_so_far, total_estimate);
-                            if let Err(e) = cb.call1(py, args) {
-                                super::set_error(&error_slot_ref, e);
-                                shutdown_ref.store(true, Ordering::Relaxed);
-                            }
-                        });
-                    }
-                };
+                let on_flush_fn =
+                    move |ts: crate::data::Instant,
+                          events_so_far: usize,
+                          total_estimate: Option<usize>| {
+                        // Check if a Python operator/source already failed.
+                        if error_slot_ref.lock().unwrap().is_some() {
+                            shutdown_ref.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                        if let Some(ref cb) = on_flush {
+                            Python::attach(|py| {
+                                // Wire format is TAI ns (matches numpy naive
+                                // `datetime64[ns]` arithmetic).
+                                let args = (ts.as_nanos(), events_so_far, total_estimate);
+                                if let Err(e) = cb.call1(py, args) {
+                                    super::set_error(&error_slot_ref, e);
+                                    shutdown_ref.store(true, Ordering::Relaxed);
+                                }
+                            });
+                        }
+                    };
 
                 rt.block_on(scenario.run_with_shutdown(on_flush_fn, shutdown));
                 (scenario, rt)

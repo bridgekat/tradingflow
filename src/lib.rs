@@ -66,11 +66,11 @@ pub mod sources;
 pub mod utils;
 
 pub use data::{
-    tai_to_utc, utc_to_tai, Array, Duration, FlatRead, FlatShapeFromArity, FlatWrite, Input,
-    InputTypes, Instant, Notify, PeekableReceiver, Scalar, Series, Slice, SliceProduced,
-    SliceRefs, SliceShape,
+    tai_to_utc, utc_to_tai, Array, Duration, FlatRead, FlatWrite, Input, InputTypes, Instant,
+    Notify, PeekableReceiver, Scalar, Series, SliceProduced, SliceRefs,
 };
 pub use operator::{ErasedOperator, Operator};
+pub use operators::Clocked;
 pub use scenario::Scenario;
 pub use source::{ErasedSource, Source};
 pub use utils::Schema;

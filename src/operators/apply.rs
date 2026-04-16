@@ -8,8 +8,7 @@
 
 use std::marker::PhantomData;
 
-use crate::data::Instant;
-use crate::{InputTypes, Notify, Operator};
+use crate::{InputTypes, Instant, Notify, Operator};
 
 /// Apply operator: applies a function to tuple inputs on each tick.
 ///
@@ -132,25 +131,26 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Array;
-    use crate::data::Instant;
-    use crate::Input;
+    use crate::{Array, Input, Instant};
 
-    fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
+    fn ts(n: i64) -> Instant {
+        Instant::from_nanos(n)
+    }
 
     #[test]
     fn apply_two_inputs_add() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let b = Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0]);
 
-        let (mut s, mut o) = Apply::<(Input<Array<f64>>, Input<Array<f64>>), _, _>::new(|(a, b)| {
-            let mut out = a.clone();
-            for (o, &v) in out.as_mut_slice().iter_mut().zip(b.as_slice()) {
-                *o += v;
-            }
-            out
-        })
-        .init((&a, &b), Instant::MIN);
+        let (mut s, mut o) =
+            Apply::<(Input<Array<f64>>, Input<Array<f64>>), _, _>::new(|(a, b)| {
+                let mut out = a.clone();
+                for (o, &v) in out.as_mut_slice().iter_mut().zip(b.as_slice()) {
+                    *o += v;
+                }
+                out
+            })
+            .init((&a, &b), Instant::MIN);
 
         assert_eq!(o.as_slice(), &[11.0, 22.0, 33.0]);
 
@@ -166,9 +166,9 @@ mod tests {
         let c = Array::scalar(4.0_f64);
 
         let (mut s, mut o) =
-            Apply::<(Input<Array<f64>>, Input<Array<f64>>, Input<Array<f64>>), _, _>::new(|(a, b, c)| {
-                Array::scalar(a[0] * b[0] + c[0])
-            })
+            Apply::<(Input<Array<f64>>, Input<Array<f64>>, Input<Array<f64>>), _, _>::new(
+                |(a, b, c)| Array::scalar(a[0] * b[0] + c[0]),
+            )
             .init((&a, &b, &c), Instant::MIN);
 
         assert_eq!(o.as_slice(), &[10.0]); // 2*3 + 4

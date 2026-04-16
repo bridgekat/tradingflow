@@ -2,8 +2,8 @@ use std::any::TypeId;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
+use crate::Instant;
 use crate::PeekableReceiver;
-use crate::data::Instant;
 
 /// An asynchronous data source that receives events via channels and writes
 /// a typed output.

@@ -44,6 +44,7 @@
 
 pub mod apply;
 pub mod cast;
+pub mod clocked;
 pub mod concat;
 pub mod metrics;
 pub mod r#const;
@@ -61,6 +62,7 @@ pub mod stocks;
 pub mod r#where;
 
 pub use cast::Cast;
+pub use clocked::Clocked;
 pub use concat::Concat;
 pub use r#const::Const;
 pub use filter::Filter;

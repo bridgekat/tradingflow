@@ -32,10 +32,10 @@ from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import Clock, CSVSource, MonthlyClock
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Apply, Const, Map, Record, Select, Stack
+from tradingflow.operators import Apply, Clocked, Map, Record, Select, Stack
 from tradingflow.operators.num import Divide, ForwardFill, Log, Multiply
 from tradingflow.operators.predictors.mean import LinearRegression
-from tradingflow.operators.predictors.variance import Sample, Shrinkage
+from tradingflow.operators.predictors.variance import Shrinkage
 from tradingflow.operators.portfolios.mean_variance import Markowitz
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
@@ -155,13 +155,15 @@ def build_scenario(
     # Rebalanced monthly to avoid per-tick overhead.
     monthly_clock = sc.add_source(MonthlyClock(data_start, end, tz="Asia/Shanghai"))
     universe = sc.add_operator(
-        Map(
-            market_cap,
-            lambda m: calculate_index_weights(m, index_size),
-            shape=(num_stocks,),
-            dtype=np.float64,
-        ),
-        clock=monthly_clock,
+        Clocked(
+            monthly_clock,
+            Map(
+                market_cap,
+                lambda m: calculate_index_weights(m, index_size),
+                shape=(num_stocks,),
+                dtype=np.float64,
+            ),
+        )
     )
     log_bp = sc.add_operator(Log(sc.add_operator(Divide(stacked["parent_equity"], market_cap))))
     turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
@@ -186,7 +188,7 @@ def build_scenario(
         np.timedelta64(rebalance_days, "D"),
     )
     rebalance_clock = sc.add_source(Clock(rebalance_dates))
-    rebalance = sc.add_operator(Const(np.array(np.nan, dtype=np.float64)), clock=rebalance_clock)
+    rebalance = rebalance_clock
 
     predicted_returns = sc.add_operator(
         LinearRegression(
@@ -273,11 +275,9 @@ def build_scenario(
 
         variants[delta] = {
             "value": sc.add_operator(Record(frictionless_value)),
-            "sharpe": sc.add_operator(Record(sc.add_operator(SharpeRatio(frictionless_value), clock=monthly_clock))),
+            "sharpe": sc.add_operator(Record(sc.add_operator(SharpeRatio(frictionless_value, monthly_clock)))),
             "drawdown": sc.add_operator(Record(sc.add_operator(Drawdown(frictionless_value)))),
-            "compound": sc.add_operator(
-                Record(sc.add_operator(CompoundReturn(frictionless_value), clock=monthly_clock))
-            ),
+            "compound": sc.add_operator(Record(sc.add_operator(CompoundReturn(frictionless_value, monthly_clock)))),
             "frontier": sc.add_operator(Record(frontier_point)),
         }
 
