@@ -4,9 +4,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...views import ArrayView, SeriesView
-from ...operator import Operator, Notify
-from ...types import Array, Series, Handle, NodeKind
+from ....views import ArrayView
+from ....operator import Operator, Notify
+from ....types import Array, Handle, NodeKind
 
 
 @dataclass(slots=True)
@@ -15,13 +15,14 @@ class InformationCoefficientState:
     num_stocks: int
     initialized: bool = False
     predictions: np.ndarray | None = None
+    prev_prices: np.ndarray | None = None
     sum_ic: float = 0.0
     count: int = 0
 
 
 class InformationCoefficient(
     Operator[
-        tuple[Handle[Series[np.float64]], Handle[Series[np.float64]]],
+        tuple[Handle[Array[np.float64]], Handle[Array[np.float64]]],
         Handle[Array[np.float64]],
         InformationCoefficientState,
     ]
@@ -42,20 +43,23 @@ class InformationCoefficient(
     Alignment guarantee
     -------------------
     After the initial warmup (first prediction stores scores without
-    emitting), the operator emits exactly once per
-    ``predictions_series`` entry (NaN when data is unavailable).
-    The prediction timestamp for ``record[i]`` is
-    ``predictions_ts[-(n + 1):-1][i]`` where ``n`` is the number
-    of recorded outputs.
+    emitting), the operator emits exactly once per prediction
+    emission (NaN when data is unavailable).
+
+    Memory
+    ------
+    Both ``predictions`` and ``prices`` are ``Array`` inputs — the
+    operator only reads the latest cross-section of each, caching
+    the previous price tick in state to compute one-period returns.
+    No ``Record`` is required upstream.
 
     Parameters
     ----------
-    predictions_series
-        Recorded predicted scores series, element shape ``(N,)``.
-        Typically ``Record(predicted_returns)`` or ``Record(factor)``.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        ``(N,)``.
+    predictions
+        Live predicted scores, shape ``(N,)``.  Typically a
+        mean-return predictor output or a factor.
+    prices
+        Live forward-adjusted close prices, shape ``(N,)``.
     ranking
         If ``False`` (default), compute Pearson IC.  If ``True``,
         rank-transform both inputs first to compute Spearman RankIC.
@@ -69,22 +73,22 @@ class InformationCoefficient(
 
     def __init__(
         self,
-        predictions_series: Handle,
-        adjusted_prices_series: Handle,
+        predictions: Handle,
+        prices: Handle,
         *,
         ranking: bool = False,
         min_valid: int = 10,
         min_periods: int = 1,
     ) -> None:
-        assert len(predictions_series.shape) == 1
-        assert len(adjusted_prices_series.shape) == 1
-        assert predictions_series.shape[0] == adjusted_prices_series.shape[0]
+        assert len(predictions.shape) == 1
+        assert len(prices.shape) == 1
+        assert predictions.shape[0] == prices.shape[0]
 
         self._ranking = ranking
-        self._num_stocks = predictions_series.shape[0]
+        self._num_stocks = predictions.shape[0]
 
         super().__init__(
-            inputs=(predictions_series, adjusted_prices_series),
+            inputs=(predictions, prices),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
             shape=(),
@@ -100,28 +104,29 @@ class InformationCoefficient(
     @staticmethod
     def compute(
         state: InformationCoefficientState,
-        inputs: tuple[SeriesView[np.float64], SeriesView[np.float64]],
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
         output: ArrayView[np.float64],
         timestamp: int,
         notify: Notify,
     ) -> bool:
-        predictions_series, prices_series = inputs
+        predictions, prices = inputs
         predictions_produced, prices_produced = notify.input_produced()
 
         # Accumulate one-period IC on price ticks.
-        if prices_produced and state.predictions is not None and len(prices_series) >= 2:
-            prices_old = np.where(prices_series[-2] > 0, prices_series[-2], np.nan)
-            prices_new = np.where(prices_series[-1] > 0, prices_series[-1], np.nan)
-            r = prices_new / prices_old - 1.0
-            s = state.predictions
-            valid = np.isfinite(s) & np.isfinite(r)
-            s, r = s[valid], r[valid]
-            if state.ranking:
-                s, r = _rank(s), _rank(r)
-            if len(s) >= 2:
-                ic = float(np.corrcoef(s, r)[0, 1])
-                state.sum_ic += ic
-            state.count += 1
+        if prices_produced:
+            prices_new = np.where(prices.value() > 0, prices.value(), np.nan)
+            if state.predictions is not None and state.prev_prices is not None:
+                r = prices_new / state.prev_prices - 1.0
+                s = state.predictions
+                valid = np.isfinite(s) & np.isfinite(r)
+                s, r = s[valid], r[valid]
+                if state.ranking:
+                    s, r = _rank(s), _rank(r)
+                if len(s) >= 2:
+                    ic = float(np.corrcoef(s, r)[0, 1])
+                    state.sum_ic += ic
+                state.count += 1
+            state.prev_prices = prices_new
 
         # Gate: new prediction?
         if not predictions_produced:
@@ -130,7 +135,7 @@ class InformationCoefficient(
         # First prediction stores scores without emitting.
         if not state.initialized:
             state.initialized = True
-            state.predictions = predictions_series[-1]
+            state.predictions = predictions.value()
             return False
 
         # Emit mean daily IC over the evaluation period.
@@ -138,7 +143,7 @@ class InformationCoefficient(
         output.write(np.array(mean_ic, dtype=np.float64))
 
         # Update stored predictions and reset accumulators.
-        state.predictions = predictions_series[-1]
+        state.predictions = predictions.value()
         state.sum_ic = 0.0
         state.count = 0
 

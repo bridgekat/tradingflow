@@ -11,7 +11,7 @@ class SingleFeature(MeanPredictor[None]):
     A trivial pass-through predictor that selects one feature column
     and outputs it unchanged.  Useful for treating a raw factor as a
     "prediction" so it can be evaluated by
-    [`InformationCoefficient`][tradingflow.operators.metrics.InformationCoefficient]
+    [`InformationCoefficient`][tradingflow.operators.metrics.mean.InformationCoefficient]
     at the predictor's rebalance cadence (rather than at the factor's
     native update cadence).
 

@@ -1,17 +1,34 @@
-"""Compare covariance estimators via GMV portfolio realized variance.
+"""Compare covariance estimators via two evaluators.
 
-For each covariance estimator (sample covariance and Ledoit-Wolf
-shrinkage), a variance predictor periodically estimates the
-cross-sectional covariance matrix.  A ``MinimumVariance`` evaluator
-computes the global minimum variance portfolio weights from each
-prediction, accumulates daily returns over the forward period, and
-reports the realized variance.
+Selects three representative covariance estimators from the survey of
+Pantaleo, Tumminello, Lillo, and Mantegna (arXiv:1004.4272) — one from
+each filtering family — and compares them on a configurable A-shares
+universe:
 
-Both estimators ignore features, so the features series is fed an
-empty ``(num_stocks, 0)`` array per tick.  The realized volatility
-(square root of variance) is plotted for each estimator over time;
-lower realized volatility indicates a better covariance estimate for
-the purpose of risk minimization.
+- ``sample`` — sample covariance (Markowitz baseline).
+- ``rmt_m`` — RMT eigenvalue mean-replacement (Potters et al.).
+- ``shrinkage_cc`` — Ledoit-Wolf shrinkage toward constant correlation.
+
+Three complementary outputs (all computed per rebalance period) are
+reported for every estimator:
+
+1. ``MinimumVariance`` metric — realized variance of the global
+   minimum variance portfolio built from each prediction.  Plotted
+   as annualized realized volatility; lower is better.
+2. ``LogLikelihood`` metric — period-averaged Gaussian negative
+   log-likelihood of the realized daily returns under the predicted
+   covariance, ``log |Σ| + (1/T) Σₜ rₜᵀ Σ⁻¹ rₜ``.  Lower is better.
+3. ``Benchmark``-traced total portfolio value — the long-only GMV
+   portfolio from the
+   [`MinimumVariance`][tradingflow.operators.portfolios.variance.MinimumVariance]
+   operator, frictionlessly traded via
+   [`Benchmark`][tradingflow.operators.traders.Benchmark] with
+   dividend reinvestment.  Higher is better.
+
+All estimators ignore features, so the features series is fed an empty
+``(num_stocks, 0)`` array per tick.  The three outputs are stacked in a
+single figure with a shared time axis so their per-period movements
+can be compared side by side.
 
 Requires ``pip install -e ".[examples]"`` and A-shares market data downloaded
 via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
@@ -19,6 +36,7 @@ and download instructions.
 """
 
 from pathlib import Path
+from re import L
 from tqdm import tqdm
 import argparse
 
@@ -34,8 +52,10 @@ from tradingflow.sources import Clock, CSVSource, MonthlyClock
 from tradingflow.operators import Clocked, Map, Record, Select, Stack
 from tradingflow.operators.num import ForwardFill, Multiply
 from tradingflow.operators.stocks import ForwardAdjust
-from tradingflow.operators.predictors.variance import Sample, Shrinkage
-from tradingflow.operators.metrics import MinimumVariance
+from tradingflow.operators.predictors.variance import RMT0, RMTM, Sample, Shrinkage, Target, SingleIndex
+from tradingflow.operators.portfolios.variance import MinimumVariance as MinimumVariancePortfolio
+from tradingflow.operators.traders import Benchmark
+from tradingflow.operators.metrics.variance import LogLikelihood, MinimumVariance
 
 from stocks import load_symbols, calculate_index_weights, resolve_data_start
 
@@ -43,6 +63,7 @@ from stocks import load_symbols, calculate_index_weights, resolve_data_start
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
 DIVIDEND_SCHEMA = Schema(CSVSchema.dividends().iter_field_ids())
+OHLCV_INDICES = PRICE_SCHEMA.indices(["prices.open", "prices.high", "prices.low", "prices.close", "prices.volume"])
 
 
 def build_scenario(
@@ -50,11 +71,37 @@ def build_scenario(
     data_dir: Path,
     rebalance_days: int,
     index_size: int,
+    initial_cash: float,
     data_start: np.datetime64,
     eval_start: np.datetime64,
     end: np.datetime64,
-) -> tuple[Scenario, dict, dict]:
-    """Build the GMV evaluation scenario."""
+) -> tuple[Scenario, dict, dict, dict, dict, np.ndarray]:
+    """Build the covariance evaluation scenario.
+
+    Returns
+    -------
+    sc
+        The scenario.
+    mv_handles
+        ``{estimator_name: record handle}`` for the
+        [`MinimumVariance`][tradingflow.operators.metrics.variance.MinimumVariance]
+        metric (realized GMV variance per period).
+    ll_handles
+        ``{estimator_name: record handle}`` for the
+        [`LogLikelihood`][tradingflow.operators.metrics.variance.LogLikelihood]
+        metric.
+    value_handles
+        ``{estimator_name: record handle}`` for the total value
+        (``holdings_value + cash``) of a long-only GMV portfolio
+        traded via [`Benchmark`][tradingflow.operators.traders.Benchmark]
+        with dividend reinvestment.
+    rebalance_dates
+        The rebalance clock dates, used for timestamp alignment when
+        extracting metric values.  Predicted covariance matrices are
+        *not* recorded — each is fed to the metrics directly as an
+        ``Array`` input, so only one covariance matrix per estimator
+        is ever resident in memory.
+    """
 
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
@@ -63,6 +110,8 @@ def build_scenario(
     per_stock: dict[str, list[Handle]] = {
         k: []
         for k in (
+            "ohlcv",
+            "adjusts",
             "adjusted_close",
             "circ_shares",
             "close",
@@ -82,11 +131,14 @@ def build_scenario(
             CSVSource(f"{h}.dividends.csv", DIVIDEND_SCHEMA, time_column="date", start=data_start, end=end)
         )
 
+        ohlcv = sc.add_operator(Select(prices, OHLCV_INDICES))
         close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
         adjusts = sc.add_operator(ForwardAdjust(close, dividends, output_prices=False))
         adjusted_close = sc.add_operator(Multiply(close, adjusts))
         circ_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
 
+        per_stock["ohlcv"].append(ohlcv)
+        per_stock["adjusts"].append(adjusts)
         per_stock["adjusted_close"].append(adjusted_close)
         per_stock["circ_shares"].append(circ_shares)
         per_stock["close"].append(close)
@@ -98,7 +150,7 @@ def build_scenario(
     stacked = {k: sc.add_operator(ForwardFill(sc.add_operator(Stack(v)))) for k, v in per_stock.items()}
 
     # ------------------------------------------------------------------
-    # Features (empty — Sample and Shrinkage do not use features)
+    # Features (empty — none of the covariance estimators use features)
     # ------------------------------------------------------------------
 
     market_cap = sc.add_operator(Multiply(stacked["close"], stacked["circ_shares"]))
@@ -148,42 +200,68 @@ def build_scenario(
 
     predictor_kwargs = dict(universe_size=index_size, rebalance=rebalance)
 
+    common_args = (universe, features_series, adjusted_prices_series)
+    common_kwargs = dict(max_periods=rebalance_days, **predictor_kwargs)
+
     estimators = {
-        "sample": sc.add_operator(
-            Sample(
-                universe,
-                features_series,
-                adjusted_prices_series,
-                max_periods=rebalance_days,
-                **predictor_kwargs,
-            ),
+        "sample": sc.add_operator(Sample(*common_args, **common_kwargs)),
+        "shrinkage_comm_cov": sc.add_operator(
+            Shrinkage(*common_args, target=Target.COMMON_COVARIANCE, verbose=False, **common_kwargs)
         ),
-        "shrinkage": sc.add_operator(
-            Shrinkage(
-                universe,
-                features_series,
-                adjusted_prices_series,
-                verbose=False,
-                max_periods=rebalance_days,
-                **predictor_kwargs,
-            ),
+        "shrinkage_const_corr": sc.add_operator(
+            Shrinkage(*common_args, target=Target.CONSTANT_CORRELATION, verbose=False, **common_kwargs)
         ),
+        "shrinkage_single_index": sc.add_operator(
+            Shrinkage(*common_args, target=Target.SINGLE_INDEX, verbose=False, **common_kwargs)
+        ),
+        "rmt_0": sc.add_operator(RMT0(*common_args, **common_kwargs)),
+        "rmt_m": sc.add_operator(RMTM(*common_args, **common_kwargs)),
+        "single_index": sc.add_operator(SingleIndex(*common_args, **common_kwargs)),
     }
 
-    eval_handles = {}
-    predictions_series_handles = {}
+    mv_handles = {}
+    ll_handles = {}
+    l_value_handles = {}
+    ls_value_handles = {}
     for name, predicted in estimators.items():
-        predictions_series = sc.add_operator(Record(predicted))
-        metric = sc.add_operator(
-            MinimumVariance(
-                predictions_series,
-                adjusted_prices_series,
+        # Two evaluation metrics.  NOTE: `predicted` is fed directly
+        # as an `Array` input — the metrics only read the latest
+        # covariance, so recording the full (N, N) history per
+        # rebalance would waste O(periods · N²) memory for no benefit.
+        mv_metric = sc.add_operator(MinimumVariance(predicted, stacked["adjusted_close"]))
+        ll_metric = sc.add_operator(LogLikelihood(predicted, stacked["adjusted_close"]))
+        mv_handles[name] = sc.add_operator(Record(mv_metric))
+        ll_handles[name] = sc.add_operator(Record(ll_metric))
+
+        # Traded long-only GMV portfolio.
+        soft_positions = sc.add_operator(MinimumVariancePortfolio(universe, predicted, long_only=True, verbose=False))
+        traded = sc.add_operator(
+            Benchmark(
+                soft_positions,
+                stacked["ohlcv"],
+                stacked["adjusts"],
+                initial_cash=initial_cash,
+                use_adjusts=True,
             )
         )
-        eval_handles[name] = sc.add_operator(Record(metric))
-        predictions_series_handles[name] = predictions_series
+        total_value = sc.add_operator(Map(traded, np.sum, shape=(), dtype=np.float64))
+        l_value_handles[name] = sc.add_operator(Record(total_value))
 
-    return sc, eval_handles, predictions_series_handles
+        # Traded long-short GMV portfolio.
+        soft_positions = sc.add_operator(MinimumVariancePortfolio(universe, predicted, long_only=False, verbose=False))
+        traded = sc.add_operator(
+            Benchmark(
+                soft_positions,
+                stacked["ohlcv"],
+                stacked["adjusts"],
+                initial_cash=initial_cash,
+                use_adjusts=True,
+            )
+        )
+        total_value = sc.add_operator(Map(traded, np.sum, shape=(), dtype=np.float64))
+        ls_value_handles[name] = sc.add_operator(Record(total_value))
+
+    return sc, mv_handles, ll_handles, l_value_handles, ls_value_handles, rebalance_dates
 
 
 if __name__ == "__main__":
@@ -201,6 +279,12 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=120, help="rebalance every N trading days")
     parser.add_argument("--index-size", type=int, default=300, help="number of stocks in the universe")
+    parser.add_argument(
+        "--initial-cash",
+        type=float,
+        default=1_000_000.0,
+        help="starting capital for the Benchmark-traced GMV portfolio (CNY)",
+    )
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir
@@ -213,11 +297,12 @@ if __name__ == "__main__":
     symbols = load_symbols(data_dir)
     print(f"Discovered {len(symbols)} symbols.")
 
-    sc, eval_handles, predictions_series_handles = build_scenario(
+    sc, mv_handles, ll_handles, l_value_handles, ls_value_handles, rebalance_dates = build_scenario(
         symbols,
         data_dir,
         rebalance_days=args.rebalance_days,
         index_size=args.index_size,
+        initial_cash=args.initial_cash,
         data_start=resolve_data_start(args.data_begin, args.begin, args.rebalance_days),
         eval_start=args.begin,
         end=args.end,
@@ -237,43 +322,81 @@ if __name__ == "__main__":
     progress.close()
 
     # ------------------------------------------------------------------
-    # Extract results with prediction timestamps
+    # Extract metric + portfolio-value time series
     # ------------------------------------------------------------------
 
-    # The MinimumVariance evaluator emits the realized variance of daily
-    # GMV portfolio returns within each evaluation period.
-    # Annualize via the standard 252-trading-day scaling.
+    # MV and LL metrics emit once per rebalance: `record[i]` corresponds
+    # to the window starting at rebalance_dates[i].  The portfolio value
+    # is recorded every tick and keeps its own daily timestamps.
     TRADING_DAYS = 252
 
-    eval_data = {}
-    for name, handle in eval_handles.items():
-        values = sc.series_view(handle).values()
-        n = len(values)
-        pred_ts = sc.series_view(predictions_series_handles[name]).timestamps()[-(n + 1) : -1]
-        series = pd.Series(values, index=pd.DatetimeIndex(pred_ts), name=name)
-        eval_data[name] = series
+    def extract_per_rebalance(handles: dict) -> dict[str, pd.Series]:
+        out = {}
+        for name, handle in handles.items():
+            values = sc.series_view(handle).values()
+            n = len(values)
+            out[name] = pd.Series(values, index=pd.DatetimeIndex(rebalance_dates[:n]), name=name)
+        return out
 
-        finite = series[np.isfinite(series)]
-        if len(finite) > 0:
-            mean_ann_vol = np.sqrt(finite.mean() * TRADING_DAYS)
-            print(f"{name}: mean annualized volatility={mean_ann_vol:.4f} ({n} periods)")
-        else:
-            print(f"{name}: no valid values")
+    def extract_daily(handles: dict) -> dict[str, pd.Series]:
+        return {name: sc.series_view(handle).to_series(name=name) for name, handle in handles.items()}
+
+    mv_data = extract_per_rebalance(mv_handles)
+    ll_data = extract_per_rebalance(ll_handles)
+    l_value_data = extract_daily(l_value_handles)
+    ls_value_data = extract_daily(ls_value_handles)
+
+    for name in mv_handles:
+        mv = mv_data[name]
+        ll = ll_data[name]
+        l_v = l_value_data[name]
+        ls_v = ls_value_data[name]
+        mv_finite = mv[np.isfinite(mv)]
+        ll_finite = ll[np.isfinite(ll)]
+        mv_str = f"ann vol={np.sqrt(mv_finite.mean() * TRADING_DAYS):.4f}" if len(mv_finite) > 0 else "no valid MV"
+        ll_str = f"NLL={ll_finite.mean():.4f}" if len(ll_finite) > 0 else "no valid LL"
+        print(f"{name}: {mv_str}, {ll_str} ({len(mv)} periods)")
 
     # ------------------------------------------------------------------
-    # Plot annualized realized volatility over time
+    # Plots — three panels stacked in one figure with shared time axis
     # ------------------------------------------------------------------
 
     plt.style.use(["fast"])
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ax.set_title("GMV annualized realized volatility by covariance estimator")
-    ax.set_ylabel(f"Annualized (× √{TRADING_DAYS}) realized volatility")
-    ax.set_xlabel("Date")
+    fig, (ax_mv, ax_l_val, ax_ls_val) = plt.subplots(3, 1, figsize=(14, 14), sharex=True)
+    fig.suptitle("Covariance estimator comparison (shared time axis)")
 
-    for i, (name, series) in enumerate(eval_data.items()):
+    # Top panel: GMV annualized realized volatility (lower is better).
+    ax_mv.set_title("GMV annualized realized volatility  (lower is better)")
+    ax_mv.set_ylabel(f"Annualized (× √{TRADING_DAYS}) realized volatility")
+    for i, (name, series) in enumerate(mv_data.items()):
         ann_vol = np.sqrt(series.clip(lower=0.0) * TRADING_DAYS)
-        ax.plot(ann_vol.index, ann_vol, label=name, color=f"C{i}", marker="o", markersize=3)
+        ax_mv.plot(series.index, ann_vol, label=name, color=f"C{i}", marker="o", markersize=3)
+    ax_mv.legend(fontsize=9)
 
-    ax.legend(fontsize=9)
+    # # Middle panel: Gaussian negative log-likelihood (lower is better).
+    # ax_ll.set_title("Gaussian negative log-likelihood  (lower is better)")
+    # ax_ll.set_ylabel(r"log|$\Sigma$| + mean $r^T \Sigma^{-1} r$")
+    # for i, (name, series) in enumerate(ll_data.items()):
+    #     ax_ll.plot(series.index, series, label=name, color=f"C{i}", marker="o", markersize=3)
+    # ax_ll.legend(fontsize=9)
+
+    # Middle panel: Frictionless long-only GMV portfolio value (less volatile is better).
+    ax_l_val.set_title("Frictionless long-only GMV portfolio value  (less volatile is better)")
+    ax_l_val.set_ylabel("Total value (CNY, 10k)")
+    ax_l_val.set_xlabel("Date")
+    ax_l_val.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
+    for i, (name, series) in enumerate(l_value_data.items()):
+        ax_l_val.plot(series.index, series / 1e4, label=name, color=f"C{i}", linewidth=0.8)
+    ax_l_val.legend(fontsize=9)
+
+    # Bottom panel: Frictionless long-short GMV portfolio value (less volatile is better).
+    ax_ls_val.set_title("Frictionless long-short GMV portfolio value  (less volatile is better)")
+    ax_ls_val.set_ylabel("Total value (CNY, 10k)")
+    ax_ls_val.set_xlabel("Date")
+    ax_ls_val.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
+    for i, (name, series) in enumerate(ls_value_data.items()):
+        ax_ls_val.plot(series.index, series / 1e4, label=name, color=f"C{i}", linewidth=0.8)
+    ax_ls_val.legend(fontsize=9)
+
     fig.tight_layout()
     plt.show()

@@ -5,9 +5,9 @@ from dataclasses import dataclass
 import numpy as np
 import scipy as sp
 
-from ...views import ArrayView, SeriesView
-from ...operator import Operator, Notify
-from ...types import Array, Series, Handle, NodeKind
+from ....views import ArrayView
+from ....operator import Operator, Notify
+from ....types import Array, Handle, NodeKind
 
 
 @dataclass(slots=True)
@@ -15,6 +15,7 @@ class MinimumVarianceState:
     num_stocks: int
     initialized: bool = False
     weights: np.ndarray | None = None
+    prev_prices: np.ndarray | None = None
     sum_r: float = 0.0
     sum_r_sq: float = 0.0
     count: int = 0
@@ -22,7 +23,7 @@ class MinimumVarianceState:
 
 class MinimumVariance(
     Operator[
-        tuple[Handle[Series[np.float64]], Handle[Series[np.float64]]],
+        tuple[Handle[Array[np.float64]], Handle[Array[np.float64]]],
         Handle[Array[np.float64]],
         MinimumVarianceState,
     ]
@@ -44,39 +45,42 @@ class MinimumVariance(
     Alignment guarantee
     -------------------
     After the initial warmup (first prediction sets weights without
-    emitting), the operator emits exactly once per
-    ``predictions_series`` entry.  Output is 0 if no daily portfolio
-    return was successfully accumulated during the period (e.g. no
-    stocks had finite covariance diagonal).  The prediction timestamp
-    for ``record[i]`` is ``predictions_ts[-(n + 1):-1][i]`` where
-    ``n`` is the number of recorded outputs.
+    emitting), the operator emits exactly once per prediction
+    emission.  Output is 0 if no daily portfolio return was
+    successfully accumulated during the period (e.g. no stocks had
+    finite covariance diagonal).
+
+    Memory
+    ------
+    Both ``predictions`` and ``prices`` are ``Array`` inputs — the
+    operator reads only the latest covariance and the latest cross-
+    section of prices, caching one previous price tick in state to
+    compute one-period returns.  No ``Record`` is required upstream.
 
     Parameters
     ----------
-    predictions_series
-        Recorded predicted covariance matrices, element shape
-        ``(N, N)``.  Typically ``Record(predicted_covariances)``.
-        Stocks excluded by the variance predictor have NaN on the
-        diagonal.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        ``(N,)``.
+    predictions
+        Live predicted covariance matrix from a variance predictor,
+        shape ``(N, N)``.  Stocks excluded by the variance predictor
+        have NaN on the diagonal.
+    prices
+        Live forward-adjusted close prices, shape ``(N,)``.
     """
 
     def __init__(
         self,
-        predictions_series: Handle,
-        adjusted_prices_series: Handle,
+        predictions: Handle,
+        prices: Handle,
     ) -> None:
-        assert len(predictions_series.shape) == 2
-        assert predictions_series.shape[0] == predictions_series.shape[1]
-        assert len(adjusted_prices_series.shape) == 1
-        assert predictions_series.shape[0] == adjusted_prices_series.shape[0]
+        assert len(predictions.shape) == 2
+        assert predictions.shape[0] == predictions.shape[1]
+        assert len(prices.shape) == 1
+        assert predictions.shape[0] == prices.shape[0]
 
-        self._num_stocks = predictions_series.shape[0]
+        self._num_stocks = predictions.shape[0]
 
         super().__init__(
-            inputs=(predictions_series, adjusted_prices_series),
+            inputs=(predictions, prices),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
             shape=(),
@@ -106,23 +110,24 @@ class MinimumVariance(
     @staticmethod
     def compute(
         state: MinimumVarianceState,
-        inputs: tuple[SeriesView[np.float64], SeriesView[np.float64]],
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
         output: ArrayView[np.float64],
         timestamp: int,
         notify: Notify,
     ) -> bool:
-        predictions_series, prices_series = inputs
+        predictions, prices = inputs
         predictions_produced, prices_produced = notify.input_produced()
 
         # Accumulate one-period portfolio return on price ticks.
-        if prices_produced and state.weights is not None and len(prices_series) >= 2:
-            prices_old = np.where(prices_series[-2] > 0, prices_series[-2], np.nan)
-            prices_new = np.where(prices_series[-1] > 0, prices_series[-1], np.nan)
-            r = prices_new / prices_old - 1.0
-            r_p = float(state.weights @ np.where(np.isfinite(r), r, 0.0))
-            state.sum_r += r_p
-            state.sum_r_sq += r_p * r_p
-            state.count += 1
+        if prices_produced:
+            prices_new = np.where(prices.value() > 0, prices.value(), np.nan)
+            if state.weights is not None and state.prev_prices is not None:
+                r = prices_new / state.prev_prices - 1.0
+                r_p = float(state.weights @ np.where(np.isfinite(r), r, 0.0))
+                state.sum_r += r_p
+                state.sum_r_sq += r_p * r_p
+                state.count += 1
+            state.prev_prices = prices_new
 
         # Gate: new prediction?
         if not predictions_produced:
@@ -131,7 +136,7 @@ class MinimumVariance(
         # First prediction stores scores without emitting.
         if not state.initialized:
             state.initialized = True
-            MinimumVariance._set_weights(state, predictions_series[-1])
+            MinimumVariance._set_weights(state, predictions.value())
             return False
 
         # Emit realized variance over the evaluation period.
@@ -140,7 +145,7 @@ class MinimumVariance(
         output.write(np.array(variance, dtype=np.float64))
 
         # Update weights and reset accumulators.
-        MinimumVariance._set_weights(state, predictions_series[-1])
+        MinimumVariance._set_weights(state, predictions.value())
         state.sum_r = 0.0
         state.sum_r_sq = 0.0
         state.count = 0

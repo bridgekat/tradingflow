@@ -43,7 +43,7 @@ from tradingflow.operators.num import Divide, ForwardFill, Log, Multiply, Subtra
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.predictors.mean import Sample, SingleFeature
-from tradingflow.operators.metrics import InformationCoefficient
+from tradingflow.operators.metrics.mean import InformationCoefficient
 
 from stocks import load_symbols, calculate_index_weights, resolve_data_start
 
@@ -63,7 +63,7 @@ def build_scenario(
     data_start: np.datetime64,
     eval_start: np.datetime64,
     end: np.datetime64,
-) -> tuple[Scenario, dict, dict]:
+) -> tuple[Scenario, dict, np.ndarray]:
     """Build the factor IC evaluation scenario."""
 
     history_dir = data_dir / "a_shares_history"
@@ -243,20 +243,20 @@ def build_scenario(
         )
 
     eval_handles = {}
-    predictions_series_handles = {}
     for name, predicted in estimators.items():
-        predictions_series = sc.add_operator(Record(predicted))
+        # `predicted` and `stacked["adjusted_close"]` are fed directly
+        # as `Array` inputs — IC only reads the latest cross-section
+        # of each and caches one previous price tick in its state.
         metric = sc.add_operator(
             InformationCoefficient(
-                predictions_series,
-                adjusted_prices_series,
+                predicted,
+                stacked["adjusted_close"],
                 ranking=True,
             )
         )
         eval_handles[name] = sc.add_operator(Record(metric))
-        predictions_series_handles[name] = predictions_series
 
-    return sc, eval_handles, predictions_series_handles
+    return sc, eval_handles, rebalance_dates
 
 
 if __name__ == "__main__":
@@ -286,7 +286,7 @@ if __name__ == "__main__":
     symbols = load_symbols(data_dir)
     print(f"Discovered {len(symbols)} symbols.")
 
-    sc, eval_handles, predictions_series_handles = build_scenario(
+    sc, eval_handles, rebalance_dates = build_scenario(
         symbols,
         data_dir,
         rebalance_days=args.rebalance_days,
@@ -317,8 +317,8 @@ if __name__ == "__main__":
     for name, handle in eval_handles.items():
         values = sc.series_view(handle).values()
         n = len(values)
-        pred_ts = sc.series_view(predictions_series_handles[name]).timestamps()[-(n + 1) : -1]
-        series = pd.Series(values, index=pd.DatetimeIndex(pred_ts), name=name)
+        # `values[i]` covers the window starting at rebalance_dates[i].
+        series = pd.Series(values, index=pd.DatetimeIndex(rebalance_dates[:n]), name=name)
         eval_data[name] = series
 
         finite = series[np.isfinite(series)]

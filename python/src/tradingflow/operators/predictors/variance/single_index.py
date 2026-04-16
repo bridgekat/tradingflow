@@ -1,17 +1,27 @@
-"""Sample covariance predictor."""
+"""Single-index factor model covariance predictor."""
 
 import numpy as np
 
 from ..variance_predictor import VariancePredictor, VariancePredictorState
-from ._common import sample_covariance
+from ._common import single_index_covariance
 
 
-class Sample(VariancePredictor[np.ndarray]):
-    """Predict covariance as the sample covariance of past returns.
+class SingleIndex(VariancePredictor[np.ndarray]):
+    """Single-index model covariance estimator.
 
-    Corresponds to the *Markowitz* direct estimator in Pantaleo et al.
-    (2010).  NaN-robust via pairwise complete observations; see
-    [`sample_covariance`][tradingflow.operators.predictors.variance._common.sample_covariance].
+    Fits the factor model ``r_i(t) = alpha_i + beta_i * f(t) + eps_i(t)``
+    stock-by-stock against an equal-weighted cross-sectional mean return
+    used as a proxy for the market factor ``f(t)``.  The estimated
+    covariance matrix is then
+
+        Sigma = sigma_f^2 * beta @ beta.T + diag(sigma_eps^2),
+
+    where ``sigma_f^2`` is the market-factor variance and
+    ``sigma_eps^2`` is the vector of idiosyncratic residual variances.
+
+    Corresponds to the *SI* estimator of Pantaleo et al. (2010).
+    Since TradingFlow does not take an external index as input, the
+    cross-sectional mean return at each timestep serves as ``f(t)``.
     Ignores features.
 
     Parameters
@@ -46,9 +56,8 @@ class Sample(VariancePredictor[np.ndarray]):
 
 
 def _fit_fn(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Sample covariance of returns (NaN-robust). Ignores features."""
-    S, _, _ = sample_covariance(y)
-    return S
+    """Fit a single-index covariance from return matrix ``y``."""
+    return single_index_covariance(y)
 
 
 def _predict_fn(state: VariancePredictorState[np.ndarray], features: np.ndarray, params: np.ndarray) -> np.ndarray:

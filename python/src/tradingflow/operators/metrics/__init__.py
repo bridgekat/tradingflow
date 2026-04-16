@@ -14,30 +14,30 @@ produce a scalar Array output:
 - [`Drawdown`][tradingflow.operators.metrics.Drawdown]
   -- `(current - running_max) / running_max`
 
-Predictor evaluation metrics:
+Predictor evaluation metrics live in submodules organised by the kind
+of prediction they evaluate:
 
-- [`InformationCoefficient`][tradingflow.operators.metrics.InformationCoefficient]
-  -- cross-sectional IC or RankIC between predicted scores and
-  realized forward returns, for evaluating mean-return predictions
-- [`MinimumVariance`][tradingflow.operators.metrics.MinimumVariance]
-  -- realized variance of the global minimum variance portfolio,
-  for evaluating covariance matrix predictions
+- [`mean`][tradingflow.operators.metrics.mean] -- evaluators for
+  mean-return predictions (e.g. Information Coefficient).
+- [`variance`][tradingflow.operators.metrics.variance] -- evaluators
+  for covariance-matrix predictions (e.g. realized GMV variance,
+  Gaussian negative log-likelihood).
 """
 
-from .compound_return import CompoundReturn
+from . import mean
+from . import variance
 from .average_return import AverageReturn
-from .volatility import Volatility
-from .sharpe_ratio import SharpeRatio
+from .compound_return import CompoundReturn
 from .drawdown import Drawdown
-from .information_coefficient import InformationCoefficient
-from .minimum_variance import MinimumVariance
+from .sharpe_ratio import SharpeRatio
+from .volatility import Volatility
 
 __all__ = [
-    "CompoundReturn",
+    "mean",
+    "variance",
     "AverageReturn",
-    "Volatility",
-    "SharpeRatio",
+    "CompoundReturn",
     "Drawdown",
-    "InformationCoefficient",
-    "MinimumVariance",
+    "SharpeRatio",
+    "Volatility",
 ]
