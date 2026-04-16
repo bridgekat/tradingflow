@@ -32,8 +32,8 @@ from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import Clock, CSVSource, MonthlyClock
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Apply, Clocked, Map, Record, Select, Stack
-from tradingflow.operators.num import Divide, ForwardFill, Log, Multiply
+from tradingflow.operators import Apply, Clocked, Map, NotifyStack, Record, Select, Stack
+from tradingflow.operators.num import Divide, Log, Multiply
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.predictors.variance import Shrinkage
 from tradingflow.operators.portfolios.mean_variance import Markowitz
@@ -71,8 +71,19 @@ def build_scenario(
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
 
-    per_stock: dict[str, list[Handle]] = {
-        k: [] for k in ("ohlcv", "adjusts", "adjusted_close", "circ_shares", "parent_equity", "net_profit")
+    # Per-stock handles grouped by cadence.
+    #
+    # * `per_stock_sync` — values produced in lockstep across all stocks
+    #   (e.g., daily prices/equity on trading days).  Stacked with
+    #   `NotifyStack` to give message-passing semantics: slots of stocks
+    #   that did not produce this cycle are filled with `NaN`.
+    # * `per_stock_irregular` — values updated on stock-specific dates
+    #   (e.g., quarterly financial reports filed on different dates).
+    #   Stacked with `Stack` to give time-series semantics: slots keep
+    #   their last-known value across quiet periods.
+    per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("ohlcv", "adjusted_close")}
+    per_stock_irregular: dict[str, list[Handle]] = {
+        k: [] for k in ("adjusts", "circ_shares", "parent_equity", "net_profit")
     }
 
     for symbol in tqdm(symbols, desc="Building scenario"):
@@ -132,18 +143,21 @@ def build_scenario(
         )
         parent_equity = sc.add_operator(Map(neg_peq, lambda x: -x.sum(), shape=(), dtype=np.float64))
 
-        per_stock["ohlcv"].append(ohlcv)
-        per_stock["adjusts"].append(adjusts)
-        per_stock["adjusted_close"].append(adjusted_close)
-        per_stock["circ_shares"].append(circ_shares)
-        per_stock["parent_equity"].append(parent_equity)
-        per_stock["net_profit"].append(net_profit)
+        per_stock_sync["ohlcv"].append(ohlcv)
+        per_stock_sync["adjusted_close"].append(adjusted_close)
+        per_stock_irregular["adjusts"].append(adjusts)
+        per_stock_irregular["circ_shares"].append(circ_shares)
+        per_stock_irregular["parent_equity"].append(parent_equity)
+        per_stock_irregular["net_profit"].append(net_profit)
 
     # ------------------------------------------------------------------
     # Cross-sectional operators (shared)
     # ------------------------------------------------------------------
 
-    stacked = {k: sc.add_operator(ForwardFill(sc.add_operator(Stack(v)))) for k, v in per_stock.items()}
+    stacked = {
+        **{k: sc.add_operator(NotifyStack(v)) for k, v in per_stock_sync.items()},
+        **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
+    }
 
     num_stocks = len(symbols)
     close = sc.add_operator(Select(stacked["ohlcv"], 3, axis=1))

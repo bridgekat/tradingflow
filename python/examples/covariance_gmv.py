@@ -49,8 +49,8 @@ from a_shares_crawler.types import Schema as CSVSchema
 from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import Clock, CSVSource, MonthlyClock
-from tradingflow.operators import Clocked, Map, Record, Select, Stack
-from tradingflow.operators.num import ForwardFill, Multiply
+from tradingflow.operators import Clocked, Map, NotifyStack, Record, Select, Stack
+from tradingflow.operators.num import Multiply
 from tradingflow.operators.stocks import ForwardAdjust
 from tradingflow.operators.predictors.variance import RMT0, RMTM, Sample, Shrinkage, Target, SingleIndex
 from tradingflow.operators.portfolios.variance import MinimumVariance as MinimumVariancePortfolio
@@ -107,14 +107,29 @@ def build_scenario(
     sc = Scenario()
     num_stocks = len(symbols)
 
-    per_stock: dict[str, list[Handle]] = {
+    # Per-stock handles grouped by cadence.
+    #
+    # * `per_stock_sync` — values produced in lockstep across all stocks
+    #   (e.g., daily prices/equity on trading days).  Stacked with
+    #   `NotifyStack` to give message-passing semantics: slots of stocks
+    #   that did not produce this cycle are filled with `NaN`.
+    # * `per_stock_irregular` — values updated on stock-specific dates
+    #   (e.g., quarterly financial reports filed on different dates).
+    #   Stacked with `Stack` to give time-series semantics: slots keep
+    #   their last-known value across quiet periods.
+    per_stock_sync: dict[str, list[Handle]] = {
         k: []
         for k in (
             "ohlcv",
-            "adjusts",
             "adjusted_close",
-            "circ_shares",
             "close",
+        )
+    }
+    per_stock_irregular: dict[str, list[Handle]] = {
+        k: []
+        for k in (
+            "adjusts",
+            "circ_shares",
         )
     }
 
@@ -137,17 +152,20 @@ def build_scenario(
         adjusted_close = sc.add_operator(Multiply(close, adjusts))
         circ_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
 
-        per_stock["ohlcv"].append(ohlcv)
-        per_stock["adjusts"].append(adjusts)
-        per_stock["adjusted_close"].append(adjusted_close)
-        per_stock["circ_shares"].append(circ_shares)
-        per_stock["close"].append(close)
+        per_stock_sync["ohlcv"].append(ohlcv)
+        per_stock_sync["adjusted_close"].append(adjusted_close)
+        per_stock_sync["close"].append(close)
+        per_stock_irregular["adjusts"].append(adjusts)
+        per_stock_irregular["circ_shares"].append(circ_shares)
 
     # ------------------------------------------------------------------
     # Cross-sectional stacking
     # ------------------------------------------------------------------
 
-    stacked = {k: sc.add_operator(ForwardFill(sc.add_operator(Stack(v)))) for k, v in per_stock.items()}
+    stacked = {
+        **{k: sc.add_operator(NotifyStack(v)) for k, v in per_stock_sync.items()},
+        **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
+    }
 
     # ------------------------------------------------------------------
     # Features (empty — none of the covariance estimators use features)

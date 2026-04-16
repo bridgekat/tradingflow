@@ -35,14 +35,13 @@ from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Map, Record, Select, Stack
+from tradingflow.operators import Clocked, Map, NotifyStack, Record, Select, Stack
 from tradingflow.operators.num import Divide, Log, Multiply
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.traders.simple import RandomTrader
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
-from tradingflow.operators.num import ForwardFill
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.sources import Clock, MonthlyClock
@@ -74,13 +73,27 @@ def build_scenario(
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
 
-    # Per-stock raw handles collected for cross-sectional stacking.
-    per_stock: dict[str, list[Handle]] = {
+    # Per-stock raw handles grouped by cadence.
+    #
+    # * `per_stock_sync` — values produced in lockstep across all stocks
+    #   (e.g., daily prices/equity on trading days).  Stacked with
+    #   `NotifyStack` to give message-passing semantics: slots of stocks
+    #   that did not produce this cycle are filled with `NaN`.
+    # * `per_stock_irregular` — values updated on stock-specific dates
+    #   (e.g., quarterly financial reports filed on different dates).
+    #   Stacked with `Stack` to give time-series semantics: slots keep
+    #   their last-known value across quiet periods.
+    per_stock_sync: dict[str, list[Handle]] = {
         k: []
         for k in (
             "ohlcv",
-            "adjusts",
             "adjusted_close",
+        )
+    }
+    per_stock_irregular: dict[str, list[Handle]] = {
+        k: []
+        for k in (
+            "adjusts",
             "circ_shares",
             "parent_equity",
             "net_profit",
@@ -154,19 +167,22 @@ def build_scenario(
             Map(neg_parent_equity_components, lambda x: -x.sum(), shape=(), dtype=np.float64)
         )
 
-        per_stock["ohlcv"].append(ohlcv)
-        per_stock["adjusts"].append(adjusts)
-        per_stock["adjusted_close"].append(adjusted_close)
-        per_stock["circ_shares"].append(circ_shares)
-        per_stock["parent_equity"].append(parent_equity)
-        per_stock["net_profit"].append(net_profit)
+        per_stock_sync["ohlcv"].append(ohlcv)
+        per_stock_sync["adjusted_close"].append(adjusted_close)
+        per_stock_irregular["adjusts"].append(adjusts)
+        per_stock_irregular["circ_shares"].append(circ_shares)
+        per_stock_irregular["parent_equity"].append(parent_equity)
+        per_stock_irregular["net_profit"].append(net_profit)
 
     # ------------------------------------------------------------------
     # Cross-sectional operators
     # ------------------------------------------------------------------
 
-    # Stack per-stock handles into (num_stocks, ...) arrays, with forward-fill to handle missing data.
-    stacked = {k: sc.add_operator(ForwardFill(sc.add_operator(Stack(v)))) for k, v in per_stock.items()}
+    # Stack per-stock handles into (num_stocks, ...) arrays.
+    stacked = {
+        **{k: sc.add_operator(NotifyStack(v)) for k, v in per_stock_sync.items()},
+        **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
+    }
 
     # Extract close and volume from stacked OHLCV for feature computation.
     close = sc.add_operator(Select(stacked["ohlcv"], 3, axis=1))

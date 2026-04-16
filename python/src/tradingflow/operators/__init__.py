@@ -13,6 +13,10 @@ This module provides all shipped operators. They fall into two categories:
 - [`Const`][tradingflow.operators.Const] -- zero-input constant array node
 - [`Concat`][tradingflow.operators.Concat] -- concatenate N arrays along an existing axis
 - [`Stack`][tradingflow.operators.Stack] -- stack N arrays along a new axis
+- [`NotifyConcat`][tradingflow.operators.NotifyConcat] -- notify-aware Concat (float-only):
+  fills non-produced input slots with NaN (message-passing semantics)
+- [`NotifyStack`][tradingflow.operators.NotifyStack] -- notify-aware Stack (float-only):
+  fills non-produced input slots with NaN (message-passing semantics)
 - [`Select`][tradingflow.operators.Select] -- select elements by flat indices
 - [`Id`][tradingflow.operators.Id] -- identity passthrough
 - [`Map`][tradingflow.operators.Map] -- applies a function to transform array values
@@ -61,6 +65,8 @@ from .id import Id
 from .lag import Lag
 from .map import Map
 from .last import Last
+from .notify_concat import NotifyConcat
+from .notify_stack import NotifyStack
 from .record import Record
 from .select import Select
 from .stack import Stack
@@ -79,6 +85,8 @@ __all__ = [
     "Clocked",
     "Const",
     "Concat",
+    "NotifyConcat",
+    "NotifyStack",
     "Stack",
     "Select",
     "Id",

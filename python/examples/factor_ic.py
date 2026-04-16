@@ -38,8 +38,8 @@ from tradingflow import Scenario, Schema
 from tradingflow.types import Handle
 from tradingflow.sources import Clock, CSVSource, MonthlyClock
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack
-from tradingflow.operators.num import Divide, ForwardFill, Log, Multiply, Subtract
+from tradingflow.operators import Clocked, Lag, Map, NotifyStack, Record, Select, Stack
+from tradingflow.operators.num import Divide, Log, Multiply, Subtract
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.predictors.mean import Sample, SingleFeature
@@ -70,15 +70,30 @@ def build_scenario(
     sc = Scenario()
     num_stocks = len(symbols)
 
-    per_stock: dict[str, list[Handle]] = {
+    # Per-stock handles grouped by cadence.
+    #
+    # * `per_stock_sync` — values produced in lockstep across all stocks
+    #   (e.g., daily prices/equity on trading days).  Stacked with
+    #   `NotifyStack` to give message-passing semantics: slots of stocks
+    #   that did not produce this cycle are filled with `NaN`.
+    # * `per_stock_irregular` — values updated on stock-specific dates
+    #   (e.g., quarterly financial reports filed on different dates).
+    #   Stacked with `Stack` to give time-series semantics: slots keep
+    #   their last-known value across quiet periods.
+    per_stock_sync: dict[str, list[Handle]] = {
         k: []
         for k in (
             "adjusted_close",
+            "close",
+            "volume",
+        )
+    }
+    per_stock_irregular: dict[str, list[Handle]] = {
+        k: []
+        for k in (
             "circ_shares",
             "parent_equity",
             "net_profit",
-            "close",
-            "volume",
         )
     }
 
@@ -141,18 +156,21 @@ def build_scenario(
             Map(neg_parent_equity_components, lambda x: -x.sum(), shape=(), dtype=np.float64)
         )
 
-        per_stock["adjusted_close"].append(adjusted_close)
-        per_stock["circ_shares"].append(circ_shares)
-        per_stock["parent_equity"].append(parent_equity)
-        per_stock["net_profit"].append(net_profit)
-        per_stock["close"].append(close)
-        per_stock["volume"].append(volume)
+        per_stock_sync["adjusted_close"].append(adjusted_close)
+        per_stock_sync["close"].append(close)
+        per_stock_sync["volume"].append(volume)
+        per_stock_irregular["circ_shares"].append(circ_shares)
+        per_stock_irregular["parent_equity"].append(parent_equity)
+        per_stock_irregular["net_profit"].append(net_profit)
 
     # ------------------------------------------------------------------
     # Cross-sectional stacking
     # ------------------------------------------------------------------
 
-    stacked = {k: sc.add_operator(ForwardFill(sc.add_operator(Stack(v)))) for k, v in per_stock.items()}
+    stacked = {
+        **{k: sc.add_operator(NotifyStack(v)) for k, v in per_stock_sync.items()},
+        **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
+    }
 
     # ------------------------------------------------------------------
     # Features

@@ -13,6 +13,8 @@ produce a scalar Array output:
   -- mean / std of period returns
 - [`Drawdown`][tradingflow.operators.metrics.Drawdown]
   -- `(current - running_max) / running_max`
+- [`Turnover`][tradingflow.operators.metrics.Turnover]
+  -- `||w_t - w_{t-1}||_1`: L1 change in portfolio weights per rebalance
 
 Predictor evaluation metrics live in submodules organised by the kind
 of prediction they evaluate:
@@ -30,6 +32,7 @@ from .average_return import AverageReturn
 from .compound_return import CompoundReturn
 from .drawdown import Drawdown
 from .sharpe_ratio import SharpeRatio
+from .turnover import Turnover
 from .volatility import Volatility
 
 __all__ = [
@@ -39,5 +42,6 @@ __all__ = [
     "CompoundReturn",
     "Drawdown",
     "SharpeRatio",
+    "Turnover",
     "Volatility",
 ]

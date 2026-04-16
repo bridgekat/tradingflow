@@ -253,6 +253,30 @@ pub fn dispatch_native_operator(
             }
             Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
         }
+        "notify_concat" => {
+            let axis: usize = params
+                .get_item("axis")?
+                .ok_or_else(|| PyTypeError::new_err("notify_concat requires 'axis' param"))?
+                .extract()?;
+            macro_rules! go {
+                ($T:ty) => {
+                    add_slice_operator_from_indices(sc, operators::NotifyConcat::<$T>::new(axis), input_indices)
+                };
+            }
+            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+        }
+        "notify_stack" => {
+            let axis: usize = params
+                .get_item("axis")?
+                .ok_or_else(|| PyTypeError::new_err("notify_stack requires 'axis' param"))?
+                .extract()?;
+            macro_rules! go {
+                ($T:ty) => {
+                    add_slice_operator_from_indices(sc, operators::NotifyStack::<$T>::new(axis), input_indices)
+                };
+            }
+            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+        }
 
         // -- Last (Series → Array) -------------------------------------------
         "last" => {
