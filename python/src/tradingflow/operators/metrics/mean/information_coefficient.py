@@ -6,7 +6,7 @@ import numpy as np
 
 from ....views import ArrayView
 from ....operator import Operator
-from ....types import Array, Handle, NodeKind
+from ....types import Handle, NodeKind
 
 
 @dataclass(slots=True)
@@ -22,8 +22,9 @@ class InformationCoefficientState:
 
 class InformationCoefficient(
     Operator[
-        tuple[Handle[Array[np.float64]], Handle[Array[np.float64]]],
-        Handle[Array[np.float64]],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
         InformationCoefficientState,
     ]
 ):
@@ -95,7 +96,11 @@ class InformationCoefficient(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> InformationCoefficientState:
+    def init(
+        self,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        timestamp: int,
+    ) -> InformationCoefficientState:
         return InformationCoefficientState(
             ranking=self._ranking,
             num_stocks=self._num_stocks,

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .types import NodeKind
+from .types import NodeKind, _to_native_node_kind
+
+if TYPE_CHECKING:
+    from tradingflow._native import NativeScenario
 
 
 class Source(ABC):
@@ -96,6 +99,19 @@ class Source(ABC):
         """Human-readable name."""
         return self._name
 
+    def _register(self, native_scenario: NativeScenario) -> int:
+        """Register this Python source with the native scenario.
+
+        Polymorphic dispatch: [`Scenario.add_source`][tradingflow.Scenario.add_source]
+        delegates to this method without branching on source kind.
+        """
+        return native_scenario.add_py_source(
+            self,
+            _to_native_node_kind(self._kind),
+            "" if self._kind == NodeKind.UNIT else self._dtype.name,
+            list(self._shape),
+        )
+
 
 async def empty_historical_gen() -> AsyncIterator[tuple[np.datetime64, Any]]:
     """Immediately-exhausting historical async generator."""
@@ -180,3 +196,12 @@ class NativeSource:
     def name(self) -> str:
         """Human-readable name."""
         return self._name
+
+    def _register(self, native_scenario: NativeScenario) -> int:
+        """Register this native source with the native scenario."""
+        return native_scenario.add_native_source(
+            self._native_id,
+            self._dtype,
+            list(self._shape),
+            self._params,
+        )

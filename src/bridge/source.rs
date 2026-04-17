@@ -22,7 +22,7 @@ use crate::Instant;
 use crate::{Array, ErasedSource, PeekableReceiver, Series};
 
 use super::dispatch::dispatch_dtype;
-use super::views::{ViewKind, create_view};
+use super::views::{NativeNodeKind, create_view};
 use super::{ErrorSlot, set_error, set_error_msg};
 
 type PyObject = Py<PyAny>;
@@ -80,7 +80,7 @@ pub fn make_py_source(
     py: Python<'_>,
     output_type_id: TypeId,
     out_dtype: &str,
-    out_view_kind: ViewKind,
+    out_view_kind: NativeNodeKind,
     output_shape: &[usize],
     py_source: PyObject,
     event_loop: PyObject,
@@ -88,21 +88,21 @@ pub fn make_py_source(
 ) -> PyResult<ErasedSource> {
     // Allocate output and create its Python view.
     let (output_ptr, output_drop_fn): (*mut u8, unsafe fn(*mut u8)) =
-        if out_view_kind == ViewKind::Unit {
+        if out_view_kind == NativeNodeKind::Unit {
             (Box::into_raw(Box::new(())) as *mut u8, drop_fn::<()>)
         } else {
             macro_rules! alloc_output {
                 ($T:ty) => {
                     match out_view_kind {
-                        ViewKind::Array => (
+                        NativeNodeKind::Array => (
                             Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
                             drop_fn::<Array<$T>> as unsafe fn(*mut u8),
                         ),
-                        ViewKind::Series => (
+                        NativeNodeKind::Series => (
                             Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
                             drop_fn::<Series<$T>> as unsafe fn(*mut u8),
                         ),
-                        ViewKind::Unit => unreachable!(),
+                        NativeNodeKind::Unit => unreachable!(),
                     }
                 };
             }

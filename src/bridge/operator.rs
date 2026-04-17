@@ -17,7 +17,7 @@ use crate::{Array, Series};
 use crate::ErasedOperator;
 
 use super::dispatch::dispatch_dtype;
-use super::views::{ViewKind, create_view};
+use super::views::{NativeNodeKind, create_view};
 use super::{ErrorSlot, set_error};
 
 type PyObject = Py<PyAny>;
@@ -62,7 +62,7 @@ pub fn make_py_operator(
     input_type_ids: Box<[TypeId]>,
     output_type_id: TypeId,
     out_dtype: &str,
-    out_view_kind: ViewKind,
+    out_view_kind: NativeNodeKind,
     output_shape: &[usize],
     py_inputs: PyObject,
     py_operator: PyObject,
@@ -73,21 +73,21 @@ pub fn make_py_operator(
     // Unit outputs carry no data — use a 1-byte dummy allocation that is
     // never written to or read from; the Python operator receives None.
     let (output_ptr, output_drop_fn): (*mut u8, unsafe fn(*mut u8)) =
-        if out_view_kind == ViewKind::Unit {
+        if out_view_kind == NativeNodeKind::Unit {
             (Box::into_raw(Box::new(())) as *mut u8, drop_fn::<()>)
         } else {
             macro_rules! alloc_output {
                 ($T:ty) => {
                     match out_view_kind {
-                        ViewKind::Array => (
+                        NativeNodeKind::Array => (
                             Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
                             drop_fn::<Array<$T>> as unsafe fn(*mut u8),
                         ),
-                        ViewKind::Series => (
+                        NativeNodeKind::Series => (
                             Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
                             drop_fn::<Series<$T>> as unsafe fn(*mut u8),
                         ),
-                        ViewKind::Unit => unreachable!(),
+                        NativeNodeKind::Unit => unreachable!(),
                     }
                 };
             }
@@ -100,15 +100,15 @@ pub fn make_py_operator(
     // Unit output: pass None directly to the Python operator.
     let views_mod = py.import("tradingflow.views")?;
     let py_output: PyObject = match out_view_kind {
-        ViewKind::Array => {
+        NativeNodeKind::Array => {
             let cls = views_mod.getattr("ArrayView")?;
             cls.call1((native_output.bind(py),))?.unbind()
         }
-        ViewKind::Series => {
+        NativeNodeKind::Series => {
             let cls = views_mod.getattr("SeriesView")?;
             cls.call1((native_output.bind(py),))?.unbind()
         }
-        ViewKind::Unit => py.None(),
+        NativeNodeKind::Unit => py.None(),
     };
 
     // Call operator.init(inputs, timestamp) to get initial state.

@@ -13,8 +13,8 @@ use crate::operators;
 use crate::scenario::Scenario;
 use crate::{ErasedOperator, Operator};
 
-use super::dispatch::{dispatch_dtype, normalize_dtype};
-use super::views::ViewKind;
+use super::dispatch::dispatch_dtype;
+use super::views::NativeNodeKind;
 
 /// Register a fixed-arity operator (Sized Inputs — tuples of Input<T>).
 fn add_operator_from_indices<O: Operator>(
@@ -71,51 +71,49 @@ macro_rules! dispatch_op {
 }
 
 /// Register a Rust-native operator by `(kind, dtype)` and return the output
-/// node index together with the output [`ViewKind`].
+/// node index together with the output [`NativeNodeKind`].
 pub fn dispatch_native_operator(
     sc: &mut Scenario,
     kind: &str,
     dtype: &str,
     input_indices: &[usize],
     params: &Bound<'_, PyDict>,
-) -> PyResult<(usize, ViewKind)> {
-    let dtype = normalize_dtype(dtype);
-
+) -> PyResult<(usize, NativeNodeKind)> {
     match kind {
         // -- Binary arithmetic -----------------------------------------------
-        "add" => Ok((dispatch_op!(dtype, num::Add, numeric, sc, input_indices), ViewKind::Array)),
-        "subtract" => Ok((dispatch_op!(dtype, num::Subtract, numeric, sc, input_indices), ViewKind::Array)),
-        "multiply" => Ok((dispatch_op!(dtype, num::Multiply, numeric, sc, input_indices), ViewKind::Array)),
-        "divide" => Ok((dispatch_op!(dtype, num::Divide, numeric, sc, input_indices), ViewKind::Array)),
+        "add" => Ok((dispatch_op!(dtype, num::Add, numeric, sc, input_indices), NativeNodeKind::Array)),
+        "subtract" => Ok((dispatch_op!(dtype, num::Subtract, numeric, sc, input_indices), NativeNodeKind::Array)),
+        "multiply" => Ok((dispatch_op!(dtype, num::Multiply, numeric, sc, input_indices), NativeNodeKind::Array)),
+        "divide" => Ok((dispatch_op!(dtype, num::Divide, numeric, sc, input_indices), NativeNodeKind::Array)),
 
         // -- Unary arithmetic ------------------------------------------------
-        "negate" => Ok((dispatch_op!(dtype, num::Negate, signed, sc, input_indices), ViewKind::Array)),
+        "negate" => Ok((dispatch_op!(dtype, num::Negate, signed, sc, input_indices), NativeNodeKind::Array)),
 
         // -- Float unary math ------------------------------------------------
-        "log" => Ok((dispatch_op!(dtype, num::Log, float, sc, input_indices), ViewKind::Array)),
-        "log2" => Ok((dispatch_op!(dtype, num::Log2, float, sc, input_indices), ViewKind::Array)),
-        "log10" => Ok((dispatch_op!(dtype, num::Log10, float, sc, input_indices), ViewKind::Array)),
-        "exp" => Ok((dispatch_op!(dtype, num::Exp, float, sc, input_indices), ViewKind::Array)),
-        "exp2" => Ok((dispatch_op!(dtype, num::Exp2, float, sc, input_indices), ViewKind::Array)),
-        "sqrt" => Ok((dispatch_op!(dtype, num::Sqrt, float, sc, input_indices), ViewKind::Array)),
-        "ceil" => Ok((dispatch_op!(dtype, num::Ceil, float, sc, input_indices), ViewKind::Array)),
-        "floor" => Ok((dispatch_op!(dtype, num::Floor, float, sc, input_indices), ViewKind::Array)),
-        "round" => Ok((dispatch_op!(dtype, num::Round, float, sc, input_indices), ViewKind::Array)),
-        "recip" => Ok((dispatch_op!(dtype, num::Recip, float, sc, input_indices), ViewKind::Array)),
+        "log" => Ok((dispatch_op!(dtype, num::Log, float, sc, input_indices), NativeNodeKind::Array)),
+        "log2" => Ok((dispatch_op!(dtype, num::Log2, float, sc, input_indices), NativeNodeKind::Array)),
+        "log10" => Ok((dispatch_op!(dtype, num::Log10, float, sc, input_indices), NativeNodeKind::Array)),
+        "exp" => Ok((dispatch_op!(dtype, num::Exp, float, sc, input_indices), NativeNodeKind::Array)),
+        "exp2" => Ok((dispatch_op!(dtype, num::Exp2, float, sc, input_indices), NativeNodeKind::Array)),
+        "sqrt" => Ok((dispatch_op!(dtype, num::Sqrt, float, sc, input_indices), NativeNodeKind::Array)),
+        "ceil" => Ok((dispatch_op!(dtype, num::Ceil, float, sc, input_indices), NativeNodeKind::Array)),
+        "floor" => Ok((dispatch_op!(dtype, num::Floor, float, sc, input_indices), NativeNodeKind::Array)),
+        "round" => Ok((dispatch_op!(dtype, num::Round, float, sc, input_indices), NativeNodeKind::Array)),
+        "recip" => Ok((dispatch_op!(dtype, num::Recip, float, sc, input_indices), NativeNodeKind::Array)),
 
         // -- Signed unary math -----------------------------------------------
-        "abs" => Ok((dispatch_op!(dtype, num::Abs, signed, sc, input_indices), ViewKind::Array)),
-        "sign" => Ok((dispatch_op!(dtype, num::Sign, signed, sc, input_indices), ViewKind::Array)),
+        "abs" => Ok((dispatch_op!(dtype, num::Abs, signed, sc, input_indices), NativeNodeKind::Array)),
+        "sign" => Ok((dispatch_op!(dtype, num::Sign, signed, sc, input_indices), NativeNodeKind::Array)),
 
         // -- Float binary math -----------------------------------------------
-        "min" => Ok((dispatch_op!(dtype, num::Min, float, sc, input_indices), ViewKind::Array)),
-        "max" => Ok((dispatch_op!(dtype, num::Max, float, sc, input_indices), ViewKind::Array)),
+        "min" => Ok((dispatch_op!(dtype, num::Min, float, sc, input_indices), NativeNodeKind::Array)),
+        "max" => Ok((dispatch_op!(dtype, num::Max, float, sc, input_indices), NativeNodeKind::Array)),
 
         // -- Record (Array → Series) -----------------------------------------
-        "record" => Ok((dispatch_op!(dtype, Record, numeric, sc, input_indices), ViewKind::Series)),
+        "record" => Ok((dispatch_op!(dtype, Record, numeric, sc, input_indices), NativeNodeKind::Series)),
 
         // -- Forward-fill (Series → Array, float only) ------------------------
-        "forward_fill" => Ok((dispatch_op!(dtype, num::ForwardFill, float, sc, input_indices), ViewKind::Array)),
+        "forward_fill" => Ok((dispatch_op!(dtype, num::ForwardFill, float, sc, input_indices), NativeNodeKind::Array)),
 
         // -- Identity (Array → Array) ----------------------------------------
         "id" => {
@@ -127,7 +125,7 @@ pub fn dispatch_native_operator(
                         input_indices)
                 };
             }
-            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
         }
 
         // -- Parameterized unary: pow ----------------------------------------
@@ -141,7 +139,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::num::Pow::<$T>::new(n), input_indices)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
         // -- Parameterized unary: scale --------------------------------------
@@ -155,7 +153,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::num::Scale::<$T>::new(c), input_indices)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go, numeric), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, numeric), NativeNodeKind::Array))
         }
 
         // -- Parameterized unary: shift --------------------------------------
@@ -169,7 +167,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::num::Shift::<$T>::new(c), input_indices)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go, numeric), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, numeric), NativeNodeKind::Array))
         }
 
         // -- Parameterized unary: clamp --------------------------------------
@@ -187,7 +185,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::num::Clamp::<$T>::new(lo, hi), input_indices)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
         // -- Parameterized unary: fillna (nan_to_num) ------------------------
@@ -201,7 +199,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::num::Fillna::<$T>::new(val), input_indices)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
         // -- Selection -------------------------------------------------------
@@ -225,7 +223,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::Select::<$T>::new(indices.clone(), axis, squeeze), input_indices)
                 };
             }
-            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
         }
 
         // -- Variadic (homogeneous) ------------------------------------------
@@ -239,7 +237,7 @@ pub fn dispatch_native_operator(
                     add_slice_operator_from_indices(sc, operators::Concat::<$T>::new(axis), input_indices)
                 };
             }
-            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
         }
         "stack" => {
             let axis: usize = params
@@ -251,7 +249,7 @@ pub fn dispatch_native_operator(
                     add_slice_operator_from_indices(sc, operators::Stack::<$T>::new(axis), input_indices)
                 };
             }
-            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
         }
         "notify_concat" => {
             let axis: usize = params
@@ -263,7 +261,7 @@ pub fn dispatch_native_operator(
                     add_slice_operator_from_indices(sc, operators::NotifyConcat::<$T>::new(axis), input_indices)
                 };
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
         "notify_stack" => {
             let axis: usize = params
@@ -275,7 +273,7 @@ pub fn dispatch_native_operator(
                     add_slice_operator_from_indices(sc, operators::NotifyStack::<$T>::new(axis), input_indices)
                 };
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
         // -- Last (Series → Array) -------------------------------------------
@@ -290,7 +288,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::Last::<$T>::new(fill), input_indices)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
         }
 
         // -- Lag (Series → Array) --------------------------------------------
@@ -309,7 +307,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::Lag::<$T>::new(offset, fill), input_indices)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
         }
 
         // -- Rolling operators (Series → Array, float only) ------------------
@@ -336,7 +334,7 @@ pub fn dispatch_native_operator(
                     }
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
         "ema" => {
             let window: usize = params
@@ -359,7 +357,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, op, input_indices)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
         // -- Cast (Array<S> → Array<T>) --------------------------------------
@@ -380,7 +378,7 @@ pub fn dispatch_native_operator(
             }
             Ok((
                 dispatch_dtype!(&from_dtype, go_from, numeric),
-                ViewKind::Array,
+                NativeNodeKind::Array,
             ))
         }
 
@@ -396,7 +394,7 @@ pub fn dispatch_native_operator(
                     sc,
                     operators::stocks::ForwardAdjust::new().with_output_prices(output_prices),
                     input_indices),
-                ViewKind::Array,
+                NativeNodeKind::Array,
             ))
         }
 
@@ -406,7 +404,7 @@ pub fn dispatch_native_operator(
                 sc,
                 operators::stocks::Annualize::new(),
                 input_indices),
-            ViewKind::Array,
+            NativeNodeKind::Array,
         )),
 
         // -- Const (0-input → Array) -----------------------------------------
@@ -430,7 +428,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::Const::new(arr), input_indices)
                 }};
             }
-            Ok((dispatch_dtype!(dtype, go), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
         }
 
         // -- Metrics --------------------------------------------------------
@@ -447,7 +445,7 @@ pub fn dispatch_native_operator(
                     }
                 };
             }
-            Ok((dispatch_dtype!(dtype, go, float), ViewKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
         // -- ArgSort (Array<T:Float> → Array<u64>) ----------------------------
@@ -461,7 +459,7 @@ pub fn dispatch_native_operator(
                     add_operator_from_indices(sc, operators::num::ArgSort::<$T>::new(), input_indices)
                 };
             }
-            Ok((dispatch_dtype!(input_dtype.as_str(), go, float), ViewKind::Array))
+            Ok((dispatch_dtype!(input_dtype.as_str(), go, float), NativeNodeKind::Array))
         }
 
         other => Err(PyTypeError::new_err(format!(

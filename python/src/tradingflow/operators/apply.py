@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
 from ..operator import Operator
-from ..types import Array, Handle, NodeKind
+from ..types import Handle, NodeKind
+from ..views import ArrayView
 
 
 @dataclass
@@ -21,8 +21,8 @@ class ApplyState:
 
 class Apply(
     Operator[
-        tuple[Handle[Array[np.float64]], ...],
-        Handle[Array[np.float64]],
+        *tuple[ArrayView[np.float64], ...],
+        ArrayView[np.float64],
         ApplyState,
     ]
 ):
@@ -68,14 +68,16 @@ class Apply(
             name=name,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> ApplyState:
+    def init(
+        self, inputs: tuple[ArrayView[np.float64], ...], timestamp: int
+    ) -> ApplyState:
         return ApplyState(f=self._f)
 
     @staticmethod
     def compute(
         state: ApplyState,
-        inputs: tuple,
-        output: Any,
+        inputs: tuple[ArrayView[np.float64], ...],
+        output: ArrayView[np.float64],
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:

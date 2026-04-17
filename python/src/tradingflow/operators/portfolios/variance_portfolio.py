@@ -8,7 +8,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...operator import Operator
-from ...types import Array, Handle, NodeKind
+from ...types import Handle, NodeKind
+from ...views import ArrayView
 
 
 @dataclass(slots=True)
@@ -21,8 +22,9 @@ class VariancePortfolioState:
 
 class VariancePortfolio(
     Operator[
-        tuple[Handle[Array[np.float64]], ...],
-        Handle[Array[np.float64]],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
         VariancePortfolioState,
     ]
 ):
@@ -76,7 +78,11 @@ class VariancePortfolio(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> VariancePortfolioState:
+    def init(
+        self,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        timestamp: int,
+    ) -> VariancePortfolioState:
         return VariancePortfolioState(
             num_stocks=self._num_stocks,
             positions_fn=self._positions_fn,
@@ -85,8 +91,8 @@ class VariancePortfolio(
     @staticmethod
     def compute(
         state: VariancePortfolioState,
-        inputs: tuple,
-        output,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        output: ArrayView[np.float64],
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:

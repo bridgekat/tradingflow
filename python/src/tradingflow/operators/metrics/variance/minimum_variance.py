@@ -7,7 +7,7 @@ import scipy as sp
 
 from ....views import ArrayView
 from ....operator import Operator
-from ....types import Array, Handle, NodeKind
+from ....types import Handle, NodeKind
 
 
 @dataclass(slots=True)
@@ -23,8 +23,9 @@ class MinimumVarianceState:
 
 class MinimumVariance(
     Operator[
-        tuple[Handle[Array[np.float64]], Handle[Array[np.float64]]],
-        Handle[Array[np.float64]],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
         MinimumVarianceState,
     ]
 ):
@@ -87,7 +88,11 @@ class MinimumVariance(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> MinimumVarianceState:
+    def init(
+        self,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        timestamp: int,
+    ) -> MinimumVarianceState:
         return MinimumVarianceState(
             num_stocks=self._num_stocks,
         )

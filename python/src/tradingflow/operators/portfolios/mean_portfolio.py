@@ -8,7 +8,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...operator import Operator
-from ...types import Array, Handle, NodeKind
+from ...types import Handle, NodeKind
+from ...views import ArrayView
 
 
 @dataclass(slots=True)
@@ -19,8 +20,9 @@ class MeanPortfolioState:
 
 class MeanPortfolio(
     Operator[
-        tuple[Handle[Array[np.float64]], ...],
-        Handle[Array[np.float64]],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
         MeanPortfolioState,
     ]
 ):
@@ -70,7 +72,11 @@ class MeanPortfolio(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> MeanPortfolioState:
+    def init(
+        self,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        timestamp: int,
+    ) -> MeanPortfolioState:
         return MeanPortfolioState(
             num_stocks=self._num_stocks,
             positions_fn=self._positions_fn,
@@ -79,8 +85,8 @@ class MeanPortfolio(
     @staticmethod
     def compute(
         state: MeanPortfolioState,
-        inputs: tuple,
-        output,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        output: ArrayView[np.float64],
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:

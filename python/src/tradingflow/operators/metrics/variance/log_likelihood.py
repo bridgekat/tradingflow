@@ -6,7 +6,7 @@ import numpy as np
 
 from ....views import ArrayView
 from ....operator import Operator
-from ....types import Array, Handle, NodeKind
+from ....types import Handle, NodeKind
 
 
 @dataclass(slots=True)
@@ -22,8 +22,9 @@ class LogLikelihoodState:
 
 class LogLikelihood(
     Operator[
-        tuple[Handle[Array[np.float64]], Handle[Array[np.float64]]],
-        Handle[Array[np.float64]],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
         LogLikelihoodState,
     ]
 ):
@@ -93,7 +94,11 @@ class LogLikelihood(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> LogLikelihoodState:
+    def init(
+        self,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        timestamp: int,
+    ) -> LogLikelihoodState:
         return LogLikelihoodState(
             num_stocks=self._num_stocks,
         )

@@ -54,25 +54,19 @@ class Scenario:
         return self.add_operator(operators.Const(value))
 
     def add_source(self, source: Source | NativeSource) -> Handle:
-        """Register a source and return a handle to its output node."""
-        if isinstance(source, NativeSource):
-            idx = self._native.add_native_source(
-                source.native_id,
-                source.dtype,
-                list(source.shape),
-                source.params,
-            )
-            # ViewKind is determined by Rust; reflect it back into the Handle.
-            dtype = np.dtype("void") if source.kind == NodeKind.UNIT else np.dtype(source.dtype)
-            return Handle(idx, source.kind, dtype, source.shape)
-        else:
-            idx = self._native.add_py_source(
-                source,
-                source.kind.value,
-                str(source.dtype),
-                list(source.shape),
-            )
-            return Handle(idx, source.kind, source.dtype, source.shape)
+        """Register a source and return a handle to its output node.
+
+        Polymorphic dispatch via `source._register`: native and Python
+        sources share a single code path.
+        """
+        idx = source._register(self._native)
+        # Unit nodes carry no value; report `void` dtype on the handle.
+        dtype = (
+            np.dtype("void")
+            if source.kind == NodeKind.UNIT
+            else np.dtype(source.dtype)
+        )
+        return Handle(idx, source.kind, dtype, source.shape)
 
     def add_operator(
         self,
@@ -80,32 +74,17 @@ class Scenario:
     ) -> Handle:
         """Register an operator and return a handle to its output node.
 
+        Polymorphic dispatch via `operator._register`: native and Python
+        operators share a single code path.
+
         Parameters
         ----------
         operator
             The operator to register (native or Python).
         """
         input_indices = [inp.index for inp in operator.inputs]
-        if isinstance(operator, NativeOperator):
-            idx = self._native.add_native_operator(
-                operator.native_id,
-                str(operator.dtype),
-                input_indices,
-                list(operator.shape),
-                operator.params,
-            )
-            kind = operator.kind
-        else:
-            input_types, output_type = operator.get_io_types()
-            idx = self._native.add_py_operator(
-                input_indices,
-                [(k.value, d) for k, d in input_types],
-                (output_type[0].value, output_type[1]),
-                list(operator.shape),
-                operator,
-            )
-            kind = output_type[0]
-        return Handle(idx, kind, operator.dtype, operator.shape)
+        idx = operator._register(self._native, input_indices)
+        return Handle(idx, operator.kind, operator.dtype, operator.shape)
 
     def estimated_event_count(self) -> int | None:
         """Sum of estimated event counts across all sources.

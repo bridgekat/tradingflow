@@ -10,6 +10,7 @@ import numpy as np
 
 from ..operator import Operator
 from ..types import Array, Handle, NodeKind
+from ..views import ArrayView
 
 
 @dataclass(slots=True)
@@ -22,8 +23,8 @@ class WhereState[T: np.generic]:
 
 class Where[T: np.generic](
     Operator[
-        tuple[Handle[Array[T]]],
-        Handle[Array[T]],
+        ArrayView[T],
+        ArrayView[T],
         WhereState[T],
     ]
 ):
@@ -65,14 +66,14 @@ class Where[T: np.generic](
             name=name,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> WhereState[T]:
+    def init(self, inputs: tuple[ArrayView[T]], timestamp: int) -> WhereState[T]:
         return WhereState(condition=self._condition, fill=self._fill)
 
     @staticmethod
     def compute(
-        state: WhereState,
-        inputs: tuple,
-        output: Any,
+        state: WhereState[T],
+        inputs: tuple[ArrayView[T]],
+        output: ArrayView[T],
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:

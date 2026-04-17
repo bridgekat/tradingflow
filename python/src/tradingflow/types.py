@@ -7,6 +7,8 @@ import typing
 
 import numpy as np
 
+from tradingflow._native import NativeNodeKind
+
 
 # ---------------------------------------------------------------------------
 # Node kind enum
@@ -14,11 +16,33 @@ import numpy as np
 
 
 class NodeKind(enum.Enum):
-    """Kind of a graph node's value."""
+    """Kind of a graph node's value.
+
+    Pure-Python mirror of the Rust [`NativeNodeKind`][tradingflow._native.NativeNodeKind]
+    PyO3 enum.  The Python-facing API uses [`NodeKind`][tradingflow.NodeKind] so
+    type checkers (which cannot read PyO3-generated classes) see a normal
+    Python enum.  At the FFI boundary, [`_to_native_node_kind`][tradingflow.types._to_native_node_kind]
+    converts to the PyO3 variant.
+    """
 
     ARRAY = "array"
     SERIES = "series"
     UNIT = "unit"
+
+
+def _to_native_node_kind(kind: NodeKind) -> NativeNodeKind:
+    """Convert a Python [`NodeKind`] to the Rust [`NativeNodeKind`] PyO3 enum.
+
+    Used by [`Scenario`][tradingflow.Scenario] when registering nodes; the
+    PyO3 enum travels across the FFI boundary in place of a string tag.
+    """
+    match kind:
+        case NodeKind.ARRAY:
+            return NativeNodeKind.Array
+        case NodeKind.SERIES:
+            return NativeNodeKind.Series
+        case NodeKind.UNIT:
+            return NativeNodeKind.Unit
 
 
 # ---------------------------------------------------------------------------

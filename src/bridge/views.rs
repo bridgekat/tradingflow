@@ -46,8 +46,14 @@ impl PyScalar for f64 {}
 // ===========================================================================
 
 /// What kind of value a node holds.
+///
+/// Exposed to Python as the `NativeNodeKind` PyO3 enum so the bridge can
+/// pass node-kind tags across the FFI boundary without re-parsing strings.
+/// The user-facing Python wrapper is [`tradingflow.NodeKind`]; conversion
+/// happens at the boundary via `tradingflow.types._to_native_node_kind`.
+#[pyclass(eq, eq_int, from_py_object, name = "NativeNodeKind")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewKind {
+pub enum NativeNodeKind {
     /// A fixed-shape multidimensional array.
     Array,
     /// A time-indexed append-only series.
@@ -58,30 +64,30 @@ pub enum ViewKind {
 
 /// Create a Python view for a node, dispatching on its kind and dtype.
 ///
-/// Returns `None` (Python `None`) for [`ViewKind::Unit`] nodes since they
-/// carry no data.
+/// Returns `None` (Python `None`) for [`NativeNodeKind::Unit`] nodes since
+/// they carry no data.
 pub fn create_view(
     py: Python<'_>,
     ptr: *mut u8,
     shape: &[usize],
     dtype: &str,
-    kind: ViewKind,
+    kind: NativeNodeKind,
 ) -> PyResult<PyObject> {
-    if kind == ViewKind::Unit {
+    if kind == NativeNodeKind::Unit {
         return Ok(py.None());
     }
     macro_rules! make_view {
         ($T:ty) => {
             match kind {
-                ViewKind::Array => {
+                NativeNodeKind::Array => {
                     let v = make_array_view::<$T>(ptr, shape, dtype);
                     Ok(Py::new(py, v)?.into_any())
                 }
-                ViewKind::Series => {
+                NativeNodeKind::Series => {
                     let v = make_series_view::<$T>(ptr, shape, dtype);
                     Ok(Py::new(py, v)?.into_any())
                 }
-                ViewKind::Unit => unreachable!(),
+                NativeNodeKind::Unit => unreachable!(),
             }
         };
     }

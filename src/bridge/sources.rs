@@ -15,15 +15,15 @@ use super::dispatch::{ContiguousArrayInfo, dispatch_dtype};
 
 /// Register a Rust-native source and return `(node_index, output_view_kind)`.
 ///
-/// The output [`ViewKind`] is determined by the Rust source type, not by the
+/// The output [`NativeNodeKind`] is determined by the Rust source type, not by the
 /// Python caller — mirrors how [`dispatch_native_operator`] works.
 pub fn dispatch_native_source(
     sc: &mut Scenario,
     kind: &str,
     dtype: &str,
     params: &Bound<'_, PyDict>,
-) -> PyResult<(usize, super::views::ViewKind)> {
-    use super::views::ViewKind;
+) -> PyResult<(usize, super::views::NativeNodeKind)> {
+    use super::views::NativeNodeKind;
     match kind {
         "array" => {
             let timestamps = params
@@ -86,7 +86,7 @@ pub fn dispatch_native_source(
                 start_ns.map(Instant::from_nanos),
                 end_ns.map(Instant::from_nanos),
             );
-            Ok((sc.add_source(source).index(), ViewKind::Array))
+            Ok((sc.add_source(source).index(), NativeNodeKind::Array))
         }
         "financial_report" => {
             let path: String = params
@@ -164,7 +164,7 @@ pub fn dispatch_native_source(
                 start_ns.map(Instant::from_nanos),
                 end_ns.map(Instant::from_nanos),
             );
-            Ok((sc.add_source(source).index(), ViewKind::Array))
+            Ok((sc.add_source(source).index(), NativeNodeKind::Array))
         }
         "clock" => {
             let timestamps: Vec<i64> = params
@@ -174,7 +174,7 @@ pub fn dispatch_native_source(
             let timestamps: Vec<Instant> =
                 timestamps.into_iter().map(Instant::from_nanos).collect();
             use crate::sources::clock;
-            Ok((sc.add_source(clock(timestamps)).index(), ViewKind::Unit))
+            Ok((sc.add_source(clock(timestamps)).index(), NativeNodeKind::Unit))
         }
         other => Err(PyTypeError::new_err(format!(
             "unknown native source kind: {other}"
@@ -183,14 +183,14 @@ pub fn dispatch_native_source(
 }
 
 /// Create a node and register an `ArraySource` in one step.
-/// Returns `(node_index, ViewKind::Array)`.
+/// Returns `(node_index, NativeNodeKind::Array)`.
 fn register_array_source(
     sc: &mut Scenario,
     dtype: &str,
     timestamps: &Bound<'_, pyo3::types::PyAny>,
     values: &Bound<'_, pyo3::types::PyAny>,
     shape: &[usize],
-) -> PyResult<(usize, super::views::ViewKind)> {
+) -> PyResult<(usize, super::views::NativeNodeKind)> {
     macro_rules! register {
         ($T:ty) => {{
             let info = ContiguousArrayInfo::try_from(timestamps)?;
@@ -207,6 +207,6 @@ fn register_array_source(
     }
     Ok((
         dispatch_dtype!(dtype, register, numeric),
-        super::views::ViewKind::Array,
+        super::views::NativeNodeKind::Array,
     ))
 }

@@ -10,7 +10,7 @@ import numpy as np
 
 from ...views import ArrayView
 from ...operator import Operator
-from ...types import Array, Handle, NodeKind
+from ...types import Handle, NodeKind
 
 
 @dataclass(slots=True)
@@ -45,12 +45,10 @@ class OHLCV(IntEnum):
 
 class SimpleTrader(
     Operator[
-        tuple[
-            Handle[Array[np.float64]],  # soft positions (num_stocks,)
-            Handle[Array[np.float64]],  # OHLCV prices (num_stocks, 5)
-            Handle[Array[np.float64]],  # adjusts (num_stocks,)
-        ],
-        Handle[Array[np.float64]],  # (position_value, excess_liquidity)
+        ArrayView[np.float64],  # soft positions (num_stocks,)
+        ArrayView[np.float64],  # OHLCV prices (num_stocks, 5)
+        ArrayView[np.float64],  # adjusts (num_stocks,)
+        ArrayView[np.float64],  # output: (position_value, excess_liquidity)
         SimpleTraderState,
     ]
 ):
@@ -153,7 +151,13 @@ class SimpleTrader(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> SimpleTraderState:
+    def init(
+        self,
+        inputs: tuple[
+            ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]
+        ],
+        timestamp: int,
+    ) -> SimpleTraderState:
         n = self._num_stocks
         return SimpleTraderState(
             num_stocks=n,

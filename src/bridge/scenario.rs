@@ -7,15 +7,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
 use crate::Scenario;
 use crate::scenario::ShutdownFlag;
 
-use super::dispatch::{normalize_dtype, resolve_type_id};
-use super::views::{ViewKind, create_view};
+use super::dispatch::resolve_type_id;
+use super::views::{NativeNodeKind, create_view};
 use super::{ErrorSlot, operator, operators, source, sources};
 
 type PyObject = Py<PyAny>;
@@ -64,7 +64,7 @@ pub struct NativeScenario {
     scenario: Option<Scenario>,
     error_slot: ErrorSlot,
     /// Per-node metadata: (dtype_str, view_kind).
-    node_info: Vec<(String, ViewKind)>,
+    node_info: Vec<(String, NativeNodeKind)>,
     /// Cached Python view objects, indexed by node index.
     cached_views: Vec<Option<PyObject>>,
     /// Tokio runtime — kept alive for the scenario's lifetime.
@@ -96,18 +96,18 @@ impl NativeScenario {
         py: Python<'_>,
         node_index: usize,
         dtype: &str,
-        kind: ViewKind,
+        kind: NativeNodeKind,
         shape: &[usize],
     ) -> PyResult<()> {
         // Ensure vectors are sized to accommodate node_index.
         while self.node_info.len() <= node_index {
-            self.node_info.push((String::new(), ViewKind::Unit)); // placeholder; overwritten below
+            self.node_info.push((String::new(), NativeNodeKind::Unit)); // placeholder; overwritten below
             self.cached_views.push(None);
         }
         self.node_info[node_index] = (dtype.to_string(), kind);
 
         // Unit nodes carry no data; store Python None as the view.
-        let view = if kind == ViewKind::Unit {
+        let view = if kind == NativeNodeKind::Unit {
             py.None()
         } else {
             let sc = self.scenario.as_ref().unwrap();
@@ -165,7 +165,7 @@ impl NativeScenario {
 
     /// Register a Rust-native source by `(source_kind, dtype)` + params.
     ///
-    /// The output [`ViewKind`] is determined by the Rust source type — the
+    /// The output [`NativeNodeKind`] is determined by the Rust source type — the
     /// Python caller does not need to specify it.
     #[pyo3(signature = (source_kind, dtype, shape, params))]
     fn add_native_source(
@@ -178,10 +178,8 @@ impl NativeScenario {
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
         let sc = self.scenario.as_mut().unwrap();
-        let dtype_norm = normalize_dtype(dtype).to_string();
-        let (idx, view_kind) =
-            sources::dispatch_native_source(sc, source_kind, &dtype_norm, params)?;
-        self.push_node(py, idx, &dtype_norm, view_kind, &shape)?;
+        let (idx, view_kind) = sources::dispatch_native_source(sc, source_kind, dtype, params)?;
+        self.push_node(py, idx, dtype, view_kind, &shape)?;
         Ok(idx)
     }
 
@@ -198,10 +196,9 @@ impl NativeScenario {
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
         let sc = self.scenario.as_mut().unwrap();
-        let dtype_norm = normalize_dtype(dtype).to_string();
         let (idx, view_kind) =
-            operators::dispatch_native_operator(sc, kind, &dtype_norm, &input_indices, params)?;
-        self.push_node(py, idx, &dtype_norm, view_kind, &shape)?;
+            operators::dispatch_native_operator(sc, kind, dtype, &input_indices, params)?;
+        self.push_node(py, idx, dtype, view_kind, &shape)?;
         Ok(idx)
     }
 
@@ -215,25 +212,12 @@ impl NativeScenario {
         &mut self,
         py: Python<'_>,
         py_source: PyObject,
-        output_kind: &str,
+        output_kind: NativeNodeKind,
         dtype: &str,
         output_shape: Vec<usize>,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
-        let out_dtype = normalize_dtype(dtype).to_string();
-
-        let out_view_kind = match output_kind {
-            "array" => ViewKind::Array,
-            "series" => ViewKind::Series,
-            "unit" => ViewKind::Unit,
-            other => {
-                return Err(PyTypeError::new_err(format!(
-                    "unsupported output kind: {other}"
-                )));
-            }
-        };
-
-        let output_type_id = resolve_type_id(output_kind, &out_dtype)?;
+        let output_type_id = resolve_type_id(output_kind, dtype)?;
 
         // Ensure asyncio event loop exists.
         let event_loop = self.ensure_event_loop(py)?;
@@ -241,8 +225,8 @@ impl NativeScenario {
         let erased = source::make_py_source(
             py,
             output_type_id,
-            &out_dtype,
-            out_view_kind,
+            dtype,
+            output_kind,
             &output_shape,
             py_source,
             event_loop,
@@ -250,17 +234,16 @@ impl NativeScenario {
         )?;
         let sc = self.scenario.as_mut().unwrap();
         let idx = sc.add_erased_source(erased);
-        self.push_node(py, idx, &out_dtype, out_view_kind, &output_shape)?;
+        self.push_node(py, idx, dtype, output_kind, &output_shape)?;
         Ok(idx)
     }
 
     /// Register a Python operator via
     /// [`ErasedOperator`](crate::operator::ErasedOperator).
     ///
-    /// `input_types` is a list of `(kind, dtype)` pairs (e.g.
-    /// `[("array", "float64"), ("series", "int32")]`).
-    /// `output_type` is a `(kind, dtype)` pair for the output node (e.g.
-    /// `("array", "float64")` or `("series", "float64")`).
+    /// `input_types` is a list of `(NativeNodeKind, dtype)` pairs.
+    /// `output_type` is a `(NativeNodeKind, dtype)` pair for the output node.
+    /// `dtype` strings are canonical numpy dtype names (e.g. `"float64"`).
     ///
     /// Input type validation is performed by
     /// [`Scenario::add_erased_operator`].
@@ -269,32 +252,20 @@ impl NativeScenario {
         &mut self,
         py: Python<'_>,
         input_indices: Vec<usize>,
-        input_types: Vec<(String, String)>,
-        output_type: (String, String),
+        input_types: Vec<(NativeNodeKind, String)>,
+        output_type: (NativeNodeKind, String),
         output_shape: Vec<usize>,
         py_operator: PyObject,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
-        let (out_kind_str, out_dtype_str) = &output_type;
-        let out_dtype = normalize_dtype(out_dtype_str).to_string();
-
-        let out_view_kind = match out_kind_str.as_str() {
-            "array" => ViewKind::Array,
-            "series" => ViewKind::Series,
-            "unit" => ViewKind::Unit,
-            other => {
-                return Err(PyTypeError::new_err(format!(
-                    "unsupported output kind: {other}"
-                )));
-            }
-        };
+        let (out_view_kind, out_dtype) = output_type;
 
         // 1. Resolve TypeIds from Python-declared types.
         let input_type_ids = input_types
             .iter()
-            .map(|(kind, dtype)| resolve_type_id(kind, dtype))
+            .map(|(kind, dtype)| resolve_type_id(*kind, dtype))
             .collect::<PyResult<Box<[_]>>>()?;
-        let output_type_id = resolve_type_id(out_kind_str, &out_dtype)?;
+        let output_type_id = resolve_type_id(out_view_kind, &out_dtype)?;
 
         // 2. Build input views (input nodes already exist).
         //    Wrap NativeArrayView / NativeSeriesView in their Python-side
@@ -315,10 +286,10 @@ impl NativeScenario {
                     })?;
                 let (_, kind) = &self.node_info[idx];
                 let wrapped: PyObject = match kind {
-                    ViewKind::Array => array_view_cls.call1((native.bind(py),))?.unbind(),
-                    ViewKind::Series => series_view_cls.call1((native.bind(py),))?.unbind(),
+                    NativeNodeKind::Array => array_view_cls.call1((native.bind(py),))?.unbind(),
+                    NativeNodeKind::Series => series_view_cls.call1((native.bind(py),))?.unbind(),
                     // Unit inputs carry no data — pass None to the Python operator.
-                    ViewKind::Unit => py.None(),
+                    NativeNodeKind::Unit => py.None(),
                 };
                 Ok(wrapped)
             })

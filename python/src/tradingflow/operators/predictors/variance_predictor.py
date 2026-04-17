@@ -7,7 +7,7 @@ import numpy as np
 
 from ...views import ArrayView, SeriesView
 from ...operator import Operator
-from ...types import Array, Series, Handle, NodeKind
+from ...types import Handle, NodeKind
 
 
 @dataclass(slots=True)
@@ -23,13 +23,11 @@ class VariancePredictorState[T]:
 
 class VariancePredictor[T](
     Operator[
-        tuple[
-            Handle[Array[np.float64]],
-            Handle[Series[np.float64]],
-            Handle[Series[np.float64]],
-            Handle[Array[np.float64]],
-        ],
-        Handle[Array[np.float64]],
+        ArrayView[np.float64],
+        SeriesView[np.float64],
+        SeriesView[np.float64],
+        None,
+        ArrayView[np.float64],
         VariancePredictorState[T],
     ]
 ):
@@ -118,7 +116,16 @@ class VariancePredictor[T](
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> VariancePredictorState[T]:
+    def init(
+        self,
+        inputs: tuple[
+            ArrayView[np.float64],
+            SeriesView[np.float64],
+            SeriesView[np.float64],
+            None,
+        ],
+        timestamp: int,
+    ) -> VariancePredictorState[T]:
         return VariancePredictorState(
             num_stocks=self._num_stocks,
             num_features=self._num_features,
@@ -136,7 +143,7 @@ class VariancePredictor[T](
             ArrayView[np.float64],
             SeriesView[np.float64],
             SeriesView[np.float64],
-            ArrayView[np.float64],
+            None,
         ],
         output: ArrayView[np.float64],
         timestamp: int,

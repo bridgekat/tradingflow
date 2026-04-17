@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from tradingflow import Scenario, Operator
+from tradingflow import Scenario, Operator, ArrayView, SeriesView
 from tradingflow.sources import ArraySource, IterSource
 from tradingflow.operators import Record
 from tradingflow.operators.stocks import ForwardAdjust
@@ -119,8 +119,9 @@ class TestForwardAdjust:
 
 class SelectiveRecorder(
     Operator[
-        tuple[Handle[Array[np.float64]], Handle[Array[np.float64]]],
-        Handle[Series[np.float64]],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
+        SeriesView[np.float64],
         None,
     ]
 ):
@@ -140,14 +141,18 @@ class SelectiveRecorder(
             shape=messages.shape,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> None:
+    def init(
+        self,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        timestamp: int,
+    ) -> None:
         return None
 
     @staticmethod
     def compute(
         state: None,
-        inputs: tuple,
-        output: Any,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        output: SeriesView[np.float64],
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:

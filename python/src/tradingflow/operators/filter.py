@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
 from ..operator import Operator
 from ..types import Array, Handle, NodeKind
+from ..views import ArrayView
 
 
 @dataclass(slots=True)
@@ -21,8 +21,8 @@ class FilterState[T: np.generic]:
 
 class Filter[T: np.generic](
     Operator[
-        tuple[Handle[Array[T]]],
-        Handle[Array[T]],
+        ArrayView[T],
+        ArrayView[T],
         FilterState[T],
     ]
 ):
@@ -60,14 +60,14 @@ class Filter[T: np.generic](
             name=name,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> FilterState[T]:
+    def init(self, inputs: tuple[ArrayView[T]], timestamp: int) -> FilterState[T]:
         return FilterState(predicate=self._predicate)
 
     @staticmethod
     def compute(
-        state: FilterState,
-        inputs: tuple,
-        output: Any,
+        state: FilterState[T],
+        inputs: tuple[ArrayView[T]],
+        output: ArrayView[T],
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:

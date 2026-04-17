@@ -18,6 +18,9 @@
 //! - [`NativeScenario`](scenario::NativeScenario) — the main pyclass.
 //! - [`NativeArrayView`] / [`NativeSeriesView`] — read-only Python views into
 //!   `Array<T>` and `Series<T>` node values, backed by raw pointers.
+//! - [`NativeNodeKind`] — `Array` / `Series` / `Unit` discriminator
+//!   exposed to Python so node-kind tags travel as an enum across the FFI
+//!   boundary instead of strings.
 //! Python operators receive `produced` as a flat `tuple[bool, ...]` built
 //! fresh each compute call by [`operator::py_compute_fn`](operator) — no
 //! dedicated Python class.  Its shape parallels the operator's flat input
@@ -49,7 +52,7 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 
-pub use views::{NativeArrayView, NativeSeriesView};
+pub use views::{NativeArrayView, NativeNodeKind, NativeSeriesView};
 
 use scenario::NativeScenario;
 
@@ -78,6 +81,7 @@ pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_class::<NativeScenario>()?;
     m.add_class::<NativeArrayView>()?;
     m.add_class::<NativeSeriesView>()?;
+    m.add_class::<NativeNodeKind>()?;
     m.add_class::<source::DoneCallback>()?;
     m.add_function(pyo3::wrap_pyfunction!(py_utc_to_tai, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(py_tai_to_utc, m)?)?;
