@@ -13,15 +13,14 @@
 //! is the trailing field of the tuple, it may be `!Sized` (e.g.
 //! `[Input<Array<T>>]` for a [`Stack`](crate::operators::Stack) operator).
 //!
-//! # Notify remapping
+//! # Produced tuple destructure
 //!
-//! The graph's flat position space covers positions 0‥(1 + |O|).  Position 0
-//! is the clock; positions 1‥ belong to O's inputs.  [`Clocked::compute`]
-//! uses [`Notify::skip_leading`] to build a zero-allocation inner `Notify`
-//! whose positions are remapped to 0‥|O| before being forwarded to
-//! `O::compute`.
+//! The parallel `produced` tuple is exactly `(bool, O::Inputs::Produced<'_>)`.
+//! The clock bit is the tuple's first field; the inner operator's produced
+//! tree is the second field and forwards directly into `O::compute` with
+//! zero runtime work.
 
-use crate::data::{Input, InputTypes, Instant, Notify};
+use crate::data::{Input, InputTypes, Instant};
 use crate::operator::Operator;
 
 /// Wraps an operator so it only fires when a leading `Input<()>` clock
@@ -58,16 +57,12 @@ impl<O: Operator> Operator for Clocked<O> {
         inputs: (&(), <O::Inputs as InputTypes>::Refs<'_>),
         output: &mut O::Output,
         timestamp: Instant,
-        notify: &Notify<'_>,
+        produced: (bool, <O::Inputs as InputTypes>::Produced<'_>),
     ) -> bool {
-        // Clock is at local position 0.  Only run the inner operator when
-        // the clock ticks.  `produced()` yields local positions, so we
-        // simply check for 0.
-        if !notify.produced().any(|p| p == 0) {
+        let (clock_fired, inner_produced) = produced;
+        if !clock_fired {
             return false;
         }
-        // Build a zero-allocation inner Notify that remaps positions 1.. to
-        // 0..(num_inputs-1) for the wrapped operator.
-        O::compute(state, inputs.1, output, timestamp, &notify.skip_leading(1))
+        O::compute(state, inputs.1, output, timestamp, inner_produced)
     }
 }

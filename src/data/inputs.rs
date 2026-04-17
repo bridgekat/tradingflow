@@ -32,7 +32,12 @@
 //! * [`Input<T>`] — leaf marker wrapping any `T: Send + 'static`.
 //! * [`SliceRefs<'a, T>`] / [`SliceProduced<'a, T>`] — zero-allocation views
 //!   over a trailing slice branch.
-//! * [`FlatRead`] / [`FlatWrite`] — single-pass cursors.
+//! * [`FlatRead`] / [`FlatWrite`] — single-pass cursors over `&[T]`, used on
+//!   the [`Refs<'a>`](InputTypes::Refs) path.
+//! * [`BitRead`] — single-pass cursor over a packed bit buffer `&[u64]`,
+//!   used on the [`Produced<'a>`](InputTypes::Produced) path.  Symmetric to
+//!   [`FlatRead<bool>`]: same `new` / `remaining` / `take` / `pop` surface,
+//!   but storage is 1 bit per slot instead of 1 byte.
 
 use std::any::TypeId;
 use std::marker::PhantomData;
@@ -75,6 +80,146 @@ impl<'a, T> FlatRead<'a, T> {
         self.idx += 1;
         v
     }
+}
+
+// ===========================================================================
+// Bit-packed cursor
+// ===========================================================================
+
+/// Single-pass cursor over a packed bit buffer `&'a [u64]`.
+///
+/// Symmetric to [`FlatRead<T>`]: same `new` / `remaining` / `take` / `pop`
+/// surface but storage is 1 bit per slot.  The absolute bit offset is
+/// *unbounded* (not re-normalized into `0..64`).  Bits beyond the backing
+/// buffer read as `false`, which makes "all zeros" views trivial to build
+/// with an empty `&[u64]`.
+#[derive(Copy, Clone, Debug)]
+pub struct BitRead<'a> {
+    words: &'a [u64],
+    /// Absolute bit position of the next bit to read.
+    bit_idx: usize,
+    /// Absolute bit position one past the last readable bit.
+    bit_end: usize,
+}
+
+impl<'a> BitRead<'a> {
+    /// Wrap `words`; cursor starts at bit 0 and covers `num_bits` bits.
+    #[inline(always)]
+    pub fn new(words: &'a [u64], num_bits: usize) -> Self {
+        Self {
+            words,
+            bit_idx: 0,
+            bit_end: num_bits,
+        }
+    }
+
+    /// Wrap `words`; cursor covers bits `[bit_off, bit_off + num_bits)`.
+    #[inline(always)]
+    pub fn from_parts(words: &'a [u64], bit_off: usize, num_bits: usize) -> Self {
+        Self {
+            words,
+            bit_idx: bit_off,
+            bit_end: bit_off + num_bits,
+        }
+    }
+
+    /// Number of bits remaining past the cursor.
+    #[inline(always)]
+    pub fn remaining(&self) -> usize {
+        self.bit_end - self.bit_idx
+    }
+
+    /// Consume `n` bits, returning a sub-cursor with lifetime `'a`.
+    #[inline(always)]
+    pub fn take(&mut self, n: usize) -> BitRead<'a> {
+        let sub = BitRead {
+            words: self.words,
+            bit_idx: self.bit_idx,
+            bit_end: self.bit_idx + n,
+        };
+        self.bit_idx += n;
+        sub
+    }
+
+    /// Consume one bit.  Bits beyond the backing buffer read as `false`.
+    #[inline(always)]
+    pub fn pop(&mut self) -> bool {
+        let g = self.bit_idx;
+        self.bit_idx += 1;
+        let wi = g / 64;
+        if wi >= self.words.len() {
+            false
+        } else {
+            (self.words[wi] >> (g % 64)) & 1 != 0
+        }
+    }
+
+    /// Iterate over local positions (0..[`remaining`](Self::remaining)) whose
+    /// bit is set.  Uses `u64::trailing_zeros` for per-set-bit-constant work.
+    pub fn iter_set(&self) -> impl Iterator<Item = usize> + '_ {
+        let words = self.words;
+        let start = self.bit_idx;
+        let end = self.bit_end;
+        let start_word = start / 64;
+        let end_word = end.div_ceil(64).min(words.len());
+        let first_word = start_word.min(end_word);
+        (first_word..end_word).flat_map(move |wi| {
+            let word_base = wi * 64;
+            let mut word = words[wi];
+            if word_base < start {
+                word &= u64::MAX << (start - word_base);
+            }
+            if word_base + 64 > end {
+                let bits = end - word_base;
+                if bits < 64 {
+                    word &= (1u64 << bits) - 1;
+                }
+            }
+            std::iter::from_fn(move || {
+                if word == 0 {
+                    None
+                } else {
+                    let bit = word.trailing_zeros() as usize;
+                    word &= word - 1;
+                    Some(word_base + bit - start)
+                }
+            })
+        })
+    }
+}
+
+// ===========================================================================
+
+/// Build a `Produced<'static>` tree with every bit `false`.
+///
+/// Convenience for tests and ad-hoc operator invocations: the returned
+/// tree reports "no input produced" for every leaf.  `num_bits` is only
+/// needed for slice-tailed inputs (to give the `SliceProduced` its length);
+/// for fully-`Sized` inputs pass 0 or the arity.
+#[inline]
+pub fn empty_produced<I: InputTypes + ?Sized>(num_bits: usize) -> I::Produced<'static> {
+    let mut reader = BitRead::new(&[], num_bits);
+    I::produced_from_flat(&mut reader)
+}
+
+/// Build a `Produced<'static>` tree from `positions` expressed as local
+/// input indices.  Convenience for tests.
+///
+/// Packs the positions into a leaked bit buffer and traverses.  Do not use
+/// on the hot path.
+#[cfg(test)]
+pub fn produced_from_positions<I: InputTypes + ?Sized>(
+    positions: &[usize],
+    num_bits: usize,
+) -> I::Produced<'static> {
+    let n_words = num_bits.div_ceil(64).max(1);
+    let mut buf = vec![0u64; n_words];
+    for &p in positions {
+        buf[p / 64] |= 1u64 << (p % 64);
+    }
+    let words: &'static [u64] = Box::leak(buf.into_boxed_slice());
+    let mut reader = BitRead::new(words, num_bits);
+    I::produced_from_flat(&mut reader)
 }
 
 /// Single-pass cursor over a flat mutable slice `&'a mut [T]`.
@@ -156,10 +301,10 @@ pub trait InputTypes {
     /// Each consumed pointer must point to a valid value of the matching type.
     unsafe fn refs_from_flat<'a>(reader: &mut FlatRead<'a, *const u8>) -> Self::Refs<'a>;
 
-    /// Construct nested booleans by consuming slots from `reader`.
+    /// Construct nested booleans by consuming bits from `reader`.
     ///
     /// Same slot-count semantics as [`refs_from_flat`](Self::refs_from_flat).
-    fn produced_from_flat<'a>(reader: &mut FlatRead<'a, bool>) -> Self::Produced<'a>;
+    fn produced_from_flat<'a>(reader: &mut BitRead<'a>) -> Self::Produced<'a>;
 }
 
 // -- Leaf: Input<T> ----------------------------------------------------------
@@ -184,8 +329,8 @@ impl<T: Send + 'static> InputTypes for Input<T> {
     }
 
     #[inline(always)]
-    fn produced_from_flat<'a>(reader: &mut FlatRead<'a, bool>) -> bool {
-        *reader.pop()
+    fn produced_from_flat<'a>(reader: &mut BitRead<'a>) -> bool {
+        reader.pop()
     }
 }
 
@@ -207,7 +352,7 @@ impl InputTypes for () {
     unsafe fn refs_from_flat<'a>(_reader: &mut FlatRead<'a, *const u8>) {}
 
     #[inline(always)]
-    fn produced_from_flat<'a>(_reader: &mut FlatRead<'a, bool>) {}
+    fn produced_from_flat<'a>(_reader: &mut BitRead<'a>) {}
 }
 
 // -- Compound: tuple branches (arities 1-12) ---------------------------------
@@ -233,7 +378,7 @@ impl<S: InputTypes + ?Sized> InputTypes for (S,) {
     }
 
     #[inline(always)]
-    fn produced_from_flat<'a>(reader: &mut FlatRead<'a, bool>) -> Self::Produced<'a> {
+    fn produced_from_flat<'a>(reader: &mut BitRead<'a>) -> Self::Produced<'a> {
         (S::produced_from_flat(reader),)
     }
 }
@@ -265,7 +410,7 @@ macro_rules! impl_input_types_for_tuple {
             }
 
             #[inline(always)]
-            fn produced_from_flat<'a>(reader: &mut FlatRead<'a, bool>) -> Self::Produced<'a> {
+            fn produced_from_flat<'a>(reader: &mut BitRead<'a>) -> Self::Produced<'a> {
                 (
                     $( $T::produced_from_flat(reader), )+
                     $S::produced_from_flat(reader),
@@ -322,8 +467,9 @@ impl<T: InputTypes + 'static> InputTypes for [T] {
     }
 
     #[inline(always)]
-    fn produced_from_flat<'a>(reader: &mut FlatRead<'a, bool>) -> SliceProduced<'a, T> {
-        SliceProduced::new(reader.take(reader.remaining()))
+    fn produced_from_flat<'a>(reader: &mut BitRead<'a>) -> SliceProduced<'a, T> {
+        let rem = reader.remaining();
+        SliceProduced::from_cursor(reader.take(rem))
     }
 }
 
@@ -373,17 +519,28 @@ impl<'a, T: InputTypes> SliceRefs<'a, T> {
 }
 
 /// Zero-allocation nested boolean view over a trailing `[T]` branch.
+///
+/// Symmetric to [`SliceRefs`]: construction is a pure struct copy, and
+/// sub-element `Produced` values are built *lazily* on demand via
+/// [`get`](Self::get) / [`iter`](Self::iter) / [`any`](Self::any).
 pub struct SliceProduced<'a, T: InputTypes> {
-    flat: &'a [bool],
+    /// Backing bit buffer.  Bits outside the logical range read as `false`.
+    words: &'a [u64],
+    /// Absolute starting bit offset of this slice within `words`.
+    bit_off: usize,
+    /// Total bit count covered by this slice (element count × `T::arity()`).
+    bit_len: usize,
     _marker: PhantomData<fn() -> T>,
 }
 
 impl<'a, T: InputTypes> SliceProduced<'a, T> {
-    /// Construct a view from a flat boolean sub-slice.
+    /// Internal: take over a cursor's entire remaining range.
     #[inline(always)]
-    pub fn new(flat: &'a [bool]) -> Self {
+    fn from_cursor(cursor: BitRead<'a>) -> Self {
         Self {
-            flat,
+            words: cursor.words,
+            bit_off: cursor.bit_idx,
+            bit_len: cursor.bit_end - cursor.bit_idx,
             _marker: PhantomData,
         }
     }
@@ -391,7 +548,7 @@ impl<'a, T: InputTypes> SliceProduced<'a, T> {
     #[inline(always)]
     pub fn len(&self) -> usize {
         let s = T::arity();
-        if s != 0 { self.flat.len() / s } else { 0 }
+        if s != 0 { self.bit_len / s } else { 0 }
     }
 
     #[inline(always)]
@@ -399,16 +556,26 @@ impl<'a, T: InputTypes> SliceProduced<'a, T> {
         self.len() == 0
     }
 
+    /// Build element `i`'s nested `Produced` on demand.  No bit is read
+    /// until the caller descends into leaves.
     #[inline(always)]
     pub fn get(&self, i: usize) -> T::Produced<'a> {
         let s = T::arity();
-        let mut reader = FlatRead::new(&self.flat[i * s..]);
+        let mut reader = BitRead::from_parts(self.words, self.bit_off + i * s, s);
         T::produced_from_flat(&mut reader)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = T::Produced<'a>> + '_ {
-        let mut reader = FlatRead::new(self.flat);
+        let mut reader =
+            BitRead::from_parts(self.words, self.bit_off, self.bit_len);
         (0..self.len()).map(move |_| T::produced_from_flat(&mut reader))
+    }
+
+    /// Whether any bit within this slice's range is set.  Scans O(len/64)
+    /// words via `trailing_zeros`.
+    pub fn any(&self) -> bool {
+        let reader = BitRead::from_parts(self.words, self.bit_off, self.bit_len);
+        reader.iter_set().next().is_some()
     }
 }
 
@@ -427,8 +594,22 @@ mod tests {
         refs
     }
 
-    fn read_produced<'a, I: InputTypes + ?Sized>(bits: &'a [bool]) -> I::Produced<'a> {
-        let mut reader = FlatRead::new(bits);
+    /// Pack a `&[bool]` into a minimally-sized `Vec<u64>` bitset.
+    fn pack_bits(bits: &[bool]) -> Vec<u64> {
+        let mut out = vec![0u64; bits.len().div_ceil(64).max(1)];
+        for (i, &b) in bits.iter().enumerate() {
+            if b {
+                out[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        out
+    }
+
+    fn read_produced<I: InputTypes + ?Sized>(bits: &[bool]) -> I::Produced<'static> {
+        // Leak the packed storage — test-only, short-lived, keeps the
+        // returned `Produced<'a>` usable without lifetime gymnastics.
+        let packed: &'static [u64] = Box::leak(pack_bits(bits).into_boxed_slice());
+        let mut reader = BitRead::new(packed, bits.len());
         let p = I::produced_from_flat(&mut reader);
         assert_eq!(reader.remaining(), 0, "cursor did not reach end");
         p

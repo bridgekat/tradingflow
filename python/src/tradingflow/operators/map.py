@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from ..operator import Operator, Notify
+from ..operator import Operator
 from ..types import Array, Handle, NodeKind
 
 
@@ -82,7 +82,7 @@ class Map[S: np.generic, T: np.generic](
         inputs: tuple,
         output: Any,
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         value = inputs[0].value()
         result = state.f(value)

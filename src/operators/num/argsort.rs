@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use num_traits::Float;
 
 use crate::Instant;
-use crate::{Array, Input, Notify, Operator, Scalar};
+use crate::{Array, Input, InputTypes, Operator, Scalar};
 
 /// Produces the indices that would sort a 1-D array from smallest to
 /// largest.  Output is `Array<u64>` of the same length as the input.
@@ -47,7 +47,7 @@ impl<T: Scalar + Float> Operator for ArgSort<T> {
         inputs: &Array<T>,
         output: &mut Array<u64>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let src = inputs.as_slice();
         let n = src.len();
@@ -89,7 +89,7 @@ mod tests {
     fn basic() {
         let a = Array::from_vec(&[5], vec![30.0, 10.0, 50.0, 20.0, 40.0_f64]);
         let (mut s, mut o) = ArgSort::<f64>::new().init(&a, Instant::from_nanos(0));
-        ArgSort::compute(&mut s, &a, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
+        ArgSort::compute(&mut s, &a, &mut o, Instant::from_nanos(1), false);
         // sorted: 10(1), 20(3), 30(0), 40(4), 50(2)
         assert_eq!(o.as_slice(), &[1, 3, 0, 4, 2]);
     }
@@ -98,7 +98,7 @@ mod tests {
     fn with_nan() {
         let a = Array::from_vec(&[4], vec![f64::NAN, 20.0, 10.0, f64::NAN]);
         let (mut s, mut o) = ArgSort::<f64>::new().init(&a, Instant::from_nanos(0));
-        ArgSort::compute(&mut s, &a, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
+        ArgSort::compute(&mut s, &a, &mut o, Instant::from_nanos(1), false);
         // sorted: 10(2), 20(1), NaN(0), NaN(3)
         assert_eq!(o.as_slice()[0], 2);
         assert_eq!(o.as_slice()[1], 1);
@@ -109,7 +109,7 @@ mod tests {
     fn single_element() {
         let a = Array::from_vec(&[1], vec![42.0_f64]);
         let (mut s, mut o) = ArgSort::<f64>::new().init(&a, Instant::from_nanos(0));
-        ArgSort::compute(&mut s, &a, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
+        ArgSort::compute(&mut s, &a, &mut o, Instant::from_nanos(1), false);
         assert_eq!(o.as_slice(), &[0]);
     }
 }

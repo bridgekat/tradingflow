@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{Array, Input, Instant, Notify, Operator, Scalar};
+use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 
 /// Select elements from an array along an axis.
 ///
@@ -84,7 +84,7 @@ impl<T: Scalar> Operator for Select<T> {
         inputs: &Array<T>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let src = inputs.as_slice();
         let dst = output.as_mut_slice();
@@ -127,7 +127,7 @@ mod tests {
             &a,
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            false,
         );
         assert_eq!(o.shape(), &[2]);
         assert_eq!(o.as_slice(), &[20.0, 40.0]);
@@ -143,7 +143,7 @@ mod tests {
             &a,
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            false,
         );
         assert_eq!(o.shape(), &[2, 2]);
         assert_eq!(o.as_slice(), &[1.0, 3.0, 4.0, 6.0]);
@@ -158,7 +158,7 @@ mod tests {
             &a,
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            false,
         );
         assert_eq!(o.as_slice(), &[30.0]);
     }

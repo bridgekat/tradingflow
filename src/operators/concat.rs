@@ -7,7 +7,7 @@
 
 use num_traits::Float;
 
-use crate::{Array, Input, Instant, Notify, Operator, Scalar, SliceRefs};
+use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, SliceProduced, SliceRefs};
 
 /// Concatenate N homogeneous arrays along an existing axis.
 pub struct Concat<T: Scalar> {
@@ -60,7 +60,7 @@ impl<T: Scalar> Operator for Concat<T> {
         inputs: SliceRefs<'_, Input<Array<T>>>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         interleaved_copy(
             output,
@@ -74,8 +74,8 @@ impl<T: Scalar> Operator for Concat<T> {
 }
 
 /// Concatenate N homogeneous float arrays along an existing axis,
-/// using [`Notify`] to distinguish freshly-produced inputs from stale
-/// ones.
+/// using the `produced` tree to distinguish freshly-produced inputs from
+/// stale ones.
 ///
 /// On every compute, the output is first cleared to `NaN`, then only
 /// the slots corresponding to inputs that produced in the current
@@ -137,7 +137,7 @@ impl<T: Scalar + Float> Operator for NotifyConcat<T> {
         inputs: SliceRefs<'_, Input<Array<T>>>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        notify: &Notify<'_>,
+        produced: SliceProduced<'_, Input<Array<T>>>,
     ) -> bool {
         // Reset the entire output to NaN; then copy only produced inputs.
         for v in output.as_mut_slice().iter_mut() {
@@ -146,7 +146,7 @@ impl<T: Scalar + Float> Operator for NotifyConcat<T> {
         interleaved_copy_selective(
             output,
             &inputs,
-            notify.produced(),
+            (0..produced.len()).filter(|&i| produced.get(i)),
             state.n_inputs,
             state.outer_count,
             state.chunk_size,
@@ -213,8 +213,9 @@ pub(super) fn interleaved_copy_selective<T: Scalar>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::inputs::{empty_produced, produced_from_positions};
     use crate::operator::Operator;
-    use crate::{FlatRead, InputTypes};
+    use crate::FlatRead;
 
     /// Build a flat pointer buffer for a slice of Array refs.
     fn make_ptrs<'a, T: Scalar>(arrays: &'a [&'a Array<T>]) -> Vec<*const u8> {
@@ -227,6 +228,14 @@ mod tests {
     fn refs<'a, T: Scalar>(ptrs: &'a [*const u8]) -> SliceRefs<'a, Input<Array<T>>> {
         let mut reader = FlatRead::new(ptrs);
         unsafe { <[Input<Array<T>>] as InputTypes>::refs_from_flat(&mut reader) }
+    }
+
+    fn sp_empty(n: usize) -> SliceProduced<'static, Input<Array<f64>>> {
+        empty_produced::<[Input<Array<f64>>]>(n)
+    }
+
+    fn sp_positions(positions: &[usize], n: usize) -> SliceProduced<'static, Input<Array<f64>>> {
+        produced_from_positions::<[Input<Array<f64>>]>(positions, n)
     }
 
     // Two 2×3×2 arrays concatenated along each axis.
@@ -256,7 +265,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            sp_empty(0),
         );
         assert_eq!(o.shape(), &[4, 3, 2]);
         let expected: Vec<f64> = (1..=24).map(|x| x as f64).collect();
@@ -275,7 +284,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            sp_empty(0),
         );
         assert_eq!(o.shape(), &[2, 6, 2]);
         assert_eq!(
@@ -299,7 +308,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            sp_empty(0),
         );
         assert_eq!(o.shape(), &[2, 3, 4]);
         assert_eq!(
@@ -334,7 +343,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[0, 1], 2),
+            sp_positions(&[0, 1], 2),
         );
         assert_eq!(o.shape(), &[4, 3, 2]);
         let expected: Vec<f64> = (1..=24).map(|x| x as f64).collect();
@@ -353,7 +362,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[0], 2),
+            sp_positions(&[0], 2),
         );
         let out = o.as_slice();
         let expected_a: Vec<f64> = (1..=12).map(|x| x as f64).collect();
@@ -375,7 +384,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[1], 2),
+            sp_positions(&[1], 2),
         );
         assert_eq!(o.shape(), &[2, 6, 2]);
         let out = o.as_slice();
@@ -400,7 +409,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 2),
+            sp_empty(2),
         );
         for v in o.as_slice() {
             assert!(v.is_nan());

@@ -3,7 +3,7 @@
 use std::ops;
 
 use crate::Instant;
-use crate::{Array, Input, Notify, Operator, Scalar};
+use crate::{Array, Input, InputTypes, Operator, Scalar};
 
 /// Element-wise scale: `x * c`.
 pub struct Scale<T: Scalar> {
@@ -32,7 +32,7 @@ impl<T: Scalar + ops::Mul<Output = T>> Operator for Scale<T> {
         inputs: &Array<T>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let c = state.clone();
         let a = inputs.as_slice();
@@ -52,7 +52,7 @@ mod tests {
     fn test_scale() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let (mut s, mut o) = Scale::new(3.0).init(&a, Instant::MIN);
-        Scale::compute(&mut s, &a, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
+        Scale::compute(&mut s, &a, &mut o, Instant::from_nanos(1), false);
         assert_eq!(o.as_slice(), &[3.0, 6.0, 9.0]);
     }
 }

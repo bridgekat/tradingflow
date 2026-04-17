@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ....views import ArrayView
-from ....operator import Operator, Notify
+from ....operator import Operator
 from ....types import Array, Handle, NodeKind
 
 
@@ -107,10 +107,10 @@ class InformationCoefficient(
         inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
         output: ArrayView[np.float64],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         predictions, prices = inputs
-        predictions_produced, prices_produced = notify.input_produced()
+        predictions_produced, prices_produced = produced
 
         # Accumulate one-period IC on price ticks.
         if prices_produced:

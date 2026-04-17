@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...views import ArrayView, SeriesView
-from ...operator import Operator, Notify
+from ...operator import Operator
 from ...types import Array, Series, Handle, NodeKind
 
 
@@ -140,10 +140,10 @@ class VariancePredictor[T](
         ],
         output: ArrayView[np.float64],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         # Emit only on rebalance ticks.  See MeanPredictor for rationale.
-        if not notify.input_produced()[3]:
+        if not produced[3]:
             return False
 
         universe, features_series, prices_series, _rebalance = inputs

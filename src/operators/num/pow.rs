@@ -3,7 +3,7 @@
 use num_traits::Float;
 
 use crate::Instant;
-use crate::{Array, Input, Notify, Operator, Scalar};
+use crate::{Array, Input, InputTypes, Operator, Scalar};
 
 /// Element-wise power: `x.powf(n)`.
 pub struct Pow<T: Scalar> {
@@ -32,7 +32,7 @@ impl<T: Scalar + Float> Operator for Pow<T> {
         inputs: &Array<T>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let n = *state;
         let a = inputs.as_slice();
@@ -52,7 +52,7 @@ mod tests {
     fn test_pow() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let (mut s, mut o) = Pow::new(2.0).init(&a, Instant::MIN);
-        Pow::compute(&mut s, &a, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
+        Pow::compute(&mut s, &a, &mut o, Instant::from_nanos(1), false);
         assert_eq!(o.as_slice(), &[1.0, 4.0, 9.0]);
     }
 }

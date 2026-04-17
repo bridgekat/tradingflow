@@ -19,10 +19,11 @@
 //!   [`estimated_event_count`](Source::estimated_event_count) method for
 //!   progress reporting. Type-erased form: [`ErasedSource`].
 //! * [`Operator`] — synchronous computation node that reads typed inputs and
-//!   writes a typed output. Type-erased form: [`ErasedOperator`].
-//! * [`Notify`] — notification context passed to [`Operator::compute`],
-//!   providing which inputs produced new output in the current flush cycle
-//!   via [`Notify::produced`] and [`Notify::input_produced`].
+//!   writes a typed output. Type-erased form: [`ErasedOperator`].  The
+//!   `compute` method receives two structurally parallel hierarchical trees:
+//!   `inputs: <Inputs as InputTypes>::Refs<'_>` and
+//!   `produced: <Inputs as InputTypes>::Produced<'_>`.  Slice branches
+//!   expose lazy views; sized tuples produce stack-allocated compounds.
 //!
 //! # Runtime
 //!
@@ -38,9 +39,9 @@
 //!   * [`data::series`] — `Series`.
 //!   * [`data::time`] — `Instant` (SI nanoseconds since 1970-01-01 00:00:00
 //!     TAI) and `Duration` (SI nanoseconds).
-//!   * [`data::inputs`] — `InputTypes`, `Input<T>`, `Slice<T>`, flat
-//!     readers/writers, and related machinery.
-//!   * Flat: `Scalar`, `PeekableReceiver`, `Notify`.
+//!   * [`data::inputs`] — `InputTypes`, `Input<T>`, `FlatRead` / `BitRead`
+//!     cursors, and related machinery.
+//!   * Flat: `Scalar`, `PeekableReceiver`.
 //! * [`source`] — `Source` trait, `ErasedSource`.
 //! * [`operator`] — `Operator` trait, `ErasedOperator`.
 //! * [`scenario`] — `Scenario`, `Handle`, `InputTypesHandles`.
@@ -66,8 +67,8 @@ pub mod sources;
 pub mod utils;
 
 pub use data::{
-    tai_to_utc, utc_to_tai, Array, Duration, FlatRead, FlatWrite, Input, InputTypes, Instant,
-    Notify, PeekableReceiver, Scalar, Series, SliceProduced, SliceRefs,
+    tai_to_utc, utc_to_tai, Array, BitRead, Duration, FlatRead, FlatWrite, Input, InputTypes,
+    Instant, PeekableReceiver, Scalar, Series, SliceProduced, SliceRefs,
 };
 pub use operator::{ErasedOperator, Operator};
 pub use operators::Clocked;

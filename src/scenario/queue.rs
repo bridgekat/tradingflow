@@ -418,7 +418,7 @@ mod tests {
 
     use crate::operators::Record;
     use crate::Instant;
-    use crate::{Array, Input, Notify, Operator, Scenario, Series, Source};
+    use crate::{Array, Input, Operator, Scenario, Series, Source};
 
     use super::super::handle::Handle;
 
@@ -499,7 +499,7 @@ mod tests {
             _inputs: &Array<f64>,
             _output: &mut (),
             timestamp: Instant,
-            _notify: &Notify<'_>,
+            _produced: bool,
         ) -> bool {
             state.1.lock().unwrap().push((timestamp, state.0));
             false

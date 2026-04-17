@@ -10,8 +10,8 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::{Duration, Instant};
-use crate::{Array, Input, Notify, Operator, Scalar, Series};
+use crate::{Duration, InputTypes, Instant};
+use crate::{Array, Input, Operator, Scalar, Series};
 
 // ===========================================================================
 // Accumulator trait
@@ -147,7 +147,7 @@ impl<A: Accumulator> Operator for Rolling<A> {
         inputs: &Series<A::Scalar>,
         output: &mut Array<A::Scalar>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let series = inputs;
         let len = series.len();

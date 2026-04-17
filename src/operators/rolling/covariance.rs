@@ -132,7 +132,7 @@ mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
     use crate::{Duration, Instant};
-    use crate::{Notify, Operator, Series};
+    use crate::{Operator, Series};
 
     type RollingCovariance = Rolling<CovarianceAccumulator<f64>>;
 
@@ -151,7 +151,7 @@ mod tests {
             &s,
             &mut out,
             ts(1),
-            &Notify::new(&[], 0)
+            false
         ));
 
         s.push(ts(2), &[2.0, 4.0]);
@@ -160,7 +160,7 @@ mod tests {
             &s,
             &mut out,
             ts(2),
-            &Notify::new(&[], 0)
+            false
         ));
 
         s.push(ts(3), &[3.0, 6.0]);
@@ -169,7 +169,7 @@ mod tests {
             &s,
             &mut out,
             ts(3),
-            &Notify::new(&[], 0)
+            false
         ));
 
         // Perfect linear correlation: y = 2x.
@@ -194,10 +194,10 @@ mod tests {
         let (mut state, mut out) = RollingCovariance::count(2).init(&s, Instant::MIN);
 
         s.push(ts(1), &[f64::NAN, 1.0]);
-        RollingCovariance::compute(&mut state, &s, &mut out, ts(1), &Notify::new(&[], 0));
+        RollingCovariance::compute(&mut state, &s, &mut out, ts(1), false);
 
         s.push(ts(2), &[2.0, 2.0]);
-        RollingCovariance::compute(&mut state, &s, &mut out, ts(2), &Notify::new(&[], 0));
+        RollingCovariance::compute(&mut state, &s, &mut out, ts(2), false);
 
         let cov = out.as_slice();
         assert!(cov[0].is_nan()); // Var(x): NaN in x
@@ -217,13 +217,13 @@ mod tests {
             &s,
             &mut out,
             ts(100),
-            &Notify::new(&[], 0)
+            false
         ));
         // Single element → all covariances = 0.
         assert_eq!(out.as_slice(), &[0.0, 0.0, 0.0, 0.0]);
 
         s.push(ts(200), &[3.0, 6.0]);
-        RollingCovariance::compute(&mut state, &s, &mut out, ts(200), &Notify::new(&[], 0));
+        RollingCovariance::compute(&mut state, &s, &mut out, ts(200), false);
 
         // Cov([1,3], [2,6]): Var(x)=1, Cov(x,y)=2, Var(y)=4.
         let cov = out.as_slice();

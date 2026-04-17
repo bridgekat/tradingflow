@@ -8,7 +8,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{InputTypes, Instant, Notify, Operator};
+use crate::{InputTypes, Instant, Operator};
 
 /// Apply operator: applies a function to tuple inputs on each tick.
 ///
@@ -61,7 +61,7 @@ where
         inputs: <I as InputTypes>::Refs<'_>,
         output: &mut T,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         *output = (state.f)(inputs);
         true
@@ -122,7 +122,7 @@ where
         inputs: <I as InputTypes>::Refs<'_>,
         output: &mut T,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         (state.f)(inputs, output)
     }
@@ -155,7 +155,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[11.0, 22.0, 33.0]);
 
         let a2 = Array::from_vec(&[3], vec![100.0, 200.0, 300.0]);
-        Apply::compute(&mut s, (&a2, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Apply::compute(&mut s, (&a2, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[110.0, 220.0, 330.0]);
     }
 
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[10.0]); // 2*3 + 4
 
         let a2 = Array::scalar(5.0);
-        Apply::compute(&mut s, (&a2, &b, &c), &mut o, ts(1), &Notify::new(&[], 0));
+        Apply::compute(&mut s, (&a2, &b, &c), &mut o, ts(1), (false, false, false));
         assert_eq!(o.as_slice(), &[19.0]); // 5*3 + 4
     }
 
@@ -200,7 +200,7 @@ mod tests {
             (&a2, &b),
             &mut o,
             ts(1),
-            &Notify::new(&[], 0),
+            (false, false),
         ));
         assert_eq!(o.as_slice(), &[13.0]);
     }
@@ -231,7 +231,7 @@ mod tests {
             (&a2, &b),
             &mut o,
             ts(1),
-            &Notify::new(&[], 0),
+            (false, false),
         ));
 
         // 10 + 2 = 12 > 5 → true
@@ -241,7 +241,7 @@ mod tests {
             (&a3, &b),
             &mut o,
             ts(2),
-            &Notify::new(&[], 0),
+            (false, false),
         ));
         assert_eq!(o.as_slice(), &[12.0]);
     }

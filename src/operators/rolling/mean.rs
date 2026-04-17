@@ -69,7 +69,7 @@ mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
     use crate::{Duration, Instant};
-    use crate::{Array, Notify, Operator, Series};
+    use crate::{Array, Operator, Series};
 
     type RollingMean = Rolling<MeanAccumulator<f64>>;
 
@@ -83,7 +83,7 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts(t), &[val]);
-        RollingMean::compute(state, s, out, ts(t), &Notify::new(&[], 0))
+        RollingMean::compute(state, s, out, ts(t), false)
     }
 
     #[test]
@@ -166,17 +166,17 @@ mod tests {
             &s,
             &mut out,
             ts(100),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(out.as_slice()[0], 2.0); // mean of [2]
 
         s.push(ts(200), &[4.0]);
-        RollingMean::compute(&mut state, &s, &mut out, ts(200), &Notify::new(&[], 0));
+        RollingMean::compute(&mut state, &s, &mut out, ts(200), false);
         assert_eq!(out.as_slice()[0], 3.0); // mean of [2, 4]
 
         // ts=350: evict ts=100. Window [200, 350], mean of [4, 6] = 5.
         s.push(ts(350), &[6.0]);
-        RollingMean::compute(&mut state, &s, &mut out, ts(350), &Notify::new(&[], 0));
+        RollingMean::compute(&mut state, &s, &mut out, ts(350), false);
         assert_eq!(out.as_slice()[0], 5.0);
     }
 }

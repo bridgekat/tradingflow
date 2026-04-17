@@ -3,7 +3,7 @@
 //! - [`Map`] — allocating: `Fn(&S) -> T`.
 //! - [`MapInplace`] — in-place: `Fn(&S, &mut T) -> bool`.
 
-use crate::{Input, Instant, Notify, Operator};
+use crate::{Input, InputTypes, Instant, Operator};
 
 /// Map operator: applies a function `S → T` to the input on each tick.
 ///
@@ -55,7 +55,7 @@ where
         inputs: &S,
         output: &mut T,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         *output = (state.f)(inputs);
         true
@@ -116,7 +116,7 @@ where
         inputs: &S,
         output: &mut T,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         (state.f)(inputs, output)
     }
@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[10.0]);
 
         let b = Array::scalar(3.0_f64);
-        Map::compute(&mut s, &b, &mut o, ts(1), &Notify::new(&[], 0));
+        Map::compute(&mut s, &b, &mut o, ts(1), false);
         assert_eq!(o.as_slice(), &[6.0]);
     }
 
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(o, "42");
 
         let b = Array::scalar(99.0_f64);
-        Map::compute(&mut s, &b, &mut o, ts(1), &Notify::new(&[], 0));
+        Map::compute(&mut s, &b, &mut o, ts(1), false);
         assert_eq!(o, "99");
     }
 
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[6.0]);
 
         let b = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
-        Map::compute(&mut s, &b, &mut o, ts(1), &Notify::new(&[], 0));
+        Map::compute(&mut s, &b, &mut o, ts(1), false);
         assert_eq!(o.as_slice(), &[60.0]);
     }
 
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(o.as_slice(), &[10.0]);
 
         let b = Array::scalar(3.0);
-        MapInplace::compute(&mut s, &b, &mut o, ts(1), &Notify::new(&[], 0));
+        MapInplace::compute(&mut s, &b, &mut o, ts(1), false);
         assert_eq!(o.as_slice(), &[6.0]);
     }
 
@@ -217,7 +217,7 @@ mod tests {
             &b,
             &mut o,
             ts(1),
-            &Notify::new(&[], 0)
+            false
         ));
 
         // Input > 3 → returns true.
@@ -227,7 +227,7 @@ mod tests {
             &c,
             &mut o,
             ts(2),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(o.as_slice(), &[5.0]);
     }

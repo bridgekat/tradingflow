@@ -75,7 +75,7 @@ mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
     use crate::{Duration, Instant};
-    use crate::{Array, Notify, Operator, Series};
+    use crate::{Array, Operator, Series};
 
     type RollingVariance = Rolling<VarianceAccumulator<f64>>;
 
@@ -89,7 +89,7 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts(t), &[val]);
-        RollingVariance::compute(state, s, out, ts(t), &Notify::new(&[], 0))
+        RollingVariance::compute(state, s, out, ts(t), false)
     }
 
     #[test]
@@ -133,13 +133,13 @@ mod tests {
             &s,
             &mut out,
             ts(100),
-            &Notify::new(&[], 0)
+            false
         ));
         // Single element → variance = 0.
         assert_eq!(out.as_slice()[0], 0.0);
 
         s.push(ts(200), &[4.0]);
-        RollingVariance::compute(&mut state, &s, &mut out, ts(200), &Notify::new(&[], 0));
+        RollingVariance::compute(&mut state, &s, &mut out, ts(200), false);
         // Var([2,4]) = (4+16)/2 - 9 = 1.0
         assert!((out.as_slice()[0] - 1.0).abs() < 1e-10);
     }

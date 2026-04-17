@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from ..operator import Operator, Notify
+from ..operator import Operator
 from ..types import Array, Handle, NodeKind
 
 
@@ -77,7 +77,7 @@ class Apply(
         inputs: tuple,
         output: Any,
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         values = tuple(inp.value() for inp in inputs)
         result = state.f(*values)

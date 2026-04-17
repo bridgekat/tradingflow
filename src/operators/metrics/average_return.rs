@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use num_traits::Float;
 
 use crate::Instant;
-use crate::{Array, Input, Notify, Operator, Scalar};
+use crate::{Array, Input, Operator, Scalar};
 
 /// Average (arithmetic mean) of period returns since inception.
 pub struct AverageReturn<T: Scalar + Float> {
@@ -47,10 +47,11 @@ impl<T: Scalar + Float> Operator for AverageReturn<T> {
         inputs: (&Array<T>, &()),
         output: &mut Array<T>,
         _timestamp: Instant,
-        notify: &Notify<'_>,
+        produced: (bool, bool),
     ) -> bool {
-        // Only compute on clock ticks (second input, position 1).
-        if !notify.produced().any(|p| p == 1) {
+        // Only compute on clock ticks (second input).
+        let (_produced_data, produced_clock) = produced;
+        if !produced_clock {
             return false;
         }
         let current = inputs.0[0];
@@ -80,15 +81,15 @@ mod tests {
         let (mut s, mut o) = AverageReturn::new().init((&a, &()), Instant::from_nanos(0));
 
         let mut a = Array::scalar(100.0);
-        AverageReturn::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(1), &Notify::new(&[1], 2));
+        AverageReturn::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(1), (false, true));
         assert!(o[0].is_nan()); // no return yet
 
         a[0] = 110.0;
-        AverageReturn::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(2), &Notify::new(&[1], 2));
+        AverageReturn::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(2), (false, true));
         assert!((o[0] - 0.10).abs() < 1e-10);
 
         a[0] = 99.0;
-        AverageReturn::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(3), &Notify::new(&[1], 2));
+        AverageReturn::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(3), (false, true));
         // returns: 0.10, -0.10 => mean = 0.0
         assert!((o[0] - 0.0).abs() < 1e-10);
     }

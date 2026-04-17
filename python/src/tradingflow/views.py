@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from tradingflow._native import NativeArrayView, NativeNotify, NativeSeriesView
+from tradingflow._native import NativeArrayView, NativeSeriesView
 
 from .schema import Schema
 from .utils import ensure_contiguous, coerce_timestamp
@@ -287,66 +287,3 @@ class SeriesView[T: np.generic]:
         return f"SeriesView(len={len(self)}, shape={self.shape}, dtype={self.dtype})"
 
 
-class Notify:
-    """Notification context for Python-implemented operators.
-
-    Provides two views of which inputs produced new output in the current
-    flush cycle:
-
-    - [`input_produced`][tradingflow.Notify.input_produced] — ``list[bool]``
-      indexed by **local** input position.
-    - [`produced`][tradingflow.Notify.produced] — ``list[int]`` of **local**
-      input positions that produced.
-
-    Positions are always relative to the operator's own input layout
-    (`0..num_inputs`), regardless of any transformer wrapping.
-
-    Operator transformers (e.g. [`Clocked`][tradingflow.operators.Clocked])
-    call [`skip_leading`][tradingflow.Notify.skip_leading] to pass a
-    correctly remapped notification to the inner operator.
-
-    Instances are created by the runtime and passed to
-    [`Operator.compute`][tradingflow.Operator.compute] — users do not construct
-    these directly.
-    """
-
-    __slots__ = ("_inner",)
-
-    def __init__(self, inner: NativeNotify) -> None:
-        self._inner = inner
-
-    @property
-    def num_inputs(self) -> int:
-        """Total number of inputs visible to this operator."""
-        return self._inner.num_inputs
-
-    def input_produced(self) -> list[bool]:
-        """Per-position booleans: ``True`` if that input produced this cycle.
-
-        Positions are local (0-based relative to this operator's input layout).
-        """
-        return self._inner.input_produced()
-
-    def produced(self) -> list[int]:
-        """Local input positions that produced new output this flush cycle.
-
-        Positions are local (0-based relative to this operator's input layout).
-        """
-        return self._inner.produced()
-
-    def skip_leading(self, n: int) -> Notify:
-        """Return a view for an inner operator, skipping the first ``n`` inputs.
-
-        Zero-allocation: shares the same underlying incoming buffer with an
-        incremented offset.  Mirrors Rust's ``Notify::skip_leading``.
-
-        Used by operator transformers to pass a correctly remapped
-        notification to the inner operator:
-
-        ```python
-        # Clock is at position 0; pass positions 1.. to the inner operator.
-        inner_notify = notify.skip_leading(1)
-        inner.compute(state, inputs[1:], output, timestamp, inner_notify)
-        ```
-        """
-        return Notify(self._inner.skip_leading(n))

@@ -14,7 +14,7 @@ use pyo3::prelude::*;
 
 use crate::Instant;
 use crate::{Array, Series};
-use crate::{ErasedOperator, Notify};
+use crate::ErasedOperator;
 
 use super::dispatch::dispatch_dtype;
 use super::views::{ViewKind, create_view};
@@ -29,14 +29,20 @@ type PyObject = Py<PyAny>;
 /// Per-operator state for the non-generic [`py_compute_fn`].
 ///
 /// Holds the Python callback, pre-built input/output views, mutable
-/// Python state, a pre-allocated notify view, and an error slot shared
-/// with the scenario.
+/// Python state, and an error slot shared with the scenario.
+///
+/// Inputs and produced are structurally symmetric on the Python side:
+/// `py_inputs` is a flat tuple of views (one per input position);
+/// `produced` is built fresh each compute as a flat tuple of bools with
+/// the same arity.  Python operators access them identically:
+/// `inputs[i]` / `produced[i]`.
 struct PyOperatorState {
     py_operator: PyObject,
     py_inputs: PyObject,
     py_output: PyObject,
-    py_notify: PyObject,
     py_state: PyObject,
+    /// Arity of the flat input tuple; used to size `produced` on each compute.
+    num_inputs: usize,
     error_slot: ErrorSlot,
 }
 
@@ -89,9 +95,8 @@ pub fn make_py_operator(
         };
 
     let native_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
-    let native_notify = Py::new(py, super::views::NativeNotify::from_empty())?.into_any();
 
-    // Wrap native views in Python-side wrappers (ArrayView/SeriesView/Notify).
+    // Wrap native views in Python-side wrappers (ArrayView/SeriesView).
     // Unit output: pass None directly to the Python operator.
     let views_mod = py.import("tradingflow.views")?;
     let py_output: PyObject = match out_view_kind {
@@ -105,22 +110,19 @@ pub fn make_py_operator(
         }
         ViewKind::Unit => py.None(),
     };
-    let notify_cls = views_mod.getattr("Notify")?;
-    let py_notify: PyObject = notify_cls
-        .call1((native_notify.bind(py),))?
-        .unbind();
 
     // Call operator.init(inputs, timestamp) to get initial state.
     // Wire format is TAI ns (matches numpy naive `datetime64[ns]`).
     let py_state = py_operator
         .call_method1(py, "init", (&py_inputs, timestamp.as_nanos()))?;
 
+    let num_inputs = input_type_ids.len();
     let state = Box::new(PyOperatorState {
         py_operator,
         py_inputs,
         py_output,
-        py_notify,
         py_state,
+        num_inputs,
         error_slot,
     });
 
@@ -145,9 +147,14 @@ pub fn make_py_operator(
 
 /// Compute function for Python operators.
 ///
-/// Calls `operator.compute(state, inputs, output, timestamp, notify)` via
-/// GIL.  State is modified in-place by Python.  Not generic — works
-/// entirely through Python views in [`PyOperatorState`].
+/// Calls `operator.compute(state, inputs, output, timestamp, produced)`
+/// via GIL.  State is modified in-place by Python.  Not generic — works
+/// entirely through Python objects in [`PyOperatorState`].
+///
+/// Builds a fresh flat `tuple[bool, ...]` for `produced` each call — same
+/// arity as `inputs`, same shape, same indexing (`produced[i]` parallel
+/// to `inputs[i]`).  Owned by the tuple object: safe to hold beyond
+/// compute scope.
 ///
 /// # Safety
 ///
@@ -157,7 +164,9 @@ unsafe fn py_compute_fn(
     _input_ptrs: &[*const u8],
     _output_ptr: *mut u8,
     timestamp: Instant,
-    notify: &Notify,
+    produced_words: &[u64],
+    produced_bit_off: usize,
+    produced_num_inputs: usize,
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut PyOperatorState) };
 
@@ -165,17 +174,23 @@ unsafe fn py_compute_fn(
         return false;
     }
 
+    let n = state.num_inputs;
+    debug_assert_eq!(produced_num_inputs, n);
+
     let result = Python::attach(|py| -> PyResult<bool> {
-        // Update the pre-allocated NativeNotify (inside the Python Notify
-        // wrapper) with current pointers.
-        {
-            let inner = state.py_notify.getattr(py, "_inner")?;
-            let mut native_notify = inner
-                .bind(py)
-                .downcast::<super::views::NativeNotify>()?
-                .borrow_mut();
-            native_notify.update_from(notify);
+        // Build a flat `tuple[bool, ...]` matching the arity of `py_inputs`.
+        // Each compute allocates one tuple + `n` bool refs; Python caches
+        // the `True`/`False` singletons so only the tuple is new.
+        let mut bits = Vec::with_capacity(n);
+        let mut reader = crate::data::BitRead::from_parts(
+            produced_words,
+            produced_bit_off,
+            produced_num_inputs,
+        );
+        for _ in 0..n {
+            bits.push(reader.pop());
         }
+        let py_produced = pyo3::types::PyTuple::new(py, &bits)?;
 
         let produced: bool = state
             .py_operator
@@ -187,7 +202,7 @@ unsafe fn py_compute_fn(
                     &state.py_inputs,
                     &state.py_output,
                     timestamp.as_nanos(),
-                    &state.py_notify,
+                    py_produced,
                 ),
             )?
             .extract(py)?;

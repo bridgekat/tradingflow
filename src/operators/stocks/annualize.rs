@@ -5,7 +5,7 @@
 //! (quarterly, semi-annual, annual) uniformly.
 
 use crate::Instant;
-use crate::{Array, Input, Notify, Operator};
+use crate::{Array, Input, InputTypes, Operator};
 
 /// Convert year-to-date (YTD) financial values into annualized values.
 ///
@@ -82,7 +82,7 @@ impl Operator for Annualize {
         inputs: &Array<f64>,
         output: &mut Array<f64>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let input = inputs.as_slice();
         let year = input[0].floor() as i64;
@@ -136,9 +136,8 @@ mod tests {
         Array::from_vec(&[data.len()], data)
     }
 
-    fn notify() -> Notify<'static> {
-        Notify::new(&[0], 1)
-    }
+    // Annualize's `Inputs = Input<Array<f64>>` → `Produced = bool`.
+    const PRODUCED: bool = true;
 
     fn ts(n: i64) -> Instant {
         Instant::from_nanos(n)
@@ -151,7 +150,7 @@ mod tests {
         let inp = input(2024.0, 91.0, &[100.0, 20.0]);
         let (mut s, mut o) = Annualize::new().init(&inp, ts(0));
 
-        Annualize::compute(&mut s, &inp, &mut o, ts(1), &notify());
+        Annualize::compute(&mut s, &inp, &mut o, ts(1), PRODUCED);
         // annualized = ytd * 365 / 91
         let expected_rev = 100.0 * 365.0 / 91.0;
         let expected_ni = 20.0 * 365.0 / 91.0;
@@ -164,11 +163,11 @@ mod tests {
         // Q1: day 90, YTD = [100, 20].
         let q1 = input(2024.0, 90.0, &[100.0, 20.0]);
         let (mut s, mut o) = Annualize::new().init(&q1, ts(0));
-        Annualize::compute(&mut s, &q1, &mut o, ts(1), &notify());
+        Annualize::compute(&mut s, &q1, &mut o, ts(1), PRODUCED);
 
         // H1: day 181, YTD = [250, 55].
         let h1 = input(2024.0, 181.0, &[250.0, 55.0]);
-        Annualize::compute(&mut s, &h1, &mut o, ts(2), &notify());
+        Annualize::compute(&mut s, &h1, &mut o, ts(2), PRODUCED);
 
         // delta = [150, 35], days_elapsed = 91.
         let expected_rev = 150.0 * 365.0 / 91.0;
@@ -182,11 +181,11 @@ mod tests {
         // Annual 2023: day 365, YTD = [1000].
         let annual = input(2023.0, 365.0, &[1000.0]);
         let (mut s, mut o) = Annualize::new().init(&annual, ts(0));
-        Annualize::compute(&mut s, &annual, &mut o, ts(1), &notify());
+        Annualize::compute(&mut s, &annual, &mut o, ts(1), PRODUCED);
 
         // Q1 2024: day 91, YTD = [300].
         let q1 = input(2024.0, 91.0, &[300.0]);
-        Annualize::compute(&mut s, &q1, &mut o, ts(2), &notify());
+        Annualize::compute(&mut s, &q1, &mut o, ts(2), PRODUCED);
 
         // New year → delta = ytd = 300, days_elapsed = 91.
         let expected = 300.0 * 365.0 / 91.0;
@@ -197,20 +196,20 @@ mod tests {
     fn full_year_sequence() {
         let q1 = input(2024.0, 91.0, &[100.0]);
         let (mut s, mut o) = Annualize::new().init(&q1, ts(0));
-        Annualize::compute(&mut s, &q1, &mut o, ts(1), &notify());
+        Annualize::compute(&mut s, &q1, &mut o, ts(1), PRODUCED);
 
         let h1 = input(2024.0, 182.0, &[210.0]);
-        Annualize::compute(&mut s, &h1, &mut o, ts(2), &notify());
+        Annualize::compute(&mut s, &h1, &mut o, ts(2), PRODUCED);
         // delta = 110, days = 91.
         assert!((o.as_slice()[0] - 110.0 * 365.0 / 91.0).abs() < 1e-10);
 
         let q3 = input(2024.0, 274.0, &[330.0]);
-        Annualize::compute(&mut s, &q3, &mut o, ts(3), &notify());
+        Annualize::compute(&mut s, &q3, &mut o, ts(3), PRODUCED);
         // delta = 120, days = 92.
         assert!((o.as_slice()[0] - 120.0 * 365.0 / 92.0).abs() < 1e-10);
 
         let annual = input(2024.0, 366.0, &[460.0]);
-        Annualize::compute(&mut s, &annual, &mut o, ts(4), &notify());
+        Annualize::compute(&mut s, &annual, &mut o, ts(4), PRODUCED);
         // delta = 130, days = 92.
         assert!((o.as_slice()[0] - 130.0 * 365.0 / 92.0).abs() < 1e-10);
     }
@@ -219,7 +218,7 @@ mod tests {
     fn nan_propagation() {
         let q1 = input(2024.0, 91.0, &[f64::NAN, 20.0]);
         let (mut s, mut o) = Annualize::new().init(&q1, ts(0));
-        Annualize::compute(&mut s, &q1, &mut o, ts(1), &notify());
+        Annualize::compute(&mut s, &q1, &mut o, ts(1), PRODUCED);
 
         // NaN * scale = NaN.
         assert!(o.as_slice()[0].is_nan());
@@ -232,13 +231,13 @@ mod tests {
         // H1: day 182, YTD = [500].
         let h1 = input(2024.0, 182.0, &[500.0]);
         let (mut s, mut o) = Annualize::new().init(&h1, ts(0));
-        Annualize::compute(&mut s, &h1, &mut o, ts(1), &notify());
+        Annualize::compute(&mut s, &h1, &mut o, ts(1), PRODUCED);
         // First report: annualized = 500 * 365 / 182.
         assert!((o.as_slice()[0] - 500.0 * 365.0 / 182.0).abs() < 1e-10);
 
         // Annual: day 366, YTD = [1100].
         let annual = input(2024.0, 366.0, &[1100.0]);
-        Annualize::compute(&mut s, &annual, &mut o, ts(2), &notify());
+        Annualize::compute(&mut s, &annual, &mut o, ts(2), PRODUCED);
         // delta = 600, days = 184.
         assert!((o.as_slice()[0] - 600.0 * 365.0 / 184.0).abs() < 1e-10);
     }

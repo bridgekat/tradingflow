@@ -3,7 +3,7 @@
 use num_traits::Float;
 
 use crate::Instant;
-use crate::{Array, Input, Notify, Operator, Scalar};
+use crate::{Array, Input, InputTypes, Operator, Scalar};
 
 /// Element-wise clamp to `[lo, hi]`.
 pub struct Clamp<T: Scalar> {
@@ -33,7 +33,7 @@ impl<T: Scalar + Float> Operator for Clamp<T> {
         inputs: &Array<T>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let (lo, hi) = *state;
         let a = inputs.as_slice();
@@ -53,7 +53,7 @@ mod tests {
     fn test_clamp() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 3.0, 7.0]);
         let (mut s, mut o) = Clamp::new(2.0, 5.0).init(&a, Instant::MIN);
-        Clamp::compute(&mut s, &a, &mut o, Instant::from_nanos(1), &Notify::new(&[], 0));
+        Clamp::compute(&mut s, &a, &mut o, Instant::from_nanos(1), false);
         assert_eq!(o.as_slice(), &[2.0, 3.0, 5.0]);
     }
 }

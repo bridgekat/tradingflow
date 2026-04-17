@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ...views import ArrayView
-from ...operator import Operator, Notify
+from ...operator import Operator
 from ...types import Array, Handle, NodeKind
 
 
@@ -73,7 +73,7 @@ class Turnover(
         inputs: tuple[ArrayView[np.float64]],
         output: ArrayView[np.float64],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         current = np.where(np.isfinite(inputs[0].value()), inputs[0].value(), 0.0)
 

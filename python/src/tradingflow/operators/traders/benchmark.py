@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ...operator import Operator, Notify
+from ...operator import Operator
 from ...types import Array, Handle, NodeKind
 from ..traders.simple_trader import OHLCV
 
@@ -123,7 +123,7 @@ class Benchmark(
         inputs: tuple,
         output,
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         N = state.num_stocks
         soft_positions = inputs[0].value()
@@ -145,7 +145,7 @@ class Benchmark(
         current_value = state.cash + np.sum(state.shares[held] * closes[held])
 
         # Rebalance if soft positions input was updated.
-        rebalance = notify.input_produced()[0]
+        rebalance = produced[0]
         if rebalance:
 
             # Execution price = open price.

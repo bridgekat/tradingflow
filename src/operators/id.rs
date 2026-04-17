@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{Input, Instant, Notify, Operator};
+use crate::{Input, InputTypes, Instant, Operator};
 
 /// Identity operator: clones input to output unchanged.
 ///
@@ -41,7 +41,7 @@ impl<T: Clone + Send + 'static> Operator for Id<T> {
         inputs: &T,
         output: &mut T,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         output.clone_from(inputs);
         true
@@ -65,7 +65,7 @@ mod tests {
             &b,
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(o.as_slice(), &[99.0]);
     }
@@ -81,7 +81,7 @@ mod tests {
             &b,
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(o, "world");
     }

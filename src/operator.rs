@@ -1,8 +1,12 @@
-//! Operator trait, type-erased operator, and notification context.
+//! Operator trait and type-erased operator.
 //!
 //! # Public items
 //!
-//! - [`Operator`] — synchronous computation trait.
+//! - [`Operator`] — synchronous computation trait.  Two hierarchical views
+//!   are built from flat graph buffers and passed to
+//!   [`compute`](Operator::compute): `inputs` (nested references via
+//!   [`FlatRead`]) and `produced` (nested bits via [`BitRead`]).  The two
+//!   are structurally parallel — same tree shape, different leaf types.
 //! - [`ErasedOperator`] — type-erased operator combining init/compute/drop
 //!   function pointers and `TypeId`s for runtime validation.
 //! - [`InitFn`] / [`ComputeFn`] — type aliases for the erased signatures.
@@ -10,7 +14,7 @@
 use std::any::TypeId;
 
 use super::data::Instant;
-use super::data::{FlatRead, FlatWrite, InputTypes, Notify};
+use super::data::{BitRead, FlatRead, FlatWrite, InputTypes};
 
 /// A synchronous computation node that reads typed inputs and writes a typed
 /// output.
@@ -31,13 +35,18 @@ pub trait Operator: 'static {
 
     /// Update the output from inputs and current state.
     ///
+    /// `produced` mirrors `inputs` in shape: each leaf is a `bool` flagging
+    /// whether that input produced in this flush cycle.  Slice branches
+    /// expose a lazy [`SliceProduced`](crate::data::SliceProduced) view —
+    /// bits are only read when the operator descends into elements.
+    ///
     /// Returns `true` if downstream propagation should occur.
     fn compute(
         state: &mut Self::State,
         inputs: <Self::Inputs as InputTypes>::Refs<'_>,
         output: &mut Self::Output,
         timestamp: Instant,
-        notify: &Notify<'_>,
+        produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool;
 }
 
@@ -48,7 +57,20 @@ pub trait Operator: 'static {
 pub type InitFn = Box<dyn FnOnce(&[*const u8], Instant) -> (*mut u8, *mut u8)>;
 
 /// Type-erased compute function pointer.
-pub type ComputeFn = unsafe fn(*mut u8, &[*const u8], *mut u8, Instant, &Notify) -> bool;
+///
+/// The flat-buffer arguments `produced_words` / `produced_bit_off` /
+/// `produced_num_inputs` describe a bit range covering this operator's
+/// inputs; the monomorphised body threads them through a [`BitRead`] cursor
+/// to build the operator's concrete `Produced<'_>` tree.
+pub type ComputeFn = unsafe fn(
+    state: *mut u8,
+    input_ptrs: &[*const u8],
+    output: *mut u8,
+    timestamp: Instant,
+    produced_words: &[u64],
+    produced_bit_off: usize,
+    produced_num_inputs: usize,
+) -> bool;
 
 /// Type-erased representation of an operator.
 pub struct ErasedOperator {
@@ -163,18 +185,28 @@ impl ErasedOperator {
 }
 
 /// Type-erased compute function, monomorphised per operator type.
+///
+/// Parallel tree construction: [`FlatRead`] over `input_ptrs` feeds
+/// [`refs_from_flat`](InputTypes::refs_from_flat); [`BitRead`] over
+/// `produced_words` feeds
+/// [`produced_from_flat`](InputTypes::produced_from_flat).
 unsafe fn erased_compute_fn<O: Operator>(
     state_ptr: *mut u8,
     input_ptrs: &[*const u8],
     output_ptr: *mut u8,
     timestamp: Instant,
-    notify: &Notify<'_>,
+    produced_words: &[u64],
+    produced_bit_off: usize,
+    produced_num_inputs: usize,
 ) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut O::State) };
-    let mut reader = FlatRead::new(input_ptrs);
-    let inputs = unsafe { O::Inputs::refs_from_flat(&mut reader) };
+    let mut ptr_reader = FlatRead::new(input_ptrs);
+    let inputs = unsafe { O::Inputs::refs_from_flat(&mut ptr_reader) };
+    let mut bit_reader =
+        BitRead::from_parts(produced_words, produced_bit_off, produced_num_inputs);
+    let produced = O::Inputs::produced_from_flat(&mut bit_reader);
     let output = unsafe { &mut *(output_ptr as *mut O::Output) };
-    O::compute(state, inputs, output, timestamp, notify)
+    O::compute(state, inputs, output, timestamp, produced)
 }
 
 /// Type-erased box drop function, monomorphised per value type.

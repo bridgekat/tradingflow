@@ -74,13 +74,16 @@ Most operators use time-series semantics and ignore the `Notify` context entirel
 
 A notification is treated as a *message* whose payload is the value written into the corresponding node. If an input did not produce this cycle, there is no message from it. Operators inspect `Notify` to distinguish "input updated" from "input is stale":
 
-- [`Notify.produced()`](src/data/mod.rs) returns the list of input positions that produced — for efficient O(n_messages) iteration over only the inputs that changed.
+- [`Notify.produced()`](src/data/mod.rs) returns a zero-allocation iterator of input positions that produced — for efficient O(n_messages) iteration over only the inputs that changed.
 - [`Notify.input_produced()`](src/data/mod.rs) returns a per-position boolean slice — for O(1) checks like `notify.input_produced()[i]`.
 
 Message-passing semantics are useful when an operator must react differently depending on *which* inputs changed. For example, the [ForwardAdjust](src/operators/stocks/forward_adjust.rs) operator only updates its cumulative dividend factor when the dividend input produces, and only emits an adjusted price when the price input produces.
 
-### Clock-triggerable operators
+### Clocks as first-class inputs
 
-Operators may optionally be registered with a *clock* trigger instead of being triggered by their data inputs. A clock-triggered operator only runs when the clock fires, reading the latest values from its data inputs at that point.
+A [clock](src/sources/clock.rs) source emits `()` at a fixed cadence. Operators that should fire on a schedule rather than on every data update declare the clock as an explicit `Input<()>` in their input tree — composed naturally with other data inputs.
 
-Operators that rely on message-passing semantics must **not** be clock-triggered, since they would miss messages between clock ticks. The `Operator` trait provides an [`is_clock_triggerable()`](src/operator.rs) method (default `true`) that operators can override to return `false`, preventing accidental registration with a clock.
+Two patterns are common:
+
+- **Built-in clock input**, used by e.g. the [performance metric operators](src/operators/metrics/), which take `(Input<Array<T>>, Input<()>)` and gate their compute bodies on the clock position directly.
+- **External clock wrapping** via the [`Clocked<O>`](src/operators/clocked.rs) transformer, which prepends an `Input<()>` to any operator's inputs and runs the inner operator only when the clock ticks. Operators whose compute depends on message-passing semantics should not be wrapped this way, since they would miss messages between clock ticks.

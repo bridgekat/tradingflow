@@ -30,13 +30,15 @@ registration API.
 * [`Array`][tradingflow.Array] — marker for Rust `Array<T>` node value types.
 * [`Series`][tradingflow.Series] — marker for Rust `Series<T>` node value types.
 
-## Views and notifications (for reading/writing graph data inside Python operators)
+## Views (for reading/writing graph data inside Python operators)
 
 * [`ArrayView`][tradingflow.ArrayView] — view of a Rust `Array<T>` node.
 * [`SeriesView`][tradingflow.SeriesView] — view of a Rust `Series<T>` node.
-* [`Notify`][tradingflow.Notify] — notification context passed to
-  [`Operator.compute`][tradingflow.Operator.compute] indicating which inputs
-  produced new output in the current flush cycle.
+
+[`Operator.compute`][tradingflow.Operator.compute] receives a flat
+`produced: tuple[bool, ...]` parallel to its flat `inputs` tuple — no
+dedicated "notify" class; `produced[i]` is `True` iff input `i` produced
+this flush cycle.
 
 ## Utilities
 
@@ -71,7 +73,7 @@ CSV dates under either interpretation can be ingested at the source
 boundary without post-hoc scalar conversion.
 """
 
-from .views import ArrayView, Notify, SeriesView
+from .views import ArrayView, SeriesView
 from .source import Source, NativeSource
 from .operator import Operator, NativeOperator
 from .types import Array, NodeKind, Series, Unit, Handle
@@ -85,7 +87,6 @@ __all__ = [
     "NativeOperator",
     "NodeKind",
     "Unit",
-    "Notify",
     "NativeSource",
     "Operator",
     "Scenario",

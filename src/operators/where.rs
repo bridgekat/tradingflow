@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{Array, Input, Instant, Notify, Operator, Scalar};
+use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 
 /// Element-wise conditional operator: keeps the value if the condition
 /// returns `true`, otherwise replaces it with `fill`.
@@ -37,7 +37,7 @@ impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
         inputs: &Array<T>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let a = inputs.as_slice();
         let out = output.as_mut_slice();
@@ -66,7 +66,7 @@ mod tests {
             &a,
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            false,
         );
         assert_eq!(o.as_slice(), &[0.0, 5.0, 0.0]);
     }
@@ -80,7 +80,7 @@ mod tests {
             &a,
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            false,
         );
         assert_eq!(o.as_slice(), &[10.0, 20.0]);
     }
@@ -94,7 +94,7 @@ mod tests {
             &a,
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            false,
         );
         assert_eq!(o.as_slice(), &[0.0, 0.0]);
     }

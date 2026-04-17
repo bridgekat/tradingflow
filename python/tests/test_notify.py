@@ -1,4 +1,4 @@
-"""Tests for the Notify mechanism — both native (ForwardAdjust) and Python operators."""
+"""Tests for the produced-tuple mechanism — both native (ForwardAdjust) and Python operators."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from tradingflow import Scenario, Operator, Notify
+from tradingflow import Scenario, Operator
 from tradingflow.sources import ArraySource, IterSource
 from tradingflow.operators import Record
 from tradingflow.operators.stocks import ForwardAdjust
@@ -19,12 +19,12 @@ def ts(i: int) -> np.datetime64:
 
 
 # =========================================================================
-# ForwardAdjust (native operator using Notify)
+# ForwardAdjust (native operator using produced tuple)
 # =========================================================================
 
 
 class TestForwardAdjust:
-    """Native ForwardAdjust operator, which uses Notify.input_produced()."""
+    """Native ForwardAdjust operator, which inspects the produced tuple per input."""
 
     def test_no_dividends(self) -> None:
         """Adjusted close equals raw close when there are no dividends."""
@@ -113,7 +113,7 @@ class TestForwardAdjust:
 
 
 # =========================================================================
-# Python operator using Notify — message-queue semantics
+# Python operator using produced tuple — message-queue semantics
 # =========================================================================
 
 
@@ -149,16 +149,16 @@ class SelectiveRecorder(
         inputs: tuple,
         output: Any,
         timestamp: int,
-        notify: Any,
+        produced: tuple[bool, ...],
     ) -> bool:
-        if notify.input_produced()[1]:
+        if produced[1]:
             output.push(timestamp, inputs[1].value())
             return True
         return False
 
 
 class TestPythonNotify:
-    """Python-implemented operator that uses Notify for selective recording."""
+    """Python-implemented operator that uses produced tuple for selective recording."""
 
     def test_selective_recorder_matches_record(self) -> None:
         """SelectiveRecorder output equals Record applied to the message source."""

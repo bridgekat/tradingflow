@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..operator import Operator, Notify
+from ..operator import Operator
 from ..types import Handle
 
 
@@ -26,10 +26,8 @@ class Clocked(Operator):
     [`Clocked<O>`][tradingflow.Clocked] layout.  On each flush, if the
     clock did not produce, the operator returns immediately without
     computing.  When the clock ticks, the inner operator's ``compute`` is
-    called with the data inputs (positions 1‥) and a
-    [`Notify`][tradingflow.Notify] remapped via
-    [`skip_leading(1)`][tradingflow.Notify.skip_leading] so the inner
-    operator sees its own positions starting from 0.
+    called with the data inputs (``inputs[1:]``) and the correspondingly
+    sliced ``produced[1:]`` tuple — symmetric slicing on both arguments.
 
     Parameters
     ----------
@@ -78,17 +76,17 @@ class Clocked(Operator):
         inputs: tuple,
         output: Any,
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         # Clock is at position 0. Only run inner when it ticks.
-        if not notify.input_produced()[0]:
+        if not produced[0]:
             return False
-        # Remap notify for the inner operator: skip the leading clock
-        # position so the inner sees its own inputs at positions 0..
+        # Symmetric slicing: inner sees its own inputs at positions 0..
+        # and the corresponding produced bits at positions 0..
         return state.compute_fn(
             state.inner_state,
             inputs[1:],
             output,
             timestamp,
-            notify.skip_leading(1),
+            produced[1:],
         )

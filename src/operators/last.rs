@@ -1,6 +1,6 @@
 //! Last operator — extracts the most recent element from a Series.
 
-use crate::{Array, Input, Instant, Notify, Operator, Scalar, Series};
+use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, Series};
 
 /// Extract the most recent element from a `Series<T>` as an `Array<T>`.
 ///
@@ -39,7 +39,7 @@ impl<T: Scalar> Operator for Last<T> {
         inputs: &Series<T>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         if let Some(last) = inputs.last() {
             output.as_mut_slice().clone_from_slice(last);
@@ -72,7 +72,7 @@ mod tests {
         assert_eq!(out.as_slice(), &[3.0, 4.0]);
 
         s.push(ts(300), &[5.0, 6.0]);
-        Last::compute(&mut state, &s, &mut out, ts(300), &Notify::new(&[], 0));
+        Last::compute(&mut state, &s, &mut out, ts(300), false);
         assert_eq!(out.as_slice(), &[5.0, 6.0]);
     }
 
@@ -85,7 +85,7 @@ mod tests {
         assert!(out[2].is_nan());
 
         // Still empty on compute
-        Last::compute(&mut state, &s, &mut out, ts(1), &Notify::new(&[], 0));
+        Last::compute(&mut state, &s, &mut out, ts(1), false);
         assert!(out[0].is_nan());
     }
 
@@ -101,8 +101,8 @@ mod tests {
         for i in 1..=10_i64 {
             let v = i as f64 * 7.0;
             a[0] = v;
-            Record::compute(&mut rec_s, &a, &mut series, ts(i), &Notify::new(&[], 0));
-            Last::compute(&mut last_s, &series, &mut out, ts(i), &Notify::new(&[], 0));
+            Record::compute(&mut rec_s, &a, &mut series, ts(i), false);
+            Last::compute(&mut last_s, &series, &mut out, ts(i), false);
             assert_eq!(out[0], v, "mismatch at step {i}");
         }
     }
@@ -119,8 +119,8 @@ mod tests {
         for i in 1..=10_i64 {
             let v = i as f64 * 7.0;
             s.push(ts(i), &[v]);
-            Last::compute(&mut last_a, &s, &mut arr, ts(i), &Notify::new(&[], 0));
-            Record::compute(&mut rec_a, &arr, &mut out, ts(i), &Notify::new(&[], 0));
+            Last::compute(&mut last_a, &s, &mut arr, ts(i), false);
+            Record::compute(&mut rec_a, &arr, &mut out, ts(i), false);
             assert_eq!(s.len(), out.len(), "mismatch at step {i}");
             for j in 0..s.len() {
                 assert_eq!(out.at(j), s.at(j), "mismatch at step {i}, index {j}");
@@ -133,7 +133,7 @@ mod tests {
         let mut s = Series::<f64>::new(&[]);
         s.push(ts(1), &[42.0]);
         let (mut state, mut out) = Last::new(0.0).init(&s, Instant::MIN);
-        Last::compute(&mut state, &s, &mut out, ts(1), &Notify::new(&[], 0));
+        Last::compute(&mut state, &s, &mut out, ts(1), false);
         assert_eq!(out[0], 42.0);
     }
 }

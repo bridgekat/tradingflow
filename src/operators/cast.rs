@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
-use crate::{Array, Input, Instant, Notify, Operator, Scalar};
+use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 
 /// Element-wise type conversion: `out[i] = input[i] as T`.
 ///
@@ -49,7 +49,7 @@ where
         inputs: &Array<S>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let src = inputs.as_slice();
         let dst = output.as_mut_slice();
@@ -78,7 +78,7 @@ mod tests {
             &b,
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(o.as_slice(), &[10.0, 20.0, 30.0]);
     }

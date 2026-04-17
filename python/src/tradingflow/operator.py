@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 
 from .types import Handle, NodeKind, node_type_to_name
-from .views import Notify
 
 
 class Operator[Inputs, Output, State](ABC):
@@ -87,7 +86,7 @@ class Operator[Inputs, Output, State](ABC):
         inputs: Any,
         output: Any,
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         """Compute the next output value.
 
@@ -106,13 +105,13 @@ class Operator[Inputs, Output, State](ABC):
             Current event timestamp in **TAI nanoseconds** (`int64`
             since the PTP epoch 1970-01-01 00:00:00 TAI — matches numpy
             `datetime64[ns]` numerically).
-        notify
-            [`Notify`][tradingflow.Notify] context for checking which inputs
-            produced new output in the current flush cycle via
-            [`Notify.input_produced`][tradingflow.Notify.input_produced]
-            (per-position booleans) or
-            [`Notify.produced`][tradingflow.Notify.produced]
-            (list of positions).
+        produced
+            Flat ``tuple[bool, ...]`` parallel to ``inputs``: element ``i``
+            is ``True`` iff input ``i`` produced new output this flush
+            cycle.  Same arity as ``inputs``; access with ``produced[i]``
+            or destructure (``a, b = produced``).  Transformers like
+            [`Clocked`][tradingflow.operators.Clocked] forward a sliced
+            view (``produced[1:]``) to inner operators.
 
         Returns
         -------

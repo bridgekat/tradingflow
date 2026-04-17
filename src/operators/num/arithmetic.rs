@@ -6,7 +6,7 @@ use std::ops;
 use num_traits::{Float, Signed};
 
 use crate::Instant;
-use crate::{Array, Input, Notify, Operator, Scalar};
+use crate::{Array, Input, InputTypes, Operator, Scalar};
 
 // ===========================================================================
 // Unary
@@ -41,7 +41,7 @@ macro_rules! define_unary_op {
                 inputs: &Array<T>,
                 output: &mut Array<T>,
                 _timestamp: Instant,
-                _notify: &Notify<'_>,
+                _produced: <Self::Inputs as InputTypes>::Produced<'_>,
             ) -> bool {
                 let a = inputs.as_slice();
                 let out = output.as_mut_slice();
@@ -153,7 +153,7 @@ macro_rules! define_binary_op {
                 inputs: (&Array<T>, &Array<T>),
                 output: &mut Array<T>,
                 _timestamp: Instant,
-                _notify: &Notify<'_>,
+                _produced: <Self::Inputs as InputTypes>::Produced<'_>,
             ) -> bool {
                 let a_sl = inputs.0.as_slice();
                 let b_sl = inputs.1.as_slice();
@@ -218,7 +218,7 @@ mod tests {
     ) -> Vec<f64> {
         let a = Array::from_vec(&[input.len()], input.to_vec());
         let (mut s, mut o) = op.init(&a, Instant::MIN);
-        O::compute(&mut s, &a, &mut o, ts(1), &Notify::new(&[], 0));
+        O::compute(&mut s, &a, &mut o, ts(1), false);
         o.as_slice().to_vec()
     }
 
@@ -228,7 +228,7 @@ mod tests {
     fn negate_vector() {
         let a = Array::from_vec(&[3], vec![1.0_f64, -2.0, 3.0]);
         let (mut s, mut o) = Negate::<f64>::new().init(&a, Instant::MIN);
-        Negate::compute(&mut s, &a, &mut o, ts(1), &Notify::new(&[], 0));
+        Negate::compute(&mut s, &a, &mut o, ts(1), false);
         assert_eq!(o.as_slice(), &[-1.0, 2.0, -3.0]);
     }
 
@@ -313,7 +313,7 @@ mod tests {
         let a = Array::scalar(10.0_f64);
         let b = Array::scalar(3.0);
         let (mut s, mut o) = Add::<f64>::new().init((&a, &b), Instant::MIN);
-        Add::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Add::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[13.0]);
     }
 
@@ -322,7 +322,7 @@ mod tests {
         let a = Array::from_vec(&[3], vec![1.0, 2.0, 3.0]);
         let b = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
         let (mut s, mut o) = Add::<f64>::new().init((&a, &b), Instant::MIN);
-        Add::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Add::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[11.0, 22.0, 33.0]);
     }
 
@@ -331,7 +331,7 @@ mod tests {
         let a = Array::from_vec(&[3], vec![1_i32, 2, 3]);
         let b = Array::from_vec(&[3], vec![10, 20, 30]);
         let (mut s, mut o) = Add::<i32>::new().init((&a, &b), Instant::MIN);
-        Add::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Add::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[11, 22, 33]);
     }
 
@@ -340,7 +340,7 @@ mod tests {
         let a = Array::scalar(20.0_f64);
         let b = Array::scalar(7.0);
         let (mut s, mut o) = Subtract::<f64>::new().init((&a, &b), Instant::MIN);
-        Subtract::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Subtract::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[13.0]);
     }
 
@@ -349,7 +349,7 @@ mod tests {
         let a = Array::scalar(4.0_f64);
         let b = Array::scalar(5.0);
         let (mut s, mut o) = Multiply::<f64>::new().init((&a, &b), Instant::MIN);
-        Multiply::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Multiply::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[20.0]);
     }
 
@@ -358,7 +358,7 @@ mod tests {
         let a = Array::scalar(20.0_f64);
         let b = Array::scalar(4.0);
         let (mut s, mut o) = Divide::<f64>::new().init((&a, &b), Instant::MIN);
-        Divide::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Divide::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[5.0]);
     }
 
@@ -369,11 +369,11 @@ mod tests {
         let (mut s, mut o) = Add::<f64>::new().init((&a, &b), Instant::MIN);
         a[0] = 10.0;
         b[0] = 3.0;
-        Add::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Add::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o[0], 13.0);
         a[0] = 20.0;
         b[0] = 7.0;
-        Add::compute(&mut s, (&a, &b), &mut o, ts(2), &Notify::new(&[], 0));
+        Add::compute(&mut s, (&a, &b), &mut o, ts(2), (false, false));
         assert_eq!(o[0], 27.0);
     }
 
@@ -383,11 +383,11 @@ mod tests {
         let b = Array::from_vec(&[3], vec![2.0, 4.0, 6.0]);
 
         let (mut s, mut o) = Min::<f64>::new().init((&a, &b), Instant::MIN);
-        Min::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Min::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[1.0, 4.0, 3.0]);
 
         let (mut s, mut o) = Max::<f64>::new().init((&a, &b), Instant::MIN);
-        Max::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Max::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[2.0, 5.0, 6.0]);
     }
 
@@ -396,7 +396,7 @@ mod tests {
         let a = Array::from_vec(&[2], vec![f64::NAN, 1.0]);
         let b = Array::from_vec(&[2], vec![1.0, f64::NAN]);
         let (mut s, mut o) = Min::<f64>::new().init((&a, &b), Instant::MIN);
-        Min::compute(&mut s, (&a, &b), &mut o, ts(1), &Notify::new(&[], 0));
+        Min::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o[0], 1.0);
         assert_eq!(o[1], 1.0);
     }

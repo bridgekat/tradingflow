@@ -68,7 +68,7 @@ mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
     use crate::{Duration, Instant};
-    use crate::{Array, Notify, Operator, Series};
+    use crate::{Array, Operator, Series};
 
     type RollingSum = Rolling<SumAccumulator<f64>>;
 
@@ -82,7 +82,7 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts(t), &[val]);
-        RollingSum::compute(state, s, out, ts(t), &Notify::new(&[], 0))
+        RollingSum::compute(state, s, out, ts(t), false)
     }
 
     #[test]
@@ -131,7 +131,7 @@ mod tests {
             &s,
             &mut out,
             ts(1),
-            &Notify::new(&[], 0)
+            false
         ));
         assert!(out.as_slice()[0].is_nan());
         assert!(out.as_slice()[1].is_nan());
@@ -142,7 +142,7 @@ mod tests {
             &s,
             &mut out,
             ts(2),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(out.as_slice(), &[3.0, 30.0]);
 
@@ -152,7 +152,7 @@ mod tests {
             &s,
             &mut out,
             ts(3),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(out.as_slice(), &[5.0, 50.0]);
     }
@@ -186,7 +186,7 @@ mod tests {
             &s,
             &mut out,
             ts(100),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(out.as_slice()[0], 1.0);
 
@@ -197,7 +197,7 @@ mod tests {
             &s,
             &mut out,
             ts(200),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(out.as_slice()[0], 3.0);
 
@@ -208,7 +208,7 @@ mod tests {
             &s,
             &mut out,
             ts(350),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(out.as_slice()[0], 5.0);
     }

@@ -6,7 +6,7 @@
 use num_traits::Float;
 
 use crate::Instant;
-use crate::{Array, Input, Notify, Operator, Scalar, Series};
+use crate::{Array, Input, InputTypes, Operator, Scalar, Series};
 
 /// Exponential moving average.
 ///
@@ -104,7 +104,7 @@ impl<T: Scalar + Float> Operator for Ema<T> {
         inputs: &Series<T>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         let series = inputs;
         let len = series.len();
@@ -179,7 +179,7 @@ mod tests {
         val: f64,
     ) -> bool {
         s.push(ts(t), &[val]);
-        Ema::compute(state, s, out, ts(t), &Notify::new(&[], 0))
+        Ema::compute(state, s, out, ts(t), false)
     }
 
     #[test]
@@ -314,13 +314,13 @@ mod tests {
         let (mut state, mut out) = Ema::<f64>::new(0.5, 2).init(&s, Instant::MIN);
 
         s.push(ts(1), &[10.0, 100.0]);
-        assert!(!Ema::compute(&mut state, &s, &mut out, ts(1), &Notify::new(&[], 0)));
+        assert!(!Ema::compute(&mut state, &s, &mut out, ts(1), false));
         // Output stays NaN during warmup.
         assert!(out.as_slice()[0].is_nan());
         assert!(out.as_slice()[1].is_nan());
 
         s.push(ts(2), &[20.0, 200.0]);
-        assert!(Ema::compute(&mut state, &s, &mut out, ts(2), &Notify::new(&[], 0)));
+        assert!(Ema::compute(&mut state, &s, &mut out, ts(2), false));
         let row = out.as_slice();
         let expected_0 = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25);
         let expected_1 = (0.5 * 200.0 + 0.25 * 100.0) / (0.5 + 0.25);
@@ -373,19 +373,19 @@ mod tests {
 
         // NaN only in element 0
         s.push(ts(1), &[f64::NAN, 10.0]);
-        assert!(!Ema::compute(&mut state, &s, &mut out, ts(1), &Notify::new(&[], 0)));
+        assert!(!Ema::compute(&mut state, &s, &mut out, ts(1), false));
         // Output stays NaN during warmup.
         assert!(out.as_slice()[0].is_nan());
         assert!(out.as_slice()[1].is_nan());
 
         s.push(ts(2), &[5.0, 20.0]);
-        assert!(Ema::compute(&mut state, &s, &mut out, ts(2), &Notify::new(&[], 0)));
+        assert!(Ema::compute(&mut state, &s, &mut out, ts(2), false));
         // NaN still in window for element 0
         assert!(out.as_slice()[0].is_nan());
         assert!(!out.as_slice()[1].is_nan());
 
         s.push(ts(3), &[15.0, 30.0]);
-        Ema::compute(&mut state, &s, &mut out, ts(3), &Notify::new(&[], 0));
+        Ema::compute(&mut state, &s, &mut out, ts(3), false);
         // NaN evicted for element 0
         assert!(!out.as_slice()[0].is_nan());
         assert!(!out.as_slice()[1].is_nan());

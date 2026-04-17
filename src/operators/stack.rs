@@ -7,7 +7,7 @@
 
 use num_traits::Float;
 
-use crate::{Array, Input, Instant, Notify, Operator, Scalar, SliceRefs};
+use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, SliceProduced, SliceRefs};
 
 /// Stack N homogeneous arrays along a new axis.
 pub struct Stack<T: Scalar> {
@@ -62,7 +62,7 @@ impl<T: Scalar> Operator for Stack<T> {
         inputs: SliceRefs<'_, Input<Array<T>>>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         super::concat::interleaved_copy(
             output,
@@ -75,8 +75,8 @@ impl<T: Scalar> Operator for Stack<T> {
     }
 }
 
-/// Stack N homogeneous float arrays along a new axis, using
-/// [`Notify`] to distinguish freshly-produced inputs from stale ones.
+/// Stack N homogeneous float arrays along a new axis, using the `produced`
+/// tree to distinguish freshly-produced inputs from stale ones.
 ///
 /// On every compute, the output is first cleared to `NaN`, then only
 /// the slots corresponding to inputs that produced in the current
@@ -147,7 +147,7 @@ impl<T: Scalar + Float> Operator for NotifyStack<T> {
         inputs: SliceRefs<'_, Input<Array<T>>>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        notify: &Notify<'_>,
+        produced: SliceProduced<'_, Input<Array<T>>>,
     ) -> bool {
         // Reset the entire output to NaN; then copy only produced inputs.
         for v in output.as_mut_slice().iter_mut() {
@@ -156,7 +156,7 @@ impl<T: Scalar + Float> Operator for NotifyStack<T> {
         super::concat::interleaved_copy_selective(
             output,
             &inputs,
-            notify.produced(),
+            (0..produced.len()).filter(|&i| produced.get(i)),
             state.n_inputs,
             state.outer_count,
             state.chunk_size,
@@ -169,8 +169,17 @@ impl<T: Scalar + Float> Operator for NotifyStack<T> {
 mod tests {
     use super::*;
     use crate::Array;
+    use crate::data::inputs::{empty_produced, produced_from_positions};
     use crate::operator::Operator;
-    use crate::{FlatRead, InputTypes};
+    use crate::FlatRead;
+
+    fn sp_empty(n: usize) -> SliceProduced<'static, Input<Array<f64>>> {
+        empty_produced::<[Input<Array<f64>>]>(n)
+    }
+
+    fn sp_positions(positions: &[usize], n: usize) -> SliceProduced<'static, Input<Array<f64>>> {
+        produced_from_positions::<[Input<Array<f64>>]>(positions, n)
+    }
 
     fn make_ptrs<'a, T: Scalar>(arrays: &'a [&'a Array<T>]) -> Vec<*const u8> {
         arrays
@@ -209,7 +218,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            sp_empty(0),
         );
         assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
@@ -231,7 +240,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            sp_empty(0),
         );
         assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
@@ -253,7 +262,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0),
+            sp_empty(0),
         );
         assert_eq!(o.shape(), &[2, 3, 2]);
         assert_eq!(
@@ -276,7 +285,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[0, 1], 2),
+            sp_positions(&[0, 1], 2),
         );
         assert_eq!(o.shape(), &[2, 2, 3]);
         assert_eq!(
@@ -297,7 +306,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[0], 2),
+            sp_positions(&[0], 2),
         );
         assert_eq!(o.shape(), &[2, 2, 3]);
         let out = o.as_slice();
@@ -318,7 +327,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[1], 2),
+            sp_positions(&[1], 2),
         );
         let out = o.as_slice();
         for v in &out[0..6] {
@@ -339,7 +348,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 2),
+            sp_empty(2),
         );
         for v in o.as_slice() {
             assert!(v.is_nan());
@@ -360,7 +369,7 @@ mod tests {
             refs(&ptrs),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[1], 2),
+            sp_positions(&[1], 2),
         );
         assert_eq!(o.shape(), &[2, 2, 3]);
         let out = o.as_slice();

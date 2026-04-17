@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ...views import ArrayView
-from ...operator import Operator, Notify
+from ...operator import Operator
 from ...types import Array, Handle, NodeKind
 
 
@@ -173,7 +173,7 @@ class SimpleTrader(
         inputs: tuple[ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]],
         output: ArrayView[np.float64],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         N = state.num_stocks
         soft_positions = inputs[0].value()
@@ -194,7 +194,7 @@ class SimpleTrader(
         state._current_value = state.cash + np.sum(state.shares[held] * closes[held])
 
         # Rebalance if soft positions input was updated.
-        rebalance = notify.input_produced()[0]
+        rebalance = produced[0]
         if rebalance:
 
             # Execution price = open price.

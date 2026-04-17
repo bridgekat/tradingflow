@@ -1,6 +1,6 @@
 //! Constant operator — a 0-input node holding a fixed initial value.
 
-use crate::{Instant, Notify, Operator};
+use crate::{InputTypes, Instant, Operator};
 
 /// A 0-input operator that holds a constant value.
 ///
@@ -36,7 +36,7 @@ impl<T: Send + 'static> Operator for Const<T> {
         _inputs: (),
         _output: &mut T,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         true
     }
@@ -58,7 +58,7 @@ mod tests {
             (),
             &mut o,
             Instant::from_nanos(1),
-            &Notify::new(&[], 0)
+            ()
         ));
         assert_eq!(o.as_slice(), &[42.0]);
     }

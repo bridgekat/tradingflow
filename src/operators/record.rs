@@ -1,6 +1,6 @@
 //! Record operator — records array values into a time series.
 
-use crate::{Array, Input, Instant, Notify, Operator, Scalar, Series};
+use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, Series};
 
 /// Record an array stream into a time series.
 ///
@@ -37,7 +37,7 @@ impl<T: Scalar> Operator for Record<T> {
         inputs: &Array<T>,
         output: &mut Series<T>,
         timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         output.push(timestamp, inputs.as_slice());
         true
@@ -58,10 +58,10 @@ mod tests {
     fn scalar() {
         let a = Array::scalar(10.0_f64);
         let (mut s, mut o) = Record::<f64>::new().init(&a, Instant::MIN);
-        Record::compute(&mut s, &a, &mut o, ts(100), &Notify::new(&[], 0));
+        Record::compute(&mut s, &a, &mut o, ts(100), false);
         let mut a2 = a.clone();
         a2[0] = 20.0;
-        Record::compute(&mut s, &a2, &mut o, ts(200), &Notify::new(&[], 0));
+        Record::compute(&mut s, &a2, &mut o, ts(200), false);
         assert_eq!(o.len(), 2);
         assert_eq!(o.timestamps(), &[ts(100), ts(200)]);
         assert_eq!(o.values(), &[10.0, 20.0]);
@@ -71,7 +71,7 @@ mod tests {
     fn vector() {
         let a = Array::from_vec(&[2], vec![1.0, 2.0_f64]);
         let (mut s, mut o) = Record::<f64>::new().init(&a, Instant::MIN);
-        Record::compute(&mut s, &a, &mut o, ts(1), &Notify::new(&[], 0));
+        Record::compute(&mut s, &a, &mut o, ts(1), false);
         assert_eq!(o.len(), 1);
         assert_eq!(o.shape(), &[2]);
         assert_eq!(o.at(0), &[1.0, 2.0]);

@@ -5,7 +5,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use tradingflow::operators::{Record, num::Add};
 use tradingflow::sources::ArraySource;
-use tradingflow::{Array, Instant, Notify, Operator, Scenario, Series};
+use tradingflow::{Array, Instant, Operator, Scenario, Series};
 
 const N: usize = 10_000;
 
@@ -81,7 +81,7 @@ fn bench_direct_compute(c: &mut Criterion) {
                     (&arr_a, &arr_b),
                     &mut arr_out,
                     Instant::from_nanos(i as i64),
-                    &Notify::new(&[], 0),
+                    (false, false),
                 );
             }
             black_box(arr_out[0]);
@@ -111,14 +111,14 @@ fn bench_direct_compute_series(c: &mut Criterion) {
                     (&arr_a, &arr_b),
                     &mut arr_out,
                     Instant::from_nanos(i as i64),
-                    &Notify::new(&[], 0),
+                    (false, false),
                 );
                 Record::<f64>::compute(
                     &mut (),
                     &arr_out,
                     &mut series_out,
                     Instant::from_nanos(i as i64),
-                    &Notify::new(&[], 0),
+                    false,
                 );
             }
             black_box(series_out.last().unwrap()[0]);

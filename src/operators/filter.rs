@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{Array, Input, Instant, Notify, Operator, Scalar};
+use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 
 /// Filter operator: passes or drops the entire input array based on a predicate.
 ///
@@ -38,7 +38,7 @@ impl<T: Scalar, F: Fn(&Array<T>) -> bool + Send + 'static> Operator for Filter<T
         inputs: &Array<T>,
         output: &mut Array<T>,
         _timestamp: Instant,
-        _notify: &Notify<'_>,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         if (state.predicate)(inputs) {
             output.as_mut_slice().clone_from_slice(inputs.as_slice());
@@ -68,7 +68,7 @@ mod tests {
             &a,
             &mut o,
             ts(1),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(o.as_slice(), &[5.0]);
     }
@@ -82,7 +82,7 @@ mod tests {
             &a,
             &mut o,
             ts(1),
-            &Notify::new(&[], 0)
+            false
         ));
     }
 
@@ -96,7 +96,7 @@ mod tests {
             &a,
             &mut o,
             ts(1),
-            &Notify::new(&[], 0)
+            false
         ));
     }
 
@@ -109,14 +109,14 @@ mod tests {
             &Array::scalar(5.0),
             &mut o,
             ts(1),
-            &Notify::new(&[], 0)
+            false
         ));
         assert!(!Filter::compute(
             &mut s,
             &Array::scalar(1.0),
             &mut o,
             ts(2),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(o[0], 5.0);
         assert!(Filter::compute(
@@ -124,7 +124,7 @@ mod tests {
             &Array::scalar(10.0),
             &mut o,
             ts(3),
-            &Notify::new(&[], 0)
+            false
         ));
         assert_eq!(o[0], 10.0);
     }

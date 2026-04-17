@@ -3,15 +3,13 @@
 //! Each [`Node`] owns a heap-allocated value and a [`NodeState`] classifying
 //! it as either a source or an operator.  [`OperatorState`] stores
 //! pre-collected input pointers, the monomorphised compute function, and
-//! `input_node_indices` used to determine the input count for [`Notify`]
-//! contexts during flush.
+//! `input_node_indices` used to size the produced bitset during flush.
 
 use std::any::TypeId;
 
 use crate::operator::{ComputeFn, ErasedOperator};
 use crate::source::{ErasedSource, PollFn, WriteFn};
 use crate::Instant;
-use crate::Notify;
 
 // ===========================================================================
 // NodeState
@@ -254,6 +252,10 @@ impl OperatorState {
 
     /// Invoke the compute function.
     ///
+    /// `produced_words` + `produced_bit_off` + `produced_num_inputs` describe
+    /// a bit range covering this operator's inputs; the erased compute
+    /// function uses them to build the operator's `Produced<'_>` tree.
+    ///
     /// # Safety
     ///
     /// * Each `input_ptrs[i]` must point to a valid value of the expected type.
@@ -263,7 +265,9 @@ impl OperatorState {
         &self,
         output_ptr: *mut u8,
         timestamp: Instant,
-        notify: &Notify<'_>,
+        produced_words: &[u64],
+        produced_bit_off: usize,
+        produced_num_inputs: usize,
     ) -> bool {
         unsafe {
             (self.compute_fn)(
@@ -271,7 +275,9 @@ impl OperatorState {
                 &self.input_ptrs,
                 output_ptr,
                 timestamp,
-                notify,
+                produced_words,
+                produced_bit_off,
+                produced_num_inputs,
             )
         }
     }
