@@ -123,25 +123,43 @@ def single_index_covariance(y: np.ndarray) -> np.ndarray:
     return F
 
 
-def ledoit_wolf_alpha(
+def schafer_strimmer_alpha(
     S: np.ndarray,
     F: np.ndarray,
     centered: np.ndarray,
     finite: np.ndarray,
 ) -> tuple[float, int]:
-    """Ledoit-Wolf optimal linear-shrinkage intensity.
+    """Schäfer-Strimmer optimal linear-shrinkage intensity.
 
-    Computes ``alpha = delta / (T_eff * ||S - F||_F^2)`` clipped to
-    ``[0, 1]`` where ``delta = (1/T_eff) Σ_t ||x_t x_t^T - S||_F^2``.
-    This is the general formula from Ledoit & Wolf (2004) Lemma 3.3
-    that does not depend on the specific target ``F``.
+    Implements the analytic unbiased estimator of Schäfer & Strimmer
+    (2005, *Statistical Applications in Genetics and Molecular Biology*),
+    as used by Pantaleo et al. (2010, arXiv:1004.4272):
+
+    .. math::
+        \\alpha^* = \\frac{\\sum_{i \\ne j} \\widehat{\\mathrm{Var}}(s_{ij})}
+                          {\\sum_{i \\ne j} (s_{ij} - f_{ij})^2}
+
+    with the element-wise variance estimator
+
+    .. math::
+        \\widehat{\\mathrm{Var}}(s_{ij}) =
+            \\frac{T_{ij}}{(T_{ij} - 1)^3}
+            \\sum_{t \\in V_{ij}} (w_{ij}(t) - \\bar{w}_{ij})^2,
+        \\quad w_{ij}(t) = z_i(t) z_j(t)
+
+    where ``z`` are the centered returns, ``V_{ij}`` is the set of
+    time indices where both stocks are observable, ``T_{ij}`` is its
+    cardinality, and ``\\bar{w}_{ij}`` is the pairwise sample mean of
+    ``w_{ij}`` over ``V_{ij}``.  The sum is restricted to off-diagonal
+    elements; diagonal (sample variance) elements are well-estimated
+    and would otherwise dominate the numerator.
 
     Parameters
     ----------
     S
-        Sample covariance matrix.
+        Sample covariance matrix ``(N, N)``.
     F
-        Target matrix (same shape as ``S``).
+        Target matrix ``(N, N)``.
     centered
         Mean-centered returns ``(T, N)`` with non-finite rows zeroed.
     finite
@@ -154,19 +172,34 @@ def ledoit_wolf_alpha(
     T_eff : int
         Number of rows with at least one finite observation.
     """
-    T = centered.shape[0]
-    delta = 0.0
-    T_eff = 0
-    for t in range(T):
-        if not finite[t].any():
-            continue
-        T_eff += 1
-        xt = centered[t : t + 1].T  # (N, 1)
-        M = xt @ xt.T - S
-        delta += np.sum(M * M)
-    if T_eff > 0:
-        delta /= T_eff
-    denom = float(np.sum((S - F) ** 2))
-    if denom < 1e-30 or T_eff == 0:
+    N = S.shape[0]
+    T_eff = int(finite.any(axis=1).sum())
+    if T_eff < 2 or N < 2:
         return 1.0, T_eff
-    return float(np.clip(delta / (T_eff * denom), 0.0, 1.0)), T_eff
+
+    # Pairwise counts of jointly-observable timesteps.
+    indicator = finite.astype(np.float64)
+    counts = indicator.T @ indicator  # (N, N)
+
+    # w_ij(t) = z_i(t) z_j(t); rows with NaN are already zeroed in centered.
+    sum_w = centered.T @ centered  # (N, N), Σ_t w_ij(t) over valid t
+    centered_sq = centered * centered
+    sum_w_sq = centered_sq.T @ centered_sq  # (N, N), Σ_t w_ij(t)^2 over valid t
+
+    # Σ_t (w_ij(t) - w̄_ij)^2 = Σ_t w_ij(t)^2 - T_ij · w̄_ij^2
+    # with w̄_ij = sum_w / T_ij (pairwise-mean).
+    counts_safe = np.maximum(counts, 1.0)
+    centered_sum_sq = sum_w_sq - sum_w * sum_w / counts_safe
+
+    # V̂ar(s_ij) = T_ij / (T_ij - 1)^3 · centered_sum_sq.  Pairs with
+    # fewer than 2 valid observations contribute nothing.
+    dof_cube = np.maximum((counts - 1.0) ** 3, 1.0)
+    var_s = np.where(counts >= 2, counts * centered_sum_sq / dof_cube, 0.0)
+
+    off_diag = ~np.eye(N, dtype=bool)
+    numerator = float(var_s[off_diag].sum())
+    denominator = float(((S - F) ** 2)[off_diag].sum())
+
+    if denominator < 1e-30:
+        return 1.0, T_eff
+    return float(np.clip(numerator / denominator, 0.0, 1.0)), T_eff

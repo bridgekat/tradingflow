@@ -1,4 +1,4 @@
-"""Ledoit-Wolf linear shrinkage covariance estimator with a pluggable target."""
+"""Linear shrinkage covariance estimator with a pluggable target."""
 
 from enum import IntEnum
 
@@ -7,7 +7,7 @@ import numpy as np
 from ..variance_predictor import VariancePredictor
 from ._common import (
     correlation_from_covariance,
-    ledoit_wolf_alpha,
+    schafer_strimmer_alpha,
     sample_covariance,
     single_index_covariance,
 )
@@ -43,8 +43,9 @@ class Shrinkage(VariancePredictor[np.ndarray]):
     sample covariance and ``F`` is one of the three structured targets
     enumerated by [`Target`][tradingflow.operators.predictors.variance.Target].
 
-    The intensity ``alpha`` is estimated analytically via the universal
-    Ledoit-Wolf (2004) Lemma 3.3 formula.  Ignores features.
+    The intensity ``alpha`` is estimated analytically via the
+    Schäfer-Strimmer (2005) element-wise unbiased estimator, as
+    prescribed by Pantaleo et al. (2010).  Ignores features.
 
     Parameters
     ----------
@@ -123,7 +124,7 @@ def _fit_fn(y: np.ndarray, *, target: Target, verbose: bool = False) -> np.ndarr
     S, centered, finite = sample_covariance(y)
     F, diagnostics = _TARGET_BUILDERS[target](y, S)
 
-    alpha, T_eff = ledoit_wolf_alpha(S, F, centered, finite)
+    alpha, T_eff = schafer_strimmer_alpha(S, F, centered, finite)
 
     if verbose:
         extras = f", {diagnostics}" if diagnostics else ""
