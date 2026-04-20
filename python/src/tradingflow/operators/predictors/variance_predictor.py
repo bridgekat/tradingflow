@@ -37,7 +37,7 @@ class VariancePredictor[T](
     observe each new sample (a future incremental-fit hook can accumulate
     running statistics here — the current base class refits from scratch
     on rebalance, so non-rebalance ticks simply return without work).
-    On each **rebalance** tick, reads the last ``max_periods`` feature
+    On each **rebalance** tick, reads the last `max_periods` feature
     and price entries from the upstream `Series` inputs, builds a
     1-period return matrix, calls `fit_fn` and `predict_fn`, and emits
     the predicted covariance matrix.
@@ -48,37 +48,37 @@ class VariancePredictor[T](
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
         Recorded features series, element shape
-        ``(num_stocks, num_features)``.
+        `(num_stocks, num_features)`.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
     rebalance
         Clock source handle that fires on each rebalance date.
         Pass the clock source directly (e.g. `rebalance_clock`).
     fit_fn
-        ``(x, y) -> params``.  Feature array ``x`` of shape
-        ``(T, N, F)`` and 1-period return matrix ``y`` of shape
-        ``(T, N)``.
+        `(x, y) -> params`.  Feature array `x` of shape
+        `(T, N, F)` and 1-period return matrix `y` of shape
+        `(T, N)`.
     predict_fn
-        ``(state, features, params) -> covariances``.  Current
-        features of shape ``(N, F)`` and fitted params.
-        ``state.universe_size`` gives the maximum number of stocks
+        `(state, features, params) -> covariances`.  Current
+        features of shape `(N, F)` and fitted params.
+        `state.universe_size` gives the maximum number of stocks
         in the universe.
     universe_size
         Upper bound on the number of nonzero entries in the universe
-        array.  Passed through to ``predict_fn`` via state for
+        array.  Passed through to `predict_fn` via state for
         pre-allocation.
     max_periods
         Maximum number of most-recent time rows to feed to
-        ``fit_fn``.  ``None`` uses all available history.
+        `fit_fn`.  `None` uses all available history.
     min_periods
         Minimum number of valid observations per stock.  Stocks with
         fewer valid (all-finite features and finite return) observations
-        across the time rows receive ``NaN`` for their variance
-        and all covariances with other stocks.  ``None`` disables
+        across the time rows receive `NaN` for their variance
+        and all covariances with other stocks.  `None` disables
         per-stock filtering.
     """
 

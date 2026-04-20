@@ -15,24 +15,24 @@ class SingleFeature(MeanPredictor[None]):
     at the predictor's rebalance cadence (rather than at the factor's
     native update cadence).
 
-    No fitting is performed.  ``max_periods`` and ``min_periods`` are
-    fixed to ``1`` since no historical window is needed -- only the
+    No fitting is performed.  `max_periods` and `min_periods` are
+    fixed to `1` since no historical window is needed -- only the
     latest feature row is used.
 
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
-        Recorded features series, element shape ``(num_stocks, num_features)``.
+        Recorded features series, element shape `(num_stocks, num_features)`.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
     feature_index
-        Index of the feature column to return.  Default ``0``.
+        Index of the feature column to return.  Default `0`.
     **kwargs
         Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor].
-        ``max_periods`` and ``min_periods`` are fixed to ``1``.
+        `max_periods` and `min_periods` are fixed to `1`.
     """
 
     def __init__(

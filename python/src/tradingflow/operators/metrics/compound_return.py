@@ -5,7 +5,7 @@ from ...types import Handle, NodeKind
 
 
 class CompoundReturn(NativeOperator):
-    """Compound return: ``(current / first)^(1/n) - 1``.
+    """Compound return: `(current / first)^(1/n) - 1`.
 
     Parameters
     ----------

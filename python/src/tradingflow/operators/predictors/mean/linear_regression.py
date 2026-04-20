@@ -8,21 +8,21 @@ from ..mean_predictor import MeanPredictor, MeanPredictorState
 class LinearRegression(MeanPredictor[np.ndarray]):
     """Mean predictor using pooled OLS regression.
 
-    Fits ``y = X @ beta + intercept`` via QR decomposition on each
-    rebalance tick, where ``y`` is the 1-period forward return and
-    ``X`` is the feature matrix.
+    Fits `y = X @ beta + intercept` via QR decomposition on each
+    rebalance tick, where `y` is the 1-period forward return and
+    `X` is the feature matrix.
 
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
-        Recorded features series, element shape ``(num_stocks, num_features)``.
+        Recorded features series, element shape `(num_stocks, num_features)`.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
     verbose
-        If ``True``, print regression diagnostics to stdout.
+        If `True`, print regression diagnostics to stdout.
     **kwargs
         Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor].
     """
@@ -57,12 +57,15 @@ def _fit_fn(x: np.ndarray, y: np.ndarray, *, verbose: bool = False) -> np.ndarra
     Parameters
     ----------
     x
-        Feature tensor of shape ``(M, N, F)``.
+        Feature tensor of shape `(M, N, F)`.
     y
-        Return matrix of shape ``(M, N)``.
+        Return matrix of shape `(M, N)`.
 
-    Returns coefficient vector ``(num_features + 1,)`` (intercept last),
-    or a zero vector if the design matrix is rank-deficient.
+    Returns
+    -------
+    np.ndarray
+        Coefficient vector `(num_features + 1,)` (intercept last),
+        or a zero vector if the design matrix is rank-deficient.
     """
 
     # Flatten cross-sectional structure for pooled regression.

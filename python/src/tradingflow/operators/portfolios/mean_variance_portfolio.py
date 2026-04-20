@@ -32,9 +32,9 @@ class MeanVariancePortfolio(
     """Abstract portfolio constructor from predicted returns and covariance.
 
     Triggered by new predicted mean or covariance from upstream.
-    Delegates to ``positions_fn`` to compute position weights.  Only
+    Delegates to `positions_fn` to compute position weights.  Only
     stocks with positive universe weights, finite predicted returns, and
-    finite diagonal covariance entries are passed to ``positions_fn``;
+    finite diagonal covariance entries are passed to `positions_fn`;
     the result is scattered back to the full dimension with zeros
     elsewhere.  The sub-covariance-matrix of the remaining stocks must
     not contain non-finite entries.
@@ -46,14 +46,14 @@ class MeanVariancePortfolio(
     Parameters
     ----------
     universe
-        Handle to universe weights, shape ``(num_stocks,)``.
+        Handle to universe weights, shape `(num_stocks,)`.
         Stocks with positive values are included in the optimization.
     predicted_returns
-        Handle to predicted returns array, shape ``(num_stocks,)``.
+        Handle to predicted returns array, shape `(num_stocks,)`.
     predicted_covariances
-        Handle to predicted covariance matrix, shape ``(num_stocks, num_stocks)``.
+        Handle to predicted covariance matrix, shape `(num_stocks, num_stocks)`.
     positions_fn
-        ``(state, mu, Sigma) -> weights``.  Receives only the subset.
+        `(state, mu, Sigma) -> weights`.  Receives only the subset.
     """
 
     def __init__(

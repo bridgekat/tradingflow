@@ -16,11 +16,11 @@ class NotifyConcat(NativeOperator):
 
     Message-passing counterpart to
     [`Concat`][tradingflow.operators.Concat]: slots of inputs that did
-    not produce in the current flush cycle are filled with ``NaN``.
+    not produce in the current flush cycle are filled with `NaN`.
     See [`NotifyStack`][tradingflow.operators.NotifyStack] for the
     general motivation.
 
-    Float dtype only: ``NaN`` is used as the "no update" sentinel.
+    Float dtype only: `NaN` is used as the "no update" sentinel.
 
     Parameters
     ----------
@@ -29,7 +29,7 @@ class NotifyConcat(NativeOperator):
         the same float dtype and matching shapes on every axis except
         *axis*.
     axis
-        Axis along which to concatenate (default ``0``).
+        Axis along which to concatenate (default `0`).
     """
 
     def __init__(self, inputs: Sequence[Handle], *, axis: int = 0) -> None:

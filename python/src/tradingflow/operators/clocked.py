@@ -26,9 +26,9 @@ class Clocked(Operator):
     clock handle to its inputs (position 0), mirroring the Rust
     [`Clocked<O>`][tradingflow.Clocked] layout.  On each flush, if the
     clock did not produce, the operator returns immediately without
-    computing.  When the clock ticks, the inner operator's ``compute`` is
-    called with the data inputs (``inputs[1:]``) and the correspondingly
-    sliced ``produced[1:]`` tuple — symmetric slicing on both arguments.
+    computing.  When the clock ticks, the inner operator's `compute` is
+    called with the data inputs (`inputs[1:]`) and the correspondingly
+    sliced `produced[1:]` tuple — symmetric slicing on both arguments.
 
     Parameters
     ----------

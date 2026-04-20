@@ -23,9 +23,9 @@ class ArraySource(NativeSource):
         1-D array-like of `datetime64`-compatible timestamps in
         non-decreasing order.
     values
-        Array-like of values; first dimension must match *timestamps*.
+        Array-like of values; first dimension must match `timestamps`.
     dtype
-        Optional NumPy dtype to cast *values* to.
+        Optional NumPy dtype to cast `values` to.
     name
         Optional source name.
     """

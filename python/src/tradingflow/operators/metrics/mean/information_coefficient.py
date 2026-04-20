@@ -38,31 +38,29 @@ class InformationCoefficient(
     the stored scores.
 
     Output is a scalar (the mean daily cross-sectional IC over one
-    evaluation period).  ``Record(output)`` produces a directly
+    evaluation period).  `Record(output)` produces a directly
     plottable time series.
 
-    Alignment guarantee
-    -------------------
-    After the initial warmup (first prediction stores scores without
-    emitting), the operator emits exactly once per prediction
-    emission (NaN when data is unavailable).
+    Notes
+    -----
+    **Alignment guarantee.** After the initial warmup (first prediction
+    stores scores without emitting), the operator emits exactly once per
+    prediction emission (NaN when data is unavailable).
 
-    Memory
-    ------
-    Both ``predictions`` and ``prices`` are ``Array`` inputs — the
+    **Memory.** Both `predictions` and `prices` are `Array` inputs — the
     operator only reads the latest cross-section of each, caching
     the previous price tick in state to compute one-period returns.
-    No ``Record`` is required upstream.
+    No `Record` is required upstream.
 
     Parameters
     ----------
     predictions
-        Live predicted scores, shape ``(N,)``.  Typically a
+        Live predicted scores, shape `(N,)`.  Typically a
         mean-return predictor output or a factor.
     prices
-        Live forward-adjusted close prices, shape ``(N,)``.
+        Live forward-adjusted close prices, shape `(N,)`.
     ranking
-        If ``False`` (default), compute Pearson IC.  If ``True``,
+        If `False` (default), compute Pearson IC.  If `True`,
         rank-transform both inputs first to compute Spearman RankIC.
     min_valid
         Minimum number of non-NaN cross-sectional pairs required to

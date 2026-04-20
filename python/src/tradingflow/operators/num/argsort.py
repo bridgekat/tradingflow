@@ -10,7 +10,7 @@ from ...types import Handle, NodeKind
 
 class ArgSort(NativeOperator):
     """Produces the indices that would sort a 1-D array from smallest
-    to largest.  Output is ``Array<uint64>`` of the same length.
+    to largest.  Output is `Array<uint64>` of the same length.
 
     NaN values are sorted to the end.
 

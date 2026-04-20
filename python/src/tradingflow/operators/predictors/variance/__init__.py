@@ -9,7 +9,7 @@ sample, spectral, hierarchical-clustering, and shrinkage.
 
 All estimators share the same interface: they subclass
 [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor],
-ignore the ``features_series`` input, and emit an ``(N, N)`` covariance
+ignore the `features_series` input, and emit an `(N, N)` covariance
 matrix on every rebalance tick for the stocks currently in the universe.
 
 **Baseline**
@@ -20,7 +20,7 @@ matrix on every rebalance tick for the stocks currently in the universe.
 **Spectral estimators**
 
 - [`SingleIndex`][tradingflow.operators.predictors.variance.SingleIndex]
-  — single-factor covariance ``sigma_f^2 beta beta.T + diag(sigma_eps^2)``
+  — single-factor covariance `sigma_f^2 beta beta.T + diag(sigma_eps^2)`
   using the equal-weighted cross-sectional mean return as the market
   proxy.
 - [`RMT0`][tradingflow.operators.predictors.variance.RMT0] — zeros
@@ -41,11 +41,11 @@ matrix on every rebalance tick for the stocks currently in the universe.
 **Shrinkage estimators**
 
 - [`Shrinkage`][tradingflow.operators.predictors.variance.Shrinkage] —
-  Ledoit-Wolf linear shrinkage with a pluggable ``target`` parameter
+  Ledoit-Wolf linear shrinkage with a pluggable `target` parameter
   (a [`Target`][tradingflow.operators.predictors.variance.Target] enum
   member) selecting one of the three targets surveyed in the paper:
-  ``Target.COMMON_COVARIANCE`` (default),
-  ``Target.CONSTANT_CORRELATION``, or ``Target.SINGLE_INDEX``.
+  `Target.COMMON_COVARIANCE` (default),
+  `Target.CONSTANT_CORRELATION`, or `Target.SINGLE_INDEX`.
 """
 
 from .hierarchical import UPGMA, WPGMA, Hausdorff

@@ -30,8 +30,8 @@ class Apply(
 
     Unlike [`Map`][tradingflow.operators.Map] which takes a single input,
     `Apply` accepts an arbitrary tuple of upstream handles.  The function
-    receives the current values of all inputs as positional ``np.ndarray``
-    arguments and must return a ``np.ndarray`` of the declared output
+    receives the current values of all inputs as positional `np.ndarray`
+    arguments and must return a `np.ndarray` of the declared output
     shape and dtype.  Always produces output (never halts propagation).
 
     Parameters

@@ -44,7 +44,7 @@ class Scenario:
     def add_const(self, value: np.ndarray) -> Handle:
         """Register a constant node with an initial value.
 
-        Shorthand for ``add_operator(Const(value))``.
+        Shorthand for `add_operator(Const(value))`.
 
         Parameters
         ----------
@@ -111,8 +111,8 @@ class Scenario:
         ----------
         on_flush
             Optional callback invoked after each timestamp batch is
-            flushed.  Receives ``(timestamp_ns, events_so_far,
-            total_estimate)`` where `timestamp_ns` is the batch
+            flushed.  Receives `(timestamp_ns, events_so_far,
+            total_estimate)` where `timestamp_ns` is the batch
             timestamp in TAI ns since the PTP epoch (re-view as
             `datetime64[ns]` to display), `events_so_far` is the
             running count of consumed source events, and

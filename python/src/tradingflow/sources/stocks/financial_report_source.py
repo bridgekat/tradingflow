@@ -17,19 +17,19 @@ class FinancialReportSource(NativeSource):
     Reads a CSV with a report-date column, an optional notice-date column,
     and numeric value columns.
 
-    When *use_effective_date* is `True` (the default), the event timestamp
-    for each row is ``max(report_date, notice_date)``, falling back to
-    ``report_date + notice_date_fallback`` when the notice date is missing.
+    When `use_effective_date` is `True` (the default), the event timestamp
+    for each row is `max(report_date, notice_date)`, falling back to
+    `report_date + notice_date_fallback` when the notice date is missing.
     Reports whose report date is earlier than a previously emitted report
     date are dropped (retrospective updates).  This mode ensures backtesting
     correctness — data cannot be used before publication.
 
-    When *use_effective_date* is `False`, the report date is used directly
+    When `use_effective_date` is `False`, the report date is used directly
     as the event timestamp.  This is useful for analysis that should align
     with reporting periods rather than publication dates.
 
-    When *with_report_date* is `True`, the output array is prepended with
-    two extra elements ``[year, day_of_year]`` derived from the report date,
+    When `with_report_date` is `True`, the output array is prepended with
+    two extra elements `[year, day_of_year]` derived from the report date,
     for use with the [`Annualize`][tradingflow.operators.stocks.Annualize]
     operator.
 
@@ -43,17 +43,17 @@ class FinancialReportSource(NativeSource):
         Name of the report-date column.
     notice_date_column
         Name of the notice-date column.  If the column is absent from the
-        CSV, every row falls back to ``report_date + notice_date_fallback``.
+        CSV, every row falls back to `report_date + notice_date_fallback`.
     with_report_date
-        If `True`, prepend ``[year, day_of_year]`` to the output array.
+        If `True`, prepend `[year, day_of_year]` to the output array.
         Required when piping into `Annualize`.
     use_effective_date
-        If `True` (default), use ``max(report_date, notice_date)`` as the
+        If `True` (default), use `max(report_date, notice_date)` as the
         event timestamp and drop retrospective updates.  If `False`, use
         the report date directly.
     notice_date_fallback
         Offset added to the report date when the notice date is missing
-        (only used when *use_effective_date* is `True`).  Defaults to
+        (only used when `use_effective_date` is `True`).  Defaults to
         90 days.
     is_utc
         If `True` (default), date strings are interpreted as UTC

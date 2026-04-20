@@ -9,7 +9,7 @@ from ..types import Handle, NodeKind
 class Lag(NativeOperator):
     """Output the value from *offset* steps ago.
 
-    If fewer than ``offset + 1`` values have been recorded, the output
+    If fewer than `offset + 1` values have been recorded, the output
     is filled with *fill*.
 
     Parameters
@@ -17,9 +17,9 @@ class Lag(NativeOperator):
     a
         Handle to a Series node.
     offset
-        Number of steps to look back (default ``1``).
+        Number of steps to look back (default `1`).
     fill
-        Value used when history is insufficient (default ``0``).
+        Value used when history is insufficient (default `0`).
     """
 
     def __init__(self, a: Handle, offset: int = 1, *, fill: float | int = 0) -> None:

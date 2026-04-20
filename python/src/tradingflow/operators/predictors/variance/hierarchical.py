@@ -6,18 +6,18 @@ a dendrogram from the sample correlation similarities, read the
 *cophenetic similarity* (the similarity at which pairs first merge)
 into a filtered correlation matrix, and rescale by the sample standard
 deviations.  They differ only in the rule that defines the similarity
-between a newly-merged cluster ``L = A ∪ B`` and another active
-cluster ``F``:
+between a newly-merged cluster `L = A ∪ B` and another active
+cluster `F`:
 
 - [`UPGMA`][tradingflow.operators.predictors.variance.UPGMA] — unweighted
   pair-group method with arithmetic mean:
-  ``σ(L, F) = (N_A σ(A, F) + N_B σ(B, F)) / (N_A + N_B)``.
+  `σ(L, F) = (N_A σ(A, F) + N_B σ(B, F)) / (N_A + N_B)`.
 - [`WPGMA`][tradingflow.operators.predictors.variance.WPGMA] — weighted
   pair-group method with arithmetic mean:
-  ``σ(L, F) = (σ(A, F) + σ(B, F)) / 2``.
+  `σ(L, F) = (σ(A, F) + σ(B, F)) / 2`.
 - [`Hausdorff`][tradingflow.operators.predictors.variance.Hausdorff] —
   Hausdorff linkage using the original pairwise similarities:
-  ``σ(L, F) = min{min_{i∈L} max_{j∈F} σ_ij, max_{i∈L} min_{j∈F} σ_ij}``.
+  `σ(L, F) = min{min_{i∈L} max_{j∈F} σ_ij, max_{i∈L} min_{j∈F} σ_ij}`.
 
 To keep the dendrogram monotonic (a prerequisite for a positive
 semi-definite filtered correlation matrix), merge similarities are
@@ -77,7 +77,7 @@ class Hausdorff(VariancePredictor[np.ndarray]):
     """Hausdorff-linkage hierarchical-clustering covariance estimator.
 
     Uses the Hausdorff-style similarity
-    ``min{min_i max_j, max_i min_j}`` over the original pairwise
+    `min{min_i max_j, max_i min_j}` over the original pairwise
     correlations.  Reversals in the resulting dendrogram are removed
     by clamping each merge similarity to the minimum of the previous
     merges.  Ignores features.
@@ -114,15 +114,15 @@ def _cophenetic_similarity(C: np.ndarray, *, method: str) -> np.ndarray:
     Parameters
     ----------
     C
-        ``(N, N)`` similarity matrix (typically the sample correlation)
-        with ``C[i, i] = 1``.
+        `(N, N)` similarity matrix (typically the sample correlation)
+        with `C[i, i] = 1`.
     method
-        One of ``"upgma"``, ``"wpgma"``, ``"hausdorff"``.
+        One of `"upgma"`, `"wpgma"`, `"hausdorff"`.
 
     Returns
     -------
     np.ndarray
-        ``(N, N)`` cophenetic-similarity matrix with unit diagonal.
+        `(N, N)` cophenetic-similarity matrix with unit diagonal.
     """
     N = C.shape[0]
     members: dict[int, list[int]] = {i: [i] for i in range(N)}

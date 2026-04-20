@@ -34,7 +34,7 @@ class SimpleTraderState:
 
 
 class OHLCV(IntEnum):
-    """Column indices within the prices array of shape ``(num_stocks, 5)``."""
+    """Column indices within the prices array of shape `(num_stocks, 5)`."""
 
     OPEN = 0
     HIGH = 1
@@ -64,7 +64,7 @@ class SimpleTrader(
        opening prices, and deducts transaction fees.  If the resulting
        absolute position for a stock is less than one lot, the remainder
        is liquidated.
-    3. Outputs a 2-element array ``(holdings_value, cash)`` where
+    3. Outputs a 2-element array `(holdings_value, cash)` where
        *holdings_value* is positions valued at closing prices and
        *cash* is the cash balance.  Total portfolio value is their sum.
 
@@ -94,12 +94,11 @@ class SimpleTrader(
     verbose
         If `True`, print current positions after each rebalance.
 
+    Notes
+    -----
     The rebalance cadence is controlled by upstream: the trader
     rebalances exactly when the soft-positions input produces (which in
     turn is driven by the predictor's clock trigger).
-
-    Notes
-    -----
 
     This operator uses a simplified market model:
 

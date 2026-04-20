@@ -23,11 +23,11 @@ class Target(IntEnum):
       sample covariance.
     - [`CONSTANT_CORRELATION`][tradingflow.operators.predictors.variance.Target]
       — diagonal = sample variances, off-diagonal =
-      ``r_bar * std_i * std_j`` with ``r_bar`` the average off-diagonal
+      `r_bar * std_i * std_j` with `r_bar` the average off-diagonal
       sample correlation.
     - [`SINGLE_INDEX`][tradingflow.operators.predictors.variance.Target]
       — single-index factor-model covariance
-      ``sigma_f^2 * beta beta' + diag(sigma_eps^2)`` using the equal-
+      `sigma_f^2 * beta beta' + diag(sigma_eps^2)` using the equal-
       weighted cross-sectional mean as the market proxy.
     """
 
@@ -39,30 +39,30 @@ class Target(IntEnum):
 class Shrinkage(VariancePredictor[np.ndarray]):
     """Linear-shrinkage covariance estimator with a pluggable target.
 
-    Computes ``Sigma = alpha * F + (1 - alpha) * S`` where ``S`` is the
-    sample covariance and ``F`` is one of the three structured targets
+    Computes `Sigma = alpha * F + (1 - alpha) * S` where `S` is the
+    sample covariance and `F` is one of the three structured targets
     enumerated by [`Target`][tradingflow.operators.predictors.variance.Target].
 
-    The intensity ``alpha`` is estimated analytically via the
+    The intensity `alpha` is estimated analytically via the
     Schäfer-Strimmer (2005) element-wise unbiased estimator, as
     prescribed by Pantaleo et al. (2010).  Ignores features.
 
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
-        Recorded features series, element shape ``(num_stocks, num_features)``.
+        Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
     target
         Shrinkage target, a member of
         [`Target`][tradingflow.operators.predictors.variance.Target].
-        Default is ``Target.COMMON_COVARIANCE``.
+        Default is `Target.COMMON_COVARIANCE`.
     verbose
-        If ``True``, print shrinkage diagnostics to stdout.
+        If `True`, print shrinkage diagnostics to stdout.
     **kwargs
         Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
     """

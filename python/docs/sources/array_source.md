@@ -1,1 +1,0 @@
-:::tradingflow.sources.array_source

@@ -11,7 +11,7 @@ from tradingflow._native import utc_to_tai as _utc_to_tai_scalar
 def ensure_contiguous(arr: np.ndarray) -> np.ndarray:
     """Return *arr* as a C-contiguous array, preserving shape.
 
-    Unlike ``np.ascontiguousarray``, this does **not** promote 0-d arrays
+    Unlike `np.ascontiguousarray`, this does **not** promote 0-d arrays
     to 1-d.  If the array is already C-contiguous, it is returned as-is
     (no copy).
     """
@@ -28,8 +28,8 @@ def coerce_timestamp(ts: np.datetime64 | int | np.integer) -> np.int64:
     TradingFlow uses TAI throughout, on both sides of the PyO3 bridge.
     A `datetime64[ns]` value is reinterpreted as its stored `int64`
     directly — no timescale math, no leap-second correction.  The
-    resulting integer is an [`Instant`][tradingflow.Instant]'s numeric
-    value: SI nanoseconds since the PTP epoch (1970-01-01 00:00:00 TAI).
+    resulting integer is `int64` SI nanoseconds since the PTP epoch
+    1970-01-01 00:00:00 TAI (the Rust `Instant` encoding).
 
     Because NumPy / pandas `datetime64` arithmetic is itself naïve of
     leap seconds, this matches numpy's own semantics exactly.  The only

@@ -31,7 +31,7 @@ class NodeKind(enum.Enum):
 
 
 def _to_native_node_kind(kind: NodeKind) -> NativeNodeKind:
-    """Convert a Python [`NodeKind`] to the Rust [`NativeNodeKind`] PyO3 enum.
+    """Convert a Python [`NodeKind`][tradingflow.NodeKind] to the Rust [`NativeNodeKind`][tradingflow._native.NativeNodeKind] PyO3 enum.
 
     Used by [`Scenario`][tradingflow.Scenario] when registering nodes; the
     PyO3 enum travels across the FFI boundary in place of a string tag.

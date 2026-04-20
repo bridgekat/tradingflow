@@ -5,7 +5,7 @@ from ...types import Handle, NodeKind
 
 
 class Drawdown(NativeOperator):
-    """Drawdown: ``(current - running_max) / running_max``.
+    """Drawdown: `(current - running_max) / running_max`.
 
     Always non-positive.  Zero when at a new high.
 

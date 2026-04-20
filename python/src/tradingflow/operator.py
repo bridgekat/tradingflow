@@ -121,12 +121,12 @@ class Operator[*Views, Output, State](ABC):
             since the PTP epoch 1970-01-01 00:00:00 TAI — matches numpy
             `datetime64[ns]` numerically).
         produced
-            Flat ``tuple[bool, ...]`` parallel to ``inputs``: element ``i``
-            is ``True`` iff input ``i`` produced new output this flush
-            cycle.  Same arity as ``inputs``; access with ``produced[i]``
-            or destructure (``a, b = produced``).  Transformers like
+            Flat `tuple[bool, ...]` parallel to `inputs`: element `i`
+            is `True` iff input `i` produced new output this flush
+            cycle.  Same arity as `inputs`; access with `produced[i]`
+            or destructure (`a, b = produced`).  Transformers like
             [`Clocked`][tradingflow.operators.Clocked] forward a sliced
-            view (``produced[1:]``) to inner operators.
+            view (`produced[1:]`) to inner operators.
 
         Returns
         -------
@@ -206,7 +206,7 @@ class NativeOperator:
     inputs
         Tuple of upstream handles.
     kind
-        Output node kind: ``"array"`` or ``"series"``.
+        Output node kind: `"array"` or `"series"`.
     dtype
         Output numpy dtype.
     shape

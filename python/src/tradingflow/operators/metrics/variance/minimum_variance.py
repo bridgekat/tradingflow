@@ -32,40 +32,38 @@ class MinimumVariance(
     """GMV portfolio realized variance evaluator.
 
     Evaluates covariance prediction quality.  On each prediction
-    emission, computes GMV weights ``w = Σ⁺ 1 / (1ᵀ Σ⁺ 1)`` (using
+    emission, computes GMV weights `w = Σ⁺ 1 / (1ᵀ Σ⁺ 1)` (using
     the SVD-based pseudo-inverse for numerical stability with
     rank-deficient Σ) and begins accumulating daily portfolio returns
-    ``rₚ = wᵀ r``.  When the next prediction arrives, emits the
+    `rₚ = wᵀ r`.  When the next prediction arrives, emits the
     realized variance of the accumulated returns and updates the
     weights.
 
     Output is a scalar (the realized variance over one evaluation
-    period).  ``Record(output)`` produces a directly plottable
+    period).  `Record(output)` produces a directly plottable
     time series.
 
-    Alignment guarantee
-    -------------------
-    After the initial warmup (first prediction sets weights without
-    emitting), the operator emits exactly once per prediction
-    emission.  Output is 0 if no daily portfolio return was
+    Notes
+    -----
+    **Alignment guarantee.** After the initial warmup (first prediction
+    sets weights without emitting), the operator emits exactly once per
+    prediction emission.  Output is 0 if no daily portfolio return was
     successfully accumulated during the period (e.g. no stocks had
     finite covariance diagonal).
 
-    Memory
-    ------
-    Both ``predictions`` and ``prices`` are ``Array`` inputs — the
+    **Memory.** Both `predictions` and `prices` are `Array` inputs — the
     operator reads only the latest covariance and the latest cross-
     section of prices, caching one previous price tick in state to
-    compute one-period returns.  No ``Record`` is required upstream.
+    compute one-period returns.  No `Record` is required upstream.
 
     Parameters
     ----------
     predictions
         Live predicted covariance matrix from a variance predictor,
-        shape ``(N, N)``.  Stocks excluded by the variance predictor
+        shape `(N, N)`.  Stocks excluded by the variance predictor
         have NaN on the diagonal.
     prices
-        Live forward-adjusted close prices, shape ``(N,)``.
+        Live forward-adjusted close prices, shape `(N,)`.
     """
 
     def __init__(
@@ -166,14 +164,14 @@ def _gmv_weights(sigma: np.ndarray) -> np.ndarray:
         minimize    wᵀ Σ w
         subject to  1ᵀ w = 1
 
-    given by ``w = Σ⁺ 1 / (1ᵀ Σ⁺ 1)``.  No non-negativity constraint
+    given by `w = Σ⁺ 1 / (1ᵀ Σ⁺ 1)`.  No non-negativity constraint
     is imposed (weights may be negative, i.e. short positions are
     allowed).
 
-    Uses the SVD-based Moore–Penrose pseudo-inverse ``Σ⁺`` instead of
+    Uses the SVD-based Moore–Penrose pseudo-inverse `Σ⁺` instead of
     a direct solve, which gracefully handles rank-deficient covariance
     matrices (e.g. sample covariance with N > T) by returning the
-    minimum-norm solution.  If the denominator ``1ᵀ Σ⁺ 1`` is zero,
+    minimum-norm solution.  If the denominator `1ᵀ Σ⁺ 1` is zero,
     the returned weights contain non-finite entries (NaN or inf).
     """
     n = sigma.shape[0]

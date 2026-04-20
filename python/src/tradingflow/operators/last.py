@@ -16,7 +16,7 @@ class Last(NativeOperator):
     a
         Handle to a Series node.
     fill
-        Value used when the series is empty (default ``0``).
+        Value used when the series is empty (default `0`).
     """
 
     def __init__(self, a: Handle, *, fill: float | int = 0) -> None:

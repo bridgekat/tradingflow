@@ -31,9 +31,9 @@ class VariancePortfolio(
     """Abstract portfolio constructor from covariance alone (no expected returns).
 
     Triggered by new predicted covariance from upstream.  Delegates to
-    ``positions_fn`` to compute position weights.  Only stocks with
+    `positions_fn` to compute position weights.  Only stocks with
     positive universe weights and finite diagonal covariance entries
-    are passed to ``positions_fn``; the result is scattered back to
+    are passed to `positions_fn`; the result is scattered back to
     the full dimension with zeros elsewhere.  The sub-covariance
     matrix of the remaining stocks must not contain non-finite
     entries.
@@ -45,12 +45,12 @@ class VariancePortfolio(
     Parameters
     ----------
     universe
-        Handle to universe weights, shape ``(num_stocks,)``.
+        Handle to universe weights, shape `(num_stocks,)`.
         Stocks with positive values are included in the optimization.
     predicted_covariances
-        Handle to predicted covariance matrix, shape ``(num_stocks, num_stocks)``.
+        Handle to predicted covariance matrix, shape `(num_stocks, num_stocks)`.
     positions_fn
-        ``(state, Sigma) -> weights``.  Receives only the universe-
+        `(state, Sigma) -> weights`.  Receives only the universe-
         active sub-block of the covariance matrix.
     """
 

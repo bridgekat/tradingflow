@@ -18,11 +18,11 @@ class MinimumVariance(VariancePortfolio):
         subject to  1' x = 1
                     x >= 0   (if long_only)
 
-    When ``long_only=False`` this reproduces — modulo solver tolerance —
-    the analytical GMV solution ``x = Σ⁺ 1 / (1ᵀ Σ⁺ 1)`` used by the
+    When `long_only=False` this reproduces — modulo solver tolerance —
+    the analytical GMV solution `x = Σ⁺ 1 / (1ᵀ Σ⁺ 1)` used by the
     evaluation metric
     [`MinimumVariance`][tradingflow.operators.metrics.variance.MinimumVariance].
-    With ``long_only=True`` the no-short-selling constraint cannot in
+    With `long_only=True` the no-short-selling constraint cannot in
     general be satisfied by the closed-form pseudo-inverse solution, and
     the CVXPY quadratic program is used to enforce it.
 

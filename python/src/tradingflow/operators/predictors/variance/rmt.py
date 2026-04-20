@@ -6,7 +6,7 @@ Laloux-corrected Marchenko-Pastur upper bound
 
     lambda_max = sigma^2 * (1 + N/T + 2 * sqrt(N/T)),
 
-where ``sigma^2 = 1 - lambda_1 / N`` discounts the market-mode
+where `sigma^2 = 1 - lambda_1 / N` discounts the market-mode
 eigenvalue.  They differ in how sub-threshold eigenvalues are
 replaced:
 
@@ -38,13 +38,13 @@ class RMT0(VariancePredictor[np.ndarray]):
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
-        Recorded features series, element shape ``(num_stocks, num_features)``.
+        Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
     **kwargs
         Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
     """
@@ -72,13 +72,13 @@ class RMTM(VariancePredictor[np.ndarray]):
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
-        Recorded features series, element shape ``(num_stocks, num_features)``.
+        Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
     **kwargs
         Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
     """
@@ -100,9 +100,9 @@ def _rmt_fit(y: np.ndarray, *, mode: str) -> np.ndarray:
     Parameters
     ----------
     y
-        Return matrix ``(T, N)``.
+        Return matrix `(T, N)`.
     mode
-        ``"zero"`` for RMT-0, ``"mean"`` for RMT-M.
+        `"zero"` for RMT-0, `"mean"` for RMT-M.
     """
     T, N = y.shape
     S, _, _ = sample_covariance(y)

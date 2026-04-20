@@ -14,17 +14,17 @@ def sample_covariance(y: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray
     Parameters
     ----------
     y
-        Cross-sectional return matrix of shape ``(T, N)``.
+        Cross-sectional return matrix of shape `(T, N)`.
 
     Returns
     -------
     S : np.ndarray
-        ``(N, N)`` sample covariance matrix.
+        `(N, N)` sample covariance matrix.
     centered : np.ndarray
-        ``(T, N)`` mean-centered returns with non-finite entries
+        `(T, N)` mean-centered returns with non-finite entries
         replaced by 0 (so they contribute nothing to sums).
     finite : np.ndarray
-        ``(T, N)`` boolean mask of originally-finite entries.
+        `(T, N)` boolean mask of originally-finite entries.
     """
     mean = np.nanmean(y, axis=0)
     centered = y - mean
@@ -42,15 +42,15 @@ def correlation_from_covariance(S: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     Parameters
     ----------
     S
-        ``(N, N)`` covariance matrix.
+        `(N, N)` covariance matrix.
 
     Returns
     -------
     C : np.ndarray
-        ``(N, N)`` correlation matrix, with diagonal forced to 1 and
-        entries clipped to ``[-1, 1]``.
+        `(N, N)` correlation matrix, with diagonal forced to 1 and
+        entries clipped to `[-1, 1]`.
     stds : np.ndarray
-        ``(N,)`` sample standard deviations.
+        `(N,)` sample standard deviations.
     """
     diag = np.maximum(np.diag(S), 0.0)
     stds = np.sqrt(diag)
@@ -63,9 +63,9 @@ def correlation_from_covariance(S: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def single_index_covariance(y: np.ndarray) -> np.ndarray:
     """Single-index factor-model covariance estimator.
 
-    Fits the factor model ``r_i(t) = alpha_i + beta_i * f(t) + eps_i(t)``
+    Fits the factor model `r_i(t) = alpha_i + beta_i * f(t) + eps_i(t)`
     stock-by-stock against the equal-weighted cross-sectional mean return
-    ``f(t)``, and returns
+    `f(t)`, and returns
 
         Sigma = sigma_f^2 * beta @ beta.T + diag(sigma_eps^2).
 
@@ -75,12 +75,12 @@ def single_index_covariance(y: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     y
-        Cross-sectional return matrix of shape ``(T, N)``.
+        Cross-sectional return matrix of shape `(T, N)`.
 
     Returns
     -------
     np.ndarray
-        ``(N, N)`` single-index covariance matrix.  Zero matrix if the
+        `(N, N)` single-index covariance matrix.  Zero matrix if the
         factor is never observable.
     """
     _, N = y.shape
@@ -135,40 +135,42 @@ def schafer_strimmer_alpha(
     (2005, *Statistical Applications in Genetics and Molecular Biology*),
     as used by Pantaleo et al. (2010, arXiv:1004.4272):
 
-    .. math::
-        \\alpha^* = \\frac{\\sum_{i \\ne j} \\widehat{\\mathrm{Var}}(s_{ij})}
-                          {\\sum_{i \\ne j} (s_{ij} - f_{ij})^2}
+    $$
+    \\alpha^* = \\frac{\\sum_{i \\ne j} \\widehat{\\mathrm{Var}}(s_{ij})}
+                      {\\sum_{i \\ne j} (s_{ij} - f_{ij})^2}
+    $$
 
     with the element-wise variance estimator
 
-    .. math::
-        \\widehat{\\mathrm{Var}}(s_{ij}) =
-            \\frac{T_{ij}}{(T_{ij} - 1)^3}
-            \\sum_{t \\in V_{ij}} (w_{ij}(t) - \\bar{w}_{ij})^2,
-        \\quad w_{ij}(t) = z_i(t) z_j(t)
+    $$
+    \\widehat{\\mathrm{Var}}(s_{ij}) =
+        \\frac{T_{ij}}{(T_{ij} - 1)^3}
+        \\sum_{t \\in V_{ij}} (w_{ij}(t) - \\bar{w}_{ij})^2,
+    \\quad w_{ij}(t) = z_i(t) z_j(t)
+    $$
 
-    where ``z`` are the centered returns, ``V_{ij}`` is the set of
-    time indices where both stocks are observable, ``T_{ij}`` is its
-    cardinality, and ``\\bar{w}_{ij}`` is the pairwise sample mean of
-    ``w_{ij}`` over ``V_{ij}``.  The sum is restricted to off-diagonal
+    where `z` are the centered returns, `V_{ij}` is the set of
+    time indices where both stocks are observable, `T_{ij}` is its
+    cardinality, and `\\bar{w}_{ij}` is the pairwise sample mean of
+    `w_{ij}` over `V_{ij}`.  The sum is restricted to off-diagonal
     elements; diagonal (sample variance) elements are well-estimated
     and would otherwise dominate the numerator.
 
     Parameters
     ----------
     S
-        Sample covariance matrix ``(N, N)``.
+        Sample covariance matrix `(N, N)`.
     F
-        Target matrix ``(N, N)``.
+        Target matrix `(N, N)`.
     centered
-        Mean-centered returns ``(T, N)`` with non-finite rows zeroed.
+        Mean-centered returns `(T, N)` with non-finite rows zeroed.
     finite
-        Boolean finiteness mask ``(T, N)``.
+        Boolean finiteness mask `(T, N)`.
 
     Returns
     -------
     alpha : float
-        Optimal shrinkage intensity in ``[0, 1]``.
+        Optimal shrinkage intensity in `[0, 1]`.
     T_eff : int
         Number of rows with at least one finite observation.
     """

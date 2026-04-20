@@ -30,25 +30,25 @@ class Turnover(
 
         turnover_t = sum_i |w_{t,i} - w_{t-1,i}|
 
-    For long-only portfolios that sum to 1, turnover lies in ``[0, 2]``:
-    ``0`` means no change, ``2`` means a complete liquidation and
+    For long-only portfolios that sum to 1, turnover lies in `[0, 2]`:
+    `0` means no change, `2` means a complete liquidation and
     re-investment.
 
     The first update is a warmup: the operator caches the weights and
-    emits ``NaN``.  All subsequent updates emit a finite turnover value.
+    emits `NaN`.  All subsequent updates emit a finite turnover value.
 
-    NaN handling: positions ``w_{t,i}`` and ``w_{t-1,i}`` that are
-    non-finite are treated as ``0`` before computing the difference,
+    NaN handling: positions `w_{t,i}` and `w_{t-1,i}` that are
+    non-finite are treated as `0` before computing the difference,
     so a stock going from active to missing (or vice versa) contributes
     its full weight to the turnover.
 
-    Output is a scalar. ``Record(output)`` produces a plottable time
-    series; downstream ``RollingMean`` yields an average turnover.
+    Output is a scalar. `Record(output)` produces a plottable time
+    series; downstream `RollingMean` yields an average turnover.
 
     Parameters
     ----------
     weights
-        Soft position weights, shape ``(N,)``.  Typically the output
+        Soft position weights, shape `(N,)`.  Typically the output
         of a portfolio constructor.
     """
 

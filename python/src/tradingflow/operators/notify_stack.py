@@ -16,7 +16,7 @@ class NotifyStack(NativeOperator):
     Message-passing counterpart to
     [`Stack`][tradingflow.operators.Stack]: on every compute, slots of
     inputs that did not produce in the current flush cycle are filled
-    with ``NaN``.  This separates freshly-updated state from stale
+    with `NaN`.  This separates freshly-updated state from stale
     carry-over.
 
     Typical use: pair with
@@ -26,7 +26,7 @@ class NotifyStack(NativeOperator):
     event streams, and any cross-sectional aggregation where inputs
     update at heterogeneous cadences.
 
-    Float dtype only: ``NaN`` is used as the "no update" sentinel.
+    Float dtype only: `NaN` is used as the "no update" sentinel.
 
     Parameters
     ----------
@@ -34,7 +34,7 @@ class NotifyStack(NativeOperator):
         Sequence of upstream handles (at least one).  All must share
         the same float dtype and shape.
     axis
-        Position of the new axis (default ``0``).
+        Position of the new axis (default `0`).
     """
 
     def __init__(self, inputs: Sequence[Handle], *, axis: int = 0) -> None:

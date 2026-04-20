@@ -29,7 +29,7 @@ class MeanPortfolio(
     """Abstract portfolio constructor from predicted returns.
 
     Triggered by new predicted returns from upstream.  Delegates to
-    ``positions_fn`` to compute position weights from the subset of
+    `positions_fn` to compute position weights from the subset of
     stocks with positive universe weights and finite predictions.  The
     result is scattered back to the full dimension with zeros elsewhere.
 
@@ -40,12 +40,12 @@ class MeanPortfolio(
     Parameters
     ----------
     universe
-        Handle to universe weights, shape ``(num_stocks,)``.
+        Handle to universe weights, shape `(num_stocks,)`.
         Stocks with positive values are included in the optimization.
     predicted_returns
-        Handle to predicted returns array, shape ``(num_stocks,)``.
+        Handle to predicted returns array, shape `(num_stocks,)`.
     positions_fn
-        ``(state, mu) -> positions``.  Receives only the subset of
+        `(state, mu) -> positions`.  Receives only the subset of
         stocks with positive universe weights and finite predictions.
     """
 

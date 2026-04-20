@@ -41,14 +41,13 @@ class Benchmark(
     1. Adjusts held shares for dividend reinvestment via forward
        adjustment factor changes.
     2. If the soft-positions input was updated (rebalance signal),
-       computes the current portfolio value, calls `trade_fn` to get
-       the number of lots to trade per stock, executes the trades at
-       opening prices, and deducts transaction fees.  If the resulting
-       absolute position for a stock is less than one lot, the remainder
-       is liquidated.
-    3. Outputs a 2-element array ``(holdings_value, cash)`` where
-       *holdings_value* is positions valued at closing prices and
-       *cash* is the cash balance.  Total portfolio value is their sum.
+       computes the current portfolio value and rebalances to exactly
+       match the target weights: target shares = `soft_positions *
+       current_value / open_price`, executed at opening prices as
+       fractional shares with no transaction fees and no lot rounding.
+    3. Outputs a 2-element array `(holdings_value, cash)` where
+       `holdings_value` is positions valued at closing prices and
+       `cash` is the cash balance.  Total portfolio value is their sum.
 
     Parameters
     ----------
@@ -59,19 +58,15 @@ class Benchmark(
         `(open, high, low, close, volume)`.
     adjusts
         Stacked forward adjustment factors, shape `(num_stocks,)`.
-    trade_fn
-        `(state, soft_positions) -> lots`.  Called with the current
-        state and the soft position-weight vector of shape
-        `(num_stocks,)`.  Must return an array of shape
-        `(num_stocks,)` representing the number of lots to trade
-        (positive for buy, negative for sell).
     initial_cash
         Starting capital.
     use_adjusts
-        If ``True``, account for dividend reinvestment via adjustment
-        factors (total return index).  If ``False``, use raw prices
+        If `True`, account for dividend reinvestment via adjustment
+        factors (total return index).  If `False`, use raw prices
         (price index).
 
+    Notes
+    -----
     The rebalance cadence is controlled by upstream: the benchmark
     rebalances exactly when the soft-positions input produces.
     """

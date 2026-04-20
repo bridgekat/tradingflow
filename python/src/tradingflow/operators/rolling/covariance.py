@@ -13,7 +13,7 @@ class RollingCovariance(NativeOperator):
     """Pairwise rolling covariance matrix.
 
     Takes a Series input and outputs an Array.
-    Input must be 1-D with shape ``(K,)``. Output shape is ``(K, K)``.
+    Input must be 1-D with shape `(K,)`. Output shape is `(K, K)`.
     If any value in the window is NaN, the affected covariance entries are NaN.
 
     Parameters

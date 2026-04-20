@@ -59,9 +59,9 @@ class Source(ABC):
         AsyncIterator[tuple[np.datetime64, ArrayLike]],
         AsyncIterator[tuple[np.datetime64, ArrayLike]],
     ]:
-        """Return a ``(historical, live)`` async-iterator pair.
+        """Return a `(historical, live)` async-iterator pair.
 
-        Both iterators yield ``(timestamp, value)`` tuples.  Timestamps
+        Both iterators yield `(timestamp, value)` tuples.  Timestamps
         are `int64` TAI nanoseconds since the PTP epoch (1970-01-01
         00:00:00 TAI) — the same convention NumPy `datetime64[ns]` uses
         numerically.  The bridge reinterprets them directly; no
