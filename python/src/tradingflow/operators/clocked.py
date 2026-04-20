@@ -5,9 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..operator import Operator
-from ..types import Handle
-from ..views import ArrayView, SeriesView
+from .. import ArrayView, Handle, Operator, SeriesView
 
 
 @dataclass
@@ -63,9 +61,7 @@ class Clocked(Operator):
             name=f"Clocked({getattr(inner, 'name', type(inner).__name__)})",
         )
 
-    def init(
-        self, inputs: tuple[None, *tuple[Any, ...]], timestamp: int
-    ) -> ClockedState:
+    def init(self, inputs: tuple[None, *tuple[Any, ...]], timestamp: int) -> ClockedState:
         # inputs[0] is the clock (unit, passed as None); inputs[1:] are data.
         inner_state = self._inner.init(inputs[1:], timestamp)
         return ClockedState(

@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 from a_shares_crawler.types import Schema as CSVSchema
 
 from tradingflow import Scenario, Schema
-from tradingflow.types import Handle
+from tradingflow import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Clocked, Map, NotifyStack, Record, Select, Stack

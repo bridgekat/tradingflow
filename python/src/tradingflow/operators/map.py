@@ -7,9 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..operator import Operator
-from ..types import Array, Handle, NodeKind
-from ..views import ArrayView
+from .. import Array, ArrayView, Handle, NodeKind, Operator
 
 
 @dataclass

@@ -50,7 +50,7 @@ impl PyScalar for f64 {}
 /// Exposed to Python as the `NativeNodeKind` PyO3 enum so the bridge can
 /// pass node-kind tags across the FFI boundary without re-parsing strings.
 /// The user-facing Python wrapper is [`tradingflow.NodeKind`]; conversion
-/// happens at the boundary via `tradingflow.types._to_native_node_kind`.
+/// happens at the boundary via `tradingflow.data.types._to_native_node_kind`.
 #[pyclass(eq, eq_int, from_py_object, name = "NativeNodeKind")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeNodeKind {

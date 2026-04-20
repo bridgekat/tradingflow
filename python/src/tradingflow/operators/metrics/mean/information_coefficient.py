@@ -4,9 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ....views import ArrayView
-from ....operator import Operator
-from ....types import Handle, NodeKind
+from .... import ArrayView, Handle, NodeKind, Operator
 
 
 @dataclass(slots=True)

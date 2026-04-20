@@ -1,4 +1,12 @@
-"""Internal helpers shared across the package."""
+"""TAI ↔ UTC conversions and timestamp FFI helpers.
+
+Python counterpart to the Rust [`tradingflow::data::time`] module.
+TradingFlow stores time as `int64` SI nanoseconds since the PTP epoch
+(1970-01-01 00:00:00 TAI).  Arithmetic matches NumPy's naïve
+`datetime64[ns]` semantics exactly — no leap-second correction at the
+FFI boundary.  The conversion helpers in this module are used only
+when interoperating with external wall-clock (UTC) data.
+"""
 
 from __future__ import annotations
 
@@ -6,20 +14,6 @@ import numpy as np
 
 from tradingflow._native import tai_to_utc as _tai_to_utc_scalar
 from tradingflow._native import utc_to_tai as _utc_to_tai_scalar
-
-
-def ensure_contiguous(arr: np.ndarray) -> np.ndarray:
-    """Return *arr* as a C-contiguous array, preserving shape.
-
-    Unlike `np.ascontiguousarray`, this does **not** promote 0-d arrays
-    to 1-d.  If the array is already C-contiguous, it is returned as-is
-    (no copy).
-    """
-    if arr.flags["C_CONTIGUOUS"]:
-        return arr
-    else:
-        assert arr.ndim > 0
-        return np.ascontiguousarray(arr)
 
 
 def coerce_timestamp(ts: np.datetime64 | int | np.integer) -> np.int64:
@@ -37,8 +31,8 @@ def coerce_timestamp(ts: np.datetime64 | int | np.integer) -> np.int64:
     instant 37 s *earlier* in wall-clock UTC than the eponymous UTC
     midnight.  To convert to/from the UTC wall-clock convention for
     plotting or interoperability with external systems, use
-    [`utc_to_tai`][tradingflow.utils.utc_to_tai] or
-    [`tai_to_utc`][tradingflow.utils.tai_to_utc].
+    [`utc_to_tai`][tradingflow.data.time.utc_to_tai] or
+    [`tai_to_utc`][tradingflow.data.time.tai_to_utc].
 
     Accepts `datetime64` (any precision; coerced to ns), plain `int`, or
     `np.integer`.

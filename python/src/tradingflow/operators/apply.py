@@ -7,9 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..operator import Operator
-from ..types import Handle, NodeKind
-from ..views import ArrayView
+from .. import ArrayView, Handle, NodeKind, Operator
 
 
 @dataclass
@@ -68,9 +66,7 @@ class Apply(
             name=name,
         )
 
-    def init(
-        self, inputs: tuple[ArrayView[np.float64], ...], timestamp: int
-    ) -> ApplyState:
+    def init(self, inputs: tuple[ArrayView[np.float64], ...], timestamp: int) -> ApplyState:
         return ApplyState(f=self._f)
 
     @staticmethod

@@ -61,11 +61,11 @@ than the same string would mean under a UTC interpretation.  For almost
 every backtest this uniform offset is invisible.  When data must be
 anchored to wall-clock UTC (ingesting from leap-second-aware systems,
 or labelling plot axes), use the conversion helpers in
-[`tradingflow.utils`][tradingflow.utils]:
+[`tradingflow.data.time`][tradingflow.data.time]:
 
-* [`utc_to_tai`][tradingflow.utils.utc_to_tai] — accepts a scalar or
-  numpy array.  Adds the current TAI−UTC offset.
-* [`tai_to_utc`][tradingflow.utils.tai_to_utc] — inverse.
+* [`utc_to_tai`][tradingflow.data.time.utc_to_tai] — accepts a scalar
+  or numpy array.  Adds the current TAI−UTC offset.
+* [`tai_to_utc`][tradingflow.data.time.tai_to_utc] — inverse.
 
 String-parsing sources (`CSVSource`, `FinancialReportSource`) accept an
 `is_utc` flag (default `True`) and `tz_offset: np.timedelta64` so that
@@ -73,12 +73,12 @@ CSV dates under either interpretation can be ingested at the source
 boundary without post-hoc scalar conversion.
 """
 
-from .views import ArrayView, SeriesView
+from .data import Array, ArrayView, Handle, NodeKind, Series, SeriesView, Unit
 from .source import Source, NativeSource
 from .operator import Operator, NativeOperator
-from .types import Array, NodeKind, Series, Unit, Handle
 from .scenario import Scenario
-from .schema import Schema
+from .utils import Schema
+
 
 __all__ = [
     "Array",

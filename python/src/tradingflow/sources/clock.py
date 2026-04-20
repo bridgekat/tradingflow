@@ -15,8 +15,9 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from .. import NodeKind
 from ..source import NativeSource
-from ..utils import coerce_timestamp
+from ..data import coerce_timestamp
 
 
 class Clock(NativeSource):
@@ -31,7 +32,6 @@ class Clock(NativeSource):
     def __init__(self, timestamps: list[np.datetime64] | np.ndarray) -> None:
         ts_ns = np.asarray(timestamps, dtype="datetime64[ns]")
         ts_i64 = ts_ns.view("int64").tolist()
-        from ..types import NodeKind
         super().__init__(native_id="clock", kind=NodeKind.UNIT, dtype="", params={"timestamps": ts_i64})
 
 

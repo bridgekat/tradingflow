@@ -47,7 +47,7 @@ import matplotlib.pyplot as plt
 from a_shares_crawler.types import Schema as CSVSchema
 
 from tradingflow import Scenario, Schema
-from tradingflow.types import Handle
+from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource, MonthlyClock
 from tradingflow.operators import Clocked, Map, NotifyStack, Record, Select, Stack
 from tradingflow.operators.num import Multiply

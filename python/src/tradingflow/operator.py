@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .types import Handle, NodeKind, _to_native_node_kind
+from .data.types import Handle, NodeKind, _to_native_node_kind
 
 if TYPE_CHECKING:
     from tradingflow._native import NativeScenario
@@ -169,16 +169,11 @@ class Operator[*Views, Output, State](ABC):
         of generic parameters.  The class-level `*Views`/`Output` are
         purely static-typing aids for pyright.
         """
-        input_names = [
-            (inp.kind, "" if inp.kind == NodeKind.UNIT else inp.dtype.name)
-            for inp in self._inputs
-        ]
+        input_names = [(inp.kind, "" if inp.kind == NodeKind.UNIT else inp.dtype.name) for inp in self._inputs]
         output_name = (self._kind, "" if self._kind == NodeKind.UNIT else self._dtype.name)
         return input_names, output_name
 
-    def _register(
-        self, native_scenario: NativeScenario, input_indices: list[int]
-    ) -> int:
+    def _register(self, native_scenario: NativeScenario, input_indices: list[int]) -> int:
         """Register this Python operator with the native scenario.
 
         Polymorphic dispatch: [`Scenario.add_operator`][tradingflow.Scenario.add_operator]
@@ -273,9 +268,7 @@ class NativeOperator:
         """Human-readable name."""
         return self._name
 
-    def _register(
-        self, native_scenario: NativeScenario, input_indices: list[int]
-    ) -> int:
+    def _register(self, native_scenario: NativeScenario, input_indices: list[int]) -> int:
         """Register this native operator with the native scenario."""
         return native_scenario.add_native_operator(
             self._native_id,

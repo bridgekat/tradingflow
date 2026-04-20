@@ -7,7 +7,7 @@ from typing import cast
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ..utils import ensure_contiguous
+from ..data import ensure_contiguous
 from ..source import NativeSource
 
 

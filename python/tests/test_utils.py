@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from tradingflow.utils import ensure_contiguous
+from tradingflow.data import ensure_contiguous
 
 
 class TestEnsureContiguous:

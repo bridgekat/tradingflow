@@ -271,7 +271,7 @@ impl NativeScenario {
         //    Wrap NativeArrayView / NativeSeriesView in their Python-side
         //    wrappers (ArrayView / SeriesView) so Python operators receive
         //    the high-level types.
-        let views_mod = py.import("tradingflow.views")?;
+        let views_mod = py.import("tradingflow.data.views")?;
         let array_view_cls = views_mod.getattr("ArrayView")?;
         let series_view_cls = views_mod.getattr("SeriesView")?;
 

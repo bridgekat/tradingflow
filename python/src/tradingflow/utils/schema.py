@@ -36,12 +36,12 @@ class Schema:
         return f"Schema({self._names!r})"
 
     def index(self, name: str) -> int:
-        """Look up the position of *name*.
+        """Look up the position of `name`.
 
         Raises
         ------
         KeyError
-            If *name* is not in the schema.
+            If `name` is not in the schema.
         """
         return self._lookup[name]
 
@@ -56,16 +56,16 @@ class Schema:
         return [self._lookup[n] for n in names]
 
     def try_index(self, name: str) -> int | None:
-        """Look up the position of *name*, returning `None` if absent."""
+        """Look up the position of `name`, returning `None` if absent."""
         return self._lookup.get(name)
 
     def name(self, index: int) -> str:
-        """Look up the name at *index*.
+        """Look up the name at `index`.
 
         Raises
         ------
         IndexError
-            If *index* is out of bounds.
+            If `index` is out of bounds.
         """
         return self._names[index]
 
@@ -75,7 +75,7 @@ class Schema:
         return list(self._names)
 
     def contains(self, name: str) -> bool:
-        """Whether the schema contains *name*."""
+        """Whether the schema contains `name`."""
         return name in self._lookup
 
     def select(self, indices: Iterable[int]) -> Schema:
@@ -83,7 +83,7 @@ class Schema:
         return Schema(self._names[i] for i in indices)
 
     def concat(self, other: Schema) -> Schema:
-        """Create a schema by concatenating this schema with *other*.
+        """Create a schema by concatenating this schema with `other`.
 
         Raises
         ------

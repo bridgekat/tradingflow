@@ -35,7 +35,7 @@ from tradingflow.operators.rolling import (
     RollingCovariance,
     EMA,
 )
-from tradingflow.types import Handle, NodeKind
+from tradingflow import Handle, NodeKind
 
 
 def ts(i: int) -> np.datetime64:

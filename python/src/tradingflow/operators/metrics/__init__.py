@@ -26,8 +26,7 @@ of prediction they evaluate:
   Gaussian negative log-likelihood).
 """
 
-from . import mean
-from . import variance
+from . import mean, variance
 from .average_return import AverageReturn
 from .compound_return import CompoundReturn
 from .drawdown import Drawdown

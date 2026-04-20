@@ -7,8 +7,9 @@ import pandas as pd
 
 from tradingflow._native import NativeArrayView, NativeSeriesView
 
-from .schema import Schema
-from .utils import ensure_contiguous, coerce_timestamp
+from ..utils.schema import Schema
+from .numpy import ensure_contiguous
+from .time import coerce_timestamp
 
 
 class ArrayView[T: np.generic]:
@@ -172,8 +173,8 @@ class SeriesView[T: np.generic]:
             Timestamp of the new element in the TradingFlow convention
             (TAI ns since PTP epoch).  Any `datetime64` precision is
             accepted and reinterpreted as int64 without leap-second
-            math.  Use [`utc_to_tai`][tradingflow.utils.utc_to_tai] if
-            the value came from a UTC-convention source.
+            math.  Use [`utc_to_tai`][tradingflow.data.time.utc_to_tai]
+            if the value came from a UTC-convention source.
 
         value
             Array whose shape must match the view's shape.
@@ -190,7 +191,7 @@ class SeriesView[T: np.generic]:
         core stores TAI `Instant`s and the bridge reinterprets them
         directly — the returned int64 values are TAI ns since the PTP
         epoch.  For plotting against UTC wall-clock axes, pass the
-        result through [`tai_to_utc`][tradingflow.utils.tai_to_utc]
+        result through [`tai_to_utc`][tradingflow.data.time.tai_to_utc]
         first.
         """
         return self.slice(start, end).view("datetime64[ns]")
@@ -285,5 +286,3 @@ class SeriesView[T: np.generic]:
 
     def __repr__(self) -> str:
         return f"SeriesView(len={len(self)}, shape={self.shape}, dtype={self.dtype})"
-
-

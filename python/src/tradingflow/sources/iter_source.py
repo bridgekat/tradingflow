@@ -8,7 +8,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ..utils import coerce_timestamp, ensure_contiguous
+from ..data import coerce_timestamp
+from ..data import ensure_contiguous
 from ..source import Source, empty_live_gen
 
 
@@ -49,7 +50,9 @@ class IterSource(Source):
         super().__init__(dtype, shape, initial=initial, name=name)
         self._iterable = iterable
 
-    def init(self, timestamp: int) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[tuple[np.datetime64, Any]]]:
+    def init(
+        self, timestamp: int
+    ) -> tuple[AsyncIterator[tuple[np.datetime64, Any]], AsyncIterator[tuple[np.datetime64, Any]]]:
         return self._historical_gen(), empty_live_gen()
 
     async def _historical_gen(self) -> AsyncIterator[tuple[np.datetime64, Any]]:

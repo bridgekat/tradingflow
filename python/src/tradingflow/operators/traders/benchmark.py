@@ -6,9 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ...operator import Operator
-from ...types import Handle, NodeKind
-from ...views import ArrayView
+from ... import ArrayView, Handle, NodeKind, Operator
 from ..traders.simple_trader import OHLCV
 
 
@@ -102,9 +100,7 @@ class Benchmark(
 
     def init(
         self,
-        inputs: tuple[
-            ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]
-        ],
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]],
         timestamp: int,
     ) -> BenchmarkState:
         n = self._num_stocks
@@ -120,9 +116,7 @@ class Benchmark(
     @staticmethod
     def compute(
         state: BenchmarkState,
-        inputs: tuple[
-            ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]
-        ],
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]],
         output: ArrayView[np.float64],
         timestamp: int,
         produced: tuple[bool, ...],

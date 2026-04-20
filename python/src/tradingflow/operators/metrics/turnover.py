@@ -4,9 +4,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ...views import ArrayView
-from ...operator import Operator
-from ...types import Handle, NodeKind
+from ... import ArrayView, Handle, NodeKind, Operator
 
 
 @dataclass(slots=True)
@@ -64,9 +62,7 @@ class Turnover(
             name=type(self).__name__,
         )
 
-    def init(
-        self, inputs: tuple[ArrayView[np.float64]], timestamp: int
-    ) -> TurnoverState:
+    def init(self, inputs: tuple[ArrayView[np.float64]], timestamp: int) -> TurnoverState:
         return TurnoverState(num_stocks=self._num_stocks)
 
     @staticmethod

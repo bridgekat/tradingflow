@@ -11,8 +11,8 @@ from tradingflow._native import NativeArrayView, NativeSeriesView, NativeScenari
 from . import Array, Series, operators
 from .operator import Operator, NativeOperator
 from .source import Source, NativeSource
-from .types import Handle, NodeKind
-from .views import ArrayView, SeriesView
+from .data.types import Handle, NodeKind
+from .data.views import ArrayView, SeriesView
 
 
 class Scenario:
@@ -61,11 +61,7 @@ class Scenario:
         """
         idx = source._register(self._native)
         # Unit nodes carry no value; report `void` dtype on the handle.
-        dtype = (
-            np.dtype("void")
-            if source.kind == NodeKind.UNIT
-            else np.dtype(source.dtype)
-        )
+        dtype = np.dtype("void") if source.kind == NodeKind.UNIT else np.dtype(source.dtype)
         return Handle(idx, source.kind, dtype, source.shape)
 
     def add_operator(

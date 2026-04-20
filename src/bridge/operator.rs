@@ -98,7 +98,7 @@ pub fn make_py_operator(
 
     // Wrap native views in Python-side wrappers (ArrayView/SeriesView).
     // Unit output: pass None directly to the Python operator.
-    let views_mod = py.import("tradingflow.views")?;
+    let views_mod = py.import("tradingflow.data.views")?;
     let py_output: PyObject = match out_view_kind {
         NativeNodeKind::Array => {
             let cls = views_mod.getattr("ArrayView")?;

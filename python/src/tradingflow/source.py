@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .types import NodeKind, _to_native_node_kind
+from .data.types import NodeKind, _to_native_node_kind
 
 if TYPE_CHECKING:
     from tradingflow._native import NativeScenario

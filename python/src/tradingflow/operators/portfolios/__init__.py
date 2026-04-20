@@ -24,9 +24,7 @@ Python.
   variance-only (minimum-variance) portfolio implementations.
 """
 
-from . import mean
-from . import mean_variance
-from . import variance
+from . import mean, mean_variance, variance
 from .mean_portfolio import MeanPortfolio, MeanPortfolioState
 from .mean_variance_portfolio import MeanVariancePortfolio, MeanVariancePortfolioState
 from .variance_portfolio import VariancePortfolio, VariancePortfolioState

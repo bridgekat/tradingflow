@@ -1,7 +1,6 @@
 """Sharpe ratio since inception."""
 
-from ...operator import NativeOperator
-from ...types import Handle, NodeKind
+from ... import Handle, NativeOperator, NodeKind
 
 
 class SharpeRatio(NativeOperator):

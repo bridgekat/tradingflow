@@ -1,4 +1,4 @@
-"""Node type markers and Handle for the computation graph."""
+"""Node type markers, `NodeKind` enum, and `Handle` for the computation graph."""
 
 from __future__ import annotations
 
@@ -10,18 +10,13 @@ import numpy as np
 from tradingflow._native import NativeNodeKind
 
 
-# ---------------------------------------------------------------------------
-# Node kind enum
-# ---------------------------------------------------------------------------
-
-
 class NodeKind(enum.Enum):
     """Kind of a graph node's value.
 
     Pure-Python mirror of the Rust [`NativeNodeKind`][tradingflow._native.NativeNodeKind]
     PyO3 enum.  The Python-facing API uses [`NodeKind`][tradingflow.NodeKind] so
     type checkers (which cannot read PyO3-generated classes) see a normal
-    Python enum.  At the FFI boundary, [`_to_native_node_kind`][tradingflow.types._to_native_node_kind]
+    Python enum.  At the FFI boundary, [`_to_native_node_kind`][tradingflow.data.types._to_native_node_kind]
     converts to the PyO3 variant.
     """
 
@@ -43,11 +38,6 @@ def _to_native_node_kind(kind: NodeKind) -> NativeNodeKind:
             return NativeNodeKind.Series
         case NodeKind.UNIT:
             return NativeNodeKind.Unit
-
-
-# ---------------------------------------------------------------------------
-# Node type markers
-# ---------------------------------------------------------------------------
 
 
 class Array[T: np.generic]:
@@ -77,10 +67,6 @@ class Unit:
 
     pass
 
-
-# ---------------------------------------------------------------------------
-# Type-to-name mapping
-# ---------------------------------------------------------------------------
 
 _SCALAR_NAMES: dict[type, str] = {
     np.bool_: "bool",
@@ -130,11 +116,6 @@ def node_type_to_name(tp: type) -> tuple[NodeKind, str]:
     if tp is Unit:
         return (NodeKind.UNIT, "")
     raise TypeError(f"Cannot resolve node type: {tp}")
-
-
-# ---------------------------------------------------------------------------
-# Handle
-# ---------------------------------------------------------------------------
 
 
 class Handle[T]:

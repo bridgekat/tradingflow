@@ -6,9 +6,9 @@ from pathlib import Path
 
 import numpy as np
 
-from ..schema import Schema
+from .. import Schema
 from ..source import NativeSource
-from ..utils import coerce_timestamp
+from ..data import coerce_timestamp
 
 
 class CSVSource(NativeSource):

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..utils import ensure_contiguous
-from ..operator import NativeOperator
-from ..types import NodeKind
+from ..data import ensure_contiguous
+from .. import NativeOperator, NodeKind
 
 
 class Const(NativeOperator):

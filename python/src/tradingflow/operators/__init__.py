@@ -47,13 +47,7 @@ This module provides all shipped operators. They fall into two categories:
 - [`traders`][tradingflow.operators.traders] -- trading simulation operators
 """
 
-from . import metrics
-from . import num
-from . import portfolios
-from . import predictors
-from . import rolling
-from . import stocks
-from . import traders
+from . import metrics, num, portfolios, predictors, rolling, stocks, traders
 
 from .apply import Apply
 from .cast import Cast

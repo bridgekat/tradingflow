@@ -6,8 +6,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from ..operator import NativeOperator
-from ..types import Handle, NodeKind
+from .. import Handle, NativeOperator, NodeKind
 
 
 class NotifyStack(NativeOperator):
@@ -42,9 +41,7 @@ class NotifyStack(NativeOperator):
             raise ValueError("NotifyStack requires at least one input.")
         dtype = np.dtype(inputs[0].dtype)
         if dtype.kind != "f":
-            raise TypeError(
-                f"NotifyStack requires a float dtype (got {dtype}); NaN is used as the no-update sentinel."
-            )
+            raise TypeError(f"NotifyStack requires a float dtype (got {dtype}); NaN is used as the no-update sentinel.")
         base_shape = list(inputs[0].shape)
         out_shape = base_shape[:axis] + [len(inputs)] + base_shape[axis:]
         super().__init__(

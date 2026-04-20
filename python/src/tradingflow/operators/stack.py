@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..operator import NativeOperator
-from ..types import Handle, NodeKind
+from .. import Handle, NativeOperator, NodeKind
 
 
 class Stack(NativeOperator):
