@@ -30,7 +30,7 @@ from a_shares_crawler.types import Schema as CSVSchema
 
 from tradingflow import Scenario, Schema
 from tradingflow import Handle
-from tradingflow.sources import Clock, CSVSource, MonthlyClock
+from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Apply, Clocked, Map, Record, Select, Stack, StackSync
 from tradingflow.operators.num import Divide, Log, Multiply
@@ -52,7 +52,7 @@ BS_SCHEMA = Schema(CSVSchema.balance_sheet().iter_field_ids())
 INC_SCHEMA = Schema(CSVSchema.income_statement().iter_field_ids())
 OHLCV_INDICES = PRICE_SCHEMA.indices(["prices.open", "prices.high", "prices.low", "prices.close", "prices.volume"])
 
-RISK_AVERSIONS = np.linspace(0.0, 5.0, 11).round(2).tolist()
+RISK_AVERSIONS = np.linspace(2.0, 0.0, 10, endpoint=False).round(2).tolist()
 
 
 def build_scenario(
@@ -151,38 +151,35 @@ def build_scenario(
         per_stock_irregular["net_profit"].append(net_profit)
 
     # ------------------------------------------------------------------
-    # Cross-sectional operators (shared)
+    # Cross-sectional operators
     # ------------------------------------------------------------------
 
+    num_stocks = len(symbols)
+
+    # Stack per-stock handles into (num_stocks, ...) arrays.
     stacked = {
         **{k: sc.add_operator(StackSync(v)) for k, v in per_stock_sync.items()},
         **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
     }
 
-    num_stocks = len(symbols)
+    # Extract close and volume from stacked OHLCV for feature computation.
     close = sc.add_operator(Select(stacked["ohlcv"], 3, axis=1))
     volume = sc.add_operator(Select(stacked["ohlcv"], 4, axis=1))
+
+    # Market cap and log(market cap).
     market_cap = sc.add_operator(Multiply(close, stacked["circ_shares"]))
     log_mcap = sc.add_operator(Log(market_cap))
 
-    # Stock index: top index_size companies by market cap, cap-weighted.
-    # Rebalanced monthly to avoid per-tick overhead.
-    monthly_clock = sc.add_source(MonthlyClock(data_start, end, tz="Asia/Shanghai"))
-    universe = sc.add_operator(
-        Clocked(
-            monthly_clock,
-            Map(
-                market_cap,
-                lambda m: calculate_index_weights(m, index_size),
-                shape=(num_stocks,),
-                dtype=np.float64,
-            ),
-        )
-    )
-    log_bp = sc.add_operator(Log(sc.add_operator(Divide(stacked["parent_equity"], market_cap))))
+    # log(B/P) = log(parent_equity / market_cap).
+    bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
+    log_bp = sc.add_operator(Log(bp))
+
+    # Turnover MA.
     turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
     turnover_ma = sc.add_operator(RollingMean(turnover_series, window=rebalance_days))
+
+    # Stack features into (num_stocks, num_features).
     stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
 
     # Record feature and price history for predictors.
@@ -193,23 +190,31 @@ def build_scenario(
     # Shared predictors
     # ------------------------------------------------------------------
 
-    # Rebalance clock fires every `rebalance_days` from trading_start.
-    # Const clocked by it produces an Array[float64] rebalance signal
-    # which the predictors consume as a regular input.
+    # Rebalance clock: the single periodic signal in this scenario.
     rebalance_dates = np.arange(
         trading_start,
         end + np.timedelta64(1, "D"),
         np.timedelta64(rebalance_days, "D"),
     )
     rebalance_clock = sc.add_source(Clock(rebalance_dates))
-    rebalance = rebalance_clock
+
+    universe = sc.add_operator(
+        Clocked(
+            rebalance_clock,
+            Map(
+                market_cap,
+                lambda m: calculate_index_weights(m, index_size),
+                shape=(num_stocks,),
+                dtype=np.float64,
+            ),
+        )
+    )
 
     predicted_returns = sc.add_operator(
         LinearRegression(
             universe,
             features_series,
             adjusted_prices_series,
-            rebalance=rebalance,
             universe_size=index_size,
             min_periods=100,
             verbose=True,
@@ -221,7 +226,6 @@ def build_scenario(
             universe,
             features_series,
             adjusted_prices_series,
-            rebalance=rebalance,
             universe_size=index_size,
             max_periods=100,
             min_periods=50,
@@ -289,9 +293,9 @@ def build_scenario(
 
         variants[delta] = {
             "value": sc.add_operator(Record(frictionless_value)),
-            "sharpe": sc.add_operator(Record(sc.add_operator(SharpeRatio(frictionless_value, monthly_clock)))),
+            "sharpe": sc.add_operator(Record(sc.add_operator(SharpeRatio(frictionless_value, rebalance_clock)))),
             "drawdown": sc.add_operator(Record(sc.add_operator(Drawdown(frictionless_value)))),
-            "compound": sc.add_operator(Record(sc.add_operator(CompoundReturn(frictionless_value, monthly_clock)))),
+            "compound": sc.add_operator(Record(sc.add_operator(CompoundReturn(frictionless_value, rebalance_clock)))),
             "frontier": sc.add_operator(Record(frontier_point)),
         }
 
@@ -301,7 +305,7 @@ def build_scenario(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument("--data-begin", type=np.datetime64, default=None, help="data sampling start date")
+    parser.add_argument("--sample-begin", type=np.datetime64, default=None, help="data sampling start date")
     parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=90, help="rebalance every N calendar days")
@@ -326,7 +330,7 @@ if __name__ == "__main__":
         rebalance_days=args.rebalance_days,
         initial_cash=args.initial_cash,
         index_size=args.index_size,
-        data_start=resolve_data_start(args.data_begin, args.begin, args.rebalance_days),
+        data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
         end=args.end,
     )
@@ -345,6 +349,7 @@ if __name__ == "__main__":
     progress.close()
 
     # Extract results.
+    periods_per_year = 365.0 / args.rebalance_days
     results: dict[float, dict] = {}
     index_value = sc.series_view(handles["index_value"]).to_series()
     for delta, variant in variants.items():
@@ -360,8 +365,8 @@ if __name__ == "__main__":
             "compound": compound,
             "frontier": frontier,
         }
-        car = ((compound.iloc[-1] + 1) ** 12 - 1) if len(compound) > 0 else 0.0
-        sr = sharpe.iloc[-1] * np.sqrt(12) if len(sharpe) > 0 else 0.0
+        car = ((compound.iloc[-1] + 1) ** periods_per_year - 1) if len(compound) > 0 else 0.0
+        sr = sharpe.iloc[-1] * np.sqrt(periods_per_year) if len(sharpe) > 0 else 0.0
         mdd = drawdown.min() if len(drawdown) > 0 else 0.0
         print(f"delta={delta:.1f}: final={value.iloc[-1]:,.0f} CNY, annual={car:.2%}, sharpe={sr:.3f}, mdd={mdd:.2%}")
 
@@ -429,13 +434,13 @@ if __name__ == "__main__":
 
     # Panel 3 (bottom-left): Sharpe ratio
     ax = axes[1, 0]
-    ax.set_title("Monthly Sharpe ratio annualized (since inception)")
+    ax.set_title("Sharpe ratio annualized (since inception)")
     ax.set_ylabel("Sharpe")
     ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
     for (delta, result), color in zip(results.items(), colors):
         ax.plot(
             result["sharpe"].index,
-            result["sharpe"] * np.sqrt(12),
+            result["sharpe"] * np.sqrt(periods_per_year),
             linewidth=0.8,
             color=color,
             label=f"delta={delta}",

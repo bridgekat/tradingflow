@@ -26,14 +26,17 @@ class MeanPortfolio(
 ):
     """Abstract portfolio constructor from predicted returns.
 
-    Triggered by new predicted returns from upstream.  Delegates to
-    `positions_fn` to compute position weights from the subset of
-    stocks with positive universe weights and finite predictions.  The
-    result is scattered back to the full dimension with zeros elsewhere.
+    Triggered by `universe` updates — the universe is the canonical
+    rebalance signal.  On each trigger, delegates to `positions_fn` to
+    compute position weights from the subset of stocks with positive
+    universe weights and finite predictions.  The result is scattered
+    back to the full dimension with zeros elsewhere.
 
-    The rebalance cadence is inherited from upstream: when the predictor
-    is clock-triggered at rebalance dates, this operator runs at the
-    same cadence (driven by the predictor's input-production signal).
+    The rebalance cadence is inherited from upstream: `universe` is
+    typically clocked by a rebalance clock (e.g. via
+    [`Clocked`][tradingflow.operators.Clocked]), so this operator runs
+    at that cadence.  `predicted_returns` is read as the latest stored
+    prediction at the trigger — it need not produce on the same cycle.
 
     ## NaN behavior
 
@@ -97,8 +100,10 @@ class MeanPortfolio(
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:
-        # Changes in universe only should not trigger recomputation.
-        if not produced[1]:
+        # Trigger on universe updates: the universe is the canonical
+        # rebalance signal, and the predictor's mu is stored as the last
+        # prediction even when it did not produce this cycle.
+        if not produced[0]:
             return False
 
         universe = inputs[0].value()

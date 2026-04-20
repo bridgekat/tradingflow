@@ -44,7 +44,7 @@ from tradingflow.operators.traders.simple import RandomTrader
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
-from tradingflow.sources import Clock, MonthlyClock
+from tradingflow.sources import Clock
 
 from stocks import load_symbols, calculate_index_weights, resolve_data_start
 
@@ -178,6 +178,8 @@ def build_scenario(
     # Cross-sectional operators
     # ------------------------------------------------------------------
 
+    num_stocks = len(symbols)
+
     # Stack per-stock handles into (num_stocks, ...) arrays.
     stacked = {
         **{k: sc.add_operator(StackSync(v)) for k, v in per_stock_sync.items()},
@@ -189,24 +191,8 @@ def build_scenario(
     volume = sc.add_operator(Select(stacked["ohlcv"], 4, axis=1))
 
     # Market cap and log(market cap).
-    num_stocks = len(symbols)
     market_cap = sc.add_operator(Multiply(close, stacked["circ_shares"]))
     log_mcap = sc.add_operator(Log(market_cap))
-
-    # Stock index: top index_size companies by market cap, cap-weighted.
-    # Rebalanced monthly to avoid per-tick overhead.
-    monthly_clock = sc.add_source(MonthlyClock(data_start, end, tz="Asia/Shanghai"))
-    universe = sc.add_operator(
-        Clocked(
-            monthly_clock,
-            Map(
-                market_cap,
-                lambda m: calculate_index_weights(m, index_size),
-                shape=(num_stocks,),
-                dtype=np.float64,
-            ),
-        )
-    )
 
     # log(B/P) = log(parent_equity / market_cap).
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
@@ -228,24 +214,31 @@ def build_scenario(
     # Strategy pipeline
     # ------------------------------------------------------------------
 
-    # Rebalance clock fires every `rebalance_days` from trading_start
-    # onward.  A Const operator clocked by it produces an Array[float64]
-    # rebalance signal, routed as a regular input into the predictor so
-    # it observes every data tick and emits only on rebalance.
+    # Rebalance clock: the single periodic signal in this scenario.
     rebalance_dates = np.arange(
         trading_start,
         end + np.timedelta64(1, "D"),
         np.timedelta64(rebalance_days, "D"),
     )
     rebalance_clock = sc.add_source(Clock(rebalance_dates))
-    rebalance = rebalance_clock
+
+    universe = sc.add_operator(
+        Clocked(
+            rebalance_clock,
+            Map(
+                market_cap,
+                lambda m: calculate_index_weights(m, index_size),
+                shape=(num_stocks,),
+                dtype=np.float64,
+            ),
+        )
+    )
 
     predicted_returns = sc.add_operator(
         LinearRegression(
             universe,
             features_series,
             adjusted_prices_series,
-            rebalance=rebalance,
             universe_size=index_size,
             min_periods=100,
             verbose=True,
@@ -298,8 +291,8 @@ def build_scenario(
     # ------------------------------------------------------------------
 
     actual_value = sc.add_operator(Map(strategy_actual, np.sum, shape=(), dtype=np.float64))
-    sharpe = sc.add_operator(SharpeRatio(actual_value, monthly_clock))
-    compound_ret = sc.add_operator(CompoundReturn(actual_value, monthly_clock))
+    sharpe = sc.add_operator(SharpeRatio(actual_value, rebalance_clock))
+    compound_ret = sc.add_operator(CompoundReturn(actual_value, rebalance_clock))
     drawdown = sc.add_operator(Drawdown(actual_value))  # Triggers on every update
 
     return sc, {
@@ -315,7 +308,7 @@ def build_scenario(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument("--data-begin", type=np.datetime64, default=None, help="data sampling start date")
+    parser.add_argument("--sample-begin", type=np.datetime64, default=None, help="data sampling start date")
     parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=90, help="rebalance every N calendar days")
@@ -339,7 +332,7 @@ if __name__ == "__main__":
         rebalance_days=args.rebalance_days,
         initial_cash=args.initial_cash,
         index_size=args.index_size,
-        data_start=resolve_data_start(args.data_begin, args.begin, args.rebalance_days),
+        data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
         end=args.end,
     )
@@ -380,12 +373,13 @@ if __name__ == "__main__":
     print(f"Final value:   {total_value.iloc[-1]:,.2f} CNY")
     print()
 
+    periods_per_year = 365.0 / args.rebalance_days
     if len(compound_return) > 0:
-        compound_return_annualized = (compound_return.iloc[-1] + 1) ** 12 - 1
+        compound_return_annualized = (compound_return.iloc[-1] + 1) ** periods_per_year - 1
         print(f"Compound return annualized: {compound_return_annualized:.2%}")
     if len(sharpe) > 0:
-        monthly_sharpe_annualized = sharpe.iloc[-1] * np.sqrt(12)
-        print(f"Monthly Sharpe ratio annualized: {monthly_sharpe_annualized:.4f}")
+        sharpe_annualized = sharpe.iloc[-1] * np.sqrt(periods_per_year)
+        print(f"Sharpe ratio annualized: {sharpe_annualized:.4f}")
     if len(drawdown) > 0:
         max_drawdown = drawdown.min()
         print(f"Max drawdown: {max_drawdown:.2%}")
@@ -428,10 +422,10 @@ if __name__ == "__main__":
     ax.legend(loc="upper left", fontsize=8)
 
     ax = axes[1]
-    ax.set_title("Monthly Sharpe ratio annualized (since inception)")
+    ax.set_title("Sharpe ratio annualized (since inception)")
     ax.set_ylabel("Sharpe ratio")
     ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
-    ax.plot(sharpe.index, sharpe * np.sqrt(12), color="C1")
+    ax.plot(sharpe.index, sharpe * np.sqrt(periods_per_year), color="C1")
 
     ax = axes[2]
     ax.set_title("Drawdown (since previous high)")

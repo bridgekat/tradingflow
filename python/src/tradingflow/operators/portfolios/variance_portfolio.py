@@ -28,15 +28,19 @@ class VariancePortfolio(
 ):
     """Abstract portfolio constructor from covariance alone (no expected returns).
 
-    Triggered by new predicted covariance from upstream.  Delegates to
-    `positions_fn` to compute position weights.  Only stocks with
-    positive universe weights and finite diagonal covariance entries
-    are passed to `positions_fn`; the result is scattered back to
-    the full dimension with zeros elsewhere.
+    Triggered by `universe` updates — the universe is the canonical
+    rebalance signal.  On each trigger, delegates to `positions_fn` to
+    compute position weights.  Only stocks with positive universe
+    weights and finite diagonal covariance entries are passed to
+    `positions_fn`; the result is scattered back to the full dimension
+    with zeros elsewhere.
 
-    The rebalance cadence is inherited from upstream: when the
-    covariance predictor is clock-triggered at rebalance dates, this
-    operator runs at the same cadence.
+    The rebalance cadence is inherited from upstream: `universe` is
+    typically clocked by a rebalance clock (e.g. via
+    [`Clocked`][tradingflow.operators.Clocked]), so this operator runs
+    at that cadence.  `predicted_covariances` is read as the latest
+    stored prediction at the trigger — it need not produce on the same
+    cycle.
 
     ## NaN behavior
 
@@ -105,8 +109,10 @@ class VariancePortfolio(
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:
-        # Changes in universe only should not trigger recomputation.
-        if not produced[1]:
+        # Trigger on universe updates: the universe is the canonical
+        # rebalance signal, and the predictor's sigma is stored as the
+        # last prediction even when it did not produce this cycle.
+        if not produced[0]:
             return False
 
         universe = inputs[0].value()

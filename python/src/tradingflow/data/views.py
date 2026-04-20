@@ -8,8 +8,21 @@ import pandas as pd
 from tradingflow._native import NativeArrayView, NativeSeriesView
 
 from ..utils.schema import Schema
-from .numpy import ensure_contiguous
 from .time import coerce_timestamp
+
+
+def ensure_contiguous(arr: np.ndarray) -> np.ndarray:
+    """Return `arr` as a C-contiguous array, preserving shape.
+
+    Unlike `np.ascontiguousarray`, this does **not** promote 0-d arrays
+    to 1-d.  If the array is already C-contiguous, it is returned as-is
+    (no copy).
+    """
+    if arr.flags["C_CONTIGUOUS"]:
+        return arr
+    else:
+        assert arr.ndim > 0
+        return np.ascontiguousarray(arr)
 
 
 class ArrayView[T: np.generic]:

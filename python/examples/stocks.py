@@ -21,20 +21,20 @@ def load_symbols(data_dir: Path) -> list[str]:
 
 
 def resolve_data_start(
-    data_begin: np.datetime64 | None,
+    sample_begin: np.datetime64 | None,
     trading_begin: np.datetime64,
     rebalance_days: int,
 ) -> np.datetime64:
     """Resolve the data start date.
 
-    If ``data_begin`` is ``None``, returns ``trading_begin`` minus
+    If ``sample_begin`` is ``None``, returns ``trading_begin`` minus
     ``rebalance_days`` calendar days.  Otherwise returns
-    ``min(data_begin, trading_begin)`` (clamping data_begin so it never
-    exceeds the trading begin).
+    ``min(sample_begin, trading_begin)`` (clamping sample_begin so it
+    never exceeds the trading begin).
     """
-    if data_begin is None:
+    if sample_begin is None:
         return trading_begin - np.timedelta64(rebalance_days, "D")
-    return min(data_begin, trading_begin)
+    return min(sample_begin, trading_begin)
 
 
 def calculate_index_weights(market_cap: np.ndarray, k: int) -> np.ndarray:

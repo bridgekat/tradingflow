@@ -13,15 +13,14 @@ as numpy-based helpers at the FFI boundary.
   [`Handle`][tradingflow.Handle] class used to refer to graph nodes.
 * [`views`][tradingflow.data.views] — [`ArrayView`][tradingflow.ArrayView]
   and [`SeriesView`][tradingflow.SeriesView], Python wrappers over
-  Rust-owned array / series buffers.
+  Rust-owned array / series buffers, plus the
+  [`ensure_contiguous`][tradingflow.data.views.ensure_contiguous] FFI
+  helper.
 * [`time`][tradingflow.data.time] — TAI ↔ UTC conversion helpers
   ([`utc_to_tai`][tradingflow.data.time.utc_to_tai],
   [`tai_to_utc`][tradingflow.data.time.tai_to_utc]) and the
   [`coerce_timestamp`][tradingflow.data.time.coerce_timestamp] FFI
   helper.
-* [`numpy`][tradingflow.data.numpy] — small numpy helpers used at the
-  FFI boundary
-  ([`ensure_contiguous`][tradingflow.data.numpy.ensure_contiguous]).
 """
 
 from .types import (
@@ -33,9 +32,8 @@ from .types import (
     _to_native_node_kind,
     node_type_to_name,
 )
-from .views import ArrayView, SeriesView
+from .views import ArrayView, SeriesView, ensure_contiguous
 from .time import coerce_timestamp, tai_to_utc, utc_to_tai
-from .numpy import ensure_contiguous
 
 __all__ = [
     "Array",

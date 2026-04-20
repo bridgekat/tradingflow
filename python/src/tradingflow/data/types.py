@@ -16,8 +16,8 @@ class NodeKind(enum.Enum):
     Pure-Python mirror of the Rust [`NativeNodeKind`][tradingflow._native.NativeNodeKind]
     PyO3 enum.  The Python-facing API uses [`NodeKind`][tradingflow.NodeKind] so
     type checkers (which cannot read PyO3-generated classes) see a normal
-    Python enum.  At the FFI boundary, [`_to_native_node_kind`][tradingflow.data.types._to_native_node_kind]
-    converts to the PyO3 variant.
+    Python enum; a private helper converts to the PyO3 variant at the FFI
+    boundary.
     """
 
     ARRAY = "array"

@@ -24,7 +24,6 @@ class MeanPredictor[T](
         ArrayView[np.float64],
         SeriesView[np.float64],
         SeriesView[np.float64],
-        None,
         ArrayView[np.float64],
         MeanPredictorState[T],
     ]
@@ -35,13 +34,16 @@ class MeanPredictor[T](
     observe each new sample (a future incremental-fit hook can accumulate
     running statistics here — the current base class refits from scratch
     on rebalance, so non-rebalance ticks simply return without work).
-    On each **rebalance** tick (signalled by the `rebalance` input
-    producing), reads the last `max_periods` feature and price entries
-    from the upstream `Series` inputs, builds a 1-period return matrix,
-    calls `fit_fn` and `predict_fn`, and emits predicted returns.
+    On each **rebalance** tick (signalled by the `universe` input
+    producing new weights), reads the last `max_periods` feature and
+    price entries from the upstream `Series` inputs, builds a 1-period
+    return matrix, calls `fit_fn` and `predict_fn`, and emits predicted
+    returns.
 
-    The rebalance cadence is controlled by the caller: pass a clock
-    source handle as the `rebalance` parameter.
+    The rebalance cadence is controlled by the caller: typically
+    `universe` is clocked by a rebalance clock (e.g. via
+    [`Clocked`][tradingflow.operators.Clocked]), so universe updates
+    coincide with rebalance dates.
 
     ## NaN behavior
 
@@ -58,16 +60,14 @@ class MeanPredictor[T](
     Parameters
     ----------
     universe
-        Universe weights, shape `(num_stocks,)`.
+        Universe weights, shape `(num_stocks,)`.  Updates on this input
+        trigger a rebalance.
     features_series
         Recorded features series, element shape
         `(num_stocks, num_features)`.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
         `(num_stocks,)`.
-    rebalance
-        Clock source handle that fires on each rebalance date.
-        Pass the clock source directly (e.g. `rebalance_clock`).
     fit_fn
         `(x, y) -> params`.  Feature array `x` of shape
         `(T, N, F)` and 1-period return matrix `y` of shape
@@ -96,7 +96,6 @@ class MeanPredictor[T](
         features_series: Handle,
         adjusted_prices_series: Handle,
         *,
-        rebalance: Handle,
         fit_fn: Callable[[np.ndarray, np.ndarray], T],
         predict_fn: Callable[[MeanPredictorState[T], np.ndarray, T], np.ndarray],
         universe_size: int,
@@ -117,7 +116,7 @@ class MeanPredictor[T](
         self._min_periods = min_periods
 
         super().__init__(
-            inputs=(universe, features_series, adjusted_prices_series, rebalance),
+            inputs=(universe, features_series, adjusted_prices_series),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
             shape=(self._num_stocks,),
@@ -130,7 +129,6 @@ class MeanPredictor[T](
             ArrayView[np.float64],
             SeriesView[np.float64],
             SeriesView[np.float64],
-            None,
         ],
         timestamp: int,
     ) -> MeanPredictorState[T]:
@@ -151,20 +149,20 @@ class MeanPredictor[T](
             ArrayView[np.float64],
             SeriesView[np.float64],
             SeriesView[np.float64],
-            None,
         ],
         output: ArrayView[np.float64],
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:
-        # Emit only on rebalance ticks.  Other invocations are reserved
+        # Emit only on rebalance ticks (signalled by the `universe`
+        # input producing new weights).  Other invocations are reserved
         # for subclasses that want to incrementally accumulate per-tick
         # statistics — the base class refits from scratch on rebalance
         # and has no per-tick state, so it returns immediately.
-        if not produced[3]:
+        if not produced[0]:
             return False
 
-        universe, features_series, prices_series, _rebalance = inputs
+        universe, features_series, prices_series = inputs
 
         # Bulk-read the last max_periods entries from both series.
         n_available = max(0, len(prices_series) - 1)

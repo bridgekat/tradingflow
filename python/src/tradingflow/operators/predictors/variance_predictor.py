@@ -24,7 +24,6 @@ class VariancePredictor[T](
         ArrayView[np.float64],
         SeriesView[np.float64],
         SeriesView[np.float64],
-        None,
         ArrayView[np.float64],
         VariancePredictorState[T],
     ]
@@ -35,13 +34,16 @@ class VariancePredictor[T](
     observe each new sample (a future incremental-fit hook can accumulate
     running statistics here — the current base class refits from scratch
     on rebalance, so non-rebalance ticks simply return without work).
-    On each **rebalance** tick, reads the last `max_periods` feature
-    and price entries from the upstream `Series` inputs, builds a
-    1-period return matrix, calls `fit_fn` and `predict_fn`, and emits
-    the predicted covariance matrix.
+    On each **rebalance** tick (signalled by the `universe` input
+    producing new weights), reads the last `max_periods` feature and
+    price entries from the upstream `Series` inputs, builds a 1-period
+    return matrix, calls `fit_fn` and `predict_fn`, and emits the
+    predicted covariance matrix.
 
-    The rebalance cadence is controlled by the caller: pass a clock
-    source handle as the `rebalance` parameter.
+    The rebalance cadence is controlled by the caller: typically
+    `universe` is clocked by a rebalance clock (e.g. via
+    [`Clocked`][tradingflow.operators.Clocked]), so universe updates
+    coincide with rebalance dates.
 
     ## NaN behavior
 
@@ -60,16 +62,14 @@ class VariancePredictor[T](
     Parameters
     ----------
     universe
-        Universe weights, shape `(num_stocks,)`.
+        Universe weights, shape `(num_stocks,)`.  Updates on this input
+        trigger a rebalance.
     features_series
         Recorded features series, element shape
         `(num_stocks, num_features)`.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
         `(num_stocks,)`.
-    rebalance
-        Clock source handle that fires on each rebalance date.
-        Pass the clock source directly (e.g. `rebalance_clock`).
     fit_fn
         `(x, y) -> params`.  Feature array `x` of shape
         `(T, N, F)` and 1-period return matrix `y` of shape
@@ -100,7 +100,6 @@ class VariancePredictor[T](
         features_series: Handle,
         adjusted_prices_series: Handle,
         *,
-        rebalance: Handle,
         fit_fn: Callable[[np.ndarray, np.ndarray], T],
         predict_fn: Callable[[VariancePredictorState[T], np.ndarray, T], np.ndarray],
         universe_size: int,
@@ -121,7 +120,7 @@ class VariancePredictor[T](
         self._min_periods = min_periods
 
         super().__init__(
-            inputs=(universe, features_series, adjusted_prices_series, rebalance),
+            inputs=(universe, features_series, adjusted_prices_series),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
             shape=(self._num_stocks, self._num_stocks),
@@ -134,7 +133,6 @@ class VariancePredictor[T](
             ArrayView[np.float64],
             SeriesView[np.float64],
             SeriesView[np.float64],
-            None,
         ],
         timestamp: int,
     ) -> VariancePredictorState[T]:
@@ -155,17 +153,17 @@ class VariancePredictor[T](
             ArrayView[np.float64],
             SeriesView[np.float64],
             SeriesView[np.float64],
-            None,
         ],
         output: ArrayView[np.float64],
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:
-        # Emit only on rebalance ticks.  See MeanPredictor for rationale.
-        if not produced[3]:
+        # Emit only on rebalance ticks (signalled by `universe`
+        # producing new weights).  See MeanPredictor for rationale.
+        if not produced[0]:
             return False
 
-        universe, features_series, prices_series, _rebalance = inputs
+        universe, features_series, prices_series = inputs
 
         # Bulk-read the last max_periods entries from both series.
         n_available = max(0, len(prices_series) - 1)

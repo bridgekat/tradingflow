@@ -36,7 +36,7 @@ from a_shares_crawler.types import Schema as CSVSchema
 
 from tradingflow import Scenario, Schema
 from tradingflow import Handle
-from tradingflow.sources import Clock, CSVSource, MonthlyClock
+from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack, StackSync
 from tradingflow.operators.num import Divide, Log, Multiply, Subtract
@@ -204,11 +204,21 @@ def build_scenario(
     features_series = sc.add_operator(Record(stacked_features))
     adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
 
-    # Universe: top stocks by market cap.
-    monthly_clock = sc.add_source(MonthlyClock(data_start, end, tz="Asia/Shanghai"))
+    # ------------------------------------------------------------------
+    # IC / RankIC evaluation
+    # ------------------------------------------------------------------
+
+    # Rebalance clock: the single periodic signal in this scenario.
+    rebalance_dates = np.arange(
+        eval_start,
+        end + np.timedelta64(1, "D"),
+        np.timedelta64(rebalance_days, "D"),
+    )
+    rebalance_clock = sc.add_source(Clock(rebalance_dates))
+
     universe = sc.add_operator(
         Clocked(
-            monthly_clock,
+            rebalance_clock,
             Map(
                 market_cap,
                 lambda m: calculate_index_weights(m, index_size),
@@ -218,25 +228,7 @@ def build_scenario(
         )
     )
 
-    # ------------------------------------------------------------------
-    # IC / RankIC evaluation
-    # ------------------------------------------------------------------
-
-    # Rebalance clock: fires every `rebalance_days` calendar days from
-    # `eval_start` to `end` (inclusive).  A Const operator clocked by
-    # the clock source produces an Array[float64] rebalance signal —
-    # routed as a regular input into the predictors so they observe
-    # every data tick (for future incremental accumulators) and emit
-    # only when the rebalance signal produces.
-    rebalance_dates = np.arange(
-        eval_start,
-        end + np.timedelta64(1, "D"),
-        np.timedelta64(rebalance_days, "D"),
-    )
-    rebalance_clock = sc.add_source(Clock(rebalance_dates))
-    rebalance = rebalance_clock
-
-    predictor_kwargs = dict(universe_size=index_size, rebalance=rebalance)
+    predictor_kwargs = dict(universe_size=index_size)
 
     estimators = {
         "sample": sc.add_operator(
@@ -280,7 +272,7 @@ def build_scenario(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument("--data-begin", type=np.datetime64, default=None, help="data sampling start date")
+    parser.add_argument("--sample-begin", type=np.datetime64, default=None, help="data sampling start date")
     parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=90, help="rebalance every N calendar days")
@@ -302,7 +294,7 @@ if __name__ == "__main__":
         data_dir,
         rebalance_days=args.rebalance_days,
         index_size=args.index_size,
-        data_start=resolve_data_start(args.data_begin, args.begin, args.rebalance_days),
+        data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
         eval_start=args.begin,
         end=args.end,
     )
