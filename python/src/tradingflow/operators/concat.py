@@ -18,6 +18,12 @@ from .. import Handle, NativeOperator, NodeKind
 class Concat(NativeOperator):
     """Concatenate N arrays along an existing axis.
 
+    Time-series semantics: on every trigger, the latest value of each
+    input is copied into the output, regardless of which inputs actually
+    produced this cycle.  See
+    [`ConcatSync`][tradingflow.operators.ConcatSync] for the
+    message-passing variant that fills non-produced slots with `NaN`.
+
     All inputs must have the same dtype and matching shapes on every axis
     except *axis*.
     """

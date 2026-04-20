@@ -18,10 +18,22 @@ from .data.views import ArrayView, SeriesView
 class Scenario:
     """A directed acyclic graph of sources and operators.
 
-    Sources and operators are registered via `add_source` and
-    `add_operator`, each returning a `Handle`. To record history,
-    use the `record` operator explicitly. `run` executes the
-    event loop.
+    Sources and operators are registered via
+    [`add_source`][tradingflow.Scenario.add_source] and
+    [`add_operator`][tradingflow.Scenario.add_operator], each returning
+    a [`Handle`][tradingflow.Handle].  Node output values are not
+    historised automatically — attach a
+    [`Record`][tradingflow.operators.Record] operator where a time
+    series is required.
+
+    [`run`][tradingflow.Scenario.run] drives the async event loop: it
+    drains every source's historical and live channels in timestamp
+    order, coalesces events that share the same timestamp into a single
+    flush batch, and propagates the batch through the DAG before
+    advancing to the next timestamp.  Within a batch, each operator's
+    `produced` mask reports which of its inputs actually produced this
+    cycle (see the "Notification semantics" section in
+    [`tradingflow`][tradingflow]).
     """
 
     __slots__ = ("_native",)

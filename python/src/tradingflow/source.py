@@ -18,6 +18,15 @@ if TYPE_CHECKING:
 class Source(ABC):
     """Abstract base for data sources.
 
+    A source feeds data into a DAG node via two async iterators: a
+    *historical* stream and a *live* stream.  Subclasses implement
+    [`init`][tradingflow.Source.init], which returns the pair; the two
+    iterators must cover the same underlying data stream without
+    overlap, split at some instant during `init`.  The runtime drains
+    the historical stream in timestamp order first, then interleaves
+    live events (clamping stale live timestamps forward to preserve
+    non-decreasing ingestion order).
+
     Parameters
     ----------
     dtype
@@ -60,6 +69,16 @@ class Source(ABC):
         AsyncIterator[tuple[np.datetime64, ArrayLike]],
     ]:
         """Return a `(historical, live)` async-iterator pair.
+
+        The two iterators cover complementary, non-overlapping segments
+        of the same underlying stream, split at some instant during the
+        execution of `init()`.  The runtime drains `historical` fully
+        (in timestamp order) and interleaves `live` events as they
+        arrive; either iterator may be immediately exhausted for a
+        history-only or live-only source — see
+        [`empty_historical_gen`][tradingflow.source.empty_historical_gen]
+        and
+        [`empty_live_gen`][tradingflow.source.empty_live_gen].
 
         Both iterators yield `(timestamp, value)` tuples.  Timestamps
         are `int64` TAI nanoseconds since the PTP epoch (1970-01-01

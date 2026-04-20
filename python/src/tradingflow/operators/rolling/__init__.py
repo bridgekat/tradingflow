@@ -8,6 +8,15 @@ to Rust. Each operator outputs an Array (not a Series); use
 Rolling operators accept a *window* parameter that is either an `int`
 (count-based: last N elements) or a `numpy.timedelta64` (time-delta-based:
 all elements within the given duration of the most recent timestamp).
+The two strategies differ in when the operator starts emitting output:
+
+- **Count-based (`int`)** — output is produced only once the window is
+  full (i.e. after the first N elements).  Before then the operator is
+  silent.
+- **Time-delta-based (`numpy.timedelta64`)** — output is produced as
+  soon as at least one element is in the window.  Short warm-up
+  periods therefore still yield output, computed over whatever
+  elements have arrived so far.
 
 - [`RollingSum`][tradingflow.operators.rolling.RollingSum],
   [`RollingMean`][tradingflow.operators.rolling.RollingMean],

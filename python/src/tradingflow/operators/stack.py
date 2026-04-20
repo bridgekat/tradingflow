@@ -18,6 +18,12 @@ from .. import Handle, NativeOperator, NodeKind
 class Stack(NativeOperator):
     """Stack N arrays along a new axis.
 
+    Time-series semantics: on every trigger, the latest value of each
+    input is copied into the output, regardless of which inputs actually
+    produced this cycle.  See
+    [`StackSync`][tradingflow.operators.StackSync] for the
+    message-passing variant that fills non-produced slots with `NaN`.
+
     All inputs must have the same dtype and shape. The output shape
     inserts a new dimension of size `len(inputs)` at *axis*.
 

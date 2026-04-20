@@ -1,5 +1,11 @@
 """Clock sources -- scheduling triggers at fixed timestamps.
 
+A clock is a [`NodeKind.UNIT`][tradingflow.NodeKind] source: its output
+node carries no data, only a produce bit.  Downstream operators consume
+it as a trigger to gate their compute — typically via the
+[`Clocked`][tradingflow.operators.Clocked] transformer or as an extra
+input on performance-metric operators that fire on a schedule.
+
 Calendar-aligned clocks (`DailyClock`, `MonthlyClock`) are constructed in
 Python via the standard-library `zoneinfo` module: timestamps are
 pre-computed here and passed to the native `clock` source as a list.
@@ -22,6 +28,10 @@ from ..data import coerce_timestamp
 
 class Clock(NativeSource):
     """Clock source from explicit timestamps.
+
+    Emits unit events (`NodeKind.UNIT`, no payload) at the supplied
+    timestamps.  The output handle exists solely to be wired into
+    downstream operators as a trigger input.
 
     Parameters
     ----------
