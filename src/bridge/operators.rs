@@ -251,26 +251,26 @@ pub fn dispatch_native_operator(
             }
             Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
         }
-        "notify_concat" => {
+        "concat_sync" => {
             let axis: usize = params
                 .get_item("axis")?
-                .ok_or_else(|| PyTypeError::new_err("notify_concat requires 'axis' param"))?
+                .ok_or_else(|| PyTypeError::new_err("concat_sync requires 'axis' param"))?
                 .extract()?;
             macro_rules! go {
                 ($T:ty) => {
-                    add_slice_operator_from_indices(sc, operators::NotifyConcat::<$T>::new(axis), input_indices)
+                    add_slice_operator_from_indices(sc, operators::ConcatSync::<$T>::new(axis), input_indices)
                 };
             }
             Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
-        "notify_stack" => {
+        "stack_sync" => {
             let axis: usize = params
                 .get_item("axis")?
-                .ok_or_else(|| PyTypeError::new_err("notify_stack requires 'axis' param"))?
+                .ok_or_else(|| PyTypeError::new_err("stack_sync requires 'axis' param"))?
                 .extract()?;
             macro_rules! go {
                 ($T:ty) => {
-                    add_slice_operator_from_indices(sc, operators::NotifyStack::<$T>::new(axis), input_indices)
+                    add_slice_operator_from_indices(sc, operators::StackSync::<$T>::new(axis), input_indices)
                 };
             }
             Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))

@@ -18,9 +18,10 @@ class BenchmarkState:
     use_adjusts: bool
 
     # Portfolio state.
-    cash: float = 0.0
+    cash: np.ndarray = field(default_factory=lambda: np.array(0.0))
     shares: np.ndarray = field(default_factory=lambda: np.empty(0))
     last_adjust: np.ndarray = field(default_factory=lambda: np.empty(0))
+    last_close: np.ndarray = field(default_factory=lambda: np.empty(0))
 
 
 class Benchmark(
@@ -38,11 +39,15 @@ class Benchmark(
 
     1. Adjusts held shares for dividend reinvestment via forward
        adjustment factor changes.
-    2. If the soft-positions input was updated (rebalance signal),
-       computes the current portfolio value and rebalances to exactly
-       match the target weights: target shares = `soft_positions *
-       current_value / open_price`, executed at opening prices as
-       fractional shares with no transaction fees and no lot rounding.
+    2. If the soft-positions input was updated (rebalance signal), first
+       force-liquidates held positions in stocks with no valid exec
+       price today (suspended or delisted) at their last valid close,
+       then rebalances the remaining tradable stocks to their target
+       allocations via a single net trade at today's open:
+       `target_shares = soft_positions * current_value / open_price`,
+       executed as fractional shares with no transaction fees and no lot
+       rounding.  Suspended or delisted stocks hold zero shares
+       post-rebalance.
     3. Outputs a 2-element array `(holdings_value, cash)` where
        `holdings_value` is positions valued at closing prices and
        `cash` is the cash balance.  Total portfolio value is their sum.
@@ -67,6 +72,23 @@ class Benchmark(
     -----
     The rebalance cadence is controlled by upstream: the benchmark
     rebalances exactly when the soft-positions input produces.
+
+    **NaN prices (suspended / delisted stocks).**  A stock with `NaN`
+    open or close on the current tick is handled as follows:
+
+    - **Valuation (every tick)**: portfolio value uses the *last valid
+      close* carried forward, so held shares of a suspended stock keep
+      contributing at their most recent known price instead of dropping
+      out.
+    - **Rebalance**: stocks with a finite, positive current open are
+      rebalanced via a single net trade (delta shares from current to
+      target).  Stocks with non-finite or non-positive open cannot be
+      traded on the open market; if we held any, the simulator
+      force-closes them at their last valid close (an idealisation that
+      is not achievable in live trading) so they hold zero shares
+      post-rebalance.  No fresh entry is ever made into a stock whose
+      current open is invalid — capital earmarked for it remains in
+      cash.
     """
 
     def __init__(
@@ -108,9 +130,10 @@ class Benchmark(
             num_stocks=n,
             initial_cash=self._initial_cash,
             use_adjusts=self._use_adjusts,
-            cash=self._initial_cash,
+            cash=np.array(self._initial_cash),
             shares=np.zeros(n),
             last_adjust=np.ones(n),
+            last_close=np.full(n, np.nan),
         )
 
     @staticmethod
@@ -136,34 +159,44 @@ class Benchmark(
             state.shares[adjust_mask] *= adjusts[adjust_mask] / state.last_adjust[adjust_mask]
             state.last_adjust[valid_adjusts] = adjusts[valid_adjusts]
 
-        # Compute portfolio market value.
-        held = (state.shares != 0) & np.isfinite(closes)
-        current_value = state.cash + np.sum(state.shares[held] * closes[held])
+        # Update the last-valid-close carry-forward for stocks that
+        # ticked this cycle; suspended stocks retain their previous
+        # last-valid close.
+        close_tick = np.isfinite(closes)
+        state.last_close[close_tick] = closes[close_tick]
 
         # Rebalance if soft positions input was updated.
         rebalance = produced[0]
         if rebalance:
 
-            # Execution price = open price.
-            exec_price = opens
+            # Step 1: force-liquidate positions in stocks with no valid
+            # exec price today (suspended or delisted) at their last
+            # valid close — the simulator assumes an idealised exit even
+            # when no open-market trade is actually possible.
+            valid_exec = np.isfinite(opens) & (opens > 0)
+            force_liq = (state.shares != 0) & ~valid_exec & np.isfinite(state.last_close)
+            state.cash += np.sum(state.shares[force_liq] * state.last_close[force_liq])
+            state.shares[force_liq] = 0.0
 
+            # Step 2: compute portfolio value post force-liquidation,
+            # then rebalance tradable stocks to target via a single net
+            # trade.  (In a frictionless benchmark this coincides with
+            # full liquidate + re-enter; the delta form keeps the logic
+            # consistent with `SimpleTrader`, which must use it to avoid
+            # doubling fees.)
+            held = (state.shares != 0) & np.isfinite(state.last_close)
+            current_value = state.cash + np.sum(state.shares[held] * state.last_close[held])
             for i in range(N):
-                p = exec_price[i]
-                if not np.isfinite(p) or p <= 0:
+                if not valid_exec[i]:
                     continue
-
-                # Calculate trade shares.
-                target_value = soft_positions[i] * current_value
-                target_shares = target_value / p
+                p = opens[i]
+                target_shares = soft_positions[i] * current_value / p
                 trade_shares = target_shares - state.shares[i]
-
-                # Simulate frictionless trade.
-                trade_value = trade_shares * p
-                state.cash -= trade_value
+                state.cash -= trade_shares * p
                 state.shares[i] += trade_shares
 
         # Output (holdings_value, cash).  Total portfolio value = sum.
-        held = (state.shares != 0) & np.isfinite(closes)
-        holdings_value = np.sum(state.shares[held] * closes[held])
+        held = (state.shares != 0) & np.isfinite(state.last_close)
+        holdings_value = np.sum(state.shares[held] * state.last_close[held])
         output.write(np.array([holdings_value, state.cash], dtype=np.float64))
         return True

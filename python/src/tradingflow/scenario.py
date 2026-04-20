@@ -20,7 +20,7 @@ class Scenario:
 
     Sources and operators are registered via `add_source` and
     `add_operator`, each returning a `Handle`. To record history,
-    use the `record` operator explicitly. `run` executes the POCQ
+    use the `record` operator explicitly. `run` executes the
     event loop.
     """
 
@@ -96,7 +96,7 @@ class Scenario:
         self,
         on_flush: Callable[[int, int, int | None], Any] | None = None,
     ) -> None:
-        """Execute the POCQ event loop.
+        """Execute the event loop.
 
         Python sources are driven by Rust-side async tasks that iterate
         the source's async iterators via a background asyncio event loop.

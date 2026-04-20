@@ -2,7 +2,7 @@
 //!
 //! * [`Concat`] — time-series semantics: copies all inputs on every
 //!   trigger.
-//! * [`NotifyConcat`] — message-passing semantics: fills non-produced
+//! * [`ConcatSync`] — message-passing semantics: fills non-produced
 //!   input slots with `NaN` (float-only).
 
 use num_traits::Float;
@@ -82,16 +82,16 @@ impl<T: Scalar> Operator for Concat<T> {
 /// flush cycle are copied in.  All other slots remain `NaN`.
 ///
 /// Message-passing counterpart to [`Concat`].  See
-/// [`NotifyStack`](super::stack::NotifyStack) for the general
+/// [`StackSync`](super::stack::StackSync) for the general
 /// motivation.
 ///
 /// Float-only because `NaN` is used as the "no update" sentinel.
-pub struct NotifyConcat<T: Scalar + Float> {
+pub struct ConcatSync<T: Scalar + Float> {
     axis: usize,
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T: Scalar + Float> NotifyConcat<T> {
+impl<T: Scalar + Float> ConcatSync<T> {
     pub fn new(axis: usize) -> Self {
         Self {
             axis,
@@ -100,15 +100,15 @@ impl<T: Scalar + Float> NotifyConcat<T> {
     }
 }
 
-/// Runtime state for [`NotifyConcat`].
-pub struct NotifyConcatState {
+/// Runtime state for [`ConcatSync`].
+pub struct ConcatSyncState {
     outer_count: usize,
     chunk_size: usize,
     n_inputs: usize,
 }
 
-impl<T: Scalar + Float> Operator for NotifyConcat<T> {
-    type State = NotifyConcatState;
+impl<T: Scalar + Float> Operator for ConcatSync<T> {
+    type State = ConcatSyncState;
     type Inputs = [Input<Array<T>>];
     type Output = Array<T>;
 
@@ -116,11 +116,11 @@ impl<T: Scalar + Float> Operator for NotifyConcat<T> {
         self,
         inputs: SliceRefs<'_, Input<Array<T>>>,
         _timestamp: Instant,
-    ) -> (NotifyConcatState, Array<T>) {
-        assert!(!inputs.is_empty(), "NotifyConcat requires at least one input");
+    ) -> (ConcatSyncState, Array<T>) {
+        assert!(!inputs.is_empty(), "ConcatSync requires at least one input");
         let first = inputs.get(0).shape();
         assert!(self.axis < first.len(), "axis out of bounds");
-        let state = NotifyConcatState {
+        let state = ConcatSyncState {
             outer_count: first[..self.axis].iter().product(),
             chunk_size: first[self.axis..].iter().product(),
             n_inputs: inputs.len(),
@@ -133,7 +133,7 @@ impl<T: Scalar + Float> Operator for NotifyConcat<T> {
 
     #[inline(always)]
     fn compute(
-        state: &mut NotifyConcatState,
+        state: &mut ConcatSyncState,
         inputs: SliceRefs<'_, Input<Array<T>>>,
         output: &mut Array<T>,
         _timestamp: Instant,
@@ -182,8 +182,8 @@ pub(super) fn interleaved_copy<'a, T: Scalar>(
 }
 
 /// Copy only the specified input positions into the output, leaving the
-/// rest of the output untouched.  Used by [`NotifyConcat`] and
-/// [`NotifyStack`](super::stack::NotifyStack) to fill only the slots
+/// rest of the output untouched.  Used by [`ConcatSync`] and
+/// [`StackSync`](super::stack::StackSync) to fill only the slots
 /// corresponding to freshly-produced inputs.
 ///
 /// The caller is expected to initialise the output (e.g. with NaN)
@@ -329,7 +329,7 @@ mod tests {
         Concat::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
     }
 
-    // ---- NotifyConcat ----
+    // ---- ConcatSync ----
 
     #[test]
     fn notify_both_produced_matches_concat() {
@@ -337,8 +337,8 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (mut s, mut o) = NotifyConcat::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
-        NotifyConcat::compute(
+        let (mut s, mut o) = ConcatSync::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
+        ConcatSync::compute(
             &mut s,
             refs(&ptrs),
             &mut o,
@@ -356,8 +356,8 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (mut s, mut o) = NotifyConcat::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
-        NotifyConcat::compute(
+        let (mut s, mut o) = ConcatSync::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
+        ConcatSync::compute(
             &mut s,
             refs(&ptrs),
             &mut o,
@@ -378,8 +378,8 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (mut s, mut o) = NotifyConcat::<f64>::new(1).init(refs(&ptrs), Instant::MIN);
-        NotifyConcat::compute(
+        let (mut s, mut o) = ConcatSync::<f64>::new(1).init(refs(&ptrs), Instant::MIN);
+        ConcatSync::compute(
             &mut s,
             refs(&ptrs),
             &mut o,
@@ -403,8 +403,8 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (mut s, mut o) = NotifyConcat::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
-        NotifyConcat::compute(
+        let (mut s, mut o) = ConcatSync::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
+        ConcatSync::compute(
             &mut s,
             refs(&ptrs),
             &mut o,

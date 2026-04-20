@@ -29,8 +29,7 @@
 //!
 //! * [`Scenario`] — DAG runtime with type-erased dispatch. Nodes are
 //!   connected via typed [`Handle`](scenario::Handle)s. Execution is driven
-//!   by [`Scenario::flush`] (manual) or [`Scenario::run`] (async POCQ event
-//!   loop).
+//!   by [`Scenario::flush`] (manual) or [`Scenario::run`] (async event loop).
 //!
 //! # Modules
 //!

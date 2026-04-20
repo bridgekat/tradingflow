@@ -22,12 +22,13 @@ class SimpleTraderState:
     verbose: bool
 
     # Portfolio state.
-    cash: float = 0.0
+    cash: np.ndarray = field(default_factory=lambda: np.array(0.0))
     shares: np.ndarray = field(default_factory=lambda: np.empty(0))
     last_adjust: np.ndarray = field(default_factory=lambda: np.empty(0))
+    last_close: np.ndarray = field(default_factory=lambda: np.empty(0))
 
     # Transient values set by compute() before calling trade_fn().
-    _current_value: float = 0.0
+    _current_value: np.ndarray = field(default_factory=lambda: np.array(0.0))
     _exec_price: np.ndarray = field(default_factory=lambda: np.empty(0))
 
 
@@ -56,12 +57,15 @@ class SimpleTrader(
 
     1. Adjusts held shares for dividend reinvestment via forward
        adjustment factor changes.
-    2. If the soft-positions input was updated (rebalance signal),
-       computes the current portfolio value, calls `trade_fn` to get
-       the number of lots to trade per stock, executes the trades at
-       opening prices, and deducts transaction fees.  If the resulting
-       absolute position for a stock is less than one lot, the remainder
-       is liquidated.
+    2. If the soft-positions input was updated (rebalance signal), first
+       force-liquidates held positions in stocks with no valid exec
+       price today (suspended or delisted) at their last valid close —
+       each forced sale charged the same fee as a normal trade — then
+       calls `trade_fn` with the post-liquidation state to obtain
+       net-delta lots for the rest, and executes those lots at today's
+       open.  Tradable stocks therefore incur at most one trade (one
+       fee) per rebalance, not two.  Suspended / delisted stocks receive
+       zero shares post-rebalance.
     3. Outputs a 2-element array `(holdings_value, cash)` where
        *holdings_value* is positions valued at closing prices and
        *cash* is the cash balance.  Total portfolio value is their sum.
@@ -109,6 +113,24 @@ class SimpleTrader(
     These assumptions are a reasonable approximation when trading sizes
     are small relative to market liquidity, but become inaccurate as
     capital grows large or stocks are illiquid.
+
+    **NaN prices (suspended / delisted stocks).**  A stock with `NaN`
+    open or close on the current tick is handled as follows:
+
+    - **Valuation (every tick)**: portfolio value uses the *last valid
+      close* carried forward, so held shares of a suspended stock keep
+      contributing at their most recent known price instead of dropping
+      out.
+    - **Rebalance**: stocks with a finite, positive current open are
+      rebalanced via a single net trade (delta lots from `trade_fn`),
+      paying one round of fees.  Stocks with non-finite or non-positive
+      open cannot be traded on the open market; if we held any, the
+      simulator force-closes them at their last valid close (charged the
+      same fee as a normal trade — an idealisation that is not
+      achievable in live trading) so they hold zero shares
+      post-rebalance.  No fresh entry is ever made into a stock whose
+      current open is invalid — `trade_fn` is free to return lots for
+      such stocks, but the per-stock execution loop enforces the skip.
     """
 
     def __init__(
@@ -161,9 +183,10 @@ class SimpleTrader(
             fee_rate=self._fee_rate,
             trade_fn=self._trade_fn,
             verbose=self._verbose,
-            cash=self._initial_cash,
+            cash=np.array(self._initial_cash),
             shares=np.zeros(n),
             last_adjust=np.ones(n),
+            last_close=np.full(n, np.nan),
         )
 
     @staticmethod
@@ -188,21 +211,46 @@ class SimpleTrader(
         state.shares[adjust_mask] *= adjusts[adjust_mask] / state.last_adjust[adjust_mask]
         state.last_adjust[valid_adjusts] = adjusts[valid_adjusts]
 
-        # Compute portfolio market value.
-        held = (state.shares != 0) & np.isfinite(closes)
-        state._current_value = state.cash + np.sum(state.shares[held] * closes[held])
+        # Update the last-valid-close carry-forward for stocks that
+        # ticked this cycle; suspended stocks retain their previous
+        # last-valid close.
+        close_tick = np.isfinite(closes)
+        state.last_close[close_tick] = closes[close_tick]
 
         # Rebalance if soft positions input was updated.
         rebalance = produced[0]
+        traded = False
         if rebalance:
 
-            # Execution price = open price.
-            state._exec_price = opens
+            # Step 1: force-liquidate positions in stocks with no valid
+            # exec price today (suspended or delisted) at their last
+            # valid close — the simulator assumes an idealised exit even
+            # when no open-market trade is actually possible.  Each
+            # forced sale is charged the same fee as a normal trade.
+            exec_price = opens
+            valid_exec = np.isfinite(exec_price) & (exec_price > 0)
+            force_liq_idx = np.where((state.shares != 0) & ~valid_exec & np.isfinite(state.last_close))[0]
 
-            # Ask trade_fn for lot counts.
+            for i in force_liq_idx:
+                sell_value = state.shares[i] * state.last_close[i]
+                state.cash += sell_value
+                fee = max(state.fee_base, abs(sell_value) * state.fee_rate)
+                state.cash -= fee
+                state.shares[i] = 0.0
+                traded = True
+
+            # Step 2: compute portfolio value post force-liquidation,
+            # then ask `trade_fn` for net delta lots.  Tradable stocks
+            # therefore incur at most one trade (and one fee) per
+            # rebalance, not two.
+            held = (state.shares != 0) & np.isfinite(state.last_close)
+            state._current_value = state.cash + np.sum(state.shares[held] * state.last_close[held])
+            state._exec_price = exec_price
+
             trade_lots = state.trade_fn(state, soft_positions)
 
-            traded = False
+            # Step 3: execute the net delta lots at today's open for
+            # tradable stocks only.
             for i in range(N):
                 p = state._exec_price[i]
                 if not np.isfinite(p) or p <= 0:
@@ -215,7 +263,6 @@ class SimpleTrader(
                 if abs(state.shares[i] + trade_shares) < state.lot_size:
                     trade_shares = -state.shares[i]
 
-                # Simulate trade.
                 if trade_shares != 0:
                     trade_value = trade_shares * p
                     state.cash -= trade_value
@@ -231,7 +278,7 @@ class SimpleTrader(
                     print(f"  positions: { {int(i): state.shares[i] for i in idx} }")
 
         # Output (holdings_value, cash).  Total portfolio value = sum.
-        held = (state.shares != 0) & np.isfinite(closes)
-        holdings_value = np.sum(state.shares[held] * closes[held])
+        held = (state.shares != 0) & np.isfinite(state.last_close)
+        holdings_value = np.sum(state.shares[held] * state.last_close[held])
         output.write(np.array([holdings_value, state.cash], dtype=np.float64))
         return True

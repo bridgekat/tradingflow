@@ -26,7 +26,7 @@ type PyObject = Py<PyAny>;
 
 /// Signals an `asyncio.Event` via `call_soon_threadsafe(event.set)` on drop.
 ///
-/// Created on the POCQ background thread; fires on both normal return and
+/// Created on the event loop background thread; fires on both normal return and
 /// panic (stack unwinding), ensuring the main thread's
 /// `run_until_complete(event.wait())` always unblocks.
 struct DoneGuard(Option<PyObject>, PyObject);
@@ -56,7 +56,7 @@ unsafe impl Send for DoneGuard {}
 
 /// Python-visible wrapper around the Rust `Scenario` runtime.
 ///
-/// Owns a tokio runtime used to drive the POCQ event loop and source
+/// Owns a tokio runtime used to drive the event loop and source
 /// driver tasks.  Registration methods enter the runtime so that
 /// sources can use [`tokio::spawn`] during `init`.
 #[pyclass]
@@ -71,10 +71,10 @@ pub struct NativeScenario {
     runtime: tokio::runtime::Runtime,
     /// Asyncio event loop for Python source coroutines, created on first
     /// `add_py_source`.  Runs on the **main thread** during `run()` for
-    /// proper signal handling; the tokio POCQ loop runs on a background
+    /// proper signal handling; the tokio event loop runs on a background
     /// thread.
     event_loop: Option<PyObject>,
-    /// Cooperative shutdown flag — set on drop to stop the POCQ loop.
+    /// Cooperative shutdown flag — set on drop to stop the event loop.
     shutdown: ShutdownFlag,
 }
 
@@ -83,7 +83,7 @@ unsafe impl Sync for NativeScenario {}
 
 impl Drop for NativeScenario {
     fn drop(&mut self) {
-        // Signal the POCQ background thread to exit so it doesn't keep
+        // Signal the event loop background thread to exit so it doesn't keep
         // the process alive after the Python object is garbage-collected.
         self.shutdown.store(true, Ordering::Relaxed);
     }
@@ -332,11 +332,11 @@ impl NativeScenario {
             .and_then(|sc| sc.estimated_event_count())
     }
 
-    /// Run the POCQ event loop.
+    /// Run the event loop.
     ///
     /// If Python sources have been registered, the asyncio event loop runs
     /// on the **main thread** (for proper signal handling) while the tokio
-    /// POCQ loop runs on a background thread.  Driver tasks on the tokio
+    /// event loop runs on a background thread.  Driver tasks on the tokio
     /// runtime iterate Python source async iterators by scheduling
     /// coroutines on the main-thread asyncio loop via
     /// `run_coroutine_threadsafe`.
@@ -347,7 +347,7 @@ impl NativeScenario {
         })?;
 
         // Two-thread model:
-        //   Background thread: tokio block_on(POCQ + driver tasks)
+        //   Background thread: tokio block_on(event loop + driver tasks)
         //   Main thread:       asyncio run_until_complete(done_event.wait())
         //                      (if Python sources exist) or just wait (if not)
         //
@@ -386,7 +386,7 @@ impl NativeScenario {
             .as_ref()
             .map(|(_, set_fn, el_ref)| (set_fn.clone_ref(py), el_ref.clone_ref(py)));
 
-        // Spawn the POCQ + drivers on a background thread.
+        // Spawn the event loop + drivers on a background thread.
         let shutdown = self.shutdown.clone();
         let error_slot_for_bg = self.error_slot.clone();
         let bg_handle = {
@@ -437,7 +437,7 @@ impl NativeScenario {
 
         // Join the background thread, periodically reacquiring the GIL
         // so Python can process signals (e.g. KeyboardInterrupt from
-        // Ctrl+C).  If interrupted, set the shutdown flag so the POCQ
+        // Ctrl+C).  If interrupted, set the shutdown flag so the event
         // loop exits cooperatively.
         let join_result = loop {
             let is_finished = bg_handle.is_finished();
@@ -459,7 +459,9 @@ impl NativeScenario {
                 self.runtime = rt;
             }
             Err(_) => {
-                return Err(PyRuntimeError::new_err("POCQ background thread panicked"));
+                return Err(PyRuntimeError::new_err(
+                    "event loop background thread panicked",
+                ));
             }
         }
 

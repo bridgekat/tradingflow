@@ -2,7 +2,7 @@
 //!
 //! * [`Stack`] — time-series semantics: copies all inputs on every
 //!   trigger.
-//! * [`NotifyStack`] — message-passing semantics: fills non-produced
+//! * [`StackSync`] — message-passing semantics: fills non-produced
 //!   input slots with `NaN` (float-only).
 
 use num_traits::Float;
@@ -84,8 +84,9 @@ impl<T: Scalar> Operator for Stack<T> {
 ///
 /// This is the message-passing counterpart to [`Stack`] — where
 /// `Stack` reads the latest value from every input (time-series
-/// semantics), `NotifyStack` carries only values from inputs that
-/// actually updated this cycle (message-passing semantics).
+/// semantics), `StackSync` carries only values from inputs that
+/// actually updated this cycle (message-passing semantics), i.e. it
+/// carries the *synchronised* slice of inputs that fired together.
 ///
 /// Typical use: combined with [`ForwardFill`](super::num::ForwardFill)
 /// downstream to cleanly separate "freshly updated" from "last known"
@@ -94,12 +95,12 @@ impl<T: Scalar> Operator for Stack<T> {
 /// sparse event streams).
 ///
 /// Float-only because `NaN` is used as the "no update" sentinel.
-pub struct NotifyStack<T: Scalar + Float> {
+pub struct StackSync<T: Scalar + Float> {
     axis: usize,
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T: Scalar + Float> NotifyStack<T> {
+impl<T: Scalar + Float> StackSync<T> {
     pub fn new(axis: usize) -> Self {
         Self {
             axis,
@@ -108,15 +109,15 @@ impl<T: Scalar + Float> NotifyStack<T> {
     }
 }
 
-/// Runtime state for [`NotifyStack`].
-pub struct NotifyStackState {
+/// Runtime state for [`StackSync`].
+pub struct StackSyncState {
     outer_count: usize,
     chunk_size: usize,
     n_inputs: usize,
 }
 
-impl<T: Scalar + Float> Operator for NotifyStack<T> {
-    type State = NotifyStackState;
+impl<T: Scalar + Float> Operator for StackSync<T> {
+    type State = StackSyncState;
     type Inputs = [Input<Array<T>>];
     type Output = Array<T>;
 
@@ -124,11 +125,11 @@ impl<T: Scalar + Float> Operator for NotifyStack<T> {
         self,
         inputs: SliceRefs<'_, Input<Array<T>>>,
         _timestamp: Instant,
-    ) -> (NotifyStackState, Array<T>) {
-        assert!(!inputs.is_empty(), "NotifyStack requires at least one input");
+    ) -> (StackSyncState, Array<T>) {
+        assert!(!inputs.is_empty(), "StackSync requires at least one input");
         let first = inputs.get(0).shape();
         assert!(self.axis <= first.len(), "axis out of bounds");
-        let state = NotifyStackState {
+        let state = StackSyncState {
             outer_count: first[..self.axis].iter().product(),
             chunk_size: first[self.axis..].iter().product(),
             n_inputs: inputs.len(),
@@ -143,7 +144,7 @@ impl<T: Scalar + Float> Operator for NotifyStack<T> {
 
     #[inline(always)]
     fn compute(
-        state: &mut NotifyStackState,
+        state: &mut StackSyncState,
         inputs: SliceRefs<'_, Input<Array<T>>>,
         output: &mut Array<T>,
         _timestamp: Instant,
@@ -271,7 +272,7 @@ mod tests {
         );
     }
 
-    // ---- NotifyStack ----
+    // ---- StackSync ----
 
     #[test]
     fn notify_both_produced_matches_stack() {
@@ -279,8 +280,8 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (mut s, mut o) = NotifyStack::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
-        NotifyStack::compute(
+        let (mut s, mut o) = StackSync::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
+        StackSync::compute(
             &mut s,
             refs(&ptrs),
             &mut o,
@@ -300,8 +301,8 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (mut s, mut o) = NotifyStack::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
-        NotifyStack::compute(
+        let (mut s, mut o) = StackSync::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
+        StackSync::compute(
             &mut s,
             refs(&ptrs),
             &mut o,
@@ -321,8 +322,8 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (mut s, mut o) = NotifyStack::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
-        NotifyStack::compute(
+        let (mut s, mut o) = StackSync::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
+        StackSync::compute(
             &mut s,
             refs(&ptrs),
             &mut o,
@@ -342,8 +343,8 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (mut s, mut o) = NotifyStack::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
-        NotifyStack::compute(
+        let (mut s, mut o) = StackSync::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
+        StackSync::compute(
             &mut s,
             refs(&ptrs),
             &mut o,
@@ -363,8 +364,8 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (mut s, mut o) = NotifyStack::<f64>::new(1).init(refs(&ptrs), Instant::MIN);
-        NotifyStack::compute(
+        let (mut s, mut o) = StackSync::<f64>::new(1).init(refs(&ptrs), Instant::MIN);
+        StackSync::compute(
             &mut s,
             refs(&ptrs),
             &mut o,
@@ -389,7 +390,7 @@ mod tests {
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);
-        let (_, o) = NotifyStack::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
+        let (_, o) = StackSync::<f64>::new(0).init(refs(&ptrs), Instant::MIN);
         for v in o.as_slice() {
             assert!(v.is_nan());
         }

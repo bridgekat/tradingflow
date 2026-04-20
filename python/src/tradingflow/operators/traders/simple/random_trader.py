@@ -58,8 +58,11 @@ def _trade_fn(
     current_value = state._current_value
     exec_price = state._exec_price
 
+    # Exclude stocks with no valid execution price (e.g. suspended).
+    tradable = np.isfinite(exec_price) & (exec_price > 0)
+
     # Normalize soft weights into sampling probabilities.
-    weights = np.maximum(soft_positions, 0.0)
+    weights = np.where(tradable, np.maximum(soft_positions, 0.0), 0.0)
     s = weights.sum()
     if s <= 0:
         return np.zeros(N, dtype=np.float64)

@@ -34,12 +34,27 @@ class MeanVariancePortfolio(
     stocks with positive universe weights, finite predicted returns, and
     finite diagonal covariance entries are passed to `positions_fn`;
     the result is scattered back to the full dimension with zeros
-    elsewhere.  The sub-covariance-matrix of the remaining stocks must
-    not contain non-finite entries.
+    elsewhere.
 
     The rebalance cadence is inherited from upstream: when the
     predictors are clock-triggered at rebalance dates, this operator
     runs at the same cadence.
+
+    ## NaN behavior
+
+    `predicted_returns` and `predicted_covariances` are allowed to
+    contain `NaN` entries — per the
+    [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor]
+    and
+    [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor]
+    contracts, these mark stocks with insufficient data.  The base
+    class subsets to `(universe > 0) & np.isfinite(mu) &
+    np.isfinite(np.diag(Sigma))` before calling `positions_fn`, so
+    subclasses never see `NaN` inputs.  The sub-covariance-matrix of
+    the remaining stocks must not contain non-finite off-diagonal
+    entries (the base class raises `ValueError` if it does).  The
+    emitted position vector is zero for stocks outside the valid
+    subset.
 
     Parameters
     ----------

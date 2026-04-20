@@ -3,7 +3,7 @@
 //! Every source in this module implements [`Source`](crate::Source) and is
 //! registered into a [`Scenario`](crate::Scenario) via
 //! [`Scenario::add_source`](crate::Scenario::add_source). Sources feed events
-//! into the DAG through historical and live channels; the POCQ event loop
+//! into the DAG through historical and live channels; the event loop
 //! ([`Scenario::run`](crate::Scenario::run)) drains them in timestamp order.
 //!
 //! # Data sources

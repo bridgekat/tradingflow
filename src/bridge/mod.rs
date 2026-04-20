@@ -9,7 +9,7 @@
 //!   string + dtype + params.
 //! * `add_py_source` — register a Python source whose `init()` returns
 //!   async iterators.  Driver tasks on the tokio runtime iterate them and
-//!   feed events into bounded channels consumed by the POCQ event loop.
+//!   feed events into bounded channels consumed by the event loop.
 //! * `add_py_operator` — register a Python-implemented operator whose
 //!   `compute()` is called via GIL during flush.
 //!
@@ -21,10 +21,6 @@
 //! - [`NativeNodeKind`] — `Array` / `Series` / `Unit` discriminator
 //!   exposed to Python so node-kind tags travel as an enum across the FFI
 //!   boundary instead of strings.
-//! Python operators receive `produced` as a flat `tuple[bool, ...]` built
-//! fresh each compute call by [`operator::py_compute_fn`](operator) — no
-//! dedicated Python class.  Its shape parallels the operator's flat input
-//! tuple.
 //! - [`DoneCallback`](source::DoneCallback) — pyclass used internally to
 //!   bridge `concurrent.futures.Future` completion to tokio oneshot channels.
 //!

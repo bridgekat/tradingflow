@@ -37,8 +37,8 @@
 //!
 //! - [`Scenario::flush`] — manually propagate updates through the DAG for a
 //!   set of updated source node indices at a given timestamp.
-//! - [`Scenario::run`] — async POCQ (Point-of-Coherency Queue) event loop
-//!   that drains all historical and live source channels in timestamp order,
+//! - [`Scenario::run`] — async event loop that drains all
+//!   historical and live source channels in timestamp order,
 //!   coalescing same-timestamp events before flushing.  See the [`queue`]
 //!   module for ordering guarantees and complexity.
 //!

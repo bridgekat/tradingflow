@@ -1,4 +1,4 @@
-//! POCQ (Point-of-Coherency Queue) event loop for [`Scenario::run`].
+//! Event loop for [`Scenario::run`].
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
@@ -10,13 +10,13 @@ use std::task::Poll;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 
-use crate::source::PollFn;
 use crate::Instant;
+use crate::source::PollFn;
 
 use super::Scenario;
 use super::node::{ChannelKind, SourceState};
 
-/// Shared shutdown flag for cooperative cancellation of the POCQ loop.
+/// Shared shutdown flag for cooperative cancellation of the event loop.
 pub type ShutdownFlag = Arc<AtomicBool>;
 
 // ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ impl SourceState {
 /// A `'static + Send` future representing one pending channel receive.
 ///
 /// Resolves to `(source_idx, kind, Option<Instant>)` — `None` means the channel
-/// closed.  Designed for use in [`FuturesUnordered`] so the queue can
+/// closed.  Designed for use in [`FuturesUnordered`] so the event loop can
 /// concurrently await many channels with O(log N) heap inserts.
 ///
 /// # Safety invariant
@@ -144,7 +144,11 @@ async fn drain_hist(
         // produce timestamps strictly greater than the current heap minimum,
         // we can safely pop the heap minimum without waiting for them.
         let heap_min = heap.peek().map(|&Reverse(e)| e.ts).unwrap_or(Instant::MAX);
-        let pending_lower = hist_pending_ts.keys().next().copied().unwrap_or(Instant::MAX);
+        let pending_lower = hist_pending_ts
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(Instant::MAX);
         if pending_lower > heap_min {
             break;
         }
@@ -192,11 +196,11 @@ async fn drain_live(
 }
 
 // ---------------------------------------------------------------------------
-// Scenario — POCQ event loop
+// Scenario — event loop
 // ---------------------------------------------------------------------------
 
 impl Scenario {
-    /// Run the unified POCQ event loop.
+    /// Run the unified event loop.
     ///
     /// Consumes all historical and live events from every registered source
     /// in timestamp order, propagating each batch through the DAG via
@@ -335,10 +339,11 @@ impl Scenario {
                 self.graph.flush(qts, &queue_sources);
                 queue_sources.clear();
                 on_flush(
-                qts,
-                events_processed,
-                self.estimated_event_count().map(|t| t.max(events_processed)),
-            );
+                    qts,
+                    events_processed,
+                    self.estimated_event_count()
+                        .map(|t| t.max(events_processed)),
+                );
                 if shutdown.load(Ordering::Relaxed) {
                     return;
                 }
@@ -397,14 +402,15 @@ impl Scenario {
             on_flush(
                 qts,
                 events_processed,
-                self.estimated_event_count().map(|t| t.max(events_processed)),
+                self.estimated_event_count()
+                    .map(|t| t.max(events_processed)),
             );
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Tests — randomized POCQ invariant checks
+// Tests — randomized event loop invariant checks
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -416,8 +422,8 @@ mod tests {
     use rand::{Rng, SeedableRng};
     use tokio::sync::mpsc;
 
-    use crate::operators::Record;
     use crate::Instant;
+    use crate::operators::Record;
     use crate::{Array, Input, Operator, Scenario, Series, Source};
 
     use super::super::handle::Handle;
@@ -540,7 +546,7 @@ mod tests {
 
     // -- Invariant checker ----------------------------------------------------
 
-    /// Check the POCQ output invariants for one source.
+    /// Check the event loop output invariants for one source.
     ///
     /// 1. Monotonicity — recorded timestamps are non-decreasing.
     /// 2. Historical stability — every distinct hist timestamp appears
@@ -634,7 +640,7 @@ mod tests {
 
     /// Zero sources — must terminate immediately.
     #[tokio::test]
-    async fn pocq_empty_scenario() {
+    async fn empty_scenario() {
         let mut sc = Scenario::new();
         sc.run(|_, _, _| {}).await;
     }
@@ -646,7 +652,7 @@ mod tests {
     /// for live input, deterministically exercising the `ts.max(current_ts)`
     /// clamping path.
     #[tokio::test]
-    async fn pocq_live_clamping() {
+    async fn live_clamping() {
         use crate::operators::Record;
 
         struct ManualChannel {
@@ -698,7 +704,7 @@ mod tests {
     /// 200 random scenarios testing interleaving of hist and live channels
     /// across multiple sources.
     #[tokio::test]
-    async fn pocq_random_interleaving() {
+    async fn random_interleaving() {
         for seed in 0..200 {
             let mut rng = StdRng::seed_from_u64(seed);
             let n_sources: usize = rng.gen_range(1..=5);

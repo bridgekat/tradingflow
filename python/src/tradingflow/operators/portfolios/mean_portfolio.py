@@ -35,6 +35,15 @@ class MeanPortfolio(
     is clock-triggered at rebalance dates, this operator runs at the
     same cadence (driven by the predictor's input-production signal).
 
+    ## NaN behavior
+
+    `predicted_returns` is allowed to contain `NaN` entries — per the
+    [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor]
+    contract, these mark stocks with insufficient data.  The base class
+    subsets to `(universe > 0) & np.isfinite(mu)` before calling
+    `positions_fn`, so subclasses never see `NaN` inputs.  The emitted
+    position vector is zero for stocks outside this subset.
+
     Parameters
     ----------
     universe

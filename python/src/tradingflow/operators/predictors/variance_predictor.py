@@ -43,6 +43,20 @@ class VariancePredictor[T](
     The rebalance cadence is controlled by the caller: pass a clock
     source handle as the `rebalance` parameter.
 
+    ## NaN behavior
+
+    The emitted `(num_stocks, num_stocks)` covariance matrix may contain
+    `NaN` rows and columns for stocks that are out of the universe, have
+    non-finite features at the rebalance timestamp, or have fewer than
+    `min_periods` valid historical observations.  The finite submatrix
+    (indexed by the remaining stocks) is the output of `predict_fn` on a
+    fully-masked feature subset — so `predict_fn` itself never needs to
+    handle `NaN`.  Downstream portfolio constructors must accept `NaN`
+    rows/columns and subset to the finite ones (see
+    [`VariancePortfolio`][tradingflow.operators.portfolios.VariancePortfolio]
+    and
+    [`MeanVariancePortfolio`][tradingflow.operators.portfolios.MeanVariancePortfolio]).
+
     Parameters
     ----------
     universe

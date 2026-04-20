@@ -38,7 +38,7 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource, MonthlyClock
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Lag, Map, NotifyStack, Record, Select, Stack
+from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack, StackSync
 from tradingflow.operators.num import Divide, Log, Multiply, Subtract
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
@@ -74,7 +74,7 @@ def build_scenario(
     #
     # * `per_stock_sync` — values produced in lockstep across all stocks
     #   (e.g., daily prices/equity on trading days).  Stacked with
-    #   `NotifyStack` to give message-passing semantics: slots of stocks
+    #   `StackSync` to give message-passing semantics: slots of stocks
     #   that did not produce this cycle are filled with `NaN`.
     # * `per_stock_irregular` — values updated on stock-specific dates
     #   (e.g., quarterly financial reports filed on different dates).
@@ -168,7 +168,7 @@ def build_scenario(
     # ------------------------------------------------------------------
 
     stacked = {
-        **{k: sc.add_operator(NotifyStack(v)) for k, v in per_stock_sync.items()},
+        **{k: sc.add_operator(StackSync(v)) for k, v in per_stock_sync.items()},
         **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
     }
 

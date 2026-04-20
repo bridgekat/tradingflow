@@ -32,13 +32,24 @@ class VariancePortfolio(
     `positions_fn` to compute position weights.  Only stocks with
     positive universe weights and finite diagonal covariance entries
     are passed to `positions_fn`; the result is scattered back to
-    the full dimension with zeros elsewhere.  The sub-covariance
-    matrix of the remaining stocks must not contain non-finite
-    entries.
+    the full dimension with zeros elsewhere.
 
     The rebalance cadence is inherited from upstream: when the
     covariance predictor is clock-triggered at rebalance dates, this
     operator runs at the same cadence.
+
+    ## NaN behavior
+
+    `predicted_covariances` is allowed to contain `NaN` rows and columns
+    — per the
+    [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor]
+    contract, these mark stocks with insufficient data.  The base class
+    subsets to `(universe > 0) & np.isfinite(np.diag(Sigma))` before
+    calling `positions_fn`, so subclasses never see `NaN` inputs.  The
+    sub-covariance-matrix of the remaining stocks must not contain
+    non-finite off-diagonal entries (the base class raises
+    `ValueError` if it does).  The emitted position vector is zero for
+    stocks outside the valid subset.
 
     Parameters
     ----------

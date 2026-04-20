@@ -2,7 +2,7 @@
 
 This package exposes a directed acyclic graph (DAG) runtime backed by a
 compiled Rust core. Users build a graph of sources and operators, then
-execute it via the POCQ event loop. The Rust core handles memory layout,
+execute it via an event loop. The Rust core handles memory layout,
 type-erased dispatch, and timestamp-ordered event coalescing; this Python
 layer provides typed handles, numpy-backed views, and an ergonomic
 registration API.

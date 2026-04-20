@@ -43,6 +43,18 @@ class MeanPredictor[T](
     The rebalance cadence is controlled by the caller: pass a clock
     source handle as the `rebalance` parameter.
 
+    ## NaN behavior
+
+    The emitted `(num_stocks,)` return vector may contain `NaN` entries
+    for stocks that are out of the universe, have non-finite features at
+    the rebalance timestamp, or have fewer than `min_periods` valid
+    historical observations.  Finite entries are the outputs of
+    `predict_fn` on a fully-masked (all-finite) feature subset — so
+    `predict_fn` itself never needs to handle `NaN`.  Downstream
+    portfolio constructors must accept `NaN` entries and subset to the
+    finite ones (see
+    [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio]).
+
     Parameters
     ----------
     universe

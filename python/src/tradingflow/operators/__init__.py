@@ -13,10 +13,12 @@ This module provides all shipped operators. They fall into two categories:
 - [`Const`][tradingflow.operators.Const] -- zero-input constant array node
 - [`Concat`][tradingflow.operators.Concat] -- concatenate N arrays along an existing axis
 - [`Stack`][tradingflow.operators.Stack] -- stack N arrays along a new axis
-- [`NotifyConcat`][tradingflow.operators.NotifyConcat] -- notify-aware Concat (float-only):
-  fills non-produced input slots with NaN (message-passing semantics)
-- [`NotifyStack`][tradingflow.operators.NotifyStack] -- notify-aware Stack (float-only):
-  fills non-produced input slots with NaN (message-passing semantics)
+- [`ConcatSync`][tradingflow.operators.ConcatSync] -- message-passing Concat (float-only):
+  fills non-produced input slots with NaN so downstream sees only the
+  synchronised slice of inputs that fired together
+- [`StackSync`][tradingflow.operators.StackSync] -- message-passing Stack (float-only):
+  fills non-produced input slots with NaN so downstream sees only the
+  synchronised slice of inputs that fired together
 - [`Select`][tradingflow.operators.Select] -- select elements by flat indices
 - [`Id`][tradingflow.operators.Id] -- identity passthrough
 - [`Map`][tradingflow.operators.Map] -- applies a function to transform array values
@@ -52,18 +54,16 @@ from . import metrics, num, portfolios, predictors, rolling, stocks, traders
 from .apply import Apply
 from .cast import Cast
 from .clocked import Clocked
-from .concat import Concat
+from .concat import Concat, ConcatSync
 from .const import Const
 from .filter import Filter
 from .id import Id
 from .lag import Lag
 from .map import Map
 from .last import Last
-from .notify_concat import NotifyConcat
-from .notify_stack import NotifyStack
 from .record import Record
 from .select import Select
-from .stack import Stack
+from .stack import Stack, StackSync
 from .where import Where
 
 __all__ = [
@@ -79,9 +79,9 @@ __all__ = [
     "Clocked",
     "Const",
     "Concat",
-    "NotifyConcat",
-    "NotifyStack",
+    "ConcatSync",
     "Stack",
+    "StackSync",
     "Select",
     "Id",
     "Map",
