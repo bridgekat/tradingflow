@@ -1,8 +1,10 @@
 //! Rolling covariance matrix accumulator.
 //!
-//! O(K²) per tick via incremental cross-product sums with NaN counting.
+//! O(K²) per tick via incremental cross-product sums with non-finite
+//! counting.
 
 use num_traits::Float;
+
 
 use crate::Scalar;
 
@@ -13,13 +15,15 @@ use super::accumulator::Accumulator;
 /// Input must be 1D with shape `[K]`. Output has shape `[K, K]`.
 ///
 /// `Cov(i,j) = E[x_i · x_j] − E[x_i] · E[x_j]` over the window.
-/// If any value in the window is NaN for either element `i` or `j`, the
-/// output `Cov(i,j)` is NaN.
+/// Non-finite values (NaN, ±inf) are skipped and counted separately rather
+/// than added to the running sums, since `inf − inf` would corrupt the
+/// sums to NaN on eviction.  If any value in the window is non-finite for
+/// either element `i` or `j`, the output `Cov(i,j)` is NaN.
 pub struct CovarianceAccumulator<T: Scalar + Float> {
     k: usize,
     sum: Vec<T>,
     sum_cross: Vec<T>,
-    nan_count: Vec<u32>,
+    nonfinite_count: Vec<u32>,
 }
 
 impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
@@ -36,7 +40,7 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
             k,
             sum: vec![T::zero(); k],
             sum_cross: vec![T::zero(); k * k],
-            nan_count: vec![0; k],
+            nonfinite_count: vec![0; k],
         }
     }
 
@@ -53,20 +57,20 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
         let k = self.k;
         for i in 0..k {
             let xi = element[i];
-            if xi.is_nan() {
-                self.nan_count[i] += 1;
+            if !xi.is_finite() {
+                self.nonfinite_count[i] += 1;
             } else {
                 self.sum[i] = self.sum[i] + xi;
             }
         }
         for i in 0..k {
             let xi = element[i];
-            if xi.is_nan() {
+            if !xi.is_finite() {
                 continue;
             }
             for j in i..k {
                 let xj = element[j];
-                if xj.is_nan() {
+                if !xj.is_finite() {
                     continue;
                 }
                 let prod = xi * xj;
@@ -82,20 +86,20 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
         let k = self.k;
         for i in 0..k {
             let xi = element[i];
-            if xi.is_nan() {
-                self.nan_count[i] -= 1;
+            if !xi.is_finite() {
+                self.nonfinite_count[i] -= 1;
             } else {
                 self.sum[i] = self.sum[i] - xi;
             }
         }
         for i in 0..k {
             let xi = element[i];
-            if xi.is_nan() {
+            if !xi.is_finite() {
                 continue;
             }
             for j in i..k {
                 let xj = element[j];
-                if xj.is_nan() {
+                if !xj.is_finite() {
                     continue;
                 }
                 let prod = xi * xj;
@@ -112,7 +116,8 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
         let n = T::from(count).unwrap();
         for i in 0..k {
             for j in 0..k {
-                output[i * k + j] = if self.nan_count[i] == 0 && self.nan_count[j] == 0 {
+                output[i * k + j] = if self.nonfinite_count[i] == 0 && self.nonfinite_count[j] == 0
+                {
                     self.sum_cross[i * k + j] / n - (self.sum[i] / n) * (self.sum[j] / n)
                 } else {
                     T::nan()
@@ -126,42 +131,45 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
 mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
-    use crate::{Notify, Operator, Series};
+    use crate::{Duration, Instant};
+    use crate::{Operator, Series};
 
     type RollingCovariance = Rolling<CovarianceAccumulator<f64>>;
+
+    fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
     #[test]
     fn cov_basic() {
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::count(3).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingCovariance::count(3).init(&s, Instant::MIN);
 
         assert_eq!(out.shape(), &[2, 2]);
 
-        s.push(1, &[1.0, 2.0]);
+        s.push(ts(1), &[1.0, 2.0]);
         assert!(!RollingCovariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
-            1,
-            &Notify::new(&[], 0)
+            ts(1),
+            false
         ));
 
-        s.push(2, &[2.0, 4.0]);
+        s.push(ts(2), &[2.0, 4.0]);
         assert!(!RollingCovariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
-            2,
-            &Notify::new(&[], 0)
+            ts(2),
+            false
         ));
 
-        s.push(3, &[3.0, 6.0]);
+        s.push(ts(3), &[3.0, 6.0]);
         assert!(RollingCovariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
-            3,
-            &Notify::new(&[], 0)
+            ts(3),
+            false
         ));
 
         // Perfect linear correlation: y = 2x.
@@ -177,19 +185,19 @@ mod tests {
     #[should_panic(expected = "requires 1D")]
     fn cov_rejects_scalar() {
         let s = Series::<f64>::new(&[]);
-        RollingCovariance::count(3).init((&s,), i64::MIN);
+        RollingCovariance::count(3).init(&s, Instant::MIN);
     }
 
     #[test]
     fn cov_nan_propagation() {
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::count(2).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingCovariance::count(2).init(&s, Instant::MIN);
 
-        s.push(1, &[f64::NAN, 1.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0));
+        s.push(ts(1), &[f64::NAN, 1.0]);
+        RollingCovariance::compute(&mut state, &s, &mut out, ts(1), false);
 
-        s.push(2, &[2.0, 2.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 2, &Notify::new(&[], 0));
+        s.push(ts(2), &[2.0, 2.0]);
+        RollingCovariance::compute(&mut state, &s, &mut out, ts(2), false);
 
         let cov = out.as_slice();
         assert!(cov[0].is_nan()); // Var(x): NaN in x
@@ -201,21 +209,21 @@ mod tests {
     #[test]
     fn cov_time_delta() {
         let mut s = Series::<f64>::new(&[2]);
-        let (mut state, mut out) = RollingCovariance::time_delta(200).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingCovariance::time_delta(Duration::from_nanos(200)).init(&s, Instant::MIN);
 
-        s.push(100, &[1.0, 2.0]);
+        s.push(ts(100), &[1.0, 2.0]);
         assert!(RollingCovariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
-            100,
-            &Notify::new(&[], 0)
+            ts(100),
+            false
         ));
         // Single element → all covariances = 0.
         assert_eq!(out.as_slice(), &[0.0, 0.0, 0.0, 0.0]);
 
-        s.push(200, &[3.0, 6.0]);
-        RollingCovariance::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], 0));
+        s.push(ts(200), &[3.0, 6.0]);
+        RollingCovariance::compute(&mut state, &s, &mut out, ts(200), false);
 
         // Cov([1,3], [2,6]): Var(x)=1, Cov(x,y)=2, Var(y)=4.
         let cov = out.as_slice();

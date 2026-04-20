@@ -1,8 +1,10 @@
 //! Rolling variance accumulator.
 //!
-//! O(1) per element per tick via incremental sum/sum_sq with NaN counting.
+//! O(1) per element per tick via incremental sum/sum_sq with non-finite
+//! counting.
 
 use num_traits::Float;
+
 
 use crate::Scalar;
 
@@ -11,12 +13,14 @@ use super::accumulator::Accumulator;
 /// Incremental population variance accumulator.
 ///
 /// Uses the formula `Var(x) = E[x²] − E[x]²`.
-/// If any value in the window is NaN for a given element position, the
-/// output for that position is NaN.
+/// Non-finite values (NaN, ±inf) are skipped and counted separately rather
+/// than added to the running sums, since `inf − inf` would corrupt the
+/// sums to NaN on eviction.  If any value in the window is non-finite for
+/// a given element position, the output for that position is NaN.
 pub struct VarianceAccumulator<T: Scalar + Float> {
     sum: Vec<T>,
     sum_sq: Vec<T>,
-    nan_count: Vec<u32>,
+    nonfinite_count: Vec<u32>,
 }
 
 impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
@@ -27,14 +31,14 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
         Self {
             sum: vec![T::zero(); stride],
             sum_sq: vec![T::zero(); stride],
-            nan_count: vec![0; stride],
+            nonfinite_count: vec![0; stride],
         }
     }
 
     fn add(&mut self, element: &[T]) {
         for (j, &v) in element.iter().enumerate() {
-            if v.is_nan() {
-                self.nan_count[j] += 1;
+            if !v.is_finite() {
+                self.nonfinite_count[j] += 1;
             } else {
                 self.sum[j] = self.sum[j] + v;
                 self.sum_sq[j] = self.sum_sq[j] + v * v;
@@ -44,8 +48,8 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
 
     fn remove(&mut self, element: &[T]) {
         for (j, &v) in element.iter().enumerate() {
-            if v.is_nan() {
-                self.nan_count[j] -= 1;
+            if !v.is_finite() {
+                self.nonfinite_count[j] -= 1;
             } else {
                 self.sum[j] = self.sum[j] - v;
                 self.sum_sq[j] = self.sum_sq[j] - v * v;
@@ -56,7 +60,7 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
     fn write(&self, count: usize, output: &mut [T]) {
         let n = T::from(count).unwrap();
         for (j, o) in output.iter_mut().enumerate() {
-            *o = if self.nan_count[j] == 0 {
+            *o = if self.nonfinite_count[j] == 0 {
                 let mean = self.sum[j] / n;
                 self.sum_sq[j] / n - mean * mean
             } else {
@@ -70,25 +74,28 @@ impl<T: Scalar + Float> Accumulator for VarianceAccumulator<T> {
 mod tests {
     use super::*;
     use crate::operators::rolling::accumulator::Rolling;
-    use crate::{Array, Notify, Operator, Series};
+    use crate::{Duration, Instant};
+    use crate::{Array, Operator, Series};
 
     type RollingVariance = Rolling<VarianceAccumulator<f64>>;
+
+    fn ts(n: i64) -> Instant { Instant::from_nanos(n) }
 
     fn push_compute(
         s: &mut Series<f64>,
         state: &mut <RollingVariance as Operator>::State,
         out: &mut Array<f64>,
-        ts: i64,
+        t: i64,
         val: f64,
     ) -> bool {
-        s.push(ts, &[val]);
-        RollingVariance::compute(state, (s,), out, ts, &Notify::new(&[], 0))
+        s.push(ts(t), &[val]);
+        RollingVariance::compute(state, s, out, ts(t), false)
     }
 
     #[test]
     fn var_basic() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::count(3).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingVariance::count(3).init(&s, Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(!push_compute(&mut s, &mut state, &mut out, 2, 2.0));
@@ -101,7 +108,7 @@ mod tests {
     #[test]
     fn var_nan() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::count(2).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingVariance::count(2).init(&s, Instant::MIN);
 
         assert!(!push_compute(&mut s, &mut state, &mut out, 1, 1.0));
         assert!(push_compute(&mut s, &mut state, &mut out, 2, f64::NAN));
@@ -118,21 +125,21 @@ mod tests {
     #[test]
     fn var_time_delta() {
         let mut s = Series::<f64>::new(&[]);
-        let (mut state, mut out) = RollingVariance::time_delta(200).init((&s,), i64::MIN);
+        let (mut state, mut out) = RollingVariance::time_delta(Duration::from_nanos(200)).init(&s, Instant::MIN);
 
-        s.push(100, &[2.0]);
+        s.push(ts(100), &[2.0]);
         assert!(RollingVariance::compute(
             &mut state,
-            (&s,),
+            &s,
             &mut out,
-            100,
-            &Notify::new(&[], 0)
+            ts(100),
+            false
         ));
         // Single element → variance = 0.
         assert_eq!(out.as_slice()[0], 0.0);
 
-        s.push(200, &[4.0]);
-        RollingVariance::compute(&mut state, (&s,), &mut out, 200, &Notify::new(&[], 0));
+        s.push(ts(200), &[4.0]);
+        RollingVariance::compute(&mut state, &s, &mut out, ts(200), false);
         // Var([2,4]) = (4+16)/2 - 9 = 1.0
         assert!((out.as_slice()[0] - 1.0).abs() < 1e-10);
     }

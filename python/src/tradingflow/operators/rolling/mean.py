@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ...operator import NativeOperator
-from ...types import Handle, NodeKind
+from ... import Handle, NativeOperator, NodeKind
 from ._window import window_params as _window_params
 
 

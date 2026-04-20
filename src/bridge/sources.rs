@@ -9,17 +9,21 @@ use pyo3::types::PyDict;
 
 use crate::sources::ArraySource;
 use crate::{Array, Scenario, Series};
+use crate::{Duration, Instant};
 
 use super::dispatch::{ContiguousArrayInfo, dispatch_dtype};
 
-/// Register a Rust-native source by `(kind, dtype)` and return the output
-/// node index.
+/// Register a Rust-native source and return `(node_index, output_view_kind)`.
+///
+/// The output [`NativeNodeKind`] is determined by the Rust source type, not by the
+/// Python caller — mirrors how [`dispatch_native_operator`] works.
 pub fn dispatch_native_source(
     sc: &mut Scenario,
     kind: &str,
     dtype: &str,
     params: &Bound<'_, PyDict>,
-) -> PyResult<usize> {
+) -> PyResult<(usize, super::views::NativeNodeKind)> {
+    use super::views::NativeNodeKind;
     match kind {
         "array" => {
             let timestamps = params
@@ -60,10 +64,29 @@ pub fn dispatch_native_source(
                 .get_item("end_ns")?
                 .map(|v| v.extract::<i64>())
                 .transpose()?;
+            let is_utc: bool = params
+                .get_item("is_utc")?
+                .map(|v| v.extract::<bool>())
+                .transpose()?
+                .unwrap_or(true);
+            let tz_offset_ns: i64 = params
+                .get_item("tz_offset_ns")?
+                .map(|v| v.extract::<i64>())
+                .transpose()?
+                .unwrap_or(0);
             use crate::sources::CsvSource;
-            let source = CsvSource::new(path, time_column, value_columns, timestamp_offset_ns)
-                .with_time_range(start_ns, end_ns);
-            Ok(sc.add_source(source).index())
+            let source = CsvSource::new(
+                path,
+                time_column,
+                value_columns,
+                Duration::from_nanos(timestamp_offset_ns),
+            )
+            .with_timescale(is_utc, Duration::from_nanos(tz_offset_ns))
+            .with_time_range(
+                start_ns.map(Instant::from_nanos),
+                end_ns.map(Instant::from_nanos),
+            );
+            Ok((sc.add_source(source).index(), NativeNodeKind::Array))
         }
         "financial_report" => {
             let path: String = params
@@ -97,9 +120,7 @@ pub fn dispatch_native_source(
             let use_effective_date: bool = params
                 .get_item("use_effective_date")?
                 .ok_or_else(|| {
-                    PyTypeError::new_err(
-                        "financial_report source requires 'use_effective_date'",
-                    )
+                    PyTypeError::new_err("financial_report source requires 'use_effective_date'")
                 })?
                 .extract()?;
             let notice_date_fallback_ns: i64 = params
@@ -118,6 +139,16 @@ pub fn dispatch_native_source(
                 .get_item("end_ns")?
                 .map(|v| v.extract::<i64>())
                 .transpose()?;
+            let is_utc: bool = params
+                .get_item("is_utc")?
+                .map(|v| v.extract::<bool>())
+                .transpose()?
+                .unwrap_or(true);
+            let tz_offset_ns: i64 = params
+                .get_item("tz_offset_ns")?
+                .map(|v| v.extract::<i64>())
+                .transpose()?
+                .unwrap_or(0);
             use crate::sources::stocks::FinancialReportSource;
             let source = FinancialReportSource::new(
                 path,
@@ -126,50 +157,24 @@ pub fn dispatch_native_source(
                 value_columns,
                 with_report_date,
                 use_effective_date,
-                notice_date_fallback_ns,
+                Duration::from_nanos(notice_date_fallback_ns),
             )
-            .with_time_range(start_ns, end_ns);
-            Ok(sc.add_source(source).index())
+            .with_timescale(is_utc, Duration::from_nanos(tz_offset_ns))
+            .with_time_range(
+                start_ns.map(Instant::from_nanos),
+                end_ns.map(Instant::from_nanos),
+            );
+            Ok((sc.add_source(source).index(), NativeNodeKind::Array))
         }
         "clock" => {
             let timestamps: Vec<i64> = params
                 .get_item("timestamps")?
                 .ok_or_else(|| PyTypeError::new_err("clock source requires 'timestamps'"))?
                 .extract()?;
+            let timestamps: Vec<Instant> =
+                timestamps.into_iter().map(Instant::from_nanos).collect();
             use crate::sources::clock;
-            Ok(sc.add_source(clock(timestamps)).index())
-        }
-        "daily_clock" => {
-            let start_ns: i64 = params
-                .get_item("start_ns")?
-                .ok_or_else(|| PyTypeError::new_err("daily_clock requires 'start_ns'"))?
-                .extract()?;
-            let end_ns: i64 = params
-                .get_item("end_ns")?
-                .ok_or_else(|| PyTypeError::new_err("daily_clock requires 'end_ns'"))?
-                .extract()?;
-            let tz: String = params
-                .get_item("tz")?
-                .ok_or_else(|| PyTypeError::new_err("daily_clock requires 'tz'"))?
-                .extract()?;
-            use crate::sources::daily_clock;
-            Ok(sc.add_source(daily_clock(start_ns, end_ns, &tz)).index())
-        }
-        "monthly_clock" => {
-            let start_ns: i64 = params
-                .get_item("start_ns")?
-                .ok_or_else(|| PyTypeError::new_err("monthly_clock requires 'start_ns'"))?
-                .extract()?;
-            let end_ns: i64 = params
-                .get_item("end_ns")?
-                .ok_or_else(|| PyTypeError::new_err("monthly_clock requires 'end_ns'"))?
-                .extract()?;
-            let tz: String = params
-                .get_item("tz")?
-                .ok_or_else(|| PyTypeError::new_err("monthly_clock requires 'tz'"))?
-                .extract()?;
-            use crate::sources::monthly_clock;
-            Ok(sc.add_source(monthly_clock(start_ns, end_ns, &tz)).index())
+            Ok((sc.add_source(clock(timestamps)).index(), NativeNodeKind::Unit))
         }
         other => Err(PyTypeError::new_err(format!(
             "unknown native source kind: {other}"
@@ -178,17 +183,19 @@ pub fn dispatch_native_source(
 }
 
 /// Create a node and register an `ArraySource` in one step.
+/// Returns `(node_index, NativeNodeKind::Array)`.
 fn register_array_source(
     sc: &mut Scenario,
     dtype: &str,
     timestamps: &Bound<'_, pyo3::types::PyAny>,
     values: &Bound<'_, pyo3::types::PyAny>,
     shape: &[usize],
-) -> PyResult<usize> {
+) -> PyResult<(usize, super::views::NativeNodeKind)> {
     macro_rules! register {
         ($T:ty) => {{
             let info = ContiguousArrayInfo::try_from(timestamps)?;
-            let timestamps = unsafe { info.to_vec::<i64>() };
+            let unix_ns = unsafe { info.to_vec::<i64>() };
+            let timestamps: Vec<Instant> = unix_ns.into_iter().map(Instant::from_nanos).collect();
             let info = ContiguousArrayInfo::try_from(values)?;
             let data = unsafe { info.to_vec::<$T>() };
             let source = ArraySource::new(
@@ -198,5 +205,8 @@ fn register_array_source(
             sc.add_source(source).index()
         }};
     }
-    Ok(dispatch_dtype!(dtype, register, numeric))
+    Ok((
+        dispatch_dtype!(dtype, register, numeric),
+        super::views::NativeNodeKind::Array,
+    ))
 }

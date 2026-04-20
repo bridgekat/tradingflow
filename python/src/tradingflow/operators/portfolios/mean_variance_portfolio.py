@@ -7,9 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...operator import Operator, Notify
-from ...types import Array, Handle, NodeKind
-from ...utils import coerce_timestamp
+from ... import ArrayView, Handle, NodeKind, Operator
 
 
 @dataclass(slots=True)
@@ -17,41 +15,43 @@ class MeanVariancePortfolioState:
     """Mutable state for [`MeanVariancePortfolio`] subclasses."""
 
     num_stocks: int
-    trading_start: int | None
     positions_fn: Callable[["MeanVariancePortfolioState", np.ndarray, np.ndarray], np.ndarray]
 
 
 class MeanVariancePortfolio(
     Operator[
-        tuple[Handle[Array[np.float64]], ...],
-        Handle[Array[np.float64]],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
         MeanVariancePortfolioState,
     ]
 ):
     """Abstract portfolio constructor from predicted returns and covariance.
 
-    On each tick, reads predicted returns and covariance matrix, delegates to
-    ``positions_fn`` to compute position weights.
+    Triggered by new predicted mean or covariance from upstream.
+    Delegates to `positions_fn` to compute position weights.  Only
+    stocks with positive universe weights, finite predicted returns, and
+    finite diagonal covariance entries are passed to `positions_fn`;
+    the result is scattered back to the full dimension with zeros
+    elsewhere.  The sub-covariance-matrix of the remaining stocks must
+    not contain non-finite entries.
 
-    Only stocks with positive universe weights, finite predicted returns,
-    and finite diagonal covariance entries are passed to ``positions_fn``;
-    the result is scattered back to the full dimension with zeros elsewhere.
-    The sub-covariance-matrix of the remaining stocks must not contain
-    non-finite entries.
+    The rebalance cadence is inherited from upstream: when the
+    predictors are clock-triggered at rebalance dates, this operator
+    runs at the same cadence.
 
     Parameters
     ----------
     universe
-        Handle to universe weights, shape ``(num_stocks,)``.
+        Handle to universe weights, shape `(num_stocks,)`.
         Stocks with positive values are included in the optimization.
     predicted_returns
-        Handle to predicted returns array, shape ``(num_stocks,)``.
+        Handle to predicted returns array, shape `(num_stocks,)`.
     predicted_covariances
-        Handle to predicted covariance matrix, shape ``(num_stocks, num_stocks)``.
+        Handle to predicted covariance matrix, shape `(num_stocks, num_stocks)`.
     positions_fn
-        ``(state, mu, Sigma) -> weights``.  Receives only the subset.
-    trading_start
-        If set, outputs zero weights before this timestamp.
+        `(state, mu, Sigma) -> weights`.  Receives only the subset.
     """
 
     def __init__(
@@ -61,7 +61,6 @@ class MeanVariancePortfolio(
         predicted_covariances: Handle,
         *,
         positions_fn: Callable[[MeanVariancePortfolioState, np.ndarray, np.ndarray], np.ndarray],
-        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(predicted_returns.shape) == 1
@@ -72,7 +71,6 @@ class MeanVariancePortfolio(
 
         self._num_stocks = predicted_returns.shape[0]
         self._positions_fn = positions_fn
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         inputs = (universe, predicted_returns, predicted_covariances)
         super().__init__(
@@ -83,27 +81,34 @@ class MeanVariancePortfolio(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> MeanVariancePortfolioState:
+    def init(
+        self,
+        inputs: tuple[
+            ArrayView[np.float64],
+            ArrayView[np.float64],
+            ArrayView[np.float64],
+        ],
+        timestamp: int,
+    ) -> MeanVariancePortfolioState:
         return MeanVariancePortfolioState(
             num_stocks=self._num_stocks,
-            trading_start=self._trading_start,
             positions_fn=self._positions_fn,
         )
 
     @staticmethod
     def compute(
         state: MeanVariancePortfolioState,
-        inputs: tuple,
-        output,
+        inputs: tuple[
+            ArrayView[np.float64],
+            ArrayView[np.float64],
+            ArrayView[np.float64],
+        ],
+        output: ArrayView[np.float64],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         # Changes in universe only should not trigger recomputation.
-        if not notify.input_produced()[1] or not notify.input_produced()[2]:
-            return False
-
-        # Output zeros before trading start.
-        if state.trading_start is not None and timestamp < state.trading_start:
+        if not produced[1] or not produced[2]:
             return False
 
         universe = inputs[0].value()

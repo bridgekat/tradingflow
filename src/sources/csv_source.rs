@@ -1,9 +1,10 @@
 //! Historical-only source that reads a CSV file asynchronously.
 
-use chrono::NaiveDate;
 use csv_async::StringRecord;
+use hifitime::Epoch;
 use tokio::sync::mpsc;
 
+use crate::{Duration, Instant};
 use crate::{Array, Source};
 
 /// Historical-only source backed by a CSV file.
@@ -17,13 +18,21 @@ pub struct CsvSource {
     path: String,
     time_column: String,
     value_columns: Vec<String>,
-    timestamp_offset_ns: i64,
-    /// Optional inclusive start bound (nanoseconds).  Rows before this
-    /// timestamp are dropped.
-    start_ns: Option<i64>,
-    /// Optional inclusive end bound (nanoseconds).  Rows after this
-    /// timestamp are dropped.
-    end_ns: Option<i64>,
+    timestamp_offset: Duration,
+    /// If `true` (default), date strings are interpreted as UTC wall-clock
+    /// instants and converted to TAI via the IERS leap-second table.  If
+    /// `false`, they are interpreted directly as TAI wall-clock (no leap
+    /// seconds involved).
+    is_utc: bool,
+    /// Offset of the date-string timezone from the reference timescale.
+    /// E.g. `Duration::from_hours(8)` for Asia/Shanghai when `is_utc` is
+    /// `true`.  The parsed local wall-clock is shifted by subtracting
+    /// `tz_offset` before leap-second conversion.
+    tz_offset: Duration,
+    /// Optional inclusive start bound.  Rows before this timestamp are dropped.
+    start: Option<Instant>,
+    /// Optional inclusive end bound.  Rows after this timestamp are dropped.
+    end: Option<Instant>,
 }
 
 impl CsvSource {
@@ -34,53 +43,264 @@ impl CsvSource {
     ///   (parsed as `YYYY-MM-DD`).
     /// * `value_columns` — header names of columns to include as values,
     ///   in order.  Each is parsed as `f64`.
-    /// * `timestamp_offset_ns` — constant offset in nanoseconds added to
-    ///   every parsed timestamp before it is used as the event timestamp.
-    ///   Useful when the CSV contains low-precision timestamps (e.g. dates)
-    ///   that would otherwise cause forward-looking bias against
-    ///   higher-precision sources.
+    /// * `timestamp_offset` — constant offset added to every parsed
+    ///   timestamp before it is used as the event timestamp.  Useful when
+    ///   the CSV contains low-precision timestamps (e.g. dates) that would
+    ///   otherwise cause forward-looking bias against higher-precision
+    ///   sources.
+    ///
+    /// The date strings are interpreted as **UTC midnight** by default.
+    /// Use [`with_timescale`](Self::with_timescale) to change the
+    /// interpretation (TAI) or the wall-clock timezone offset.
     pub fn new(
         path: String,
         time_column: String,
         value_columns: Vec<String>,
-        timestamp_offset_ns: i64,
+        timestamp_offset: Duration,
     ) -> Self {
         Self {
             path,
             time_column,
             value_columns,
-            timestamp_offset_ns,
-            start_ns: None,
-            end_ns: None,
+            timestamp_offset,
+            is_utc: true,
+            tz_offset: Duration::ZERO,
+            start: None,
+            end: None,
         }
+    }
+
+    /// Set the interpretation of the date strings in the CSV.
+    ///
+    /// * `is_utc` — if `true` (default), date strings are interpreted as
+    ///   UTC wall-clock instants; conversion to TAI applies the IERS
+    ///   leap-second offset.  If `false`, they are interpreted as TAI
+    ///   wall-clock directly (no leap-second math).
+    /// * `tz_offset` — offset of the local wall-clock timezone from the
+    ///   reference timescale (UTC or TAI as selected by `is_utc`).  For
+    ///   example, `Duration::from_hours(8)` for Asia/Shanghai.
+    pub fn with_timescale(mut self, is_utc: bool, tz_offset: Duration) -> Self {
+        self.is_utc = is_utc;
+        self.tz_offset = tz_offset;
+        self
     }
 
     /// Restrict the source to the given inclusive time range.
     ///
-    /// Rows outside `[start_ns, end_ns]` are dropped.  The reported
-    /// [`time_range`](Source::time_range) is clamped accordingly.
-    pub fn with_time_range(mut self, start_ns: Option<i64>, end_ns: Option<i64>) -> Self {
-        self.start_ns = start_ns;
-        self.end_ns = end_ns;
+    /// Rows outside `[start, end]` are dropped.
+    pub fn with_time_range(mut self, start: Option<Instant>, end: Option<Instant>) -> Self {
+        self.start = start;
+        self.end = end;
         self
     }
 }
 
-/// Parse a date string (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS`) to
-/// nanoseconds since the UNIX epoch (midnight UTC).
-fn parse_timestamp(s: &str) -> Result<i64, String> {
-    let date = if let Ok(d) = NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d") {
-        d
-    } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%d %H:%M:%S") {
-        dt.date()
-    } else {
-        return Err(format!("cannot parse date: {s:?}"));
+/// Estimate the number of data rows in a CSV file from a small synchronous
+/// prefix read.  Samples at most `SAMPLE_BYTES` to compute an average line
+/// length after the header, then extrapolates against the full file size.
+///
+/// For CSV files dominated by fixed-width numeric columns the resulting
+/// estimate is usually within a few percent.  Header-only files return
+/// `Some(0)`.  Returns `None` only if the file cannot be opened or read.
+pub(crate) fn estimate_csv_rows(path: &str) -> Option<usize> {
+    const SAMPLE_BYTES: usize = 16 * 1024;
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let file_size = f.metadata().ok()?.len();
+    if file_size == 0 {
+        return Some(0);
+    }
+    let mut buf = vec![0u8; SAMPLE_BYTES.min(file_size as usize)];
+    let read = f.read(&mut buf).ok()?;
+    buf.truncate(read);
+    // Find the end of the header line.  No newline → header-only (no body).
+    let Some(nl_pos) = buf.iter().position(|&b| b == b'\n') else {
+        return Some(0);
     };
-    date.and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc()
-        .timestamp_nanos_opt()
-        .ok_or_else(|| format!("timestamp overflow for {s:?}"))
+    let header_end = nl_pos + 1;
+    let body = &buf[header_end..];
+    let line_count = body.iter().filter(|&&b| b == b'\n').count();
+    if line_count == 0 {
+        // Header line + at most one partial data row in the sample.  Treat
+        // as header-only when the whole file fits in the sample, otherwise
+        // approximate from the partial data row's length.
+        if file_size as usize <= read {
+            return Some(if body.is_empty() { 0 } else { 1 });
+        }
+        let avg_line_bytes = body.len().max(1) as f64;
+        let remaining_bytes = file_size.saturating_sub(header_end as u64) as f64;
+        return Some((remaining_bytes / avg_line_bytes).round() as usize);
+    }
+    let avg_line_bytes = body.len() as f64 / line_count as f64;
+    let remaining_bytes = file_size.saturating_sub(header_end as u64) as f64;
+    Some((remaining_bytes / avg_line_bytes).round() as usize)
+}
+
+/// Scale a row estimate by the fraction of the file's time span that
+/// overlaps `[start, end]`, assuming rows are uniformly distributed in
+/// time.
+///
+/// The file's time span is read from the first and last data rows via
+/// [`read_boundary_timestamps`], which does one seek + two small reads.
+/// When neither `start` nor `end` is set, or the boundary reads fail, the
+/// input `total` is returned unchanged.
+pub(crate) fn scale_rows_to_range(
+    total: usize,
+    path: &str,
+    time_column: &str,
+    start: Option<Instant>,
+    end: Option<Instant>,
+    is_utc: bool,
+    tz_offset: Duration,
+    timestamp_offset: Duration,
+) -> usize {
+    if total == 0 || (start.is_none() && end.is_none()) {
+        return total;
+    }
+    let Some((file_start, file_end)) =
+        read_boundary_timestamps(path, time_column, is_utc, tz_offset, timestamp_offset)
+    else {
+        return total;
+    };
+    if file_end <= file_start {
+        return total;
+    }
+    let q_start = start.unwrap_or(Instant::MIN).max(file_start);
+    let q_end = end.unwrap_or(Instant::MAX).min(file_end);
+    if q_end <= q_start {
+        return 0;
+    }
+    let span = (file_end - file_start).as_nanos() as f64;
+    let overlap = (q_end - q_start).as_nanos() as f64;
+    ((total as f64) * (overlap / span).clamp(0.0, 1.0)).round() as usize
+}
+
+/// Read the first and last data rows' time-column values from a CSV file.
+///
+/// Uses one prefix read for the header + first row and one suffix seek for
+/// the tail.  Assumes simple CSVs with no quoted newlines and the time
+/// column containing a leading `YYYY-MM-DD` date with no embedded commas.
+/// Returns `None` if the file has fewer than two data rows, the column
+/// cannot be resolved, or a date fails to parse.
+fn read_boundary_timestamps(
+    path: &str,
+    time_column: &str,
+    is_utc: bool,
+    tz_offset: Duration,
+    timestamp_offset: Duration,
+) -> Option<(Instant, Instant)> {
+    const BOUNDARY_SAMPLE_BYTES: usize = 4 * 1024;
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut f = std::fs::File::open(path).ok()?;
+    let file_size = f.metadata().ok()?.len() as usize;
+    if file_size == 0 {
+        return None;
+    }
+
+    // Prefix: header + first data row.
+    let prefix_len = BOUNDARY_SAMPLE_BYTES.min(file_size);
+    let mut prefix = vec![0u8; prefix_len];
+    f.read_exact(&mut prefix).ok()?;
+    let prefix_str = std::str::from_utf8(&prefix).ok()?;
+    let mut lines = prefix_str.split('\n');
+    let header = lines.next()?;
+    let first_data_line = lines.next()?.trim_end_matches('\r');
+    if first_data_line.is_empty() {
+        return None;
+    }
+    let time_idx = header
+        .trim_end_matches('\r')
+        .split(',')
+        .position(|h| h.trim() == time_column)?;
+    let first_ts =
+        parse_ts_from_line(first_data_line, time_idx, is_utc, tz_offset, timestamp_offset)?;
+
+    // Suffix: find the last complete data line.
+    let tail_len = BOUNDARY_SAMPLE_BYTES.min(file_size);
+    let tail_bytes: Vec<u8> = if file_size <= prefix_len {
+        prefix
+    } else {
+        f.seek(SeekFrom::End(-(tail_len as i64))).ok()?;
+        let mut tail = vec![0u8; tail_len];
+        f.read_exact(&mut tail).ok()?;
+        tail
+    };
+    let tail_str = std::str::from_utf8(&tail_bytes).ok()?;
+    let trimmed = tail_str.trim_end_matches(|c: char| c == '\n' || c == '\r');
+    // Find the start of the last line: after the last '\n' if any, else the
+    // beginning of the tail (valid only if the whole file fit in the buffer).
+    let last_line_start = match trimmed.rfind('\n') {
+        Some(i) => i + 1,
+        None if file_size <= tail_len => 0,
+        None => return None,
+    };
+    let last_line = trimmed[last_line_start..].trim_end_matches('\r');
+    if last_line.is_empty() {
+        return None;
+    }
+    let last_ts =
+        parse_ts_from_line(last_line, time_idx, is_utc, tz_offset, timestamp_offset)?;
+
+    Some((first_ts, last_ts))
+}
+
+/// Parse the `time_idx`-th comma-separated field of `line` as a
+/// `YYYY-MM-DD` date and convert it to an [`Instant`] under the given
+/// timescale interpretation.
+fn parse_ts_from_line(
+    line: &str,
+    time_idx: usize,
+    is_utc: bool,
+    tz_offset: Duration,
+    timestamp_offset: Duration,
+) -> Option<Instant> {
+    let field = line.split(',').nth(time_idx)?.trim();
+    let epoch = parse_gregorian_date(field).ok()?;
+    Some(epoch_to_instant(epoch, is_utc, tz_offset) + timestamp_offset)
+}
+
+/// Parse the leading `YYYY-MM-DD` of a string into a Gregorian `Epoch`
+/// (at UTC midnight, as if the date were in UTC).  Any time component
+/// after the leading 10-char date is ignored.  The resulting Epoch is
+/// the one hifitime returns from `maybe_from_gregorian_utc`; callers
+/// re-anchor it as needed for UTC vs TAI interpretation.
+pub(crate) fn parse_gregorian_date(s: &str) -> Result<Epoch, String> {
+    let s = s.trim();
+    let date = s.get(..10).ok_or_else(|| format!("cannot parse date: {s:?}"))?;
+    let mut parts = date.split('-');
+    let year: i32 = parts.next().and_then(|p| p.parse().ok())
+        .ok_or_else(|| format!("cannot parse date: {s:?}"))?;
+    let month: u8 = parts.next().and_then(|p| p.parse().ok())
+        .ok_or_else(|| format!("cannot parse date: {s:?}"))?;
+    let day: u8 = parts.next().and_then(|p| p.parse().ok())
+        .ok_or_else(|| format!("cannot parse date: {s:?}"))?;
+    if parts.next().is_some() {
+        return Err(format!("cannot parse date: {s:?}"));
+    }
+    Epoch::maybe_from_gregorian_utc(year, month, day, 0, 0, 0, 0)
+        .map_err(|e| format!("invalid date {s:?}: {e}"))
+}
+
+/// Convert a Gregorian-parsed `Epoch` to an [`Instant`] under the
+/// source's timescale interpretation, then shift by `tz_offset`.
+///
+/// `is_utc = true`: the date labels a UTC wall-clock instant; the TAI
+/// `Instant` is that UTC instant viewed on the TAI timeline (leap-second
+/// offset applied by hifitime).
+///
+/// `is_utc = false`: the date labels a TAI wall-clock instant; every
+/// calendar day is 86 400 SI seconds (no leap-second math).  The TAI
+/// `Instant` is the integer `(days_since_1970 * 86400 + seconds_of_day)
+/// * 1e9`, which equals the UNIX-ns of the same date reinterpreted on
+/// the TAI timeline.
+pub(crate) fn epoch_to_instant(epoch: Epoch, is_utc: bool, tz_offset: Duration) -> Instant {
+    let anchored = if is_utc {
+        Instant::from_hifitime_epoch(epoch)
+    } else {
+        Instant::from_nanos(Instant::from_hifitime_epoch(epoch).to_utc_nanos())
+    };
+    anchored - tz_offset
 }
 
 /// Resolve column indices from CSV headers.
@@ -125,16 +345,26 @@ impl Source for CsvSource {
     type Event = Array<f64>;
     type Output = Array<f64>;
 
-    fn time_range(&self) -> (Option<i64>, Option<i64>) {
-        (self.start_ns, self.end_ns)
+    fn estimated_event_count(&self) -> Option<usize> {
+        let total = estimate_csv_rows(&self.path)?;
+        Some(scale_rows_to_range(
+            total,
+            &self.path,
+            &self.time_column,
+            self.start,
+            self.end,
+            self.is_utc,
+            self.tz_offset,
+            self.timestamp_offset,
+        ))
     }
 
     fn init(
         self,
-        _timestamp: i64,
+        _timestamp: Instant,
     ) -> (
-        mpsc::Receiver<(i64, Array<f64>)>,
-        mpsc::Receiver<(i64, Array<f64>)>,
+        mpsc::Receiver<(Instant, Array<f64>)>,
+        mpsc::Receiver<(Instant, Array<f64>)>,
         Array<f64>,
     ) {
         let num_columns = self.value_columns.len();
@@ -172,16 +402,18 @@ impl Source for CsvSource {
                     }
                 };
 
-            let start_ns = self.start_ns;
-            let end_ns = self.end_ns;
+            let start = self.start;
+            let end = self.end;
+            let is_utc = self.is_utc;
+            let tz_offset = self.tz_offset;
 
-            // When `start_ns` is set, track the last row before the window
-            // so it can be emitted as the initial value at `start_ns`.
+            // When `start` is set, track the last row before the window
+            // so it can be emitted as the initial value at `start`.
             let mut last_before_start: Option<Vec<f64>> = None;
-            let mut entered_window = start_ns.is_none();
+            let mut entered_window = start.is_none();
 
             let mut record = StringRecord::new();
-            let mut prev_ts = i64::MIN;
+            let mut prev_ts = Instant::MIN;
             loop {
                 match reader.read_record(&mut record).await {
                     Ok(false) => break, // EOF
@@ -191,8 +423,8 @@ impl Source for CsvSource {
                     }
                     Ok(true) => {}
                 }
-                let ts = match parse_timestamp(&record[time_idx]) {
-                    Ok(t) => t + self.timestamp_offset_ns,
+                let ts = match parse_gregorian_date(&record[time_idx]) {
+                    Ok(epoch) => epoch_to_instant(epoch, is_utc, tz_offset) + self.timestamp_offset,
                     Err(e) => {
                         eprintln!("CsvSource error: {e}");
                         return;
@@ -214,8 +446,8 @@ impl Source for CsvSource {
                 };
 
                 // Before the start of the window: remember the last row.
-                if let Some(start) = start_ns {
-                    if ts < start {
+                if let Some(s) = start {
+                    if ts < s {
                         last_before_start = Some(values);
                         continue;
                     }
@@ -226,16 +458,16 @@ impl Source for CsvSource {
                 if !entered_window {
                     entered_window = true;
                     if let Some(init_vals) = last_before_start.take() {
-                        let start = start_ns.unwrap();
+                        let s = start.unwrap();
                         let arr = Array::from_vec(&[num_columns], init_vals);
-                        if hist_tx.send((start, arr)).await.is_err() {
+                        if hist_tx.send((s, arr)).await.is_err() {
                             break;
                         }
                     }
                 }
 
-                if let Some(end) = end_ns {
-                    if ts > end {
+                if let Some(e) = end {
+                    if ts > e {
                         break;
                     }
                 }
@@ -249,9 +481,9 @@ impl Source for CsvSource {
             // If the file had only pre-start rows, emit the last one.
             if !entered_window {
                 if let Some(init_vals) = last_before_start.take() {
-                    if let Some(start) = start_ns {
+                    if let Some(s) = start {
                         let arr = Array::from_vec(&[num_columns], init_vals);
-                        let _ = hist_tx.send((start, arr)).await;
+                        let _ = hist_tx.send((s, arr)).await;
                     }
                 }
             }
@@ -260,7 +492,7 @@ impl Source for CsvSource {
         (hist_rx, live_rx, Array::zeros(&[num_columns]))
     }
 
-    fn write(payload: Array<f64>, output: &mut Array<f64>, _timestamp: i64) -> bool {
+    fn write(payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> bool {
         output.assign(payload.as_slice());
         true
     }
@@ -270,31 +502,194 @@ impl Source for CsvSource {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_date() {
-        let ts = parse_timestamp("2024-01-15").unwrap();
-        // 2024-01-15 00:00:00 UTC
-        let expected = chrono::NaiveDate::from_ymd_opt(2024, 1, 15)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc()
-            .timestamp_nanos_opt()
-            .unwrap();
-        assert_eq!(ts, expected);
+    fn utc_midnight(y: i32, m: u8, d: u8) -> Instant {
+        Instant::from_hifitime_epoch(
+            Epoch::maybe_from_gregorian_utc(y, m, d, 0, 0, 0, 0).unwrap(),
+        )
+    }
+
+    fn parse_utc(s: &str) -> Instant {
+        epoch_to_instant(parse_gregorian_date(s).unwrap(), true, Duration::ZERO)
     }
 
     #[test]
-    fn parse_datetime() {
+    fn parse_date_utc_default() {
+        assert_eq!(parse_utc("2024-01-15"), utc_midnight(2024, 1, 15));
+    }
+
+    #[test]
+    fn parse_datetime_utc_default() {
         // datetime → truncated to date
-        let ts = parse_timestamp("2024-01-15 09:30:00").unwrap();
-        let expected = chrono::NaiveDate::from_ymd_opt(2024, 1, 15)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc()
-            .timestamp_nanos_opt()
+        assert_eq!(parse_utc("2024-01-15 09:30:00"), utc_midnight(2024, 1, 15));
+    }
+
+    #[test]
+    fn parse_date_tai_interpretation() {
+        // Under is_utc=false, "2024-01-15" labels TAI 2024-01-15 00:00:00
+        // directly — no leap-second offset.
+        let tai = epoch_to_instant(parse_gregorian_date("2024-01-15").unwrap(), false, Duration::ZERO);
+        let utc = parse_utc("2024-01-15");
+        // TAI interpretation is 37 s earlier on the TAI timeline than the
+        // UTC interpretation of the same string (because UTC midnight was
+        // 37 s later in TAI than TAI midnight).
+        assert_eq!((utc - tai).as_nanos(), 37 * 1_000_000_000);
+    }
+
+    #[test]
+    fn parse_date_with_tz_offset() {
+        // "2024-01-15" in UTC+8 means UTC 2024-01-14 16:00:00.
+        let shanghai = epoch_to_instant(
+            parse_gregorian_date("2024-01-15").unwrap(),
+            true,
+            Duration::from_hours(8),
+        );
+        let utc = parse_utc("2024-01-15");
+        assert_eq!((utc - shanghai).as_nanos(), 8 * 3600 * 1_000_000_000);
+    }
+
+    #[test]
+    fn estimate_rows_approximate() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "date,open,close").unwrap();
+        for i in 0..1000 {
+            writeln!(
+                f,
+                "2024-01-{:02},{:.4},{:.4}",
+                (i % 28) + 1,
+                100.0 + i as f64,
+                101.0 + i as f64,
+            )
             .unwrap();
-        assert_eq!(ts, expected);
+        }
+        f.flush().unwrap();
+        let est = estimate_csv_rows(f.path().to_str().unwrap()).unwrap();
+        // Heuristic should be within 5% for uniform rows.
+        assert!(
+            (950..=1050).contains(&est),
+            "expected ~1000, got {est}"
+        );
+    }
+
+    #[test]
+    fn estimate_rows_exact_when_file_fits_in_sample() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "date,val").unwrap();
+        for i in 0..10 {
+            writeln!(f, "2024-01-{:02},{i}.0", i + 1).unwrap();
+        }
+        f.flush().unwrap();
+        let est = estimate_csv_rows(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(est, 10);
+    }
+
+    #[test]
+    fn estimate_rows_header_only_returns_zero() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "date,val").unwrap();
+        f.flush().unwrap();
+        let est = estimate_csv_rows(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(est, 0);
+    }
+
+    #[test]
+    fn estimate_rows_empty_file_returns_zero() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let est = estimate_csv_rows(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(est, 0);
+    }
+
+    /// Helper: write `days` daily rows starting at 2020-01-01, return path.
+    fn write_daily_csv(f: &mut tempfile::NamedTempFile, days: u32) {
+        use std::io::Write;
+        writeln!(f, "date,val").unwrap();
+        let mut year = 2020;
+        let mut month = 1;
+        let mut day = 1;
+        for i in 0..days {
+            writeln!(f, "{year:04}-{month:02}-{day:02},{i}").unwrap();
+            day += 1;
+            if day > 28 {
+                day = 1;
+                month += 1;
+                if month > 12 {
+                    month = 1;
+                    year += 1;
+                }
+            }
+        }
+        f.flush().unwrap();
+    }
+
+    #[test]
+    fn scale_rows_to_range_halves_when_half_overlap() {
+        // 1000 daily rows spanning ~3.5 years; query the latter half.
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write_daily_csv(&mut f, 1000);
+        let path = f.path().to_str().unwrap();
+        let total = estimate_csv_rows(path).unwrap();
+        // Midpoint in UTC TAI ns via parse_utc.
+        let file_start = parse_utc("2020-01-01");
+        let file_end = parse_utc("2022-12-28"); // not exact but close enough
+        let mid = Instant::from_nanos((file_start.as_nanos() + file_end.as_nanos()) / 2);
+        let scaled = scale_rows_to_range(
+            total,
+            path,
+            "date",
+            Some(mid),
+            None,
+            true,
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        // Expect ~half the rows, allow ±10% for boundary-row parsing noise.
+        let expected = total / 2;
+        let lo = (expected as f64 * 0.90) as usize;
+        let hi = (expected as f64 * 1.10) as usize + 2;
+        assert!(
+            (lo..=hi).contains(&scaled),
+            "expected ~{expected}, got {scaled}"
+        );
+    }
+
+    #[test]
+    fn scale_rows_to_range_empty_window_returns_zero() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write_daily_csv(&mut f, 100);
+        let path = f.path().to_str().unwrap();
+        let total = estimate_csv_rows(path).unwrap();
+        // Window entirely after the file.
+        let scaled = scale_rows_to_range(
+            total,
+            path,
+            "date",
+            Some(parse_utc("2030-01-01")),
+            Some(parse_utc("2031-01-01")),
+            true,
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert_eq!(scaled, 0);
+    }
+
+    #[test]
+    fn scale_rows_to_range_no_bounds_returns_total() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write_daily_csv(&mut f, 100);
+        let path = f.path().to_str().unwrap();
+        let total = estimate_csv_rows(path).unwrap();
+        let scaled = scale_rows_to_range(
+            total,
+            path,
+            "date",
+            None,
+            None,
+            true,
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert_eq!(scaled, total);
     }
 }

@@ -2,6 +2,7 @@
 
 use tokio::sync::mpsc;
 
+use crate::Instant;
 use crate::{Array, Scalar, Series, Source};
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
@@ -29,21 +30,16 @@ impl<T: Scalar> Source for ArraySource<T> {
     type Event = Array<T>;
     type Output = Array<T>;
 
-    fn time_range(&self) -> (Option<i64>, Option<i64>) {
-        let ts = self.series.timestamps();
-        if ts.is_empty() {
-            (None, None)
-        } else {
-            (Some(ts[0]), Some(*ts.last().unwrap()))
-        }
+    fn estimated_event_count(&self) -> Option<usize> {
+        Some(self.series.len())
     }
 
     fn init(
         self,
-        _timestamp: i64,
+        _timestamp: Instant,
     ) -> (
-        mpsc::Receiver<(i64, Array<T>)>,
-        mpsc::Receiver<(i64, Array<T>)>,
+        mpsc::Receiver<(Instant, Array<T>)>,
+        mpsc::Receiver<(Instant, Array<T>)>,
         Array<T>,
     ) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
@@ -64,7 +60,7 @@ impl<T: Scalar> Source for ArraySource<T> {
         (hist_rx, live_rx, self.default)
     }
 
-    fn write(payload: Array<T>, output: &mut Array<T>, _timestamp: i64) -> bool {
+    fn write(payload: Array<T>, output: &mut Array<T>, _timestamp: Instant) -> bool {
         output.assign(payload.as_slice());
         true
     }

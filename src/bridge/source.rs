@@ -18,10 +18,11 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use tokio::sync::mpsc;
 
+use crate::Instant;
 use crate::{Array, ErasedSource, PeekableReceiver, Series};
 
 use super::dispatch::dispatch_dtype;
-use super::views::{ViewKind, create_view};
+use super::views::{NativeNodeKind, create_view};
 use super::{ErrorSlot, set_error, set_error_msg};
 
 type PyObject = Py<PyAny>;
@@ -36,7 +37,7 @@ type PyObject = Py<PyAny>;
 /// [`PyOperatorState`](super::operator) which stores views alongside
 /// the compute callback.
 struct PySourceState {
-    rx: PeekableReceiver<(i64, PyObject)>,
+    rx: PeekableReceiver<(Instant, PyObject)>,
     py_output: PyObject,
     error_slot: ErrorSlot,
 }
@@ -79,29 +80,34 @@ pub fn make_py_source(
     py: Python<'_>,
     output_type_id: TypeId,
     out_dtype: &str,
-    out_view_kind: ViewKind,
+    out_view_kind: NativeNodeKind,
     output_shape: &[usize],
     py_source: PyObject,
     event_loop: PyObject,
     error_slot: ErrorSlot,
 ) -> PyResult<ErasedSource> {
-    // Allocate output (generic on T) and create its Python view.
-    macro_rules! alloc_output {
-        ($T:ty) => {
-            match out_view_kind {
-                ViewKind::Array => (
-                    Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
-                    drop_fn::<Array<$T>> as unsafe fn(*mut u8),
-                ),
-                ViewKind::Series => (
-                    Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
-                    drop_fn::<Series<$T>> as unsafe fn(*mut u8),
-                ),
-            }
-        };
-    }
+    // Allocate output and create its Python view.
     let (output_ptr, output_drop_fn): (*mut u8, unsafe fn(*mut u8)) =
-        dispatch_dtype!(out_dtype, alloc_output);
+        if out_view_kind == NativeNodeKind::Unit {
+            (Box::into_raw(Box::new(())) as *mut u8, drop_fn::<()>)
+        } else {
+            macro_rules! alloc_output {
+                ($T:ty) => {
+                    match out_view_kind {
+                        NativeNodeKind::Array => (
+                            Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
+                            drop_fn::<Array<$T>> as unsafe fn(*mut u8),
+                        ),
+                        NativeNodeKind::Series => (
+                            Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
+                            drop_fn::<Series<$T>> as unsafe fn(*mut u8),
+                        ),
+                        NativeNodeKind::Unit => unreachable!(),
+                    }
+                };
+            }
+            dispatch_dtype!(out_dtype, alloc_output)
+        };
 
     let py_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
 
@@ -110,8 +116,8 @@ pub fn make_py_source(
     let view_for_live = py_output;
     let error_for_driver = error_slot.clone();
 
-    let init_fn: Box<dyn FnOnce(i64) -> (*mut u8, *mut u8, *mut u8)> =
-        Box::new(move |timestamp: i64| {
+    let init_fn: Box<dyn FnOnce(Instant) -> (*mut u8, *mut u8, *mut u8)> =
+        Box::new(move |timestamp: Instant| {
             let (hist_tx, hist_rx) = mpsc::channel(64);
             let (live_tx, live_rx) = mpsc::channel(64);
 
@@ -146,7 +152,7 @@ pub fn make_py_source(
         ErasedSource::new(
             TypeId::of::<PyObject>(),
             output_type_id,
-            (None, None), // Python sources don't provide time ranges
+            None, // Python sources don't provide an estimate by default
             init_fn,
             py_poll_fn,
             py_write_fn,
@@ -170,7 +176,7 @@ pub fn make_py_source(
 unsafe fn py_poll_fn(
     state: *mut u8,
     cx: &mut std::task::Context<'_>,
-) -> std::task::Poll<Option<i64>> {
+) -> std::task::Poll<Option<Instant>> {
     let state = unsafe { &mut *(state as *mut PySourceState) };
     state.rx.poll_pending(cx).map(|opt| opt.map(|item| item.0))
 }
@@ -184,7 +190,7 @@ unsafe fn py_poll_fn(
 /// # Safety
 ///
 /// `state_ptr` must point to a valid `PySourceState`.
-unsafe fn py_write_fn(state_ptr: *mut u8, _output_ptr: *mut u8, _ts: i64) -> bool {
+unsafe fn py_write_fn(state_ptr: *mut u8, _output_ptr: *mut u8, _ts: Instant) -> bool {
     let state = unsafe { &mut *(state_ptr as *mut PySourceState) };
 
     if state.error_slot.lock().unwrap().is_some() {
@@ -192,6 +198,12 @@ unsafe fn py_write_fn(state_ptr: *mut u8, _output_ptr: *mut u8, _ts: i64) -> boo
     }
 
     if let Some((_ts, py_value)) = state.rx.take_pending() {
+        // Unit outputs carry no data — just consume the event and signal
+        // downstream propagation without calling .write().
+        let is_none = Python::attach(|py| state.py_output.is_none(py));
+        if is_none {
+            return true;
+        }
         let result = Python::attach(|py| -> PyResult<()> {
             state
                 .py_output
@@ -235,14 +247,15 @@ fn extract_timestamp_ns(py: Python<'_>, ts_obj: &Bound<'_, PyAny>) -> PyResult<i
 async fn drive_source(
     py_source: PyObject,
     event_loop: PyObject,
-    hist_tx: mpsc::Sender<(i64, PyObject)>,
-    live_tx: mpsc::Sender<(i64, PyObject)>,
+    hist_tx: mpsc::Sender<(Instant, PyObject)>,
+    live_tx: mpsc::Sender<(Instant, PyObject)>,
     error_slot: ErrorSlot,
-    timestamp: i64,
+    timestamp: Instant,
 ) {
     let result = async {
         let (hist_iter, live_iter) = Python::attach(|py| -> PyResult<(PyObject, PyObject)> {
-            let result = py_source.call_method1(py, "init", (timestamp,))?;
+            // Wire format is TAI ns (matches numpy naive `datetime64[ns]`).
+            let result = py_source.call_method1(py, "init", (timestamp.as_nanos(),))?;
             let tuple = result.bind(py);
             Ok((tuple.get_item(0)?.unbind(), tuple.get_item(1)?.unbind()))
         })
@@ -272,7 +285,7 @@ async fn drive_source(
 async fn drive_async_iter(
     py_iter: &PyObject,
     event_loop: &PyObject,
-    tx: &mpsc::Sender<(i64, PyObject)>,
+    tx: &mpsc::Sender<(Instant, PyObject)>,
 ) -> Result<(), String> {
     loop {
         // Acquire GIL: call __anext__(), schedule on asyncio, register callback.
@@ -299,13 +312,14 @@ async fn drive_async_iter(
         let _ = rx_done.await;
 
         // Acquire GIL: extract (timestamp, value) or detect StopAsyncIteration.
-        let event = Python::attach(|py| -> PyResult<Option<(i64, PyObject)>> {
+        let event = Python::attach(|py| -> PyResult<Option<(Instant, PyObject)>> {
             match coro_future.call_method0(py, "result") {
                 Ok(value) => {
                     let tuple = value.bind(py);
                     let ts_ns = extract_timestamp_ns(py, &tuple.get_item(0)?)?;
                     let val = tuple.get_item(1)?.unbind();
-                    Ok(Some((ts_ns, val)))
+                    // Wire format is TAI ns (matches numpy naive `datetime64[ns]`).
+                    Ok(Some((Instant::from_nanos(ts_ns), val)))
                 }
                 Err(e) => {
                     if e.get_type(py).name()? == "StopAsyncIteration" {
@@ -319,8 +333,8 @@ async fn drive_async_iter(
         .map_err(|e| format!("event extraction failed: {e}"))?;
 
         match event {
-            Some((ts_ns, val)) => {
-                if tx.send((ts_ns, val)).await.is_err() {
+            Some((ts, val)) => {
+                if tx.send((ts, val)).await.is_err() {
                     break;
                 }
             }

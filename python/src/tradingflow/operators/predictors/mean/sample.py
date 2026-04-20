@@ -13,13 +13,13 @@ class Sample(MeanPredictor[np.ndarray]):
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
-        Recorded features series, element shape ``(num_stocks, num_features)``.
+        Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
     **kwargs
         Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor].
     """

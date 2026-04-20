@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ...operator import NativeOperator
-from ...types import Handle, NodeKind
+from ... import Handle, NativeOperator, NodeKind
 from ._window import window_params as _window_params
 
 
@@ -13,7 +12,7 @@ class RollingCovariance(NativeOperator):
     """Pairwise rolling covariance matrix.
 
     Takes a Series input and outputs an Array.
-    Input must be 1-D with shape ``(K,)``. Output shape is ``(K, K)``.
+    Input must be 1-D with shape `(K,)`. Output shape is `(K, K)`.
     If any value in the window is NaN, the affected covariance entries are NaN.
 
     Parameters

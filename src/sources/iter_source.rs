@@ -3,6 +3,7 @@
 use tokio::sync::mpsc;
 
 use crate::source::Source;
+use crate::Instant;
 
 /// A source driven by an iterator of `(timestamp, event)` pairs.
 ///
@@ -14,29 +15,30 @@ use crate::source::Source;
 ///
 /// Requires a tokio runtime to be active when added to a scenario.
 pub struct IterSource<T: Send + 'static> {
-    iter: Box<dyn Iterator<Item = (i64, T)> + Send>,
+    iter: Box<dyn Iterator<Item = (Instant, T)> + Send>,
     default: T,
-    known_time_range: (Option<i64>, Option<i64>),
+    estimated_event_count: Option<usize>,
 }
 
 impl<T: Clone + Send + 'static> IterSource<T> {
     /// Create from an iterator and a default output value.
     ///
     /// Each iterator item is `(timestamp, value)`.
-    pub fn new(iter: impl Iterator<Item = (i64, T)> + Send + 'static, default: T) -> Self {
+    pub fn new(iter: impl Iterator<Item = (Instant, T)> + Send + 'static, default: T) -> Self {
         Self {
             iter: Box::new(iter),
             default,
-            known_time_range: (None, None),
+            estimated_event_count: None,
         }
     }
 
-    /// Set the known time range for this source.
+    /// Advertise an estimated total event count.
     ///
-    /// Call this when the full set of timestamps is available at
-    /// construction time (e.g. clock sources).
-    pub fn with_time_range(mut self, first: i64, last: i64) -> Self {
-        self.known_time_range = (Some(first), Some(last));
+    /// Call this when the iterator length is known at construction time
+    /// (e.g. clock sources backed by a `Vec`).  Used only by
+    /// [`Scenario::run`](crate::Scenario::run)'s progress callback.
+    pub fn with_estimated_count(mut self, count: usize) -> Self {
+        self.estimated_event_count = Some(count);
         self
     }
 }
@@ -45,11 +47,11 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
     type Event = T;
     type Output = T;
 
-    fn time_range(&self) -> (Option<i64>, Option<i64>) {
-        self.known_time_range
+    fn estimated_event_count(&self) -> Option<usize> {
+        self.estimated_event_count
     }
 
-    fn init(self, _timestamp: i64) -> (mpsc::Receiver<(i64, T)>, mpsc::Receiver<(i64, T)>, T) {
+    fn init(self, _timestamp: Instant) -> (mpsc::Receiver<(Instant, T)>, mpsc::Receiver<(Instant, T)>, T) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
 
@@ -64,7 +66,7 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
         (hist_rx, live_rx, self.default)
     }
 
-    fn write(payload: T, output: &mut T, _timestamp: i64) -> bool {
+    fn write(payload: T, output: &mut T, _timestamp: Instant) -> bool {
         *output = payload;
         true
     }

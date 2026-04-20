@@ -16,14 +16,16 @@ Examples require A-shares market data downloaded via the [a-shares-crawler](http
 - [**Plotting total market cap**](python/examples/plot_total_market_cap.py) — loads daily prices and equity structures for all stocks, computes per-stock circulating market cap, and plots the total across the entire market over time.
 - [**Mean strategy backtesting**](python/examples/mean_strategy.py) — loads daily prices, equity structures, dividends, and financial reports for all stocks, computes cross-sectional features, periodically fits a linear regression to predict stock returns, selects a portfolio from the top-predicted stocks with rank-linear weights, simulates trading with transaction costs, and plots portfolio value, rolling Sharpe ratio and drawdown against a market-cap-weighted index.
 - [**Mean-variance strategy backtesting**](python/examples/mean_variance_strategy.py) — extends the mean strategy with Ledoit-Wolf shrinkage covariance estimation and Markowitz mean-variance portfolio optimisation (via CVXPY), comparing multiple risk-aversion levels against the index.
+- [**Mean factor evaluation**](python/examples/factor_ic.py) — computes daily cross-sectional factors (log market cap, log book-to-price, turnover MA), evaluates each factor's predictive power via Information Coefficient (Pearson or Spearman), and plots cumulative IC curves.
+- [**Covariance estimator comparison**](python/examples/covariance_gmv.py) — compares sample covariance and Ledoit-Wolf shrinkage estimators by measuring the realized variance of their respective Global Minimum Variance portfolios over time.
 
 # Core Concepts
 
 ## Arrays and Series
 
-A [multi-dimensional array](src/array.rs) contains uniformly-typed [scalars](src/types.rs). It is backed by a flat `Vec<T>` scalar buffer, guaranteeing contiguous layout.
+A [multi-dimensional array](src/data/array.rs) contains uniformly-typed [scalars](src/data/mod.rs). It is backed by a flat `Vec<T>` scalar buffer, guaranteeing contiguous layout.
 
-A [time series](src/series.rs) contains uniformly-shaped array elements. It is backed by a flat `Vec<T>` scalar buffer and a parallel `Vec<i64>` of non-decreasing timestamps (each representing nanoseconds since the UNIX epoch).
+A [time series](src/data/series.rs) contains uniformly-shaped array elements. It is backed by a flat `Vec<T>` scalar buffer and a parallel `Vec<Instant>` of non-decreasing timestamps. [`Instant`](src/data/time.rs) is a `#[repr(transparent)]` `i64` counting SI nanoseconds since the PTP epoch (1970-01-01 00:00:00 TAI).
 
 Most nodes in the computation graph hold either arrays or series as their output values. They can be converted back and forth by a pair of inverse operators, assuming series elements are pushed one-by-one:
 
@@ -72,13 +74,16 @@ Most operators use time-series semantics and ignore the `Notify` context entirel
 
 A notification is treated as a *message* whose payload is the value written into the corresponding node. If an input did not produce this cycle, there is no message from it. Operators inspect `Notify` to distinguish "input updated" from "input is stale":
 
-- [`Notify.produced()`](src/types.rs) returns the list of input positions that produced — for efficient O(n_messages) iteration over only the inputs that changed.
-- [`Notify.input_produced()`](src/types.rs) returns a per-position boolean slice — for O(1) checks like `notify.input_produced()[i]`.
+- [`Notify.produced()`](src/data/mod.rs) returns a zero-allocation iterator of input positions that produced — for efficient O(n_messages) iteration over only the inputs that changed.
+- [`Notify.input_produced()`](src/data/mod.rs) returns a per-position boolean slice — for O(1) checks like `notify.input_produced()[i]`.
 
 Message-passing semantics are useful when an operator must react differently depending on *which* inputs changed. For example, the [ForwardAdjust](src/operators/stocks/forward_adjust.rs) operator only updates its cumulative dividend factor when the dividend input produces, and only emits an adjusted price when the price input produces.
 
-### Clock-triggerable operators
+### Clocks as first-class inputs
 
-Operators may optionally be registered with a *clock* trigger instead of being triggered by their data inputs. A clock-triggered operator only runs when the clock fires, reading the latest values from its data inputs at that point.
+A [clock](src/sources/clock.rs) source emits `()` at a fixed cadence. Operators that should fire on a schedule rather than on every data update declare the clock as an explicit `Input<()>` in their input tree — composed naturally with other data inputs.
 
-Operators that rely on message-passing semantics must **not** be clock-triggered, since they would miss messages between clock ticks. The `Operator` trait provides an [`is_clock_triggerable()`](src/operator.rs) method (default `true`) that operators can override to return `false`, preventing accidental registration with a clock.
+Two patterns are common:
+
+- **Built-in clock input**, used by e.g. the [performance metric operators](src/operators/metrics/), which take `(Input<Array<T>>, Input<()>)` and gate their compute bodies on the clock position directly.
+- **External clock wrapping** via the [`Clocked<O>`](src/operators/clocked.rs) transformer, which prepends an `Input<()>` to any operator's inputs and runs the inner operator only when the clock ticks. Operators whose compute depends on message-passing semantics should not be wrapped this way, since they would miss messages between clock ticks.

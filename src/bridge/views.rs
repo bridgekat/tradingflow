@@ -1,14 +1,17 @@
-//! Python-visible views for Array, Series, and Notify.
+//! Python-visible views for Array and Series node values.
 //!
 //! - [`NativeArrayView`] — copy-in / copy-out view of a Rust `Array<T>` node.
 //! - [`NativeSeriesView`] — copy-out view (plus `push`) of a Rust `Series<T>`
 //!   node.
-//! - [`NativeNotify`] — wrapper exposing the Rust
-//!   [`Notify`](crate::operator::Notify) context to Python operators.
 //!
-//! All views hold raw pointers into graph-owned memory.  Reads copy data out
-//! and writes copy data in, so no reference to graph memory is ever exposed
-//! to Python.
+//! All views hold raw pointers into graph-owned memory; reads copy out and
+//! writes copy in, so no reference to graph memory is ever exposed to
+//! Python.
+//!
+//! The per-operator produced bitset is **not** exposed as a view class —
+//! Python operators receive `produced` directly as a flat
+//! `tuple[bool, ...]` parallel to their flat `inputs` tuple.  See
+//! [`operator::py_compute_fn`](super::operator).
 
 use numpy::ndarray::{Array1, ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn};
@@ -43,34 +46,48 @@ impl PyScalar for f64 {}
 // ===========================================================================
 
 /// What kind of value a node holds.
+///
+/// Exposed to Python as the `NativeNodeKind` PyO3 enum so the bridge can
+/// pass node-kind tags across the FFI boundary without re-parsing strings.
+/// The user-facing Python wrapper is [`tradingflow.NodeKind`]; conversion
+/// happens at the boundary via `tradingflow.data.types._to_native_node_kind`.
+#[pyclass(eq, eq_int, from_py_object, name = "NativeNodeKind")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewKind {
+pub enum NativeNodeKind {
     /// A fixed-shape multidimensional array.
     Array,
     /// A time-indexed append-only series.
     Series,
+    /// The unit type `()` — carries no data, only a trigger signal.
+    Unit,
 }
 
-/// Create a Python view ([`NativeArrayView`] or [`NativeSeriesView`]) for a
-/// node, dispatching on its kind and dtype.
+/// Create a Python view for a node, dispatching on its kind and dtype.
+///
+/// Returns `None` (Python `None`) for [`NativeNodeKind::Unit`] nodes since
+/// they carry no data.
 pub fn create_view(
     py: Python<'_>,
     ptr: *mut u8,
     shape: &[usize],
     dtype: &str,
-    kind: ViewKind,
+    kind: NativeNodeKind,
 ) -> PyResult<PyObject> {
+    if kind == NativeNodeKind::Unit {
+        return Ok(py.None());
+    }
     macro_rules! make_view {
         ($T:ty) => {
             match kind {
-                ViewKind::Array => {
+                NativeNodeKind::Array => {
                     let v = make_array_view::<$T>(ptr, shape, dtype);
                     Ok(Py::new(py, v)?.into_any())
                 }
-                ViewKind::Series => {
+                NativeNodeKind::Series => {
                     let v = make_series_view::<$T>(ptr, shape, dtype);
                     Ok(Py::new(py, v)?.into_any())
                 }
+                NativeNodeKind::Unit => unreachable!(),
             }
         };
     }
@@ -388,7 +405,9 @@ unsafe fn series_index<T: PyScalar>(
     let n = series.len();
     let start = start.min(n);
     let end = end.min(n);
-    let slice = &series.timestamps()[start..end];
+    // Wire format is TAI ns (matches numpy naive `datetime64[ns]`
+    // arithmetic).  Reinterpret the `Instant` slice as `i64`.
+    let slice = crate::data::Instant::as_nanos_slice(&series.timestamps()[start..end]);
     let arr = Array1::from(slice.to_vec());
     Ok(PyArray1::from_owned_array(py, arr).into_any().unbind())
 }
@@ -405,7 +424,7 @@ unsafe fn series_asof<T: PyScalar>(
     timestamp: i64,
 ) -> PyResult<PyObject> {
     let series = unsafe { &*(ptr as *const Series<T>) };
-    match series.asof(timestamp) {
+    match series.asof(crate::data::Instant::from_nanos(timestamp)) {
         Some(slice) => {
             let nd = ArrayD::from_shape_vec(IxDyn(shape), slice.to_vec())
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -451,83 +470,7 @@ unsafe fn series_push<T: PyScalar>(
 
     let mut buf = vec![T::default(); stride];
     unsafe { src.clone_to_slice(&mut buf) };
-    series.push(timestamp, &buf);
+    series.push(crate::data::Instant::from_nanos(timestamp), &buf);
     Ok(())
 }
 
-// ===========================================================================
-// NativeNotify
-// ===========================================================================
-
-/// Python-visible wrapper around the Rust [`Notify`](crate::operator::Notify)
-/// context.
-///
-/// Provides [`input_produced`](Self::input_produced) (per-position booleans)
-/// and [`produced`](Self::produced) (list of positions) so Python operators
-/// can check which inputs produced new output in the current flush cycle.
-#[pyclass]
-pub struct NativeNotify {
-    incoming: *const usize,
-    incoming_len: usize,
-    num_inputs: usize,
-}
-
-unsafe impl Send for NativeNotify {}
-unsafe impl Sync for NativeNotify {}
-
-impl NativeNotify {
-    /// Construct an empty notify.
-    pub fn from_empty() -> Self {
-        Self {
-            incoming: std::ptr::null(),
-            incoming_len: 0,
-            num_inputs: 0,
-        }
-    }
-
-    /// Update pointers from a [`Notify`](crate::operator::Notify) reference.
-    ///
-    /// # Safety
-    ///
-    /// The `NativeNotify` must not be accessed after the `Notify` it borrows
-    /// from is dropped.
-    pub unsafe fn update_from(&mut self, notify: &crate::Notify<'_>) {
-        self.incoming = notify.incoming_ptr();
-        self.incoming_len = notify.incoming_len();
-        self.num_inputs = notify.num_inputs();
-    }
-}
-
-#[pymethods]
-impl NativeNotify {
-    /// Returns a list of bools indexed by input position: `True` if
-    /// that input produced new output in the current flush cycle.
-    ///
-    /// Computed on each call from the incoming positions list.
-    fn input_produced<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        let mut flags = vec![false; self.num_inputs];
-        if !self.incoming.is_null() {
-            let incoming =
-                unsafe { std::slice::from_raw_parts(self.incoming, self.incoming_len) };
-            for &pos in incoming {
-                if pos < self.num_inputs {
-                    flags[pos] = true;
-                }
-            }
-        }
-        let list = pyo3::types::PyList::new(py, &flags)?;
-        Ok(list.into_any().unbind())
-    }
-
-    /// Returns the input positions that produced new output in the
-    /// current flush cycle.
-    fn produced<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        let slice = if self.incoming.is_null() || self.incoming_len == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(self.incoming, self.incoming_len) }
-        };
-        let list = pyo3::types::PyList::new(py, slice)?;
-        Ok(list.into_any().unbind())
-    }
-}

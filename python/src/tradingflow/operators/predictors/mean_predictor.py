@@ -1,72 +1,81 @@
 """Abstract mean-return predictor operator."""
 
 from typing import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
-from ...views import ArrayView, SeriesView
-from ...operator import Operator, Notify
-from ...types import Array, Series, Handle, NodeKind
-from ...utils import coerce_timestamp
+from ... import ArrayView, Handle, NodeKind, Operator, SeriesView
 
 
 @dataclass(slots=True)
 class MeanPredictorState[T]:
     num_stocks: int
     num_features: int
-    rebalance_period: int
-    max_samples: int
-    min_samples: int
-    trading_start: int | None
+    universe_size: int
+    max_periods: int | None
+    min_periods: int | None
     fit_fn: Callable[[np.ndarray, np.ndarray], T]
     predict_fn: Callable[["MeanPredictorState[T]", np.ndarray, T], np.ndarray]
-
-    tick_count: int = 0
-    rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng())
 
 
 class MeanPredictor[T](
     Operator[
-        tuple[Handle[Array[np.float64]], Handle[Series[np.float64]], Handle[Series[np.float64]]],
-        Handle[Array[np.float64]],
+        ArrayView[np.float64],
+        SeriesView[np.float64],
+        SeriesView[np.float64],
+        None,
+        ArrayView[np.float64],
         MeanPredictorState[T],
     ]
 ):
     """Abstract mean-return predictor.
 
-    Runs on every tick.  Every ``rebalance_period`` ticks, reads the
-    accumulated feature and price history from upstream ``Series``
-    inputs, builds a return matrix, subsamples time rows, calls
-    ``fit_fn`` and ``predict_fn``, and outputs predicted returns.
+    On every upstream tick, the predictor is invoked so subclasses can
+    observe each new sample (a future incremental-fit hook can accumulate
+    running statistics here — the current base class refits from scratch
+    on rebalance, so non-rebalance ticks simply return without work).
+    On each **rebalance** tick (signalled by the `rebalance` input
+    producing), reads the last `max_periods` feature and price entries
+    from the upstream `Series` inputs, builds a 1-period return matrix,
+    calls `fit_fn` and `predict_fn`, and emits predicted returns.
+
+    The rebalance cadence is controlled by the caller: pass a clock
+    source handle as the `rebalance` parameter.
 
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
-        Recorded features series, element shape ``(num_stocks, num_features)``.
+        Recorded features series, element shape
+        `(num_stocks, num_features)`.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
+    rebalance
+        Clock source handle that fires on each rebalance date.
+        Pass the clock source directly (e.g. `rebalance_clock`).
     fit_fn
-        ``(x, y) -> params``.  Feature array ``x`` of shape
-        ``(T, N, F)`` and return matrix ``y`` of shape ``(T, N)``.
+        `(x, y) -> params`.  Feature array `x` of shape
+        `(T, N, F)` and 1-period return matrix `y` of shape
+        `(T, N)`.
     predict_fn
-        ``(state, features, params) -> returns``.  Current features
-        of shape ``(N, F)`` and fitted params.
-    rebalance_period
-        Produce output every N ticks.
-    max_samples
-        Maximum number of time rows to feed to ``fit_fn``.
-    min_samples
+        `(state, features, params) -> returns`.  Current features
+        of shape `(N, F)` and fitted params.  `state.universe_size`
+        gives the maximum number of stocks in the universe.
+    universe_size
+        Upper bound on the number of nonzero entries in the universe
+        array.  Passed through to `predict_fn` via state for
+        pre-allocation.
+    max_periods
+        Maximum number of most-recent time rows to feed to
+        `fit_fn`.  `None` uses all available history.
+    min_periods
         Minimum number of valid observations per stock.  Stocks with
         fewer valid (all-finite features and finite return) observations
-        across the sampled time rows receive ``NaN`` in the output.
-    trading_start
-        If set, the predictor suppresses output (returns ``False``)
-        before this timestamp, allowing upstream data to accumulate
-        without triggering downstream trading.
+        across the time rows receive `NaN` in the output.  `None`
+        disables per-stock filtering.
     """
 
     def __init__(
@@ -75,12 +84,12 @@ class MeanPredictor[T](
         features_series: Handle,
         adjusted_prices_series: Handle,
         *,
+        rebalance: Handle,
         fit_fn: Callable[[np.ndarray, np.ndarray], T],
         predict_fn: Callable[[MeanPredictorState[T], np.ndarray, T], np.ndarray],
-        rebalance_period: int,
-        max_samples: int,
-        min_samples: int = 1,
-        trading_start: np.datetime64 | None = None,
+        universe_size: int,
+        max_periods: int | None = None,
+        min_periods: int | None = None,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(features_series.shape) == 2
@@ -89,106 +98,100 @@ class MeanPredictor[T](
 
         self._num_stocks = features_series.shape[0]
         self._num_features = features_series.shape[-1]
+        self._universe_size = universe_size
         self._fit_fn = fit_fn
         self._predict_fn = predict_fn
-        self._rebalance_period = rebalance_period
-        self._max_samples = max_samples
-        self._min_samples = min_samples
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
+        self._max_periods = max_periods
+        self._min_periods = min_periods
 
         super().__init__(
-            inputs=(universe, features_series, adjusted_prices_series),
+            inputs=(universe, features_series, adjusted_prices_series, rebalance),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
             shape=(self._num_stocks,),
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> MeanPredictorState[T]:
+    def init(
+        self,
+        inputs: tuple[
+            ArrayView[np.float64],
+            SeriesView[np.float64],
+            SeriesView[np.float64],
+            None,
+        ],
+        timestamp: int,
+    ) -> MeanPredictorState[T]:
         return MeanPredictorState(
             num_stocks=self._num_stocks,
             num_features=self._num_features,
+            universe_size=self._universe_size,
             fit_fn=self._fit_fn,
             predict_fn=self._predict_fn,
-            rebalance_period=self._rebalance_period,
-            max_samples=self._max_samples,
-            min_samples=self._min_samples,
-            trading_start=self._trading_start,
+            max_periods=self._max_periods,
+            min_periods=self._min_periods,
         )
 
     @staticmethod
     def compute(
         state: MeanPredictorState[T],
-        inputs: tuple[ArrayView[np.float64], SeriesView[np.float64], SeriesView[np.float64]],
+        inputs: tuple[
+            ArrayView[np.float64],
+            SeriesView[np.float64],
+            SeriesView[np.float64],
+            None,
+        ],
         output: ArrayView[np.float64],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
-        # Changes in universe only should not trigger recomputation.
-        if not notify.input_produced()[1] and not notify.input_produced()[2]:
+        # Emit only on rebalance ticks.  Other invocations are reserved
+        # for subclasses that want to incrementally accumulate per-tick
+        # statistics — the base class refits from scratch on rebalance
+        # and has no per-tick state, so it returns immediately.
+        if not produced[3]:
             return False
 
-        # Only produce output every rebalance_period ticks.
-        state.tick_count += 1
-        if state.tick_count < state.rebalance_period:
-            return False
-        state.tick_count = 0
+        universe, features_series, prices_series, _rebalance = inputs
 
-        # Suppress output before trading start.
-        if state.trading_start is not None and timestamp < state.trading_start:
-            return False
+        # Bulk-read the last max_periods entries from both series.
+        n_available = max(0, len(prices_series) - 1)
+        n_use = min(n_available, state.max_periods) if state.max_periods is not None else n_available
+        start = n_available - n_use
 
-        universe, features_series, prices_series = inputs
+        all_features = features_series.values(start, start + n_use)  # (M, N, F)
+        all_prices = prices_series.values(start, start + n_use + 1)  # (M+1, N)
 
-        # Build cross-sectional return matrix and feature array for
-        # universe stocks, subsampling time rows if needed.
-        m_periods = max(0, len(prices_series) - state.rebalance_period)
+        # Vectorized 1-period returns: (M, N).
+        prices_curr = np.where(all_prices[:-1] > 0, all_prices[:-1], np.nan)
+        prices_next = np.where(all_prices[1:] > 0, all_prices[1:], np.nan)
+        all_returns = prices_next / prices_curr - 1.0
 
-        # Subsample time rows if too many.
-        if m_periods > state.max_samples:
-            ts = state.rng.choice(m_periods, state.max_samples, replace=False)
-            ts.sort()
-        else:
-            ts = np.arange(m_periods)
-
-        # Collect features and returns for the sampled time rows.
-        all_features = []
-        all_returns = []
-        counts = np.zeros((state.num_stocks,), dtype=np.int64)
-        for t in ts:
-            t = int(t)
-            features = features_series[t]
-            prices_curr = prices_series[t]
-            prices_curr = np.where(prices_curr > 0, prices_curr, np.nan)
-            prices_next = prices_series[t + state.rebalance_period]
-            prices_next = np.where(prices_next > 0, prices_next, np.nan)
-            returns = prices_next / prices_curr - 1.0
-
-            all_features.append(features)
-            all_returns.append(returns)
-            counts += np.isfinite(features).all(axis=1) & np.isfinite(returns)
+        # Per-stock valid observation counts.
+        valid = np.isfinite(all_features).all(axis=2) & np.isfinite(all_returns)
+        counts = valid.sum(axis=0)  # (N,)
 
         # Current features for prediction.
         features = features_series[-1]
 
         # Filter to stocks currently in the universe.
         mask = universe.to_numpy() > 0
+        assert int(mask.sum()) <= state.universe_size, (
+            f"universe has {int(mask.sum())} nonzero entries, " f"exceeds universe_size={state.universe_size}"
+        )
 
         # Filter to stocks with enough valid observations.
-        mask &= counts >= state.min_samples
+        if state.min_periods is not None:
+            mask &= counts >= state.min_periods
 
         # Filter to stocks with valid features for prediction.
         mask &= np.isfinite(features).all(axis=1)
 
-        # Combine sampled time rows into arrays of shape (M, N, F) and (M, N).
-        M, N, F = len(ts), mask.sum(), state.num_features
-        x = np.empty((M, N, F), dtype=np.float64)
-        y = np.empty((M, N), dtype=np.float64)
-        for i, t in enumerate(ts):
-            x[i] = all_features[i][mask]
-            y[i] = all_returns[i][mask]
+        M, N, F = n_use, int(mask.sum()), state.num_features
+        x = all_features[:, mask, :]  # (M, N, F)
+        y = all_returns[:, mask]  # (M, N)
 
-        # Fit and predict only for stocks with sufficient data.
+        # Fit and predict.
         mu = np.full((state.num_stocks,), np.nan, dtype=np.float64)
         if M > 0 and N > 0:
             mu[mask] = state.predict_fn(state, features[mask], state.fit_fn(x, y))

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from ..operator import NativeOperator
-from ..types import Handle, NodeKind
+from .. import Handle, NativeOperator, NodeKind
 
 
 class Last(NativeOperator):
@@ -16,9 +15,11 @@ class Last(NativeOperator):
     a
         Handle to a Series node.
     fill
-        Value used when the series is empty (default ``0``).
+        Value used when the series is empty (default `0`).
     """
 
     def __init__(self, a: Handle, *, fill: float | int = 0) -> None:
         params = {"fill": fill} if fill != 0 else {}
-        super().__init__(native_id="last", inputs=(a,), kind=NodeKind.ARRAY, dtype=a.dtype, shape=a.shape, params=params)
+        super().__init__(
+            native_id="last", inputs=(a,), kind=NodeKind.ARRAY, dtype=a.dtype, shape=a.shape, params=params
+        )

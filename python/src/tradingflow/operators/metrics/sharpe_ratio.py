@@ -1,7 +1,6 @@
 """Sharpe ratio since inception."""
 
-from ...operator import NativeOperator
-from ...types import Handle, NodeKind
+from ... import Handle, NativeOperator, NodeKind
 
 
 class SharpeRatio(NativeOperator):
@@ -11,7 +10,9 @@ class SharpeRatio(NativeOperator):
     ----------
     a
         Scalar Array input (e.g. portfolio market value).
+    clock
+        Clock source handle. The operator only emits on clock ticks.
     """
 
-    def __init__(self, a: Handle) -> None:
-        super().__init__(native_id="sharpe_ratio", inputs=(a,), kind=NodeKind.ARRAY, dtype=a.dtype, shape=())
+    def __init__(self, a: Handle, clock: Handle) -> None:
+        super().__init__(native_id="sharpe_ratio", inputs=(a, clock), kind=NodeKind.ARRAY, dtype=a.dtype, shape=())

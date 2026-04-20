@@ -32,22 +32,21 @@ import matplotlib.pyplot as plt
 from a_shares_crawler.types import Schema as CSVSchema
 
 from tradingflow import Scenario, Schema
-from tradingflow.types import Handle
+from tradingflow import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Map, Record, Select, Stack
+from tradingflow.operators import Clocked, Map, NotifyStack, Record, Select, Stack
 from tradingflow.operators.num import Divide, Log, Multiply
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.traders.simple import RandomTrader
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
-from tradingflow.operators.num import ForwardFill
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
-from tradingflow.sources import MonthlyClock
+from tradingflow.sources import Clock, MonthlyClock
 
-from stocks import load_symbols, calculate_index_weights
+from stocks import load_symbols, calculate_index_weights, resolve_data_start
 
 
 DAY_NS = 86_400_000_000_000
@@ -74,13 +73,27 @@ def build_scenario(
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
 
-    # Per-stock raw handles collected for cross-sectional stacking.
-    per_stock: dict[str, list[Handle]] = {
+    # Per-stock raw handles grouped by cadence.
+    #
+    # * `per_stock_sync` — values produced in lockstep across all stocks
+    #   (e.g., daily prices/equity on trading days).  Stacked with
+    #   `NotifyStack` to give message-passing semantics: slots of stocks
+    #   that did not produce this cycle are filled with `NaN`.
+    # * `per_stock_irregular` — values updated on stock-specific dates
+    #   (e.g., quarterly financial reports filed on different dates).
+    #   Stacked with `Stack` to give time-series semantics: slots keep
+    #   their last-known value across quiet periods.
+    per_stock_sync: dict[str, list[Handle]] = {
         k: []
         for k in (
             "ohlcv",
-            "adjusts",
             "adjusted_close",
+        )
+    }
+    per_stock_irregular: dict[str, list[Handle]] = {
+        k: []
+        for k in (
+            "adjusts",
             "circ_shares",
             "parent_equity",
             "net_profit",
@@ -154,19 +167,22 @@ def build_scenario(
             Map(neg_parent_equity_components, lambda x: -x.sum(), shape=(), dtype=np.float64)
         )
 
-        per_stock["ohlcv"].append(ohlcv)
-        per_stock["adjusts"].append(adjusts)
-        per_stock["adjusted_close"].append(adjusted_close)
-        per_stock["circ_shares"].append(circ_shares)
-        per_stock["parent_equity"].append(parent_equity)
-        per_stock["net_profit"].append(net_profit)
+        per_stock_sync["ohlcv"].append(ohlcv)
+        per_stock_sync["adjusted_close"].append(adjusted_close)
+        per_stock_irregular["adjusts"].append(adjusts)
+        per_stock_irregular["circ_shares"].append(circ_shares)
+        per_stock_irregular["parent_equity"].append(parent_equity)
+        per_stock_irregular["net_profit"].append(net_profit)
 
     # ------------------------------------------------------------------
     # Cross-sectional operators
     # ------------------------------------------------------------------
 
-    # Stack per-stock handles into (num_stocks, ...) arrays, with forward-fill to handle missing data.
-    stacked = {k: sc.add_operator(ForwardFill(sc.add_operator(Stack(v)))) for k, v in per_stock.items()}
+    # Stack per-stock handles into (num_stocks, ...) arrays.
+    stacked = {
+        **{k: sc.add_operator(NotifyStack(v)) for k, v in per_stock_sync.items()},
+        **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
+    }
 
     # Extract close and volume from stacked OHLCV for feature computation.
     close = sc.add_operator(Select(stacked["ohlcv"], 3, axis=1))
@@ -181,34 +197,20 @@ def build_scenario(
     # Rebalanced monthly to avoid per-tick overhead.
     monthly_clock = sc.add_source(MonthlyClock(data_start, end, tz="Asia/Shanghai"))
     universe = sc.add_operator(
-        Map(
-            market_cap,
-            lambda m: calculate_index_weights(m, index_size),
-            shape=(num_stocks,),
-            dtype=np.float64,
-        ),
-        clock=monthly_clock,
+        Clocked(
+            monthly_clock,
+            Map(
+                market_cap,
+                lambda m: calculate_index_weights(m, index_size),
+                shape=(num_stocks,),
+                dtype=np.float64,
+            ),
+        )
     )
 
     # log(B/P) = log(parent_equity / market_cap).
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
     log_bp = sc.add_operator(Log(bp))
-
-    # # TTM net profit via 365-day rolling mean of annualized net profit.
-    # net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
-    # net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
-
-    # # TTM E/P and TTM ROE.
-    # ttm_ep = sc.add_operator(Divide(net_profit_ttm, market_cap))
-    # ttm_roe = sc.add_operator(Divide(net_profit_ttm, stacked["parent_equity"]))
-
-    # # Momentum MA (-day MA of daily log-returns of adjusted_close).
-    # log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
-    # log_adj_series = sc.add_operator(Record(log_adj))
-    # log_adj_lag = sc.add_operator(Last(sc.add_operator(Lag(log_adj_series, 1, fill=np.float64(np.nan)))))
-    # daily_ret = sc.add_operator(Subtract(log_adj, log_adj_lag))
-    # daily_ret_series = sc.add_operator(Record(daily_ret))
-    # momentum_ma = sc.add_operator(RollingMean(daily_ret_series, window=rebalance_days))
 
     # Turnover MA.
     turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
@@ -226,17 +228,28 @@ def build_scenario(
     # Strategy pipeline
     # ------------------------------------------------------------------
 
+    # Rebalance clock fires every `rebalance_days` from trading_start
+    # onward.  A Const operator clocked by it produces an Array[float64]
+    # rebalance signal, routed as a regular input into the predictor so
+    # it observes every data tick and emits only on rebalance.
+    rebalance_dates = np.arange(
+        trading_start,
+        end + np.timedelta64(1, "D"),
+        np.timedelta64(rebalance_days, "D"),
+    )
+    rebalance_clock = sc.add_source(Clock(rebalance_dates))
+    rebalance = rebalance_clock
+
     predicted_returns = sc.add_operator(
         LinearRegression(
             universe,
             features_series,
             adjusted_prices_series,
-            rebalance_period=rebalance_days,
-            max_samples=1000,
-            min_samples=100,
-            trading_start=trading_start,
+            rebalance=rebalance,
+            universe_size=index_size,
+            min_periods=100,
             verbose=True,
-        )
+        ),
     )
 
     soft_positions = sc.add_operator(
@@ -244,7 +257,6 @@ def build_scenario(
             universe,
             predicted_returns,
             top_fraction=0.1,
-            trading_start=trading_start,
         )
     )
 
@@ -255,7 +267,6 @@ def build_scenario(
             stacked["adjusts"],
             initial_cash=initial_cash,
             use_adjusts=True,
-            trading_start=trading_start,
         )
     )
 
@@ -266,7 +277,6 @@ def build_scenario(
             stacked["adjusts"],
             initial_cash=initial_cash,
             use_adjusts=True,
-            trading_start=trading_start,
         )
     )
 
@@ -280,7 +290,6 @@ def build_scenario(
             lot_size=100.0,
             fee_base=5.0,
             fee_rate=0.001,
-            trading_start=trading_start,
         )
     )
 
@@ -289,8 +298,8 @@ def build_scenario(
     # ------------------------------------------------------------------
 
     actual_value = sc.add_operator(Map(strategy_actual, np.sum, shape=(), dtype=np.float64))
-    sharpe = sc.add_operator(SharpeRatio(actual_value), clock=monthly_clock)
-    compound_ret = sc.add_operator(CompoundReturn(actual_value), clock=monthly_clock)
+    sharpe = sc.add_operator(SharpeRatio(actual_value, monthly_clock))
+    compound_ret = sc.add_operator(CompoundReturn(actual_value, monthly_clock))
     drawdown = sc.add_operator(Drawdown(actual_value))  # Triggers on every update
 
     return sc, {
@@ -306,7 +315,12 @@ def build_scenario(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument("--data-begin", type=np.datetime64, default=np.datetime64("1990-01-01"), help="data start date")
+    parser.add_argument(
+        "--data-begin",
+        type=np.datetime64,
+        default=None,
+        help="data start date (default: trading begin minus --rebalance-days calendar days)",
+    )
     parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="trading start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=120, help="rebalance every N trading days")
@@ -330,33 +344,23 @@ if __name__ == "__main__":
         rebalance_days=args.rebalance_days,
         initial_cash=args.initial_cash,
         index_size=args.index_size,
-        data_start=min(args.data_begin, args.begin),
+        data_start=resolve_data_start(args.data_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
         end=args.end,
     )
 
-    first_ns, last_ns = sc.time_range()
-    assert first_ns is not None and last_ns is not None
+    mid = args.begin
+    progress = tqdm(total=sc.estimated_event_count(), unit=" events", desc="Loading samples")
 
-    first, mid, last = np.datetime64(first_ns, "ns"), args.begin, np.datetime64(last_ns, "ns")
-    preload_days = (mid - first) / np.timedelta64(1, "D")
-    trading_days = (last - mid) / np.timedelta64(1, "D")
-
-    preload_bar = tqdm(total=preload_days, unit="d", desc="Loading samples")
-    trading_bar = tqdm(total=trading_days, unit="d", desc="Running strategy")
-
-    def on_flush(ts: int) -> None:
-        dt = np.datetime64(ts, "ns")
-        if dt <= mid:
-            current_days = (dt - first) / np.timedelta64(1, "D")
-            preload_bar.update(current_days - preload_bar.n)
-        else:
-            current_days = (dt - mid) / np.timedelta64(1, "D")
-            trading_bar.update(current_days - trading_bar.n)
+    def on_flush(ts_ns: int, events: int, total: int | None) -> None:
+        if np.datetime64(ts_ns, "ns") > mid:
+            progress.set_description("Running strategy")
+        if total != progress.total:
+            progress.total = total
+        progress.update(events - progress.n)
 
     sc.run(on_flush=on_flush)
-    preload_bar.close()
-    trading_bar.close()
+    progress.close()
 
     # Extract results.
     index = sc.series_view(handles["index"]).to_dataframe(["holdings", "cash"])

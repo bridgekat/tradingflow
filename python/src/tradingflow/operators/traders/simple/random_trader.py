@@ -10,19 +10,19 @@ from ..simple_trader import SimpleTrader, SimpleTraderState
 class RandomTrader(SimpleTrader):
     """Randomly select stocks with probability proportional to soft weights.
 
-    On each rebalance, picks ``portfolio_size`` stocks (without
+    On each rebalance, picks `portfolio_size` stocks (without
     replacement) using the soft position weights as sampling
     probabilities, then allocates equal market-value weight
-    ``1 / portfolio_size`` to each chosen stock.
+    `1 / portfolio_size` to each chosen stock.
 
     Parameters
     ----------
     soft_positions
-        Soft position weights, shape ``(num_stocks,)``.
+        Soft position weights, shape `(num_stocks,)`.
     prices
-        Stacked OHLCV prices, shape ``(num_stocks, 5)``.
+        Stacked OHLCV prices, shape `(num_stocks, 5)`.
     adjusts
-        Stacked forward adjustment factors, shape ``(num_stocks,)``.
+        Stacked forward adjustment factors, shape `(num_stocks,)`.
     portfolio_size
         Number of stocks to hold.
     **kwargs

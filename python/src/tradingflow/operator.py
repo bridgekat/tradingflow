@@ -2,35 +2,47 @@
 
 from __future__ import annotations
 
-import typing
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .types import Handle, NodeKind, node_type_to_name
-from .views import Notify
+from .data.types import Handle, NodeKind, _to_native_node_kind
+
+if TYPE_CHECKING:
+    from tradingflow._native import NativeScenario
 
 
-class Operator[Inputs, Output, State](ABC):
+class Operator[*Views, Output, State](ABC):
     """Abstract base for Python-implemented operators.
 
-    Generic parameters encode input/output types for both static checking
-    and runtime TypeId validation:
+    Generic parameters describe the operator's compute-time signature:
 
-    - **Inputs** — tuple of `Handle[NodeType]` types consumed by the operator.
-    - **Output** — `Handle[NodeType]` type produced.
-    - **State** — mutable state type carried across invocations.
+    - ***Views** — element-wise view types of the upstream inputs, in
+      order.  Each entry is the view class a Python operator actually
+      sees at compute time, e.g. [`ArrayView[T]`][tradingflow.ArrayView],
+      [`SeriesView[T]`][tradingflow.SeriesView], or `None` for clock
+      (`Unit`) inputs.
+    - **Output** — view type of the operator's output node.
+    - **State** — mutable state object carried across invocations.
 
-    At registration time, `get_io_types()` extracts `(kind, dtype)` pairs
-    from the generic parameters and sends them to Rust for TypeId validation.
+    The flat shape mirrors the bridge: Python operators always receive a
+    flat `inputs: tuple[*Views]` and a flat `produced: tuple[bool, ...]`,
+    regardless of any hierarchical structure on the Rust side.
+
+    Construction-time inputs are passed positionally as
+    [`Handle`][tradingflow.Handle]s via the `inputs` constructor
+    argument; the runtime resolves each handle to its corresponding
+    view before calling [`init`][tradingflow.Operator.init] and
+    [`compute`][tradingflow.Operator.compute].
 
     Parameters
     ----------
     inputs
-        Tuple of upstream handles.
+        Tuple of upstream handles, in the same order as `*Views`.
     kind
-        Output node kind: ``"array"`` or ``"series"``.
+        Output node kind: [`NodeKind.ARRAY`][tradingflow.NodeKind] or
+        [`NodeKind.SERIES`][tradingflow.NodeKind].
     dtype
         NumPy dtype of the output.
     shape
@@ -57,7 +69,7 @@ class Operator[Inputs, Output, State](ABC):
         self._name = name or type(self).__name__
 
     @abstractmethod
-    def init(self, inputs: Inputs, timestamp: int) -> State:
+    def init(self, inputs: tuple[*Views], timestamp: int) -> State:
         """Initialize mutable state from input views and initial timestamp.
 
         Consumes the operator's configuration into the returned state,
@@ -66,9 +78,11 @@ class Operator[Inputs, Output, State](ABC):
         Parameters
         ----------
         inputs
-            Tuple of input views (same views passed to `compute`).
+            Tuple of input views (the same views passed to `compute`).
         timestamp
-            Initial timestamp (nanoseconds since epoch).
+            Initial timestamp in **TAI nanoseconds** (`int64` since the
+            PTP epoch 1970-01-01 00:00:00 TAI — matches numpy
+            `datetime64[ns]` numerically).
 
         Returns
         -------
@@ -82,14 +96,15 @@ class Operator[Inputs, Output, State](ABC):
     @abstractmethod
     def compute(
         state: State,
-        inputs: Any,
-        output: Any,
+        inputs: tuple[*Views],
+        output: Output,
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         """Compute the next output value.
 
-        Write into *output* via `output.write(value)`.  Modify *state*
+        Write into *output* via `output.write(value)` (Array) or
+        `output.push(timestamp, value)` (Series).  Modify *state*
         in-place as needed.
 
         Parameters
@@ -97,18 +112,21 @@ class Operator[Inputs, Output, State](ABC):
         state
             Mutable state (from `init` or previous `compute` call).
         inputs
-            Tuple of input views corresponding to the upstream handles.
+            Tuple of input views, one per upstream handle, in the order
+            declared by `*Views`.
         output
             Output view to write results into.
         timestamp
-            Current event timestamp (nanoseconds since epoch).
-        notify
-            [`Notify`][tradingflow.Notify] context for checking which inputs
-            produced new output in the current flush cycle via
-            [`Notify.input_produced`][tradingflow.Notify.input_produced]
-            (per-position booleans) or
-            [`Notify.produced`][tradingflow.Notify.produced]
-            (list of positions).
+            Current event timestamp in **TAI nanoseconds** (`int64`
+            since the PTP epoch 1970-01-01 00:00:00 TAI — matches numpy
+            `datetime64[ns]` numerically).
+        produced
+            Flat `tuple[bool, ...]` parallel to `inputs`: element `i`
+            is `True` iff input `i` produced new output this flush
+            cycle.  Same arity as `inputs`; access with `produced[i]`
+            or destructure (`a, b = produced`).  Transformers like
+            [`Clocked`][tradingflow.operators.Clocked] forward a sliced
+            view (`produced[1:]`) to inner operators.
 
         Returns
         -------
@@ -143,63 +161,32 @@ class Operator[Inputs, Output, State](ABC):
         """Human-readable name."""
         return self._name
 
-    @property
-    def is_clock_triggerable(self) -> bool:
-        """Whether this operator can be gated by a clock trigger.
-
-        Operators that use message-passing semantics (relying on
-        ``Notify.produced()`` to track which inputs produced)
-        should return ``False`` — they must be triggered by their data
-        inputs so they never miss a message.
-
-        The default is ``True``.
-        """
-        return True
-
     def get_io_types(self) -> tuple[list[tuple[NodeKind, str]], tuple[NodeKind, str]]:
         """Return `(input_types, output_type)` for Rust TypeId validation.
 
-        Tries to extract from generic type parameters first. Falls back to
-        deriving types from the input handles' dtype metadata when generics
-        contain unresolved TypeVars.
+        Derived directly from the upstream handles' kind/dtype and the
+        operator's declared output kind/dtype — no runtime inspection
+        of generic parameters.  The class-level `*Views`/`Output` are
+        purely static-typing aids for pyright.
         """
-        result = _try_extract_io_types(type(self))
-        if result is not None:
-            return result
-        input_names = [(inp.kind, str(inp.dtype)) for inp in self._inputs]
-        output_name = (self._kind, str(self._dtype))
+        input_names = [(inp.kind, "" if inp.kind == NodeKind.UNIT else inp.dtype.name) for inp in self._inputs]
+        output_name = (self._kind, "" if self._kind == NodeKind.UNIT else self._dtype.name)
         return input_names, output_name
 
+    def _register(self, native_scenario: NativeScenario, input_indices: list[int]) -> int:
+        """Register this Python operator with the native scenario.
 
-def _try_extract_io_types(cls: type) -> tuple[list[tuple[NodeKind, str]], tuple[NodeKind, str]] | None:
-    """Try to extract I/O types from generic parameters.
-
-    Returns `None` if generics contain unresolved TypeVars.
-    """
-    for base in getattr(cls, "__orig_bases__", ()):
-        origin = typing.get_origin(base)
-        if origin is Operator:
-            args = typing.get_args(base)
-            if len(args) >= 2:
-                try:
-                    inputs_tp, output_tp = args[0], args[1]
-                    input_handle_types = typing.get_args(inputs_tp)
-                    input_names = []
-                    for ht in input_handle_types:
-                        ht_args = typing.get_args(ht)
-                        if ht_args:
-                            input_names.append(node_type_to_name(ht_args[0]))
-                        else:
-                            return None
-                    out_args = typing.get_args(output_tp)
-                    if out_args:
-                        output_name = node_type_to_name(out_args[0])
-                    else:
-                        return None
-                    return input_names, output_name
-                except TypeError:
-                    return None
-    return None
+        Polymorphic dispatch: [`Scenario.add_operator`][tradingflow.Scenario.add_operator]
+        delegates to this method without branching on operator kind.
+        """
+        input_types, output_type = self.get_io_types()
+        return native_scenario.add_py_operator(
+            input_indices,
+            [(_to_native_node_kind(k), d) for k, d in input_types],
+            (_to_native_node_kind(output_type[0]), output_type[1]),
+            list(self._shape),
+            self,
+        )
 
 
 class NativeOperator:
@@ -214,7 +201,7 @@ class NativeOperator:
     inputs
         Tuple of upstream handles.
     kind
-        Output node kind: ``"array"`` or ``"series"``.
+        Output node kind: `"array"` or `"series"`.
     dtype
         Output numpy dtype.
     shape
@@ -280,3 +267,13 @@ class NativeOperator:
     def name(self) -> str:
         """Human-readable name."""
         return self._name
+
+    def _register(self, native_scenario: NativeScenario, input_indices: list[int]) -> int:
+        """Register this native operator with the native scenario."""
+        return native_scenario.add_native_operator(
+            self._native_id,
+            self._dtype.name,
+            input_indices,
+            list(self._shape),
+            self._params,
+        )

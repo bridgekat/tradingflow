@@ -9,15 +9,15 @@ class RankEqual(MeanPortfolio):
     """Assign equal weights to the top fraction of stocks.
 
     Stocks with positive predicted returns are ranked.  The top
-    ``top_fraction`` receive equal weight, normalized to sum to 1.
+    `top_fraction` receive equal weight, normalized to sum to 1.
     All other stocks receive zero weight.
 
     Parameters
     ----------
     universe
-        Handle to universe weights, shape ``(num_stocks,)``.
+        Handle to universe weights, shape `(num_stocks,)`.
     predicted_returns
-        Handle to predicted returns array, shape ``(num_stocks,)``.
+        Handle to predicted returns array, shape `(num_stocks,)`.
     top_fraction
         Fraction of positively-predicted stocks to include.
     **kwargs

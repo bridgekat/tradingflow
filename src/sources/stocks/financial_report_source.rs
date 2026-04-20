@@ -9,9 +9,9 @@
 //! extra elements `[year, day_of_year]` derived from the report date, for use
 //! by downstream annualisation operators.
 
-use chrono::{Datelike, NaiveDate};
 use tokio::sync::mpsc;
 
+use crate::{Duration, Instant};
 use crate::{Array, Source};
 
 /// Historical-only source backed by a financial report CSV file.
@@ -48,11 +48,13 @@ pub struct FinancialReportSource {
     value_columns: Vec<String>,
     with_report_date: bool,
     use_effective_date: bool,
-    notice_date_fallback_ns: i64,
-    /// Optional inclusive start bound (nanoseconds).
-    start_ns: Option<i64>,
-    /// Optional inclusive end bound (nanoseconds).
-    end_ns: Option<i64>,
+    notice_date_fallback: Duration,
+    is_utc: bool,
+    tz_offset: Duration,
+    /// Optional inclusive start bound.
+    start: Option<Instant>,
+    /// Optional inclusive end bound.
+    end: Option<Instant>,
 }
 
 impl FinancialReportSource {
@@ -61,9 +63,13 @@ impl FinancialReportSource {
     /// * `use_effective_date` — if `true`, the event timestamp is
     ///   `max(report_date, notice_date)`; if `false`, the report date is
     ///   used directly.
-    /// * `notice_date_fallback_ns` — nanosecond offset added to the report
-    ///   date when the notice date is missing (only relevant when
-    ///   `use_effective_date` is `true`).
+    /// * `notice_date_fallback` — offset added to the report date when the
+    ///   notice date is missing (only relevant when `use_effective_date` is
+    ///   `true`).
+    ///
+    /// Date strings are interpreted as **UTC midnight** by default.  Use
+    /// [`with_timescale`](Self::with_timescale) to change the
+    /// interpretation.
     pub fn new(
         path: String,
         report_date_column: String,
@@ -71,7 +77,7 @@ impl FinancialReportSource {
         value_columns: Vec<String>,
         with_report_date: bool,
         use_effective_date: bool,
-        notice_date_fallback_ns: i64,
+        notice_date_fallback: Duration,
     ) -> Self {
         Self {
             path,
@@ -80,52 +86,43 @@ impl FinancialReportSource {
             value_columns,
             with_report_date,
             use_effective_date,
-            notice_date_fallback_ns,
-            start_ns: None,
-            end_ns: None,
+            notice_date_fallback,
+            is_utc: true,
+            tz_offset: Duration::ZERO,
+            start: None,
+            end: None,
         }
+    }
+
+    /// Set the interpretation of the date strings in the CSV.  See
+    /// [`CsvSource::with_timescale`](crate::sources::CsvSource::with_timescale)
+    /// for the semantics.
+    pub fn with_timescale(mut self, is_utc: bool, tz_offset: Duration) -> Self {
+        self.is_utc = is_utc;
+        self.tz_offset = tz_offset;
+        self
     }
 
     /// Restrict the source to the given inclusive time range.
     ///
-    /// Rows outside `[start_ns, end_ns]` are dropped.  The reported
-    /// [`time_range`](Source::time_range) is clamped accordingly.
-    pub fn with_time_range(mut self, start_ns: Option<i64>, end_ns: Option<i64>) -> Self {
-        self.start_ns = start_ns;
-        self.end_ns = end_ns;
+    /// Rows outside `[start, end]` are dropped.
+    pub fn with_time_range(mut self, start: Option<Instant>, end: Option<Instant>) -> Self {
+        self.start = start;
+        self.end = end;
         self
     }
 }
 
 /// A parsed row from the CSV.
 struct Row {
-    event_ts: i64,
-    report_ts: i64,
+    event_ts: Instant,
+    report_ts: Instant,
     report_year: f64,
     report_day_of_year: f64,
     values: Vec<f64>,
 }
 
-/// Parse a date string (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS`) to a [`NaiveDate`].
-fn parse_date(s: &str) -> Result<NaiveDate, String> {
-    let s = s.trim();
-    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Ok(d);
-    }
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
-        return Ok(dt.date());
-    }
-    Err(format!("cannot parse date {s:?}"))
-}
-
-/// Convert a [`NaiveDate`] to nanoseconds since the UNIX epoch (midnight UTC).
-fn date_to_nanos(d: NaiveDate) -> Result<i64, String> {
-    d.and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc()
-        .timestamp_nanos_opt()
-        .ok_or_else(|| format!("timestamp overflow for {d}"))
-}
+use super::super::csv_source::{epoch_to_instant, parse_gregorian_date};
 
 /// Read and parse the financial report CSV, returning rows sorted by event
 /// timestamp.
@@ -135,7 +132,9 @@ fn read_csv(
     notice_date_column: &str,
     value_columns: &[String],
     use_effective_date: bool,
-    notice_date_fallback_ns: i64,
+    notice_date_fallback: Duration,
+    is_utc: bool,
+    tz_offset: Duration,
 ) -> Result<Vec<Row>, String> {
     let mut reader =
         csv::Reader::from_path(path).map_err(|e| format!("cannot open {path}: {e}"))?;
@@ -169,7 +168,7 @@ fn read_csv(
         let record = result.map_err(|e| e.to_string())?;
 
         // Parse report date.
-        let report_date = parse_date(&record[report_idx])?;
+        let report_date = parse_gregorian_date(&record[report_idx])?;
 
         // Parse notice date (may be empty / missing column).
         let notice_date = if let Some(ni) = notice_idx {
@@ -177,19 +176,19 @@ fn read_csv(
             if s.is_empty() {
                 None
             } else {
-                Some(parse_date(s)?)
+                Some(parse_gregorian_date(s)?)
             }
         } else {
             None
         };
 
-        let report_ts = date_to_nanos(report_date)?;
+        let report_ts = epoch_to_instant(report_date, is_utc, tz_offset);
         let event_ts = if use_effective_date {
             // Effective date = max(report_date, notice_date).
             // When notice_date is missing, fall back to report_date + offset.
             let notice_ts = match notice_date {
-                Some(d) => date_to_nanos(d)?,
-                None => report_ts + notice_date_fallback_ns,
+                Some(d) => epoch_to_instant(d, is_utc, tz_offset),
+                None => report_ts + notice_date_fallback,
             };
             report_ts.max(notice_ts)
         } else {
@@ -209,11 +208,14 @@ fn read_csv(
             values.push(v);
         }
 
+        let (year, day_of_year) = report_date.year_days_of_year();
         rows.push(Row {
             event_ts,
             report_ts,
-            report_year: report_date.year() as f64,
-            report_day_of_year: report_date.ordinal() as f64,
+            report_year: year as f64,
+            // hifitime's day_of_year is 0-based (Jan 1 = 0); shift to 1-based
+            // to match the chrono `ordinal()` convention the operators rely on.
+            report_day_of_year: day_of_year + 1.0,
             values,
         });
     }
@@ -226,7 +228,7 @@ fn read_csv(
         // report whose report_date does not advance the high-water mark
         // is a late-arriving correction for an already-seen period and
         // should be ignored.
-        let mut max_report_ts = i64::MIN;
+        let mut max_report_ts = Instant::MIN;
         rows.retain(|r| {
             if r.report_ts > max_report_ts {
                 max_report_ts = r.report_ts;
@@ -244,16 +246,38 @@ impl Source for FinancialReportSource {
     type Event = Array<f64>;
     type Output = Array<f64>;
 
-    fn time_range(&self) -> (Option<i64>, Option<i64>) {
-        (self.start_ns, self.end_ns)
+    fn estimated_event_count(&self) -> Option<usize> {
+        use super::super::csv_source::{estimate_csv_rows, scale_rows_to_range};
+        let total = estimate_csv_rows(&self.path)?;
+        // Scale by the report_date column (sorted in file order).  When
+        // `use_effective_date` is set, add `notice_date_fallback` to the
+        // user-supplied bounds so the comparison lives on the report-date
+        // timeline; this mirrors the fallback applied per row when the
+        // notice date is missing, and approximates the typical 1-quarter
+        // lag between period end and publication.
+        let shift = if self.use_effective_date {
+            self.notice_date_fallback
+        } else {
+            Duration::ZERO
+        };
+        Some(scale_rows_to_range(
+            total,
+            &self.path,
+            &self.report_date_column,
+            self.start.map(|s| s - shift),
+            self.end.map(|e| e - shift),
+            self.is_utc,
+            self.tz_offset,
+            Duration::ZERO,
+        ))
     }
 
     fn init(
         self,
-        _timestamp: i64,
+        _timestamp: Instant,
     ) -> (
-        mpsc::Receiver<(i64, Array<f64>)>,
-        mpsc::Receiver<(i64, Array<f64>)>,
+        mpsc::Receiver<(Instant, Array<f64>)>,
+        mpsc::Receiver<(Instant, Array<f64>)>,
         Array<f64>,
     ) {
         let num_values = self.value_columns.len();
@@ -273,7 +297,9 @@ impl Source for FinancialReportSource {
                 &self.notice_date_column,
                 &self.value_columns,
                 self.use_effective_date,
-                self.notice_date_fallback_ns,
+                self.notice_date_fallback,
+                self.is_utc,
+                self.tz_offset,
             ) {
                 Ok(r) => r,
                 Err(e) => {
@@ -281,17 +307,17 @@ impl Source for FinancialReportSource {
                     return;
                 }
             };
-            let start_ns = self.start_ns;
-            let end_ns = self.end_ns;
+            let start = self.start;
+            let end = self.end;
 
-            // When start_ns is set, find the last row before the window
-            // and emit it at start_ns as the initial value.
+            // When start is set, find the last row before the window
+            // and emit it at start as the initial value.
             let mut last_before_start: Option<&Row> = None;
-            let mut entered_window = start_ns.is_none();
+            let mut entered_window = start.is_none();
 
             for row in &rows {
-                if let Some(start) = start_ns {
-                    if row.event_ts < start {
+                if let Some(s) = start {
+                    if row.event_ts < s {
                         last_before_start = Some(row);
                         continue;
                     }
@@ -300,7 +326,7 @@ impl Source for FinancialReportSource {
                 if !entered_window {
                     entered_window = true;
                     if let Some(init_row) = last_before_start.take() {
-                        let start = start_ns.unwrap();
+                        let s = start.unwrap();
                         let data = if with_report_date {
                             let mut v = Vec::with_capacity(2 + init_row.values.len());
                             v.push(init_row.report_year);
@@ -311,14 +337,14 @@ impl Source for FinancialReportSource {
                             init_row.values.clone()
                         };
                         let arr = Array::from_vec(&[output_len], data);
-                        if hist_tx.send((start, arr)).await.is_err() {
+                        if hist_tx.send((s, arr)).await.is_err() {
                             break;
                         }
                     }
                 }
 
-                if let Some(end) = end_ns {
-                    if row.event_ts > end {
+                if let Some(e) = end {
+                    if row.event_ts > e {
                         break;
                     }
                 }
@@ -340,7 +366,7 @@ impl Source for FinancialReportSource {
             // If all rows were before the start, emit the last one.
             if !entered_window {
                 if let Some(init_row) = last_before_start {
-                    if let Some(start) = start_ns {
+                    if let Some(s) = start {
                         let data = if with_report_date {
                             let mut v = Vec::with_capacity(2 + init_row.values.len());
                             v.push(init_row.report_year);
@@ -351,7 +377,7 @@ impl Source for FinancialReportSource {
                             init_row.values.clone()
                         };
                         let arr = Array::from_vec(&[output_len], data);
-                        let _ = hist_tx.send((start, arr)).await;
+                        let _ = hist_tx.send((s, arr)).await;
                     }
                 }
             }
@@ -360,7 +386,7 @@ impl Source for FinancialReportSource {
         (hist_rx, live_rx, Array::zeros(&[output_len]))
     }
 
-    fn write(payload: Array<f64>, output: &mut Array<f64>, _timestamp: i64) -> bool {
+    fn write(payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> bool {
         output.assign(payload.as_slice());
         true
     }
@@ -369,11 +395,12 @@ impl Source for FinancialReportSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hifitime::Epoch;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    /// 90 days in nanoseconds — default fallback for tests.
-    const FALLBACK_90D_NS: i64 = 90 * 24 * 3600 * 1_000_000_000;
+    /// 90 days — default fallback for tests.
+    const FALLBACK_90D: Duration = Duration::from_days(90);
 
     fn make_csv(content: &str) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();
@@ -382,10 +409,23 @@ mod tests {
         f
     }
 
+    fn ymd(y: i32, m: u8, d: u8) -> Instant {
+        Instant::from_hifitime_epoch(
+            Epoch::maybe_from_gregorian_utc(y, m, d, 0, 0, 0, 0).unwrap(),
+        )
+    }
+
+    fn day_of_year_1based(y: i32, m: u8, d: u8) -> f64 {
+        let (_, doy) = Epoch::maybe_from_gregorian_utc(y, m, d, 0, 0, 0, 0)
+            .unwrap()
+            .year_days_of_year();
+        doy + 1.0
+    }
+
     #[test]
     fn parse_date_basic() {
-        let d = parse_date("2024-03-31").unwrap();
-        assert_eq!(d, NaiveDate::from_ymd_opt(2024, 3, 31).unwrap());
+        let d = parse_gregorian_date("2024-03-31").unwrap();
+        assert_eq!(d, Epoch::maybe_from_gregorian_utc(2024, 3, 31, 0, 0, 0, 0).unwrap());
     }
 
     #[test]
@@ -401,16 +441,18 @@ mod tests {
             "notice_date",
             &["revenue".to_string()],
             true,
-            FALLBACK_90D_NS,
+            FALLBACK_90D,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
         // Row 1: notice (Apr 28) > report (Mar 31) → event = Apr 28.
-        let expected_0 = date_to_nanos(NaiveDate::from_ymd_opt(2024, 4, 28).unwrap()).unwrap();
+        let expected_0 = ymd(2024, 4, 28);
         assert_eq!(rows[0].event_ts, expected_0);
 
         // Row 2: report (Jun 30) > notice (Jun 15) → event = Jun 30.
-        let expected_1 = date_to_nanos(NaiveDate::from_ymd_opt(2024, 6, 30).unwrap()).unwrap();
+        let expected_1 = ymd(2024, 6, 30);
         assert_eq!(rows[1].event_ts, expected_1);
     }
 
@@ -426,12 +468,14 @@ mod tests {
             "notice_date",
             &["revenue".to_string()],
             true,
-            FALLBACK_90D_NS,
+            FALLBACK_90D,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
-        let report_ts = date_to_nanos(NaiveDate::from_ymd_opt(2024, 3, 31).unwrap()).unwrap();
-        assert_eq!(rows[0].event_ts, report_ts + FALLBACK_90D_NS);
+        let report_ts = ymd(2024, 3, 31);
+        assert_eq!(rows[0].event_ts, report_ts + FALLBACK_90D);
     }
 
     #[test]
@@ -440,7 +484,7 @@ mod tests {
             "report_date,notice_date,val\n\
              2024-03-31,,1.0\n",
         );
-        let fallback_30d: i64 = 30 * 24 * 3600 * 1_000_000_000;
+        let fallback_30d: Duration = Duration::from_days(30);
         let rows = read_csv(
             csv.path().to_str().unwrap(),
             "report_date",
@@ -448,10 +492,12 @@ mod tests {
             &["val".to_string()],
             true,
             fallback_30d,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
-        let report_ts = date_to_nanos(NaiveDate::from_ymd_opt(2024, 3, 31).unwrap()).unwrap();
+        let report_ts = ymd(2024, 3, 31);
         assert_eq!(rows[0].event_ts, report_ts + fallback_30d);
     }
 
@@ -469,13 +515,15 @@ mod tests {
             "notice_date",
             &["val".to_string()],
             false,
-            FALLBACK_90D_NS,
+            FALLBACK_90D,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
         // Both rows use the report date directly, sorted by report date.
-        let expected_0 = date_to_nanos(NaiveDate::from_ymd_opt(2024, 3, 31).unwrap()).unwrap();
-        let expected_1 = date_to_nanos(NaiveDate::from_ymd_opt(2024, 6, 30).unwrap()).unwrap();
+        let expected_0 = ymd(2024, 3, 31);
+        let expected_1 = ymd(2024, 6, 30);
         assert_eq!(rows[0].event_ts, expected_0);
         assert_eq!(rows[1].event_ts, expected_1);
     }
@@ -496,7 +544,9 @@ mod tests {
             "notice_date",
             &["val".to_string()],
             true,
-            FALLBACK_90D_NS,
+            FALLBACK_90D,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
@@ -520,7 +570,9 @@ mod tests {
             "notice_date",
             &["val".to_string()],
             false,
-            FALLBACK_90D_NS,
+            FALLBACK_90D,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
@@ -542,19 +594,21 @@ mod tests {
             "notice_date",
             &["val".to_string()],
             true,
-            FALLBACK_90D_NS,
+            FALLBACK_90D,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
         assert_eq!(rows[0].report_year, 2024.0);
         assert_eq!(
             rows[0].report_day_of_year,
-            NaiveDate::from_ymd_opt(2024, 3, 31).unwrap().ordinal() as f64
+            day_of_year_1based(2024, 3, 31)
         );
         assert_eq!(rows[1].report_year, 2024.0);
         assert_eq!(
             rows[1].report_day_of_year,
-            NaiveDate::from_ymd_opt(2024, 12, 31).unwrap().ordinal() as f64
+            day_of_year_1based(2024, 12, 31)
         );
     }
 
@@ -573,7 +627,9 @@ mod tests {
             "notice_date",
             &["val".to_string()],
             true,
-            FALLBACK_90D_NS,
+            FALLBACK_90D,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
@@ -597,7 +653,9 @@ mod tests {
             "notice_date",
             &["a".to_string(), "b".to_string()],
             true,
-            FALLBACK_90D_NS,
+            FALLBACK_90D,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
@@ -617,12 +675,14 @@ mod tests {
             "notice_date",
             &["val".to_string()],
             true,
-            FALLBACK_90D_NS,
+            FALLBACK_90D,
+            true,
+            Duration::ZERO,
         )
         .unwrap();
 
-        let report_ts = date_to_nanos(NaiveDate::from_ymd_opt(2024, 3, 31).unwrap()).unwrap();
-        assert_eq!(rows[0].event_ts, report_ts + FALLBACK_90D_NS);
+        let report_ts = ymd(2024, 3, 31);
+        assert_eq!(rows[0].event_ts, report_ts + FALLBACK_90D);
         assert_eq!(rows[0].values, vec![100.0]);
     }
 }

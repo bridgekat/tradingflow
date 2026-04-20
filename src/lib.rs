@@ -15,13 +15,15 @@
 //! # Traits
 //!
 //! * [`Source`] — asynchronous data source feeding events into the graph via
-//!   historical and live channels. Provides an optional [`time_range`](Source::time_range)
-//!   method for declaring known data bounds. Type-erased form: [`ErasedSource`].
+//!   historical and live channels. Provides an optional
+//!   [`estimated_event_count`](Source::estimated_event_count) method for
+//!   progress reporting. Type-erased form: [`ErasedSource`].
 //! * [`Operator`] — synchronous computation node that reads typed inputs and
-//!   writes a typed output. Type-erased form: [`ErasedOperator`].
-//! * [`Notify`] — notification context passed to [`Operator::compute`],
-//!   providing which inputs produced new output in the current flush cycle
-//!   via [`Notify::produced`] and [`Notify::input_produced`].
+//!   writes a typed output. Type-erased form: [`ErasedOperator`].  The
+//!   `compute` method receives two structurally parallel hierarchical trees:
+//!   `inputs: <Inputs as InputTypes>::Refs<'_>` and
+//!   `produced: <Inputs as InputTypes>::Produced<'_>`.  Slice branches
+//!   expose lazy views; sized tuples produce stack-allocated compounds.
 //!
 //! # Runtime
 //!
@@ -32,41 +34,46 @@
 //!
 //! # Modules
 //!
-//! * [`array`] — `Array`.
-//! * [`series`] — `Series`.
+//! * [`data`] — primitive data types and operator-input trait machinery:
+//!   * [`data::array`] — `Array`.
+//!   * [`data::series`] — `Series`.
+//!   * [`data::time`] — `Instant` (SI nanoseconds since 1970-01-01 00:00:00
+//!     TAI) and `Duration` (SI nanoseconds).
+//!   * [`data::inputs`] — `InputTypes`, `Input<T>`, `FlatRead` / `BitRead`
+//!     cursors, and related machinery.
+//!   * Flat: `Scalar`, `PeekableReceiver`.
 //! * [`source`] — `Source` trait, `ErasedSource`.
 //! * [`operator`] — `Operator` trait, `ErasedOperator`.
 //! * [`scenario`] — `Scenario`, `Handle`, `InputTypesHandles`.
-//! * [`types`] — `Scalar`, `PeekableReceiver`, `InputTypes`.
 //! * [`operators`] — built-in operators: structural (`Const`, `Id`, `Filter`,
 //!   `Where`, `Select`, `Concat`, `Stack`, `Cast`), series (`Record`, `Last`,
 //!   `Lag`), element-wise numeric ([`operators::num`]), rolling-window
 //!   ([`operators::rolling`]), and stock-specific ([`operators::stocks`]).
 //! * [`sources`] — built-in data sources: `ArraySource`, `CsvSource`,
-//!   `IterSource`, and clock sources (`clock`, `daily_clock`,
-//!   `monthly_clock`).
+//!   `IterSource`, and the `clock` trigger source.  Calendar-aligned
+//!   clock schedules live in the Python wrapper.
 //! * [`utils`] — `Schema`.
 //! * [`bridge`] — PyO3 bindings (behind the `python` feature).
 //!
 //! When compiled with the `python` feature, the crate also produces a PyO3
 //! `cdylib` exposing the runtime to Python.
 
-pub mod array;
+pub mod data;
 pub mod operator;
 pub mod operators;
 pub mod scenario;
-pub mod series;
 pub mod source;
 pub mod sources;
-pub mod types;
 pub mod utils;
 
-pub use array::Array;
+pub use data::{
+    tai_to_utc, utc_to_tai, Array, BitRead, Duration, FlatRead, FlatWrite, Input, InputTypes,
+    Instant, PeekableReceiver, Scalar, Series, SliceProduced, SliceRefs,
+};
 pub use operator::{ErasedOperator, Operator};
+pub use operators::Clocked;
 pub use scenario::Scenario;
-pub use series::Series;
 pub use source::{ErasedSource, Source};
-pub use types::{InputTypes, Notify, PeekableReceiver, Scalar};
 pub use utils::Schema;
 
 #[cfg(feature = "python")]

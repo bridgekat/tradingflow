@@ -2,30 +2,29 @@
 
 from __future__ import annotations
 
-from ..operator import NativeOperator
-from ..types import Handle, NodeKind
+from .. import Handle, NativeOperator, NodeKind
 
 
 class Select(NativeOperator):
     """Select elements along an axis.
 
-    When *indices* is a single ``int``, the selected axis is squeezed
-    out of the output shape (e.g. selecting element 2 from a ``(5,)``
-    array yields a scalar ``()``; selecting column 3 from a ``(N, 5)``
-    array with ``axis=1`` yields ``(N,)``).
+    When *indices* is a single `int`, the selected axis is squeezed
+    out of the output shape (e.g. selecting element 2 from a `(5,)`
+    array yields a scalar `()`; selecting column 3 from a `(N, 5)`
+    array with `axis=1` yields `(N,)`).
 
-    When *indices* is a ``list[int]``, the axis is preserved with size
-    ``len(indices)``.
+    When *indices* is a `list[int]`, the axis is preserved with size
+    `len(indices)`.
 
     Parameters
     ----------
     a
         Handle to an Array node.
     indices
-        A single index (``int``, squeezes the axis) or a list of
-        indices (``list[int]``, preserves the axis).
+        A single index (`int`, squeezes the axis) or a list of
+        indices (`list[int]`, preserves the axis).
     axis
-        Axis to select along (default ``0``).
+        Axis to select along (default `0`).
     """
 
     def __init__(self, a: Handle, indices: int | list[int], *, axis: int = 0) -> None:

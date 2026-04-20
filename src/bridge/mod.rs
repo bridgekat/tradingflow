@@ -18,9 +18,13 @@
 //! - [`NativeScenario`](scenario::NativeScenario) — the main pyclass.
 //! - [`NativeArrayView`] / [`NativeSeriesView`] — read-only Python views into
 //!   `Array<T>` and `Series<T>` node values, backed by raw pointers.
-//! - [`NativeNotify`] — Python-visible wrapper around the Rust
-//!   [`Notify`](crate::operator::Notify) context, exposing which inputs
-//!   produced new output to Python operators during flush.
+//! - [`NativeNodeKind`] — `Array` / `Series` / `Unit` discriminator
+//!   exposed to Python so node-kind tags travel as an enum across the FFI
+//!   boundary instead of strings.
+//! Python operators receive `produced` as a flat `tuple[bool, ...]` built
+//! fresh each compute call by [`operator::py_compute_fn`](operator) — no
+//! dedicated Python class.  Its shape parallels the operator's flat input
+//! tuple.
 //! - [`DoneCallback`](source::DoneCallback) — pyclass used internally to
 //!   bridge `concurrent.futures.Future` completion to tokio oneshot channels.
 //!
@@ -48,7 +52,7 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 
-pub use views::{NativeArrayView, NativeNotify, NativeSeriesView};
+pub use views::{NativeArrayView, NativeNodeKind, NativeSeriesView};
 
 use scenario::NativeScenario;
 
@@ -77,7 +81,21 @@ pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_class::<NativeScenario>()?;
     m.add_class::<NativeArrayView>()?;
     m.add_class::<NativeSeriesView>()?;
-    m.add_class::<NativeNotify>()?;
+    m.add_class::<NativeNodeKind>()?;
     m.add_class::<source::DoneCallback>()?;
+    m.add_function(pyo3::wrap_pyfunction!(py_utc_to_tai, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(py_tai_to_utc, m)?)?;
     Ok(())
+}
+
+/// Convert a UTC timestamp in nanoseconds to a TAI timestamp in nanoseconds.
+#[pyo3::pyfunction(name = "utc_to_tai")]
+fn py_utc_to_tai(utc_ns: i64) -> i64 {
+    crate::data::utc_to_tai(utc_ns)
+}
+
+/// Convert a TAI timestamp in nanoseconds to a UTC timestamp in nanoseconds.
+#[pyo3::pyfunction(name = "tai_to_utc")]
+fn py_tai_to_utc(tai_ns: i64) -> i64 {
+    crate::data::tai_to_utc(tai_ns)
 }

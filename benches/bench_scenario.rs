@@ -7,23 +7,28 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use tradingflow::array::Array;
+use tradingflow::Instant;
+use tradingflow::data::array::Array;
+use tradingflow::data::series::Series;
 use tradingflow::operators::Record;
 use tradingflow::operators::num::{Add, Multiply, Negate};
 use tradingflow::scenario::Scenario;
-use tradingflow::series::Series;
 use tradingflow::sources::ArraySource;
 
 const N: usize = 10_000;
 
+fn instants(it: impl Iterator<Item = i64>) -> Vec<Instant> {
+    it.map(Instant::from_nanos).collect()
+}
+
 fn make_series(n: usize) -> (Series<f64>, Array<f64>) {
-    let ts: Vec<i64> = (0..n as i64).collect();
+    let ts = instants(0..n as i64);
     let vals: Vec<f64> = (0..n).map(|i| i as f64 * 0.1).collect();
     (Series::from_vec(&[], ts, vals), Array::scalar(0.0))
 }
 
 fn make_series_vec(n: usize, stride: usize) -> (Series<f64>, Array<f64>) {
-    let ts: Vec<i64> = (0..n as i64).collect();
+    let ts = instants(0..n as i64);
     let vals: Vec<f64> = (0..n * stride).map(|i| i as f64 * 0.01).collect();
     (
         Series::from_vec(&[stride], ts, vals),
@@ -47,8 +52,8 @@ fn bench_single_source(c: &mut Criterion) {
             let _guard = rt.enter();
             let mut sc = Scenario::new();
             let h = sc.add_source(ArraySource::new(series.clone(), default.clone()));
-            let hs = sc.add_operator(Record::new(), (h,), None);
-            rt.block_on(sc.run(|_| {}));
+            let hs = sc.add_operator(Record::new(), h);
+            rt.block_on(sc.run(|_, _, _| {}));
             black_box(sc.value::<Series<f64>>(hs).len());
         });
     });
@@ -72,9 +77,9 @@ fn bench_two_sources_add(c: &mut Criterion) {
             let mut sc = Scenario::new();
             let ha = sc.add_source(ArraySource::new(sa.clone(), da.clone()));
             let hb = sc.add_source(ArraySource::new(sb.clone(), db.clone()));
-            let ho = sc.add_operator(Add::new(), (ha, hb), None);
-            let hs = sc.add_operator(Record::new(), (ho,), None);
-            rt.block_on(sc.run(|_| {}));
+            let ho = sc.add_operator(Add::new(), (ha, hb));
+            let hs = sc.add_operator(Record::new(), ho);
+            rt.block_on(sc.run(|_, _, _| {}));
             black_box(sc.value::<Series<f64>>(hs).len());
         });
     });
@@ -98,10 +103,10 @@ fn bench_two_sources_chain(c: &mut Criterion) {
             let mut sc = Scenario::new();
             let ha = sc.add_source(ArraySource::new(sa.clone(), da.clone()));
             let hb = sc.add_source(ArraySource::new(sb.clone(), db.clone()));
-            let ho = sc.add_operator(Add::new(), (ha, hb), None);
-            let hn = sc.add_operator(Negate::new(), (ho,), None);
-            let hs = sc.add_operator(Record::new(), (hn,), None);
-            rt.block_on(sc.run(|_| {}));
+            let ho = sc.add_operator(Add::new(), (ha, hb));
+            let hn = sc.add_operator(Negate::new(), ho);
+            let hs = sc.add_operator(Record::new(), hn);
+            rt.block_on(sc.run(|_, _, _| {}));
             black_box(sc.value::<Series<f64>>(hs).len());
         });
     });
@@ -130,10 +135,10 @@ fn bench_fan_in(c: &mut Criterion) {
                     .collect();
                 let mut acc = handles[0];
                 for &h in &handles[1..] {
-                    acc = sc.add_operator(Add::new(), (acc, h), None);
+                    acc = sc.add_operator(Add::new(), (acc, h));
                 }
-                let hs = sc.add_operator(Record::new(), (acc,), None);
-                rt.block_on(sc.run(|_| {}));
+                let hs = sc.add_operator(Record::new(), acc);
+                rt.block_on(sc.run(|_, _, _| {}));
                 black_box(sc.value::<Series<f64>>(hs).len());
             });
         });
@@ -151,8 +156,8 @@ fn bench_interleaved(c: &mut Criterion) {
         .unwrap();
 
     // Source A at even timestamps, source B at odd timestamps.
-    let ts_a: Vec<i64> = (0..N as i64).map(|i| i * 2).collect();
-    let ts_b: Vec<i64> = (0..N as i64).map(|i| i * 2 + 1).collect();
+    let ts_a = instants((0..N as i64).map(|i| i * 2));
+    let ts_b = instants((0..N as i64).map(|i| i * 2 + 1));
     let vals: Vec<f64> = (0..N).map(|i| i as f64).collect();
     let sa = Series::from_vec(&[], ts_a, vals.clone());
     let sb = Series::from_vec(&[], ts_b, vals);
@@ -164,9 +169,9 @@ fn bench_interleaved(c: &mut Criterion) {
             let mut sc = Scenario::new();
             let ha = sc.add_source(ArraySource::new(sa.clone(), default.clone()));
             let hb = sc.add_source(ArraySource::new(sb.clone(), default.clone()));
-            let ho = sc.add_operator(Add::new(), (ha, hb), None);
-            let hs = sc.add_operator(Record::new(), (ho,), None);
-            rt.block_on(sc.run(|_| {}));
+            let ho = sc.add_operator(Add::new(), (ha, hb));
+            let hs = sc.add_operator(Record::new(), ho);
+            rt.block_on(sc.run(|_, _, _| {}));
             black_box(sc.value::<Series<f64>>(hs).len());
         });
     });
@@ -192,9 +197,9 @@ fn bench_strided(c: &mut Criterion) {
                 let mut sc = Scenario::new();
                 let ha = sc.add_source(ArraySource::new(sa.clone(), da.clone()));
                 let hb = sc.add_source(ArraySource::new(sb.clone(), db.clone()));
-                let ho = sc.add_operator(Add::new(), (ha, hb), None);
-                let hs = sc.add_operator(Record::new(), (ho,), None);
-                rt.block_on(sc.run(|_| {}));
+                let ho = sc.add_operator(Add::new(), (ha, hb));
+                let hs = sc.add_operator(Record::new(), ho);
+                rt.block_on(sc.run(|_, _, _| {}));
                 black_box(sc.value::<Series<f64>>(hs).len());
             });
         });
@@ -219,10 +224,10 @@ fn bench_diamond(c: &mut Criterion) {
             let mut sc = Scenario::new();
             let ha = sc.add_source(ArraySource::new(sa.clone(), da.clone()));
             let hb = sc.add_source(ArraySource::new(sb.clone(), db.clone()));
-            let hsum = sc.add_operator(Add::new(), (ha, hb), None);
-            let hprod = sc.add_operator(Multiply::new(), (ha, hsum), None);
-            let hs = sc.add_operator(Record::new(), (hprod,), None);
-            rt.block_on(sc.run(|_| {}));
+            let hsum = sc.add_operator(Add::new(), (ha, hb));
+            let hprod = sc.add_operator(Multiply::new(), (ha, hsum));
+            let hs = sc.add_operator(Record::new(), hprod);
+            rt.block_on(sc.run(|_, _, _| {}));
             black_box(sc.value::<Series<f64>>(hs).len());
         });
     });

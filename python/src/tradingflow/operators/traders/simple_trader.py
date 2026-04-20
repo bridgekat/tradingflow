@@ -8,10 +8,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ...views import ArrayView
-from ...operator import Operator, Notify
-from ...types import Array, Handle, NodeKind
-from ...utils import coerce_timestamp
+from ... import ArrayView, Handle, NodeKind, Operator
 
 
 @dataclass(slots=True)
@@ -23,7 +20,6 @@ class SimpleTraderState:
     fee_rate: float
     trade_fn: Callable[["SimpleTraderState", np.ndarray], np.ndarray]
     verbose: bool
-    trading_start: int | None
 
     # Portfolio state.
     cash: float = 0.0
@@ -36,7 +32,7 @@ class SimpleTraderState:
 
 
 class OHLCV(IntEnum):
-    """Column indices within the prices array of shape ``(num_stocks, 5)``."""
+    """Column indices within the prices array of shape `(num_stocks, 5)`."""
 
     OPEN = 0
     HIGH = 1
@@ -47,12 +43,10 @@ class OHLCV(IntEnum):
 
 class SimpleTrader(
     Operator[
-        tuple[
-            Handle[Array[np.float64]],  # soft positions (num_stocks,)
-            Handle[Array[np.float64]],  # OHLCV prices (num_stocks, 5)
-            Handle[Array[np.float64]],  # adjusts (num_stocks,)
-        ],
-        Handle[Array[np.float64]],  # (position_value, excess_liquidity)
+        ArrayView[np.float64],  # soft positions (num_stocks,)
+        ArrayView[np.float64],  # OHLCV prices (num_stocks, 5)
+        ArrayView[np.float64],  # adjusts (num_stocks,)
+        ArrayView[np.float64],  # output: (position_value, excess_liquidity)
         SimpleTraderState,
     ]
 ):
@@ -68,7 +62,7 @@ class SimpleTrader(
        opening prices, and deducts transaction fees.  If the resulting
        absolute position for a stock is less than one lot, the remainder
        is liquidated.
-    3. Outputs a 2-element array ``(holdings_value, cash)`` where
+    3. Outputs a 2-element array `(holdings_value, cash)` where
        *holdings_value* is positions valued at closing prices and
        *cash* is the cash balance.  Total portfolio value is their sum.
 
@@ -97,11 +91,12 @@ class SimpleTrader(
         Proportional transaction fee rate.
     verbose
         If `True`, print current positions after each rebalance.
-    trading_start
-        If set, rebalance signals before this timestamp are ignored.
 
     Notes
     -----
+    The rebalance cadence is controlled by upstream: the trader
+    rebalances exactly when the soft-positions input produces (which in
+    turn is driven by the predictor's clock trigger).
 
     This operator uses a simplified market model:
 
@@ -128,7 +123,6 @@ class SimpleTrader(
         fee_base: float,
         fee_rate: float,
         verbose: bool = False,
-        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(soft_positions.shape) == 1, "Soft positions input must have shape (num_stocks,)."
         assert (
@@ -145,7 +139,6 @@ class SimpleTrader(
         self._fee_base = fee_base
         self._fee_rate = fee_rate
         self._verbose = verbose
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         super().__init__(
             inputs=(soft_positions, prices, adjusts),
@@ -155,7 +148,11 @@ class SimpleTrader(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> SimpleTraderState:
+    def init(
+        self,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]],
+        timestamp: int,
+    ) -> SimpleTraderState:
         n = self._num_stocks
         return SimpleTraderState(
             num_stocks=n,
@@ -164,7 +161,6 @@ class SimpleTrader(
             fee_rate=self._fee_rate,
             trade_fn=self._trade_fn,
             verbose=self._verbose,
-            trading_start=self._trading_start,
             cash=self._initial_cash,
             shares=np.zeros(n),
             last_adjust=np.ones(n),
@@ -176,7 +172,7 @@ class SimpleTrader(
         inputs: tuple[ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]],
         output: ArrayView[np.float64],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         N = state.num_stocks
         soft_positions = inputs[0].value()
@@ -197,9 +193,7 @@ class SimpleTrader(
         state._current_value = state.cash + np.sum(state.shares[held] * closes[held])
 
         # Rebalance if soft positions input was updated.
-        rebalance = notify.input_produced()[0]
-        if state.trading_start is not None and timestamp < state.trading_start:
-            rebalance = False
+        rebalance = produced[0]
         if rebalance:
 
             # Execution price = open price.

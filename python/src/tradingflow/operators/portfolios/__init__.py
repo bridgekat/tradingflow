@@ -11,6 +11,8 @@ Python.
   abstract base taking predicted returns only.
 - [`MeanVariancePortfolio`][tradingflow.operators.portfolios.MeanVariancePortfolio] --
   abstract base taking predicted returns and covariance.
+- [`VariancePortfolio`][tradingflow.operators.portfolios.VariancePortfolio] --
+  abstract base taking covariance only (no expected returns).
 
 ## Sub-modules
 
@@ -18,18 +20,23 @@ Python.
   mean-portfolio implementations.
 - [`mean_variance`][tradingflow.operators.portfolios.mean_variance] -- concrete
   mean-variance portfolio implementations.
+- [`variance`][tradingflow.operators.portfolios.variance] -- concrete
+  variance-only (minimum-variance) portfolio implementations.
 """
 
-from . import mean
-from . import mean_variance
+from . import mean, mean_variance, variance
 from .mean_portfolio import MeanPortfolio, MeanPortfolioState
 from .mean_variance_portfolio import MeanVariancePortfolio, MeanVariancePortfolioState
+from .variance_portfolio import VariancePortfolio, VariancePortfolioState
 
 __all__ = [
     "mean",
     "mean_variance",
+    "variance",
     "MeanPortfolio",
     "MeanPortfolioState",
     "MeanVariancePortfolio",
     "MeanVariancePortfolioState",
+    "VariancePortfolio",
+    "VariancePortfolioState",
 ]

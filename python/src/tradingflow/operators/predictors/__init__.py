@@ -1,7 +1,7 @@
 """Cross-sectional return and covariance predictors.
 
 Predictor operators read accumulated feature and price history from
-upstream ``Series`` inputs (produced by ``Record`` operators),
+upstream `Series` inputs (produced by `Record` operators),
 periodically fit a model on historical data, and output predictions
 for every stock.
 
@@ -22,8 +22,7 @@ Python.
   variance-predictor implementations.
 """
 
-from . import mean
-from . import variance
+from . import mean, variance
 from .mean_predictor import MeanPredictor, MeanPredictorState
 from .variance_predictor import VariancePredictor, VariancePredictorState
 

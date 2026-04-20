@@ -1,13 +1,16 @@
 //! Constant operator — a 0-input node holding a fixed initial value.
 
-use crate::{Notify, Operator};
+use crate::{InputTypes, Instant, Operator};
 
 /// A 0-input operator that holds a constant value.
 ///
-/// The output is set once at init and never changes (compute always returns
-/// `false`).  This is the canonical way to inject an initial value into the
-/// DAG; the value can still be mutated externally via
-/// [`Scenario::value_mut`](crate::Scenario::value_mut).
+/// The output is set once at init and never changes.  Compute returns
+/// `true` so that, when the operator is bound to a clock trigger, each
+/// clock tick propagates a production signal downstream.
+///
+/// Without a trigger the operator has no triggers and compute is never
+/// invoked, so the return value is inert.  The value can still be mutated
+/// externally via [`Scenario::value_mut`](crate::Scenario::value_mut).
 pub struct Const<T: Send + 'static> {
     value: T,
 }
@@ -23,7 +26,7 @@ impl<T: Send + 'static> Operator for Const<T> {
     type Inputs = ();
     type Output = T;
 
-    fn init(self, _inputs: (), _timestamp: i64) -> ((), T) {
+    fn init(self, _inputs: (), _timestamp: Instant) -> ((), T) {
         ((), self.value)
     }
 
@@ -32,30 +35,30 @@ impl<T: Send + 'static> Operator for Const<T> {
         _state: &mut (),
         _inputs: (),
         _output: &mut T,
-        _timestamp: i64,
-        _notify: &Notify<'_>,
+        _timestamp: Instant,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
-        false
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::Array;
+    use crate::Array;
     use crate::operator::Operator;
 
     #[test]
     fn const_scalar() {
-        let (mut s, o) = Const::new(Array::scalar(42.0_f64)).init((), i64::MIN);
+        let (mut s, o) = Const::new(Array::scalar(42.0_f64)).init((), Instant::MIN);
         assert_eq!(o.as_slice(), &[42.0]);
         let mut o = o;
-        assert!(!Const::<Array<f64>>::compute(
+        assert!(Const::<Array<f64>>::compute(
             &mut s,
             (),
             &mut o,
-            1,
-            &Notify::new(&[], 0)
+            Instant::from_nanos(1),
+            ()
         ));
         assert_eq!(o.as_slice(), &[42.0]);
     }
@@ -63,7 +66,7 @@ mod tests {
     #[test]
     fn const_arbitrary_type() {
         use std::collections::BTreeMap;
-        let (_, o) = Const::new(BTreeMap::<String, f64>::new()).init((), i64::MIN);
+        let (_, o) = Const::new(BTreeMap::<String, f64>::new()).init((), Instant::MIN);
         assert!(o.is_empty());
     }
 }

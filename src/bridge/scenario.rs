@@ -7,15 +7,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
 use crate::Scenario;
 use crate::scenario::ShutdownFlag;
 
-use super::dispatch::{normalize_dtype, resolve_type_id};
-use super::views::{ViewKind, create_view};
+use super::dispatch::resolve_type_id;
+use super::views::{NativeNodeKind, create_view};
 use super::{ErrorSlot, operator, operators, source, sources};
 
 type PyObject = Py<PyAny>;
@@ -64,7 +64,7 @@ pub struct NativeScenario {
     scenario: Option<Scenario>,
     error_slot: ErrorSlot,
     /// Per-node metadata: (dtype_str, view_kind).
-    node_info: Vec<(String, ViewKind)>,
+    node_info: Vec<(String, NativeNodeKind)>,
     /// Cached Python view objects, indexed by node index.
     cached_views: Vec<Option<PyObject>>,
     /// Tokio runtime — kept alive for the scenario's lifetime.
@@ -96,19 +96,24 @@ impl NativeScenario {
         py: Python<'_>,
         node_index: usize,
         dtype: &str,
-        kind: ViewKind,
+        kind: NativeNodeKind,
         shape: &[usize],
     ) -> PyResult<()> {
         // Ensure vectors are sized to accommodate node_index.
         while self.node_info.len() <= node_index {
-            self.node_info.push((String::new(), ViewKind::Array));
+            self.node_info.push((String::new(), NativeNodeKind::Unit)); // placeholder; overwritten below
             self.cached_views.push(None);
         }
         self.node_info[node_index] = (dtype.to_string(), kind);
 
-        let sc = self.scenario.as_ref().unwrap();
-        let ptr = sc.value_ptr(node_index);
-        let view = create_view(py, ptr, shape, dtype, kind)?;
+        // Unit nodes carry no data; store Python None as the view.
+        let view = if kind == NativeNodeKind::Unit {
+            py.None()
+        } else {
+            let sc = self.scenario.as_ref().unwrap();
+            let ptr = sc.value_ptr(node_index);
+            create_view(py, ptr, shape, dtype, kind)?
+        };
         self.cached_views[node_index] = Some(view);
         Ok(())
     }
@@ -133,7 +138,7 @@ impl NativeScenario {
 impl NativeScenario {
     #[new]
     fn new() -> Self {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
@@ -158,25 +163,28 @@ impl NativeScenario {
         }
     }
 
-    /// Register a Rust-native source by kind + dtype + params.
+    /// Register a Rust-native source by `(source_kind, dtype)` + params.
+    ///
+    /// The output [`NativeNodeKind`] is determined by the Rust source type — the
+    /// Python caller does not need to specify it.
+    #[pyo3(signature = (source_kind, dtype, shape, params))]
     fn add_native_source(
         &mut self,
         py: Python<'_>,
-        kind: &str,
+        source_kind: &str,
         dtype: &str,
         shape: Vec<usize>,
         params: &Bound<'_, PyDict>,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
         let sc = self.scenario.as_mut().unwrap();
-        let dtype_norm = normalize_dtype(dtype).to_string();
-        let idx = sources::dispatch_native_source(sc, kind, &dtype_norm, params)?;
-        self.push_node(py, idx, &dtype_norm, ViewKind::Array, &shape)?;
+        let (idx, view_kind) = sources::dispatch_native_source(sc, source_kind, dtype, params)?;
+        self.push_node(py, idx, dtype, view_kind, &shape)?;
         Ok(idx)
     }
 
     /// Register a Rust-native operator by kind + dtype + params.
-    #[pyo3(signature = (kind, dtype, input_indices, shape, params, clock_index=None))]
+    #[pyo3(signature = (kind, dtype, input_indices, shape, params))]
     fn add_native_operator(
         &mut self,
         py: Python<'_>,
@@ -185,20 +193,12 @@ impl NativeScenario {
         input_indices: Vec<usize>,
         shape: Vec<usize>,
         params: &Bound<'_, PyDict>,
-        clock_index: Option<usize>,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
         let sc = self.scenario.as_mut().unwrap();
-        let dtype_norm = normalize_dtype(dtype).to_string();
-        let (idx, view_kind) = operators::dispatch_native_operator(
-            sc,
-            kind,
-            &dtype_norm,
-            &input_indices,
-            clock_index,
-            params,
-        )?;
-        self.push_node(py, idx, &dtype_norm, view_kind, &shape)?;
+        let (idx, view_kind) =
+            operators::dispatch_native_operator(sc, kind, dtype, &input_indices, params)?;
+        self.push_node(py, idx, dtype, view_kind, &shape)?;
         Ok(idx)
     }
 
@@ -207,29 +207,17 @@ impl NativeScenario {
     /// Immediately creates the DAG node with channels.  A tokio driver task
     /// is spawned that will call `source.init()` and iterate the returned
     /// async iterators when the tokio runtime runs.
-    #[pyo3(signature = (py_source, output_type, output_shape))]
+    #[pyo3(signature = (py_source, output_kind, dtype, output_shape))]
     fn add_py_source(
         &mut self,
         py: Python<'_>,
         py_source: PyObject,
-        output_type: (String, String),
+        output_kind: NativeNodeKind,
+        dtype: &str,
         output_shape: Vec<usize>,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
-        let (out_kind_str, out_dtype_str) = &output_type;
-        let out_dtype = normalize_dtype(out_dtype_str).to_string();
-
-        let out_view_kind = match out_kind_str.as_str() {
-            "array" => ViewKind::Array,
-            "series" => ViewKind::Series,
-            other => {
-                return Err(PyTypeError::new_err(format!(
-                    "unsupported output kind: {other}"
-                )));
-            }
-        };
-
-        let output_type_id = resolve_type_id(out_kind_str, &out_dtype)?;
+        let output_type_id = resolve_type_id(output_kind, dtype)?;
 
         // Ensure asyncio event loop exists.
         let event_loop = self.ensure_event_loop(py)?;
@@ -237,8 +225,8 @@ impl NativeScenario {
         let erased = source::make_py_source(
             py,
             output_type_id,
-            &out_dtype,
-            out_view_kind,
+            dtype,
+            output_kind,
             &output_shape,
             py_source,
             event_loop,
@@ -246,58 +234,44 @@ impl NativeScenario {
         )?;
         let sc = self.scenario.as_mut().unwrap();
         let idx = sc.add_erased_source(erased);
-        self.push_node(py, idx, &out_dtype, out_view_kind, &output_shape)?;
+        self.push_node(py, idx, dtype, output_kind, &output_shape)?;
         Ok(idx)
     }
 
     /// Register a Python operator via
     /// [`ErasedOperator`](crate::operator::ErasedOperator).
     ///
-    /// `input_types` is a list of `(kind, dtype)` pairs (e.g.
-    /// `[("array", "float64"), ("series", "int32")]`).
-    /// `output_type` is a `(kind, dtype)` pair for the output node (e.g.
-    /// `("array", "float64")` or `("series", "float64")`).
+    /// `input_types` is a list of `(NativeNodeKind, dtype)` pairs.
+    /// `output_type` is a `(NativeNodeKind, dtype)` pair for the output node.
+    /// `dtype` strings are canonical numpy dtype names (e.g. `"float64"`).
     ///
     /// Input type validation is performed by
     /// [`Scenario::add_erased_operator`].
-    #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator, clock_index=None, is_clock_triggerable=true))]
+    #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator))]
     fn add_py_operator(
         &mut self,
         py: Python<'_>,
         input_indices: Vec<usize>,
-        input_types: Vec<(String, String)>,
-        output_type: (String, String),
+        input_types: Vec<(NativeNodeKind, String)>,
+        output_type: (NativeNodeKind, String),
         output_shape: Vec<usize>,
         py_operator: PyObject,
-        clock_index: Option<usize>,
-        is_clock_triggerable: bool,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
-        let (out_kind_str, out_dtype_str) = &output_type;
-        let out_dtype = normalize_dtype(out_dtype_str).to_string();
-
-        let out_view_kind = match out_kind_str.as_str() {
-            "array" => ViewKind::Array,
-            "series" => ViewKind::Series,
-            other => {
-                return Err(PyTypeError::new_err(format!(
-                    "unsupported output kind: {other}"
-                )));
-            }
-        };
+        let (out_view_kind, out_dtype) = output_type;
 
         // 1. Resolve TypeIds from Python-declared types.
         let input_type_ids = input_types
             .iter()
-            .map(|(kind, dtype)| resolve_type_id(kind, dtype))
+            .map(|(kind, dtype)| resolve_type_id(*kind, dtype))
             .collect::<PyResult<Box<[_]>>>()?;
-        let output_type_id = resolve_type_id(out_kind_str, &out_dtype)?;
+        let output_type_id = resolve_type_id(out_view_kind, &out_dtype)?;
 
         // 2. Build input views (input nodes already exist).
         //    Wrap NativeArrayView / NativeSeriesView in their Python-side
         //    wrappers (ArrayView / SeriesView) so Python operators receive
         //    the high-level types.
-        let views_mod = py.import("tradingflow.views")?;
+        let views_mod = py.import("tradingflow.data.views")?;
         let array_view_cls = views_mod.getattr("ArrayView")?;
         let series_view_cls = views_mod.getattr("SeriesView")?;
 
@@ -312,8 +286,10 @@ impl NativeScenario {
                     })?;
                 let (_, kind) = &self.node_info[idx];
                 let wrapped: PyObject = match kind {
-                    ViewKind::Array => array_view_cls.call1((native.bind(py),))?.unbind(),
-                    ViewKind::Series => series_view_cls.call1((native.bind(py),))?.unbind(),
+                    NativeNodeKind::Array => array_view_cls.call1((native.bind(py),))?.unbind(),
+                    NativeNodeKind::Series => series_view_cls.call1((native.bind(py),))?.unbind(),
+                    // Unit inputs carry no data — pass None to the Python operator.
+                    NativeNodeKind::Unit => py.None(),
                 };
                 Ok(wrapped)
             })
@@ -327,19 +303,18 @@ impl NativeScenario {
             py,
             input_type_ids,
             output_type_id,
-            is_clock_triggerable,
             &out_dtype,
             out_view_kind,
             &output_shape,
             py_inputs,
             py_operator,
-            i64::MIN,
+            crate::data::Instant::MIN,
             self.error_slot.clone(),
         )?;
 
         // 4. Register via the unified path (validates input TypeIds).
         let sc = self.scenario.as_mut().unwrap();
-        let output_idx = sc.add_erased_operator(erased, &input_indices, clock_index);
+        let output_idx = sc.add_erased_operator(erased, &input_indices);
 
         // 5. Cache output node metadata and view.
         self.push_node(py, output_idx, &out_dtype, out_view_kind, &output_shape)?;
@@ -347,14 +322,14 @@ impl NativeScenario {
         Ok(output_idx)
     }
 
-    /// Return the aggregate time range across all sources.
+    /// Return the aggregate estimated event count across all sources.
     ///
-    /// Returns `(first_ns, last_ns)` when every registered source provides
-    /// both bounds; otherwise returns `(None, None)`.
-    fn time_range(&self) -> (Option<i64>, Option<i64>) {
+    /// Returns `Some(total)` only when every registered source provides an
+    /// estimate; otherwise `None`.
+    fn estimated_event_count(&self) -> Option<usize> {
         self.scenario
             .as_ref()
-            .map_or((None, None), |sc| sc.time_range())
+            .and_then(|sc| sc.estimated_event_count())
     }
 
     /// Run the POCQ event loop.
@@ -424,21 +399,27 @@ impl NativeScenario {
                 let shutdown_ref = shutdown.clone();
                 let error_slot_ref = error_slot_for_bg.clone();
 
-                let on_flush_fn = move |ts: i64| {
-                    // Check if a Python operator/source already failed.
-                    if error_slot_ref.lock().unwrap().is_some() {
-                        shutdown_ref.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                    if let Some(ref cb) = on_flush {
-                        Python::attach(|py| {
-                            if let Err(e) = cb.call1(py, (ts,)) {
-                                super::set_error(&error_slot_ref, e);
-                                shutdown_ref.store(true, Ordering::Relaxed);
-                            }
-                        });
-                    }
-                };
+                let on_flush_fn =
+                    move |ts: crate::data::Instant,
+                          events_so_far: usize,
+                          total_estimate: Option<usize>| {
+                        // Check if a Python operator/source already failed.
+                        if error_slot_ref.lock().unwrap().is_some() {
+                            shutdown_ref.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                        if let Some(ref cb) = on_flush {
+                            Python::attach(|py| {
+                                // Wire format is TAI ns (matches numpy naive
+                                // `datetime64[ns]` arithmetic).
+                                let args = (ts.as_nanos(), events_so_far, total_estimate);
+                                if let Err(e) = cb.call1(py, args) {
+                                    super::set_error(&error_slot_ref, e);
+                                    shutdown_ref.store(true, Ordering::Relaxed);
+                                }
+                            });
+                        }
+                    };
 
                 rt.block_on(scenario.run_with_shutdown(on_flush_fn, shutdown));
                 (scenario, rt)

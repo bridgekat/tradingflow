@@ -3,23 +3,27 @@
 import numpy as np
 
 from ..variance_predictor import VariancePredictor, VariancePredictorState
+from ._common import sample_covariance
 
 
 class Sample(VariancePredictor[np.ndarray]):
     """Predict covariance as the sample covariance of past returns.
 
-    Ignores features entirely.  Useful as a baseline.
+    Corresponds to the *Markowitz* direct estimator in Pantaleo et al.
+    (2010).  NaN-robust via pairwise complete observations; see
+    [`sample_covariance`][tradingflow.operators.predictors.variance._common.sample_covariance].
+    Ignores features.
 
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
-        Recorded features series, element shape ``(num_stocks, num_features)``.
+        Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
     **kwargs
         Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
     """
@@ -43,19 +47,9 @@ class Sample(VariancePredictor[np.ndarray]):
 
 def _fit_fn(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Sample covariance of returns (NaN-robust). Ignores features."""
-    # y: (T, N)
-    T, N = y.shape
-
-    # NaN-robust sample covariance (pairwise complete observations).
-    mean = np.nanmean(y, axis=0)
-    centered = y - mean
-    finite = np.isfinite(centered)
-    centered = np.where(finite, centered, 0.0)
-    indicator = finite.astype(np.float64)
-    counts = indicator.T @ indicator  # (N, N)
-    return (centered.T @ centered) / np.maximum(counts - 1, 1.0)
+    S, _, _ = sample_covariance(y)
+    return S
 
 
 def _predict_fn(state: VariancePredictorState[np.ndarray], features: np.ndarray, params: np.ndarray) -> np.ndarray:
-    """Return the sample covariance directly."""
     return params

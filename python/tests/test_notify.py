@@ -1,4 +1,4 @@
-"""Tests for the Notify mechanism — both native (ForwardAdjust) and Python operators."""
+"""Tests for the produced-tuple mechanism — both native (ForwardAdjust) and Python operators."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from typing import Any
 import numpy as np
 import pytest
 
-from tradingflow import Scenario, Operator, Notify
+from tradingflow import Scenario, Operator, ArrayView, SeriesView
 from tradingflow.sources import ArraySource, IterSource
 from tradingflow.operators import Record
 from tradingflow.operators.stocks import ForwardAdjust
-from tradingflow.types import Array, Series, Handle, NodeKind
+from tradingflow import Array, Series, Handle, NodeKind
 
 
 def ts(i: int) -> np.datetime64:
@@ -19,26 +19,30 @@ def ts(i: int) -> np.datetime64:
 
 
 # =========================================================================
-# ForwardAdjust (native operator using Notify)
+# ForwardAdjust (native operator using produced tuple)
 # =========================================================================
 
 
 class TestForwardAdjust:
-    """Native ForwardAdjust operator, which uses Notify.input_produced()."""
+    """Native ForwardAdjust operator, which inspects the produced tuple per input."""
 
     def test_no_dividends(self) -> None:
         """Adjusted close equals raw close when there are no dividends."""
         sc = Scenario()
-        prices = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2), ts(3)],
-            values=np.array([10.0, 11.0, 12.0]),
-        ))
-        divs = sc.add_source(IterSource(
-            iterable=[],
-            shape=(2,),
-            dtype=np.float64,
-            initial=np.array([0.0, 0.0]),
-        ))
+        prices = sc.add_source(
+            ArraySource(
+                timestamps=[ts(1), ts(2), ts(3)],
+                values=np.array([10.0, 11.0, 12.0]),
+            )
+        )
+        divs = sc.add_source(
+            IterSource(
+                iterable=[],
+                shape=(2,),
+                dtype=np.float64,
+                initial=np.array([0.0, 0.0]),
+            )
+        )
         adj = sc.add_operator(ForwardAdjust(prices, divs))
         adj_s = sc.add_operator(Record(adj))
         sc.run()
@@ -48,16 +52,20 @@ class TestForwardAdjust:
     def test_cash_dividend(self) -> None:
         """Cash dividend adjusts prices forward."""
         sc = Scenario()
-        prices = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2)],
-            values=np.array([10.0, 9.5]),
-        ))
-        divs = sc.add_source(IterSource(
-            iterable=[(ts(2), np.array([0.0, 0.5]))],
-            shape=(2,),
-            dtype=np.float64,
-            initial=np.array([0.0, 0.0]),
-        ))
+        prices = sc.add_source(
+            ArraySource(
+                timestamps=[ts(1), ts(2)],
+                values=np.array([10.0, 9.5]),
+            )
+        )
+        divs = sc.add_source(
+            IterSource(
+                iterable=[(ts(2), np.array([0.0, 0.5]))],
+                shape=(2,),
+                dtype=np.float64,
+                initial=np.array([0.0, 0.0]),
+            )
+        )
         adj = sc.add_operator(ForwardAdjust(prices, divs))
         adj_s = sc.add_operator(Record(adj))
         sc.run()
@@ -69,16 +77,20 @@ class TestForwardAdjust:
     def test_share_dividend(self) -> None:
         """Share dividend (bonus shares) adjusts prices forward."""
         sc = Scenario()
-        prices = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2)],
-            values=np.array([20.0, 18.0]),
-        ))
-        divs = sc.add_source(IterSource(
-            iterable=[(ts(2), np.array([0.1, 0.0]))],
-            shape=(2,),
-            dtype=np.float64,
-            initial=np.array([0.0, 0.0]),
-        ))
+        prices = sc.add_source(
+            ArraySource(
+                timestamps=[ts(1), ts(2)],
+                values=np.array([20.0, 18.0]),
+            )
+        )
+        divs = sc.add_source(
+            IterSource(
+                iterable=[(ts(2), np.array([0.1, 0.0]))],
+                shape=(2,),
+                dtype=np.float64,
+                initial=np.array([0.0, 0.0]),
+            )
+        )
         adj = sc.add_operator(ForwardAdjust(prices, divs))
         adj_s = sc.add_operator(Record(adj))
         sc.run()
@@ -89,19 +101,23 @@ class TestForwardAdjust:
     def test_cumulative_dividends(self) -> None:
         """Two successive dividends compound."""
         sc = Scenario()
-        prices = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2), ts(3), ts(4)],
-            values=np.array([100.0, 98.0, 99.0, 98.0]),
-        ))
-        divs = sc.add_source(IterSource(
-            iterable=[
-                (ts(2), np.array([0.0, 2.0])),
-                (ts(4), np.array([0.0, 1.0])),
-            ],
-            shape=(2,),
-            dtype=np.float64,
-            initial=np.array([0.0, 0.0]),
-        ))
+        prices = sc.add_source(
+            ArraySource(
+                timestamps=[ts(1), ts(2), ts(3), ts(4)],
+                values=np.array([100.0, 98.0, 99.0, 98.0]),
+            )
+        )
+        divs = sc.add_source(
+            IterSource(
+                iterable=[
+                    (ts(2), np.array([0.0, 2.0])),
+                    (ts(4), np.array([0.0, 1.0])),
+                ],
+                shape=(2,),
+                dtype=np.float64,
+                initial=np.array([0.0, 0.0]),
+            )
+        )
         adj = sc.add_operator(ForwardAdjust(prices, divs))
         adj_s = sc.add_operator(Record(adj))
         sc.run()
@@ -113,14 +129,15 @@ class TestForwardAdjust:
 
 
 # =========================================================================
-# Python operator using Notify — message-queue semantics
+# Python operator using produced tuple — message-queue semantics
 # =========================================================================
 
 
 class SelectiveRecorder(
     Operator[
-        tuple[Handle[Array[np.float64]], Handle[Array[np.float64]]],
-        Handle[Series[np.float64]],
+        ArrayView[np.float64],
+        ArrayView[np.float64],
+        SeriesView[np.float64],
         None,
     ]
 ):
@@ -140,43 +157,51 @@ class SelectiveRecorder(
             shape=messages.shape,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> None:
+    def init(
+        self,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        timestamp: int,
+    ) -> None:
         return None
 
     @staticmethod
     def compute(
         state: None,
-        inputs: tuple,
-        output: Any,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
+        output: SeriesView[np.float64],
         timestamp: int,
-        notify: Any,
+        produced: tuple[bool, ...],
     ) -> bool:
-        if notify.input_produced()[1]:
+        if produced[1]:
             output.push(timestamp, inputs[1].value())
             return True
         return False
 
 
 class TestPythonNotify:
-    """Python-implemented operator that uses Notify for selective recording."""
+    """Python-implemented operator that uses produced tuple for selective recording."""
 
     def test_selective_recorder_matches_record(self) -> None:
         """SelectiveRecorder output equals Record applied to the message source."""
         sc = Scenario()
 
         # Background fires every tick.
-        background = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2), ts(3), ts(4), ts(5)],
-            values=np.array([100.0, 200.0, 300.0, 400.0, 500.0]),
-        ))
+        background = sc.add_source(
+            ArraySource(
+                timestamps=[ts(1), ts(2), ts(3), ts(4), ts(5)],
+                values=np.array([100.0, 200.0, 300.0, 400.0, 500.0]),
+            )
+        )
 
         # Messages fire only at ts=2 and ts=4.
-        messages = sc.add_source(IterSource(
-            iterable=[(ts(2), np.array(10.0)), (ts(4), np.array(20.0))],
-            shape=(),
-            dtype=np.float64,
-            initial=np.array(0.0),
-        ))
+        messages = sc.add_source(
+            IterSource(
+                iterable=[(ts(2), np.array(10.0)), (ts(4), np.array(20.0))],
+                shape=(),
+                dtype=np.float64,
+                initial=np.array(0.0),
+            )
+        )
 
         # SelectiveRecorder: should only record when messages fires.
         sel = sc.add_operator(SelectiveRecorder(background, messages))
@@ -208,16 +233,20 @@ class TestPythonNotify:
         """When the message source never fires, the output Series is empty."""
         sc = Scenario()
 
-        background = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2), ts(3)],
-            values=np.array([1.0, 2.0, 3.0]),
-        ))
-        messages = sc.add_source(IterSource(
-            iterable=[],
-            shape=(),
-            dtype=np.float64,
-            initial=np.array(0.0),
-        ))
+        background = sc.add_source(
+            ArraySource(
+                timestamps=[ts(1), ts(2), ts(3)],
+                values=np.array([1.0, 2.0, 3.0]),
+            )
+        )
+        messages = sc.add_source(
+            IterSource(
+                iterable=[],
+                shape=(),
+                dtype=np.float64,
+                initial=np.array(0.0),
+            )
+        )
 
         sel = sc.add_operator(SelectiveRecorder(background, messages))
         sc.run()
@@ -229,14 +258,18 @@ class TestPythonNotify:
         sc = Scenario()
 
         # Both fire at every timestamp.
-        background = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2), ts(3)],
-            values=np.array([100.0, 200.0, 300.0]),
-        ))
-        messages = sc.add_source(ArraySource(
-            timestamps=[ts(1), ts(2), ts(3)],
-            values=np.array([10.0, 20.0, 30.0]),
-        ))
+        background = sc.add_source(
+            ArraySource(
+                timestamps=[ts(1), ts(2), ts(3)],
+                values=np.array([100.0, 200.0, 300.0]),
+            )
+        )
+        messages = sc.add_source(
+            ArraySource(
+                timestamps=[ts(1), ts(2), ts(3)],
+                values=np.array([10.0, 20.0, 30.0]),
+            )
+        )
 
         sel = sc.add_operator(SelectiveRecorder(background, messages))
         sc.run()

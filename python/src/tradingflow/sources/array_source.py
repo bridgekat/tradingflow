@@ -7,7 +7,7 @@ from typing import cast
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ..utils import ensure_contiguous
+from ..data import ensure_contiguous
 from ..source import NativeSource
 
 
@@ -23,9 +23,9 @@ class ArraySource(NativeSource):
         1-D array-like of `datetime64`-compatible timestamps in
         non-decreasing order.
     values
-        Array-like of values; first dimension must match *timestamps*.
+        Array-like of values; first dimension must match `timestamps`.
     dtype
-        Optional NumPy dtype to cast *values* to.
+        Optional NumPy dtype to cast `values` to.
     name
         Optional source name.
     """

@@ -1,6 +1,6 @@
 //! Last operator — extracts the most recent element from a Series.
 
-use crate::{Array, Notify, Operator, Scalar, Series};
+use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, Series};
 
 /// Extract the most recent element from a `Series<T>` as an `Array<T>`.
 ///
@@ -21,12 +21,12 @@ impl<T: Scalar> Last<T> {
 
 impl<T: Scalar> Operator for Last<T> {
     type State = T;
-    type Inputs = (Series<T>,);
+    type Inputs = Input<Series<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: (&Series<T>,), _timestamp: i64) -> (T, Array<T>) {
-        let shape = inputs.0.shape();
-        let out = if let Some(last) = inputs.0.last() {
+    fn init(self, inputs: &Series<T>, _timestamp: Instant) -> (T, Array<T>) {
+        let shape = inputs.shape();
+        let out = if let Some(last) = inputs.last() {
             Array::from_vec(shape, last.to_vec())
         } else {
             Array::full(shape, self.fill.clone())
@@ -36,12 +36,12 @@ impl<T: Scalar> Operator for Last<T> {
 
     fn compute(
         state: &mut T,
-        inputs: (&Series<T>,),
+        inputs: &Series<T>,
         output: &mut Array<T>,
-        _timestamp: i64,
-        _notify: &Notify<'_>,
+        _timestamp: Instant,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
-        if let Some(last) = inputs.0.last() {
+        if let Some(last) = inputs.last() {
             output.as_mut_slice().clone_from_slice(last);
         } else {
             let out = output.as_mut_slice();
@@ -56,31 +56,36 @@ impl<T: Scalar> Operator for Last<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Instant;
+
+    fn ts(n: i64) -> Instant {
+        Instant::from_nanos(n)
+    }
 
     #[test]
     fn last_basic() {
         let mut s = Series::<f64>::new(&[2]);
-        s.push(100, &[1.0, 2.0]);
-        s.push(200, &[3.0, 4.0]);
+        s.push(ts(100), &[1.0, 2.0]);
+        s.push(ts(200), &[3.0, 4.0]);
 
-        let (mut state, mut out) = Last::new(0.0).init((&s,), i64::MIN);
+        let (mut state, mut out) = Last::new(0.0).init(&s, Instant::MIN);
         assert_eq!(out.as_slice(), &[3.0, 4.0]);
 
-        s.push(300, &[5.0, 6.0]);
-        Last::compute(&mut state, (&s,), &mut out, 300, &Notify::new(&[], 0));
+        s.push(ts(300), &[5.0, 6.0]);
+        Last::compute(&mut state, &s, &mut out, ts(300), false);
         assert_eq!(out.as_slice(), &[5.0, 6.0]);
     }
 
     #[test]
     fn last_empty_series() {
         let s = Series::<f64>::new(&[3]);
-        let (mut state, mut out) = Last::new(f64::NAN).init((&s,), i64::MIN);
+        let (mut state, mut out) = Last::new(f64::NAN).init(&s, Instant::MIN);
         assert!(out[0].is_nan());
         assert!(out[1].is_nan());
         assert!(out[2].is_nan());
 
         // Still empty on compute
-        Last::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0));
+        Last::compute(&mut state, &s, &mut out, ts(1), false);
         assert!(out[0].is_nan());
     }
 
@@ -90,14 +95,14 @@ mod tests {
 
         // Last(Record(x)) == x for each of 10 elements
         let mut a = Array::scalar(0.0_f64);
-        let (mut rec_s, mut series) = Record::new().init((&a,), i64::MIN);
-        let (mut last_s, mut out) = Last::new(0.0).init((&series,), i64::MIN);
+        let (mut rec_s, mut series) = Record::new().init(&a, Instant::MIN);
+        let (mut last_s, mut out) = Last::new(0.0).init(&series, Instant::MIN);
 
-        for i in 1..=10 {
+        for i in 1..=10_i64 {
             let v = i as f64 * 7.0;
             a[0] = v;
-            Record::compute(&mut rec_s, (&a,), &mut series, i, &Notify::new(&[], 0));
-            Last::compute(&mut last_s, (&series,), &mut out, i, &Notify::new(&[], 0));
+            Record::compute(&mut rec_s, &a, &mut series, ts(i), false);
+            Last::compute(&mut last_s, &series, &mut out, ts(i), false);
             assert_eq!(out[0], v, "mismatch at step {i}");
         }
     }
@@ -108,14 +113,14 @@ mod tests {
 
         // Record(Last(x)) == x for each of 10 elements
         let mut s = Series::new(&[]);
-        let (mut last_a, mut arr) = Last::new(0.0).init((&s,), i64::MIN);
-        let (mut rec_a, mut out) = Record::new().init((&arr,), i64::MIN);
+        let (mut last_a, mut arr) = Last::new(0.0).init(&s, Instant::MIN);
+        let (mut rec_a, mut out) = Record::new().init(&arr, Instant::MIN);
 
-        for i in 1..=10 {
+        for i in 1..=10_i64 {
             let v = i as f64 * 7.0;
-            s.push(i, &[v]);
-            Last::compute(&mut last_a, (&s,), &mut arr, i, &Notify::new(&[], 0));
-            Record::compute(&mut rec_a, (&arr,), &mut out, i, &Notify::new(&[], 0));
+            s.push(ts(i), &[v]);
+            Last::compute(&mut last_a, &s, &mut arr, ts(i), false);
+            Record::compute(&mut rec_a, &arr, &mut out, ts(i), false);
             assert_eq!(s.len(), out.len(), "mismatch at step {i}");
             for j in 0..s.len() {
                 assert_eq!(out.at(j), s.at(j), "mismatch at step {i}, index {j}");
@@ -126,9 +131,9 @@ mod tests {
     #[test]
     fn last_scalar() {
         let mut s = Series::<f64>::new(&[]);
-        s.push(1, &[42.0]);
-        let (mut state, mut out) = Last::new(0.0).init((&s,), i64::MIN);
-        Last::compute(&mut state, (&s,), &mut out, 1, &Notify::new(&[], 0));
+        s.push(ts(1), &[42.0]);
+        let (mut state, mut out) = Last::new(0.0).init(&s, Instant::MIN);
+        Last::compute(&mut state, &s, &mut out, ts(1), false);
         assert_eq!(out[0], 42.0);
     }
 }

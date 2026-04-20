@@ -3,14 +3,13 @@
 //! Each [`Node`] owns a heap-allocated value and a [`NodeState`] classifying
 //! it as either a source or an operator.  [`OperatorState`] stores
 //! pre-collected input pointers, the monomorphised compute function, and
-//! `input_node_indices` used to determine the input count for [`Notify`]
-//! contexts during flush.
+//! `input_node_indices` used to size the produced bitset during flush.
 
 use std::any::TypeId;
 
 use crate::operator::{ComputeFn, ErasedOperator};
 use crate::source::{ErasedSource, PollFn, WriteFn};
-use crate::types::Notify;
+use crate::Instant;
 
 // ===========================================================================
 // NodeState
@@ -51,7 +50,7 @@ impl Node {
     /// Create a source node from an [`ErasedSource`].
     ///
     /// Calls the deferred init and attaches the channel state.
-    pub fn from_erased_source(erased: ErasedSource, timestamp: i64) -> Self {
+    pub fn from_erased_source(erased: ErasedSource, timestamp: Instant) -> Self {
         let output_type_id = erased.output_type_id();
         let poll_fn = erased.poll_fn();
         let write_fn = erased.write_fn();
@@ -77,7 +76,7 @@ impl Node {
         input_ptrs: Box<[*const u8]>,
         input_node_indices: Box<[usize]>,
         input_type_ids: &[TypeId],
-        timestamp: i64,
+        timestamp: Instant,
     ) -> Self {
         assert_eq!(
             input_type_ids.len(),
@@ -219,21 +218,17 @@ unsafe impl Send for SourceState {}
 ///
 /// Owns the heap-allocated [`Operator::State`](crate::Operator::State),
 /// pre-collected input pointers, and the monomorphised compute function.
+/// No shape field: the cursor-based traversal in `erased_compute_fn<O>`
+/// needs no runtime descriptor.
 pub(super) struct OperatorState {
-    /// Monomorphised compute function.
     compute_fn: ComputeFn,
-    /// Pre-collected pointers to input values.
     input_ptrs: Box<[*const u8]>,
-    /// Node indices of the operator's inputs (for [`Notify`]).
     input_node_indices: Box<[usize]>,
-    /// Heap-allocated operator state.
     pub(super) state_ptr: *mut u8,
-    /// Drop the state.
     state_drop_fn: unsafe fn(*mut u8),
 }
 
 impl OperatorState {
-    /// Create from raw components.
     fn new(
         compute_fn: ComputeFn,
         input_ptrs: Box<[*const u8]>,
@@ -257,19 +252,32 @@ impl OperatorState {
 
     /// Invoke the compute function.
     ///
+    /// `produced_words` + `produced_bit_off` + `produced_num_inputs` describe
+    /// a bit range covering this operator's inputs; the erased compute
+    /// function uses them to build the operator's `Produced<'_>` tree.
+    ///
     /// # Safety
     ///
     /// * Each `input_ptrs[i]` must point to a valid value of the expected type.
     /// * `output_ptr` must point to a valid output value.
     /// * `output_ptr` must not alias any `input_ptrs[i]`.
-    pub unsafe fn compute(&self, output_ptr: *mut u8, timestamp: i64, notify: &Notify<'_>) -> bool {
+    pub unsafe fn compute(
+        &self,
+        output_ptr: *mut u8,
+        timestamp: Instant,
+        produced_words: &[u64],
+        produced_bit_off: usize,
+        produced_num_inputs: usize,
+    ) -> bool {
         unsafe {
             (self.compute_fn)(
                 self.state_ptr,
                 &self.input_ptrs,
                 output_ptr,
                 timestamp,
-                notify,
+                produced_words,
+                produced_bit_off,
+                produced_num_inputs,
             )
         }
     }

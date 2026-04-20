@@ -8,7 +8,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{InputTypes, Notify, Operator};
+use crate::{InputTypes, Instant, Operator};
 
 /// Apply operator: applies a function to tuple inputs on each tick.
 ///
@@ -50,7 +50,7 @@ where
     type Inputs = I;
     type Output = T;
 
-    fn init(self, inputs: <I as InputTypes>::Refs<'_>, _timestamp: i64) -> (Self, T) {
+    fn init(self, inputs: <I as InputTypes>::Refs<'_>, _timestamp: Instant) -> (Self, T) {
         let output = (self.f)(inputs);
         (self, output)
     }
@@ -60,8 +60,8 @@ where
         state: &mut Self,
         inputs: <I as InputTypes>::Refs<'_>,
         output: &mut T,
-        _timestamp: i64,
-        _notify: &Notify<'_>,
+        _timestamp: Instant,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         *output = (state.f)(inputs);
         true
@@ -110,7 +110,7 @@ where
     type Inputs = I;
     type Output = T;
 
-    fn init(self, inputs: <I as InputTypes>::Refs<'_>, _timestamp: i64) -> (Self, T) {
+    fn init(self, inputs: <I as InputTypes>::Refs<'_>, _timestamp: Instant) -> (Self, T) {
         let mut output = self.initial.clone();
         (self.f)(inputs, &mut output);
         (self, output)
@@ -121,8 +121,8 @@ where
         state: &mut Self,
         inputs: <I as InputTypes>::Refs<'_>,
         output: &mut T,
-        _timestamp: i64,
-        _notify: &Notify<'_>,
+        _timestamp: Instant,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
     ) -> bool {
         (state.f)(inputs, output)
     }
@@ -131,26 +131,31 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::Array;
+    use crate::{Array, Input, Instant};
+
+    fn ts(n: i64) -> Instant {
+        Instant::from_nanos(n)
+    }
 
     #[test]
     fn apply_two_inputs_add() {
         let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
         let b = Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0]);
 
-        let (mut s, mut o) = Apply::<(Array<f64>, Array<f64>), _, _>::new(|(a, b)| {
-            let mut out = a.clone();
-            for (o, &v) in out.as_mut_slice().iter_mut().zip(b.as_slice()) {
-                *o += v;
-            }
-            out
-        })
-        .init((&a, &b), i64::MIN);
+        let (mut s, mut o) =
+            Apply::<(Input<Array<f64>>, Input<Array<f64>>), _, _>::new(|(a, b)| {
+                let mut out = a.clone();
+                for (o, &v) in out.as_mut_slice().iter_mut().zip(b.as_slice()) {
+                    *o += v;
+                }
+                out
+            })
+            .init((&a, &b), Instant::MIN);
 
         assert_eq!(o.as_slice(), &[11.0, 22.0, 33.0]);
 
         let a2 = Array::from_vec(&[3], vec![100.0, 200.0, 300.0]);
-        Apply::compute(&mut s, (&a2, &b), &mut o, 1, &Notify::new(&[], 0));
+        Apply::compute(&mut s, (&a2, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[110.0, 220.0, 330.0]);
     }
 
@@ -161,15 +166,15 @@ mod tests {
         let c = Array::scalar(4.0_f64);
 
         let (mut s, mut o) =
-            Apply::<(Array<f64>, Array<f64>, Array<f64>), _, _>::new(|(a, b, c)| {
-                Array::scalar(a[0] * b[0] + c[0])
-            })
-            .init((&a, &b, &c), i64::MIN);
+            Apply::<(Input<Array<f64>>, Input<Array<f64>>, Input<Array<f64>>), _, _>::new(
+                |(a, b, c)| Array::scalar(a[0] * b[0] + c[0]),
+            )
+            .init((&a, &b, &c), Instant::MIN);
 
         assert_eq!(o.as_slice(), &[10.0]); // 2*3 + 4
 
         let a2 = Array::scalar(5.0);
-        Apply::compute(&mut s, (&a2, &b, &c), &mut o, 1, &Notify::new(&[], 0));
+        Apply::compute(&mut s, (&a2, &b, &c), &mut o, ts(1), (false, false, false));
         assert_eq!(o.as_slice(), &[19.0]); // 5*3 + 4
     }
 
@@ -178,14 +183,14 @@ mod tests {
         let a = Array::scalar(5.0_f64);
         let b = Array::scalar(3.0_f64);
 
-        let (mut s, mut o) = ApplyInplace::<(Array<f64>, Array<f64>), _, _>::new(
+        let (mut s, mut o) = ApplyInplace::<(Input<Array<f64>>, Input<Array<f64>>), _, _>::new(
             |(a, b), out| {
                 out[0] = a[0] + b[0];
                 true
             },
             Array::scalar(0.0),
         )
-        .init((&a, &b), i64::MIN);
+        .init((&a, &b), Instant::MIN);
 
         assert_eq!(o.as_slice(), &[8.0]);
 
@@ -194,8 +199,8 @@ mod tests {
             &mut s,
             (&a2, &b),
             &mut o,
-            1,
-            &Notify::new(&[], 0),
+            ts(1),
+            (false, false),
         ));
         assert_eq!(o.as_slice(), &[13.0]);
     }
@@ -205,7 +210,7 @@ mod tests {
         let a = Array::scalar(1.0_f64);
         let b = Array::scalar(2.0_f64);
 
-        let (mut s, mut o) = ApplyInplace::<(Array<f64>, Array<f64>), _, _>::new(
+        let (mut s, mut o) = ApplyInplace::<(Input<Array<f64>>, Input<Array<f64>>), _, _>::new(
             |(a, b), out| {
                 let sum = a[0] + b[0];
                 if sum > 5.0 {
@@ -217,7 +222,7 @@ mod tests {
             },
             Array::scalar(0.0),
         )
-        .init((&a, &b), i64::MIN);
+        .init((&a, &b), Instant::MIN);
 
         // 1 + 2 = 3 ≤ 5 → false
         let a2 = Array::scalar(1.0);
@@ -225,8 +230,8 @@ mod tests {
             &mut s,
             (&a2, &b),
             &mut o,
-            1,
-            &Notify::new(&[], 0),
+            ts(1),
+            (false, false),
         ));
 
         // 10 + 2 = 12 > 5 → true
@@ -235,8 +240,8 @@ mod tests {
             &mut s,
             (&a3, &b),
             &mut o,
-            2,
-            &Notify::new(&[], 0),
+            ts(2),
+            (false, false),
         ));
         assert_eq!(o.as_slice(), &[12.0]);
     }

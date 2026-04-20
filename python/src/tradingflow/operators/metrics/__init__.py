@@ -1,9 +1,7 @@
-"""Clock-driven financial metrics operators.
+"""Financial metrics operators.
 
-Each operator takes a scalar Array input and produces a scalar Array
-output.  Intended to be triggered by a clock source so that each tick
-represents one period (e.g. monthly).  All metrics are since-inception
-(not rolling).
+Clock-driven since-inception metrics that take a scalar Array input and
+produce a scalar Array output:
 
 - [`CompoundReturn`][tradingflow.operators.metrics.CompoundReturn]
   -- `(current / first)^(1/n) - 1`
@@ -15,18 +13,34 @@ represents one period (e.g. monthly).  All metrics are since-inception
   -- mean / std of period returns
 - [`Drawdown`][tradingflow.operators.metrics.Drawdown]
   -- `(current - running_max) / running_max`
+- [`Turnover`][tradingflow.operators.metrics.Turnover]
+  -- `||w_t - w_{t-1}||_1`: L1 change in portfolio weights per rebalance
+
+Predictor evaluation metrics live in submodules organised by the kind
+of prediction they evaluate:
+
+- [`mean`][tradingflow.operators.metrics.mean] -- evaluators for
+  mean-return predictions (e.g. Information Coefficient).
+- [`variance`][tradingflow.operators.metrics.variance] -- evaluators
+  for covariance-matrix predictions (e.g. realized GMV variance,
+  Gaussian negative log-likelihood).
 """
 
-from .compound_return import CompoundReturn
+from . import mean, variance
 from .average_return import AverageReturn
-from .volatility import Volatility
-from .sharpe_ratio import SharpeRatio
+from .compound_return import CompoundReturn
 from .drawdown import Drawdown
+from .sharpe_ratio import SharpeRatio
+from .turnover import Turnover
+from .volatility import Volatility
 
 __all__ = [
-    "CompoundReturn",
+    "mean",
+    "variance",
     "AverageReturn",
-    "Volatility",
-    "SharpeRatio",
+    "CompoundReturn",
     "Drawdown",
+    "SharpeRatio",
+    "Turnover",
+    "Volatility",
 ]

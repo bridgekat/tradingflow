@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
-from ..operator import Operator, Notify
-from ..types import Array, Handle, NodeKind
+from .. import Array, ArrayView, Handle, NodeKind, Operator
 
 
 @dataclass
@@ -28,8 +26,8 @@ class MapInplaceState:
 
 class Map[S: np.generic, T: np.generic](
     Operator[
-        tuple[Handle[Array[S]]],
-        Handle[Array[T]],
+        ArrayView[S],
+        ArrayView[T],
         MapState,
     ]
 ):
@@ -73,16 +71,16 @@ class Map[S: np.generic, T: np.generic](
             name=name,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> MapState:
+    def init(self, inputs: tuple[ArrayView[S]], timestamp: int) -> MapState:
         return MapState(f=self._f)
 
     @staticmethod
     def compute(
         state: MapState,
-        inputs: tuple,
-        output: Any,
+        inputs: tuple[ArrayView[S]],
+        output: ArrayView[T],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         value = inputs[0].value()
         result = state.f(value)

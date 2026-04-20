@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from ...operator import NativeOperator
-from ...types import Handle, NodeKind
+from ... import Handle, NativeOperator, NodeKind
 
 
 class EMA(NativeOperator):
@@ -13,9 +12,9 @@ class EMA(NativeOperator):
 
     Exactly one of *alpha*, *span*, or *half_life* must be provided:
 
-    - ``alpha`` -- explicit smoothing factor in ``(0, 1]``.
-    - ``span`` -- equivalent to ``alpha = 2 / (span + 1)`` (pandas convention).
-    - ``half_life`` -- equivalent to ``alpha = 1 - exp(-ln2 / half_life)``.
+    - `alpha` -- explicit smoothing factor in `(0, 1]`.
+    - `span` -- equivalent to `alpha = 2 / (span + 1)` (pandas convention).
+    - `half_life` -- equivalent to `alpha = 1 - exp(-ln2 / half_life)`.
 
     Parameters
     ----------

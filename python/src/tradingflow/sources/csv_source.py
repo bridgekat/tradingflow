@@ -6,9 +6,9 @@ from pathlib import Path
 
 import numpy as np
 
-from ..schema import Schema
+from .. import Schema
 from ..source import NativeSource
-from ..utils import coerce_timestamp
+from ..data import coerce_timestamp
 
 
 class CSVSource(NativeSource):
@@ -31,6 +31,15 @@ class CSVSource(NativeSource):
         timestamps (e.g. dates at midnight) that would otherwise cause
         forward-looking bias against higher-precision sources.  Defaults
         to zero (no offset).
+    is_utc
+        If `True` (default), date strings are interpreted as UTC
+        wall-clock instants and converted to this crate's TAI timeline
+        via the IERS leap-second table.  If `False`, date strings are
+        treated as TAI wall-clock directly (no leap-second math).
+    tz_offset
+        Offset of the date-string timezone from the reference timescale.
+        E.g. `np.timedelta64(8, "h")` for Asia/Shanghai when `is_utc` is
+        `True`.  Defaults to zero.
     start
         Optional inclusive start bound.  Rows before this timestamp are
         dropped and the reported time range is clamped.
@@ -48,6 +57,8 @@ class CSVSource(NativeSource):
         *,
         time_column: str,
         timestamp_offset: np.timedelta64 = np.timedelta64(0, "ns"),
+        is_utc: bool = True,
+        tz_offset: np.timedelta64 = np.timedelta64(0, "ns"),
         start: np.datetime64 | None = None,
         end: np.datetime64 | None = None,
         name: str | None = None,
@@ -56,12 +67,15 @@ class CSVSource(NativeSource):
         shape = () if stride == 1 else (stride,)
 
         offset_ns = int(np.timedelta64(timestamp_offset, "ns").astype(np.int64))
+        tz_offset_ns = int(np.timedelta64(tz_offset, "ns").astype(np.int64))
 
         params: dict = {
             "path": str(Path(path).resolve()),
             "time_column": time_column,
             "value_columns": schema.names,
             "timestamp_offset_ns": offset_ns,
+            "is_utc": is_utc,
+            "tz_offset_ns": tz_offset_ns,
         }
         if start is not None:
             params["start_ns"] = int(coerce_timestamp(start))

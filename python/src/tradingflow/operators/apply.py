@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
-from ..operator import Operator, Notify
-from ..types import Array, Handle, NodeKind
+from .. import ArrayView, Handle, NodeKind, Operator
 
 
 @dataclass
@@ -21,8 +19,8 @@ class ApplyState:
 
 class Apply(
     Operator[
-        tuple[Handle[Array[np.float64]], ...],
-        Handle[Array[np.float64]],
+        *tuple[ArrayView[np.float64], ...],
+        ArrayView[np.float64],
         ApplyState,
     ]
 ):
@@ -30,8 +28,8 @@ class Apply(
 
     Unlike [`Map`][tradingflow.operators.Map] which takes a single input,
     `Apply` accepts an arbitrary tuple of upstream handles.  The function
-    receives the current values of all inputs as positional ``np.ndarray``
-    arguments and must return a ``np.ndarray`` of the declared output
+    receives the current values of all inputs as positional `np.ndarray`
+    arguments and must return a `np.ndarray` of the declared output
     shape and dtype.  Always produces output (never halts propagation).
 
     Parameters
@@ -68,16 +66,16 @@ class Apply(
             name=name,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> ApplyState:
+    def init(self, inputs: tuple[ArrayView[np.float64], ...], timestamp: int) -> ApplyState:
         return ApplyState(f=self._f)
 
     @staticmethod
     def compute(
         state: ApplyState,
-        inputs: tuple,
-        output: Any,
+        inputs: tuple[ArrayView[np.float64], ...],
+        output: ArrayView[np.float64],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         values = tuple(inp.value() for inp in inputs)
         result = state.f(*values)

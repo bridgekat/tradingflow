@@ -11,6 +11,7 @@ use std::task::Poll;
 use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::source::PollFn;
+use crate::Instant;
 
 use super::Scenario;
 use super::node::{ChannelKind, SourceState};
@@ -43,7 +44,7 @@ impl SourceState {
 
 /// A `'static + Send` future representing one pending channel receive.
 ///
-/// Resolves to `(source_idx, kind, Option<i64>)` — `None` means the channel
+/// Resolves to `(source_idx, kind, Option<Instant>)` — `None` means the channel
 /// closed.  Designed for use in [`FuturesUnordered`] so the queue can
 /// concurrently await many channels with O(log N) heap inserts.
 ///
@@ -72,8 +73,8 @@ impl ErasedRecvFuture {
 }
 
 impl std::future::Future for ErasedRecvFuture {
-    /// `(source_idx, kind, Option<i64>)` — `None` timestamp means channel closed.
-    type Output = (usize, ChannelKind, Option<i64>);
+    /// `(source_idx, kind, Option<Instant>)` — `None` timestamp means channel closed.
+    type Output = (usize, ChannelKind, Option<Instant>);
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let source_idx = self.source_idx;
@@ -88,7 +89,7 @@ impl std::future::Future for ErasedRecvFuture {
 
 #[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 struct HeapEntry {
-    ts: i64,
+    ts: Instant,
     source_idx: usize,
     kind: ChannelKind,
 }
@@ -112,8 +113,8 @@ struct HeapEntry {
 async fn drain_hist(
     hist_refills: &mut FuturesUnordered<ErasedRecvFuture>,
     heap: &mut BinaryHeap<Reverse<HeapEntry>>,
-    last_hist_ts: &mut [i64],
-    hist_pending_ts: &mut BTreeMap<i64, usize>,
+    last_hist_ts: &mut [Instant],
+    hist_pending_ts: &mut BTreeMap<Instant, usize>,
 ) {
     while let Some((src, _kind, opt_ts)) = hist_refills.next().await {
         // Remove this source's lower-bound entry from the pending multiset.
@@ -142,8 +143,8 @@ async fn drain_hist(
         // Early-exit: if all remaining pending futures are guaranteed to
         // produce timestamps strictly greater than the current heap minimum,
         // we can safely pop the heap minimum without waiting for them.
-        let heap_min = heap.peek().map(|&Reverse(e)| e.ts).unwrap_or(i64::MAX);
-        let pending_lower = hist_pending_ts.keys().next().copied().unwrap_or(i64::MAX);
+        let heap_min = heap.peek().map(|&Reverse(e)| e.ts).unwrap_or(Instant::MAX);
+        let pending_lower = hist_pending_ts.keys().next().copied().unwrap_or(Instant::MAX);
         if pending_lower > heap_min {
             break;
         }
@@ -167,7 +168,7 @@ async fn drain_hist(
 async fn drain_live(
     live_refills: &mut FuturesUnordered<ErasedRecvFuture>,
     heap: &mut BinaryHeap<Reverse<HeapEntry>>,
-    current_ts: i64,
+    current_ts: Instant,
 ) {
     poll_fn(|cx| {
         loop {
@@ -212,7 +213,7 @@ impl Scenario {
     /// # Complexity
     ///
     /// O(log N) per event for N sources — no O(N) scans.
-    pub async fn run(&mut self, on_flush: impl FnMut(i64)) {
+    pub async fn run(&mut self, on_flush: impl FnMut(Instant, usize, Option<usize>)) {
         self.run_with_shutdown(on_flush, Arc::new(AtomicBool::new(false)))
             .await;
     }
@@ -221,9 +222,17 @@ impl Scenario {
     ///
     /// When the flag is set to `true`, the loop exits at the next flush
     /// boundary.
+    ///
+    /// # `on_flush` signature
+    ///
+    /// `FnMut(flush_timestamp, events_processed_so_far, total_estimate)`.
+    /// `events_processed_so_far` counts each [`HeapEntry`] popped from the
+    /// merge queue (under coalescing, N sources firing at the same timestamp
+    /// count as N).  `total_estimate` is re-read on each flush so that
+    /// future dynamic re-estimation can propagate without a signature change.
     pub async fn run_with_shutdown(
         &mut self,
-        mut on_flush: impl FnMut(i64),
+        mut on_flush: impl FnMut(Instant, usize, Option<usize>),
         shutdown: ShutdownFlag,
     ) {
         let n = self.source_indices.len();
@@ -234,14 +243,15 @@ impl Scenario {
         let mut heap: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::new();
         let mut hist_refills: FuturesUnordered<ErasedRecvFuture> = FuturesUnordered::new();
         let mut live_refills: FuturesUnordered<ErasedRecvFuture> = FuturesUnordered::new();
-        let mut current_ts: i64 = i64::MIN;
+        let mut current_ts: Instant = Instant::MIN;
+        let mut events_processed: usize = 0;
 
         // Per-source lower bounds for the drain_hist early-exit check.
         // last_hist_ts[i] = timestamp of last consumed hist event for source i
-        //                   (valid lower bound on its next event, i64::MIN initially).
-        let mut last_hist_ts: Vec<i64> = vec![i64::MIN; n];
+        //                   (valid lower bound on its next event, Instant::MIN initially).
+        let mut last_hist_ts: Vec<Instant> = vec![Instant::MIN; n];
         // BTreeMap multiset: lower-bound value → count of pending futures with that bound.
-        let mut hist_pending_ts: BTreeMap<i64, usize> = BTreeMap::new();
+        let mut hist_pending_ts: BTreeMap<Instant, usize> = BTreeMap::new();
 
         // ----------------------------------------------------------------
         // Initialisation: push all hist and live futures.
@@ -253,7 +263,7 @@ impl Scenario {
                 .source_state()
                 .unwrap();
             hist_refills.push(unsafe { source.recv_future(i, ChannelKind::Hist) });
-            *hist_pending_ts.entry(i64::MIN).or_insert(0) += 1;
+            *hist_pending_ts.entry(Instant::MIN).or_insert(0) += 1;
             live_refills.push(unsafe { source.recv_future(i, ChannelKind::Live) });
         }
 
@@ -270,7 +280,7 @@ impl Scenario {
         // Non-blocking initial poll of live channels.
         drain_live(&mut live_refills, &mut heap, current_ts).await;
 
-        let mut queue_ts: Option<i64> = None;
+        let mut queue_ts: Option<Instant> = None;
         let mut queue_sources: Vec<usize> = Vec::new();
 
         loop {
@@ -324,7 +334,11 @@ impl Scenario {
             {
                 self.graph.flush(qts, &queue_sources);
                 queue_sources.clear();
-                on_flush(qts);
+                on_flush(
+                qts,
+                events_processed,
+                self.estimated_event_count().map(|t| t.max(events_processed)),
+            );
                 if shutdown.load(Ordering::Relaxed) {
                     return;
                 }
@@ -350,6 +364,7 @@ impl Scenario {
                 let write_fn = source.write_fn();
                 unsafe { (write_fn)(rx_ptr, node.value_ptr, min_ts) };
                 queue_sources.push(node_idx);
+                events_processed = events_processed.saturating_add(1);
 
                 // Re-queue the consumed channel's future.
                 let source = self.graph.nodes[node_idx].source_state().unwrap();
@@ -379,7 +394,11 @@ impl Scenario {
             let qts = queue_ts.unwrap();
             self.graph.flush(qts, &queue_sources);
             queue_sources.clear();
-            on_flush(qts);
+            on_flush(
+                qts,
+                events_processed,
+                self.estimated_event_count().map(|t| t.max(events_processed)),
+            );
         }
     }
 }
@@ -398,16 +417,21 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::operators::Record;
-    use crate::{Array, Notify, Operator, Scenario, Series, Source};
+    use crate::Instant;
+    use crate::{Array, Input, Operator, Scenario, Series, Source};
 
     use super::super::handle::Handle;
+
+    fn ts(n: i64) -> Instant {
+        Instant::from_nanos(n)
+    }
 
     // -- Test source ----------------------------------------------------------
 
     /// A source backed by pre-filled bounded channels.
     struct PrefilledSource {
-        hist_events: Vec<(i64, f64)>,
-        live_events: Vec<(i64, f64)>,
+        hist_events: Vec<(Instant, f64)>,
+        live_events: Vec<(Instant, f64)>,
     }
 
     impl Source for PrefilledSource {
@@ -416,10 +440,10 @@ mod tests {
 
         fn init(
             self,
-            _ts: i64,
+            _ts: Instant,
         ) -> (
-            mpsc::Receiver<(i64, f64)>,
-            mpsc::Receiver<(i64, f64)>,
+            mpsc::Receiver<(Instant, f64)>,
+            mpsc::Receiver<(Instant, f64)>,
             Array<f64>,
         ) {
             let (hist_tx, hist_rx) = mpsc::channel(self.hist_events.len().max(1));
@@ -437,13 +461,13 @@ mod tests {
             (hist_rx, live_rx, Array::scalar(0.0_f64))
         }
 
-        fn write(event: f64, output: &mut Array<f64>, _ts: i64) -> bool {
+        fn write(event: f64, output: &mut Array<f64>, _ts: Instant) -> bool {
             output[0] = event;
             true
         }
     }
 
-    fn make_source(hist: &[(i64, f64)], live: &[(i64, f64)]) -> PrefilledSource {
+    fn make_source(hist: &[(Instant, f64)], live: &[(Instant, f64)]) -> PrefilledSource {
         PrefilledSource {
             hist_events: hist.to_vec(),
             live_events: live.to_vec(),
@@ -454,28 +478,28 @@ mod tests {
 
     struct GlobalLogger {
         source_id: usize,
-        log: Arc<Mutex<Vec<(i64, usize)>>>,
+        log: Arc<Mutex<Vec<(Instant, usize)>>>,
     }
 
     impl Operator for GlobalLogger {
-        type State = (usize, Arc<Mutex<Vec<(i64, usize)>>>);
-        type Inputs = (Array<f64>,);
+        type State = (usize, Arc<Mutex<Vec<(Instant, usize)>>>);
+        type Inputs = Input<Array<f64>>;
         type Output = ();
 
         fn init(
             self,
-            _inputs: (&Array<f64>,),
-            _ts: i64,
-        ) -> ((usize, Arc<Mutex<Vec<(i64, usize)>>>), ()) {
+            _inputs: &Array<f64>,
+            _ts: Instant,
+        ) -> ((usize, Arc<Mutex<Vec<(Instant, usize)>>>), ()) {
             ((self.source_id, self.log), ())
         }
 
         fn compute(
-            state: &mut (usize, Arc<Mutex<Vec<(i64, usize)>>>),
-            _inputs: (&Array<f64>,),
+            state: &mut (usize, Arc<Mutex<Vec<(Instant, usize)>>>),
+            _inputs: &Array<f64>,
             _output: &mut (),
-            timestamp: i64,
-            _notify: &Notify<'_>,
+            timestamp: Instant,
+            _produced: bool,
         ) -> bool {
             state.1.lock().unwrap().push((timestamp, state.0));
             false
@@ -484,7 +508,7 @@ mod tests {
 
     // -- Helpers ---------------------------------------------------------------
 
-    type EventVec = Vec<(i64, f64)>;
+    type EventVec = Vec<(Instant, f64)>;
 
     fn generate_events(rng: &mut StdRng, source_id: usize) -> (EventVec, EventVec) {
         let hist_count: usize = rng.gen_range(0..=15);
@@ -499,16 +523,16 @@ mod tests {
             .collect();
         live_ts.sort();
 
-        let hist: Vec<(i64, f64)> = hist_ts
+        let hist: EventVec = hist_ts
             .into_iter()
             .enumerate()
-            .map(|(i, ts)| (ts, source_id as f64 * 10000.0 + i as f64))
+            .map(|(i, t)| (ts(t), source_id as f64 * 10000.0 + i as f64))
             .collect();
 
-        let live: Vec<(i64, f64)> = live_ts
+        let live: EventVec = live_ts
             .into_iter()
             .enumerate()
-            .map(|(i, ts)| (ts, source_id as f64 * 10000.0 + 1000.0 + i as f64))
+            .map(|(i, t)| (ts(t), source_id as f64 * 10000.0 + 1000.0 + i as f64))
             .collect();
 
         (hist, live)
@@ -527,34 +551,34 @@ mod tests {
     /// 5. No fabrication — no recorded timestamp below the minimum original.
     fn check_invariants(
         series: &Series<f64>,
-        hist_events: &[(i64, f64)],
-        live_events: &[(i64, f64)],
+        hist_events: &[(Instant, f64)],
+        live_events: &[(Instant, f64)],
         source_id: usize,
         seed: u64,
     ) {
-        let ts = series.timestamps();
+        let tsr = series.timestamps();
 
-        for w in ts.windows(2) {
+        for w in tsr.windows(2) {
             assert!(
                 w[0] <= w[1],
-                "seed {seed}, source {source_id}: monotonicity violated: {} > {}",
+                "seed {seed}, source {source_id}: monotonicity violated: {:?} > {:?}",
                 w[0],
                 w[1],
             );
         }
 
-        let distinct_hist: BTreeSet<i64> = hist_events.iter().map(|e| e.0).collect();
-        let recorded: BTreeSet<i64> = ts.iter().copied().collect();
+        let distinct_hist: BTreeSet<Instant> = hist_events.iter().map(|e| e.0).collect();
+        let recorded: BTreeSet<Instant> = tsr.iter().copied().collect();
         for &ht in &distinct_hist {
             assert!(
                 recorded.contains(&ht),
-                "seed {seed}, source {source_id}: hist timestamp {ht} missing",
+                "seed {seed}, source {source_id}: hist timestamp {ht:?} missing",
             );
         }
-        let hist_expected: Vec<i64> = distinct_hist.iter().copied().collect();
-        if ts.len() >= hist_expected.len() {
+        let hist_expected: Vec<Instant> = distinct_hist.iter().copied().collect();
+        if tsr.len() >= hist_expected.len() {
             assert_eq!(
-                &ts[..hist_expected.len()],
+                &tsr[..hist_expected.len()],
                 &hist_expected[..],
                 "seed {seed}, source {source_id}: hist portion of record is wrong",
             );
@@ -562,22 +586,22 @@ mod tests {
 
         if !live_events.is_empty() {
             let min_live_ts = live_events[0].0;
-            for (i, &t) in ts.iter().enumerate().skip(hist_expected.len()) {
+            for (i, &t) in tsr.iter().enumerate().skip(hist_expected.len()) {
                 assert!(
                     t >= min_live_ts,
-                    "seed {seed}, source {source_id}: live entry {i} ts={t} < min_live_ts={min_live_ts}",
+                    "seed {seed}, source {source_id}: live entry {i} ts={t:?} < min_live_ts={min_live_ts:?}",
                 );
             }
         }
 
         assert!(
-            ts.len() >= distinct_hist.len(),
+            tsr.len() >= distinct_hist.len(),
             "seed {seed}, source {source_id}: too few entries: {} < {} distinct hist",
-            ts.len(),
+            tsr.len(),
             distinct_hist.len(),
         );
 
-        if !ts.is_empty() {
+        if !tsr.is_empty() {
             let min_original = hist_events
                 .iter()
                 .chain(live_events.iter())
@@ -585,19 +609,19 @@ mod tests {
                 .min()
                 .unwrap();
             assert!(
-                ts[0] >= min_original,
-                "seed {seed}, source {source_id}: first ts {} < min original {}",
-                ts[0],
+                tsr[0] >= min_original,
+                "seed {seed}, source {source_id}: first ts {:?} < min original {:?}",
+                tsr[0],
                 min_original,
             );
         }
     }
 
-    fn check_global_log(log: &[(i64, usize)], seed: u64) {
+    fn check_global_log(log: &[(Instant, usize)], seed: u64) {
         for w in log.windows(2) {
             assert!(
                 w[0].0 <= w[1].0,
-                "seed {seed}: global monotonicity violated: ts {} (source {}) > ts {} (source {})",
+                "seed {seed}: global monotonicity violated: ts {:?} (source {}) > ts {:?} (source {})",
                 w[0].0,
                 w[0].1,
                 w[1].0,
@@ -612,7 +636,7 @@ mod tests {
     #[tokio::test]
     async fn pocq_empty_scenario() {
         let mut sc = Scenario::new();
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
     }
 
     /// A stale live event (ts=50) arriving after hist pushes current_ts to 100
@@ -626,8 +650,8 @@ mod tests {
         use crate::operators::Record;
 
         struct ManualChannel {
-            hist_rx: mpsc::Receiver<(i64, f64)>,
-            live_rx: mpsc::Receiver<(i64, f64)>,
+            hist_rx: mpsc::Receiver<(Instant, f64)>,
+            live_rx: mpsc::Receiver<(Instant, f64)>,
         }
 
         impl Source for ManualChannel {
@@ -636,16 +660,16 @@ mod tests {
 
             fn init(
                 self,
-                _timestamp: i64,
+                _timestamp: Instant,
             ) -> (
-                mpsc::Receiver<(i64, f64)>,
-                mpsc::Receiver<(i64, f64)>,
+                mpsc::Receiver<(Instant, f64)>,
+                mpsc::Receiver<(Instant, f64)>,
                 Array<f64>,
             ) {
                 (self.hist_rx, self.live_rx, Array::scalar(0.0_f64))
             }
 
-            fn write(event: f64, output: &mut Array<f64>, _timestamp: i64) -> bool {
+            fn write(event: f64, output: &mut Array<f64>, _timestamp: Instant) -> bool {
                 output[0] = event;
                 true
             }
@@ -653,22 +677,22 @@ mod tests {
 
         let (hist_tx, hist_rx) = mpsc::channel(1);
         let (live_tx, live_rx) = mpsc::channel(1);
-        hist_tx.send((100_i64, 1.0_f64)).await.unwrap();
+        hist_tx.send((ts(100), 1.0_f64)).await.unwrap();
         drop(hist_tx);
 
         let mut sc = Scenario::new();
         let hs = sc.add_source(ManualChannel { hist_rx, live_rx });
-        let hrec = sc.add_operator(Record::<f64>::new(), (hs,), None);
+        let hrec = sc.add_operator(Record::<f64>::new(), hs);
 
         tokio::spawn(async move {
-            live_tx.send((50_i64, 2.0_f64)).await.unwrap();
+            live_tx.send((ts(50), 2.0_f64)).await.unwrap();
         });
 
-        sc.run(|_| {}).await;
+        sc.run(|_, _, _| {}).await;
 
         let series: &Series<f64> = sc.value(hrec);
         assert_eq!(series.len(), 1);
-        assert_eq!(series.timestamps(), &[100_i64]);
+        assert_eq!(series.timestamps(), &[ts(100)]);
     }
 
     /// 200 random scenarios testing interleaving of hist and live channels
@@ -687,19 +711,18 @@ mod tests {
             for i in 0..n_sources {
                 let (hist, live) = generate_events(&mut rng, i);
                 let h = sc.add_source(make_source(&hist, &live));
-                records.push(sc.add_operator(Record::<f64>::new(), (h,), None));
+                records.push(sc.add_operator(Record::<f64>::new(), h));
                 sc.add_operator(
                     GlobalLogger {
                         source_id: i,
                         log: log.clone(),
                     },
-                    (h,),
-                    None,
+                    h,
                 );
                 source_data.push((hist, live));
             }
 
-            sc.run(|_| {}).await;
+            sc.run(|_, _, _| {}).await;
 
             for (i, (hr, (hist, live))) in records.iter().zip(source_data.iter()).enumerate() {
                 let series: &Series<f64> = sc.value(*hr);

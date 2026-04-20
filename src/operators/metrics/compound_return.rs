@@ -4,7 +4,8 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::{Array, Notify, Operator, Scalar};
+use crate::Instant;
+use crate::{Array, Input, Operator, Scalar};
 
 /// Compound return: `(current / first)^(1/n) - 1` where `n` is the
 /// number of periods elapsed.
@@ -27,10 +28,10 @@ pub struct CompoundReturnState<T: Scalar + Float> {
 
 impl<T: Scalar + Float> Operator for CompoundReturn<T> {
     type State = CompoundReturnState<T>;
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>, Input<()>);
     type Output = Array<T>;
 
-    fn init(self, _inputs: (&Array<T>,), _timestamp: i64) -> (Self::State, Array<T>) {
+    fn init(self, _inputs: (&Array<T>, &()), _timestamp: Instant) -> (Self::State, Array<T>) {
         (
             CompoundReturnState {
                 first_value: T::nan(),
@@ -42,11 +43,15 @@ impl<T: Scalar + Float> Operator for CompoundReturn<T> {
 
     fn compute(
         state: &mut CompoundReturnState<T>,
-        inputs: (&Array<T>,),
+        inputs: (&Array<T>, &()),
         output: &mut Array<T>,
-        _timestamp: i64,
-        _notify: &Notify<'_>,
+        _timestamp: Instant,
+        produced: (bool, bool),
     ) -> bool {
+        let (_produced_data, produced_clock) = produced;
+        if !produced_clock {
+            return false;
+        }
         let current = inputs.0[0];
         if current.is_nan() {
             return false;
@@ -83,18 +88,18 @@ mod tests {
     #[test]
     fn basic() {
         let a = Array::scalar(0.0_f64);
-        let (mut s, mut o) = CompoundReturn::new().init((&a,), 0);
+        let (mut s, mut o) = CompoundReturn::new().init((&a, &()), Instant::from_nanos(0));
 
         let mut a = Array::scalar(100.0);
-        CompoundReturn::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
+        CompoundReturn::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(1), (false, true));
         assert_eq!(o[0], 0.0); // first tick
 
         a[0] = 110.0;
-        CompoundReturn::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], 0));
+        CompoundReturn::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(2), (false, true));
         assert!((o[0] - 0.10).abs() < 1e-10); // 1 period: 10%
 
         a[0] = 121.0;
-        CompoundReturn::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], 0));
+        CompoundReturn::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(3), (false, true));
         // 2 periods: (121/100)^(1/2) - 1 = 0.10
         assert!((o[0] - 0.10).abs() < 1e-10);
     }

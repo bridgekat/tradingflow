@@ -6,9 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ...operator import Operator, Notify
-from ...types import Array, Handle, NodeKind
-from ...utils import coerce_timestamp
+from ... import ArrayView, Handle, NodeKind, Operator
 from ..traders.simple_trader import OHLCV
 
 
@@ -18,7 +16,6 @@ class BenchmarkState:
     num_stocks: int
     initial_cash: float
     use_adjusts: bool
-    trading_start: int | None
 
     # Portfolio state.
     cash: float = 0.0
@@ -28,12 +25,10 @@ class BenchmarkState:
 
 class Benchmark(
     Operator[
-        tuple[
-            Handle[Array[np.float64]],  # soft positions (num_stocks,)
-            Handle[Array[np.float64]],  # OHLCV prices (num_stocks, 5)
-            Handle[Array[np.float64]],  # adjusts (num_stocks,)
-        ],
-        Handle[Array[np.float64]],  # (holdings_value, cash)
+        ArrayView[np.float64],  # soft positions (num_stocks,)
+        ArrayView[np.float64],  # OHLCV prices (num_stocks, 5)
+        ArrayView[np.float64],  # adjusts (num_stocks,)
+        ArrayView[np.float64],  # output: (holdings_value, cash)
         BenchmarkState,
     ]
 ):
@@ -44,14 +39,13 @@ class Benchmark(
     1. Adjusts held shares for dividend reinvestment via forward
        adjustment factor changes.
     2. If the soft-positions input was updated (rebalance signal),
-       computes the current portfolio value, calls `trade_fn` to get
-       the number of lots to trade per stock, executes the trades at
-       opening prices, and deducts transaction fees.  If the resulting
-       absolute position for a stock is less than one lot, the remainder
-       is liquidated.
-    3. Outputs a 2-element array ``(holdings_value, cash)`` where
-       *holdings_value* is positions valued at closing prices and
-       *cash* is the cash balance.  Total portfolio value is their sum.
+       computes the current portfolio value and rebalances to exactly
+       match the target weights: target shares = `soft_positions *
+       current_value / open_price`, executed at opening prices as
+       fractional shares with no transaction fees and no lot rounding.
+    3. Outputs a 2-element array `(holdings_value, cash)` where
+       `holdings_value` is positions valued at closing prices and
+       `cash` is the cash balance.  Total portfolio value is their sum.
 
     Parameters
     ----------
@@ -62,20 +56,17 @@ class Benchmark(
         `(open, high, low, close, volume)`.
     adjusts
         Stacked forward adjustment factors, shape `(num_stocks,)`.
-    trade_fn
-        `(state, soft_positions) -> lots`.  Called with the current
-        state and the soft position-weight vector of shape
-        `(num_stocks,)`.  Must return an array of shape
-        `(num_stocks,)` representing the number of lots to trade
-        (positive for buy, negative for sell).
     initial_cash
         Starting capital.
     use_adjusts
-        If ``True``, account for dividend reinvestment via adjustment
-        factors (total return index).  If ``False``, use raw prices
+        If `True`, account for dividend reinvestment via adjustment
+        factors (total return index).  If `False`, use raw prices
         (price index).
-    trading_start
-        If set, rebalance signals before this timestamp are ignored.
+
+    Notes
+    -----
+    The rebalance cadence is controlled by upstream: the benchmark
+    rebalances exactly when the soft-positions input produces.
     """
 
     def __init__(
@@ -86,7 +77,6 @@ class Benchmark(
         *,
         initial_cash: float,
         use_adjusts: bool,
-        trading_start: np.datetime64 | None = None,
     ) -> None:
         assert len(soft_positions.shape) == 1, "Soft positions input must have shape (num_stocks,)."
         assert (
@@ -99,7 +89,6 @@ class Benchmark(
         self._num_stocks = soft_positions.shape[0]
         self._initial_cash = initial_cash
         self._use_adjusts = use_adjusts
-        self._trading_start = int(coerce_timestamp(trading_start)) if trading_start is not None else None
 
         super().__init__(
             inputs=(soft_positions, prices, adjusts),
@@ -109,13 +98,16 @@ class Benchmark(
             name=type(self).__name__,
         )
 
-    def init(self, inputs: tuple, timestamp: int) -> BenchmarkState:
+    def init(
+        self,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]],
+        timestamp: int,
+    ) -> BenchmarkState:
         n = self._num_stocks
         return BenchmarkState(
             num_stocks=n,
             initial_cash=self._initial_cash,
             use_adjusts=self._use_adjusts,
-            trading_start=self._trading_start,
             cash=self._initial_cash,
             shares=np.zeros(n),
             last_adjust=np.ones(n),
@@ -124,10 +116,10 @@ class Benchmark(
     @staticmethod
     def compute(
         state: BenchmarkState,
-        inputs: tuple,
-        output,
+        inputs: tuple[ArrayView[np.float64], ArrayView[np.float64], ArrayView[np.float64]],
+        output: ArrayView[np.float64],
         timestamp: int,
-        notify: Notify,
+        produced: tuple[bool, ...],
     ) -> bool:
         N = state.num_stocks
         soft_positions = inputs[0].value()
@@ -149,9 +141,7 @@ class Benchmark(
         current_value = state.cash + np.sum(state.shares[held] * closes[held])
 
         # Rebalance if soft positions input was updated.
-        rebalance = notify.input_produced()[0]
-        if state.trading_start is not None and timestamp < state.trading_start:
-            rebalance = False
+        rebalance = produced[0]
         if rebalance:
 
             # Execution price = open price.

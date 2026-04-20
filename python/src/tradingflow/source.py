@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import ArrayLike
+
+from .data.types import NodeKind, _to_native_node_kind
+
+if TYPE_CHECKING:
+    from tradingflow._native import NativeScenario
 
 
 class Source(ABC):
@@ -16,27 +21,31 @@ class Source(ABC):
     Parameters
     ----------
     dtype
-        NumPy dtype for emitted values.
+        NumPy dtype for emitted values (ignored for unit sources).
     shape
         Shape of each emitted value element. Use `()` for scalars.
+    kind
+        Output node kind (default [`NodeKind.ARRAY`]).
     initial
         Initial value. Defaults to NaN for floats, zero otherwise.
     name
         Optional human-readable name.
     """
 
-    __slots__ = ("_dtype", "_shape", "_initial", "_name")
+    __slots__ = ("_dtype", "_shape", "_kind", "_initial", "_name")
 
     def __init__(
         self,
         dtype: type | np.dtype,
         shape: tuple[int, ...],
         *,
+        kind: NodeKind = NodeKind.ARRAY,
         initial: ArrayLike | None = None,
         name: str | None = None,
     ) -> None:
         self._dtype = np.dtype(dtype)
         self._shape = shape
+        self._kind = kind
         if initial is not None:
             self._initial = np.asarray(initial, dtype=self._dtype)
         elif np.issubdtype(self._dtype, np.floating):
@@ -50,18 +59,25 @@ class Source(ABC):
         AsyncIterator[tuple[np.datetime64, ArrayLike]],
         AsyncIterator[tuple[np.datetime64, ArrayLike]],
     ]:
-        """Return a ``(historical, live)`` async-iterator pair.
+        """Return a `(historical, live)` async-iterator pair.
 
-        Both iterators yield ``(timestamp, value)`` tuples, matching the
-        Rust ``Source::init`` which returns two ``Receiver<(i64, Event)>``
-        channels.
+        Both iterators yield `(timestamp, value)` tuples.  Timestamps
+        are `int64` TAI nanoseconds since the PTP epoch (1970-01-01
+        00:00:00 TAI) — the same convention NumPy `datetime64[ns]` uses
+        numerically.  The bridge reinterprets them directly; no
+        leap-second math runs here.
 
         Parameters
         ----------
         timestamp
-            Initial timestamp (nanoseconds since epoch).
+            Initial timestamp (TAI nanoseconds since the PTP epoch).
         """
         ...
+
+    @property
+    def kind(self) -> NodeKind:
+        """Output node kind."""
+        return self._kind
 
     @property
     def dtype(self) -> np.dtype:
@@ -82,6 +98,19 @@ class Source(ABC):
     def name(self) -> str:
         """Human-readable name."""
         return self._name
+
+    def _register(self, native_scenario: NativeScenario) -> int:
+        """Register this Python source with the native scenario.
+
+        Polymorphic dispatch: [`Scenario.add_source`][tradingflow.Scenario.add_source]
+        delegates to this method without branching on source kind.
+        """
+        return native_scenario.add_py_source(
+            self,
+            _to_native_node_kind(self._kind),
+            "" if self._kind == NodeKind.UNIT else self._dtype.name,
+            list(self._shape),
+        )
 
 
 async def empty_historical_gen() -> AsyncIterator[tuple[np.datetime64, Any]]:
@@ -107,8 +136,10 @@ class NativeSource:
     ----------
     native_id
         Source native dispatch string on the Rust side.
+    kind
+        Output node kind (default [`NodeKind.ARRAY`]).
     dtype
-        NumPy dtype string (default `"float64"`).
+        NumPy dtype string (default `"float64"`; ignored for `NodeKind.UNIT`).
     shape
         Element shape (default `()`).
     params
@@ -117,18 +148,20 @@ class NativeSource:
         Optional human-readable name (defaults to *native_id*).
     """
 
-    __slots__ = ("_native_id", "_dtype", "_shape", "_params", "_name")
+    __slots__ = ("_native_id", "_kind", "_dtype", "_shape", "_params", "_name")
 
     def __init__(
         self,
         native_id: str,
         *,
+        kind: NodeKind = NodeKind.ARRAY,
         dtype: str = "float64",
         shape: tuple[int, ...] = (),
         params: dict | None = None,
         name: str | None = None,
     ) -> None:
         self._native_id = native_id
+        self._kind = kind
         self._dtype = dtype
         self._shape = shape
         self._params = params or {}
@@ -138,6 +171,11 @@ class NativeSource:
     def native_id(self) -> str:
         """Source native dispatch string."""
         return self._native_id
+
+    @property
+    def kind(self) -> NodeKind:
+        """Output node kind."""
+        return self._kind
 
     @property
     def dtype(self) -> str:
@@ -158,3 +196,12 @@ class NativeSource:
     def name(self) -> str:
         """Human-readable name."""
         return self._name
+
+    def _register(self, native_scenario: NativeScenario) -> int:
+        """Register this native source with the native scenario."""
+        return native_scenario.add_native_source(
+            self._native_id,
+            self._dtype,
+            list(self._shape),
+            self._params,
+        )

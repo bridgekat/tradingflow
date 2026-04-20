@@ -1,30 +1,68 @@
-"""Ledoit-Wolf linear shrinkage covariance estimator."""
+"""Linear shrinkage covariance estimator with a pluggable target."""
+
+from enum import IntEnum
 
 import numpy as np
 
 from ..variance_predictor import VariancePredictor
+from ._common import (
+    correlation_from_covariance,
+    schafer_strimmer_alpha,
+    sample_covariance,
+    single_index_covariance,
+)
+
+
+class Target(IntEnum):
+    """Shrinkage target selector.
+
+    The three targets surveyed in Pantaleo et al. (2010), Section III.D:
+
+    - [`COMMON_COVARIANCE`][tradingflow.operators.predictors.variance.Target]
+      — diagonal = average sample variance, off-diagonal = average
+      sample covariance.
+    - [`CONSTANT_CORRELATION`][tradingflow.operators.predictors.variance.Target]
+      — diagonal = sample variances, off-diagonal =
+      `r_bar * std_i * std_j` with `r_bar` the average off-diagonal
+      sample correlation.
+    - [`SINGLE_INDEX`][tradingflow.operators.predictors.variance.Target]
+      — single-index factor-model covariance
+      `sigma_f^2 * beta beta' + diag(sigma_eps^2)` using the equal-
+      weighted cross-sectional mean as the market proxy.
+    """
+
+    COMMON_COVARIANCE = 1
+    CONSTANT_CORRELATION = 2
+    SINGLE_INDEX = 3
 
 
 class Shrinkage(VariancePredictor[np.ndarray]):
-    """Ledoit-Wolf linear shrinkage covariance estimator.
+    """Linear-shrinkage covariance estimator with a pluggable target.
 
-    Computes ``Σ = α * F + (1 - α) * S`` where ``S`` is the
-    sample covariance matrix and ``F`` is a structured target (scaled
-    identity matching the average variance).  The shrinkage intensity
-    ``α`` is estimated analytically following Ledoit & Wolf (2004).
+    Computes `Sigma = alpha * F + (1 - alpha) * S` where `S` is the
+    sample covariance and `F` is one of the three structured targets
+    enumerated by [`Target`][tradingflow.operators.predictors.variance.Target].
+
+    The intensity `alpha` is estimated analytically via the
+    Schäfer-Strimmer (2005) element-wise unbiased estimator, as
+    prescribed by Pantaleo et al. (2010).  Ignores features.
 
     Parameters
     ----------
     universe
-        Universe weights, shape ``(num_stocks,)``.
+        Universe weights, shape `(num_stocks,)`.
     features_series
-        Recorded features series, element shape ``(num_stocks, num_features)``.
-        Passed through but not used by this estimator.
+        Recorded features series, element shape `(num_stocks, num_features)`.
+        Passed through but not used.
     adjusted_prices_series
         Recorded forward-adjusted close prices series, element shape
-        ``(num_stocks,)``.
+        `(num_stocks,)`.
+    target
+        Shrinkage target, a member of
+        [`Target`][tradingflow.operators.predictors.variance.Target].
+        Default is `Target.COMMON_COVARIANCE`.
     verbose
-        If ``True``, print shrinkage diagnostics to stdout.
+        If `True`, print shrinkage diagnostics to stdout.
     **kwargs
         Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
     """
@@ -35,6 +73,7 @@ class Shrinkage(VariancePredictor[np.ndarray]):
         features_series,
         adjusted_prices_series,
         *,
+        target: Target = Target.COMMON_COVARIANCE,
         verbose: bool = False,
         **kwargs,
     ) -> None:
@@ -42,63 +81,53 @@ class Shrinkage(VariancePredictor[np.ndarray]):
             universe,
             features_series,
             adjusted_prices_series,
-            fit_fn=lambda x, y: _fit_fn(y, verbose=verbose),
+            fit_fn=lambda x, y: _fit_fn(y, target=target, verbose=verbose),
             predict_fn=lambda state, x, params: params,
             **kwargs,
         )
 
 
-def _fit_fn(y: np.ndarray, *, verbose: bool = False) -> np.ndarray:
-    """Ledoit-Wolf linear shrinkage toward scaled identity.
+def _target_common_covariance(y: np.ndarray, S: np.ndarray) -> tuple[np.ndarray, str]:
+    N = S.shape[0]
+    off_mask = ~np.eye(N, dtype=bool)
+    avg_var = float(np.mean(np.diag(S)))
+    avg_cov = float(S[off_mask].mean()) if N > 1 else avg_var
+    F = np.full((N, N), avg_cov, dtype=np.float64)
+    np.fill_diagonal(F, avg_var)
+    return F, f"avg_var={avg_var:.4e}, avg_cov={avg_cov:.4e}"
 
-    Parameters
-    ----------
-    y
-        Cross-sectional return matrix of shape ``(T, N)``.
 
-    Returns
-    -------
-    np.ndarray
-        Shrunk covariance matrix of shape ``(N, N)``.
-    """
+def _target_constant_correlation(y: np.ndarray, S: np.ndarray) -> tuple[np.ndarray, str]:
+    N = S.shape[0]
+    C, stds = correlation_from_covariance(S)
+    off_mask = ~np.eye(N, dtype=bool)
+    r_bar = float(C[off_mask].mean()) if N > 1 else 1.0
+    F = r_bar * np.outer(stds, stds)
+    np.fill_diagonal(F, np.diag(S))
+    return F, f"r_bar={r_bar:.4f}"
+
+
+def _target_single_index(y: np.ndarray, S: np.ndarray) -> tuple[np.ndarray, str]:
+    return single_index_covariance(y), ""
+
+
+_TARGET_BUILDERS = {
+    Target.COMMON_COVARIANCE: _target_common_covariance,
+    Target.CONSTANT_CORRELATION: _target_constant_correlation,
+    Target.SINGLE_INDEX: _target_single_index,
+}
+
+
+def _fit_fn(y: np.ndarray, *, target: Target, verbose: bool = False) -> np.ndarray:
     T, N = y.shape
 
-    # NaN-robust sample covariance (pairwise complete observations).
-    mean = np.nanmean(y, axis=0)
-    centered = y - mean
-    finite = np.isfinite(centered)
-    centered = np.where(finite, centered, 0.0)
-    indicator = finite.astype(np.float64)
-    counts = indicator.T @ indicator  # (N, N) pairwise counts
-    S = (centered.T @ centered) / np.maximum(counts - 1, 1.0)
+    S, centered, finite = sample_covariance(y)
+    F, diagnostics = _TARGET_BUILDERS[target](y, S)
 
-    # Shrinkage target: scaled identity (average variance on diagonal).
-    mu = np.trace(S) / N
-    F = mu * np.eye(N)
-
-    # Shrinkage intensity (Ledoit-Wolf analytical formula).
-    # delta = (1/T_eff) * sum_t ||x_t x_t' - S||_F^2
-    # Use zero-filled centered rows so NaN positions contribute nothing.
-    delta = 0.0
-    T_eff = 0
-    for t in range(T):
-        if not finite[t].any():
-            continue
-        T_eff += 1
-        xt = centered[t : t + 1].T  # (N, 1)
-        M = xt @ xt.T - S
-        delta += np.sum(M * M)
-    if T_eff > 0:
-        delta /= T_eff
-
-    # Optimal shrinkage intensity.
-    denom = np.sum((S - F) ** 2)
-    if denom < 1e-30:
-        alpha = 1.0
-    else:
-        alpha = min(max(delta / (T_eff * denom) if T_eff > 0 else 1.0, 0.0), 1.0)
+    alpha, T_eff = schafer_strimmer_alpha(S, F, centered, finite)
 
     if verbose:
-        print(f"  shrinkage: {T_eff}/{T} valid samples, {N} stocks, alpha={alpha:.4f}")
+        extras = f", {diagnostics}" if diagnostics else ""
+        print(f"  shrinkage[{target.value}]: {T_eff}/{T} valid samples, {N} stocks{extras}, alpha={alpha:.4f}")
 
     return alpha * F + (1.0 - alpha) * S

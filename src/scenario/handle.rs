@@ -2,22 +2,19 @@
 //!
 //! [`Handle<T>`] is a lightweight index into a [`Scenario`](super::Scenario)'s
 //! node storage, parameterised by the value type.  [`InputTypesHandles`] maps
-//! operator input types to their corresponding handle types.
+//! the nested [`InputTypes`] tree of an operator's `Inputs` declaration to
+//! the corresponding tree of user-supplied handles, and flattens both node
+//! indices and type-id bookkeeping for scenario registration.
 
 use std::marker::PhantomData;
 
-use crate::types::InputTypes;
+use crate::{FlatWrite, Input, InputTypes};
 
 // ---------------------------------------------------------------------------
 // Handle
 // ---------------------------------------------------------------------------
 
 /// A typed handle into a [`Scenario`](super::Scenario)'s node storage.
-///
-/// The type parameter encodes the value type of the node.
-///
-/// Handles carry only an index; type safety is enforced by [`TypeId`] checks
-/// at registration time via [`InputTypes::type_ids`].
 #[derive(Debug)]
 pub struct Handle<T> {
     pub(super) index: usize,
@@ -33,7 +30,6 @@ impl<T> Clone for Handle<T> {
 impl<T> Copy for Handle<T> {}
 
 impl<T> Handle<T> {
-    /// Create a handle from a raw node index.
     pub(crate) fn new(index: usize) -> Self {
         Self {
             index,
@@ -41,82 +37,134 @@ impl<T> Handle<T> {
         }
     }
 
-    /// Returns the underlying node index.
     pub fn index(&self) -> usize {
         self.index
     }
 }
 
 // ===========================================================================
-// Handle mapping
+// InputTypesHandles
 // ===========================================================================
 
-/// Maps an [`InputTypes`] collection to its corresponding [`Handle`]
-/// collection.
-///
-/// `node_indices` extracts the raw node index from each handle.
-/// TypeId validation is handled separately by [`InputTypes::type_ids`].
+/// Maps an [`InputTypes`] tree to its corresponding handle tree.
 pub trait InputTypesHandles: InputTypes {
-    /// The handle collection (e.g. `(Handle<Array<f64>>, Handle<Array<f64>>)`).
+    /// The handle tree.
     type Handles;
 
-    /// Extract node indices from handles.
-    fn node_indices(handles: &Self::Handles) -> Box<[usize]>;
+    /// Total flat leaf count from the handles.
+    fn arity(handles: &Self::Handles) -> usize;
+
+    /// Write every leaf's node index into `writer` in tree-order.
+    fn write_node_indices(handles: &Self::Handles, writer: &mut FlatWrite<usize>);
 }
 
-// -- Empty input (0-arity) ---------------------------------------------------
+// -- Leaf: Input<T> ----------------------------------------------------------
+
+impl<T: Send + 'static> InputTypesHandles for Input<T> {
+    type Handles = Handle<T>;
+
+    #[inline(always)]
+    fn arity(_: &Handle<T>) -> usize {
+        1
+    }
+
+    #[inline(always)]
+    fn write_node_indices(handles: &Handle<T>, writer: &mut FlatWrite<usize>) {
+        writer.push(handles.index);
+    }
+}
+
+// -- Compound: empty tuple ---------------------------------------------------
 
 impl InputTypesHandles for () {
     type Handles = ();
 
-    fn node_indices(_handles: &()) -> Box<[usize]> {
-        Box::new([])
+    #[inline(always)]
+    fn arity(_: &()) -> usize {
+        0
     }
+
+    #[inline(always)]
+    fn write_node_indices(_: &(), _writer: &mut FlatWrite<usize>) {}
 }
 
-// -- Single input ------------------------------------------------------------
+// -- Compound: tuple branches (arities 1-12) ---------------------------------
+//
+// Single macro, no element distinctions.  `$T::Handles` resolves to the
+// right type automatically: `Handle<T>` for `Input<T>` (Sized leaf) and
+// `Vec<T::Handles>` for `[T]` (trailing slice).  The same `arity` and
+// `write_node_indices` logic handles both uniformly.
 
-impl<A: Send + 'static> InputTypesHandles for (A,) {
-    type Handles = (Handle<A>,);
+// Mirrors `impl_input_types_for_tuple` exactly: prefix `Sized`, last `?Sized`.
 
-    fn node_indices(handles: &(Handle<A>,)) -> Box<[usize]> {
-        Box::new([handles.0.index])
-    }
-}
+macro_rules! impl_input_types_handles_for_tuple {
+    // 1-tuple.
+    ($last_idx:tt: $Last:ident) => {
+        impl<$Last: InputTypesHandles + ?Sized> InputTypesHandles for ($Last,) {
+            type Handles = ($Last::Handles,);
 
-// -- Homogeneous slice -------------------------------------------------------
+            #[inline]
+            fn arity(handles: &Self::Handles) -> usize {
+                <$Last as InputTypesHandles>::arity(&handles.0)
+            }
 
-impl<T: Send + 'static> InputTypesHandles for [T] {
-    type Handles = Box<[Handle<T>]>;
+            #[inline]
+            fn write_node_indices(handles: &Self::Handles, writer: &mut FlatWrite<usize>) {
+                <$Last as InputTypesHandles>::write_node_indices(&handles.0, writer);
+            }
+        }
+    };
+    // N-tuple: Sized prefix + ?Sized last.
+    ($($idx:tt: $T:ident),+; $last_idx:tt: $Last:ident) => {
+        impl<$($T: InputTypesHandles,)+ $Last: InputTypesHandles + ?Sized>
+            InputTypesHandles for ($($T,)+ $Last,)
+        {
+            type Handles = ($($T::Handles,)+ $Last::Handles,);
 
-    fn node_indices(handles: &Box<[Handle<T>]>) -> Box<[usize]> {
-        handles.iter().map(|h| h.index).collect()
-    }
-}
+            #[inline]
+            fn arity(handles: &Self::Handles) -> usize {
+                0 $( + <$T as InputTypesHandles>::arity(&handles.$idx) )+
+                    + <$Last as InputTypesHandles>::arity(&handles.$last_idx)
+            }
 
-// -- Tuples (macro-generated) ------------------------------------------------
-
-macro_rules! impl_input_kinds_handles_tuple {
-    ($($idx:tt: $T:ident),+ $(,)?) => {
-        impl<$($T: Send + 'static),+> InputTypesHandles for ($($T,)+) {
-            type Handles = ($(Handle<$T>,)+);
-
-            fn node_indices(handles: &Self::Handles) -> Box<[usize]> {
-                Box::new([$(handles.$idx.index),+])
+            #[inline]
+            fn write_node_indices(handles: &Self::Handles, writer: &mut FlatWrite<usize>) {
+                $( <$T as InputTypesHandles>::write_node_indices(&handles.$idx, writer); )+
+                <$Last as InputTypesHandles>::write_node_indices(&handles.$last_idx, writer);
             }
         }
     };
 }
 
-// Arity 1 is already covered above.
-impl_input_kinds_handles_tuple!(0: A, 1: B);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D, 4: E);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K);
-impl_input_kinds_handles_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);
+impl_input_types_handles_for_tuple!(0: A);
+impl_input_types_handles_for_tuple!(0: A; 1: B);
+impl_input_types_handles_for_tuple!(0: A, 1: B; 2: C);
+impl_input_types_handles_for_tuple!(0: A, 1: B, 2: C; 3: D);
+impl_input_types_handles_for_tuple!(0: A, 1: B, 2: C, 3: D; 4: E);
+impl_input_types_handles_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E; 5: F);
+impl_input_types_handles_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F; 6: G);
+impl_input_types_handles_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G; 7: H);
+impl_input_types_handles_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H; 8: I);
+impl_input_types_handles_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I; 9: J);
+impl_input_types_handles_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J; 10: K);
+impl_input_types_handles_for_tuple!(
+    0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K; 11: L
+);
+
+// -- Compound: trailing-only slice ([T]) ------------------------------------
+
+impl<T: InputTypesHandles + 'static> InputTypesHandles for [T] {
+    type Handles = Vec<T::Handles>;
+
+    #[inline]
+    fn arity(handles: &Self::Handles) -> usize {
+        handles.len() * <T as InputTypes>::arity()
+    }
+
+    #[inline]
+    fn write_node_indices(handles: &Self::Handles, writer: &mut FlatWrite<usize>) {
+        for h in handles.iter() {
+            <T as InputTypesHandles>::write_node_indices(h, writer);
+        }
+    }
+}

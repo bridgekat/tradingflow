@@ -1,25 +1,9 @@
 //! Dtype dispatch helpers.
 //!
-//! Provides normalisation of numpy dtype strings and a dispatch macro for
-//! calling monomorphised code based on a runtime dtype string.
-
-/// Normalize a numpy dtype string to a canonical form.
-pub fn normalize_dtype(dtype: &str) -> &str {
-    match dtype {
-        "bool" | "|b1" => "bool",
-        "int8" | "|i1" => "int8",
-        "int16" | "<i2" => "int16",
-        "int32" | "<i4" => "int32",
-        "int64" | "<i8" => "int64",
-        "uint8" | "|u1" => "uint8",
-        "uint16" | "<u2" => "uint16",
-        "uint32" | "<u4" => "uint32",
-        "uint64" | "<u8" => "uint64",
-        "float32" | "<f4" => "float32",
-        "float64" | "<f8" => "float64",
-        other => other,
-    }
-}
+//! Dispatch macro for calling monomorphised code based on a runtime dtype
+//! string.  Python is responsible for sending canonical dtype names (i.e.
+//! `numpy.dtype.name` rather than `numpy.dtype.str`); this module performs
+//! no aliasing.
 
 /// Dispatch on a normalized dtype string, calling a macro-rule with a concrete
 /// scalar type.
@@ -40,8 +24,10 @@ pub fn normalize_dtype(dtype: &str) -> &str {
 macro_rules! dispatch_dtype {
     // Internal: shared match body.
     (@match $dtype:expr, $action:ident, $label:literal,
-        $($name:literal => $ty:ty),+ $(,)?) => {
-        match crate::bridge::dispatch::normalize_dtype($dtype) {
+        $($name:literal => $ty:ty),+ $(,)?) => {{
+        // Accept either `&str` or anything that derefs to `str` (e.g. `&String`).
+        let __dtype: &str = ::std::convert::AsRef::<str>::as_ref($dtype);
+        match __dtype {
             $($name => $action!($ty),)+
             other => {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -49,7 +35,7 @@ macro_rules! dispatch_dtype {
                 ))
             }
         }
-    };
+    }};
     // All supported dtypes (default).
     ($dtype:expr, $action:ident) => {
         dispatch_dtype!(@match $dtype, $action, "",
@@ -86,20 +72,27 @@ pub(crate) use dispatch_dtype;
 
 use std::any::TypeId;
 
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::types::PyAnyMethods;
 
 use crate::{Array, Series};
 
-/// Resolve a Python-side `(kind, dtype)` pair to a Rust [`TypeId`].
-pub fn resolve_type_id(kind: &str, dtype: &str) -> pyo3::PyResult<TypeId> {
-    let dtype = normalize_dtype(dtype);
+use super::views::NativeNodeKind;
+
+/// Resolve a `(kind, dtype)` pair to a Rust [`TypeId`].
+///
+/// The dtype string is ignored for [`NativeNodeKind::Unit`] — unit nodes
+/// always map to `TypeId::of::<()>()`.
+pub fn resolve_type_id(kind: NativeNodeKind, dtype: &str) -> pyo3::PyResult<TypeId> {
+    if kind == NativeNodeKind::Unit {
+        return Ok(TypeId::of::<()>());
+    }
     macro_rules! resolve {
         ($T:ty) => {
             match kind {
-                "array" => Ok(TypeId::of::<Array<$T>>()),
-                "series" => Ok(TypeId::of::<Series<$T>>()),
-                other => Err(PyTypeError::new_err(format!("unknown node kind: {other}"))),
+                NativeNodeKind::Array => Ok(TypeId::of::<Array<$T>>()),
+                NativeNodeKind::Series => Ok(TypeId::of::<Series<$T>>()),
+                NativeNodeKind::Unit => unreachable!(),
             }
         };
     }

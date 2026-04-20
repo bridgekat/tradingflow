@@ -4,7 +4,8 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::{Array, Notify, Operator, Scalar};
+use crate::Instant;
+use crate::{Array, Input, Operator, Scalar};
 
 /// Sharpe ratio: `mean(r) / std(r)` of period returns since inception.
 ///
@@ -31,10 +32,10 @@ pub struct SharpeRatioState<T: Scalar + Float> {
 
 impl<T: Scalar + Float> Operator for SharpeRatio<T> {
     type State = SharpeRatioState<T>;
-    type Inputs = (Array<T>,);
+    type Inputs = (Input<Array<T>>, Input<()>);
     type Output = Array<T>;
 
-    fn init(self, _inputs: (&Array<T>,), _timestamp: i64) -> (Self::State, Array<T>) {
+    fn init(self, _inputs: (&Array<T>, &()), _timestamp: Instant) -> (Self::State, Array<T>) {
         (
             SharpeRatioState {
                 prev: T::nan(),
@@ -48,11 +49,15 @@ impl<T: Scalar + Float> Operator for SharpeRatio<T> {
 
     fn compute(
         state: &mut SharpeRatioState<T>,
-        inputs: (&Array<T>,),
+        inputs: (&Array<T>, &()),
         output: &mut Array<T>,
-        _timestamp: i64,
-        _notify: &Notify<'_>,
+        _timestamp: Instant,
+        produced: (bool, bool),
     ) -> bool {
+        let (_produced_data, produced_clock) = produced;
+        if !produced_clock {
+            return false;
+        }
         let current = inputs.0[0];
         if current.is_nan() {
             return false;
@@ -87,23 +92,23 @@ mod tests {
     #[test]
     fn basic() {
         let a = Array::scalar(0.0_f64);
-        let (mut s, mut o) = SharpeRatio::new().init((&a,), 0);
+        let (mut s, mut o) = SharpeRatio::new().init((&a, &()), Instant::from_nanos(0));
 
         let mut a = Array::scalar(100.0);
-        SharpeRatio::compute(&mut s, (&a,), &mut o, 1, &Notify::new(&[], 0));
+        SharpeRatio::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(1), (false, true));
 
         a[0] = 110.0; // r = 0.10
-        SharpeRatio::compute(&mut s, (&a,), &mut o, 2, &Notify::new(&[], 0));
+        SharpeRatio::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(2), (false, true));
         // single return with zero variance => NaN
         assert!(o[0].is_nan());
 
         a[0] = 121.0; // r = 0.10
-        SharpeRatio::compute(&mut s, (&a,), &mut o, 3, &Notify::new(&[], 0));
+        SharpeRatio::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(3), (false, true));
         // returns: 0.10, 0.10 => mean=0.10, std=0 => NaN
         assert!(o[0].is_nan());
 
         a[0] = 115.0; // r ≈ -0.0496
-        SharpeRatio::compute(&mut s, (&a,), &mut o, 4, &Notify::new(&[], 0));
+        SharpeRatio::compute(&mut s, (&a, &()), &mut o, Instant::from_nanos(4), (false, true));
         // returns: 0.10, 0.10, -0.0496 => mean>0, std>0 => finite
         assert!(o[0].is_finite());
         assert!(o[0] > 0.0); // positive mean, positive Sharpe

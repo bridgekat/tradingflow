@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..operator import NativeOperator
-from ..types import Handle, NodeKind
+from .. import Handle, NativeOperator, NodeKind
 
 
 class Cast(NativeOperator):
-    """Element-wise type conversion: ``out[i] = input[i] as dtype``.
+    """Element-wise type conversion: `out[i] = input[i] as dtype`.
 
-    Uses truncating/saturating semantics (equivalent to Rust ``as``).
+    Uses truncating/saturating semantics (equivalent to Rust `as`).
 
     Parameters
     ----------

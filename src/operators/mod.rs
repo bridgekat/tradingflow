@@ -24,6 +24,12 @@
 //! - [`Select`] — index selection along an axis (precomputed flat index map).
 //! - [`Concat`] — concatenate N arrays along an existing axis (variadic input).
 //! - [`Stack`] — stack N arrays along a new axis (variadic input).
+//! - [`NotifyConcat`] — notify-aware variant of [`Concat`] for float types:
+//!   slots of inputs that did not produce this cycle are filled with `NaN`
+//!   (message-passing semantics).
+//! - [`NotifyStack`] — notify-aware variant of [`Stack`] for float types:
+//!   slots of inputs that did not produce this cycle are filled with `NaN`
+//!   (message-passing semantics).
 //! - [`Cast`] — element-wise type conversion between `Array<S>` and `Array<T>`
 //!   via `num_traits::AsPrimitive`.
 //!
@@ -44,6 +50,7 @@
 
 pub mod apply;
 pub mod cast;
+pub mod clocked;
 pub mod concat;
 pub mod metrics;
 pub mod r#const;
@@ -61,7 +68,8 @@ pub mod stocks;
 pub mod r#where;
 
 pub use cast::Cast;
-pub use concat::Concat;
+pub use clocked::Clocked;
+pub use concat::{Concat, NotifyConcat};
 pub use r#const::Const;
 pub use filter::Filter;
 pub use id::Id;
@@ -71,5 +79,5 @@ pub use map::{Map, MapInplace};
 pub use last::Last;
 pub use record::Record;
 pub use select::Select;
-pub use stack::Stack;
+pub use stack::{NotifyStack, Stack};
 pub use r#where::Where;

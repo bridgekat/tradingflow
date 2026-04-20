@@ -9,14 +9,14 @@ class RankLinear(MeanPortfolio):
     """Assign rank-linear weights to the top fraction of stocks.
 
     Stocks with positive predicted returns are ranked.  The top
-    ``top_fraction`` receive linearly decreasing weights (highest
+    `top_fraction` receive linearly decreasing weights (highest
     prediction gets the largest weight), normalized to sum to 1.
     All other stocks receive zero weight.
 
     Parameters
     ----------
     predicted_returns
-        Handle to predicted returns array, shape ``(num_stocks,)``.
+        Handle to predicted returns array, shape `(num_stocks,)`.
     top_fraction
         Fraction of positively-predicted stocks to include.
     **kwargs
