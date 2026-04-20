@@ -9,12 +9,12 @@ from ..mean_variance_portfolio import MeanVariancePortfolio
 
 
 class MarkowitzSCS(MeanVariancePortfolio):
-    """Markowitz mean-variance optimization (conic formulation 2.9).
+    """Markowitz mean-variance optimization.
 
     Solves the conic reformulation of:
 
         maximize  mu' x  -  delta * sqrt(x' Sigma x)
-        subject to  1' x <= 1
+        subject to  1' x = 1
                     x >= 0   (if long_only)
 
     by factoring Sigma = L L' (Cholesky) and introducing an auxiliary
@@ -22,7 +22,7 @@ class MarkowitzSCS(MeanVariancePortfolio):
 
         minimize  -mu' x + delta * t
         subject to  (t, L' x) in Q^{N+1}
-                    1' x <= 1
+                    1' x = 1
                     x >= 0   (if long_only)
 
     solved directly via SCS.
@@ -66,12 +66,7 @@ class MarkowitzSCS(MeanVariancePortfolio):
 
 
 def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, verbose: bool) -> np.ndarray:
-    """Solve the Markowitz SOCP directly via SCS.
-
-    Builds the second-order cone program in SCS standard form
-    (minimize c'y  s.t.  A y + s = b,  s in K)  where
-    y = [x; t] and K = R+^1 x R+^N x Q^{N+1} (long_only) or R+^1 x Q^{N+1}.
-    """
+    """Solve the Markowitz SOCP directly via SCS."""
     N = len(mu)
 
     if verbose:
@@ -97,7 +92,7 @@ def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, ver
 
     # Constraint matrix A (block-sparse CSC).
     #   Row layout (must match cone order):
-    #   [0]         nonneg:  [1 ... 1  0]
+    #   [0]         zero:    [1 ... 1  0]
     #   [1..N]      nonneg:  [-I_N     0]        (if long_only)
     #   [r]         SOC[0]:  [0 ... 0 -1]
     #   [r+1..r+N]  SOC[1:]: [-L'      0]
@@ -109,14 +104,14 @@ def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, ver
     # Cone specification.
     cone = {}
 
-    # Nonneg cone: A = [1' 0], b = 1
-    cone["l"] = 1
+    # Zero cone: A = [1' 0], b = 1
+    cone["z"] = 1
     a.append(sparse.hstack([sparse.csc_matrix(np.ones((1, N))), sparse.csc_matrix((1, 1))]))
     b.append(1.0)
 
     # Nonneg cone: A = [-I 0], b = 0
     if long_only:
-        cone["l"] += N
+        cone["l"] = N
         a.append(sparse.hstack([-sparse.eye(N, format="csc"), sparse.csc_matrix((N, 1))]))
         b.extend([0.0] * N)
 

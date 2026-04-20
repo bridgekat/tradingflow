@@ -283,26 +283,14 @@ def build_scenario(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument(
-        "--data-begin",
-        type=np.datetime64,
-        default=None,
-        help="data start date (default: trading begin minus --rebalance-days calendar days)",
-    )
-    parser.add_argument(
-        "-b", "--begin", type=np.datetime64, required=True, help="evaluation start date (e.g. 2020-01-01)"
-    )
+    parser.add_argument("--data-begin", type=np.datetime64, default=None, help="data sampling start date")
+    parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
-    parser.add_argument("--rebalance-days", type=int, default=120, help="rebalance every N trading days")
-    parser.add_argument("--index-size", type=int, default=300, help="number of stocks in the universe")
-    parser.add_argument(
-        "--initial-cash",
-        type=float,
-        default=1_000_000.0,
-        help="starting capital for the Benchmark-traced GMV portfolio (CNY)",
-    )
+    parser.add_argument("--rebalance-days", type=int, default=90, help="rebalance every N calendar days")
+    parser.add_argument("--initial-cash", type=float, default=1000000.0, help="starting capital (CNY)")
+    parser.add_argument("--index-size", type=int, default=100, help="number of stocks in the universe")
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir
@@ -381,7 +369,6 @@ if __name__ == "__main__":
 
     plt.style.use(["fast"])
     fig, (ax_mv, ax_l_val, ax_ls_val) = plt.subplots(3, 1, figsize=(14, 14), sharex=True)
-    fig.suptitle("Covariance estimator comparison (shared time axis)")
 
     # Top panel: GMV annualized realized volatility (lower is better).
     ax_mv.set_title("GMV annualized realized volatility  (lower is better)")
@@ -401,7 +388,6 @@ if __name__ == "__main__":
     # Middle panel: Frictionless long-only GMV portfolio value (less volatile is better).
     ax_l_val.set_title("Frictionless long-only GMV portfolio value  (less volatile is better)")
     ax_l_val.set_ylabel("Total value (CNY, 10k)")
-    ax_l_val.set_xlabel("Date")
     ax_l_val.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
     for i, (name, series) in enumerate(l_value_data.items()):
         ax_l_val.plot(series.index, series / 1e4, label=name, color=f"C{i}", linewidth=0.8)

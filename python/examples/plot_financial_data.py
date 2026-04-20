@@ -177,9 +177,9 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--symbol", type=str, required=True, help='stock symbol (e.g. "000001.SZ")')
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
+    parser.add_argument("--symbol", type=str, required=True, help='stock symbol (e.g. "000001.SZ")')
     args = parser.parse_args()
 
     symbol: str = args.symbol

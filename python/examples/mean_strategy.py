@@ -313,19 +313,14 @@ def build_scenario(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument(
-        "--data-begin",
-        type=np.datetime64,
-        default=None,
-        help="data start date (default: trading begin minus --rebalance-days calendar days)",
-    )
-    parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="trading start date (e.g. 2020-01-01)")
+    parser.add_argument("--data-begin", type=np.datetime64, default=None, help="data sampling start date")
+    parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
-    parser.add_argument("--rebalance-days", type=int, default=120, help="rebalance every N trading days")
+    parser.add_argument("--rebalance-days", type=int, default=90, help="rebalance every N calendar days")
     parser.add_argument("--initial-cash", type=float, default=1000000.0, help="starting capital (CNY)")
-    parser.add_argument("--index-size", type=int, default=300, help="number of stocks in the market-cap index")
+    parser.add_argument("--index-size", type=int, default=100, help="number of stocks in the market-cap index")
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir
@@ -376,7 +371,11 @@ if __name__ == "__main__":
 
     total_value = strategy_actual.sum(axis=1)
 
-    print(f"{n} trading days, {index.index[0].date()} to {index.index[-1].date()}")
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+
+    print(f"{n} calendar days, {index.index[0].date()} to {index.index[-1].date()}")
     print(f"Initial value: {total_value.iloc[0]:,.2f} CNY")
     print(f"Final value:   {total_value.iloc[-1]:,.2f} CNY")
     print()
