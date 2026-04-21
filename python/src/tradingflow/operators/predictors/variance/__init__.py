@@ -1,4 +1,4 @@
-"""Concrete variance-predictor implementations.
+r"""Concrete variance-predictor implementations.
 
 The estimators in this module closely follow Pantaleo, Tumminello,
 Lillo, and Mantegna, *When do improved covariance matrix estimators
@@ -8,41 +8,42 @@ baseline they form the four canonical families surveyed in the paper —
 sample, spectral, hierarchical-clustering, and shrinkage.
 
 All estimators share the same interface: they subclass
-[`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor],
+[`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor],
 ignore the `features_series` input, and emit an `(N, N)` covariance
 matrix on every rebalance tick for the stocks currently in the universe.
 
 **Baseline**
 
-- [`Sample`][tradingflow.operators.predictors.variance.Sample] — sample
+- [`Sample`][tradingflow.operators.predictors.variance.sample.Sample] — sample
   covariance of historical returns (Markowitz baseline).
 
 **Spectral estimators**
 
-- [`SingleIndex`][tradingflow.operators.predictors.variance.SingleIndex]
-  — single-factor covariance `sigma_f^2 beta beta.T + diag(sigma_eps^2)`
+- [`SingleIndex`][tradingflow.operators.predictors.variance.single_index.SingleIndex]
+  — single-factor covariance
+  \(\sigma_f^{2} \beta \beta^T + \mathrm{diag}(\sigma_\epsilon^{2})\)
   using the equal-weighted cross-sectional mean return as the market
   proxy.
-- [`RMT0`][tradingflow.operators.predictors.variance.RMT0] — zeros
+- [`RMT0`][tradingflow.operators.predictors.variance.rmt.RMT0] — zeros
   eigenvalues below the Laloux-corrected Marchenko-Pastur bound
   (Rosenow et al., 2002).
-- [`RMTM`][tradingflow.operators.predictors.variance.RMTM] — replaces
+- [`RMTM`][tradingflow.operators.predictors.variance.rmt.RMTM] — replaces
   sub-threshold eigenvalues with their mean (Potters et al., 2005).
 
 **Hierarchical-clustering estimators**
 
-- [`UPGMA`][tradingflow.operators.predictors.variance.UPGMA] — size-weighted
+- [`UPGMA`][tradingflow.operators.predictors.variance.hierarchical.UPGMA] — size-weighted
   arithmetic-mean linkage on the sample correlation.
-- [`WPGMA`][tradingflow.operators.predictors.variance.WPGMA] — unweighted
+- [`WPGMA`][tradingflow.operators.predictors.variance.hierarchical.WPGMA] — unweighted
   arithmetic-mean linkage on the sample correlation.
-- [`Hausdorff`][tradingflow.operators.predictors.variance.Hausdorff] —
+- [`Hausdorff`][tradingflow.operators.predictors.variance.hierarchical.Hausdorff] —
   Hausdorff-style linkage using the original pairwise similarities.
 
 **Shrinkage estimators**
 
-- [`Shrinkage`][tradingflow.operators.predictors.variance.Shrinkage] —
+- [`Shrinkage`][tradingflow.operators.predictors.variance.shrinkage.Shrinkage] —
   Ledoit-Wolf linear shrinkage with a pluggable `target` parameter
-  (a [`Target`][tradingflow.operators.predictors.variance.Target] enum
+  (a [`Target`][tradingflow.operators.predictors.variance.shrinkage.Target] enum
   member) selecting one of the three targets surveyed in the paper:
   `Target.COMMON_COVARIANCE` (default),
   `Target.CONSTANT_CORRELATION`, or `Target.SINGLE_INDEX`.

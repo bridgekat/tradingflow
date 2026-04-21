@@ -6,11 +6,11 @@ from ..mean_predictor import MeanPredictor, MeanPredictorState
 
 
 class LinearRegression(MeanPredictor[np.ndarray]):
-    """Mean predictor using pooled OLS regression.
+    r"""Mean predictor using pooled OLS regression.
 
-    Fits `y = X @ beta + intercept` via QR decomposition on each
-    rebalance tick, where `y` is the 1-period forward return and
-    `X` is the feature matrix.
+    Fits \(y = X \beta + \mathrm{intercept}\) via QR decomposition on
+    each rebalance tick, where \(y\) is the 1-period forward return and
+    \(X\) is the feature matrix.
 
     Parameters
     ----------
@@ -24,7 +24,7 @@ class LinearRegression(MeanPredictor[np.ndarray]):
     verbose
         If `True`, print regression diagnostics to stdout.
     **kwargs
-        Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor].
+        Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.mean_predictor.MeanPredictor].
     """
 
     def __init__(

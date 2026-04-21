@@ -26,19 +26,25 @@ class LogLikelihood(
         LogLikelihoodState,
     ]
 ):
-    """Gaussian negative-log-likelihood evaluator for covariance predictions.
+    r"""Gaussian negative-log-likelihood evaluator for covariance predictions.
 
     Evaluates covariance prediction quality.  On each prediction
-    emission, caches `log |Σ|` and the Moore-Penrose pseudo-inverse
-    `Σ⁺` (via a single SVD on the symmetrized Σ, equivalent to
+    emission, caches \(\log |\Sigma|\) and the Moore-Penrose
+    pseudo-inverse \(\Sigma^+\) (via a single SVD on the symmetrized
+    \(\Sigma\), equivalent to
     [`scipy.linalg.pinv`][scipy.linalg.pinv] on symmetric PSD inputs
-    and handling rank-deficient Σ gracefully) and begins accumulating
-    the daily Mahalanobis quadratic `rᵀ Σ⁺ r`.  When the next
-    prediction arrives, emits the period-averaged negative log-
-    likelihood `log |Σ| + (1/T) Σₜ rₜᵀ Σ⁺ rₜ` — the
-    multivariate-normal log-density with the `N log(2π)` constant
-    and the `1/2` prefactor dropped (lower is better) — and updates
-    the cache.  Matches the `ll_metric` in
+    and handling rank-deficient \(\Sigma\) gracefully) and begins
+    accumulating the daily Mahalanobis quadratic \(r^T \Sigma^+ r\).
+    When the next prediction arrives, emits the period-averaged
+    negative log-likelihood
+
+    \[
+    \log |\Sigma| + \frac{1}{T} \sum_t r_t^T \Sigma^+ r_t
+    \]
+
+    — the multivariate-normal log-density with the \(N \log(2\pi)\)
+    constant and the \(1/2\) prefactor dropped (lower is better) — and
+    updates the cache.  Matches the `ll_metric` in
     <https://osquant.com/papers/a-quants-guide-to-covariance-matrix-estimation/>.
 
     Output is a scalar (the period-averaged negative log-likelihood
@@ -48,9 +54,10 @@ class LogLikelihood(
     Notes
     -----
     **Alignment guarantee.** After the initial warmup (first prediction
-    caches Σ⁺/log|Σ| without emitting), the operator emits exactly once
-    per prediction emission — **the same cadence as**
-    [`MinimumVariance`][tradingflow.operators.metrics.variance.MinimumVariance],
+    caches \(\Sigma^+\) / \(\log |\Sigma|\) without emitting), the
+    operator emits exactly once per prediction emission — **the same
+    cadence as**
+    [`MinimumVariance`][tradingflow.operators.metrics.variance.minimum_variance.MinimumVariance],
     so corresponding records line up element-by-element.  Output is 0
     if no daily return was accumulated during the period (e.g. no
     stocks had finite covariance diagonal).
@@ -101,12 +108,12 @@ class LogLikelihood(
 
     @staticmethod
     def _set_prediction(state: LogLikelihoodState, sigma: np.ndarray) -> None:
-        """Compute and store Σ⁺ and log|Σ| from a covariance matrix.
+        r"""Compute and store \(\Sigma^+\) and \(\log |\Sigma|\) from a covariance matrix.
 
         Stocks with non-finite covariance diagonal are excluded; their
-        rows and columns of Σ⁺ remain zero so their returns contribute
-        zero to the quadratic form.  If no stocks are eligible, Σ⁺ is
-        all zeros and log|Σ| is zero.
+        rows and columns of \(\Sigma^+\) remain zero so their returns
+        contribute zero to the quadratic form.  If no stocks are
+        eligible, \(\Sigma^+\) is all zeros and \(\log |\Sigma|\) is zero.
         """
         n = state.num_stocks
         mask = np.isfinite(np.diag(sigma))
@@ -162,24 +169,24 @@ class LogLikelihood(
 
 
 def _log_pdet_and_pinv(sigma: np.ndarray) -> tuple[float, np.ndarray]:
-    """Log-pseudo-determinant and Moore-Penrose pseudo-inverse via one SVD.
+    r"""Log-pseudo-determinant and Moore-Penrose pseudo-inverse via one SVD.
 
     For a real symmetric matrix the singular values equal the absolute
     eigenvalues (and equal the eigenvalues themselves when the matrix
     is PSD), so a single SVD of a symmetrized `sigma` yields both
     outputs directly:
 
-    - the log-pseudo-determinant is `sum(log(s[s > cutoff]))`;
+    - the log-pseudo-determinant is \(\sum_{s_i > \text{cutoff}} \log s_i\);
     - the Moore-Penrose pseudo-inverse is
-      `V @ diag(1/s[retained]) @ U^T` on the retained subspace and
-      zero elsewhere — equivalent to
+      \(V \, \operatorname{diag}(1/s_{\text{retained}}) \, U^T\) on the
+      retained subspace and zero elsewhere — equivalent to
       [`scipy.linalg.pinv`][scipy.linalg.pinv] on symmetric PSD inputs.
 
-    The cutoff `max(M, N) * eps * s_max` matches scipy's default
-    `rcond`; numerical-artifact negative eigenvalues (e.g. from
-    pairwise-deletion sample covariance or the Hausdorff filter) lie
-    far below it and are discarded, correctly restricting the Gaussian
-    log-likelihood to the PSD subspace.
+    The cutoff \(\max(M, N) \cdot \varepsilon \cdot s_{\max}\) matches
+    scipy's default `rcond`; numerical-artifact negative eigenvalues
+    (e.g. from pairwise-deletion sample covariance or the Hausdorff
+    filter) lie far below it and are discarded, correctly restricting
+    the Gaussian log-likelihood to the PSD subspace.
     """
     sym = 0.5 * (sigma + sigma.T)
     U, s, Vt = np.linalg.svd(sym)

@@ -30,7 +30,7 @@ class FinancialReportSource(NativeSource):
 
     When `with_report_date` is `True`, the output array is prepended with
     two extra elements `[year, day_of_year]` derived from the report date,
-    for use with the [`Annualize`][tradingflow.operators.stocks.Annualize]
+    for use with the [`Annualize`][tradingflow.operators.stocks.annualize.Annualize]
     operator.
 
     Parameters

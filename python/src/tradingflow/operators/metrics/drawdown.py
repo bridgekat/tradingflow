@@ -4,7 +4,7 @@ from ... import Handle, NativeOperator, NodeKind
 
 
 class Drawdown(NativeOperator):
-    """Drawdown: `(current - running_max) / running_max`.
+    r"""Drawdown: \((P_t - M_t) / M_t\) where \(M_t = \max_{s \le t} P_s\).
 
     Always non-positive.  Zero when at a new high.
 

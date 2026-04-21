@@ -25,7 +25,7 @@ class Sample(VariancePredictor[np.ndarray]):
         Recorded forward-adjusted close prices series, element shape
         `(num_stocks,)`.
     **kwargs
-        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
+        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor].
     """
 
     def __init__(

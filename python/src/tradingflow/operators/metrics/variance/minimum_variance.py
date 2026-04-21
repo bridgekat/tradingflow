@@ -27,14 +27,15 @@ class MinimumVariance(
         MinimumVarianceState,
     ]
 ):
-    """GMV portfolio realized variance evaluator.
+    r"""GMV portfolio realized variance evaluator.
 
     Evaluates covariance prediction quality.  On each prediction
-    emission, computes GMV weights `w = Σ⁺ 1 / (1ᵀ Σ⁺ 1)` (using
-    the SVD-based pseudo-inverse for numerical stability with
-    rank-deficient Σ) and begins accumulating daily portfolio returns
-    `rₚ = wᵀ r`.  When the next prediction arrives, emits the
-    realized variance of the accumulated returns and updates the
+    emission, computes GMV weights
+    \(w = \Sigma^+ \mathbf{1} / (\mathbf{1}^T \Sigma^+ \mathbf{1})\)
+    (using the SVD-based pseudo-inverse for numerical stability with
+    rank-deficient \(\Sigma\)) and begins accumulating daily portfolio
+    returns \(r_p = w^T r\).  When the next prediction arrives, emits
+    the realized variance of the accumulated returns and updates the
     weights.
 
     Output is a scalar (the realized variance over one evaluation
@@ -155,22 +156,27 @@ class MinimumVariance(
 
 
 def _gmv_weights(sigma: np.ndarray) -> np.ndarray:
-    """Compute GMV portfolio weights from a covariance matrix.
+    r"""Compute GMV portfolio weights from a covariance matrix.
 
     Closed-form solution to the equality-constrained quadratic program
 
-        minimize    wᵀ Σ w
-        subject to  1ᵀ w = 1
+    \[
+    \begin{aligned}
+    \text{minimize} \quad & w^T \Sigma w \\
+    \text{subject to} \quad & \mathbf{1}^T w = 1
+    \end{aligned}
+    \]
 
-    given by `w = Σ⁺ 1 / (1ᵀ Σ⁺ 1)`.  No non-negativity constraint
-    is imposed (weights may be negative, i.e. short positions are
-    allowed).
+    given by \(w = \Sigma^+ \mathbf{1} / (\mathbf{1}^T \Sigma^+ \mathbf{1})\).
+    No non-negativity constraint is imposed (weights may be negative,
+    i.e. short positions are allowed).
 
-    Uses the SVD-based Moore–Penrose pseudo-inverse `Σ⁺` instead of
-    a direct solve, which gracefully handles rank-deficient covariance
+    Uses the SVD-based Moore-Penrose pseudo-inverse \(\Sigma^+\) instead
+    of a direct solve, which gracefully handles rank-deficient covariance
     matrices (e.g. sample covariance with N > T) by returning the
-    minimum-norm solution.  If the denominator `1ᵀ Σ⁺ 1` is zero,
-    the returned weights contain non-finite entries (NaN or inf).
+    minimum-norm solution.  If the denominator
+    \(\mathbf{1}^T \Sigma^+ \mathbf{1}\) is zero, the returned weights
+    contain non-finite entries (NaN or inf).
     """
     n = sigma.shape[0]
     ones = np.ones(n, dtype=np.float64)

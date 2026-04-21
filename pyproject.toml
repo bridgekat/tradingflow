@@ -11,8 +11,7 @@ requires-python = ">=3.12"
 dependencies = ["numpy>=2.4", "pandas>=3.0", "scipy", "cvxpy", "scs"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
-docs = ["zensical", "mkdocstrings-python"]
+dev = ["pytest>=7.0", "zensical", "mkdocstrings-python"]
 examples = [
     "a-shares-crawler@git+https://github.com/bridgekat/a-shares-crawler.git@35169561c5ca89637be539d2a438055ac966aa33",
     "matplotlib",

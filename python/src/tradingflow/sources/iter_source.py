@@ -1,4 +1,4 @@
-"""Iterator-based source -- feeds events from a Python iterable."""
+"""Iterator-based source — feeds events from a Python iterable."""
 
 from __future__ import annotations
 

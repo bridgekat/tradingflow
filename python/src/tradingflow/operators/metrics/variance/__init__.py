@@ -1,10 +1,10 @@
 """Covariance-matrix prediction evaluators.
 
-- [`MinimumVariance`][tradingflow.operators.metrics.variance.MinimumVariance]
-  -- realized variance of the global minimum variance portfolio
+- [`MinimumVariance`][tradingflow.operators.metrics.variance.minimum_variance.MinimumVariance]
+  —realized variance of the global minimum variance portfolio
   built from each predicted covariance.
-- [`LogLikelihood`][tradingflow.operators.metrics.variance.LogLikelihood]
-  -- period-averaged Gaussian negative log-likelihood of realized
+- [`LogLikelihood`][tradingflow.operators.metrics.variance.log_likelihood.LogLikelihood]
+  —period-averaged Gaussian negative log-likelihood of realized
   returns under the predicted covariance.
 """
 

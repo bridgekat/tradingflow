@@ -1,4 +1,4 @@
-//! Core type-erased graph: nodes and DAG dispatch.
+//! Core type-erased graph: nodes and graph dispatch.
 //!
 //! [`Graph`] owns [`Node`]s and implements topological flush via a min-heap.
 //! Each flush cycle maintains a per-node bitset (`incoming_bits`) that
@@ -14,7 +14,7 @@ use crate::Instant;
 
 use super::node::Node;
 
-/// Untyped DAG owning [`Node`]s and implementing topological flush.
+/// Untyped graph owning [`Node`]s and implementing topological flush.
 ///
 /// # Invariants
 ///
@@ -82,7 +82,7 @@ impl Graph {
         self.nodes.len()
     }
 
-    /// Propagate updates through the DAG.
+    /// Propagate updates through the graph.
     ///
     /// For each updated source node, schedules its downstream operator nodes
     /// onto a min-heap keyed by node index (= topological order).  Each
@@ -115,13 +115,7 @@ impl Graph {
                 let num_inputs = state.input_node_indices().len();
                 // SAFETY: all pointers validated at node construction time.
                 unsafe {
-                    state.compute(
-                        node.value_ptr,
-                        timestamp,
-                        &incoming_bits[i],
-                        0,
-                        num_inputs,
-                    )
+                    state.compute(node.value_ptr, timestamp, &incoming_bits[i], 0, num_inputs)
                 }
             } else {
                 false

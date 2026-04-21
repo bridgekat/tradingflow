@@ -1,4 +1,4 @@
-//! Built-in operators for the DAG runtime.
+//! Built-in operators for the computation graph.
 //!
 //! Every operator in this module implements [`Operator`](crate::Operator).
 //! Operators are registered into a [`Scenario`](crate::Scenario) via
@@ -54,13 +54,13 @@ pub mod apply;
 pub mod cast;
 pub mod clocked;
 pub mod concat;
-pub mod metrics;
 pub mod r#const;
 pub mod filter;
 pub mod id;
 pub mod lag;
-pub mod map;
 pub mod last;
+pub mod map;
+pub mod metrics;
 pub mod num;
 pub mod record;
 pub mod rolling;
@@ -69,6 +69,7 @@ pub mod stack;
 pub mod stocks;
 pub mod r#where;
 
+pub use apply::{Apply, ApplyInplace};
 pub use cast::Cast;
 pub use clocked::Clocked;
 pub use concat::{Concat, ConcatSync};
@@ -76,9 +77,8 @@ pub use r#const::Const;
 pub use filter::Filter;
 pub use id::Id;
 pub use lag::Lag;
-pub use apply::{Apply, ApplyInplace};
-pub use map::{Map, MapInplace};
 pub use last::Last;
+pub use map::{Map, MapInplace};
 pub use record::Record;
 pub use select::Select;
 pub use stack::{Stack, StackSync};

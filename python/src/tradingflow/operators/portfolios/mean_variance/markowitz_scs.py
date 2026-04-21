@@ -9,21 +9,26 @@ from ..mean_variance_portfolio import MeanVariancePortfolio
 
 
 class MarkowitzSCS(MeanVariancePortfolio):
-    """Markowitz mean-variance optimization.
+    r"""Markowitz mean-variance optimization.
 
     Solves the conic reformulation of:
 
-        maximize  mu' x  -  delta * sqrt(x' Sigma x)
-        subject to  1' x = 1
-                    x >= 0   (if long_only)
+    \[
+    \text{maximize} \quad \mu^T x - \delta \sqrt{x^T \Sigma x}
+    \]
+    \[
+    \text{subject to} \quad \mathbf{1}^T x = 1, \quad x \geq 0 \text{ (if long-only)}
+    \]
 
-    by factoring Sigma = L L' (Cholesky) and introducing an auxiliary
-    variable t >= ||L' x||, yielding the second-order cone program:
+    by factoring \(\Sigma = L L^T\) (Cholesky) and introducing an auxiliary
+    variable \(t \geq \|L^T x\|\), yielding the second-order cone program:
 
-        minimize  -mu' x + delta * t
-        subject to  (t, L' x) in Q^{N+1}
-                    1' x = 1
-                    x >= 0   (if long_only)
+    \[
+    \text{minimize} \quad -\mu^T x + \delta t
+    \]
+    \[
+    \text{subject to} \quad (t, L^T x) \in Q^{N+1}, \quad \mathbf{1}^T x = 1, \quad x \geq 0 \text{ (if long-only)}
+    \]
 
     solved directly via SCS.
 
@@ -36,13 +41,13 @@ class MarkowitzSCS(MeanVariancePortfolio):
     covariance
         Handle to covariance matrix, shape `(num_stocks, num_stocks)`.
     risk_aversion
-        Risk-aversion coefficient `delta`.
+        Risk-aversion coefficient \(\delta\).
     long_only
-        If `True` (default), enforce `x >= 0`.
+        If `True` (default), enforce \(x \geq 0\).
     verbose
         If `True`, print optimization diagnostics to stdout.
     **kwargs
-        Forwarded to [`MeanVariancePortfolio`][tradingflow.operators.portfolios.MeanVariancePortfolio].
+        Forwarded to [`MeanVariancePortfolio`][tradingflow.operators.portfolios.mean_variance_portfolio.MeanVariancePortfolio].
     """
 
     def __init__(

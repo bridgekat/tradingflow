@@ -1,27 +1,37 @@
 """Portfolio construction operators.
 
-Portfolio operators convert predicted returns (and optionally covariance)
-into theoretical position weights.
+Portfolio operators turn predictions into target weights — the
+recipe for *what* the strategy should hold, before any consideration
+of execution, costs, or lot sizes.  They sit between predictors
+(which output return / covariance forecasts) and traders (which
+convert target weights into actual orders).
 
-All operators in this module are [`Operator`][tradingflow.Operator]
-subclasses whose [`compute`][tradingflow.Operator.compute] method runs in
-Python.
+The three abstract bases differ by what information they consume:
 
-- [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio] --
-  abstract base taking predicted returns only.
-- [`MeanVariancePortfolio`][tradingflow.operators.portfolios.MeanVariancePortfolio] --
-  abstract base taking predicted returns and covariance.
-- [`VariancePortfolio`][tradingflow.operators.portfolios.VariancePortfolio] --
-  abstract base taking covariance only (no expected returns).
+- [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio] —
+  takes predicted returns only.  Simple heuristics (top-N equal
+  weight, rank-linear, softmax) that don't need covariance
+  information.
+- [`MeanVariancePortfolio`][tradingflow.operators.portfolios.mean_variance_portfolio.MeanVariancePortfolio] —
+  takes both predicted returns and a predicted covariance matrix.
+  The classic Markowitz setup: maximize expected return for a given
+  risk aversion.
+- [`VariancePortfolio`][tradingflow.operators.portfolios.variance_portfolio.VariancePortfolio] —
+  takes covariance only.  For pure risk-minimizing allocations like
+  the Global Minimum Variance portfolio — useful as a research
+  baseline for evaluating covariance estimators (see
+  [`metrics.variance`][tradingflow.operators.metrics.variance]).
 
 ## Sub-modules
 
-- [`mean`][tradingflow.operators.portfolios.mean] -- concrete
-  mean-portfolio implementations.
-- [`mean_variance`][tradingflow.operators.portfolios.mean_variance] -- concrete
-  mean-variance portfolio implementations.
-- [`variance`][tradingflow.operators.portfolios.variance] -- concrete
-  variance-only (minimum-variance) portfolio implementations.
+- [`mean`][tradingflow.operators.portfolios.mean] — concrete
+  return-only builders (proportional, rank-equal, rank-linear,
+  softmax).
+- [`mean_variance`][tradingflow.operators.portfolios.mean_variance] —
+  concrete Markowitz-style builders (CVXPY-based and a pure-Python
+  SCS-backed fallback).
+- [`variance`][tradingflow.operators.portfolios.variance] — concrete
+  variance-only builders (analytic global minimum variance).
 """
 
 from . import mean, mean_variance, variance

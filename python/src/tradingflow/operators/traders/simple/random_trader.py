@@ -26,7 +26,7 @@ class RandomTrader(SimpleTrader):
     portfolio_size
         Number of stocks to hold.
     **kwargs
-        Forwarded to [`SimpleTrader`][tradingflow.operators.traders.SimpleTrader].
+        Forwarded to [`SimpleTrader`][tradingflow.operators.traders.simple_trader.SimpleTrader].
     """
 
     def __init__(

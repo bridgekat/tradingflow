@@ -1,52 +1,85 @@
-"""Built-in operator classes for the computation graph.
+"""Built-in operators — the reusable building blocks of every strategy.
 
-This module provides all shipped operators. They fall into two categories:
+See the root [`tradingflow`][tradingflow] page for the conceptual
+overview (what an operator is, notification semantics, etc.) and
+[`Operator`][tradingflow.operator.Operator] /
+[`NativeOperator`][tradingflow.operator.NativeOperator] for the two
+implementation tiers.
 
-- **Native operators** -- [`NativeOperator`][tradingflow.NativeOperator] subclasses
-  whose computation is dispatched entirely to Rust for performance.
-- **Python operators** -- [`Operator`][tradingflow.Operator] subclasses whose
-  [`compute`][tradingflow.Operator.compute] method runs in Python (under the GIL).
+This module groups operators by what they *do*.  The sub-modules below
+cover the heavy-duty categories; the directly-exported names at the
+top of this file cover the glue pieces you need in nearly every graph.
 
-## Structural operators
+## Structural operators (reshape / reroute / combine)
 
-- [`Cast`][tradingflow.operators.Cast] -- element-wise dtype conversion
-- [`Const`][tradingflow.operators.Const] -- zero-input constant array node
-- [`Concat`][tradingflow.operators.Concat] -- concatenate N arrays along an existing axis
-- [`Stack`][tradingflow.operators.Stack] -- stack N arrays along a new axis
-- [`ConcatSync`][tradingflow.operators.ConcatSync] -- message-passing Concat (float-only):
-  fills non-produced input slots with NaN so downstream sees only the
-  synchronised slice of inputs that fired together
-- [`StackSync`][tradingflow.operators.StackSync] -- message-passing Stack (float-only):
-  fills non-produced input slots with NaN so downstream sees only the
-  synchronised slice of inputs that fired together
-- [`Select`][tradingflow.operators.Select] -- select elements by flat indices
-- [`Id`][tradingflow.operators.Id] -- identity passthrough
-- [`Map`][tradingflow.operators.Map] -- applies a function to transform array values
-- [`MapInplace`][tradingflow.operators.MapInplace] -- applies a function in place on input and output arrays
-- [`Apply`][tradingflow.operators.Apply] -- applies a function to multiple input arrays
+Plumbing for moving data between nodes without mathematical
+transformation.
 
-## Series operators
+- [`Id`][tradingflow.operators.id.Id] — identity passthrough.  Useful for
+  alias handles or for benchmarking.
+- [`Cast`][tradingflow.operators.cast.Cast] — element-wise dtype
+  conversion (e.g. `int32` → `float64`).
+- [`Const`][tradingflow.operators.const.Const] — zero-input node that always
+  produces the same constant array.
+- [`Select`][tradingflow.operators.select.Select] — pick specific elements
+  out of an array by flat index (e.g. extract the "close" column from
+  a prices row).
+- [`Concat`][tradingflow.operators.concat.Concat] — concatenate N arrays
+  along an existing axis.
+- [`Stack`][tradingflow.operators.stack.Stack] — stack N arrays along a new
+  axis.
 
-- [`Record`][tradingflow.operators.Record] -- accumulate Array values into a Series
-- [`Last`][tradingflow.operators.Last] -- extract most recent value from a Series
-- [`Lag`][tradingflow.operators.Lag] -- output the value from N steps ago
+### Synchronized (message-passing) variants
 
-## Python operators
+[`ConcatSync`][tradingflow.operators.concat.ConcatSync] and
+[`StackSync`][tradingflow.operators.stack.StackSync] are the float-only
+message-passing counterparts of `Concat` / `Stack` (non-produced input
+slots are filled with `NaN`).
 
-- [`Filter`][tradingflow.operators.Filter] -- predicate-gated passthrough; drops the
-  entire element when the predicate returns `False`, halting downstream propagation
-- [`Where`][tradingflow.operators.Where] -- element-wise conditional replacement;
-  always produces output (never halts propagation)
+## Series operators (array ↔ series conversion)
+
+Bridges between snapshot arrays and their full-history counterparts.
+
+- [`Record`][tradingflow.operators.record.Record] — accumulate every `Array`
+  value into a `Series`.  This is how you materialize histories for
+  end-of-run inspection or as input to rolling / predictor operators.
+- [`Last`][tradingflow.operators.last.Last] — expose a `Series`'s most
+  recent value as an `Array`.
+- [`Lag`][tradingflow.operators.lag.Lag] — output the value from N steps
+  ago.
+
+## Custom-function operators (Python)
+
+For quick experiments without writing a full operator subclass.
+
+- [`Map`][tradingflow.operators.map.Map] — apply a Python callable to
+  every upstream array value.
+- [`Apply`][tradingflow.operators.apply.Apply] — apply a Python callable
+  that takes multiple array inputs.
+- [`Filter`][tradingflow.operators.filter.Filter] — predicate-gated
+  passthrough; when the predicate returns `False`, the element is
+  *dropped* and downstream nodes are not notified.
+- [`Where`][tradingflow.operators.where.Where] — element-wise conditional
+  replacement; always produces output (never halts propagation).
+
+## Scheduling
+
+- [`Clocked`][tradingflow.operators.clocked.Clocked] — wrap any operator so
+  that it only fires when a clock input ticks.  Convenient for turning
+  a purely data-driven operator into a periodic one without modifying
+  its implementation.
 
 ## Sub-modules
 
-- [`num`][tradingflow.operators.num] -- element-wise numeric operators
-- [`portfolios`][tradingflow.operators.portfolios] -- portfolio construction operators
-- [`predictors`][tradingflow.operators.predictors] -- cross-sectional return predictors
-- [`rolling`][tradingflow.operators.rolling] -- rolling window operators
-- [`metrics`][tradingflow.operators.metrics] -- clock-driven financial metrics
-- [`stocks`][tradingflow.operators.stocks] -- stock-specific operators
-- [`traders`][tradingflow.operators.traders] -- trading simulation operators
+| Sub-module | Purpose |
+|------------|---------|
+| [`num`][tradingflow.operators.num] | element-wise arithmetic and math on arrays |
+| [`rolling`][tradingflow.operators.rolling] | rolling windows over series (mean, variance, covariance, EMA) |
+| [`predictors`][tradingflow.operators.predictors] | cross-sectional return and covariance predictors |
+| [`portfolios`][tradingflow.operators.portfolios] | portfolio construction (mean, mean-variance, min-variance) |
+| [`traders`][tradingflow.operators.traders] | simulated execution with transaction costs |
+| [`metrics`][tradingflow.operators.metrics] | clock-driven performance metrics (Sharpe, drawdown, IC, ...) |
+| [`stocks`][tradingflow.operators.stocks] | stock-specific helpers (forward adjustment, annualization) |
 """
 
 from . import metrics, num, portfolios, predictors, rolling, stocks, traders

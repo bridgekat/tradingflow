@@ -7,21 +7,25 @@ from ._common import single_index_covariance
 
 
 class SingleIndex(VariancePredictor[np.ndarray]):
-    """Single-index model covariance estimator.
+    r"""Single-index model covariance estimator.
 
-    Fits the factor model `r_i(t) = alpha_i + beta_i * f(t) + eps_i(t)`
-    stock-by-stock against an equal-weighted cross-sectional mean return
-    used as a proxy for the market factor `f(t)`.  The estimated
-    covariance matrix is then
+    Fits the factor model
+    \(r_i(t) = \alpha_i + \beta_i f(t) + \epsilon_i(t)\) stock-by-stock
+    against an equal-weighted cross-sectional mean return used as a
+    proxy for the market factor \(f(t)\).  The estimated covariance
+    matrix is then
 
-        Sigma = sigma_f^2 * beta @ beta.T + diag(sigma_eps^2),
+    \[
+    \Sigma = \sigma_f^{2} \beta \beta^T + \mathrm{diag}(\sigma_\epsilon^{2}),
+    \]
 
-    where `sigma_f^2` is the market-factor variance and
-    `sigma_eps^2` is the vector of idiosyncratic residual variances.
+    where \(\sigma_f^{2}\) is the market-factor variance and
+    \(\sigma_\epsilon^{2}\) is the vector of idiosyncratic residual
+    variances.
 
     Corresponds to the *SI* estimator of Pantaleo et al. (2010).
     Since TradingFlow does not take an external index as input, the
-    cross-sectional mean return at each timestep serves as `f(t)`.
+    cross-sectional mean return at each timestep serves as \(f(t)\).
     Ignores features.
 
     Parameters
@@ -35,7 +39,7 @@ class SingleIndex(VariancePredictor[np.ndarray]):
         Recorded forward-adjusted close prices series, element shape
         `(num_stocks,)`.
     **kwargs
-        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
+        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor].
     """
 
     def __init__(

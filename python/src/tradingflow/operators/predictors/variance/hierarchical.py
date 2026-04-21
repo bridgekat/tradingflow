@@ -1,4 +1,4 @@
-"""Hierarchical-clustering covariance predictors.
+r"""Hierarchical-clustering covariance predictors.
 
 Three agglomerative hierarchical-clustering estimators of the
 covariance matrix, following Pantaleo et al. (2010).  All three build
@@ -6,18 +6,27 @@ a dendrogram from the sample correlation similarities, read the
 *cophenetic similarity* (the similarity at which pairs first merge)
 into a filtered correlation matrix, and rescale by the sample standard
 deviations.  They differ only in the rule that defines the similarity
-between a newly-merged cluster `L = A ∪ B` and another active
-cluster `F`:
+between a newly-merged cluster \(L = A \cup B\) and another active
+cluster \(F\):
 
-- [`UPGMA`][tradingflow.operators.predictors.variance.UPGMA] — unweighted
+- [`UPGMA`][tradingflow.operators.predictors.variance.hierarchical.UPGMA] — unweighted
   pair-group method with arithmetic mean:
-  `σ(L, F) = (N_A σ(A, F) + N_B σ(B, F)) / (N_A + N_B)`.
-- [`WPGMA`][tradingflow.operators.predictors.variance.WPGMA] — weighted
+  \[
+  \sigma(L, F) = \frac{N_A \cdot \sigma(A, F) + N_B \cdot \sigma(B, F)}{N_A + N_B}.
+  \]
+- [`WPGMA`][tradingflow.operators.predictors.variance.hierarchical.WPGMA] — weighted
   pair-group method with arithmetic mean:
-  `σ(L, F) = (σ(A, F) + σ(B, F)) / 2`.
-- [`Hausdorff`][tradingflow.operators.predictors.variance.Hausdorff] —
+  \[
+  \sigma(L, F) = \frac{\sigma(A, F) + \sigma(B, F)}{2}.
+  \]
+- [`Hausdorff`][tradingflow.operators.predictors.variance.hierarchical.Hausdorff] —
   Hausdorff linkage using the original pairwise similarities:
-  `σ(L, F) = min{min_{i∈L} max_{j∈F} σ_ij, max_{i∈L} min_{j∈F} σ_ij}`.
+  \[
+  \sigma(L, F) = \min\!\left\{
+      \min_{i \in L} \max_{j \in F} \sigma_{ij},\;
+      \max_{i \in L} \min_{j \in F} \sigma_{ij}
+  \right\}.
+  \]
 
 To keep the dendrogram monotonic (a prerequisite for a positive
 semi-definite filtered correlation matrix), merge similarities are
@@ -74,10 +83,10 @@ class WPGMA(VariancePredictor[np.ndarray]):
 
 
 class Hausdorff(VariancePredictor[np.ndarray]):
-    """Hausdorff-linkage hierarchical-clustering covariance estimator.
+    r"""Hausdorff-linkage hierarchical-clustering covariance estimator.
 
     Uses the Hausdorff-style similarity
-    `min{min_i max_j, max_i min_j}` over the original pairwise
+    \(\min\{\min_i \max_j,\ \max_i \min_j\}\) over the original pairwise
     correlations.  Reversals in the resulting dendrogram are removed
     by clamping each merge similarity to the minimum of the previous
     merges.  Ignores features.

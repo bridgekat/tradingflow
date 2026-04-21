@@ -1,7 +1,7 @@
 //! Benchmarks for Scenario::run() with ArraySource-driven graphs.
 //!
 //! Measures end-to-end throughput including channel creation, async event
-//! delivery, event ordering, and DAG flush.
+//! delivery, event ordering, and computation graph flush.
 //!
 //! Run with: `cargo bench --bench bench_scenario`
 

@@ -1,4 +1,4 @@
-"""Filter operator -- predicate-gated passthrough."""
+"""Filter operator — predicate-gated passthrough."""
 
 from __future__ import annotations
 

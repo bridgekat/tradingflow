@@ -15,12 +15,14 @@ class RankLinear(MeanPortfolio):
 
     Parameters
     ----------
+    universe
+        Handle to universe weights, shape `(num_stocks,)`.
     predicted_returns
         Handle to predicted returns array, shape `(num_stocks,)`.
     top_fraction
         Fraction of positively-predicted stocks to include.
     **kwargs
-        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio].
+        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio].
     """
 
     def __init__(self, universe, predicted_returns, *, top_fraction: float = 0.1, **kwargs) -> None:

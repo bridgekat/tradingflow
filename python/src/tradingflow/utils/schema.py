@@ -8,6 +8,19 @@ from collections.abc import Iterable
 class Schema:
     """Bidirectional name-to-position mapping for a single array axis.
 
+    Use a `Schema` to refer to array columns by name instead of
+    hard-coding numeric offsets.  For example, a daily-prices row laid
+    out as `[open, high, low, close, volume, turnover]` can be wrapped
+    in a schema that maps `"prices.close"` to column index 3:
+
+    ```python
+    schema = Schema([
+        "prices.open", "prices.high", "prices.low",
+        "prices.close", "prices.volume", "prices.turnover",
+    ])
+    close = sc.add_operator(Select(prices, schema.index("prices.close")))
+    ```
+
     Parameters
     ----------
     names

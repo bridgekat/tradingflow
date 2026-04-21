@@ -4,7 +4,7 @@ from ... import Handle, NativeOperator, NodeKind
 
 
 class SharpeRatio(NativeOperator):
-    """Sharpe ratio (mean / std of period returns) since inception.
+    r"""Sharpe ratio \(\mu / \sigma\) of period returns since inception.
 
     Parameters
     ----------

@@ -261,7 +261,7 @@ class SeriesView[T: np.generic]:
         ----------
         columns
             Column names. Accepts a `list[str]` or a
-            [`Schema`][tradingflow.Schema].
+            [`Schema`][tradingflow.utils.schema.Schema].
             If `None`, uses integer column names.
         """
         ts, vals = self.to_numpy()

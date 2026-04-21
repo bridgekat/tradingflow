@@ -18,7 +18,7 @@ class Proportional(MeanPortfolio):
     predicted_returns
         Handle to predicted returns array, shape `(num_stocks,)`.
     **kwargs
-        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio].
+        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio].
     """
 
     def __init__(self, universe, predicted_returns, **kwargs) -> None:

@@ -11,12 +11,12 @@ class SingleFeature(MeanPredictor[None]):
     A trivial pass-through predictor that selects one feature column
     and outputs it unchanged.  Useful for treating a raw factor as a
     "prediction" so it can be evaluated by
-    [`InformationCoefficient`][tradingflow.operators.metrics.mean.InformationCoefficient]
+    [`InformationCoefficient`][tradingflow.operators.metrics.mean.information_coefficient.InformationCoefficient]
     at the predictor's rebalance cadence (rather than at the factor's
     native update cadence).
 
     No fitting is performed.  `max_periods` and `min_periods` are
-    fixed to `1` since no historical window is needed -- only the
+    fixed to `1` since no historical window is needed — only the
     latest feature row is used.
 
     Parameters
@@ -31,7 +31,7 @@ class SingleFeature(MeanPredictor[None]):
     feature_index
         Index of the feature column to return.  Default `0`.
     **kwargs
-        Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor].
+        Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.mean_predictor.MeanPredictor].
         `max_periods` and `min_periods` are fixed to `1`.
     """
 

@@ -12,7 +12,7 @@ from ... import ArrayView, Handle, NodeKind, Operator
 
 @dataclass(slots=True)
 class VariancePortfolioState:
-    """Mutable state for [`VariancePortfolio`] subclasses."""
+    """Mutable state for [`VariancePortfolio`][tradingflow.operators.portfolios.variance_portfolio.VariancePortfolio] subclasses."""
 
     num_stocks: int
     positions_fn: Callable[["VariancePortfolioState", np.ndarray], np.ndarray]
@@ -37,7 +37,7 @@ class VariancePortfolio(
 
     The rebalance cadence is inherited from upstream: `universe` is
     typically clocked by a rebalance clock (e.g. via
-    [`Clocked`][tradingflow.operators.Clocked]), so this operator runs
+    [`Clocked`][tradingflow.operators.clocked.Clocked]), so this operator runs
     at that cadence.  `predicted_covariances` is read as the latest
     stored prediction at the trigger — it need not produce on the same
     cycle.
@@ -46,7 +46,7 @@ class VariancePortfolio(
 
     `predicted_covariances` is allowed to contain `NaN` rows and columns
     — per the
-    [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor]
+    [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor]
     contract, these mark stocks with insufficient data.  The base class
     subsets to `(universe > 0) & np.isfinite(np.diag(Sigma))` before
     calling `positions_fn`, so subclasses never see `NaN` inputs.  The

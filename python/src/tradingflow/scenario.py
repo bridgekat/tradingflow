@@ -1,4 +1,26 @@
-"""Scenario runtime -- thin Python wrapper around the Rust native backend."""
+"""Scenario — the Python entry point to the Rust computation graph.
+
+A [`Scenario`][tradingflow.scenario.Scenario] is the single object you interact
+with to build and run a strategy.  It owns the directed acyclic
+computation graph plus the event loop that drives it.
+
+Typical usage has three phases:
+
+1. **Construct** — `sc = Scenario()`.
+2. **Populate** — call `sc.add_source(...)` and `sc.add_operator(...)`,
+   passing the handles returned by earlier calls as inputs to later
+   operators.  Every call returns a typed
+   [`Handle`][tradingflow.data.types.Handle] that encodes the new node's value
+   kind (array vs. series), shape, and dtype.
+3. **Run** — `sc.run()` drains every registered source in timestamp
+   order, propagates each flush batch through the graph, and returns
+   when every source is exhausted.  After it returns, use
+   `sc.array_view(handle)` or `sc.series_view(handle)` to inspect the
+   final state of any node.
+
+This module is a thin Python wrapper over the Rust native backend;
+the bulk of the work happens inside the Rust core.
+"""
 
 from __future__ import annotations
 
@@ -19,17 +41,17 @@ class Scenario:
     """A directed acyclic graph of sources and operators.
 
     Sources and operators are registered via
-    [`add_source`][tradingflow.Scenario.add_source] and
-    [`add_operator`][tradingflow.Scenario.add_operator], each returning
-    a [`Handle`][tradingflow.Handle].  Node output values are not
+    [`add_source`][tradingflow.scenario.Scenario.add_source] and
+    [`add_operator`][tradingflow.scenario.Scenario.add_operator], each returning
+    a [`Handle`][tradingflow.data.types.Handle].  Node output values are not
     historised automatically — attach a
-    [`Record`][tradingflow.operators.Record] operator where a time
+    [`Record`][tradingflow.operators.record.Record] operator where a time
     series is required.
 
-    [`run`][tradingflow.Scenario.run] drives the async event loop: it
+    [`run`][tradingflow.scenario.Scenario.run] drives the async event loop: it
     drains every source's historical and live channels in timestamp
     order, coalesces events that share the same timestamp into a single
-    flush batch, and propagates the batch through the DAG before
+    flush batch, and propagates the batch through the graph before
     advancing to the next timestamp.  Within a batch, each operator's
     `produced` mask reports which of its inputs actually produced this
     cycle (see the "Notification semantics" section in

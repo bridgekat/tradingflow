@@ -1,4 +1,4 @@
-"""Map operators -- apply functions to transform array values."""
+"""Map operator — apply a function to transform array values."""
 
 from __future__ import annotations
 
@@ -12,16 +12,9 @@ from .. import Array, ArrayView, Handle, NodeKind, Operator
 
 @dataclass
 class MapState:
-    """State for [`Map`]."""
+    """State for [`Map`][tradingflow.operators.map.Map]."""
 
     f: Callable[[np.ndarray], np.ndarray]
-
-
-@dataclass
-class MapInplaceState:
-    """State for [`MapInplace`]."""
-
-    f: Callable[[np.ndarray, np.ndarray], bool]
 
 
 class Map[S: np.generic, T: np.generic](

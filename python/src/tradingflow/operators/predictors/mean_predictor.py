@@ -30,19 +30,15 @@ class MeanPredictor[T](
 ):
     """Abstract mean-return predictor.
 
-    On every upstream tick, the predictor is invoked so subclasses can
-    observe each new sample (a future incremental-fit hook can accumulate
-    running statistics here — the current base class refits from scratch
-    on rebalance, so non-rebalance ticks simply return without work).
     On each **rebalance** tick (signalled by the `universe` input
     producing new weights), reads the last `max_periods` feature and
     price entries from the upstream `Series` inputs, builds a 1-period
     return matrix, calls `fit_fn` and `predict_fn`, and emits predicted
-    returns.
+    returns.  Non-rebalance ticks are ignored.
 
     The rebalance cadence is controlled by the caller: typically
     `universe` is clocked by a rebalance clock (e.g. via
-    [`Clocked`][tradingflow.operators.Clocked]), so universe updates
+    [`Clocked`][tradingflow.operators.clocked.Clocked]), so universe updates
     coincide with rebalance dates.
 
     ## NaN behavior
@@ -55,7 +51,7 @@ class MeanPredictor[T](
     `predict_fn` itself never needs to handle `NaN`.  Downstream
     portfolio constructors must accept `NaN` entries and subset to the
     finite ones (see
-    [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio]).
+    [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio]).
 
     Parameters
     ----------
@@ -155,10 +151,7 @@ class MeanPredictor[T](
         produced: tuple[bool, ...],
     ) -> bool:
         # Emit only on rebalance ticks (signalled by the `universe`
-        # input producing new weights).  Other invocations are reserved
-        # for subclasses that want to incrementally accumulate per-tick
-        # statistics — the base class refits from scratch on rebalance
-        # and has no per-tick state, so it returns immediately.
+        # input producing new weights).
         if not produced[0]:
             return False
 

@@ -96,7 +96,7 @@ pub type WriteFn = unsafe fn(*mut u8, *mut u8, Instant) -> bool;
 /// 1. Created via [`from_source`](ErasedSource::from_source) (safe, typed)
 ///    or [`new`](ErasedSource::new) (`unsafe`, raw).
 /// 2. Consumed by [`Scenario::add_erased_source`], which calls
-///    [`init`](ErasedSource::init), constructs the DAG node, and stores
+///    [`init`](ErasedSource::init), constructs the graph node, and stores
 ///    channel state in `SourceState`.
 pub struct ErasedSource {
     event_type_id: TypeId,

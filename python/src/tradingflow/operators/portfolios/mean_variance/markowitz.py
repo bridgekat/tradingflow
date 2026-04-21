@@ -11,24 +11,24 @@ from ..mean_variance_portfolio import MeanVariancePortfolio
 
 
 class Mode(IntEnum):
-    """Markowitz optimization mode.
+    r"""Markowitz optimization mode.
 
     All modes share the long-only (optional) and budget constraints
-    `1' x = 1`, `x >= 0`.  The `bound` parameter's meaning is
+    \(\mathbf{1}^T x = 1\), \(x \geq 0\).  The `bound` parameter's meaning is
     mode-dependent.
 
-    - [`MIN_VARIANCE_GIVEN_RETURN`][tradingflow.operators.portfolios.mean_variance.Mode]
-      — minimize `x' Sigma x` subject to `mu' x >= bound`.  `bound` is
-      the minimum admissible expected return `mu_min`.
-    - [`MAX_RETURN_GIVEN_STD_DEV`][tradingflow.operators.portfolios.mean_variance.Mode]
-      — maximize `mu' x` subject to `sqrt(x' Sigma x) <= bound`.  `bound`
-      is the maximum admissible portfolio standard deviation `sigma_max`.
-    - [`MIN_MEAN_VARIANCE`][tradingflow.operators.portfolios.mean_variance.Mode]
-      — maximize `mu' x - bound * x' Sigma x`.  `bound` is the
-      variance-penalty coefficient `delta` (quadratic risk aversion).
-    - [`MIN_MEAN_STD_DEV`][tradingflow.operators.portfolios.mean_variance.Mode]
-      — maximize `mu' x - bound * sqrt(x' Sigma x)`.  `bound` is the
-      std-dev-penalty coefficient `delta` (linear risk aversion).
+    - [`MIN_VARIANCE_GIVEN_RETURN`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode]
+      — minimize \(x^T \Sigma x\) subject to \(\mu^T x \geq \text{bound}\).  `bound` is
+      the minimum admissible expected return \(\mu_{\min}\).
+    - [`MAX_RETURN_GIVEN_STD_DEV`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode]
+      — maximize \(\mu^T x\) subject to \(\sqrt{x^T \Sigma x} \leq \text{bound}\).  `bound`
+      is the maximum admissible portfolio standard deviation \(\sigma_{\max}\).
+    - [`MIN_MEAN_VARIANCE`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode]
+      — maximize \(\mu^T x - \text{bound} \cdot x^T \Sigma x\).  `bound` is the
+      variance-penalty coefficient \(\delta\) (quadratic risk aversion).
+    - [`MIN_MEAN_STD_DEV`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode]
+      — maximize \(\mu^T x - \text{bound} \cdot \sqrt{x^T \Sigma x}\).  `bound` is the
+      std-dev-penalty coefficient \(\delta\) (linear risk aversion).
     """
 
     MIN_VARIANCE_GIVEN_RETURN = 1
@@ -38,13 +38,13 @@ class Mode(IntEnum):
 
 
 class Markowitz(MeanVariancePortfolio):
-    """Markowitz mean-variance optimization with a pluggable mode.
+    r"""Markowitz mean-variance optimization with a pluggable mode.
 
     Solves one of four equivalent reformulations of the mean-variance
     trade-off, selected by the `mode` parameter (see
-    [`Mode`][tradingflow.operators.portfolios.mean_variance.Mode]).  The
-    budget constraint (`1' x = 1` when `full_position`, else `1' x <= 1`)
-    and the long-only constraint (`x >= 0` when `long_only`) apply to
+    [`Mode`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode]).  The
+    budget constraint (\(\mathbf{1}^T x = 1\) when `full_position`, else \(\mathbf{1}^T x \leq 1\))
+    and the long-only constraint (\(x \geq 0\) when `long_only`) apply to
     every mode; the scalar `bound` parameterizes whichever knob the
     chosen mode uses.
 
@@ -58,24 +58,24 @@ class Markowitz(MeanVariancePortfolio):
         Handle to covariance matrix, shape `(num_stocks, num_stocks)`.
     mode
         Optimization mode, a member of
-        [`Mode`][tradingflow.operators.portfolios.mean_variance.Mode].
+        [`Mode`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode].
     bound
         Scalar parameter whose meaning depends on `mode` — minimum
-        return `mu_min`, maximum standard deviation `sigma_max`, or
-        risk-aversion coefficient `delta`.  See `Mode` for details.
-        If the resulting problem is infeasible (e.g. `mu_min` above
-        every attainable return, or `sigma_max` below the GMV
+        return \(\mu_{\min}\), maximum standard deviation \(\sigma_{\max}\), or
+        risk-aversion coefficient \(\delta\).  See `Mode` for details.
+        If the resulting problem is infeasible (e.g. \(\mu_{\min}\) above
+        every attainable return, or \(\sigma_{\max}\) below the GMV
         volatility), the operator falls back to equal weights.
     long_only
-        If `True` (default), enforce `x >= 0`.
+        If `True` (default), enforce \(x \geq 0\).
     full_position
-        If `True` (default), require full investment `1' x = 1`.  If
-        `False`, allow underinvestment `1' x <= 1` (holding cash is
+        If `True` (default), require full investment \(\mathbf{1}^T x = 1\).  If
+        `False`, allow underinvestment \(\mathbf{1}^T x \leq 1\) (holding cash is
         permitted).
     verbose
         If `True`, print optimization diagnostics to stdout.
     **kwargs
-        Forwarded to [`MeanVariancePortfolio`][tradingflow.operators.portfolios.MeanVariancePortfolio].
+        Forwarded to [`MeanVariancePortfolio`][tradingflow.operators.portfolios.mean_variance_portfolio.MeanVariancePortfolio].
     """
 
     def __init__(

@@ -10,7 +10,7 @@ from .. import ArrayView, Handle, Operator, SeriesView
 
 @dataclass
 class ClockedState:
-    """State for [`Clocked`]."""
+    """State for [`Clocked`][tradingflow.operators.clocked.Clocked]."""
 
     inner_state: Any
     # Stored as an unbound function to avoid per-call attribute lookup.
@@ -20,11 +20,10 @@ class ClockedState:
 class Clocked(Operator):
     """Gates a Python operator so it only fires when a clock input ticks.
 
-    Wraps any Python [`Operator`][tradingflow.Operator] and **prepends** a
-    clock handle to its inputs (position 0), mirroring the Rust
-    [`Clocked<O>`][tradingflow.Clocked] layout.  On each flush, if the
-    clock did not produce, the operator returns immediately without
-    computing.  When the clock ticks, the inner operator's `compute` is
+    Wraps any Python [`Operator`][tradingflow.operator.Operator] and **prepends** a
+    clock handle to its inputs (position 0), mirroring the Rust-side
+    `Clocked<O>` layout.  On each flush, if the clock did not produce,
+    the operator returns immediately without computing.  When the clock ticks, the inner operator's `compute` is
     called with the data inputs (`inputs[1:]`) and the correspondingly
     sliced `produced[1:]` tuple — symmetric slicing on both arguments.
 

@@ -8,16 +8,17 @@ from ... import Handle, NativeOperator, NodeKind
 
 
 class Annualize(NativeOperator):
-    """Convert year-to-date financial values into annualized values.
+    r"""Convert year-to-date financial values into annualized values.
 
     Takes an input array of shape `(2 + N,)` laid out as
     `[year, day_of_year, ytd_1, ..., ytd_N]` (produced by
-    [`FinancialReportSource`][tradingflow.sources.FinancialReportSource] with
+    [`FinancialReportSource`][tradingflow.sources.stocks.financial_report_source.FinancialReportSource] with
     `with_report_date=True`) and outputs an array of shape `(N,)`
     containing annualized values.
 
     The operator handles any reporting frequency uniformly by using
-    days-based scaling: `annualized = (current - last) × 365 / days_elapsed`.
+    days-based scaling:
+    \(\text{annualized} = (\text{current} - \text{last}) \times 365 / \text{days\_elapsed}\).
 
     Parameters
     ----------

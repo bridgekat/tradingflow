@@ -1,4 +1,32 @@
-"""Operator interface for the computation graph."""
+"""Operator interface — how new transformations are added to the graph.
+
+An **operator** is a node that reads from one or more upstream nodes
+and writes to its own output node.  This module defines the two
+abstract bases for operators:
+
+- [`Operator`][tradingflow.operator.Operator] — base for **Python operators**.
+  Subclasses implement `compute()` (and optionally `init()`), which is
+  invoked under the GIL whenever an upstream input produces.
+  Convenient when the per-tick cost is dominated by something already
+  in Python (CVXPY solves, scikit-learn fits, NumPy linear algebra),
+  and when prototyping new ideas where the iteration speed of editing
+  Python far outweighs the runtime cost of the GIL.
+- [`NativeOperator`][tradingflow.operator.NativeOperator] — descriptor for
+  **Rust operators**.  Subclasses are thin Python shims that carry
+  enough metadata for the Rust runtime to construct and dispatch the
+  native operator entirely on its own — no Python is involved on the
+  hot path.
+
+Most users won't subclass either of these directly; the built-in
+operators in [`tradingflow.operators`][tradingflow.operators] cover
+the common cases.  Subclass `Operator` when you need a Python-side
+transformation that doesn't fit any built-in (or use the convenience
+operators [`Map`][tradingflow.operators.map.Map] or
+[`Apply`][tradingflow.operators.apply.Apply] for a quick lambda-style
+escape hatch).  Subclass `NativeOperator` when you've added a new
+operator on the Rust side and want a Python-friendly constructor for
+it.
+"""
 
 from __future__ import annotations
 
@@ -20,8 +48,8 @@ class Operator[*Views, Output, State](ABC):
 
     - ***Views** — element-wise view types of the upstream inputs, in
       order.  Each entry is the view class a Python operator actually
-      sees at compute time, e.g. [`ArrayView[T]`][tradingflow.ArrayView],
-      [`SeriesView[T]`][tradingflow.SeriesView], or `None` for clock
+      sees at compute time, e.g. [`ArrayView[T]`][tradingflow.data.views.ArrayView],
+      [`SeriesView[T]`][tradingflow.data.views.SeriesView], or `None` for clock
       (`Unit`) inputs.
     - **Output** — view type of the operator's output node.
     - **State** — mutable state object carried across invocations.
@@ -31,18 +59,18 @@ class Operator[*Views, Output, State](ABC):
     regardless of any hierarchical structure on the Rust side.
 
     Construction-time inputs are passed positionally as
-    [`Handle`][tradingflow.Handle]s via the `inputs` constructor
+    [`Handle`][tradingflow.data.types.Handle]s via the `inputs` constructor
     argument; the runtime resolves each handle to its corresponding
-    view before calling [`init`][tradingflow.Operator.init] and
-    [`compute`][tradingflow.Operator.compute].
+    view before calling [`init`][tradingflow.operator.Operator.init] and
+    [`compute`][tradingflow.operator.Operator.compute].
 
     Parameters
     ----------
     inputs
         Tuple of upstream handles, in the same order as `*Views`.
     kind
-        Output node kind: [`NodeKind.ARRAY`][tradingflow.NodeKind] or
-        [`NodeKind.SERIES`][tradingflow.NodeKind].
+        Output node kind: [`NodeKind.ARRAY`][tradingflow.data.types.NodeKind] or
+        [`NodeKind.SERIES`][tradingflow.data.types.NodeKind].
     dtype
         NumPy dtype of the output.
     shape
@@ -125,7 +153,7 @@ class Operator[*Views, Output, State](ABC):
             is `True` iff input `i` produced new output this flush
             cycle.  Same arity as `inputs`; access with `produced[i]`
             or destructure (`a, b = produced`).  Transformers like
-            [`Clocked`][tradingflow.operators.Clocked] forward a sliced
+            [`Clocked`][tradingflow.operators.clocked.Clocked] forward a sliced
             view (`produced[1:]`) to inner operators.
 
         Returns
@@ -176,7 +204,7 @@ class Operator[*Views, Output, State](ABC):
     def _register(self, native_scenario: NativeScenario, input_indices: list[int]) -> int:
         """Register this Python operator with the native scenario.
 
-        Polymorphic dispatch: [`Scenario.add_operator`][tradingflow.Scenario.add_operator]
+        Polymorphic dispatch: [`Scenario.add_operator`][tradingflow.scenario.Scenario.add_operator]
         delegates to this method without branching on operator kind.
         """
         input_types, output_type = self.get_io_types()

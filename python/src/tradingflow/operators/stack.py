@@ -1,10 +1,5 @@
-"""Stack operators — stack N arrays along a new axis.
-
-- [`Stack`][tradingflow.operators.Stack] — time-series semantics:
-  copies all inputs on every trigger.
-- [`StackSync`][tradingflow.operators.StackSync] — message-passing
-  semantics: fills non-produced input slots with `NaN` (float-only).
-"""
+"""Stack N arrays along a new axis — time-series (`Stack`) and
+message-passing (`StackSync`) variants."""
 
 from __future__ import annotations
 
@@ -21,7 +16,7 @@ class Stack(NativeOperator):
     Time-series semantics: on every trigger, the latest value of each
     input is copied into the output, regardless of which inputs actually
     produced this cycle.  See
-    [`StackSync`][tradingflow.operators.StackSync] for the
+    [`StackSync`][tradingflow.operators.stack.StackSync] for the
     message-passing variant that fills non-produced slots with `NaN`.
 
     All inputs must have the same dtype and shape. The output shape
@@ -54,14 +49,14 @@ class StackSync(NativeOperator):
     """Stack N arrays along a new axis, filling non-produced slots with NaN.
 
     Message-passing counterpart to
-    [`Stack`][tradingflow.operators.Stack]: on every compute, slots of
+    [`Stack`][tradingflow.operators.stack.Stack]: on every compute, slots of
     inputs that did not produce in the current flush cycle are filled
     with `NaN`, so downstream sees only the *synchronised* slice of
     inputs that fired together.  This separates freshly-updated state
     from stale carry-over.
 
     Typical use: pair with
-    [`ForwardFill`][tradingflow.operators.num.ForwardFill] downstream
+    [`ForwardFill`][tradingflow.operators.num.ffill.ForwardFill] downstream
     to get "fresh where available, last-known otherwise" semantics —
     correct for suspended stocks, multi-frequency sensors, sparse
     event streams, and any cross-sectional aggregation where inputs

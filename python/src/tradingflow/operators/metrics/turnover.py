@@ -21,12 +21,11 @@ class Turnover(
         TurnoverState,
     ]
 ):
-    """Per-rebalance portfolio turnover.
+    r"""Per-rebalance portfolio turnover.
 
     On every update of the input weight vector, emits the L1 norm of
     the change since the previous update:
-
-        turnover_t = sum_i |w_{t,i} - w_{t-1,i}|
+    \(\text{turnover}_t = \sum_i |w_{t,i} - w_{t-1,i}|\).
 
     For long-only portfolios that sum to 1, turnover lies in `[0, 2]`:
     `0` means no change, `2` means a complete liquidation and
@@ -35,7 +34,7 @@ class Turnover(
     The first update is a warmup: the operator caches the weights and
     emits `NaN`.  All subsequent updates emit a finite turnover value.
 
-    NaN handling: positions `w_{t,i}` and `w_{t-1,i}` that are
+    NaN handling: positions \(w_{t,i}\) and \(w_{t-1,i}\) that are
     non-finite are treated as `0` before computing the difference,
     so a stock going from active to missing (or vice versa) contributes
     its full weight to the turnover.

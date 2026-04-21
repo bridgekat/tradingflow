@@ -11,13 +11,13 @@
 # The site_name is shown in the page header and the browser window title
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_name
-site_name = "API Documentation"
+site_name = "TradingFlow"
 
 # The site_description is included in the HTML head and should contain a
 # meaningful description of the site content for use by search engines.
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_description
-site_description = "API Documentation for the TradingFlow project."
+site_description = "TradingFlow project documentation."
 
 # The site_author attribute. This is used in the HTML head element.
 #
@@ -197,7 +197,7 @@ features = [
     # In order to provide a better user experience on slow connections when
     # using instant navigation, a progress indicator can be enabled.
     # https://zensical.org/docs/setup/navigation/#progress-indicator
-    #"navigation.instant.progress",
+    "navigation.instant.progress",
 
     # When navigation paths are activated, a breadcrumb navigation is rendered
     # above the title of each page
@@ -329,3 +329,26 @@ members_order = "source"
 # ----------------------------------------------------------------------------
 [project.markdown_extensions.pymdownx.arithmatex]
 generic = true
+
+# ----------------------------------------------------------------------------
+# See: https://zensical.org/docs/authoring/code-blocks/
+# ----------------------------------------------------------------------------
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.snippets]
+
+# ----------------------------------------------------------------------------
+# See: https://zensical.org/docs/authoring/footnotes/
+# ----------------------------------------------------------------------------
+[project.markdown_extensions.footnotes]
+
+# ----------------------------------------------------------------------------
+# See: https://zensical.org/docs/authoring/diagrams/
+# ----------------------------------------------------------------------------
+[project.markdown_extensions.pymdownx.superfences]
+custom_fences = [
+    { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]

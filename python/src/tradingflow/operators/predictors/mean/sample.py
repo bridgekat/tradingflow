@@ -21,7 +21,7 @@ class Sample(MeanPredictor[np.ndarray]):
         Recorded forward-adjusted close prices series, element shape
         `(num_stocks,)`.
     **kwargs
-        Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor].
+        Forwarded to [`MeanPredictor`][tradingflow.operators.predictors.mean_predictor.MeanPredictor].
     """
 
     def __init__(

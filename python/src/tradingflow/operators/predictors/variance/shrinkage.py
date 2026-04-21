@@ -14,21 +14,21 @@ from ._common import (
 
 
 class Target(IntEnum):
-    """Shrinkage target selector.
+    r"""Shrinkage target selector.
 
     The three targets surveyed in Pantaleo et al. (2010), Section III.D:
 
-    - [`COMMON_COVARIANCE`][tradingflow.operators.predictors.variance.Target]
+    - [`COMMON_COVARIANCE`][tradingflow.operators.predictors.variance.shrinkage.Target.COMMON_COVARIANCE]
       — diagonal = average sample variance, off-diagonal = average
       sample covariance.
-    - [`CONSTANT_CORRELATION`][tradingflow.operators.predictors.variance.Target]
+    - [`CONSTANT_CORRELATION`][tradingflow.operators.predictors.variance.shrinkage.Target.CONSTANT_CORRELATION]
       — diagonal = sample variances, off-diagonal =
-      `r_bar * std_i * std_j` with `r_bar` the average off-diagonal
-      sample correlation.
-    - [`SINGLE_INDEX`][tradingflow.operators.predictors.variance.Target]
+      \(\bar{r} \cdot \mathrm{std}_i \cdot \mathrm{std}_j\) with
+      \(\bar{r}\) the average off-diagonal sample correlation.
+    - [`SINGLE_INDEX`][tradingflow.operators.predictors.variance.shrinkage.Target.SINGLE_INDEX]
       — single-index factor-model covariance
-      `sigma_f^2 * beta beta' + diag(sigma_eps^2)` using the equal-
-      weighted cross-sectional mean as the market proxy.
+      \(\sigma_f^{2} \beta \beta^T + \mathrm{diag}(\sigma_\epsilon^{2})\)
+      using the equal-weighted cross-sectional mean as the market proxy.
     """
 
     COMMON_COVARIANCE = 1
@@ -37,13 +37,13 @@ class Target(IntEnum):
 
 
 class Shrinkage(VariancePredictor[np.ndarray]):
-    """Linear-shrinkage covariance estimator with a pluggable target.
+    r"""Linear-shrinkage covariance estimator with a pluggable target.
 
-    Computes `Sigma = alpha * F + (1 - alpha) * S` where `S` is the
-    sample covariance and `F` is one of the three structured targets
-    enumerated by [`Target`][tradingflow.operators.predictors.variance.Target].
+    Computes \(\Sigma = \alpha F + (1 - \alpha) S\) where \(S\) is the
+    sample covariance and \(F\) is one of the three structured targets
+    enumerated by [`Target`][tradingflow.operators.predictors.variance.shrinkage.Target].
 
-    The intensity `alpha` is estimated analytically via the
+    The intensity \(\alpha\) is estimated analytically via the
     Schäfer-Strimmer (2005) element-wise unbiased estimator, as
     prescribed by Pantaleo et al. (2010).  Ignores features.
 
@@ -59,12 +59,12 @@ class Shrinkage(VariancePredictor[np.ndarray]):
         `(num_stocks,)`.
     target
         Shrinkage target, a member of
-        [`Target`][tradingflow.operators.predictors.variance.Target].
+        [`Target`][tradingflow.operators.predictors.variance.shrinkage.Target].
         Default is `Target.COMMON_COVARIANCE`.
     verbose
         If `True`, print shrinkage diagnostics to stdout.
     **kwargs
-        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
+        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor].
     """
 
     def __init__(

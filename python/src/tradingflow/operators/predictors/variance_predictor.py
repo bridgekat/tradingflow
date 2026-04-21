@@ -30,19 +30,15 @@ class VariancePredictor[T](
 ):
     """Abstract covariance matrix predictor.
 
-    On every upstream tick, the predictor is invoked so subclasses can
-    observe each new sample (a future incremental-fit hook can accumulate
-    running statistics here — the current base class refits from scratch
-    on rebalance, so non-rebalance ticks simply return without work).
     On each **rebalance** tick (signalled by the `universe` input
     producing new weights), reads the last `max_periods` feature and
     price entries from the upstream `Series` inputs, builds a 1-period
     return matrix, calls `fit_fn` and `predict_fn`, and emits the
-    predicted covariance matrix.
+    predicted covariance matrix.  Non-rebalance ticks are ignored.
 
     The rebalance cadence is controlled by the caller: typically
     `universe` is clocked by a rebalance clock (e.g. via
-    [`Clocked`][tradingflow.operators.Clocked]), so universe updates
+    [`Clocked`][tradingflow.operators.clocked.Clocked]), so universe updates
     coincide with rebalance dates.
 
     ## NaN behavior
@@ -55,9 +51,9 @@ class VariancePredictor[T](
     fully-masked feature subset — so `predict_fn` itself never needs to
     handle `NaN`.  Downstream portfolio constructors must accept `NaN`
     rows/columns and subset to the finite ones (see
-    [`VariancePortfolio`][tradingflow.operators.portfolios.VariancePortfolio]
+    [`VariancePortfolio`][tradingflow.operators.portfolios.variance_portfolio.VariancePortfolio]
     and
-    [`MeanVariancePortfolio`][tradingflow.operators.portfolios.MeanVariancePortfolio]).
+    [`MeanVariancePortfolio`][tradingflow.operators.portfolios.mean_variance_portfolio.MeanVariancePortfolio]).
 
     Parameters
     ----------
@@ -159,7 +155,7 @@ class VariancePredictor[T](
         produced: tuple[bool, ...],
     ) -> bool:
         # Emit only on rebalance ticks (signalled by `universe`
-        # producing new weights).  See MeanPredictor for rationale.
+        # producing new weights).
         if not produced[0]:
             return False
 

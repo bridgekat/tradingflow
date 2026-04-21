@@ -12,6 +12,8 @@ from ... import ArrayView, Handle, NodeKind, Operator
 
 @dataclass(slots=True)
 class MeanPortfolioState:
+    """Mutable state for [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio] subclasses."""
+
     num_stocks: int
     positions_fn: Callable[["MeanPortfolioState", np.ndarray], np.ndarray]
 
@@ -34,14 +36,14 @@ class MeanPortfolio(
 
     The rebalance cadence is inherited from upstream: `universe` is
     typically clocked by a rebalance clock (e.g. via
-    [`Clocked`][tradingflow.operators.Clocked]), so this operator runs
+    [`Clocked`][tradingflow.operators.clocked.Clocked]), so this operator runs
     at that cadence.  `predicted_returns` is read as the latest stored
     prediction at the trigger — it need not produce on the same cycle.
 
     ## NaN behavior
 
     `predicted_returns` is allowed to contain `NaN` entries — per the
-    [`MeanPredictor`][tradingflow.operators.predictors.MeanPredictor]
+    [`MeanPredictor`][tradingflow.operators.predictors.mean_predictor.MeanPredictor]
     contract, these mark stocks with insufficient data.  The base class
     subsets to `(universe > 0) & np.isfinite(mu)` before calling
     `positions_fn`, so subclasses never see `NaN` inputs.  The emitted

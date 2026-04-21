@@ -1,29 +1,49 @@
-"""Rolling window operators.
+"""Rolling-window operators over series inputs.
 
-All operators in this module are [`NativeOperator`][tradingflow.NativeOperator]
-subclasses operating on Series inputs with float dtypes, dispatched entirely
-to Rust. Each operator outputs an Array (not a Series); use
-[`Record`][tradingflow.operators.Record] to accumulate output into a Series.
+Rolling operators take one or more `Series` inputs with float dtype
+and produce a single `Array` output (the latest rolling statistic).
+If you want the full history of that statistic, wrap the output with
+[`Record`][tradingflow.operators.record.Record].
 
-Rolling operators accept a *window* parameter that is either an `int`
-(count-based: last N elements) or a `numpy.timedelta64` (time-delta-based:
-all elements within the given duration of the most recent timestamp).
-The two strategies differ in when the operator starts emitting output:
+All operators in this module are
+[`NativeOperator`][tradingflow.operator.NativeOperator] subclasses dispatched
+entirely to Rust.  They maintain incremental state internally, so each
+new series element costs only O(1) work regardless of window size.
 
-- **Count-based (`int`)** — output is produced only once the window is
-  full (i.e. after the first N elements).  Before then the operator is
-  silent.
-- **Time-delta-based (`numpy.timedelta64`)** — output is produced as
-  soon as at least one element is in the window.  Short warm-up
-  periods therefore still yield output, computed over whatever
-  elements have arrived so far.
+## Window parameter
 
-- [`RollingSum`][tradingflow.operators.rolling.RollingSum],
-  [`RollingMean`][tradingflow.operators.rolling.RollingMean],
-  [`RollingVariance`][tradingflow.operators.rolling.RollingVariance],
-  [`RollingCovariance`][tradingflow.operators.rolling.RollingCovariance]
-- [`EMA`][tradingflow.operators.rolling.EMA] -- window-normalized exponential
-  moving average
+Every rolling operator takes a `window` parameter that may be either:
+
+- an `int` — a **count-based** window covering the last N elements, or
+- a `numpy.timedelta64` — a **time-delta-based** window covering every
+  element whose timestamp is within the given duration of the most
+  recent one.
+
+The two modes differ in how warm-up is handled:
+
+- **Count-based** — the operator is *silent* until it has seen at
+  least N elements.  This matches the `pandas` `rolling().mean()`
+  convention (the first N-1 outputs would be `NaN`, but here no output
+  is emitted at all).
+- **Time-delta-based** — the operator emits as soon as the first
+  element arrives, computing over whatever is already in the window.
+  Short warm-up periods therefore still yield output, which may be
+  noisier than steady-state values.
+
+## Operators
+
+- [`RollingSum`][tradingflow.operators.rolling.sum.RollingSum] — sum over
+  the window.
+- [`RollingMean`][tradingflow.operators.rolling.mean.RollingMean] —
+  arithmetic mean over the window.
+- [`RollingVariance`][tradingflow.operators.rolling.variance.RollingVariance] —
+  population variance over the window.
+- [`RollingCovariance`][tradingflow.operators.rolling.covariance.RollingCovariance] —
+  covariance between two series over the window.
+- [`EMA`][tradingflow.operators.rolling.ema.EMA] — window-normalized
+  exponential moving average.  Unlike a pure EMA, this version
+  converges to the true mean as its buffer fills, which tends to
+  behave better during warm-up.
 """
 
 from .sum import RollingSum

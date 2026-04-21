@@ -203,7 +203,7 @@ impl Scenario {
     /// Run the unified event loop.
     ///
     /// Consumes all historical and live events from every registered source
-    /// in timestamp order, propagating each batch through the DAG via
+    /// in timestamp order, propagating each batch through the graph via
     /// [`Graph::flush`].
     ///
     /// # Ordering guarantees

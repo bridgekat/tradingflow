@@ -21,7 +21,7 @@ class RankEqual(MeanPortfolio):
     top_fraction
         Fraction of positively-predicted stocks to include.
     **kwargs
-        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio].
+        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio].
     """
 
     def __init__(self, universe, predicted_returns, *, top_fraction: float = 0.1, **kwargs) -> None:

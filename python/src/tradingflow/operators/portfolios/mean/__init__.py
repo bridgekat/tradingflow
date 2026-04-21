@@ -1,13 +1,13 @@
 """Concrete mean-portfolio implementations.
 
-- [`Proportional`][tradingflow.operators.portfolios.mean.Proportional]
-  -- weights proportional to positive predicted returns.
-- [`Softmax`][tradingflow.operators.portfolios.mean.Softmax]
-  -- softmax-weighted by predicted returns with temperature control.
-- [`RankEqual`][tradingflow.operators.portfolios.mean.RankEqual]
-  -- equal weights to the top fraction of stocks.
-- [`RankLinear`][tradingflow.operators.portfolios.mean.RankLinear]
-  -- linearly decreasing weights to the top fraction of stocks.
+- [`Proportional`][tradingflow.operators.portfolios.mean.proportional.Proportional]
+  —weights proportional to positive predicted returns.
+- [`Softmax`][tradingflow.operators.portfolios.mean.softmax.Softmax]
+  —softmax-weighted by predicted returns with temperature control.
+- [`RankEqual`][tradingflow.operators.portfolios.mean.rank_equal.RankEqual]
+  —equal weights to the top fraction of stocks.
+- [`RankLinear`][tradingflow.operators.portfolios.mean.rank_linear.RankLinear]
+  —linearly decreasing weights to the top fraction of stocks.
 """
 
 from .proportional import Proportional

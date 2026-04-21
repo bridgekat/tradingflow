@@ -1,4 +1,4 @@
-//! Type-erased DAG node and its source/operator state.
+//! Type-erased graph node and its source/operator state.
 //!
 //! Each [`Node`] owns a heap-allocated value and a [`NodeState`] classifying
 //! it as either a source or an operator.  [`OperatorState`] stores
@@ -7,9 +7,9 @@
 
 use std::any::TypeId;
 
+use crate::Instant;
 use crate::operator::{ComputeFn, ErasedOperator};
 use crate::source::{ErasedSource, PollFn, WriteFn};
-use crate::Instant;
 
 // ===========================================================================
 // NodeState
@@ -25,7 +25,7 @@ pub(super) enum NodeState {
 // Node
 // ===========================================================================
 
-/// Type-erased DAG node: owns a value and a [`NodeState`].
+/// Type-erased graph node: owns a value and a [`NodeState`].
 ///
 /// See [module-level docs](self) for layout and invariants.
 pub(super) struct Node {

@@ -1,21 +1,9 @@
 """TAI ↔ UTC conversions and timestamp FFI helpers.
 
-Python counterpart to the Rust [`tradingflow::data::time`] module.
-TradingFlow stores time as `int64` SI nanoseconds since the PTP epoch
-(1970-01-01 00:00:00 TAI, as specified by IEEE 1588).  Arithmetic
-matches NumPy's naïve `datetime64[ns]` semantics exactly — no
-leap-second correction at the FFI boundary, so every calendar day is
-86 400 SI seconds and `b - a` yields true elapsed SI time.
-
-For almost every backtest this uniform offset is invisible.  The
-conversion helpers in this module are used only when interoperating
-with external wall-clock (UTC) data — for example, a string like
-`"2024-01-01"` parsed by NumPy labels the instant 2024-01-01 00:00:00
-TAI, which is 37 s *earlier* than the UTC midnight with the same
-name; run such values through
-[`utc_to_tai`][tradingflow.data.time.utc_to_tai] at ingest time (or
-[`tai_to_utc`][tradingflow.data.time.tai_to_utc] at display time) when
-the distinction matters.
+TAI is native throughout TradingFlow; these helpers bridge to UTC at
+program boundaries (CSV ingest, plot axes, external-system interop).
+See the "Timestamp conventions" section of the root
+[`tradingflow`][tradingflow] page for the full rationale.
 """
 
 from __future__ import annotations

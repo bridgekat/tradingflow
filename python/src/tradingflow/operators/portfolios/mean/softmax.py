@@ -6,22 +6,24 @@ from ..mean_portfolio import MeanPortfolio
 
 
 class Softmax(MeanPortfolio):
-    """Weight stocks via softmax of their positive predicted returns.
+    r"""Weight stocks via softmax of their positive predicted returns.
 
-    `weights[i] = exp(max(predicted[i], 0) / temperature)`, normalised
+    \(w_i = \exp(\max(r_i, 0) / \tau)\), normalized
     to sum to 1.  Stocks with non-positive predicted returns receive
-    `exp(0) = 1` as their base weight, so they are not entirely
+    \(\exp(0) = 1\) as their base weight, so they are not entirely
     excluded but heavily down-weighted when `temperature` is small.
 
     Parameters
     ----------
+    universe
+        Handle to universe weights, shape `(num_stocks,)`.
     predicted_returns
         Handle to predicted returns array, shape `(num_stocks,)`.
     temperature
         Softmax temperature.  Lower values sharpen the distribution
-        towards the highest-predicted stocks.
+        toward the highest-predicted stocks.
     **kwargs
-        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.MeanPortfolio].
+        Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio].
     """
 
     def __init__(self, universe, predicted_returns, *, temperature: float = 1.0, **kwargs) -> None:

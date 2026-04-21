@@ -1,4 +1,4 @@
-"""Apply operator -- apply a function to multiple array inputs."""
+"""Apply operator — apply a function to multiple array inputs."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class Apply(
 ):
     """Applies a function to multiple input arrays on each tick.
 
-    Unlike [`Map`][tradingflow.operators.Map] which takes a single input,
+    Unlike [`Map`][tradingflow.operators.map.Map] which takes a single input,
     `Apply` accepts an arbitrary tuple of upstream handles.  The function
     receives the current values of all inputs as positional `np.ndarray`
     arguments and must return a `np.ndarray` of the declared output

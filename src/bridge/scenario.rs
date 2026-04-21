@@ -204,7 +204,7 @@ impl NativeScenario {
 
     /// Register a Python source.
     ///
-    /// Immediately creates the DAG node with channels.  A tokio driver task
+    /// Immediately creates the graph node with channels.  A tokio driver task
     /// is spawned that will call `source.init()` and iterate the returned
     /// async iterators when the tokio runtime runs.
     #[pyo3(signature = (py_source, output_kind, dtype, output_shape))]

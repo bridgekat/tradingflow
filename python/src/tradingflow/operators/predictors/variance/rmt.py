@@ -1,19 +1,21 @@
-"""Random matrix theory (RMT) covariance predictors.
+r"""Random matrix theory (RMT) covariance predictors.
 
 Both estimators diagonalize the sample correlation matrix and reduce
 the contribution of eigenvalues that fall below the
 Laloux-corrected Marchenko-Pastur upper bound
 
-    lambda_max = sigma^2 * (1 + N/T + 2 * sqrt(N/T)),
+\[
+\lambda_{\max} = \sigma^{2} \left(1 + N/T + 2 \sqrt{N/T}\right),
+\]
 
-where `sigma^2 = 1 - lambda_1 / N` discounts the market-mode
+where \(\sigma^{2} = 1 - \lambda_1 / N\) discounts the market-mode
 eigenvalue.  They differ in how sub-threshold eigenvalues are
 replaced:
 
-- [`RMT0`][tradingflow.operators.predictors.variance.RMT0] sets them to
+- [`RMT0`][tradingflow.operators.predictors.variance.rmt.RMT0] sets them to
   zero (Rosenow et al., 2002) and forces the diagonal of the filtered
   correlation matrix to 1.
-- [`RMTM`][tradingflow.operators.predictors.variance.RMTM] replaces them
+- [`RMTM`][tradingflow.operators.predictors.variance.rmt.RMTM] replaces them
   with their mean (Potters et al., 2005) — preserving the trace — and
   then renormalizes the off-diagonals so the correlation diagonal is 1.
 
@@ -46,7 +48,7 @@ class RMT0(VariancePredictor[np.ndarray]):
         Recorded forward-adjusted close prices series, element shape
         `(num_stocks,)`.
     **kwargs
-        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
+        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor].
     """
 
     def __init__(self, universe, features_series, adjusted_prices_series, **kwargs) -> None:
@@ -80,7 +82,7 @@ class RMTM(VariancePredictor[np.ndarray]):
         Recorded forward-adjusted close prices series, element shape
         `(num_stocks,)`.
     **kwargs
-        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.VariancePredictor].
+        Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor].
     """
 
     def __init__(self, universe, features_series, adjusted_prices_series, **kwargs) -> None:

@@ -1,4 +1,4 @@
-//! Scenario — the DAG runtime for event-driven computation.
+//! Scenario — the computation graph for event-driven computation.
 //!
 //! A [`Scenario`] is a directed acyclic graph of nodes, where each node holds
 //! an arbitrary value of type `T: Send + 'static`.  Nodes are fed by
@@ -35,7 +35,7 @@
 //!
 //! # Execution
 //!
-//! - [`Scenario::flush`] — manually propagate updates through the DAG for a
+//! - [`Scenario::flush`] — manually propagate updates through the graph for a
 //!   set of updated source node indices at a given timestamp.
 //! - [`Scenario::run`] — async event loop that drains all
 //!   historical and live source channels in timestamp order,
@@ -64,7 +64,7 @@ use crate::source::{ErasedSource, Source};
 use graph::Graph;
 use node::Node;
 
-/// Type-erased DAG runtime for event-driven computation.
+/// Type-erased computation graph for event-driven computation.
 ///
 /// # Type-safe API example
 ///
@@ -245,7 +245,7 @@ impl Scenario {
         self.estimated_event_count
     }
 
-    /// Propagate updates through the DAG.
+    /// Propagate updates through the graph.
     pub fn flush(&mut self, timestamp: Instant, updated_sources: &[usize]) {
         self.graph.flush(timestamp, updated_sources);
     }

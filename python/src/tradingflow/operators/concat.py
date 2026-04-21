@@ -1,10 +1,5 @@
-"""Concat operators — concatenate N arrays along an existing axis.
-
-- [`Concat`][tradingflow.operators.Concat] — time-series semantics:
-  copies all inputs on every trigger.
-- [`ConcatSync`][tradingflow.operators.ConcatSync] — message-passing
-  semantics: fills non-produced input slots with `NaN` (float-only).
-"""
+"""Concatenate N arrays along an existing axis — time-series (`Concat`)
+and message-passing (`ConcatSync`) variants."""
 
 from __future__ import annotations
 
@@ -21,7 +16,7 @@ class Concat(NativeOperator):
     Time-series semantics: on every trigger, the latest value of each
     input is copied into the output, regardless of which inputs actually
     produced this cycle.  See
-    [`ConcatSync`][tradingflow.operators.ConcatSync] for the
+    [`ConcatSync`][tradingflow.operators.concat.ConcatSync] for the
     message-passing variant that fills non-produced slots with `NaN`.
 
     All inputs must have the same dtype and matching shapes on every axis
@@ -52,10 +47,10 @@ class ConcatSync(NativeOperator):
     slots with NaN.
 
     Message-passing counterpart to
-    [`Concat`][tradingflow.operators.Concat]: slots of inputs that did
+    [`Concat`][tradingflow.operators.concat.Concat]: slots of inputs that did
     not produce in the current flush cycle are filled with `NaN`, so
     downstream sees only the *synchronised* slice of inputs that fired
-    together.  See [`StackSync`][tradingflow.operators.StackSync] for
+    together.  See [`StackSync`][tradingflow.operators.stack.StackSync] for
     the general motivation.
 
     Float dtype only: `NaN` is used as the "no update" sentinel.

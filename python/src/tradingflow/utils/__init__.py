@@ -1,12 +1,9 @@
 """General-purpose utilities shared across the package.
 
-Python counterpart to the Rust [`tradingflow::utils`] crate module.
-Currently hosts [`Schema`][tradingflow.Schema] only.
-
-## Submodules
-
-* [`schema`][tradingflow.utils.schema] — [`Schema`][tradingflow.Schema]
-  bidirectional name ↔ position mapping.
+Python counterpart of the Rust [`tradingflow::utils`] crate module.
+Currently hosts a single helper,
+[`Schema`][tradingflow.utils.schema.Schema] — a bidirectional
+name ↔ position mapping for labeling the axes of an array node.
 """
 
 from .schema import Schema

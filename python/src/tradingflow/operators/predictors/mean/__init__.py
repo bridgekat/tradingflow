@@ -1,11 +1,11 @@
 """Concrete mean-predictor implementations.
 
-- [`Sample`][tradingflow.operators.predictors.mean.Sample]
-  -- sample mean of historical returns (baseline).
-- [`SingleFeature`][tradingflow.operators.predictors.mean.SingleFeature]
-  -- pass-through: returns one feature column unchanged.
-- [`LinearRegression`][tradingflow.operators.predictors.mean.LinearRegression]
-  -- pooled OLS via QR decomposition.
+- [`Sample`][tradingflow.operators.predictors.mean.sample.Sample]
+  —sample mean of historical returns (baseline).
+- [`SingleFeature`][tradingflow.operators.predictors.mean.single_feature.SingleFeature]
+  —pass-through: returns one feature column unchanged.
+- [`LinearRegression`][tradingflow.operators.predictors.mean.linear_regression.LinearRegression]
+  —pooled OLS via QR decomposition.
 """
 
 from .sample import Sample

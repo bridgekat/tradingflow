@@ -61,13 +61,16 @@ def correlation_from_covariance(S: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def single_index_covariance(y: np.ndarray) -> np.ndarray:
-    """Single-index factor-model covariance estimator.
+    r"""Single-index factor-model covariance estimator.
 
-    Fits the factor model `r_i(t) = alpha_i + beta_i * f(t) + eps_i(t)`
-    stock-by-stock against the equal-weighted cross-sectional mean return
-    `f(t)`, and returns
+    Fits the factor model
+    \(r_i(t) = \alpha_i + \beta_i f(t) + \epsilon_i(t)\) stock-by-stock
+    against the equal-weighted cross-sectional mean return \(f(t)\),
+    and returns
 
-        Sigma = sigma_f^2 * beta @ beta.T + diag(sigma_eps^2).
+    \[
+    \Sigma = \sigma_f^{2} \beta \beta^T + \mathrm{diag}(\sigma_\epsilon^{2}).
+    \]
 
     All statistics are computed NaN-robustly from pairs of finite
     observations.
@@ -129,30 +132,30 @@ def schafer_strimmer_alpha(
     centered: np.ndarray,
     finite: np.ndarray,
 ) -> tuple[float, int]:
-    """Schäfer-Strimmer optimal linear-shrinkage intensity.
+    r"""Schäfer-Strimmer optimal linear-shrinkage intensity.
 
     Implements the analytic unbiased estimator of Schäfer & Strimmer
     (2005, *Statistical Applications in Genetics and Molecular Biology*),
     as used by Pantaleo et al. (2010, arXiv:1004.4272):
 
-    $$
-    \\alpha^* = \\frac{\\sum_{i \\ne j} \\widehat{\\mathrm{Var}}(s_{ij})}
-                      {\\sum_{i \\ne j} (s_{ij} - f_{ij})^2}
-    $$
+    \[
+    \alpha^* = \frac{\sum_{i \ne j} \widehat{\mathrm{Var}}(s_{ij})}
+                    {\sum_{i \ne j} (s_{ij} - f_{ij})^2}
+    \]
 
     with the element-wise variance estimator
 
-    $$
-    \\widehat{\\mathrm{Var}}(s_{ij}) =
-        \\frac{T_{ij}}{(T_{ij} - 1)^3}
-        \\sum_{t \\in V_{ij}} (w_{ij}(t) - \\bar{w}_{ij})^2,
-    \\quad w_{ij}(t) = z_i(t) z_j(t)
-    $$
+    \[
+    \widehat{\mathrm{Var}}(s_{ij}) =
+        \frac{T_{ij}}{(T_{ij} - 1)^3}
+        \sum_{t \in V_{ij}} (w_{ij}(t) - \bar{w}_{ij})^2,
+    \quad w_{ij}(t) = z_i(t) z_j(t)
+    \]
 
-    where `z` are the centered returns, `V_{ij}` is the set of
-    time indices where both stocks are observable, `T_{ij}` is its
-    cardinality, and `\\bar{w}_{ij}` is the pairwise sample mean of
-    `w_{ij}` over `V_{ij}`.  The sum is restricted to off-diagonal
+    where \(z\) are the centered returns, \(V_{ij}\) is the set of
+    time indices where both stocks are observable, \(T_{ij}\) is its
+    cardinality, and \(\bar{w}_{ij}\) is the pairwise sample mean of
+    \(w_{ij}\) over \(V_{ij}\).  The sum is restricted to off-diagonal
     elements; diagonal (sample variance) elements are well-estimated
     and would otherwise dominate the numerator.
 

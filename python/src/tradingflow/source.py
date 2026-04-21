@@ -1,4 +1,27 @@
-"""Source interface for data feeding into the computation graph."""
+"""Source interface — how data enters the computation graph.
+
+This module defines the two abstract bases for sources, which are
+nodes that produce timestamped values from outside the graph:
+
+- [`Source`][tradingflow.source.Source] — base for **Python sources**.
+  Subclasses implement `init()`, returning a pair of async iterators
+  (a historical stream and a live stream) that together cover the
+  underlying event stream without overlap.  Convenient when the data
+  is most easily produced by a Python generator or a third-party
+  Python client.
+- [`NativeSource`][tradingflow.source.NativeSource] — descriptor for
+  **Rust sources**.  Subclasses are thin Python shims that carry
+  enough metadata for the Rust runtime to construct and drive the
+  underlying native source on its own — no async Python machinery is
+  involved at run time.
+
+Most users won't subclass either of these directly; the built-in
+sources in [`tradingflow.sources`][tradingflow.sources] cover the
+common cases (in-memory arrays, CSVs, clocks).  Subclass `Source` when
+you need to plug in a bespoke Python data feed, and
+`NativeSource` when you've added a new source on the Rust side and
+want a Python-friendly constructor for it.
+"""
 
 from __future__ import annotations
 
@@ -18,9 +41,9 @@ if TYPE_CHECKING:
 class Source(ABC):
     """Abstract base for data sources.
 
-    A source feeds data into a DAG node via two async iterators: a
+    A source feeds data into a graph node via two async iterators: a
     *historical* stream and a *live* stream.  Subclasses implement
-    [`init`][tradingflow.Source.init], which returns the pair; the two
+    [`init`][tradingflow.source.Source.init], which returns the pair; the two
     iterators must cover the same underlying data stream without
     overlap, split at some instant during `init`.  The runtime drains
     the historical stream in timestamp order first, then interleaves
@@ -121,7 +144,7 @@ class Source(ABC):
     def _register(self, native_scenario: NativeScenario) -> int:
         """Register this Python source with the native scenario.
 
-        Polymorphic dispatch: [`Scenario.add_source`][tradingflow.Scenario.add_source]
+        Polymorphic dispatch: [`Scenario.add_source`][tradingflow.scenario.Scenario.add_source]
         delegates to this method without branching on source kind.
         """
         return native_scenario.add_py_source(
@@ -147,9 +170,9 @@ async def empty_live_gen() -> AsyncIterator[tuple[np.datetime64, Any]]:
 class NativeSource:
     """Descriptor for a Rust-implemented source.
 
-    Analogous to [`NativeOperator`][tradingflow.NativeOperator] -- carries
+    Analogous to [`NativeOperator`][tradingflow.operator.NativeOperator] -- carries
     `native_id` + `params` and is dispatched entirely on the native side. Not a
-    [`Source`][tradingflow.Source] subclass (no Python async iterators).
+    [`Source`][tradingflow.source.Source] subclass (no Python async iterators).
 
     Parameters
     ----------

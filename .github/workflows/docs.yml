@@ -25,7 +25,7 @@ jobs:
           python-version: '3.13'
 
       # Build the Python package (maturin compiles Rust + installs Python)
-      - run: python -m pip install -e ".[docs]"
+      - run: python -m pip install -e ".[dev]"
 
       # Python docs (Zensical → python/site/)
       - run: python scripts/gen_docs_stubs.py

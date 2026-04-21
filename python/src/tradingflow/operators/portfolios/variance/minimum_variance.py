@@ -10,18 +10,21 @@ from ..variance_portfolio import VariancePortfolio
 
 
 class MinimumVariance(VariancePortfolio):
-    """Global minimum-variance portfolio optimization.
+    r"""Global minimum-variance portfolio optimization.
 
     Solves the following optimization problem:
 
-        minimize    x' Sigma x
-        subject to  1' x = 1
-                    x >= 0   (if long_only)
+    \[
+    \text{minimize} \quad x^T \Sigma x
+    \]
+    \[
+    \text{subject to} \quad \mathbf{1}^T x = 1, \quad x \geq 0 \text{ (if long-only)}
+    \]
 
     When `long_only=False` this reproduces — modulo solver tolerance —
-    the analytical GMV solution `x = Σ⁺ 1 / (1ᵀ Σ⁺ 1)` used by the
+    the analytical GMV solution \(x = \Sigma^{+} \mathbf{1} / (\mathbf{1}^T \Sigma^{+} \mathbf{1})\) used by the
     evaluation metric
-    [`MinimumVariance`][tradingflow.operators.metrics.variance.MinimumVariance].
+    [`MinimumVariance`][tradingflow.operators.metrics.variance.minimum_variance.MinimumVariance].
     With `long_only=True` the no-short-selling constraint cannot in
     general be satisfied by the closed-form pseudo-inverse solution, and
     the CVXPY quadratic program is used to enforce it.
@@ -33,11 +36,11 @@ class MinimumVariance(VariancePortfolio):
     covariance
         Handle to covariance matrix, shape `(num_stocks, num_stocks)`.
     long_only
-        If `True` (default), enforce `x >= 0`.
+        If `True` (default), enforce \(x \geq 0\).
     verbose
         If `True`, print optimization diagnostics to stdout.
     **kwargs
-        Forwarded to [`VariancePortfolio`][tradingflow.operators.portfolios.VariancePortfolio].
+        Forwarded to [`VariancePortfolio`][tradingflow.operators.portfolios.variance_portfolio.VariancePortfolio].
     """
 
     def __init__(

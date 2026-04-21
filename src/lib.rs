@@ -27,7 +27,7 @@
 //!
 //! # Runtime
 //!
-//! * [`Scenario`] — DAG runtime with type-erased dispatch. Nodes are
+//! * [`Scenario`] — computation graph with type-erased dispatch. Nodes are
 //!   connected via typed [`Handle`](scenario::Handle)s. Execution is driven
 //!   by [`Scenario::flush`] (manual) or [`Scenario::run`] (async event loop).
 //!
@@ -66,8 +66,8 @@ pub mod sources;
 pub mod utils;
 
 pub use data::{
-    tai_to_utc, utc_to_tai, Array, BitRead, Duration, FlatRead, FlatWrite, Input, InputTypes,
-    Instant, PeekableReceiver, Scalar, Series, SliceProduced, SliceRefs,
+    Array, BitRead, Duration, FlatRead, FlatWrite, Input, InputTypes, Instant, PeekableReceiver,
+    Scalar, Series, SliceProduced, SliceRefs, tai_to_utc, utc_to_tai,
 };
 pub use operator::{ErasedOperator, Operator};
 pub use operators::Clocked;

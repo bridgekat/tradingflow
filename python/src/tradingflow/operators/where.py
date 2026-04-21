@@ -1,4 +1,4 @@
-"""Where operator -- element-wise conditional replacement."""
+"""Where operator — element-wise conditional replacement."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class Where[T: np.generic](
     """Element-wise conditional: keeps values where `condition` is `True`,
     replaces others with `fill`.
 
-    Unlike [`Filter`][tradingflow.operators.Filter], this always produces
+    Unlike [`Filter`][tradingflow.operators.filter.Filter], this always produces
     output (never halts propagation).
 
     Parameters
