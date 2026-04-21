@@ -1,6 +1,7 @@
 """Markowitz mean-variance portfolio optimization."""
 
 from typing import Any
+from enum import IntEnum
 
 import numpy as np
 import scipy as sp
@@ -9,14 +10,43 @@ import cvxpy as cp
 from ..mean_variance_portfolio import MeanVariancePortfolio
 
 
+class Mode(IntEnum):
+    """Markowitz optimization mode.
+
+    All modes share the long-only (optional) and budget constraints
+    `1' x = 1`, `x >= 0`.  The `bound` parameter's meaning is
+    mode-dependent.
+
+    - [`MIN_VARIANCE_GIVEN_RETURN`][tradingflow.operators.portfolios.mean_variance.Mode]
+      — minimize `x' Sigma x` subject to `mu' x >= bound`.  `bound` is
+      the minimum admissible expected return `mu_min`.
+    - [`MAX_RETURN_GIVEN_STD_DEV`][tradingflow.operators.portfolios.mean_variance.Mode]
+      — maximize `mu' x` subject to `sqrt(x' Sigma x) <= bound`.  `bound`
+      is the maximum admissible portfolio standard deviation `sigma_max`.
+    - [`MIN_MEAN_VARIANCE`][tradingflow.operators.portfolios.mean_variance.Mode]
+      — maximize `mu' x - bound * x' Sigma x`.  `bound` is the
+      variance-penalty coefficient `delta` (quadratic risk aversion).
+    - [`MIN_MEAN_STD_DEV`][tradingflow.operators.portfolios.mean_variance.Mode]
+      — maximize `mu' x - bound * sqrt(x' Sigma x)`.  `bound` is the
+      std-dev-penalty coefficient `delta` (linear risk aversion).
+    """
+
+    MIN_VARIANCE_GIVEN_RETURN = 1
+    MAX_RETURN_GIVEN_STD_DEV = 2
+    MIN_MEAN_VARIANCE = 3
+    MIN_MEAN_STD_DEV = 4
+
+
 class Markowitz(MeanVariancePortfolio):
-    """Markowitz mean-variance optimization.
+    """Markowitz mean-variance optimization with a pluggable mode.
 
-    Solves the following optimization problem:
-
-        maximize  mu' x  -  delta * sqrt(x' Sigma x)
-        subject to  1' x = 1
-                    x >= 0   (if long_only)
+    Solves one of four equivalent reformulations of the mean-variance
+    trade-off, selected by the `mode` parameter (see
+    [`Mode`][tradingflow.operators.portfolios.mean_variance.Mode]).  The
+    budget constraint (`1' x = 1` when `full_position`, else `1' x <= 1`)
+    and the long-only constraint (`x >= 0` when `long_only`) apply to
+    every mode; the scalar `bound` parameterizes whichever knob the
+    chosen mode uses.
 
     Parameters
     ----------
@@ -26,10 +56,22 @@ class Markowitz(MeanVariancePortfolio):
         Handle to predicted returns, shape `(num_stocks,)`.
     covariance
         Handle to covariance matrix, shape `(num_stocks, num_stocks)`.
-    risk_aversion
-        Risk-aversion coefficient `delta`.
+    mode
+        Optimization mode, a member of
+        [`Mode`][tradingflow.operators.portfolios.mean_variance.Mode].
+    bound
+        Scalar parameter whose meaning depends on `mode` — minimum
+        return `mu_min`, maximum standard deviation `sigma_max`, or
+        risk-aversion coefficient `delta`.  See `Mode` for details.
+        If the resulting problem is infeasible (e.g. `mu_min` above
+        every attainable return, or `sigma_max` below the GMV
+        volatility), the operator falls back to equal weights.
     long_only
         If `True` (default), enforce `x >= 0`.
+    full_position
+        If `True` (default), require full investment `1' x = 1`.  If
+        `False`, allow underinvestment `1' x <= 1` (holding cash is
+        permitted).
     verbose
         If `True`, print optimization diagnostics to stdout.
     **kwargs
@@ -42,8 +84,10 @@ class Markowitz(MeanVariancePortfolio):
         predicted_returns,
         covariance,
         *,
-        risk_aversion: float = 1.0,
+        mode: Mode,
+        bound: float,
         long_only: bool = True,
+        full_position: bool = True,
         verbose: bool = False,
         **kwargs,
     ) -> None:
@@ -51,12 +95,20 @@ class Markowitz(MeanVariancePortfolio):
             universe,
             predicted_returns,
             covariance,
-            positions_fn=lambda state, mu, sigma: _solve(mu, sigma, risk_aversion, long_only, verbose),
+            positions_fn=lambda state, mu, sigma: _solve(mu, sigma, mode, bound, long_only, full_position, verbose),
             **kwargs,
         )
 
 
-def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, verbose: bool) -> np.ndarray:
+def _solve(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    mode: Mode,
+    bound: float,
+    long_only: bool,
+    full_position: bool,
+    verbose: bool,
+) -> np.ndarray:
     """Solve the Markowitz mean-variance optimization problem."""
     N = len(mu)
 
@@ -75,10 +127,27 @@ def _solve(mu: np.ndarray, sigma: np.ndarray, delta: float, long_only: bool, ver
 
     # Construct the problem.
     x = cp.Variable(N)
-    objective = cp.Maximize(mu @ x - delta * cp.norm(L.T @ x))
-    constraints: list[Any] = [cp.sum(x) == 1]
+    constraints: list[Any] = []
+
     if long_only:
         constraints.append(x >= 0)
+
+    if full_position:
+        constraints.append(cp.sum(x) == 1)
+    else:
+        constraints.append(cp.sum(x) <= 1)
+
+    match mode:
+        case Mode.MIN_VARIANCE_GIVEN_RETURN:
+            objective = cp.Minimize(cp.sum_squares(L.T @ x))
+            constraints.append(mu @ x >= bound)
+        case Mode.MAX_RETURN_GIVEN_STD_DEV:
+            objective = cp.Maximize(mu @ x)
+            constraints.append(cp.norm(L.T @ x) <= bound)
+        case Mode.MIN_MEAN_VARIANCE:
+            objective = cp.Maximize(mu @ x - bound * cp.sum_squares(L.T @ x))
+        case Mode.MIN_MEAN_STD_DEV:
+            objective = cp.Maximize(mu @ x - bound * cp.norm(L.T @ x))
 
     # Solve the problem.
     prob = cp.Problem(objective, constraints)

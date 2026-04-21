@@ -36,7 +36,7 @@ from tradingflow.operators import Apply, Clocked, Map, Record, Select, Stack, St
 from tradingflow.operators.num import Divide, Log, Multiply
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.predictors.variance import Shrinkage
-from tradingflow.operators.portfolios.mean_variance import Markowitz
+from tradingflow.operators.portfolios.mean_variance import Markowitz, Mode
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
 from tradingflow.operators.rolling import RollingMean
@@ -52,7 +52,7 @@ BS_SCHEMA = Schema(CSVSchema.balance_sheet().iter_field_ids())
 INC_SCHEMA = Schema(CSVSchema.income_statement().iter_field_ids())
 OHLCV_INDICES = PRICE_SCHEMA.indices(["prices.open", "prices.high", "prices.low", "prices.close", "prices.volume"])
 
-RISK_AVERSIONS = np.linspace(2.0, 0.0, 10, endpoint=False).round(2).tolist()
+RISK_AVERSIONS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0]
 
 
 def build_scenario(
@@ -255,7 +255,8 @@ def build_scenario(
                 universe,
                 predicted_returns,
                 predicted_covariances,
-                risk_aversion=delta,
+                mode=Mode.MIN_MEAN_STD_DEV,
+                bound=delta,
                 long_only=True,
                 verbose=True,
             )
@@ -404,10 +405,16 @@ if __name__ == "__main__":
     ax.legend(loc="upper left", fontsize=7)
     ax.set_xlabel("Date")
 
-    # Panel 2 (top-right): Efficient frontier over time
+    # Panel 2 (top-right): Efficient frontier over time (annualized).
+    # `exp_return` and `exp_risk` are per trading day (predictors train
+    # on 1-day forward returns), so scale mean by 252 and std by √252.
     ax = axes[0, 1]
-    ax.set_title("Efficient frontier (at each rebalance)")
+    ax.set_title("Efficient frontier, annualized (at each rebalance)")
     ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+
+    trading_days = 252
+    ret_scale = trading_days * 100
+    risk_scale = np.sqrt(trading_days) * 100
 
     # Build per-rebalance curves connecting deltas from lowest to highest.
     sorted_deltas = sorted(results.keys())
@@ -420,8 +427,8 @@ if __name__ == "__main__":
     n_rebalances = len(common_ts)
     for i, ts in enumerate(common_ts):
         alpha = 0.15 + 0.85 * i / max(n_rebalances - 1, 1)
-        risks = [frontier_by_delta[d].loc[ts, "exp_risk"] * 100 for d in sorted_deltas]
-        rets = [frontier_by_delta[d].loc[ts, "exp_return"] * 100 for d in sorted_deltas]
+        risks = [frontier_by_delta[d].loc[ts, "exp_risk"] * risk_scale for d in sorted_deltas]
+        rets = [frontier_by_delta[d].loc[ts, "exp_return"] * ret_scale for d in sorted_deltas]
         ax.plot(risks, rets, color="gray", linewidth=0.4, alpha=alpha * 0.5)
         for d, r, ret in zip(sorted_deltas, risks, rets):
             ax.scatter(r, ret, s=10, color=delta_to_color[d], alpha=alpha, zorder=3)
@@ -429,8 +436,8 @@ if __name__ == "__main__":
     for (delta, _), color in zip(results.items(), colors):
         ax.scatter([], [], s=20, color=color, label=f"δ={delta}")
     ax.legend(loc="upper left", fontsize=7)
-    ax.set_xlabel("Expected risk (%)")
-    ax.set_ylabel("Expected return (%)")
+    ax.set_xlabel("Expected risk, annualized (%)")
+    ax.set_ylabel("Expected return, annualized (%)")
 
     # Panel 3 (bottom-left): Sharpe ratio
     ax = axes[1, 0]
