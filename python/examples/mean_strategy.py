@@ -46,7 +46,7 @@ from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.sources import Clock
 
-from stocks import load_symbols, calculate_index_weights, resolve_data_start
+from stocks import load_symbols, calculate_index_weights, resolve_data_start, add_market_argument
 
 
 DAY_NS = 86_400_000_000_000
@@ -67,7 +67,7 @@ def build_scenario(
     data_start: np.datetime64,
     trading_start: np.datetime64,
     end: np.datetime64,
-) -> tuple[Scenario, dict]:
+) -> tuple[Scenario, dict, np.ndarray]:
     """Build the full backtesting scenario."""
 
     history_dir = data_dir / "a_shares_history"
@@ -295,14 +295,18 @@ def build_scenario(
     compound_ret = sc.add_operator(CompoundReturn(actual_value, rebalance_clock))
     drawdown = sc.add_operator(Drawdown(actual_value))  # Triggers on every update
 
-    return sc, {
-        "index": sc.add_operator(Record(index)),
-        "strategy_frictionless": sc.add_operator(Record(strategy_frictionless)),
-        "strategy_actual": sc.add_operator(Record(strategy_actual)),
-        "sharpe": sc.add_operator(Record(sharpe)),
-        "compound_return": sc.add_operator(Record(compound_ret)),
-        "drawdown": sc.add_operator(Record(drawdown)),
-    }
+    return (
+        sc,
+        {
+            "index": sc.add_operator(Record(index)),
+            "strategy_frictionless": sc.add_operator(Record(strategy_frictionless)),
+            "strategy_actual": sc.add_operator(Record(strategy_actual)),
+            "sharpe": sc.add_operator(Record(sharpe)),
+            "compound_return": sc.add_operator(Record(compound_ret)),
+            "drawdown": sc.add_operator(Record(drawdown)),
+        },
+        rebalance_dates,
+    )
 
 
 if __name__ == "__main__":
@@ -314,6 +318,7 @@ if __name__ == "__main__":
     parser.add_argument("--rebalance-days", type=int, default=90, help="rebalance every N calendar days")
     parser.add_argument("--initial-cash", type=float, default=1000000.0, help="starting capital (CNY)")
     parser.add_argument("--index-size", type=int, default=100, help="number of stocks in the market-cap index")
+    add_market_argument(parser)
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir
@@ -323,10 +328,10 @@ if __name__ == "__main__":
             "Run `python -m a_shares_crawler --help` for download instructions."
         )
 
-    symbols = load_symbols(data_dir)
+    symbols = load_symbols(data_dir, markets=args.markets)
     print(f"Discovered {len(symbols)} symbols.")
 
-    sc, handles = build_scenario(
+    sc, handles, rebalance_dates = build_scenario(
         symbols,
         data_dir,
         rebalance_days=args.rebalance_days,
@@ -392,9 +397,14 @@ if __name__ == "__main__":
     plt.style.use(["fast"])
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True, gridspec_kw={"height_ratios": [3, 1, 1]})
 
+    def draw_rebalances(ax):
+        for d in rebalance_dates:
+            ax.axvline(d, color="lightgray", linestyle="--", linewidth=0.4, zorder=0)
+
     ax = axes[0]
     ax.set_title(f"Portfolio value")
     ax.set_ylabel("CNY (10k)")
+    draw_rebalances(ax)
     ax.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
     ax.plot(
         index.index,
@@ -424,6 +434,7 @@ if __name__ == "__main__":
     ax = axes[1]
     ax.set_title("Sharpe ratio annualized (since inception)")
     ax.set_ylabel("Sharpe ratio")
+    draw_rebalances(ax)
     ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
     ax.plot(sharpe.index, sharpe * np.sqrt(periods_per_year), color="C1")
 
@@ -431,6 +442,7 @@ if __name__ == "__main__":
     ax.set_title("Drawdown (since previous high)")
     ax.set_ylabel("Drawdown (%)")
     ax.set_xlabel("Date")
+    draw_rebalances(ax)
     ax.fill_between(drawdown.index, drawdown * 100, 0, alpha=0.4, color="C3")
 
     fig.tight_layout()

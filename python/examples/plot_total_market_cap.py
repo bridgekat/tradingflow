@@ -21,7 +21,7 @@ from tradingflow.sources import CSVSource
 from tradingflow.operators import Map, Record, Select, Stack
 from tradingflow.operators.num import Multiply
 
-from stocks import load_symbols
+from stocks import load_symbols, add_market_argument
 
 
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
@@ -62,6 +62,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
     parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
+    add_market_argument(parser)
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir
@@ -71,7 +72,7 @@ if __name__ == "__main__":
             "Run `python -m a_shares_crawler --help` for download instructions."
         )
 
-    symbols = load_symbols(data_dir)
+    symbols = load_symbols(data_dir, markets=args.markets)
     print(f"Discovered {len(symbols)} symbols.")
 
     # Run scenario.

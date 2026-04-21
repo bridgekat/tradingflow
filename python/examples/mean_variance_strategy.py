@@ -42,7 +42,7 @@ from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 
-from stocks import load_symbols, calculate_index_weights, resolve_data_start
+from stocks import load_symbols, calculate_index_weights, resolve_data_start, add_market_argument
 
 
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
@@ -65,7 +65,7 @@ def build_scenario(
     data_start: np.datetime64,
     trading_start: np.datetime64,
     end: np.datetime64,
-) -> tuple[Scenario, dict, dict]:
+) -> tuple[Scenario, dict, dict, np.ndarray]:
     """Build a scenario with shared data/features and multiple Markowitz variants."""
 
     history_dir = data_dir / "a_shares_history"
@@ -300,7 +300,7 @@ def build_scenario(
             "frontier": sc.add_operator(Record(frontier_point)),
         }
 
-    return sc, variants, {"index_value": sc.add_operator(Record(index_value))}
+    return sc, variants, {"index_value": sc.add_operator(Record(index_value))}, rebalance_dates
 
 
 if __name__ == "__main__":
@@ -312,6 +312,7 @@ if __name__ == "__main__":
     parser.add_argument("--rebalance-days", type=int, default=90, help="rebalance every N calendar days")
     parser.add_argument("--initial-cash", type=float, default=1000000.0, help="starting capital (CNY)")
     parser.add_argument("--index-size", type=int, default=100, help="number of stocks in the market-cap index")
+    add_market_argument(parser)
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir
@@ -321,10 +322,10 @@ if __name__ == "__main__":
             "Run `python -m a_shares_crawler --help` for download instructions."
         )
 
-    symbols = load_symbols(data_dir)
+    symbols = load_symbols(data_dir, markets=args.markets)
     print(f"Discovered {len(symbols)} symbols.")
 
-    sc, variants, handles = build_scenario(
+    sc, variants, handles, rebalance_dates = build_scenario(
         symbols,
         data_dir,
         risk_aversions=RISK_AVERSIONS,
@@ -382,10 +383,15 @@ if __name__ == "__main__":
     assert cm is not None
     colors = cm(np.linspace(0.0, 1.0, len(results)))
 
+    def draw_rebalances(ax):
+        for d in rebalance_dates:
+            ax.axvline(d, color="lightgray", linestyle="--", linewidth=0.4, zorder=0)
+
     # Panel 1 (top-left): Portfolio value
     ax = axes[0, 0]
     ax.set_title("Portfolio value")
     ax.set_ylabel("CNY (10k)")
+    draw_rebalances(ax)
     ax.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
     ax.plot(
         index_value.index,
@@ -443,6 +449,7 @@ if __name__ == "__main__":
     ax = axes[1, 0]
     ax.set_title("Sharpe ratio annualized (since inception)")
     ax.set_ylabel("Sharpe")
+    draw_rebalances(ax)
     ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
     for (delta, result), color in zip(results.items(), colors):
         ax.plot(
@@ -460,6 +467,7 @@ if __name__ == "__main__":
     ax.set_title("Drawdown (since previous high)")
     ax.set_ylabel("Drawdown (%)")
     ax.set_xlabel("Date")
+    draw_rebalances(ax)
     for (delta, result), color in zip(results.items(), colors):
         ax.plot(
             result["drawdown"].index,

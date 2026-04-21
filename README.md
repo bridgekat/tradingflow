@@ -76,7 +76,7 @@ flowchart LR
     classDef series fill:#f5f5f5,stroke:#6b7280,color:#111827
 ```
 
-This is the whole pattern. An actual strategy can contain many more operators — `ForwardAdjust`, `LinearPredictor`, `MeanVarianceOptimiser`, `Trader`, `Sharpe` — but the structure stays the same.
+This is the whole pattern. An actual strategy can contain many more operators — `ForwardAdjust`, `LinearRegression`, `Shrinkage`, `MeanVariancePortfolio`, `RandomTrader`, `SharpeRatio` — but the structure stays the same.
 
 You may read the [full documentation here](https://bridgekat.github.io/tradingflow/).[^1]
 

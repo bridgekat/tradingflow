@@ -45,7 +45,7 @@ from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.predictors.mean import Sample, SingleFeature
 from tradingflow.operators.metrics.mean import InformationCoefficient
 
-from stocks import load_symbols, calculate_index_weights, resolve_data_start
+from stocks import load_symbols, calculate_index_weights, resolve_data_start, add_market_argument
 
 
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
@@ -277,6 +277,7 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=90, help="rebalance every N calendar days")
     parser.add_argument("--index-size", type=int, default=100, help="number of stocks in the universe")
+    add_market_argument(parser)
     args = parser.parse_args()
 
     data_dir: Path = args.data_dir
@@ -286,7 +287,7 @@ if __name__ == "__main__":
             "Run `python -m a_shares_crawler --help` for download instructions."
         )
 
-    symbols = load_symbols(data_dir)
+    symbols = load_symbols(data_dir, markets=args.markets)
     print(f"Discovered {len(symbols)} symbols.")
 
     sc, eval_handles, rebalance_dates = build_scenario(
@@ -342,6 +343,8 @@ if __name__ == "__main__":
     ax.set_title("Cumulative RankIC by factor")
     ax.set_ylabel("Cumulative RankIC")
     ax.set_xlabel("Date")
+    for d in rebalance_dates:
+        ax.axvline(d, color="lightgray", linestyle="--", linewidth=0.4, zorder=0)
     ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
 
     for i, (name, series) in enumerate(eval_data.items()):
