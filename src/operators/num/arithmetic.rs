@@ -200,6 +200,49 @@ define_binary_op!(
 );
 
 // ===========================================================================
+// Parameterized unary
+// ===========================================================================
+
+/// Element-wise power: `x.powf(n)`.
+pub struct Pow<T: Scalar> {
+    n: T,
+}
+
+impl<T: Scalar + Float> Pow<T> {
+    /// Create a new instance with exponent `n`.
+    pub fn new(n: T) -> Self {
+        Self { n }
+    }
+}
+
+impl<T: Scalar + Float> Operator for Pow<T> {
+    type State = T;
+    type Inputs = Input<Array<T>>;
+    type Output = Array<T>;
+
+    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (T, Array<T>) {
+        (self.n, Array::zeros(inputs.shape()))
+    }
+
+    #[inline(always)]
+    fn compute(
+        state: &mut T,
+        inputs: &Array<T>,
+        output: &mut Array<T>,
+        _timestamp: Instant,
+        _produced: <Self::Inputs as InputTypes>::Produced<'_>,
+    ) -> bool {
+        let n = *state;
+        let a = inputs.as_slice();
+        let out = output.as_mut_slice();
+        for i in 0..out.len() {
+            out[i] = a[i].powf(n);
+        }
+        true
+    }
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -389,6 +432,14 @@ mod tests {
         let (mut s, mut o) = Max::<f64>::new().init((&a, &b), Instant::MIN);
         Max::compute(&mut s, (&a, &b), &mut o, ts(1), (false, false));
         assert_eq!(o.as_slice(), &[2.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_pow() {
+        let a = Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]);
+        let (mut s, mut o) = Pow::new(2.0).init(&a, Instant::MIN);
+        Pow::compute(&mut s, &a, &mut o, ts(1), false);
+        assert_eq!(o.as_slice(), &[1.0, 4.0, 9.0]);
     }
 
     #[test]

@@ -53,7 +53,7 @@ from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Clocked, Map, Record, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply
+from tradingflow.operators.num import Divide, Log, Multiply, PctChange
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.predictors.mean import LinearRegression
@@ -232,9 +232,13 @@ def build_scenario(
     # Stack features into (num_stocks, num_features).
     stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
 
-    # Record feature and price history for predictors.
+    # Record feature and target history for predictors.  Covariance
+    # estimators train on linear returns, so the emitted covariances
+    # are in linear-return units (directly consumable by
+    # `VariancePortfolio` and `MeanVariancePortfolio`).
     features_series = sc.add_operator(Record(stacked_features))
-    adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
+    returns = sc.add_operator(PctChange(stacked["adjusted_close"]))
+    target_series = sc.add_operator(Record(returns))
 
     # ------------------------------------------------------------------
     # Shared predictors
@@ -264,15 +268,16 @@ def build_scenario(
         LinearRegression(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             universe_size=index_size,
+            target_delay=1,
             min_periods=100,
             verbose=True,
         ),
     )
 
-    common_args = (universe, features_series, adjusted_prices_series)
-    common_kwargs = dict(universe_size=index_size, max_periods=rebalance_days)
+    common_args = (universe, features_series, target_series)
+    common_kwargs = dict(universe_size=index_size, target_delay=1, max_periods=rebalance_days)
 
     predicted_covariances = {
         "sample": sc.add_operator(Sample(*common_args, **common_kwargs)),
@@ -314,7 +319,7 @@ def build_scenario(
         # is fed directly as an `Array` input — the metric only reads the
         # latest covariance, so recording the full (N, N) history per
         # rebalance would waste O(periods · N²) memory for no benefit.
-        mv_metric = sc.add_operator(MinimumVariance(predicted_covariance, stacked["adjusted_close"]))
+        mv_metric = sc.add_operator(MinimumVariance(predicted_covariance, returns))
         mv_handles[name] = sc.add_operator(Record(mv_metric))
 
         for long_only, value_handles in ((True, l_value_handles), (False, ls_value_handles)):

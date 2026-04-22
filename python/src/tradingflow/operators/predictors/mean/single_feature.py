@@ -17,7 +17,9 @@ class SingleFeature(MeanPredictor[None]):
 
     No fitting is performed.  `max_periods` and `min_periods` are
     fixed to `1` since no historical window is needed — only the
-    latest feature row is used.
+    latest feature row is used.  The `target_series` input is still
+    required (for alignment consistency with the base class) but is
+    not consulted.
 
     Parameters
     ----------
@@ -25,9 +27,9 @@ class SingleFeature(MeanPredictor[None]):
         Universe weights, shape `(num_stocks,)`.
     features_series
         Recorded features series, element shape `(num_stocks, num_features)`.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        `(num_stocks,)`.
+    target_series
+        Recorded target series, element shape `(num_stocks,)`.
+        Passed through but not used.
     feature_index
         Index of the feature column to return.  Default `0`.
     **kwargs
@@ -39,7 +41,7 @@ class SingleFeature(MeanPredictor[None]):
         self,
         universe,
         features_series,
-        adjusted_prices_series,
+        target_series,
         *,
         feature_index: int = 0,
         **kwargs,
@@ -47,7 +49,7 @@ class SingleFeature(MeanPredictor[None]):
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=_fit_fn,
             predict_fn=lambda state, features, params: features[:, feature_index],
             max_periods=1,

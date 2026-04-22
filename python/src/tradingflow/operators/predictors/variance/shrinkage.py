@@ -54,9 +54,9 @@ class Shrinkage(VariancePredictor[np.ndarray]):
     features_series
         Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        `(num_stocks,)`.
+    target_series
+        Recorded target series, element shape `(num_stocks,)`.  The
+        sample covariance is estimated from this series.
     target
         Shrinkage target, a member of
         [`Target`][tradingflow.operators.predictors.variance.shrinkage.Target].
@@ -71,7 +71,7 @@ class Shrinkage(VariancePredictor[np.ndarray]):
         self,
         universe,
         features_series,
-        adjusted_prices_series,
+        target_series,
         *,
         target: Target = Target.COMMON_COVARIANCE,
         verbose: bool = False,
@@ -80,7 +80,7 @@ class Shrinkage(VariancePredictor[np.ndarray]):
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=lambda x, y: _fit_fn(y, target=target, verbose=verbose),
             predict_fn=lambda state, x, params: params,
             **kwargs,

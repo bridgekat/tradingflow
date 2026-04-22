@@ -33,7 +33,7 @@ from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Apply, Clocked, Map, Record, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply
+from tradingflow.operators.num import Divide, Log, Multiply, PctChange
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.predictors.variance import Shrinkage
 from tradingflow.operators.portfolios.mean_variance import Markowitz, Mode
@@ -182,9 +182,13 @@ def build_scenario(
     # Stack features into (num_stocks, num_features).
     stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
 
-    # Record feature and price history for predictors.
+    # Record feature and target history for predictors.  Both the mean
+    # and variance predictors train on linear returns, so the emitted
+    # predictions are in linear-return units — directly consumable by
+    # `MeanVariancePortfolio`.
     features_series = sc.add_operator(Record(stacked_features))
-    adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
+    returns = sc.add_operator(PctChange(stacked["adjusted_close"]))
+    target_series = sc.add_operator(Record(returns))
 
     # ------------------------------------------------------------------
     # Shared predictors
@@ -214,8 +218,9 @@ def build_scenario(
         LinearRegression(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             universe_size=index_size,
+            target_delay=1,
             min_periods=100,
             verbose=True,
         ),
@@ -225,8 +230,9 @@ def build_scenario(
         Shrinkage(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             universe_size=index_size,
+            target_delay=1,
             max_periods=100,
             min_periods=50,
         ),

@@ -145,32 +145,32 @@ pub fn dispatch_native_operator(
             Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
-        // -- Parameterized unary: scale --------------------------------------
-        "scale" => {
+        // -- Cross-tick stateful: diff --------------------------------------
+        "diff" => {
+            let offset: usize = params
+                .get_item("offset")?
+                .ok_or_else(|| PyTypeError::new_err("diff requires 'offset' param"))?
+                .extract()?;
             macro_rules! go {
-                ($T:ty) => {{
-                    let c: $T = params
-                        .get_item("c")?
-                        .ok_or_else(|| PyTypeError::new_err("scale requires 'c' param"))?
-                        .extract()?;
-                    add_operator_from_indices(sc, operators::num::Scale::<$T>::new(c), input_indices)
-                }};
+                ($T:ty) => {
+                    add_operator_from_indices(sc, operators::num::Diff::<$T>::new(offset), input_indices)
+                };
             }
-            Ok((dispatch_dtype!(dtype, go, numeric), NativeNodeKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
-        // -- Parameterized unary: shift --------------------------------------
-        "shift" => {
+        // -- Cross-tick stateful: pct_change --------------------------------
+        "pct_change" => {
+            let offset: usize = params
+                .get_item("offset")?
+                .ok_or_else(|| PyTypeError::new_err("pct_change requires 'offset' param"))?
+                .extract()?;
             macro_rules! go {
-                ($T:ty) => {{
-                    let c: $T = params
-                        .get_item("c")?
-                        .ok_or_else(|| PyTypeError::new_err("shift requires 'c' param"))?
-                        .extract()?;
-                    add_operator_from_indices(sc, operators::num::Shift::<$T>::new(c), input_indices)
-                }};
+                ($T:ty) => {
+                    add_operator_from_indices(sc, operators::num::PctChange::<$T>::new(offset), input_indices)
+                };
             }
-            Ok((dispatch_dtype!(dtype, go, numeric), NativeNodeKind::Array))
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
         // -- Parameterized unary: clamp --------------------------------------

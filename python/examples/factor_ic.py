@@ -16,11 +16,13 @@ Each factor is cross-sectionally ranked (NaNs last, cast to float64) and
 then wrapped in a ``SingleFeature`` pass-through predictor so its output
 emits at the rebalance cadence (parallel to the variance predictor pattern
 used in ``covariance_gmv.py``).  A ``Sample`` mean predictor (historical
-mean returns, no features) is included as a baseline.  An
-``InformationCoefficient`` evaluator with ``ranking=True`` rank-transforms
-realised 1-period forward returns before correlating; combined with the
-pre-ranked factors this yields Spearman RankIC.  Cumulative RankIC curves
-are plotted.
+mean returns, no features) is included as a baseline.
+
+The realised target fed to the evaluator is
+``Gaussianize(PctChange(adjusted_close))`` — cross-sectional linear returns
+passed through a rank-to-Gaussian transform.  Combined with the pre-ranked
+factor predictions this yields Spearman RankIC; cumulative curves are
+plotted.
 
 Requires ``pip install -e ".[examples]"`` and A-shares market data downloaded
 via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
@@ -41,8 +43,8 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Cast, Clocked, Lag, Map, Record, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply, Rank, Sqrt, Subtract
+from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack, StackSync
+from tradingflow.operators.num import Divide, Log, Multiply, Gaussianize, PctChange, Sqrt, Subtract
 from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.predictors.mean import Sample, SingleFeature
@@ -216,27 +218,34 @@ def build_scenario(
         f"volatility{window}",
     ]
 
-    # Cross-sectionally rank each factor so `InformationCoefficient`
-    # (with `ranking=True` on returns) computes Spearman RankIC.
-    def ranked(h: Handle) -> Handle:
-        return sc.add_operator(Cast(sc.add_operator(Rank(h)), np.float64))
+    # Cross-sectional rank → Φ⁻¹ transform so each factor is roughly
+    # standard-normal at every rebalance.  NaNs pass through unchanged.
+    def gaussianized(h: Handle) -> Handle:
+        return sc.add_operator(Gaussianize(h))
 
     stacked_features = sc.add_operator(
         Stack(
             [
-                ranked(market_cap),
-                ranked(bp),
-                ranked(turnover_ma),
-                ranked(ttm_ep),
-                ranked(ttm_roe),
-                ranked(momentum_ma),
-                ranked(volatility),
+                gaussianized(market_cap),
+                gaussianized(bp),
+                gaussianized(turnover_ma),
+                gaussianized(ttm_ep),
+                gaussianized(ttm_roe),
+                gaussianized(momentum_ma),
+                gaussianized(volatility),
             ],
             axis=1,
         )
     )
     features_series = sc.add_operator(Record(stacked_features))
-    adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
+
+    # Training target = linear returns.  Emitted every tick; the first
+    # tick is NaN since no previous price is available.  The evaluator
+    # uses the Gaussianized (cross-sectionally ranked) version so the
+    # IC becomes Spearman rank correlation.
+    returns = sc.add_operator(PctChange(stacked["adjusted_close"]))
+    returns_ranked = sc.add_operator(Gaussianize(returns))
+    target_series = sc.add_operator(Record(returns))
 
     # ------------------------------------------------------------------
     # IC / RankIC evaluation
@@ -262,14 +271,14 @@ def build_scenario(
         )
     )
 
-    predictor_kwargs = dict(universe_size=index_size)
+    predictor_kwargs = dict(universe_size=index_size, target_delay=1)
 
     estimators = {
         "sample": sc.add_operator(
             Sample(
                 universe,
                 features_series,
-                adjusted_prices_series,
+                target_series,
                 max_periods=rebalance_days,
                 **predictor_kwargs,
             ),
@@ -280,7 +289,7 @@ def build_scenario(
             SingleFeature(
                 universe,
                 features_series,
-                adjusted_prices_series,
+                target_series,
                 feature_index=i,
                 **predictor_kwargs,
             ),
@@ -289,11 +298,7 @@ def build_scenario(
     eval_handles = {}
     for name, predicted in estimators.items():
         metric = sc.add_operator(
-            InformationCoefficient(
-                predicted,
-                stacked["adjusted_close"],
-                ranking=True,
-            )
+            InformationCoefficient(predicted, returns_ranked),
         )
         eval_handles[name] = sc.add_operator(Record(metric))
 

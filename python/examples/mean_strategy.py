@@ -44,7 +44,7 @@ from tradingflow import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Gaussianize, Log, Multiply, Subtract
+from tradingflow.operators.num import Divide, Gaussianize, Log, Multiply, PctChange, Subtract
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
@@ -238,9 +238,13 @@ def build_scenario(
         )
     )
 
-    # Record feature and price history for predictors.
+    # Record feature and target history for predictors.  The regression
+    # target is the linear return — `PctChange` emits the cross-sectional
+    # return each tick (first tick all-NaN).  The meaning of the
+    # regressor's predictions is "linear return" because of this choice.
     features_series = sc.add_operator(Record(stacked_features))
-    adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
+    returns = sc.add_operator(PctChange(stacked["adjusted_close"]))
+    target_series = sc.add_operator(Record(returns))
 
     # ------------------------------------------------------------------
     # Strategy pipeline
@@ -270,8 +274,9 @@ def build_scenario(
         LinearRegression(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             universe_size=index_size,
+            target_delay=1,
             min_periods=100,
             verbose=True,
         ),

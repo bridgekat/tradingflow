@@ -27,7 +27,7 @@ class MeanVariancePortfolio(
         MeanVariancePortfolioState,
     ]
 ):
-    """Abstract portfolio constructor from predicted returns and covariance.
+    r"""Abstract portfolio constructor from predicted returns and covariance.
 
     Triggered by `universe` updates — the universe is the canonical
     rebalance signal.  On each trigger, delegates to `positions_fn` to
@@ -42,6 +42,18 @@ class MeanVariancePortfolio(
     at that cadence.  `predicted_returns` and `predicted_covariances`
     are read as the latest stored predictions at the trigger — neither
     need produce on the same cycle.
+
+    ## Expected prediction semantics
+
+    Mean-variance objectives mix predicted returns and covariances
+    additively (e.g. \(\mu^T w - \frac{\gamma}{2} w^T \Sigma w\)), so
+    both inputs **must be in matching, meaningful units** — typically
+    linear returns (e.g. per-period or annualized) if the covariance
+    is a linear-return covariance.  Rank-transformed or Gaussianized
+    scores are **not** suitable here because the scale information
+    required to trade off return against risk is lost.  The upstream
+    predictors must agree on the target (the same `target_series`
+    choice for both) to keep units consistent.
 
     ## NaN behavior
 

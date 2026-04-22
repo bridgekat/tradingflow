@@ -7,7 +7,7 @@ from ._common import sample_covariance
 
 
 class Sample(VariancePredictor[np.ndarray]):
-    """Predict covariance as the sample covariance of past returns.
+    """Predict covariance as the sample covariance of the target series.
 
     Corresponds to the *Markowitz* direct estimator in Pantaleo et al.
     (2010).  NaN-robust via pairwise complete observations; see
@@ -21,9 +21,9 @@ class Sample(VariancePredictor[np.ndarray]):
     features_series
         Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        `(num_stocks,)`.
+    target_series
+        Recorded target series, element shape `(num_stocks,)`.  The
+        covariance estimator operates cross-sectionally on this series.
     **kwargs
         Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor].
     """
@@ -32,13 +32,13 @@ class Sample(VariancePredictor[np.ndarray]):
         self,
         universe,
         features_series,
-        adjusted_prices_series,
+        target_series,
         **kwargs,
     ) -> None:
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=_fit_fn,
             predict_fn=_predict_fn,
             **kwargs,
@@ -46,7 +46,7 @@ class Sample(VariancePredictor[np.ndarray]):
 
 
 def _fit_fn(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Sample covariance of returns (NaN-robust). Ignores features."""
+    """Sample covariance of target (NaN-robust). Ignores features."""
     S, _, _ = sample_covariance(y)
     return S
 

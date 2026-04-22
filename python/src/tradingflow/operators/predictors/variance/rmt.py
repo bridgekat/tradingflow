@@ -44,18 +44,17 @@ class RMT0(VariancePredictor[np.ndarray]):
     features_series
         Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        `(num_stocks,)`.
+    target_series
+        Recorded target series, element shape `(num_stocks,)`.
     **kwargs
         Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor].
     """
 
-    def __init__(self, universe, features_series, adjusted_prices_series, **kwargs) -> None:
+    def __init__(self, universe, features_series, target_series, **kwargs) -> None:
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=lambda x, y: _rmt_fit(y, mode="zero"),
             predict_fn=lambda state, x, params: params,
             **kwargs,
@@ -78,18 +77,17 @@ class RMTM(VariancePredictor[np.ndarray]):
     features_series
         Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        `(num_stocks,)`.
+    target_series
+        Recorded target series, element shape `(num_stocks,)`.
     **kwargs
         Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor].
     """
 
-    def __init__(self, universe, features_series, adjusted_prices_series, **kwargs) -> None:
+    def __init__(self, universe, features_series, target_series, **kwargs) -> None:
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=lambda x, y: _rmt_fit(y, mode="mean"),
             predict_fn=lambda state, x, params: params,
             **kwargs,
@@ -102,7 +100,7 @@ def _rmt_fit(y: np.ndarray, *, mode: str) -> np.ndarray:
     Parameters
     ----------
     y
-        Return matrix `(T, N)`.
+        Target panel `(T, N)`.
     mode
         `"zero"` for RMT-0, `"mean"` for RMT-M.
     """

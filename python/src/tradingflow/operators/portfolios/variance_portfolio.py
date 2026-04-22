@@ -42,6 +42,18 @@ class VariancePortfolio(
     stored prediction at the trigger — it need not produce on the same
     cycle.
 
+    ## Expected prediction semantics
+
+    Minimum-variance solutions depend on the covariance only up to a
+    positive scalar — the chosen weights are the same whether the
+    upstream target is per-period or annualized returns — so the
+    `target_series` choice upstream affects reported risk figures but
+    not the weights themselves.  The covariance must nevertheless be
+    a valid covariance of some well-defined per-stock quantity (linear
+    returns, log returns, ...); rank-transformed or Gaussianized
+    covariances are technically valid but rarely what one wants for
+    risk minimization.
+
     ## NaN behavior
 
     `predicted_covariances` is allowed to contain `NaN` rows and columns

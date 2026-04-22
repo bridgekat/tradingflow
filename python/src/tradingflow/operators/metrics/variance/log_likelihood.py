@@ -12,7 +12,6 @@ class LogLikelihoodState:
     num_stocks: int
     initialized: bool = False
     sigma_inv: np.ndarray | None = None
-    prev_prices: np.ndarray | None = None
     log_det: float = 0.0
     sum_quad: float = 0.0
     count: int = 0
@@ -34,9 +33,9 @@ class LogLikelihood(
     \(\Sigma\), equivalent to
     [`scipy.linalg.pinv`][scipy.linalg.pinv] on symmetric PSD inputs
     and handling rank-deficient \(\Sigma\) gracefully) and begins
-    accumulating the daily Mahalanobis quadratic \(r^T \Sigma^+ r\).
-    When the next prediction arrives, emits the period-averaged
-    negative log-likelihood
+    accumulating the daily Mahalanobis quadratic \(r^T \Sigma^+ r\)
+    from the target ticks that follow.  When the next prediction arrives,
+    emits the period-averaged negative log-likelihood
 
     \[
     \log |\Sigma| + \frac{1}{T} \sum_t r_t^T \Sigma^+ r_t
@@ -59,13 +58,12 @@ class LogLikelihood(
     cadence as**
     [`MinimumVariance`][tradingflow.operators.metrics.variance.minimum_variance.MinimumVariance],
     so corresponding records line up element-by-element.  Output is 0
-    if no daily return was accumulated during the period (e.g. no
+    if no target tick was accumulated during the period (e.g. no
     stocks had finite covariance diagonal).
 
-    **Memory.** Both `predictions` and `prices` are `Array` inputs — the
-    operator reads only the latest covariance and the latest cross-
-    section of prices, caching one previous price tick in state to
-    compute one-period returns.  No `Record` is required upstream.
+    **Memory.** Both `predictions` and `target` are `Array` inputs —
+    the operator only reads the latest cross-section of each.
+    No `Record` is required upstream.
 
     Parameters
     ----------
@@ -73,24 +71,22 @@ class LogLikelihood(
         Live predicted covariance matrix from a variance predictor,
         shape `(N, N)`.  Stocks excluded by the variance predictor
         have NaN on the diagonal.
-    prices
-        Live forward-adjusted close prices, shape `(N,)`.
+    target
+        Live cross-sectional realized target values, shape `(N,)`,
+        produced at every tick (e.g. a `PctChange` node).  Non-finite
+        entries contribute zero to the Mahalanobis quadratic.
     """
 
-    def __init__(
-        self,
-        predictions: Handle,
-        prices: Handle,
-    ) -> None:
-        assert len(predictions.shape) == 2
-        assert predictions.shape[0] == predictions.shape[1]
-        assert len(prices.shape) == 1
-        assert predictions.shape[0] == prices.shape[0]
+    def __init__(self, predictions: Handle, target: Handle) -> None:
+        num_stocks = predictions.shape[0]
 
-        self._num_stocks = predictions.shape[0]
+        assert predictions.shape == (num_stocks, num_stocks)
+        assert target.shape == (num_stocks,)
+
+        self._num_stocks = num_stocks
 
         super().__init__(
-            inputs=(predictions, prices),
+            inputs=(predictions, target),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
             shape=(),
@@ -102,9 +98,7 @@ class LogLikelihood(
         inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
         timestamp: int,
     ) -> LogLikelihoodState:
-        return LogLikelihoodState(
-            num_stocks=self._num_stocks,
-        )
+        return LogLikelihoodState(num_stocks=self._num_stocks)
 
     @staticmethod
     def _set_prediction(state: LogLikelihoodState, sigma: np.ndarray) -> None:
@@ -133,18 +127,15 @@ class LogLikelihood(
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:
-        predictions, prices = inputs
-        predictions_produced, prices_produced = produced
+        predictions, target = inputs
+        predictions_produced, target_produced = produced
 
-        # Accumulate one-period Mahalanobis quadratic on price ticks.
-        if prices_produced:
-            prices_new = np.where(prices.value() > 0, prices.value(), np.nan)
-            if state.sigma_inv is not None and state.prev_prices is not None:
-                r = prices_new / state.prev_prices - 1.0
-                r = np.where(np.isfinite(r), r, 0.0)
-                state.sum_quad += float(r @ state.sigma_inv @ r)
-                state.count += 1
-            state.prev_prices = prices_new
+        # Accumulate one-period Mahalanobis quadratic on each target tick.
+        if target_produced and state.initialized:
+            r = target.value()
+            r = np.where(np.isfinite(r), r, 0.0)
+            state.sum_quad += float(r @ state.sigma_inv @ r)
+            state.count += 1
 
         # Gate: new prediction?
         if not predictions_produced:

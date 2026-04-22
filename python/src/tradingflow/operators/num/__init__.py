@@ -48,16 +48,27 @@ the event loop starts.
 These take a constant parameter at construction time and apply it
 element-wise at compute time:
 
-- [`Pow`][tradingflow.operators.num.pow.Pow] — raise each element to a
-  constant exponent.
-- [`Scale`][tradingflow.operators.num.scale.Scale] — multiply by a constant.
-- [`Shift`][tradingflow.operators.num.shift.Shift] — add a constant.
+- [`Pow`][tradingflow.operators.num.arithmetic.Pow] — raise each element
+  to a constant exponent.
 - [`Clamp`][tradingflow.operators.num.clamp.Clamp] — clip values into a
   given `[lo, hi]` range.
 - [`Fillna`][tradingflow.operators.num.fillna.Fillna] — replace NaNs with a
   constant.
 - [`ForwardFill`][tradingflow.operators.num.ffill.ForwardFill] — replace
   NaNs with the last non-NaN value seen so far (stateful).
+
+## Cross-tick (stateful)
+
+Operators that remember input history across ticks via a ring buffer
+of the last `offset` inputs.  Output is `NaN` for the first `offset`
+ticks.
+
+- [`Diff`][tradingflow.operators.num.diff.Diff] — first difference:
+  `a_t - a_{t-offset}`.
+- [`PctChange`][tradingflow.operators.num.pct_change.PctChange] — linear
+  return: `a_t / a_{t-offset} - 1`.
+
+Use `PctChange` for linear returns and `Log -> Diff` for log returns.
 
 ## Ranking
 
@@ -95,15 +106,15 @@ from .arithmetic import (
     Sign,
     Min,
     Max,
+    Pow,
 )
 from .clamp import Clamp
+from .diff import Diff
 from .ffill import ForwardFill
 from .fillna import Fillna
 from .gaussianize import Gaussianize
-from .pow import Pow
+from .pct_change import PctChange
 from .rank import ArgSort, Rank
-from .scale import Scale
-from .shift import Shift
 
 __all__ = [
     "ArgSort",
@@ -129,9 +140,9 @@ __all__ = [
     "Min",
     "Max",
     "Pow",
-    "Scale",
-    "Shift",
     "Clamp",
+    "Diff",
     "ForwardFill",
     "Fillna",
+    "PctChange",
 ]

@@ -13,6 +13,7 @@ class MeanPredictorState[T]:
     num_stocks: int
     num_features: int
     universe_size: int
+    target_delay: int
     max_periods: int | None
     min_periods: int | None
     fit_fn: Callable[[np.ndarray, np.ndarray], T]
@@ -28,18 +29,33 @@ class MeanPredictor[T](
         MeanPredictorState[T],
     ]
 ):
-    """Abstract mean-return predictor.
+    r"""Abstract cross-sectional mean predictor.
 
-    On each **rebalance** tick (signalled by the `universe` input
-    producing new weights), reads the last `max_periods` feature and
-    price entries from the upstream `Series` inputs, builds a 1-period
-    return matrix, calls `fit_fn` and `predict_fn`, and emits predicted
-    returns.  Non-rebalance ticks are ignored.
+    A `MeanPredictor` is a panel regressor: on each **rebalance** tick
+    (signalled by the `universe` input producing new weights), it reads
+    the last `max_periods` aligned feature/target rows from the upstream
+    `Series` inputs, calls `fit_fn` and `predict_fn`, and emits a
+    per-stock prediction.  Non-rebalance ticks are ignored.
 
-    The rebalance cadence is controlled by the caller: typically
-    `universe` is clocked by a rebalance clock (e.g. via
-    [`Clocked`][tradingflow.operators.clocked.Clocked]), so universe updates
-    coincide with rebalance dates.
+    The estimator itself is agnostic to what the target represents — linear
+    returns, log returns, a rank-transformed return, a custom signal —
+    so the **meaning of the prediction is defined by how the target
+    series is constructed upstream**.  Typical targets are built from
+    [`PctChange`][tradingflow.operators.num.pct_change.PctChange] (linear
+    returns) or [`Log`][tradingflow.operators.num.arithmetic.Log] followed
+    by [`Diff`][tradingflow.operators.num.diff.Diff] (log returns).
+
+    ## Input data alignment
+
+    At every rebalance, the invariant
+
+        len(features_series) == len(target_series) + target_delay
+
+    is asserted.  `features_series[i]` is then paired with
+    `target_series[i]`, and the most recent `target_delay` rows of the
+    features series are ignored in fitting.  This is useful when the
+    target is a forward-looking returns series, which only becomes
+    available *after* the features are observed.
 
     ## NaN behavior
 
@@ -61,58 +77,64 @@ class MeanPredictor[T](
     features_series
         Recorded features series, element shape
         `(num_stocks, num_features)`.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        `(num_stocks,)`.
+    target_series
+        Recorded target series, element shape `(num_stocks,)`.  The
+        meaning of the emitted prediction is whatever this series
+        represents.
     fit_fn
-        `(x, y) -> params`.  Feature array `x` of shape
-        `(T, N, F)` and 1-period return matrix `y` of shape
-        `(T, N)`.
+        `(x, y) -> params`.  Feature array `x` of shape `(T, N, F)` and
+        target matrix `y` of shape `(T, N)`.
     predict_fn
-        `(state, features, params) -> returns`.  Current features
+        `(state, features, params) -> predictions`.  Current features
         of shape `(N, F)` and fitted params.  `state.universe_size`
         gives the maximum number of stocks in the universe.
     universe_size
         Upper bound on the number of nonzero entries in the universe
         array.  Passed through to `predict_fn` via state for
         pre-allocation.
+    target_delay
+        Number of periods the target series lags the features series.
     max_periods
-        Maximum number of most-recent time rows to feed to
-        `fit_fn`.  `None` uses all available history.
+        Maximum number of most-recent time rows to feed to `fit_fn`.
+        `None` uses all available aligned pairs.
     min_periods
         Minimum number of valid observations per stock.  Stocks with
-        fewer valid (all-finite features and finite return) observations
-        across the time rows receive `NaN` in the output.  `None`
-        disables per-stock filtering.
+        fewer valid (all-finite features and finite target)
+        observations across the aligned time rows receive `NaN` in the
+        output.  `None` disables per-stock filtering.
     """
 
     def __init__(
         self,
         universe: Handle,
         features_series: Handle,
-        adjusted_prices_series: Handle,
+        target_series: Handle,
         *,
         fit_fn: Callable[[np.ndarray, np.ndarray], T],
         predict_fn: Callable[[MeanPredictorState[T], np.ndarray, T], np.ndarray],
         universe_size: int,
+        target_delay: int,
         max_periods: int | None = None,
         min_periods: int | None = None,
     ) -> None:
-        assert len(universe.shape) == 1
-        assert len(features_series.shape) == 2
-        assert len(adjusted_prices_series.shape) == 1
-        assert universe.shape[0] == features_series.shape[0] == adjusted_prices_series.shape[0]
+        num_stocks, num_features = features_series.shape
 
-        self._num_stocks = features_series.shape[0]
-        self._num_features = features_series.shape[-1]
+        assert universe.shape == (num_stocks,)
+        assert features_series.shape == (num_stocks, num_features)
+        assert target_series.shape == (num_stocks,)
+        assert target_delay >= 0
+
+        self._num_stocks = num_stocks
+        self._num_features = num_features
         self._universe_size = universe_size
+        self._target_delay = target_delay
         self._fit_fn = fit_fn
         self._predict_fn = predict_fn
         self._max_periods = max_periods
         self._min_periods = min_periods
 
         super().__init__(
-            inputs=(universe, features_series, adjusted_prices_series),
+            inputs=(universe, features_series, target_series),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
             shape=(self._num_stocks,),
@@ -132,10 +154,11 @@ class MeanPredictor[T](
             num_stocks=self._num_stocks,
             num_features=self._num_features,
             universe_size=self._universe_size,
-            fit_fn=self._fit_fn,
-            predict_fn=self._predict_fn,
+            target_delay=self._target_delay,
             max_periods=self._max_periods,
             min_periods=self._min_periods,
+            fit_fn=self._fit_fn,
+            predict_fn=self._predict_fn,
         )
 
     @staticmethod
@@ -150,53 +173,57 @@ class MeanPredictor[T](
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:
+        universe_view, features_series_view, target_series_view = inputs
+        universe_produced, _, _ = produced
+
         # Emit only on rebalance ticks (signalled by the `universe`
         # input producing new weights).
-        if not produced[0]:
+        if not universe_produced:
             return False
 
-        universe, features_series, prices_series = inputs
+        # Check data alignment.
+        n_features_total = len(features_series_view)
+        n_target = len(target_series_view)
 
-        # Bulk-read the last max_periods entries from both series.
-        n_available = max(0, len(prices_series) - 1)
-        n_use = min(n_available, state.max_periods) if state.max_periods is not None else n_available
-        start = n_available - n_use
-
-        all_features = features_series.values(start, start + n_use)  # (M, N, F)
-        all_prices = prices_series.values(start, start + n_use + 1)  # (M+1, N)
-
-        # Vectorized 1-period returns: (M, N).
-        prices_curr = np.where(all_prices[:-1] > 0, all_prices[:-1], np.nan)
-        prices_next = np.where(all_prices[1:] > 0, all_prices[1:], np.nan)
-        all_returns = prices_next / prices_curr - 1.0
-
-        # Per-stock valid observation counts.
-        valid = np.isfinite(all_features).all(axis=2) & np.isfinite(all_returns)
-        counts = valid.sum(axis=0)  # (N,)
-
-        # Current features for prediction.
-        features = features_series[-1]
-
-        # Filter to stocks currently in the universe.
-        mask = universe.to_numpy() > 0
-        assert int(mask.sum()) <= state.universe_size, (
-            f"universe has {int(mask.sum())} nonzero entries, " f"exceeds universe_size={state.universe_size}"
+        assert n_features_total == n_target + state.target_delay, (
+            f"mean_predictor: input data does not align, "
+            f"len(features_series)={n_features_total}, "
+            f"len(target_series)={n_target}, "
+            f"target_delay={state.target_delay}. "
+            f"Expected len(features) == len(target) + target_delay."
         )
 
-        # Filter to stocks with enough valid observations.
+        # Training window.
+        n_use = min(n_target, state.max_periods) if state.max_periods is not None else n_target
+        start = n_target - n_use
+
+        all_features = features_series_view.values(start, start + n_use)  # (T, N, F)
+        all_target = target_series_view.values(start, start + n_use)  # (T, N)
+
+        # Per-stock valid observation counts.
+        valid = np.isfinite(all_features).all(axis=2) & np.isfinite(all_target)
+        counts = valid.sum(axis=0)
+
+        # Current features for prediction.
+        features = features_series_view[-1]
+
+        # Universe filter.
+        mask = universe_view.to_numpy() > 0
+        assert (
+            int(mask.sum()) <= state.universe_size
+        ), f"mean_predictor: universe has {int(mask.sum())} nonzero entries, exceeds universe_size={state.universe_size}"
+
         if state.min_periods is not None:
             mask &= counts >= state.min_periods
 
         # Filter to stocks with valid features for prediction.
         mask &= np.isfinite(features).all(axis=1)
 
-        M, N, F = n_use, int(mask.sum()), state.num_features
-        x = all_features[:, mask, :]  # (M, N, F)
-        y = all_returns[:, mask]  # (M, N)
+        x = all_features[:, mask, :]  # (T, N, F)
+        y = all_target[:, mask]  # (T, N)
 
-        # Fit and predict.
         mu = np.full((state.num_stocks,), np.nan, dtype=np.float64)
-        if M > 0 and N > 0:
+        if n_use > 0 and mask.any():
             mu[mask] = state.predict_fn(state, features[mask], state.fit_fn(x, y))
 
         output.write(mu)

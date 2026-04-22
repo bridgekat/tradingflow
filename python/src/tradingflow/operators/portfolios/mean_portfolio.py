@@ -26,7 +26,7 @@ class MeanPortfolio(
         MeanPortfolioState,
     ]
 ):
-    """Abstract portfolio constructor from predicted returns.
+    """Abstract portfolio constructor from per-stock predictions.
 
     Triggered by `universe` updates — the universe is the canonical
     rebalance signal.  On each trigger, delegates to `positions_fn` to
@@ -39,6 +39,17 @@ class MeanPortfolio(
     [`Clocked`][tradingflow.operators.clocked.Clocked]), so this operator runs
     at that cadence.  `predicted_returns` is read as the latest stored
     prediction at the trigger — it need not produce on the same cycle.
+
+    ## Expected prediction semantics
+
+    `MeanPortfolio` subclasses (`Proportional`, `RankEqual`, `RankLinear`,
+    `Softmax`) only consume the *ordering* of the predictions — a
+    monotonic transform of the input does not change the selected
+    top-N or rank-based weights.  Accordingly the predictions may be
+    raw expected returns, rank-transformed scores, Gaussianized scores,
+    or any other per-stock "score" with a consistent sign convention
+    (higher = better).  The upstream predictor defines what the score
+    represents via its `target_series` input.
 
     ## NaN behavior
 
