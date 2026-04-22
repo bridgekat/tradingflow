@@ -38,16 +38,27 @@
 //! - [`Fillna`] (`T: Float`) — replace NaN with a constant.
 //! - [`ForwardFill`] (`T: Float`) — replace NaN with the last valid observation.
 //!
-//! # Index operators
+//! # Ranking (float-only, `T: Float`, 1-D input)
 //!
-//! - [`ArgSort`] (`T: Float`) — indices that would sort the array (smallest first).
+//! - [`Rank`] — 0-based rank of each element (smallest → 0).
+//! - [`ArgSort`] — indices that would sort the array (smallest first).
+//!
+//! Both treat NaN as larger than any real value, so NaNs end up at the
+//! highest ranks / indices.
+//!
+//! # Distribution shaping (float-only, `T: Float`, 1-D input)
+//!
+//! - [`Gaussianize`] — cross-sectional rank-to-Gaussian transform: map
+//!   each non-NaN element to `Φ⁻¹((rank + 0.5) / n_valid)`.  NaN inputs
+//!   are preserved as NaN outputs.
 
-mod argsort;
 mod arithmetic;
 mod clamp;
 mod ffill;
 mod fillna;
+mod gaussianize;
 mod pow;
+mod rank;
 mod scale;
 mod shift;
 
@@ -55,10 +66,11 @@ pub use arithmetic::{
     Abs, Add, Ceil, Divide, Exp, Exp2, Floor, Log, Log2, Log10, Max, Min, Multiply, Negate, Recip,
     Round, Sign, Sqrt, Subtract,
 };
-pub use argsort::ArgSort;
 pub use clamp::Clamp;
 pub use ffill::ForwardFill;
 pub use fillna::Fillna;
+pub use gaussianize::Gaussianize;
 pub use pow::Pow;
+pub use rank::{ArgSort, Rank};
 pub use scale::Scale;
 pub use shift::Shift;

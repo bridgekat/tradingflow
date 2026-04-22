@@ -115,6 +115,9 @@ pub fn dispatch_native_operator(
         // -- Forward-fill (Series → Array, float only) ------------------------
         "forward_fill" => Ok((dispatch_op!(dtype, num::ForwardFill, float, sc, input_indices), NativeNodeKind::Array)),
 
+        // -- Gaussianize (Array<T:Float> → Array<T>) --------------------------
+        "gaussianize" => Ok((dispatch_op!(dtype, num::Gaussianize, float, sc, input_indices), NativeNodeKind::Array)),
+
         // -- Identity (Array → Array) ----------------------------------------
         "id" => {
             macro_rules! go {
@@ -448,15 +451,19 @@ pub fn dispatch_native_operator(
             Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
-        // -- ArgSort (Array<T:Float> → Array<u64>) ----------------------------
-        "argsort" => {
+        // -- Rank / ArgSort (Array<T:Float> → Array<u64>) --------------------
+        "rank" | "argsort" => {
             let input_dtype: String = params
                 .get_item("input_dtype")?
-                .ok_or_else(|| PyTypeError::new_err("argsort requires 'input_dtype' param"))?
+                .ok_or_else(|| PyTypeError::new_err(format!("{kind} requires 'input_dtype' param")))?
                 .extract()?;
             macro_rules! go {
                 ($T:ty) => {
-                    add_operator_from_indices(sc, operators::num::ArgSort::<$T>::new(), input_indices)
+                    match kind {
+                        "rank" => add_operator_from_indices(sc, operators::num::Rank::<$T>::new(), input_indices),
+                        "argsort" => add_operator_from_indices(sc, operators::num::ArgSort::<$T>::new(), input_indices),
+                        _ => unreachable!(),
+                    }
                 };
             }
             Ok((dispatch_dtype!(input_dtype.as_str(), go, float), NativeNodeKind::Array))

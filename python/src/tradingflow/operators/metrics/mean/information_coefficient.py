@@ -58,8 +58,9 @@ class InformationCoefficient(
     prices
         Live forward-adjusted close prices, shape `(N,)`.
     ranking
-        If `False` (default), compute Pearson IC.  If `True`,
-        rank-transform both inputs first to compute Spearman RankIC.
+        If `True`, rank-transform the **returns** before correlating.
+        If you also want the prediction side ranked (e.g. Spearman RankIC
+        on raw factor exposures), rank those explicitly upstream.
     min_valid
         Minimum number of non-NaN cross-sectional pairs required to
         compute a valid daily IC.  Days below threshold are skipped.
@@ -122,7 +123,7 @@ class InformationCoefficient(
                 valid = np.isfinite(s) & np.isfinite(r)
                 s, r = s[valid], r[valid]
                 if state.ranking:
-                    s, r = _rank(s), _rank(r)
+                    r = _rank(r)
                 if len(s) >= 2:
                     ic = float(np.corrcoef(s, r)[0, 1])
                     state.sum_ic += ic

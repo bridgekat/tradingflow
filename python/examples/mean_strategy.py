@@ -1,11 +1,19 @@
 """Backtest a linear regression strategy on all A-shares stocks.
 
-For each stock the following features are computed every trading day:
+Features fed to the linear regression are cross-sectional **Gaussianized
+ranks** of five per-stock factors — each non-NaN value is replaced with
+``Φ⁻¹((rank + 0.5) / n_valid)`` so the features are approximately
+standard-normal across the universe at every rebalance.  NaN factor
+values stay NaN and are ignored by the regression:
 
-- ``log(market_cap)`` — log of circulating market capitalisation
-- ``log(B/P)`` — log of book-to-price ratio (parent equity / market cap)
-- ``turnover_ma`` — simple moving average of daily turnover over the rebalance
-  period (volume / circulating shares)
+- ``market_cap`` — circulating market capitalisation (close × circ_shares)
+- ``bp`` — book-to-price ratio (parent equity / market cap)
+- ``turnover_ma20`` — 20-day moving average of daily turnover
+  (volume / circulating shares)
+- ``ttm_ep`` — trailing-twelve-month earnings-to-price
+  (annualised net profit / market cap, 365-day rolling mean)
+- ``momentum_ma20`` — 20-day moving average of daily log-returns of
+  adjusted close
 
 The pipeline consists of four independent, composable operators:
 
@@ -35,8 +43,8 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Map, Record, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply
+from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack, StackSync
+from tradingflow.operators.num import Divide, Gaussianize, Log, Multiply, Subtract
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
@@ -94,6 +102,7 @@ def build_scenario(
         k: []
         for k in (
             "adjusts",
+            "total_shares",
             "circ_shares",
             "parent_equity",
             "net_profit",
@@ -148,6 +157,7 @@ def build_scenario(
         close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
         adjusts = sc.add_operator(ForwardAdjust(close, dividends, output_prices=False))
         adjusted_close = sc.add_operator(Multiply(close, adjusts))
+        total_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.total")))
         circ_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
         income_ann = sc.add_operator(Annualize(income_ytd))
         net_profit = sc.add_operator(Select(income_ann, INC_SCHEMA.index("income_statement.profit")))
@@ -170,6 +180,7 @@ def build_scenario(
         per_stock_sync["ohlcv"].append(ohlcv)
         per_stock_sync["adjusted_close"].append(adjusted_close)
         per_stock_irregular["adjusts"].append(adjusts)
+        per_stock_irregular["total_shares"].append(total_shares)
         per_stock_irregular["circ_shares"].append(circ_shares)
         per_stock_irregular["parent_equity"].append(parent_equity)
         per_stock_irregular["net_profit"].append(net_profit)
@@ -190,21 +201,42 @@ def build_scenario(
     close = sc.add_operator(Select(stacked["ohlcv"], 3, axis=1))
     volume = sc.add_operator(Select(stacked["ohlcv"], 4, axis=1))
 
-    # Market cap and log(market cap).
-    market_cap = sc.add_operator(Multiply(close, stacked["circ_shares"]))
-    log_mcap = sc.add_operator(Log(market_cap))
+    # Per-stock features.
+    window = 20
 
-    # log(B/P) = log(parent_equity / market_cap).
+    market_cap = sc.add_operator(Multiply(close, stacked["total_shares"]))
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
-    log_bp = sc.add_operator(Log(bp))
 
-    # Turnover MA.
     turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
-    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=rebalance_days))
+    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
 
-    # Stack features into (num_stocks, num_features).
-    stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
+    net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
+    net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
+    ttm_ep = sc.add_operator(Divide(net_profit_ttm, market_cap))
+
+    log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
+    log_adj_series = sc.add_operator(Record(log_adj))
+    log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
+    momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
+
+    # Cross-sectional rank → Φ⁻¹ transform so each factor is roughly
+    # standard-normal at every rebalance.  NaNs pass through unchanged.
+    def gaussianized(h: Handle) -> Handle:
+        return sc.add_operator(Gaussianize(h))
+
+    stacked_features = sc.add_operator(
+        Stack(
+            [
+                gaussianized(market_cap),
+                gaussianized(bp),
+                gaussianized(turnover_ma),
+                gaussianized(ttm_ep),
+                gaussianized(momentum_ma),
+            ],
+            axis=1,
+        )
+    )
 
     # Record feature and price history for predictors.
     features_series = sc.add_operator(Record(stacked_features))

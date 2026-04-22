@@ -59,13 +59,22 @@ element-wise at compute time:
 - [`ForwardFill`][tradingflow.operators.num.ffill.ForwardFill] — replace
   NaNs with the last non-NaN value seen so far (stateful).
 
-## Sorting
+## Ranking
 
-- [`ArgSort`][tradingflow.operators.num.argsort.ArgSort] — indices that would
+1-D float inputs only.  NaN values sort to the end in both.
+
+- [`Rank`][tradingflow.operators.num.rank.Rank] — 0-based rank of each
+  element (smallest → 0).
+- [`ArgSort`][tradingflow.operators.num.rank.ArgSort] — indices that would
   sort the input array.
+
+## Distribution shaping
+
+- [`Gaussianize`][tradingflow.operators.num.gaussianize.Gaussianize] —
+  cross-sectional rank-to-Gaussian transform: map each non-NaN element
+  to ``Φ⁻¹((rank + 0.5) / n_valid)``.  NaN inputs pass through as NaN.
 """
 
-from .argsort import ArgSort
 from .arithmetic import (
     Add,
     Subtract,
@@ -90,12 +99,16 @@ from .arithmetic import (
 from .clamp import Clamp
 from .ffill import ForwardFill
 from .fillna import Fillna
+from .gaussianize import Gaussianize
 from .pow import Pow
+from .rank import ArgSort, Rank
 from .scale import Scale
 from .shift import Shift
 
 __all__ = [
     "ArgSort",
+    "Rank",
+    "Gaussianize",
     "Add",
     "Subtract",
     "Multiply",

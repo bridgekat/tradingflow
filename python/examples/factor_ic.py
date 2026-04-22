@@ -2,22 +2,25 @@
 
 For each stock the following features are computed every trading day:
 
-- ``log(market_cap)`` -- log of circulating market capitalisation
-- ``log(B/P)`` -- log of book-to-price ratio (parent equity / market cap)
+- ``market_cap`` -- circulating market capitalisation
+- ``bp`` -- book-to-price ratio (parent equity / market cap)
 - ``turnover_ma`` -- simple moving average of daily turnover over the
   rebalance window (volume / circulating shares)
 - ``ttm_ep`` -- TTM earnings-to-price ratio (annualized net profit / market cap)
 - ``ttm_roe`` -- TTM return on equity (annualized net profit / parent equity)
 - ``momentum_ma`` -- rolling mean of daily log-returns of adjusted close
+- ``volatility`` -- rolling standard deviation of daily log-returns of
+  adjusted close
 
-Each factor is wrapped in a ``SingleFeature`` pass-through predictor so
-its output emits at the rebalance cadence (parallel to the variance
-predictor pattern used in ``covariance_gmv.py``).  A ``Sample`` mean
-predictor (historical mean returns, no features) is included as a
-baseline.  An ``InformationCoefficient`` evaluator (ranking mode)
-accumulates daily cross-sectional Spearman rank correlations between
-each prediction and realised 1-period forward returns, and reports the
-mean RankIC at each rebalance.  Cumulative RankIC curves are plotted.
+Each factor is cross-sectionally ranked (NaNs last, cast to float64) and
+then wrapped in a ``SingleFeature`` pass-through predictor so its output
+emits at the rebalance cadence (parallel to the variance predictor pattern
+used in ``covariance_gmv.py``).  A ``Sample`` mean predictor (historical
+mean returns, no features) is included as a baseline.  An
+``InformationCoefficient`` evaluator with ``ranking=True`` rank-transforms
+realised 1-period forward returns before correlating; combined with the
+pre-ranked factors this yields Spearman RankIC.  Cumulative RankIC curves
+are plotted.
 
 Requires ``pip install -e ".[examples]"`` and A-shares market data downloaded
 via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
@@ -38,9 +41,9 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply, Subtract
-from tradingflow.operators.rolling import RollingMean
+from tradingflow.operators import Cast, Clocked, Lag, Map, Record, Select, Stack, StackSync
+from tradingflow.operators.num import Divide, Log, Multiply, Rank, Sqrt, Subtract
+from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.predictors.mean import Sample, SingleFeature
 from tradingflow.operators.metrics.mean import InformationCoefficient
@@ -59,6 +62,7 @@ def build_scenario(
     symbols: list[str],
     data_dir: Path,
     rebalance_days: int,
+    window: int,
     index_size: int,
     data_start: np.datetime64,
     eval_start: np.datetime64,
@@ -91,6 +95,7 @@ def build_scenario(
     per_stock_irregular: dict[str, list[Handle]] = {
         k: []
         for k in (
+            "total_shares",
             "circ_shares",
             "parent_equity",
             "net_profit",
@@ -136,6 +141,7 @@ def build_scenario(
         close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
         adjusts = sc.add_operator(ForwardAdjust(close, dividends, output_prices=False))
         adjusted_close = sc.add_operator(Multiply(close, adjusts))
+        total_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.total")))
         circ_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
         volume = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.volume")))
         income_ann = sc.add_operator(Annualize(income_ytd))
@@ -159,6 +165,7 @@ def build_scenario(
         per_stock_sync["adjusted_close"].append(adjusted_close)
         per_stock_sync["close"].append(close)
         per_stock_sync["volume"].append(volume)
+        per_stock_irregular["total_shares"].append(total_shares)
         per_stock_irregular["circ_shares"].append(circ_shares)
         per_stock_irregular["parent_equity"].append(parent_equity)
         per_stock_irregular["net_profit"].append(net_profit)
@@ -176,12 +183,11 @@ def build_scenario(
     # Features
     # ------------------------------------------------------------------
 
-    market_cap = sc.add_operator(Multiply(stacked["close"], stacked["circ_shares"]))
-    log_mcap = sc.add_operator(Log(market_cap))
-    log_bp = sc.add_operator(Log(sc.add_operator(Divide(stacked["parent_equity"], market_cap))))
+    market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
+    bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
     turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
-    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=rebalance_days))
+    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
 
     # TTM net profit via 365-day rolling mean of annualized net profit.
     net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
@@ -194,13 +200,41 @@ def build_scenario(
     # Momentum MA (rolling mean of daily log-returns of adjusted close).
     log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
     log_adj_series = sc.add_operator(Record(log_adj))
-    log_adj_lag = sc.add_operator(Lag(log_adj_series, 1, fill=np.float64(np.nan)))
-    daily_ret = sc.add_operator(Subtract(log_adj, log_adj_lag))
-    daily_ret_series = sc.add_operator(Record(daily_ret))
-    momentum_ma = sc.add_operator(RollingMean(daily_ret_series, window=rebalance_days))
+    log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
+    momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
 
-    factor_names = ["log_mcap", "log_bp", "turnover_ma", "ttm_ep", "ttm_roe", "momentum_ma"]
-    stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma, ttm_ep, ttm_roe, momentum_ma], axis=1))
+    # Price volatility (rolling std dev of daily log-returns of adjusted close).
+    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
+
+    factor_names = [
+        "market_cap",
+        "bp",
+        f"turnover_ma{window}",
+        "ttm_ep",
+        "ttm_roe",
+        f"momentum_ma{window}",
+        f"volatility{window}",
+    ]
+
+    # Cross-sectionally rank each factor so `InformationCoefficient`
+    # (with `ranking=True` on returns) computes Spearman RankIC.
+    def ranked(h: Handle) -> Handle:
+        return sc.add_operator(Cast(sc.add_operator(Rank(h)), np.float64))
+
+    stacked_features = sc.add_operator(
+        Stack(
+            [
+                ranked(market_cap),
+                ranked(bp),
+                ranked(turnover_ma),
+                ranked(ttm_ep),
+                ranked(ttm_roe),
+                ranked(momentum_ma),
+                ranked(volatility),
+            ],
+            axis=1,
+        )
+    )
     features_series = sc.add_operator(Record(stacked_features))
     adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
 
@@ -254,9 +288,6 @@ def build_scenario(
 
     eval_handles = {}
     for name, predicted in estimators.items():
-        # `predicted` and `stacked["adjusted_close"]` are fed directly
-        # as `Array` inputs — IC only reads the latest cross-section
-        # of each and caches one previous price tick in its state.
         metric = sc.add_operator(
             InformationCoefficient(
                 predicted,
@@ -276,6 +307,12 @@ if __name__ == "__main__":
     parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
     parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
     parser.add_argument("--rebalance-days", type=int, default=90, help="rebalance every N calendar days")
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=None,
+        help="rolling window (in samples) for windowed features; defaults to --rebalance-days",
+    )
     parser.add_argument("--index-size", type=int, default=100, help="number of stocks in the universe")
     add_market_argument(parser)
     args = parser.parse_args()
@@ -290,12 +327,14 @@ if __name__ == "__main__":
     symbols = load_symbols(data_dir, markets=args.markets)
     print(f"Discovered {len(symbols)} symbols.")
 
+    window = args.window if args.window is not None else args.rebalance_days
     sc, eval_handles, rebalance_dates = build_scenario(
         symbols,
         data_dir,
         rebalance_days=args.rebalance_days,
+        window=window,
         index_size=args.index_size,
-        data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
+        data_start=resolve_data_start(args.sample_begin, args.begin, max(args.rebalance_days, window)),
         eval_start=args.begin,
         end=args.end,
     )
