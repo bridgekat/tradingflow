@@ -53,7 +53,7 @@ from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Clocked, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply, PctChange
+from tradingflow.operators.num import Diff, Divide, Log, Multiply
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.predictors.mean import LinearRegression
@@ -233,9 +233,10 @@ def build_scenario(
     stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
 
     # Record feature and target history for predictors.  Covariance
-    # estimators train on linear returns, so the emitted covariances
-    # are in linear-return units (directly consumable by
-    # `VariancePortfolio` and `MeanVariancePortfolio`).
+    # estimators train on log returns (more symmetric, closer to
+    # Gaussian); `VariancePortfolio` / `MeanVariancePortfolio` and the
+    # `MinimumVariance` metric perform the lognormal conversion to
+    # linear-return moments internally.
     #
     # `stacked_features` ticks on trading days *and* on irregular
     # corporate-event days (balance-sheet notices, equity structure
@@ -245,8 +246,9 @@ def build_scenario(
     # positional alignment contract.
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))
-    returns = sc.add_operator(PctChange(stacked["adjusted_close"]))
-    target_series = sc.add_operator(Record(returns))
+    log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
+    log_returns = sc.add_operator(Diff(log_adj))
+    target_series = sc.add_operator(Record(log_returns))
 
     # ------------------------------------------------------------------
     # Shared predictors
@@ -327,7 +329,7 @@ def build_scenario(
         # is fed directly as an `Array` input — the metric only reads the
         # latest covariance, so recording the full (N, N) history per
         # rebalance would waste O(periods · N²) memory for no benefit.
-        mv_metric = sc.add_operator(MinimumVariance(predicted_covariance, returns))
+        mv_metric = sc.add_operator(MinimumVariance(predicted_covariance, log_returns))
         mv_handles[name] = sc.add_operator(Record(mv_metric))
 
         for long_only, value_handles in ((True, l_value_handles), (False, ls_value_handles)):

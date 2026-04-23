@@ -18,7 +18,10 @@ class Softmax(MeanPortfolio):
     universe
         Handle to universe weights, shape `(num_stocks,)`.
     predicted_returns
-        Handle to predicted returns array, shape `(num_stocks,)`.
+        Handle to predicted log-returns array, shape `(num_stocks,)`.
+        Converted to linear returns by
+        [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio]
+        before the softmax is applied.
     temperature
         Softmax temperature.  Lower values sharpen the distribution
         toward the highest-predicted stocks.

@@ -34,7 +34,11 @@ class MinimumVariance(VariancePortfolio):
     universe
         Handle to universe weights, shape `(num_stocks,)`.
     covariance
-        Handle to covariance matrix, shape `(num_stocks, num_stocks)`.
+        Handle to log-return covariance matrix, shape
+        `(num_stocks, num_stocks)`.  Converted to a linear-return
+        covariance by
+        [`VariancePortfolio`][tradingflow.operators.portfolios.variance_portfolio.VariancePortfolio]
+        before the quadratic program is set up.
     long_only
         If `True` (default), enforce \(x \geq 0\).
     verbose

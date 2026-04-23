@@ -15,6 +15,7 @@ class MeanVariancePortfolioState:
     """Mutable state for [`MeanVariancePortfolio`][tradingflow.operators.portfolios.mean_variance_portfolio.MeanVariancePortfolio] subclasses."""
 
     num_stocks: int
+    logarithmic: bool
     positions_fn: Callable[["MeanVariancePortfolioState", np.ndarray, np.ndarray], np.ndarray]
 
 
@@ -45,15 +46,28 @@ class MeanVariancePortfolio(
 
     ## Expected prediction semantics
 
-    Mean-variance objectives mix predicted returns and covariances
-    additively (e.g. \(\mu^T w - \frac{\gamma}{2} w^T \Sigma w\)), so
-    both inputs **must be in matching, meaningful units** — typically
-    linear returns (e.g. per-period or annualized) if the covariance
-    is a linear-return covariance.  Rank-transformed or Gaussianized
-    scores are **not** suitable here because the scale information
-    required to trade off return against risk is lost.  The upstream
-    predictors must agree on the target (the same `target_series`
-    choice for both) to keep units consistent.
+    Controlled by `logarithmic`:
+
+    - `logarithmic=True` (default): both `predicted_returns` and
+      `predicted_covariances` are in **log-return** units.  The base
+      class maps them to linear-return moments via the full lognormal
+      moment map before calling `positions_fn`:
+
+          mu_lin[i]       = exp(mu_log[i] + ½ Sigma_log[i, i]) - 1
+          Sigma_lin[i, j] = (1 + mu_lin[i]) (1 + mu_lin[j])
+                            · (exp(Sigma_log[i, j]) - 1)
+
+    - `logarithmic=False`: both inputs are already in **linear-return**
+      units and are forwarded to `positions_fn` unchanged.
+
+    Either way, `positions_fn` always sees matched linear-return
+    mean/covariance pairs — exactly the units Markowitz-style
+    objectives \(\mu^T w - \frac{\gamma}{2} w^T \Sigma w\) expect.
+    Training the upstream predictors on log returns (more symmetric,
+    closer to Gaussian) while letting this boundary handle the
+    conversion tends to give tighter estimates than directly modelling
+    linear returns; the two upstream predictors must of course agree
+    on the target series so the units on the way in are consistent.
 
     ## NaN behavior
 
@@ -77,11 +91,20 @@ class MeanVariancePortfolio(
         Handle to universe weights, shape `(num_stocks,)`.
         Stocks with positive values are included in the optimization.
     predicted_returns
-        Handle to predicted returns array, shape `(num_stocks,)`.
+        Handle to predicted returns array, shape `(num_stocks,)`.  Log
+        or linear depending on `logarithmic`.
     predicted_covariances
-        Handle to predicted covariance matrix, shape `(num_stocks, num_stocks)`.
+        Handle to predicted covariance matrix, shape
+        `(num_stocks, num_stocks)`.  Log or linear depending on
+        `logarithmic`.
     positions_fn
-        `(state, mu, Sigma) -> weights`.  Receives only the subset.
+        `(state, mu, Sigma) -> weights`.  Receives only the
+        universe-active subset, with both moments in linear-return units.
+    logarithmic
+        If `True` (default), the two inputs are interpreted as
+        log-return moments and converted via the full lognormal moment
+        map before the inner call; if `False`, they are interpreted as
+        linear-return moments and passed through unchanged.
     """
 
     def __init__(
@@ -91,6 +114,7 @@ class MeanVariancePortfolio(
         predicted_covariances: Handle,
         *,
         positions_fn: Callable[[MeanVariancePortfolioState, np.ndarray, np.ndarray], np.ndarray],
+        logarithmic: bool = True,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(predicted_returns.shape) == 1
@@ -100,6 +124,7 @@ class MeanVariancePortfolio(
         assert predicted_covariances.shape[1] == universe.shape[0]
 
         self._num_stocks = predicted_returns.shape[0]
+        self._logarithmic = logarithmic
         self._positions_fn = positions_fn
 
         inputs = (universe, predicted_returns, predicted_covariances)
@@ -122,6 +147,7 @@ class MeanVariancePortfolio(
     ) -> MeanVariancePortfolioState:
         return MeanVariancePortfolioState(
             num_stocks=self._num_stocks,
+            logarithmic=self._logarithmic,
             positions_fn=self._positions_fn,
         )
 
@@ -152,6 +178,14 @@ class MeanVariancePortfolio(
         sub_sigma = sigma[np.ix_(mask, mask)]
         if not np.all(np.isfinite(sub_sigma)):
             raise ValueError("sub-covariance matrix contains non-finite entries")
+        # Full lognormal → linear-return moment map:
+        #   mu_lin[i]       = exp(mu_log[i] + 0.5 * Sigma_log[i, i]) - 1
+        #   Sigma_lin[i, j] = (1 + mu_lin[i])(1 + mu_lin[j])
+        #                     * (exp(Sigma_log[i, j]) - 1)
+        if state.logarithmic:
+            sub_mu = np.expm1(sub_mu + 0.5 * np.diag(sub_sigma))
+            factor = 1.0 + sub_mu
+            sub_sigma = np.outer(factor, factor) * np.expm1(sub_sigma)
 
         positions = np.zeros_like(universe, dtype=np.float64)
         if mask.any():

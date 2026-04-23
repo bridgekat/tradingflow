@@ -16,7 +16,10 @@ class Proportional(MeanPortfolio):
     universe
         Handle to universe weights, shape `(num_stocks,)`.
     predicted_returns
-        Handle to predicted returns array, shape `(num_stocks,)`.
+        Handle to predicted log-returns array, shape `(num_stocks,)`.
+        Converted to linear returns by
+        [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio]
+        before use here.
     **kwargs
         Forwarded to [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio].
     """

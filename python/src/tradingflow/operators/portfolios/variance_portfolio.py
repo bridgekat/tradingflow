@@ -15,6 +15,7 @@ class VariancePortfolioState:
     """Mutable state for [`VariancePortfolio`][tradingflow.operators.portfolios.variance_portfolio.VariancePortfolio] subclasses."""
 
     num_stocks: int
+    logarithmic: bool
     positions_fn: Callable[["VariancePortfolioState", np.ndarray], np.ndarray]
 
 
@@ -44,15 +45,28 @@ class VariancePortfolio(
 
     ## Expected prediction semantics
 
-    Minimum-variance solutions depend on the covariance only up to a
-    positive scalar — the chosen weights are the same whether the
-    upstream target is per-period or annualized returns — so the
-    `target_series` choice upstream affects reported risk figures but
-    not the weights themselves.  The covariance must nevertheless be
-    a valid covariance of some well-defined per-stock quantity (linear
-    returns, log returns, ...); rank-transformed or Gaussianized
-    covariances are technically valid but rarely what one wants for
-    risk minimization.
+    Controlled by `logarithmic`:
+
+    - `logarithmic=True` (default): `predicted_covariances` is a
+      **log-return** covariance matrix.  The base class derives an
+      implied linear-return mean and covariance via the zero-mean
+      specialisation of the lognormal moment map before calling
+      `positions_fn`:
+
+          mu_lin[i]       = exp(½ Sigma_log[i, i]) - 1
+          Sigma_lin[i, j] = (1 + mu_lin[i]) (1 + mu_lin[j])
+                            · (exp(Sigma_log[i, j]) - 1)
+
+    - `logarithmic=False`: `predicted_covariances` is already a
+      **linear-return** covariance matrix and is forwarded to
+      `positions_fn` unchanged.
+
+    Either way, `positions_fn` always sees a linear-return covariance.
+    At daily or weekly frequency, log-return covariance entries are
+    small and the conversion is close to the identity; using the
+    correct formula keeps the numbers consistent with
+    [`MeanVariancePortfolio`][tradingflow.operators.portfolios.mean_variance_portfolio.MeanVariancePortfolio],
+    which applies the full two-moment conversion.
 
     ## NaN behavior
 
@@ -73,10 +87,18 @@ class VariancePortfolio(
         Handle to universe weights, shape `(num_stocks,)`.
         Stocks with positive values are included in the optimization.
     predicted_covariances
-        Handle to predicted covariance matrix, shape `(num_stocks, num_stocks)`.
+        Handle to predicted covariance matrix, shape
+        `(num_stocks, num_stocks)`.  Log or linear depending on
+        `logarithmic`.
     positions_fn
-        `(state, Sigma) -> weights`.  Receives only the universe-
-        active sub-block of the covariance matrix.
+        `(state, Sigma) -> weights`.  Receives only the universe-active
+        sub-block of the covariance matrix, in linear-return units.
+    logarithmic
+        If `True` (default), `predicted_covariances` is interpreted as
+        a log-return covariance and converted via the zero-mean
+        lognormal moment map before the inner call; if `False`, it is
+        interpreted as a linear-return covariance and passed through
+        unchanged.
     """
 
     def __init__(
@@ -85,6 +107,7 @@ class VariancePortfolio(
         predicted_covariances: Handle,
         *,
         positions_fn: Callable[[VariancePortfolioState, np.ndarray], np.ndarray],
+        logarithmic: bool = True,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(predicted_covariances.shape) == 2
@@ -92,6 +115,7 @@ class VariancePortfolio(
         assert predicted_covariances.shape[1] == universe.shape[0]
 
         self._num_stocks = universe.shape[0]
+        self._logarithmic = logarithmic
         self._positions_fn = positions_fn
 
         inputs = (universe, predicted_covariances)
@@ -110,6 +134,7 @@ class VariancePortfolio(
     ) -> VariancePortfolioState:
         return VariancePortfolioState(
             num_stocks=self._num_stocks,
+            logarithmic=self._logarithmic,
             positions_fn=self._positions_fn,
         )
 
@@ -134,6 +159,14 @@ class VariancePortfolio(
         sub_sigma = sigma[np.ix_(mask, mask)]
         if not np.all(np.isfinite(sub_sigma)):
             raise ValueError("sub-covariance matrix contains non-finite entries")
+        # Lognormal conversion (zero-mean specialisation):
+        #   mu_lin[i]       = exp(0.5 * Sigma_log[i, i]) - 1
+        #   Sigma_lin[i, j] = (1 + mu_lin[i])(1 + mu_lin[j])
+        #                     * (exp(Sigma_log[i, j]) - 1)
+        if state.logarithmic:
+            sub_mu = np.expm1(0.5 * np.diag(sub_sigma))
+            factor = 1.0 + sub_mu
+            sub_sigma = np.outer(factor, factor) * np.expm1(sub_sigma)
 
         positions = np.zeros_like(universe, dtype=np.float64)
         if mask.any():

@@ -33,7 +33,7 @@ from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Apply, Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply, PctChange, Sqrt, Subtract
+from tradingflow.operators.num import Diff, Divide, Log, Multiply, Sqrt, Subtract
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.predictors.variance import Shrinkage
 from tradingflow.operators.portfolios.mean_variance import Markowitz, Mode
@@ -206,10 +206,11 @@ def build_scenario(
         )
     )
 
-    # Record feature and target history for predictors.  Both the mean
-    # and variance predictors train on linear returns, so the emitted
-    # predictions are in linear-return units — directly consumable by
-    # `MeanVariancePortfolio`.
+    # Record feature and target history for predictors.  The mean and
+    # variance predictors train on log returns (more symmetric, closer
+    # to Gaussian) and `MeanVariancePortfolio` does the lognormal
+    # conversion to linear-return moments internally before running
+    # Markowitz.
     #
     # `stacked_features` ticks on trading days *and* on irregular
     # corporate-event days (balance-sheet / income-statement notices,
@@ -222,8 +223,8 @@ def build_scenario(
     # i.e. the return from day t to day t+1.
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))
-    returns = sc.add_operator(PctChange(stacked["adjusted_close"]))
-    target_series = sc.add_operator(Record(returns))
+    log_returns = sc.add_operator(Diff(log_adj))
+    target_series = sc.add_operator(Record(log_returns))
 
     # ------------------------------------------------------------------
     # Strategy pipeline

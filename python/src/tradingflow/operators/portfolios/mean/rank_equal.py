@@ -17,7 +17,9 @@ class RankEqual(MeanPortfolio):
     universe
         Handle to universe weights, shape `(num_stocks,)`.
     predicted_returns
-        Handle to predicted returns array, shape `(num_stocks,)`.
+        Handle to predicted log-returns array, shape `(num_stocks,)`.
+        `exp(·) - 1` is applied upstream of this operator's ordering
+        logic, so only the ordering matters.
     top_fraction
         Fraction of positively-predicted stocks to include.
     **kwargs

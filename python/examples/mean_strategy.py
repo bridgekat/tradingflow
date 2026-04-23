@@ -54,7 +54,7 @@ from tradingflow import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply, PctChange, Percentile, Sqrt, Subtract
+from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
@@ -255,14 +255,16 @@ def build_scenario(
     )
 
     # Record feature and target history for predictors.  The regression
-    # target is the cross-sectional percentile of the 1-step linear
-    # return, matching the feature-side transform so this is rank-on-
-    # rank regression (Spearman-style fit coefficients).
+    # target is the cross-sectional percentile of the 1-step log return,
+    # matching the feature-side transform so this is rank-on-rank
+    # regression (Spearman-style fit coefficients).  Percentile ordering
+    # is identical under log vs. linear returns, but the log-return
+    # convention is what every portfolio operator expects as input.
     #
     # `stacked_features` ticks whenever any of its component factors
     # updates, which includes irregular corporate-event days (balance-
     # sheet / income-statement notices, equity structure changes) on
-    # top of trading days.  `PctChange(stacked["adjusted_close"])`, by
+    # top of trading days.  `Diff(Log(stacked["adjusted_close"]))`, by
     # contrast, only ticks on trading days (`stacked["adjusted_close"]`
     # is a `StackSync` over per-stock daily adjusted prices).  Recording
     # `stacked_features` directly would make the features record strictly
@@ -275,7 +277,8 @@ def build_scenario(
     # so feature at day t predicts the return from t to t+1.
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))
-    returns_ranked = ranked(sc.add_operator(PctChange(stacked["adjusted_close"])))
+    log_returns = sc.add_operator(Diff(log_adj))
+    returns_ranked = ranked(log_returns)
     target_series = sc.add_operator(Record(returns_ranked))
 
     # ------------------------------------------------------------------

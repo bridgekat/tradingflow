@@ -25,19 +25,21 @@ The two abstract bases below separate the two kinds of prediction:
 Both bases take a `target_series` input (rather than computing returns
 internally from prices).  The **meaning of the emitted prediction is
 defined by how this target series is constructed upstream** in the
-graph.  Common choices:
+graph.  The recommended choice matching the portfolio operators' input
+contract is log returns:
 
-- `Record(PctChange(prices))` — linear returns.  Predictors emit
-  predicted linear returns / covariances, suitable for feeding into
-  `MeanVariancePortfolio` whose objective is in linear-return units.
-- `Record(Diff(Log(prices)))` — log returns.  Predictions are then in
-  log-return units.
-- `Record(Gaussianize(PctChange(prices)))` — rank-transformed returns.
-  Predictions are on the rank scale; suitable for
+- `Record(Diff(Log(prices)))` — log returns.  Predictions are in
+  log-return units; `MeanPortfolio` / `VariancePortfolio` /
+  `MeanVariancePortfolio` convert to linear-return moments internally
+  before solving their optimization.
+- `Record(Percentile(Diff(Log(prices))))` — rank-transformed log
+  returns.  Predictions are on the rank scale; suitable for
   `MeanPortfolio` subclasses whose rebalance logic only consumes
   *ordering* (top-N, rank-linear, softmax).  **Not suitable** for
   `MeanVariancePortfolio` / `VariancePortfolio`, which require
-  magnitudes.
+  magnitudes — the conversion those operators apply would map
+  percentile inputs through `exp(·) - 1` but the numeric values no
+  longer have any risk-return interpretation.
 
 The `target_offset` parameter expresses how many periods ahead of
 the feature each training target is taken from the target series

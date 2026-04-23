@@ -53,9 +53,13 @@ class Markowitz(MeanVariancePortfolio):
     universe
         Handle to universe weights, shape `(num_stocks,)`.
     predicted_returns
-        Handle to predicted returns, shape `(num_stocks,)`.
+        Handle to predicted log-returns, shape `(num_stocks,)`.
     covariance
-        Handle to covariance matrix, shape `(num_stocks, num_stocks)`.
+        Handle to predicted log-return covariance matrix, shape
+        `(num_stocks, num_stocks)`.  Both inputs are converted to
+        linear-return moments by
+        [`MeanVariancePortfolio`][tradingflow.operators.portfolios.mean_variance_portfolio.MeanVariancePortfolio]
+        before the quadratic program is set up.
     mode
         Optimization mode, a member of
         [`Mode`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode].

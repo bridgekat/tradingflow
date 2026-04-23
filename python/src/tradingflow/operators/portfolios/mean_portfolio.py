@@ -15,6 +15,7 @@ class MeanPortfolioState:
     """Mutable state for [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio] subclasses."""
 
     num_stocks: int
+    logarithmic: bool
     positions_fn: Callable[["MeanPortfolioState", np.ndarray], np.ndarray]
 
 
@@ -42,14 +43,19 @@ class MeanPortfolio(
 
     ## Expected prediction semantics
 
-    `MeanPortfolio` subclasses (`Proportional`, `RankEqual`, `RankLinear`,
-    `Softmax`) only consume the *ordering* of the predictions — a
-    monotonic transform of the input does not change the selected
-    top-N or rank-based weights.  Accordingly the predictions may be
-    raw expected returns, rank-transformed scores, Gaussianized scores,
-    or any other per-stock "score" with a consistent sign convention
-    (higher = better).  The upstream predictor defines what the score
-    represents via its `target_series` input.
+    Controlled by `logarithmic`:
+
+    - `logarithmic=True` (default): `predicted_returns` is in **log-return**
+      units.  The base class converts to linear returns via
+      `mu_lin = exp(mu_log) - 1` (the zero-covariance specialisation of
+      the lognormal moment map) before calling `positions_fn`.
+    - `logarithmic=False`: `predicted_returns` is already in **linear-return**
+      units and is forwarded to `positions_fn` unchanged.
+
+    Either way, `positions_fn` always sees linear-return predictions.
+    Rank-based subclasses (`RankEqual`, `RankLinear`, `Softmax`,
+    `Proportional`) only consume ordering, and `exp(·) - 1` is
+    monotone, so the flag has no effect on their output.
 
     ## NaN behavior
 
@@ -66,10 +72,17 @@ class MeanPortfolio(
         Handle to universe weights, shape `(num_stocks,)`.
         Stocks with positive values are included in the optimization.
     predicted_returns
-        Handle to predicted returns array, shape `(num_stocks,)`.
+        Handle to predicted returns array, shape `(num_stocks,)`.  Log
+        or linear depending on `logarithmic`.
     positions_fn
         `(state, mu) -> positions`.  Receives only the subset of
-        stocks with positive universe weights and finite predictions.
+        stocks with positive universe weights and finite predictions,
+        in linear-return units.
+    logarithmic
+        If `True` (default), `predicted_returns` is interpreted as log
+        returns and converted via `exp(·) - 1` before the inner call;
+        if `False`, it is interpreted as linear returns and passed
+        through unchanged.
     """
 
     def __init__(
@@ -78,12 +91,14 @@ class MeanPortfolio(
         predicted_returns: Handle,
         *,
         positions_fn: Callable[[MeanPortfolioState, np.ndarray], np.ndarray],
+        logarithmic: bool = True,
     ) -> None:
         assert len(universe.shape) == 1
         assert len(predicted_returns.shape) == 1
         assert predicted_returns.shape[0] == universe.shape[0]
 
         self._num_stocks = predicted_returns.shape[0]
+        self._logarithmic = logarithmic
         self._positions_fn = positions_fn
 
         inputs = (universe, predicted_returns)
@@ -102,6 +117,7 @@ class MeanPortfolio(
     ) -> MeanPortfolioState:
         return MeanPortfolioState(
             num_stocks=self._num_stocks,
+            logarithmic=self._logarithmic,
             positions_fn=self._positions_fn,
         )
 
@@ -124,6 +140,10 @@ class MeanPortfolio(
 
         mask = (universe > 0) & np.isfinite(mu)
         sub_mu = mu[mask]
+        # Lognormal conversion (zero-covariance specialisation):
+        #   mu_lin[i] = exp(mu_log[i]) - 1
+        if state.logarithmic:
+            sub_mu = np.expm1(sub_mu)
 
         positions = np.zeros_like(universe, dtype=np.float64)
         if mask.any():

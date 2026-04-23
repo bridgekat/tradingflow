@@ -46,13 +46,18 @@ class MeanPredictor[T](
     `Series` inputs, calls `fit_fn` and `predict_fn`, and emits a
     per-stock prediction.  Non-rebalance ticks are ignored.
 
-    The estimator itself is agnostic to what the target represents — linear
-    returns, log returns, a rank-transformed return, a custom signal —
-    so the **meaning of the prediction is defined by how the target
-    series is constructed upstream**.  Typical targets are built from
-    [`PctChange`][tradingflow.operators.num.pct_change.PctChange] (linear
-    returns) or [`Log`][tradingflow.operators.num.arithmetic.Log] followed
-    by [`Diff`][tradingflow.operators.num.diff.Diff] (log returns).
+    The estimator itself is agnostic to what the target represents —
+    log returns, linear returns, a rank-transformed return, a custom
+    signal — so the **meaning of the prediction is defined by how the
+    target series is constructed upstream**.  The standard choice is
+    log returns ([`Log`][tradingflow.operators.num.arithmetic.Log]
+    followed by [`Diff`][tradingflow.operators.num.diff.Diff]), which
+    matches the input contract of
+    [`MeanPortfolio`][tradingflow.operators.portfolios.mean_portfolio.MeanPortfolio]
+    and
+    [`MeanVariancePortfolio`][tradingflow.operators.portfolios.mean_variance_portfolio.MeanVariancePortfolio];
+    those operators convert to linear returns internally via the
+    lognormal moment map.
 
     ## Input data alignment
 

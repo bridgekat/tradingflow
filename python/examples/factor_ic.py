@@ -17,7 +17,7 @@ Each factor is mapped to its cross-sectional ``Percentile`` rank
 top rank).
 
 The realised target fed to the evaluator is
-``Percentile(PctChange(adjusted_close))`` — cross-sectional linear
+``Percentile(Diff(Log(adjusted_close)))`` — cross-sectional log
 returns passed through the same NaN-preserving percentile transform.
 Combined with the percentile-ranked factors this yields Spearman
 RankIC; cumulative curves are plotted.
@@ -42,7 +42,7 @@ from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Lag, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply, PctChange, Percentile, Sqrt, Subtract
+from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract
 from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.metrics.mean import InformationCoefficient
@@ -226,8 +226,11 @@ def build_scenario(
         f"volatility_{window}": ranked(volatility),
     }
 
-    # Cross-sectionally ranked linear returns.
-    returns_ranked = ranked(sc.add_operator(PctChange(stacked["adjusted_close"])))
+    # Cross-sectionally ranked log returns (ordering is identical
+    # under log vs. linear returns, but the log-return convention
+    # matches every operator's input contract).
+    log_returns = sc.add_operator(Diff(log_adj))
+    returns_ranked = ranked(log_returns)
 
     # ------------------------------------------------------------------
     # IC / RankIC evaluation
