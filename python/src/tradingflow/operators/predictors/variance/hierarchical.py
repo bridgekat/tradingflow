@@ -52,11 +52,11 @@ class UPGMA(VariancePredictor[np.ndarray]):
     family.
     """
 
-    def __init__(self, universe, features_series, adjusted_prices_series, **kwargs) -> None:
+    def __init__(self, universe, features_series, target_series, **kwargs) -> None:
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=lambda x, y: _hcluster_fit(y, method="upgma"),
             predict_fn=lambda state, x, params: params,
             **kwargs,
@@ -71,11 +71,11 @@ class WPGMA(VariancePredictor[np.ndarray]):
     family.
     """
 
-    def __init__(self, universe, features_series, adjusted_prices_series, **kwargs) -> None:
+    def __init__(self, universe, features_series, target_series, **kwargs) -> None:
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=lambda x, y: _hcluster_fit(y, method="wpgma"),
             predict_fn=lambda state, x, params: params,
             **kwargs,
@@ -92,11 +92,11 @@ class Hausdorff(VariancePredictor[np.ndarray]):
     merges.  Ignores features.
     """
 
-    def __init__(self, universe, features_series, adjusted_prices_series, **kwargs) -> None:
+    def __init__(self, universe, features_series, target_series, **kwargs) -> None:
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=lambda x, y: _hcluster_fit(y, method="hausdorff"),
             predict_fn=lambda state, x, params: params,
             **kwargs,

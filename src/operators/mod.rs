@@ -18,6 +18,12 @@
 //!   predicate closure.
 //! - [`Where`] — element-wise conditional replacement: keeps values where the
 //!   condition holds, fills with a constant otherwise.
+//! - [`Clocked`] — gate any operator so it only fires when a leading clock
+//!   input produces.  Generic over the clock's node type (`()`, `Array<T>`,
+//!   or `Series<T>`) — only the produced bit is consulted.
+//! - [`Resample`] — `Clocked<Id<T>, T>`: re-emit a data input's latest value
+//!   on every clock tick.  Used to align records that would otherwise tick
+//!   at heterogeneous cadences.
 //!
 //! # Array reshape / selection operators
 //!
@@ -71,7 +77,7 @@ pub mod r#where;
 
 pub use apply::{Apply, ApplyInplace};
 pub use cast::Cast;
-pub use clocked::Clocked;
+pub use clocked::{Clocked, Resample};
 pub use concat::{Concat, ConcatSync};
 pub use r#const::Const;
 pub use filter::Filter;

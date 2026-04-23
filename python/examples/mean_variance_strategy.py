@@ -32,14 +32,14 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Apply, Clocked, Map, Record, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply
+from tradingflow.operators import Apply, Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
+from tradingflow.operators.num import Divide, Log, Multiply, PctChange, Sqrt, Subtract
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.predictors.variance import Shrinkage
 from tradingflow.operators.portfolios.mean_variance import Markowitz, Mode
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
-from tradingflow.operators.rolling import RollingMean
+from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 
 from stocks import load_symbols, calculate_index_weights, resolve_data_start, add_market_argument
@@ -83,7 +83,7 @@ def build_scenario(
     #   their last-known value across quiet periods.
     per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("ohlcv", "adjusted_close")}
     per_stock_irregular: dict[str, list[Handle]] = {
-        k: [] for k in ("adjusts", "circ_shares", "parent_equity", "net_profit")
+        k: [] for k in ("adjusts", "total_shares", "circ_shares", "parent_equity", "net_profit")
     }
 
     for symbol in tqdm(symbols, desc="Building scenario"):
@@ -126,6 +126,7 @@ def build_scenario(
         close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
         adjusts = sc.add_operator(ForwardAdjust(close, dividends, output_prices=False))
         adjusted_close = sc.add_operator(Multiply(close, adjusts))
+        total_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.total")))
         circ_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
         income_ann = sc.add_operator(Annualize(income_ytd))
         net_profit = sc.add_operator(Select(income_ann, INC_SCHEMA.index("income_statement.profit")))
@@ -146,6 +147,7 @@ def build_scenario(
         per_stock_sync["ohlcv"].append(ohlcv)
         per_stock_sync["adjusted_close"].append(adjusted_close)
         per_stock_irregular["adjusts"].append(adjusts)
+        per_stock_irregular["total_shares"].append(total_shares)
         per_stock_irregular["circ_shares"].append(circ_shares)
         per_stock_irregular["parent_equity"].append(parent_equity)
         per_stock_irregular["net_profit"].append(net_profit)
@@ -166,28 +168,65 @@ def build_scenario(
     close = sc.add_operator(Select(stacked["ohlcv"], 3, axis=1))
     volume = sc.add_operator(Select(stacked["ohlcv"], 4, axis=1))
 
-    # Market cap and log(market cap).
-    market_cap = sc.add_operator(Multiply(close, stacked["circ_shares"]))
-    log_mcap = sc.add_operator(Log(market_cap))
+    # Per-stock features.
+    window = 20
 
-    # log(B/P) = log(parent_equity / market_cap).
+    market_cap = sc.add_operator(Multiply(close, stacked["total_shares"]))
+
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
-    log_bp = sc.add_operator(Log(bp))
 
-    # Turnover MA.
     turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
-    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=rebalance_days))
+    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
+
+    net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
+    net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
+
+    ttm_ep = sc.add_operator(Divide(net_profit_ttm, market_cap))
+
+    log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
+    log_adj_series = sc.add_operator(Record(log_adj))
+    log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
+    momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
+
+    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
 
     # Stack features into (num_stocks, num_features).
-    stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
+    stacked_features = sc.add_operator(
+        Stack(
+            [
+                market_cap,
+                bp,
+                turnover_ma,
+                ttm_ep,
+                momentum_ma,
+                volatility,
+            ],
+            axis=1,
+        )
+    )
 
-    # Record feature and price history for predictors.
-    features_series = sc.add_operator(Record(stacked_features))
-    adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
+    # Record feature and target history for predictors.  Both the mean
+    # and variance predictors train on linear returns, so the emitted
+    # predictions are in linear-return units — directly consumable by
+    # `MeanVariancePortfolio`.
+    #
+    # `stacked_features` ticks on trading days *and* on irregular
+    # corporate-event days (balance-sheet / income-statement notices,
+    # equity structure changes).  The returns target only ticks on
+    # trading days.  `Resample` gates feature recording on the
+    # trading-day pulse (`stacked["adjusted_close"]`) so the features
+    # and target records advance lock-step, satisfying the predictor's
+    # `len(features) == len(target)` equal-length contract.
+    # `target_offset=1` below then pairs feature[i] with target[i+1],
+    # i.e. the return from day t to day t+1.
+    sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
+    features_series = sc.add_operator(Record(sampled_features))
+    returns = sc.add_operator(PctChange(stacked["adjusted_close"]))
+    target_series = sc.add_operator(Record(returns))
 
     # ------------------------------------------------------------------
-    # Shared predictors
+    # Strategy pipeline
     # ------------------------------------------------------------------
 
     # Rebalance clock: the single periodic signal in this scenario.
@@ -214,8 +253,9 @@ def build_scenario(
         LinearRegression(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             universe_size=index_size,
+            target_offset=1,
             min_periods=100,
             verbose=True,
         ),
@@ -225,10 +265,11 @@ def build_scenario(
         Shrinkage(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             universe_size=index_size,
-            max_periods=100,
-            min_periods=50,
+            target_offset=1,
+            max_periods=200,
+            min_periods=100,
         ),
     )
 

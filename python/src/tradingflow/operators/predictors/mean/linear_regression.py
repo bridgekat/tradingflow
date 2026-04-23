@@ -9,8 +9,10 @@ class LinearRegression(MeanPredictor[np.ndarray]):
     r"""Mean predictor using pooled OLS regression.
 
     Fits \(y = X \beta + \mathrm{intercept}\) via QR decomposition on
-    each rebalance tick, where \(y\) is the 1-period forward return and
-    \(X\) is the feature matrix.
+    each rebalance tick, where \(y\) is the aligned target row and
+    \(X\) is the feature matrix.  The meaning of the prediction is
+    whatever the upstream target series represents (linear returns,
+    log returns, a custom signal, etc.).
 
     Parameters
     ----------
@@ -18,9 +20,8 @@ class LinearRegression(MeanPredictor[np.ndarray]):
         Universe weights, shape `(num_stocks,)`.
     features_series
         Recorded features series, element shape `(num_stocks, num_features)`.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        `(num_stocks,)`.
+    target_series
+        Recorded target series, element shape `(num_stocks,)`.
     verbose
         If `True`, print regression diagnostics to stdout.
     **kwargs
@@ -31,7 +32,7 @@ class LinearRegression(MeanPredictor[np.ndarray]):
         self,
         universe,
         features_series,
-        adjusted_prices_series,
+        target_series,
         *,
         verbose: bool = False,
         **kwargs,
@@ -40,7 +41,7 @@ class LinearRegression(MeanPredictor[np.ndarray]):
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=lambda x, y: _fit_fn(x, y, verbose=verbose),
             predict_fn=_predict_fn,
             **kwargs,

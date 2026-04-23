@@ -1,19 +1,29 @@
 """Backtest a linear regression strategy on all A-shares stocks.
 
-Features fed to the linear regression are cross-sectional **Gaussianized
-ranks** of five per-stock factors — each non-NaN value is replaced with
-``Φ⁻¹((rank + 0.5) / n_valid)`` so the features are approximately
-standard-normal across the universe at every rebalance.  NaN factor
-values stay NaN and are ignored by the regression:
+Features fed to the linear regression are cross-sectional
+**percentile ranks** of six per-stock factors — each non-NaN value is
+replaced with ``(rank + 0.5) / n_valid`` so every feature is
+uniformly distributed in `(0, 1)` across the universe at every
+rebalance.  NaN factor values stay NaN and are ignored by the
+regression:
 
 - ``market_cap`` — circulating market capitalisation (close × circ_shares)
 - ``bp`` — book-to-price ratio (parent equity / market cap)
-- ``turnover_ma20`` — 20-day moving average of daily turnover
+- ``turnover_ma_20`` — 20-day moving average of daily turnover
   (volume / circulating shares)
 - ``ttm_ep`` — trailing-twelve-month earnings-to-price
   (annualised net profit / market cap, 365-day rolling mean)
-- ``momentum_ma20`` — 20-day moving average of daily log-returns of
+- ``momentum_ma_20`` — 20-day moving average of daily log-returns of
   adjusted close
+- ``volatility_20`` — 20-day rolling standard deviation of daily
+  log-returns of adjusted close
+
+The training target is the **percentile rank of the 1-step-forward
+linear return** (same NaN-preserving transform as the features), so
+the fitted model is a rank-on-rank regression — the regressor's
+predictions share the units of the downstream rank-linear portfolio
+constructor, and fit coefficients carry Spearman rank-correlation
+semantics.
 
 The pipeline consists of four independent, composable operators:
 
@@ -43,14 +53,14 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Gaussianize, Log, Multiply, Subtract
+from tradingflow.operators import Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
+from tradingflow.operators.num import Divide, Log, Multiply, PctChange, Percentile, Sqrt, Subtract
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.traders.simple import RandomTrader
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
-from tradingflow.operators.rolling import RollingMean
+from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.sources import Clock
 
@@ -205,6 +215,7 @@ def build_scenario(
     window = 20
 
     market_cap = sc.add_operator(Multiply(close, stacked["total_shares"]))
+
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
 
     turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
@@ -213,6 +224,7 @@ def build_scenario(
 
     net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
     net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
+
     ttm_ep = sc.add_operator(Divide(net_profit_ttm, market_cap))
 
     log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
@@ -220,27 +232,51 @@ def build_scenario(
     log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
     momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
 
-    # Cross-sectional rank → Φ⁻¹ transform so each factor is roughly
-    # standard-normal at every rebalance.  NaNs pass through unchanged.
-    def gaussianized(h: Handle) -> Handle:
-        return sc.add_operator(Gaussianize(h))
+    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
+
+    # Cross-sectional rank → percentile transform so each factor is
+    # uniformly distributed in (0, 1) at every rebalance.  NaNs pass
+    # through unchanged so downstream regression masks still filter them.
+    def ranked(h: Handle) -> Handle:
+        return sc.add_operator(Percentile(h))
 
     stacked_features = sc.add_operator(
         Stack(
             [
-                gaussianized(market_cap),
-                gaussianized(bp),
-                gaussianized(turnover_ma),
-                gaussianized(ttm_ep),
-                gaussianized(momentum_ma),
+                ranked(market_cap),
+                ranked(bp),
+                ranked(turnover_ma),
+                ranked(ttm_ep),
+                ranked(momentum_ma),
+                ranked(volatility),
             ],
             axis=1,
         )
     )
 
-    # Record feature and price history for predictors.
-    features_series = sc.add_operator(Record(stacked_features))
-    adjusted_prices_series = sc.add_operator(Record(stacked["adjusted_close"]))
+    # Record feature and target history for predictors.  The regression
+    # target is the cross-sectional percentile of the 1-step linear
+    # return, matching the feature-side transform so this is rank-on-
+    # rank regression (Spearman-style fit coefficients).
+    #
+    # `stacked_features` ticks whenever any of its component factors
+    # updates, which includes irregular corporate-event days (balance-
+    # sheet / income-statement notices, equity structure changes) on
+    # top of trading days.  `PctChange(stacked["adjusted_close"])`, by
+    # contrast, only ticks on trading days (`stacked["adjusted_close"]`
+    # is a `StackSync` over per-stock daily adjusted prices).  Recording
+    # `stacked_features` directly would make the features record strictly
+    # longer than the target record and break the predictor's equal-
+    # length alignment contract (`len(features) == len(target)`).
+    #
+    # `Resample` re-emits the features on the trading-day pulse so both
+    # records advance lock-step on trading days.  The predictor pairs
+    # feature[i] with target[i + target_offset] — here target_offset=1,
+    # so feature at day t predicts the return from t to t+1.
+    sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
+    features_series = sc.add_operator(Record(sampled_features))
+    returns_ranked = ranked(sc.add_operator(PctChange(stacked["adjusted_close"])))
+    target_series = sc.add_operator(Record(returns_ranked))
 
     # ------------------------------------------------------------------
     # Strategy pipeline
@@ -270,8 +306,9 @@ def build_scenario(
         LinearRegression(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             universe_size=index_size,
+            target_offset=1,
             min_periods=100,
             verbose=True,
         ),

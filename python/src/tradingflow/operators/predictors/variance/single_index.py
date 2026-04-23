@@ -35,9 +35,9 @@ class SingleIndex(VariancePredictor[np.ndarray]):
     features_series
         Recorded features series, element shape `(num_stocks, num_features)`.
         Passed through but not used.
-    adjusted_prices_series
-        Recorded forward-adjusted close prices series, element shape
-        `(num_stocks,)`.
+    target_series
+        Recorded target series, element shape `(num_stocks,)`.  The
+        cross-sectional mean is used as the market-factor proxy.
     **kwargs
         Forwarded to [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor].
     """
@@ -46,13 +46,13 @@ class SingleIndex(VariancePredictor[np.ndarray]):
         self,
         universe,
         features_series,
-        adjusted_prices_series,
+        target_series,
         **kwargs,
     ) -> None:
         super().__init__(
             universe,
             features_series,
-            adjusted_prices_series,
+            target_series,
             fit_fn=_fit_fn,
             predict_fn=_predict_fn,
             **kwargs,
@@ -60,7 +60,7 @@ class SingleIndex(VariancePredictor[np.ndarray]):
 
 
 def _fit_fn(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Fit a single-index covariance from return matrix `y`."""
+    """Fit a single-index covariance from target matrix `y`."""
     return single_index_covariance(y)
 
 

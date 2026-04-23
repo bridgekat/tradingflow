@@ -137,7 +137,7 @@ class Handle[T]:
         self,
         index: int,
         kind: NodeKind,
-        dtype: np.dtype,
+        dtype: np.dtype | None,
         shape: tuple[int, ...],
     ) -> None:
         self._index = index
@@ -156,8 +156,8 @@ class Handle[T]:
         return self._kind
 
     @property
-    def dtype(self) -> np.dtype:
-        """NumPy dtype of the node's value."""
+    def dtype(self) -> np.dtype | None:
+        """NumPy dtype of the node's value, or `None` for Unit nodes."""
         return self._dtype
 
     @property

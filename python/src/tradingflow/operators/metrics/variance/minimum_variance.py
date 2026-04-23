@@ -13,7 +13,6 @@ class MinimumVarianceState:
     num_stocks: int
     initialized: bool = False
     weights: np.ndarray | None = None
-    prev_prices: np.ndarray | None = None
     sum_r: float = 0.0
     sum_r_sq: float = 0.0
     count: int = 0
@@ -34,26 +33,24 @@ class MinimumVariance(
     \(w = \Sigma^+ \mathbf{1} / (\mathbf{1}^T \Sigma^+ \mathbf{1})\)
     (using the SVD-based pseudo-inverse for numerical stability with
     rank-deficient \(\Sigma\)) and begins accumulating daily portfolio
-    returns \(r_p = w^T r\).  When the next prediction arrives, emits
-    the realized variance of the accumulated returns and updates the
-    weights.
+    returns \(r_p = w^T r\) from the target ticks that follow.
+    When the next prediction arrives, emits the realized variance of
+    the accumulated returns and updates the weights.
 
     Output is a scalar (the realized variance over one evaluation
-    period).  `Record(output)` produces a directly plottable
-    time series.
+    period).  `Record(output)` produces a directly plottable time
+    series.
 
     Notes
     -----
     **Alignment guarantee.** After the initial warmup (first prediction
     sets weights without emitting), the operator emits exactly once per
-    prediction emission.  Output is 0 if no daily portfolio return was
-    successfully accumulated during the period (e.g. no stocks had
-    finite covariance diagonal).
+    prediction emission.  Output is 0 if no target tick was accumulated
+    during the period (e.g. no stocks had finite covariance diagonal).
 
-    **Memory.** Both `predictions` and `prices` are `Array` inputs — the
-    operator reads only the latest covariance and the latest cross-
-    section of prices, caching one previous price tick in state to
-    compute one-period returns.  No `Record` is required upstream.
+    **Memory.** Both `predictions` and `target` are `Array` inputs —
+    the operator only reads the latest cross-section of each.
+    No `Record` is required upstream.
 
     Parameters
     ----------
@@ -61,24 +58,22 @@ class MinimumVariance(
         Live predicted covariance matrix from a variance predictor,
         shape `(N, N)`.  Stocks excluded by the variance predictor
         have NaN on the diagonal.
-    prices
-        Live forward-adjusted close prices, shape `(N,)`.
+    target
+        Live cross-sectional realized target values, shape `(N,)`,
+        produced at every tick (e.g. a `PctChange` node).  Non-finite
+        entries contribute zero to the portfolio return.
     """
 
-    def __init__(
-        self,
-        predictions: Handle,
-        prices: Handle,
-    ) -> None:
-        assert len(predictions.shape) == 2
-        assert predictions.shape[0] == predictions.shape[1]
-        assert len(prices.shape) == 1
-        assert predictions.shape[0] == prices.shape[0]
+    def __init__(self, predictions: Handle, target: Handle) -> None:
+        num_stocks = predictions.shape[0]
 
-        self._num_stocks = predictions.shape[0]
+        assert predictions.shape == (num_stocks, num_stocks)
+        assert target.shape == (num_stocks,)
+
+        self._num_stocks = num_stocks
 
         super().__init__(
-            inputs=(predictions, prices),
+            inputs=(predictions, target),
             kind=NodeKind.ARRAY,
             dtype=np.float64,
             shape=(),
@@ -90,9 +85,7 @@ class MinimumVariance(
         inputs: tuple[ArrayView[np.float64], ArrayView[np.float64]],
         timestamp: int,
     ) -> MinimumVarianceState:
-        return MinimumVarianceState(
-            num_stocks=self._num_stocks,
-        )
+        return MinimumVarianceState(num_stocks=self._num_stocks)
 
     @staticmethod
     def _set_weights(state: MinimumVarianceState, sigma: np.ndarray) -> None:
@@ -117,25 +110,23 @@ class MinimumVariance(
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:
-        predictions, prices = inputs
-        predictions_produced, prices_produced = produced
+        predictions, target = inputs
+        predictions_produced, target_produced = produced
 
-        # Accumulate one-period portfolio return on price ticks.
-        if prices_produced:
-            prices_new = np.where(prices.value() > 0, prices.value(), np.nan)
-            if state.weights is not None and state.prev_prices is not None:
-                r = prices_new / state.prev_prices - 1.0
-                r_p = float(state.weights @ np.where(np.isfinite(r), r, 0.0))
-                state.sum_r += r_p
-                state.sum_r_sq += r_p * r_p
-                state.count += 1
-            state.prev_prices = prices_new
+        # Accumulate one-period portfolio return on each target tick.
+        if target_produced and state.initialized:
+            r = target.value()
+            r = np.where(np.isfinite(r), r, 0.0)
+            r_p = float(state.weights @ r)
+            state.sum_r += r_p
+            state.sum_r_sq += r_p * r_p
+            state.count += 1
 
         # Gate: new prediction?
         if not predictions_produced:
             return False
 
-        # First prediction stores scores without emitting.
+        # First prediction stores weights without emitting.
         if not state.initialized:
             state.initialized = True
             MinimumVariance._set_weights(state, predictions.value())

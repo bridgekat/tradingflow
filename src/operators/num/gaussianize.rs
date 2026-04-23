@@ -66,8 +66,7 @@ impl<T: Scalar + Float> Operator for Gaussianize<T> {
                 n_valid += 1;
             }
         }
-        state[..n_valid]
-            .sort_by(|&a, &b| src[a].partial_cmp(&src[b]).unwrap_or(Ordering::Equal));
+        state[..n_valid].sort_by(|&a, &b| src[a].partial_cmp(&src[b]).unwrap_or(Ordering::Equal));
 
         let dst = output.as_mut_slice();
         let nan = T::nan();

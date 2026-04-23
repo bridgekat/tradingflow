@@ -48,10 +48,8 @@ the event loop starts.
 These take a constant parameter at construction time and apply it
 element-wise at compute time:
 
-- [`Pow`][tradingflow.operators.num.pow.Pow] — raise each element to a
-  constant exponent.
-- [`Scale`][tradingflow.operators.num.scale.Scale] — multiply by a constant.
-- [`Shift`][tradingflow.operators.num.shift.Shift] — add a constant.
+- [`Pow`][tradingflow.operators.num.arithmetic.Pow] — raise each element
+  to a constant exponent.
 - [`Clamp`][tradingflow.operators.num.clamp.Clamp] — clip values into a
   given `[lo, hi]` range.
 - [`Fillna`][tradingflow.operators.num.fillna.Fillna] — replace NaNs with a
@@ -59,20 +57,33 @@ element-wise at compute time:
 - [`ForwardFill`][tradingflow.operators.num.ffill.ForwardFill] — replace
   NaNs with the last non-NaN value seen so far (stateful).
 
-## Ranking
+## Cross-tick (stateful)
 
-1-D float inputs only.  NaN values sort to the end in both.
+Single-step stateful operators that remember the previous tick.  Output
+is `NaN` on the first tick.
 
-- [`Rank`][tradingflow.operators.num.rank.Rank] — 0-based rank of each
-  element (smallest → 0).
-- [`ArgSort`][tradingflow.operators.num.rank.ArgSort] — indices that would
-  sort the input array.
+- [`Diff`][tradingflow.operators.num.diff.Diff] — first difference:
+  `a_t - a_{t-1}`.
+- [`PctChange`][tradingflow.operators.num.pct_change.PctChange] — linear
+  return: `a_t / a_{t-1} - 1`.
+
+Use `PctChange` for linear returns and `Log -> Diff` for log returns.
 
 ## Distribution shaping
 
+Cross-sectional rank statistics that sort and handle NaN internally:
+non-NaN entries are ranked ascending (the denominator is ``n_valid``,
+not ``n``) and NaN inputs propagate to NaN outputs, so downstream
+``np.isfinite`` masks still filter missing entries.  1-D float inputs
+only.
+
 - [`Gaussianize`][tradingflow.operators.num.gaussianize.Gaussianize] —
   cross-sectional rank-to-Gaussian transform: map each non-NaN element
-  to ``Φ⁻¹((rank + 0.5) / n_valid)``.  NaN inputs pass through as NaN.
+  to ``Φ⁻¹((rank + 0.5) / n_valid)``.
+- [`Percentile`][tradingflow.operators.num.percentile.Percentile] —
+  cross-sectional rank-to-percentile transform: map each non-NaN
+  element to ``(rank + 0.5) / n_valid ∈ (0, 1)``.  Same sort and NaN
+  logic as ``Gaussianize``, just without the ``Φ⁻¹`` step.
 """
 
 from .arithmetic import (
@@ -95,19 +106,17 @@ from .arithmetic import (
     Sign,
     Min,
     Max,
+    Pow,
 )
 from .clamp import Clamp
+from .diff import Diff
 from .ffill import ForwardFill
 from .fillna import Fillna
 from .gaussianize import Gaussianize
-from .pow import Pow
-from .rank import ArgSort, Rank
-from .scale import Scale
-from .shift import Shift
+from .pct_change import PctChange
+from .percentile import Percentile
 
 __all__ = [
-    "ArgSort",
-    "Rank",
     "Gaussianize",
     "Add",
     "Subtract",
@@ -129,9 +138,10 @@ __all__ = [
     "Min",
     "Max",
     "Pow",
-    "Scale",
-    "Shift",
     "Clamp",
+    "Diff",
     "ForwardFill",
     "Fillna",
+    "PctChange",
+    "Percentile",
 ]

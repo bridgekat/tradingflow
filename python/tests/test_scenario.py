@@ -8,7 +8,7 @@ import pytest
 from tradingflow import Scenario
 from tradingflow.sources import ArraySource, IterSource
 from tradingflow.operators import Record, Filter, Where, Select, Concat
-from tradingflow.operators.num import Add, Subtract, Multiply, Divide, Negate, Scale
+from tradingflow.operators.num import Add, Subtract, Multiply, Divide, Negate
 
 
 def ts(i: int) -> np.datetime64:
@@ -475,7 +475,8 @@ class TestMixedSourcesAndOperators:
                 dtype=np.float64,
             )
         )
-        hs = sc.add_operator(Scale(h, 10.0))
+        c = sc.add_const(np.array(10.0, dtype=np.float64))
+        hs = sc.add_operator(Multiply(h, c))
         hf = sc.add_operator(Filter(hs, lambda v: float(v.flat[0]) >= 50.0))
         hr = sc.add_operator(Record(hf))
         sc.run()
@@ -532,7 +533,8 @@ class TestMixedSourcesAndOperators:
                 dtype=np.float64,
             )
         )
-        hs = sc.add_operator(Scale(h, 2.0))
+        c = sc.add_const(np.array(2.0, dtype=np.float64))
+        hs = sc.add_operator(Multiply(h, c))
         hr = sc.add_operator(Record(hs))
         sc.run()
         expected = [float(i) * 2.0 for i in range(1, 11)]

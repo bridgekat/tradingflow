@@ -20,8 +20,6 @@ from tradingflow.operators.num import (
     Abs,
     Recip,
     Pow,
-    Scale,
-    Shift,
     Clamp,
     Fillna,
     Min,
@@ -584,22 +582,6 @@ class TestParameterized:
         _run(sc)
         vals = list(sc.series_view(s).values())
         assert vals == pytest.approx([1.0, 4.0, 9.0])
-
-    def test_scale(self) -> None:
-        sc, h, _ = _scalar_scenario([1.0, 2.0, 3.0])
-        h_sc = sc.add_operator(Scale(h, 3.0))
-        s = sc.add_operator(Record(h_sc))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
-        assert vals == pytest.approx([3.0, 6.0, 9.0])
-
-    def test_shift(self) -> None:
-        sc, h, _ = _scalar_scenario([1.0, 2.0, 3.0])
-        h_sh = sc.add_operator(Shift(h, 10.0))
-        s = sc.add_operator(Record(h_sh))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
-        assert vals == pytest.approx([11.0, 12.0, 13.0])
 
     def test_clamp(self) -> None:
         sc, h, _ = _scalar_scenario([1.0, 3.0, 7.0])

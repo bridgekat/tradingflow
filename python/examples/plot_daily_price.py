@@ -14,8 +14,10 @@ from a_shares_crawler.types import Schema as CSVSchema
 
 from tradingflow import Scenario, Schema
 from tradingflow.sources import CSVSource
+import numpy as np
+
 from tradingflow.operators import Record, Select
-from tradingflow.operators.num import Add, Scale, Sqrt, Subtract
+from tradingflow.operators.num import Add, Multiply, Sqrt, Subtract
 from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import ForwardAdjust
 
@@ -73,7 +75,8 @@ def build_scenario(symbol: str, data_dir: Path) -> tuple[Scenario, dict]:
     std = sc.add_operator(Sqrt(var))
 
     # Bollinger band offset: MULTIPLE × std. Shape: ().
-    band = sc.add_operator(Scale(std, MULTIPLE))
+    multiple = sc.add_const(np.array(MULTIPLE, dtype=np.float64))
+    band = sc.add_operator(Multiply(std, multiple))
 
     # Upper and lower bands: MA ± MULTIPLE × std. Shape: ().
     upper = sc.add_operator(Add(ma, band))
