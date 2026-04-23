@@ -94,8 +94,8 @@ class Scenario:
         sources share a single code path.
         """
         idx = source._register(self._native)
-        # Unit nodes carry no value; report `void` dtype on the handle.
-        dtype = np.dtype("void") if source.kind == NodeKind.UNIT else np.dtype(source.dtype)
+        # Unit nodes carry no value; report `None` dtype on the handle.
+        dtype = None if source.kind == NodeKind.UNIT else np.dtype(source.dtype)
         return Handle(idx, source.kind, dtype, source.shape)
 
     def add_operator(
@@ -114,7 +114,9 @@ class Scenario:
         """
         input_indices = [inp.index for inp in operator.inputs]
         idx = operator._register(self._native, input_indices)
-        return Handle(idx, operator.kind, operator.dtype, operator.shape)
+        # Unit outputs carry no value; report `None` dtype on the handle.
+        dtype = None if operator.kind == NodeKind.UNIT else np.dtype(operator.dtype)
+        return Handle(idx, operator.kind, dtype, operator.shape)
 
     def estimated_event_count(self) -> int | None:
         """Sum of estimated event counts across all sources.

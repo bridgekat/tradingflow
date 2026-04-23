@@ -118,6 +118,9 @@ pub fn dispatch_native_operator(
         // -- Gaussianize (Array<T:Float> → Array<T>) --------------------------
         "gaussianize" => Ok((dispatch_op!(dtype, num::Gaussianize, float, sc, input_indices), NativeNodeKind::Array)),
 
+        // -- Percentile (Array<T:Float> → Array<T>) ---------------------------
+        "percentile" => Ok((dispatch_op!(dtype, num::Percentile, float, sc, input_indices), NativeNodeKind::Array)),
+
         // -- Identity (Array → Array) ----------------------------------------
         "id" => {
             macro_rules! go {
@@ -129,6 +132,127 @@ pub fn dispatch_native_operator(
                 };
             }
             Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
+        }
+
+        // -- Resample ((clock, data) → data) ---------------------------------
+        //
+        // Clock and data are fully independent node types: 9 combinations
+        // of (data_kind × clock_kind) over unit / array / series, with
+        // independent dtypes inside the array/series arms.  The `dtype`
+        // argument is the data side's dtype (output); `clock_dtype` in
+        // params carries the clock side's dtype when applicable.
+        "resample" => {
+            let data_kind: String = params
+                .get_item("data_kind")?
+                .ok_or_else(|| PyTypeError::new_err("resample requires 'data_kind' param"))?
+                .extract()?;
+            let clock_kind: String = params
+                .get_item("clock_kind")?
+                .ok_or_else(|| PyTypeError::new_err("resample requires 'clock_kind' param"))?
+                .extract()?;
+            // `clock_dtype` may be Python `None` when the clock is a Unit
+            // node — the unit clock arms never consult it, so default to
+            // an empty string that `dispatch_dtype!` never sees.
+            let clock_dtype: String = match params.get_item("clock_dtype")? {
+                Some(v) if !v.is_none() => v.extract::<String>()?,
+                _ => String::new(),
+            };
+            match (data_kind.as_str(), clock_kind.as_str()) {
+                ("unit", "unit") => Ok((
+                    add_operator_from_indices(
+                        sc,
+                        operators::Resample::<(), ()>::new(),
+                        input_indices),
+                    NativeNodeKind::Unit,
+                )),
+                ("unit", "array") => {
+                    macro_rules! go { ($C:ty) => {
+                        add_operator_from_indices(
+                            sc,
+                            operators::Resample::<(), crate::Array<$C>>::new(),
+                            input_indices)
+                    }; }
+                    Ok((dispatch_dtype!(&clock_dtype, go), NativeNodeKind::Unit))
+                }
+                ("unit", "series") => {
+                    macro_rules! go { ($C:ty) => {
+                        add_operator_from_indices(
+                            sc,
+                            operators::Resample::<(), crate::Series<$C>>::new(),
+                            input_indices)
+                    }; }
+                    Ok((dispatch_dtype!(&clock_dtype, go), NativeNodeKind::Unit))
+                }
+                ("array", "unit") => {
+                    macro_rules! go { ($O:ty) => {
+                        add_operator_from_indices(
+                            sc,
+                            operators::Resample::<crate::Array<$O>, ()>::new(),
+                            input_indices)
+                    }; }
+                    Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Array))
+                }
+                ("array", "array") => {
+                    macro_rules! go_o { ($O:ty) => {{
+                        macro_rules! go_c { ($C:ty) => {
+                            add_operator_from_indices(
+                                sc,
+                                operators::Resample::<crate::Array<$O>, crate::Array<$C>>::new(),
+                                input_indices)
+                        }; }
+                        dispatch_dtype!(&clock_dtype, go_c)
+                    }}; }
+                    Ok((dispatch_dtype!(dtype, go_o), NativeNodeKind::Array))
+                }
+                ("array", "series") => {
+                    macro_rules! go_o { ($O:ty) => {{
+                        macro_rules! go_c { ($C:ty) => {
+                            add_operator_from_indices(
+                                sc,
+                                operators::Resample::<crate::Array<$O>, crate::Series<$C>>::new(),
+                                input_indices)
+                        }; }
+                        dispatch_dtype!(&clock_dtype, go_c)
+                    }}; }
+                    Ok((dispatch_dtype!(dtype, go_o), NativeNodeKind::Array))
+                }
+                ("series", "unit") => {
+                    macro_rules! go { ($O:ty) => {
+                        add_operator_from_indices(
+                            sc,
+                            operators::Resample::<crate::Series<$O>, ()>::new(),
+                            input_indices)
+                    }; }
+                    Ok((dispatch_dtype!(dtype, go), NativeNodeKind::Series))
+                }
+                ("series", "array") => {
+                    macro_rules! go_o { ($O:ty) => {{
+                        macro_rules! go_c { ($C:ty) => {
+                            add_operator_from_indices(
+                                sc,
+                                operators::Resample::<crate::Series<$O>, crate::Array<$C>>::new(),
+                                input_indices)
+                        }; }
+                        dispatch_dtype!(&clock_dtype, go_c)
+                    }}; }
+                    Ok((dispatch_dtype!(dtype, go_o), NativeNodeKind::Series))
+                }
+                ("series", "series") => {
+                    macro_rules! go_o { ($O:ty) => {{
+                        macro_rules! go_c { ($C:ty) => {
+                            add_operator_from_indices(
+                                sc,
+                                operators::Resample::<crate::Series<$O>, crate::Series<$C>>::new(),
+                                input_indices)
+                        }; }
+                        dispatch_dtype!(&clock_dtype, go_c)
+                    }}; }
+                    Ok((dispatch_dtype!(dtype, go_o), NativeNodeKind::Series))
+                }
+                (d, c) => Err(PyTypeError::new_err(format!(
+                    "resample: unsupported (data_kind={d}, clock_kind={c}) — each must be 'unit', 'array', or 'series'"
+                ))),
+            }
         }
 
         // -- Parameterized unary: pow ----------------------------------------
@@ -145,33 +269,11 @@ pub fn dispatch_native_operator(
             Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
         }
 
-        // -- Cross-tick stateful: diff --------------------------------------
-        "diff" => {
-            let offset: usize = params
-                .get_item("offset")?
-                .ok_or_else(|| PyTypeError::new_err("diff requires 'offset' param"))?
-                .extract()?;
-            macro_rules! go {
-                ($T:ty) => {
-                    add_operator_from_indices(sc, operators::num::Diff::<$T>::new(offset), input_indices)
-                };
-            }
-            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
-        }
+        // -- Cross-tick stateful: diff (one-step) ---------------------------
+        "diff" => Ok((dispatch_op!(dtype, num::Diff, float, sc, input_indices), NativeNodeKind::Array)),
 
-        // -- Cross-tick stateful: pct_change --------------------------------
-        "pct_change" => {
-            let offset: usize = params
-                .get_item("offset")?
-                .ok_or_else(|| PyTypeError::new_err("pct_change requires 'offset' param"))?
-                .extract()?;
-            macro_rules! go {
-                ($T:ty) => {
-                    add_operator_from_indices(sc, operators::num::PctChange::<$T>::new(offset), input_indices)
-                };
-            }
-            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
-        }
+        // -- Cross-tick stateful: pct_change (one-step) ---------------------
+        "pct_change" => Ok((dispatch_op!(dtype, num::PctChange, float, sc, input_indices), NativeNodeKind::Array)),
 
         // -- Parameterized unary: clamp --------------------------------------
         "clamp" => {
@@ -449,24 +551,6 @@ pub fn dispatch_native_operator(
                 };
             }
             Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
-        }
-
-        // -- Rank / ArgSort (Array<T:Float> → Array<u64>) --------------------
-        "rank" | "argsort" => {
-            let input_dtype: String = params
-                .get_item("input_dtype")?
-                .ok_or_else(|| PyTypeError::new_err(format!("{kind} requires 'input_dtype' param")))?
-                .extract()?;
-            macro_rules! go {
-                ($T:ty) => {
-                    match kind {
-                        "rank" => add_operator_from_indices(sc, operators::num::Rank::<$T>::new(), input_indices),
-                        "argsort" => add_operator_from_indices(sc, operators::num::ArgSort::<$T>::new(), input_indices),
-                        _ => unreachable!(),
-                    }
-                };
-            }
-            Ok((dispatch_dtype!(input_dtype.as_str(), go, float), NativeNodeKind::Array))
         }
 
         other => Err(PyTypeError::new_err(format!(

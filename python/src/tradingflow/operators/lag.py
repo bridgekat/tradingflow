@@ -26,5 +26,5 @@ class Lag(NativeOperator):
         if fill != 0:
             params["fill"] = fill
         super().__init__(
-            native_id="lag", inputs=(a,), kind=NodeKind.SERIES, dtype=a.dtype, shape=a.shape, params=params
+            native_id="lag", inputs=(a,), kind=NodeKind.ARRAY, dtype=a.dtype, shape=a.shape, params=params
         )

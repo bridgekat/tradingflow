@@ -39,11 +39,17 @@ graph.  Common choices:
   `MeanVariancePortfolio` / `VariancePortfolio`, which require
   magnitudes.
 
-The `target_delay` parameter expresses how many periods the target
-series lags the features series (e.g. an h-period forward return is
-only observable h ticks late).  At every recompute the invariant
-`len(features_series) == len(target_series) + target_delay` is
-asserted; misalignment raises `AssertionError` at runtime.
+The `target_offset` parameter expresses how many periods ahead of
+the feature each training target is taken from the target series
+(e.g. `target_offset=1` pairs features at time t with returns from
+t to t+1).  At every recompute the invariant
+`len(features_series) == len(target_series)` is asserted — both
+series must tick in lock-step upstream (use
+[`Resample`][tradingflow.operators.resample.Resample] to align
+heterogeneous-cadence feature components onto a common trading-day
+pulse).  The i-th feature is paired with the (i + target_offset)-th
+target; the last `target_offset` features have no training pair
+and only the very latest drives the emitted prediction.
 
 ## Sub-modules
 

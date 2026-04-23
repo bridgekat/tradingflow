@@ -47,19 +47,18 @@
 //! return conventions: linear returns are `PctChange`, while log returns
 //! are `Log -> Diff`.
 //!
-//! # Ranking (float-only, `T: Float`, 1-D input)
-//!
-//! - [`Rank`] — 0-based rank of each element (smallest → 0).
-//! - [`ArgSort`] — indices that would sort the array (smallest first).
-//!
-//! Both treat NaN as larger than any real value, so NaNs end up at the
-//! highest ranks / indices.
-//!
 //! # Distribution shaping (float-only, `T: Float`, 1-D input)
 //!
-//! - [`Gaussianize`] — cross-sectional rank-to-Gaussian transform: map
-//!   each non-NaN element to `Φ⁻¹((rank + 0.5) / n_valid)`.  NaN inputs
-//!   are preserved as NaN outputs.
+//! Cross-sectional rank statistics that sort and handle NaN internally:
+//! non-NaN entries are ranked ascending (denominator is `n_valid`, not
+//! `n`) and NaN inputs propagate to NaN outputs, so downstream
+//! `is_finite` masks still filter missing entries.
+//!
+//! - [`Gaussianize`] — cross-sectional rank-to-Gaussian: map each
+//!   non-NaN element to `Φ⁻¹((rank + 0.5) / n_valid)`.
+//! - [`Percentile`] — cross-sectional rank-to-percentile: map each
+//!   non-NaN element to `(rank + 0.5) / n_valid ∈ (0, 1)`.  Same sort
+//!   and NaN logic as `Gaussianize`, just without the `Φ⁻¹` step.
 
 mod arithmetic;
 mod clamp;
@@ -68,7 +67,7 @@ mod ffill;
 mod fillna;
 mod gaussianize;
 mod pct_change;
-mod rank;
+mod percentile;
 
 pub use arithmetic::{
     Abs, Add, Ceil, Divide, Exp, Exp2, Floor, Log, Log2, Log10, Max, Min, Multiply, Negate, Pow,
@@ -80,4 +79,4 @@ pub use ffill::ForwardFill;
 pub use fillna::Fillna;
 pub use gaussianize::Gaussianize;
 pub use pct_change::PctChange;
-pub use rank::{ArgSort, Rank};
+pub use percentile::Percentile;

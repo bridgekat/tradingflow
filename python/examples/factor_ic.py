@@ -12,17 +12,15 @@ For each stock the following features are computed every trading day:
 - ``volatility`` -- rolling standard deviation of daily log-returns of
   adjusted close
 
-Each factor is cross-sectionally ranked (NaNs last, cast to float64) and
-then wrapped in a ``SingleFeature`` pass-through predictor so its output
-emits at the rebalance cadence (parallel to the variance predictor pattern
-used in ``covariance_gmv.py``).  A ``Sample`` mean predictor (historical
-mean returns, no features) is included as a baseline.
+Each factor is mapped to its cross-sectional ``Percentile`` rank
+(NaN-preserving, so missing stocks stay NaN rather than clustering at the
+top rank).
 
 The realised target fed to the evaluator is
-``Gaussianize(PctChange(adjusted_close))`` — cross-sectional linear returns
-passed through a rank-to-Gaussian transform.  Combined with the pre-ranked
-factor predictions this yields Spearman RankIC; cumulative curves are
-plotted.
+``Percentile(PctChange(adjusted_close))`` — cross-sectional linear
+returns passed through the same NaN-preserving percentile transform.
+Combined with the percentile-ranked factors this yields Spearman
+RankIC; cumulative curves are plotted.
 
 Requires ``pip install -e ".[examples]"`` and A-shares market data downloaded
 via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
@@ -43,14 +41,13 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Lag, Map, Record, Select, Stack, StackSync
-from tradingflow.operators.num import Divide, Log, Multiply, Gaussianize, PctChange, Sqrt, Subtract
+from tradingflow.operators import Lag, Map, Record, Resample, Select, Stack, StackSync
+from tradingflow.operators.num import Divide, Log, Multiply, PctChange, Percentile, Sqrt, Subtract
 from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
-from tradingflow.operators.predictors.mean import Sample, SingleFeature
 from tradingflow.operators.metrics.mean import InformationCoefficient
 
-from stocks import load_symbols, calculate_index_weights, resolve_data_start, add_market_argument
+from stocks import load_symbols, resolve_data_start, add_market_argument
 
 
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
@@ -185,8 +182,13 @@ def build_scenario(
     # Features
     # ------------------------------------------------------------------
 
+    # Total market cap.
     market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
+
+    # Book-to-price ratio.
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
+
+    # Turnover MA (rolling mean of daily turnover).
     turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
     turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
@@ -208,44 +210,24 @@ def build_scenario(
     # Price volatility (rolling std dev of daily log-returns of adjusted close).
     volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
 
-    factor_names = [
-        "market_cap",
-        "bp",
-        f"turnover_ma{window}",
-        "ttm_ep",
-        "ttm_roe",
-        f"momentum_ma{window}",
-        f"volatility{window}",
-    ]
+    # Cross-sectional rank as a percentile in (0, 1).  NaNs pass through
+    # unchanged so downstream masks still filter missing stocks.
+    def ranked(h: Handle) -> Handle:
+        return sc.add_operator(Percentile(h))
 
-    # Cross-sectional rank → Φ⁻¹ transform so each factor is roughly
-    # standard-normal at every rebalance.  NaNs pass through unchanged.
-    def gaussianized(h: Handle) -> Handle:
-        return sc.add_operator(Gaussianize(h))
+    # Cross-sectionally ranked features.
+    features = {
+        "market_cap": ranked(market_cap),
+        "bp": ranked(bp),
+        f"turnover_ma_{window}": ranked(turnover_ma),
+        "ttm_ep": ranked(ttm_ep),
+        "ttm_roe": ranked(ttm_roe),
+        f"momentum_ma_{window}": ranked(momentum_ma),
+        f"volatility_{window}": ranked(volatility),
+    }
 
-    stacked_features = sc.add_operator(
-        Stack(
-            [
-                gaussianized(market_cap),
-                gaussianized(bp),
-                gaussianized(turnover_ma),
-                gaussianized(ttm_ep),
-                gaussianized(ttm_roe),
-                gaussianized(momentum_ma),
-                gaussianized(volatility),
-            ],
-            axis=1,
-        )
-    )
-    features_series = sc.add_operator(Record(stacked_features))
-
-    # Training target = linear returns.  Emitted every tick; the first
-    # tick is NaN since no previous price is available.  The evaluator
-    # uses the Gaussianized (cross-sectionally ranked) version so the
-    # IC becomes Spearman rank correlation.
-    returns = sc.add_operator(PctChange(stacked["adjusted_close"]))
-    returns_ranked = sc.add_operator(Gaussianize(returns))
-    target_series = sc.add_operator(Record(returns))
+    # Cross-sectionally ranked linear returns.
+    returns_ranked = ranked(sc.add_operator(PctChange(stacked["adjusted_close"])))
 
     # ------------------------------------------------------------------
     # IC / RankIC evaluation
@@ -259,47 +241,10 @@ def build_scenario(
     )
     rebalance_clock = sc.add_source(Clock(rebalance_dates))
 
-    universe = sc.add_operator(
-        Clocked(
-            rebalance_clock,
-            Map(
-                market_cap,
-                lambda m: calculate_index_weights(m, index_size),
-                shape=(num_stocks,),
-                dtype=np.float64,
-            ),
-        )
-    )
-
-    predictor_kwargs = dict(universe_size=index_size, target_delay=1)
-
-    estimators = {
-        "sample": sc.add_operator(
-            Sample(
-                universe,
-                features_series,
-                target_series,
-                max_periods=rebalance_days,
-                **predictor_kwargs,
-            ),
-        )
-    }
-    for i, name in enumerate(factor_names):
-        estimators[name] = sc.add_operator(
-            SingleFeature(
-                universe,
-                features_series,
-                target_series,
-                feature_index=i,
-                **predictor_kwargs,
-            ),
-        )
-
-    eval_handles = {}
-    for name, predicted in estimators.items():
-        metric = sc.add_operator(
-            InformationCoefficient(predicted, returns_ranked),
-        )
+    eval_handles: dict[str, Handle] = {}
+    for name, feature in features.items():
+        aligned = sc.add_operator(Resample(rebalance_clock, feature))
+        metric = sc.add_operator(InformationCoefficient(aligned, returns_ranked))
         eval_handles[name] = sc.add_operator(Record(metric))
 
     return sc, eval_handles, rebalance_dates

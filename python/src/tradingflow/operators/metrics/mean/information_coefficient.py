@@ -55,7 +55,7 @@ class InformationCoefficient(
     target
         Live cross-sectional target values, shape `(N,)`, produced at
         every tick (e.g. a `PctChange` node, optionally passed through
-        `Gaussianize` / `Rank` / etc.).
+        `Gaussianize` / `Percentile` / etc.).
     """
 
     def __init__(self, predictions: Handle, target: Handle) -> None:

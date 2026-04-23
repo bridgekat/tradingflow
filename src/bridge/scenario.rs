@@ -184,21 +184,32 @@ impl NativeScenario {
     }
 
     /// Register a Rust-native operator by kind + dtype + params.
+    ///
+    /// `dtype` is `None` for operators whose output is [`NativeNodeKind::Unit`]
+    /// (no value, only a trigger).  For Array/Series outputs it is required
+    /// and dispatched on; arms that receive `None` with such an output will
+    /// surface a dispatch-time error.
     #[pyo3(signature = (kind, dtype, input_indices, shape, params))]
     fn add_native_operator(
         &mut self,
         py: Python<'_>,
         kind: &str,
-        dtype: &str,
+        dtype: Option<String>,
         input_indices: Vec<usize>,
         shape: Vec<usize>,
         params: &Bound<'_, PyDict>,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
+        // For Array/Series outputs each dispatch arm consults dtype via
+        // `dispatch_dtype!`, which itself errors on an unknown dtype string;
+        // an absent dtype surfaces through the same path as an empty string.
+        // For Unit outputs dtype is never consulted — the arm returns early
+        // before dispatching on it.
+        let dtype_str = dtype.as_deref().unwrap_or("");
         let sc = self.scenario.as_mut().unwrap();
         let (idx, view_kind) =
-            operators::dispatch_native_operator(sc, kind, dtype, &input_indices, params)?;
-        self.push_node(py, idx, dtype, view_kind, &shape)?;
+            operators::dispatch_native_operator(sc, kind, dtype_str, &input_indices, params)?;
+        self.push_node(py, idx, dtype_str, view_kind, &shape)?;
         Ok(idx)
     }
 

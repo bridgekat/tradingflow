@@ -68,6 +68,11 @@ For quick experiments without writing a full operator subclass.
   that it only fires when a clock input ticks.  Convenient for turning
   a purely data-driven operator into a periodic one without modifying
   its implementation.
+- [`Resample`][tradingflow.operators.resample.Resample] — re-emit a data
+  input's latest value on every clock tick.  Clock and data must share
+  the same node type (`Unit`, `Array<T>`, or `Series<T>`); only the
+  clock's produced bit is consulted.  Use to align two records that
+  would otherwise tick at heterogeneous cadences.
 
 ## Sub-modules
 
@@ -95,6 +100,7 @@ from .lag import Lag
 from .map import Map
 from .last import Last
 from .record import Record
+from .resample import Resample
 from .select import Select
 from .stack import Stack, StackSync
 from .where import Where
@@ -119,6 +125,7 @@ __all__ = [
     "Id",
     "Map",
     "Record",
+    "Resample",
     "Last",
     "Lag",
     "Filter",

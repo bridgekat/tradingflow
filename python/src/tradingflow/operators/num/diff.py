@@ -6,29 +6,29 @@ from ... import Handle, NativeOperator, NodeKind
 
 
 class Diff(NativeOperator):
-    """Element-wise first difference across ticks.
+    """Element-wise one-step difference across ticks.
 
-    Emits `a - a_{offset steps ago}` on every tick, maintaining a ring
-    buffer of the last `offset` input arrays.  Output is `NaN` for the
-    first `offset` ticks.  `offset` must be at least `1`.
+    Emits `a - a_prev` on every tick, maintaining the previous input
+    array.  The output is `NaN` on the first tick (no previous value).
 
-    Combined with [`Log`][tradingflow.operators.num.arithmetic.Log]
-    upstream this produces log returns: `Log -> Diff`.
+    This is the unit-step counterpart of a k-step diff: multi-step
+    differences can be expressed as `Subtract(a, Last(Lag(Record(a), k)))`
+    if needed — in practice, predictor alignment is handled by the
+    `target_offset` parameter on
+    [`MeanPredictor`][tradingflow.operators.predictors.mean_predictor.MeanPredictor]
+    and friends, not by varying the diff stride.
 
     Parameters
     ----------
     a
         Handle to a float Array node.
-    offset
-        Number of ticks to look back.  Default `1`.
     """
 
-    def __init__(self, a: Handle, offset: int = 1) -> None:
+    def __init__(self, a: Handle) -> None:
         super().__init__(
             native_id="diff",
             inputs=(a,),
             kind=NodeKind.ARRAY,
             dtype=a.dtype,
             shape=a.shape,
-            params={"offset": offset},
         )

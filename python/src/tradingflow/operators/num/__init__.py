@@ -59,31 +59,31 @@ element-wise at compute time:
 
 ## Cross-tick (stateful)
 
-Operators that remember input history across ticks via a ring buffer
-of the last `offset` inputs.  Output is `NaN` for the first `offset`
-ticks.
+Single-step stateful operators that remember the previous tick.  Output
+is `NaN` on the first tick.
 
 - [`Diff`][tradingflow.operators.num.diff.Diff] — first difference:
-  `a_t - a_{t-offset}`.
+  `a_t - a_{t-1}`.
 - [`PctChange`][tradingflow.operators.num.pct_change.PctChange] — linear
-  return: `a_t / a_{t-offset} - 1`.
+  return: `a_t / a_{t-1} - 1`.
 
 Use `PctChange` for linear returns and `Log -> Diff` for log returns.
 
-## Ranking
-
-1-D float inputs only.  NaN values sort to the end in both.
-
-- [`Rank`][tradingflow.operators.num.rank.Rank] — 0-based rank of each
-  element (smallest → 0).
-- [`ArgSort`][tradingflow.operators.num.rank.ArgSort] — indices that would
-  sort the input array.
-
 ## Distribution shaping
+
+Cross-sectional rank statistics that sort and handle NaN internally:
+non-NaN entries are ranked ascending (the denominator is ``n_valid``,
+not ``n``) and NaN inputs propagate to NaN outputs, so downstream
+``np.isfinite`` masks still filter missing entries.  1-D float inputs
+only.
 
 - [`Gaussianize`][tradingflow.operators.num.gaussianize.Gaussianize] —
   cross-sectional rank-to-Gaussian transform: map each non-NaN element
-  to ``Φ⁻¹((rank + 0.5) / n_valid)``.  NaN inputs pass through as NaN.
+  to ``Φ⁻¹((rank + 0.5) / n_valid)``.
+- [`Percentile`][tradingflow.operators.num.percentile.Percentile] —
+  cross-sectional rank-to-percentile transform: map each non-NaN
+  element to ``(rank + 0.5) / n_valid ∈ (0, 1)``.  Same sort and NaN
+  logic as ``Gaussianize``, just without the ``Φ⁻¹`` step.
 """
 
 from .arithmetic import (
@@ -114,11 +114,9 @@ from .ffill import ForwardFill
 from .fillna import Fillna
 from .gaussianize import Gaussianize
 from .pct_change import PctChange
-from .rank import ArgSort, Rank
+from .percentile import Percentile
 
 __all__ = [
-    "ArgSort",
-    "Rank",
     "Gaussianize",
     "Add",
     "Subtract",
@@ -145,4 +143,5 @@ __all__ = [
     "ForwardFill",
     "Fillna",
     "PctChange",
+    "Percentile",
 ]

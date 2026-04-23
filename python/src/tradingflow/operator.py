@@ -229,9 +229,11 @@ class NativeOperator:
     inputs
         Tuple of upstream handles.
     kind
-        Output node kind: `"array"` or `"series"`.
+        Output node kind: `"array"`, `"series"`, or `"unit"`.
     dtype
-        Output numpy dtype.
+        Output numpy dtype.  Omit (or pass `None`) for
+        [`NodeKind.UNIT`][tradingflow.data.types.NodeKind] outputs, which
+        carry no value.
     shape
         Output element shape.
     params
@@ -248,7 +250,7 @@ class NativeOperator:
         inputs: tuple[Handle, ...],
         *,
         kind: NodeKind,
-        dtype: type | np.dtype,
+        dtype: type | np.dtype | None = None,
         shape: tuple[int, ...],
         params: dict[str, Any] | None = None,
         name: str | None = None,
@@ -256,7 +258,7 @@ class NativeOperator:
         self._native_id = native_id
         self._inputs = inputs
         self._kind = kind
-        self._dtype = np.dtype(dtype)
+        self._dtype = np.dtype(dtype) if dtype is not None else None
         self._shape = shape
         self._params = params or {}
         self._name = name or native_id
@@ -277,8 +279,8 @@ class NativeOperator:
         return self._kind
 
     @property
-    def dtype(self) -> np.dtype:
-        """Output numpy dtype."""
+    def dtype(self) -> np.dtype | None:
+        """Output numpy dtype, or `None` for Unit outputs."""
         return self._dtype
 
     @property
@@ -300,7 +302,7 @@ class NativeOperator:
         """Register this native operator with the native scenario."""
         return native_scenario.add_native_operator(
             self._native_id,
-            self._dtype.name,
+            self._dtype.name if self._dtype is not None else None,
             input_indices,
             list(self._shape),
             self._params,

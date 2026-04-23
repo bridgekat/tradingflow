@@ -52,7 +52,7 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Map, Record, Select, Stack, StackSync
+from tradingflow.operators import Clocked, Map, Record, Resample, Select, Stack, StackSync
 from tradingflow.operators.num import Divide, Log, Multiply, PctChange
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
@@ -236,7 +236,15 @@ def build_scenario(
     # estimators train on linear returns, so the emitted covariances
     # are in linear-return units (directly consumable by
     # `VariancePortfolio` and `MeanVariancePortfolio`).
-    features_series = sc.add_operator(Record(stacked_features))
+    #
+    # `stacked_features` ticks on trading days *and* on irregular
+    # corporate-event days (balance-sheet notices, equity structure
+    # changes), while the returns target only ticks on trading days.
+    # Gate feature recording on the trading-day pulse so the features
+    # and target records advance lock-step, satisfying the predictor's
+    # positional alignment contract.
+    sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
+    features_series = sc.add_operator(Record(sampled_features))
     returns = sc.add_operator(PctChange(stacked["adjusted_close"]))
     target_series = sc.add_operator(Record(returns))
 
@@ -270,14 +278,14 @@ def build_scenario(
             features_series,
             target_series,
             universe_size=index_size,
-            target_delay=1,
+            target_offset=1,
             min_periods=100,
             verbose=True,
         ),
     )
 
     common_args = (universe, features_series, target_series)
-    common_kwargs = dict(universe_size=index_size, target_delay=1, max_periods=rebalance_days)
+    common_kwargs = dict(universe_size=index_size, target_offset=1, max_periods=rebalance_days)
 
     predicted_covariances = {
         "sample": sc.add_operator(Sample(*common_args, **common_kwargs)),
