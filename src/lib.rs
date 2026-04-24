@@ -59,6 +59,7 @@
 
 pub mod data;
 pub mod experimental;
+pub mod experimental_alt;
 pub mod operator;
 pub mod operators;
 pub mod scenario;

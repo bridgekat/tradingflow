@@ -1119,6 +1119,8 @@ name = "tradingflow"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "crossbeam-deque",
+ "crossbeam-utils",
  "csv",
  "csv-async",
  "futures",
