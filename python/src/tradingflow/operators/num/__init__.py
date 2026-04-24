@@ -71,7 +71,7 @@ Use `PctChange` for linear returns and `Log -> Diff` for log returns.
 
 ## Distribution shaping
 
-Cross-sectional rank statistics that sort and handle NaN internally:
+Cross-sectional statistics that sort and handle NaN internally:
 non-NaN entries are ranked ascending (the denominator is ``n_valid``,
 not ``n``) and NaN inputs propagate to NaN outputs, so downstream
 ``np.isfinite`` masks still filter missing entries.  1-D float inputs
@@ -84,6 +84,11 @@ only.
   cross-sectional rank-to-percentile transform: map each non-NaN
   element to ``(rank + 0.5) / n_valid ∈ (0, 1)``.  Same sort and NaN
   logic as ``Gaussianize``, just without the ``Φ⁻¹`` step.
+- [`Winsorize`][tradingflow.operators.num.winsorize.Winsorize] —
+  cross-sectional percentile clipping: clip each non-NaN element to
+  the ``[p, 1-p]``-quantile range of the input.  Preserves magnitudes;
+  use to cap tail leverage on regression inputs / targets without
+  destroying scale information.
 """
 
 from .arithmetic import (
@@ -115,6 +120,7 @@ from .fillna import Fillna
 from .gaussianize import Gaussianize
 from .pct_change import PctChange
 from .percentile import Percentile
+from .winsorize import Winsorize
 
 __all__ = [
     "Gaussianize",
@@ -144,4 +150,5 @@ __all__ = [
     "Fillna",
     "PctChange",
     "Percentile",
+    "Winsorize",
 ]

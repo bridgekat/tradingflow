@@ -18,12 +18,14 @@ regression:
 - ``volatility_20`` — 20-day rolling standard deviation of daily
   log-returns of adjusted close
 
-The training target is the **percentile rank of the 1-step-forward
-linear return** (same NaN-preserving transform as the features), so
-the fitted model is a rank-on-rank regression — the regressor's
-predictions share the units of the downstream rank-linear portfolio
-constructor, and fit coefficients carry Spearman rank-correlation
-semantics.
+The training target is the **1-step-forward log return, winsorized
+at the cross-sectional 1st / 99th percentile each day**.  Keeping
+magnitudes (instead of ranking the target too) preserves the scale
+information pooled OLS needs for well-conditioned coefficients, while
+the per-day winsorization caps tail leverage — a rank-only target
+can still lose money under skewed return distributions, since a
+predictor that robustly predicts *ranks* provides no guarantee on
+realized magnitudes.
 
 The pipeline consists of four independent, composable operators:
 
@@ -54,7 +56,7 @@ from tradingflow import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract
+from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract, Winsorize
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
@@ -91,7 +93,7 @@ def build_scenario(
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
 
-    # Per-stock raw handles grouped by cadence.
+    # Per-stock handles grouped by cadence.
     #
     # * `per_stock_sync` — values produced in lockstep across all stocks
     #   (e.g., daily prices/equity on trading days).  Stacked with
@@ -101,22 +103,9 @@ def build_scenario(
     #   (e.g., quarterly financial reports filed on different dates).
     #   Stacked with `Stack` to give time-series semantics: slots keep
     #   their last-known value across quiet periods.
-    per_stock_sync: dict[str, list[Handle]] = {
-        k: []
-        for k in (
-            "ohlcv",
-            "adjusted_close",
-        )
-    }
+    per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("ohlcv", "close", "volume", "adjusted_close")}
     per_stock_irregular: dict[str, list[Handle]] = {
-        k: []
-        for k in (
-            "adjusts",
-            "total_shares",
-            "circ_shares",
-            "parent_equity",
-            "net_profit",
-        )
+        k: [] for k in ("adjusts", "total_shares", "circ_shares", "parent_equity", "net_profit")
     }
 
     for symbol in tqdm(symbols, desc="Building scenario"):
@@ -165,13 +154,14 @@ def build_scenario(
 
         ohlcv = sc.add_operator(Select(prices, OHLCV_INDICES))
         close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
+        volume = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.volume")))
         adjusts = sc.add_operator(ForwardAdjust(close, dividends, output_prices=False))
         adjusted_close = sc.add_operator(Multiply(close, adjusts))
         total_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.total")))
         circ_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
         income_ann = sc.add_operator(Annualize(income_ytd))
         net_profit = sc.add_operator(Select(income_ann, INC_SCHEMA.index("income_statement.profit")))
-        neg_parent_equity_components = sc.add_operator(
+        neg_peq = sc.add_operator(
             Select(
                 balance,
                 BS_SCHEMA.indices(
@@ -183,11 +173,11 @@ def build_scenario(
                 ),
             )
         )
-        parent_equity = sc.add_operator(
-            Map(neg_parent_equity_components, lambda x: -x.sum(), shape=(), dtype=np.float64)
-        )
+        parent_equity = sc.add_operator(Map(neg_peq, lambda x: -x.sum(), shape=(), dtype=np.float64))
 
         per_stock_sync["ohlcv"].append(ohlcv)
+        per_stock_sync["close"].append(close)
+        per_stock_sync["volume"].append(volume)
         per_stock_sync["adjusted_close"].append(adjusted_close)
         per_stock_irregular["adjusts"].append(adjusts)
         per_stock_irregular["total_shares"].append(total_shares)
@@ -207,59 +197,56 @@ def build_scenario(
         **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
     }
 
-    # Extract close and volume from stacked OHLCV for feature computation.
-    close = sc.add_operator(Select(stacked["ohlcv"], 3, axis=1))
-    volume = sc.add_operator(Select(stacked["ohlcv"], 4, axis=1))
-
-    # Per-stock features.
+    # Window size for rolling features (in trading days, not calendar days).
     window = 20
 
-    market_cap = sc.add_operator(Multiply(close, stacked["total_shares"]))
+    # Total market cap.
+    market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
 
+    # Book-to-price ratio.
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
 
-    turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
-    turnover_series = sc.add_operator(Record(turnover))
-    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
-
+    # TTM net profit via 365-day rolling mean of annualized net profit.
     net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
     net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
 
+    # TTM E/P and TTM ROE.
     ttm_ep = sc.add_operator(Divide(net_profit_ttm, market_cap))
+    ttm_roe = sc.add_operator(Divide(net_profit_ttm, stacked["parent_equity"]))
 
+    # Momentum MA (rolling mean of daily log-returns of adjusted close).
     log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
     log_adj_series = sc.add_operator(Record(log_adj))
     log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
     momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
 
+    # Turnover MA (rolling mean of daily turnover).
+    turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
+    turnover_series = sc.add_operator(Record(turnover))
+    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
+
+    # Price volatility (rolling std dev of daily log-returns of adjusted close).
     volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
 
-    # Cross-sectional rank → percentile transform so each factor is
-    # uniformly distributed in (0, 1) at every rebalance.  NaNs pass
-    # through unchanged so downstream regression masks still filter them.
-    def ranked(h: Handle) -> Handle:
-        return sc.add_operator(Percentile(h))
+    # Cross-sectional features.
+    features = {
+        "rank_market_cap": sc.add_operator(Percentile(market_cap)),
+        "rank_bp": sc.add_operator(Percentile(bp)),
+        "rank_ttm_ep": sc.add_operator(Percentile(ttm_ep)),
+        "rank_ttm_roe": sc.add_operator(Percentile(ttm_roe)),
+        f"momentum_ma_{window}": momentum_ma,
+        f"turnover_ma_{window}": turnover_ma,
+        f"volatility_{window}": volatility,
+    }
+    stacked_features = sc.add_operator(Stack(list(features.values()), axis=1))
 
-    stacked_features = sc.add_operator(
-        Stack(
-            [
-                ranked(market_cap),
-                ranked(bp),
-                ranked(turnover_ma),
-                ranked(ttm_ep),
-                ranked(momentum_ma),
-                ranked(volatility),
-            ],
-            axis=1,
-        )
-    )
-
-    # Record feature and target history for predictors.  The regression
-    # target is the cross-sectional percentile of the 1-step log return,
-    # matching the feature-side transform so this is rank-on-rank
-    # regression (Spearman-style fit coefficients).  Percentile ordering
-    # is identical under log vs. linear returns, but the log-return
-    # convention is what every portfolio operator expects as input.
+    # Record feature and target history for predictors.  Features are
+    # percentile-ranked per day; the regression target is the 1-step
+    # log return, winsorized at the cross-sectional 1st/99th percentile
+    # so outlier days don't dominate the pooled OLS.  Preserving
+    # magnitudes (vs. another rank transform) matters because rank-only
+    # prediction can still lose money under skewed return distributions
+    # — winsorization caps tail leverage without erasing scale.
     #
     # `stacked_features` ticks whenever any of its component factors
     # updates, which includes irregular corporate-event days (balance-
@@ -278,8 +265,8 @@ def build_scenario(
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))
     log_returns = sc.add_operator(Diff(log_adj))
-    returns_ranked = ranked(log_returns)
-    target_series = sc.add_operator(Record(returns_ranked))
+    target = sc.add_operator(Winsorize(log_returns, p=0.01))
+    target_series = sc.add_operator(Record(target))
 
     # ------------------------------------------------------------------
     # Strategy pipeline
@@ -321,7 +308,7 @@ def build_scenario(
         RankLinear(
             universe,
             predicted_returns,
-            top_fraction=0.1,
+            top_fraction=1.0,
         )
     )
 

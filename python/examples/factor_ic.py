@@ -17,10 +17,14 @@ Each factor is mapped to its cross-sectional ``Percentile`` rank
 top rank).
 
 The realised target fed to the evaluator is
-``Percentile(Diff(Log(adjusted_close)))`` — cross-sectional log
-returns passed through the same NaN-preserving percentile transform.
-Combined with the percentile-ranked factors this yields Spearman
-RankIC; cumulative curves are plotted.
+``Winsorize(Diff(Log(adjusted_close)), p=0.01)`` — cross-sectional log
+returns clipped at the 1st / 99th percentile each day.  Combined with
+the percentile-ranked factors, the reported IC is the per-period
+cross-sectional correlation between ranked factors and realised
+log-return magnitudes: a rank-vs.-magnitude measure that penalises
+factors whose top-rank stocks consistently fail to deliver large
+positive returns, rather than the pure Spearman rank correlation a
+rank-on-rank evaluator would report.
 
 Requires ``pip install -e ".[examples]"`` and A-shares market data downloaded
 via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
@@ -42,7 +46,7 @@ from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Lag, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract
+from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract, Winsorize
 from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.metrics.mean import InformationCoefficient
@@ -71,7 +75,6 @@ def build_scenario(
 
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
-    num_stocks = len(symbols)
 
     # Per-stock handles grouped by cadence.
     #
@@ -83,26 +86,17 @@ def build_scenario(
     #   (e.g., quarterly financial reports filed on different dates).
     #   Stacked with `Stack` to give time-series semantics: slots keep
     #   their last-known value across quiet periods.
-    per_stock_sync: dict[str, list[Handle]] = {
-        k: []
-        for k in (
-            "adjusted_close",
-            "close",
-            "volume",
-        )
-    }
+    per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("close", "volume", "adjusted_close")}
     per_stock_irregular: dict[str, list[Handle]] = {
-        k: []
-        for k in (
-            "total_shares",
-            "circ_shares",
-            "parent_equity",
-            "net_profit",
-        )
+        k: [] for k in ("total_shares", "circ_shares", "parent_equity", "net_profit")
     }
 
     for symbol in tqdm(symbols, desc="Building scenario"):
         h = history_dir / symbol
+
+        # ------------------------------------------------------------------
+        # Sources
+        # ------------------------------------------------------------------
 
         prices = sc.add_source(
             CSVSource(f"{h}.daily_prices.csv", PRICE_SCHEMA, time_column="date", start=data_start, end=end)
@@ -137,15 +131,19 @@ def build_scenario(
             )
         )
 
+        # ------------------------------------------------------------------
+        # Operators
+        # ------------------------------------------------------------------
+
         close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
+        volume = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.volume")))
         adjusts = sc.add_operator(ForwardAdjust(close, dividends, output_prices=False))
         adjusted_close = sc.add_operator(Multiply(close, adjusts))
         total_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.total")))
         circ_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
-        volume = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.volume")))
         income_ann = sc.add_operator(Annualize(income_ytd))
         net_profit = sc.add_operator(Select(income_ann, INC_SCHEMA.index("income_statement.profit")))
-        neg_parent_equity_components = sc.add_operator(
+        neg_peq = sc.add_operator(
             Select(
                 balance,
                 BS_SCHEMA.indices(
@@ -157,13 +155,11 @@ def build_scenario(
                 ),
             )
         )
-        parent_equity = sc.add_operator(
-            Map(neg_parent_equity_components, lambda x: -x.sum(), shape=(), dtype=np.float64)
-        )
+        parent_equity = sc.add_operator(Map(neg_peq, lambda x: -x.sum(), shape=(), dtype=np.float64))
 
-        per_stock_sync["adjusted_close"].append(adjusted_close)
         per_stock_sync["close"].append(close)
         per_stock_sync["volume"].append(volume)
+        per_stock_sync["adjusted_close"].append(adjusted_close)
         per_stock_irregular["total_shares"].append(total_shares)
         per_stock_irregular["circ_shares"].append(circ_shares)
         per_stock_irregular["parent_equity"].append(parent_equity)
@@ -188,11 +184,6 @@ def build_scenario(
     # Book-to-price ratio.
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
 
-    # Turnover MA (rolling mean of daily turnover).
-    turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
-    turnover_series = sc.add_operator(Record(turnover))
-    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
-
     # TTM net profit via 365-day rolling mean of annualized net profit.
     net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
     net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
@@ -207,30 +198,34 @@ def build_scenario(
     log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
     momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
 
+    # Turnover MA (rolling mean of daily turnover).
+    turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
+    turnover_series = sc.add_operator(Record(turnover))
+    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
+
     # Price volatility (rolling std dev of daily log-returns of adjusted close).
     volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
 
-    # Cross-sectional rank as a percentile in (0, 1).  NaNs pass through
-    # unchanged so downstream masks still filter missing stocks.
-    def ranked(h: Handle) -> Handle:
-        return sc.add_operator(Percentile(h))
-
-    # Cross-sectionally ranked features.
+    # Cross-sectional features.
     features = {
-        "market_cap": ranked(market_cap),
-        "bp": ranked(bp),
-        f"turnover_ma_{window}": ranked(turnover_ma),
-        "ttm_ep": ranked(ttm_ep),
-        "ttm_roe": ranked(ttm_roe),
-        f"momentum_ma_{window}": ranked(momentum_ma),
-        f"volatility_{window}": ranked(volatility),
+        "rank_market_cap": sc.add_operator(Percentile(market_cap)),
+        "rank_bp": sc.add_operator(Percentile(bp)),
+        "rank_ttm_ep": sc.add_operator(Percentile(ttm_ep)),
+        "rank_ttm_roe": sc.add_operator(Percentile(ttm_roe)),
+        f"momentum_ma_{window}": momentum_ma,
+        f"turnover_ma_{window}": turnover_ma,
+        f"volatility_{window}": volatility,
     }
 
-    # Cross-sectionally ranked log returns (ordering is identical
-    # under log vs. linear returns, but the log-return convention
-    # matches every operator's input contract).
+    # Cross-sectional log returns, winsorized at the 1st / 99th
+    # percentile each day.  Keeping magnitudes (rather than ranking the
+    # target) turns the downstream IC metric into a rank-factor vs.
+    # realised-magnitude correlation — a factor whose top-rank stocks
+    # reliably deliver large positive returns scores high, while one
+    # whose ranks merely track direction (a Spearman-OK but skewed
+    # factor) gets penalised for the missing magnitude.
     log_returns = sc.add_operator(Diff(log_adj))
-    returns_ranked = ranked(log_returns)
+    target = sc.add_operator(Winsorize(log_returns, p=0.01))
 
     # ------------------------------------------------------------------
     # IC / RankIC evaluation
@@ -247,7 +242,7 @@ def build_scenario(
     eval_handles: dict[str, Handle] = {}
     for name, feature in features.items():
         aligned = sc.add_operator(Resample(rebalance_clock, feature))
-        metric = sc.add_operator(InformationCoefficient(aligned, returns_ranked))
+        metric = sc.add_operator(InformationCoefficient(aligned, target))
         eval_handles[name] = sc.add_operator(Record(metric))
 
     return sc, eval_handles, rebalance_dates

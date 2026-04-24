@@ -49,7 +49,7 @@
 //!
 //! # Distribution shaping (float-only, `T: Float`, 1-D input)
 //!
-//! Cross-sectional rank statistics that sort and handle NaN internally:
+//! Cross-sectional statistics that sort and handle NaN internally:
 //! non-NaN entries are ranked ascending (denominator is `n_valid`, not
 //! `n`) and NaN inputs propagate to NaN outputs, so downstream
 //! `is_finite` masks still filter missing entries.
@@ -59,6 +59,10 @@
 //! - [`Percentile`] — cross-sectional rank-to-percentile: map each
 //!   non-NaN element to `(rank + 0.5) / n_valid ∈ (0, 1)`.  Same sort
 //!   and NaN logic as `Gaussianize`, just without the `Φ⁻¹` step.
+//! - [`Winsorize`] — cross-sectional percentile clipping: clip each
+//!   non-NaN element to the `[p, 1-p]`-quantile range of the input,
+//!   preserving magnitudes.  Use to cap tail leverage on regression
+//!   inputs / targets without destroying scale information.
 
 mod arithmetic;
 mod clamp;
@@ -68,6 +72,7 @@ mod fillna;
 mod gaussianize;
 mod pct_change;
 mod percentile;
+mod winsorize;
 
 pub use arithmetic::{
     Abs, Add, Ceil, Divide, Exp, Exp2, Floor, Log, Log2, Log10, Max, Min, Multiply, Negate, Pow,
@@ -80,3 +85,4 @@ pub use fillna::Fillna;
 pub use gaussianize::Gaussianize;
 pub use pct_change::PctChange;
 pub use percentile::Percentile;
+pub use winsorize::Winsorize;

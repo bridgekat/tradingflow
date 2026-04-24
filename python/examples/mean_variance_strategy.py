@@ -19,7 +19,6 @@ and download instructions.
 """
 
 from pathlib import Path
-from statistics import LinearRegression
 from tqdm import tqdm
 import argparse
 
@@ -33,7 +32,7 @@ from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Apply, Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Diff, Divide, Log, Multiply, Sqrt, Subtract
+from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.predictors.variance import Shrinkage
 from tradingflow.operators.portfolios.mean_variance import Markowitz, Mode
@@ -66,7 +65,7 @@ def build_scenario(
     trading_start: np.datetime64,
     end: np.datetime64,
 ) -> tuple[Scenario, dict, dict, np.ndarray]:
-    """Build a scenario with shared data/features and multiple Markowitz variants."""
+    """Build the full backtesting scenario."""
 
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
@@ -81,13 +80,17 @@ def build_scenario(
     #   (e.g., quarterly financial reports filed on different dates).
     #   Stacked with `Stack` to give time-series semantics: slots keep
     #   their last-known value across quiet periods.
-    per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("ohlcv", "adjusted_close")}
+    per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("ohlcv", "close", "volume", "adjusted_close")}
     per_stock_irregular: dict[str, list[Handle]] = {
         k: [] for k in ("adjusts", "total_shares", "circ_shares", "parent_equity", "net_profit")
     }
 
     for symbol in tqdm(symbols, desc="Building scenario"):
         h = history_dir / symbol
+
+        # ------------------------------------------------------------------
+        # Sources
+        # ------------------------------------------------------------------
 
         prices = sc.add_source(
             CSVSource(f"{h}.daily_prices.csv", PRICE_SCHEMA, time_column="date", start=data_start, end=end)
@@ -122,8 +125,13 @@ def build_scenario(
             )
         )
 
+        # ------------------------------------------------------------------
+        # Operators
+        # ------------------------------------------------------------------
+
         ohlcv = sc.add_operator(Select(prices, OHLCV_INDICES))
         close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
+        volume = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.volume")))
         adjusts = sc.add_operator(ForwardAdjust(close, dividends, output_prices=False))
         adjusted_close = sc.add_operator(Multiply(close, adjusts))
         total_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.total")))
@@ -145,6 +153,8 @@ def build_scenario(
         parent_equity = sc.add_operator(Map(neg_peq, lambda x: -x.sum(), shape=(), dtype=np.float64))
 
         per_stock_sync["ohlcv"].append(ohlcv)
+        per_stock_sync["close"].append(close)
+        per_stock_sync["volume"].append(volume)
         per_stock_sync["adjusted_close"].append(adjusted_close)
         per_stock_irregular["adjusts"].append(adjusts)
         per_stock_irregular["total_shares"].append(total_shares)
@@ -164,47 +174,48 @@ def build_scenario(
         **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
     }
 
-    # Extract close and volume from stacked OHLCV for feature computation.
-    close = sc.add_operator(Select(stacked["ohlcv"], 3, axis=1))
-    volume = sc.add_operator(Select(stacked["ohlcv"], 4, axis=1))
-
-    # Per-stock features.
+    # Window size for rolling features (in trading days, not calendar days).
     window = 20
 
-    market_cap = sc.add_operator(Multiply(close, stacked["total_shares"]))
+    # Total market cap.
+    market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
 
+    # Book-to-price ratio.
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
 
-    turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
-    turnover_series = sc.add_operator(Record(turnover))
-    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
-
+    # TTM net profit via 365-day rolling mean of annualized net profit.
     net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
     net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
 
+    # TTM E/P and TTM ROE.
     ttm_ep = sc.add_operator(Divide(net_profit_ttm, market_cap))
+    ttm_roe = sc.add_operator(Divide(net_profit_ttm, stacked["parent_equity"]))
 
+    # Momentum MA (rolling mean of daily log-returns of adjusted close).
     log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
     log_adj_series = sc.add_operator(Record(log_adj))
     log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
     momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
 
+    # Turnover MA (rolling mean of daily turnover).
+    turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
+    turnover_series = sc.add_operator(Record(turnover))
+    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
+
+    # Price volatility (rolling std dev of daily log-returns of adjusted close).
     volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
 
-    # Stack features into (num_stocks, num_features).
-    stacked_features = sc.add_operator(
-        Stack(
-            [
-                market_cap,
-                bp,
-                turnover_ma,
-                ttm_ep,
-                momentum_ma,
-                volatility,
-            ],
-            axis=1,
-        )
-    )
+    # Cross-sectional features.
+    features = {
+        "rank_market_cap": sc.add_operator(Percentile(market_cap)),
+        "rank_bp": sc.add_operator(Percentile(bp)),
+        "rank_ttm_ep": sc.add_operator(Percentile(ttm_ep)),
+        "rank_ttm_roe": sc.add_operator(Percentile(ttm_roe)),
+        f"momentum_ma_{window}": momentum_ma,
+        f"turnover_ma_{window}": turnover_ma,
+        f"volatility_{window}": volatility,
+    }
+    stacked_features = sc.add_operator(Stack(list(features.values()), axis=1))
 
     # Record feature and target history for predictors.  The mean and
     # variance predictors train on log returns (more symmetric, closer
@@ -231,6 +242,10 @@ def build_scenario(
     # ------------------------------------------------------------------
 
     # Rebalance clock: the single periodic signal in this scenario.
+    # `Clock` defaults to `is_utc=True` so naive numpy timestamps are
+    # converted to TAI on the same footing as `CSVSource`, avoiding a
+    # 37-second misalignment between the rebalance trigger and the day's
+    # OHLCV tick.
     rebalance_dates = np.arange(
         trading_start,
         end + np.timedelta64(1, "D"),
@@ -316,11 +331,22 @@ def build_scenario(
 
         frictionless_value = sc.add_operator(Map(strategy_frictionless, np.sum, shape=(), dtype=np.float64))
 
-        def _expected_return_risk(x, mu, sigma):
+        def _expected_return_risk(x, mu_log, sigma_log):
+            # Markowitz internally converts log-return predictions to
+            # linear-return moments via the lognormal moment map before
+            # optimising; evaluate the resulting weights against the
+            # same linear-return moments so the plotted frontier matches
+            # the objective that was actually maximised.  Evaluating in
+            # log space here would systematically penalise concentrated
+            # high-variance portfolios (via the −½σ² drag) and produce
+            # a non-monotonic frontier at the high-risk end.
             mask = np.isfinite(x) & (x > 0)
             x = x[mask]
-            mu = mu[mask]
-            sigma = sigma[np.ix_(mask, mask)]
+            mu_log = mu_log[mask]
+            sigma_log = sigma_log[np.ix_(mask, mask)]
+            mu = np.expm1(mu_log + 0.5 * np.diag(sigma_log))
+            factor = 1.0 + mu
+            sigma = np.outer(factor, factor) * np.expm1(sigma_log)
             exp_ret = mu @ x
             exp_risk = np.sqrt(np.max(x @ sigma @ x, 0))
             return np.array([exp_ret, exp_risk])

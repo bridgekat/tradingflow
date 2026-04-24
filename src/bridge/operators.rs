@@ -121,6 +121,20 @@ pub fn dispatch_native_operator(
         // -- Percentile (Array<T:Float> → Array<T>) ---------------------------
         "percentile" => Ok((dispatch_op!(dtype, num::Percentile, float, sc, input_indices), NativeNodeKind::Array)),
 
+        // -- Winsorize (Array<T:Float> → Array<T>, parameterised by p) --------
+        "winsorize" => {
+            macro_rules! go {
+                ($T:ty) => {{
+                    let p: $T = params
+                        .get_item("p")?
+                        .ok_or_else(|| PyTypeError::new_err("winsorize requires 'p' param"))?
+                        .extract()?;
+                    add_operator_from_indices(sc, operators::num::Winsorize::<$T>::new(p), input_indices)
+                }};
+            }
+            Ok((dispatch_dtype!(dtype, go, float), NativeNodeKind::Array))
+        }
+
         // -- Identity (Array → Array) ----------------------------------------
         "id" => {
             macro_rules! go {

@@ -24,6 +24,7 @@ import numpy as np
 from .. import NodeKind
 from ..source import NativeSource
 from ..data import coerce_timestamp
+from ..data.time import utc_to_tai
 
 
 class Clock(NativeSource):
@@ -37,18 +38,38 @@ class Clock(NativeSource):
     ----------
     timestamps
         Sequence of `datetime64` timestamps at which the clock fires.
+    is_utc
+        If `True` (default), `timestamps` are interpreted as UTC and
+        converted to TAI via
+        [`utc_to_tai`][tradingflow.data.time.utc_to_tai] before being
+        handed to the Rust core.  This matches the
+        [`CSVSource`][tradingflow.sources.csv_source.CSVSource] default
+        so a naive `np.datetime64("2024-01-15")` on both sides aligns
+        to the same flush instead of landing 37 s apart.  Set to
+        `False` when the supplied timestamps are already in TAI.
     """
 
-    def __init__(self, timestamps: list[np.datetime64] | np.ndarray) -> None:
+    def __init__(
+        self,
+        timestamps: list[np.datetime64] | np.ndarray,
+        *,
+        is_utc: bool = True,
+    ) -> None:
         ts_ns = np.asarray(timestamps, dtype="datetime64[ns]")
-        ts_i64 = ts_ns.view("int64").tolist()
+        if is_utc:
+            ts_i64 = utc_to_tai(ts_ns).tolist()
+        else:
+            ts_i64 = ts_ns.view("int64").tolist()
         super().__init__(native_id="clock", kind=NodeKind.UNIT, dtype="", params={"timestamps": ts_i64})
 
 
 class DailyClock(Clock):
     """Daily clock (midnight in the given timezone).
 
-    Timestamps are computed at construction time using `zoneinfo`.
+    Timestamps are computed at construction time using `zoneinfo` as
+    UTC-convention instants, then passed through the base `Clock` with
+    the default `is_utc=True` so the clock fires at the TAI instant
+    corresponding to each local midnight.
 
     Parameters
     ----------
@@ -72,7 +93,10 @@ class DailyClock(Clock):
 class MonthlyClock(Clock):
     """Monthly clock (first day of each month in the given timezone).
 
-    Timestamps are computed at construction time using `zoneinfo`.
+    Timestamps are computed at construction time using `zoneinfo` as
+    UTC-convention instants, then passed through the base `Clock` with
+    the default `is_utc=True` so the clock fires at the TAI instant
+    corresponding to each local midnight-of-month.
 
     Parameters
     ----------
