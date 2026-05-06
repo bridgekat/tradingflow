@@ -1,20 +1,21 @@
-//! Python-visible scenario wrapper.
+//! Python-visible scenario / session wrappers.
 //!
 //! [`NativeScenario`] wraps the Rust [`Scenario`](crate::scenario::Scenario)
-//! and provides registration entry points for sources and operators from
-//! both Rust and Python.
+//! definition and provides registration entry points for sources and
+//! operators from both Rust and Python.  Registration only updates the
+//! definition — no buffers are allocated and no Python views are
+//! constructed at this point.
 //!
-//! # Lifecycle
+//! [`NativeSession`] wraps the Rust [`Session`](crate::scenario::Session)
+//! runtime state.  A session is constructed by
+//! [`NativeScenario::run`] (build + drive event loop + return) or
+//! [`NativeScenario::build_session`] (build only); each session is
+//! independent of every other and exposes Python views into its own
+//! buffers.
 //!
-//! - Registration (`add_*`) appends descriptors to the underlying
-//!   [`Scenario`] definition.  No node buffers are allocated and no
-//!   Python views are constructed at this point.
-//! - On [`run`](NativeScenario::run), a fresh [`Session`](crate::scenario::Session)
-//!   is built by replaying every descriptor's `init`; the bridge then
-//!   rebuilds its cached Python views to point at the new session's
-//!   buffers and drives the event loop.  After `run()` returns, view
-//!   accessors expose those buffers.  Calling `run()` again replaces
-//!   the session and invalidates any view obtained from the previous run.
+//! Multiple sessions can coexist over a single scenario's lifetime —
+//! reusing the scenario as a pure config carrier — and old views remain
+//! valid as long as the session that built them is still alive.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -70,7 +71,7 @@ unsafe impl Send for DoneGuard {}
 /// Per-node Python-side metadata captured at registration time.  Used to
 /// rebuild [`NativeArrayView`](super::views::NativeArrayView) /
 /// [`NativeSeriesView`](super::views::NativeSeriesView) wrappers against
-/// each freshly built [`Session`]'s buffers.
+/// each freshly built [`NativeSession`]'s buffers.
 #[derive(Clone)]
 struct NodeInfo {
     dtype: String,
@@ -79,37 +80,39 @@ struct NodeInfo {
 }
 
 // ---------------------------------------------------------------------------
-// NativeScenario
+// NativeScenario — pure definition wrapper
 // ---------------------------------------------------------------------------
 
-/// Python-visible wrapper around the Rust `Scenario` runtime.
+/// Python-visible wrapper around the Rust [`Scenario`] definition.
 ///
-/// Owns a tokio runtime used to drive the event loop and source
-/// driver tasks.  Registration methods enter the runtime so that
-/// sources can use [`tokio::spawn`] during `init`.
+/// Holds only descriptors and per-node Python metadata.  No tokio runtime
+/// guard is needed during registration: source channels and driver tasks
+/// are created when a [`NativeSession`] is built, not when descriptors
+/// are added.
+///
+/// Each call to [`run`](Self::run) or
+/// [`build_session`](Self::build_session) constructs an independent
+/// [`NativeSession`] from the same definition.
 #[pyclass]
 pub struct NativeScenario {
     /// Pure definition: descriptors only, no per-run state.
     scenario: Scenario,
-    /// Most-recently-built session.  `None` until the first `run()`.
-    /// Replaced by every subsequent `run()`; views obtained from a
-    /// previous session are invalidated when this is overwritten.
-    session: Option<Session>,
-    error_slot: ErrorSlot,
     /// Per-node metadata in registration order.
     node_info: Vec<NodeInfo>,
-    /// Cached Python view objects, indexed by node index.  Built when
-    /// `session` is replaced; `None` for unit nodes.
-    cached_views: Vec<Option<PyObject>>,
-    /// Tokio runtime — kept alive for the scenario's lifetime.
+    /// Tokio runtime — kept alive for the scenario's lifetime so sessions
+    /// can spawn driver tasks.
     runtime: tokio::runtime::Runtime,
-    /// Asyncio event loop for Python source coroutines, created on first
-    /// `add_py_source`.  Runs on the **main thread** during `run()` for
-    /// proper signal handling; the tokio event loop runs on a background
-    /// thread.
+    /// Asyncio event loop for Python source coroutines, created lazily
+    /// on the first `add_py_source`.  Runs on the **main thread** during
+    /// [`run`](Self::run) for proper signal handling; the tokio event
+    /// loop runs on a background thread.
     event_loop: Option<PyObject>,
-    /// Cooperative shutdown flag — set on drop to stop the event loop.
+    /// Cooperative shutdown flag — set on drop to stop any in-flight event
+    /// loop background threads.
     shutdown: ShutdownFlag,
+    /// Shared error slot that surfaces failures from Python operators /
+    /// sources back into [`run`](Self::run).  Reset before each run.
+    error_slot: ErrorSlot,
 }
 
 unsafe impl Send for NativeScenario {}
@@ -117,8 +120,8 @@ unsafe impl Sync for NativeScenario {}
 
 impl Drop for NativeScenario {
     fn drop(&mut self) {
-        // Signal the event loop background thread to exit so it doesn't keep
-        // the process alive after the Python object is garbage-collected.
+        // Signal any event loop background threads to exit so they don't
+        // keep the process alive after the Python object is GC'd.
         self.shutdown.store(true, Ordering::Relaxed);
     }
 }
@@ -131,32 +134,13 @@ impl NativeScenario {
             kind,
             shape: shape.to_vec(),
         });
-        self.cached_views.push(None);
-    }
-
-    /// Rebuild every cached view to point at the buffers of the current
-    /// session.  Called after each `run()` populates a new session.
-    fn rebuild_cached_views(&mut self, py: Python<'_>) -> PyResult<()> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("no active session"))?;
-        for (idx, info) in self.node_info.iter().enumerate() {
-            let view = if info.kind == NativeNodeKind::Unit {
-                py.None()
-            } else {
-                let ptr = session.value_ptr(idx);
-                create_view(py, ptr, &info.shape, &info.dtype, info.kind)?
-            };
-            self.cached_views[idx] = Some(view);
-        }
-        Ok(())
     }
 
     /// Ensure the asyncio event loop exists.
     ///
     /// Created lazily on the first `add_py_source` call.  The loop is
-    /// **not** started here — it runs on the main thread during `run()`.
+    /// **not** started here — it runs on the main thread during
+    /// [`run`](Self::run).
     fn ensure_event_loop(&mut self, py: Python<'_>) -> PyResult<PyObject> {
         if let Some(ref loop_) = self.event_loop {
             return Ok(loop_.clone_ref(py));
@@ -179,27 +163,11 @@ impl NativeScenario {
             .unwrap();
         Self {
             scenario: Scenario::new(),
-            session: None,
-            error_slot: Arc::new(Mutex::new(None)),
             node_info: Vec::new(),
-            cached_views: Vec::new(),
             runtime,
             event_loop: None,
             shutdown: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    /// Get a cached view for a node.  Available only after the first
-    /// successful `run()`.
-    fn view(&self, py: Python<'_>, node_index: usize) -> PyResult<PyObject> {
-        match self.cached_views.get(node_index) {
-            Some(Some(view)) => Ok(view.clone_ref(py)),
-            Some(None) => Err(PyRuntimeError::new_err(format!(
-                "node {node_index} has no view (run() the scenario first)"
-            ))),
-            None => Err(PyRuntimeError::new_err(format!(
-                "node {node_index} out of range"
-            ))),
+            error_slot: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -215,7 +183,6 @@ impl NativeScenario {
         shape: Vec<usize>,
         params: &Bound<'_, PyDict>,
     ) -> PyResult<usize> {
-        let _guard = self.runtime.enter();
         let (idx, view_kind) =
             sources::dispatch_native_source(&mut self.scenario, source_kind, dtype, params)?;
         self.push_info(dtype, view_kind, &shape);
@@ -237,7 +204,6 @@ impl NativeScenario {
         shape: Vec<usize>,
         params: &Bound<'_, PyDict>,
     ) -> PyResult<usize> {
-        let _guard = self.runtime.enter();
         // For Array/Series outputs each dispatch arm consults dtype via
         // `dispatch_dtype!`, which itself errors on an unknown dtype string;
         // an absent dtype surfaces through the same path as an empty string.
@@ -259,7 +225,7 @@ impl NativeScenario {
     ///
     /// Appends a descriptor to the scenario.  The actual `init()` and
     /// tokio driver task are deferred to session-build time inside
-    /// [`run`](Self::run).
+    /// [`run`](Self::run) / [`build_session`](Self::build_session).
     #[pyo3(signature = (py_source, output_kind, dtype, output_shape))]
     fn add_py_source(
         &mut self,
@@ -269,7 +235,6 @@ impl NativeScenario {
         dtype: &str,
         output_shape: Vec<usize>,
     ) -> PyResult<usize> {
-        let _guard = self.runtime.enter();
         let output_type_id = resolve_type_id(output_kind, dtype)?;
 
         // Ensure asyncio event loop exists.
@@ -310,7 +275,6 @@ impl NativeScenario {
         output_shape: Vec<usize>,
         py_operator: PyObject,
     ) -> PyResult<usize> {
-        let _guard = self.runtime.enter();
         let (out_view_kind, out_dtype) = output_type;
 
         // 1. Resolve TypeIds from Python-declared types.
@@ -366,13 +330,27 @@ impl NativeScenario {
         self.scenario.estimated_event_count()
     }
 
-    /// Run the event loop.
+    /// Build a fresh [`NativeSession`] without driving the event loop.
     ///
-    /// Builds a fresh [`Session`] from the registered descriptors and
-    /// drives it to completion.  After return, [`view`](Self::view) can
-    /// be called to inspect the populated buffers.  Calling `run()` again
-    /// replaces the session and invalidates any view obtained from the
-    /// previous run.
+    /// Each call replays every registered descriptor's `init` against
+    /// newly allocated buffers.  Useful when a caller wants to inspect or
+    /// step the graph manually before running.
+    fn build_session(&self, py: Python<'_>) -> PyResult<NativeSession> {
+        let session = {
+            let _guard = self.runtime.enter();
+            self.scenario.build_session()
+        };
+        NativeSession::from_session(py, session, &self.node_info)
+    }
+
+    /// Build a fresh [`NativeSession`] and drive its event loop.
+    ///
+    /// Each call replays every registered descriptor's `init` against
+    /// newly allocated buffers, drives the async event loop until every
+    /// source is exhausted, and returns the populated session for
+    /// inspection.  Calling `run()` again builds an independent session;
+    /// views from previous sessions remain valid as long as those
+    /// sessions are alive.
     ///
     /// If Python sources have been registered, the asyncio event loop runs
     /// on the **main thread** (for proper signal handling) while the tokio
@@ -381,13 +359,8 @@ impl NativeScenario {
     /// coroutines on the main-thread asyncio loop via
     /// `run_coroutine_threadsafe`.
     #[pyo3(signature = (on_flush=None))]
-    fn run(&mut self, py: Python<'_>, on_flush: Option<PyObject>) -> PyResult<()> {
-        // Drop any prior session before building a fresh one.  Releases
-        // the previous session's buffers (and invalidates any user-held
-        // views from the prior run).
-        self.session = None;
-        // Reset error slot so a previous failed run does not poison the
-        // next one.
+    fn run(&mut self, py: Python<'_>, on_flush: Option<PyObject>) -> PyResult<NativeSession> {
+        // Reset error slot so a previous failed run does not poison the next one.
         *self.error_slot.lock().unwrap() = None;
 
         // Build a fresh session under the runtime guard so any
@@ -507,25 +480,96 @@ impl NativeScenario {
                 return Err(e);
             }
         };
-        match join_result {
+        let session = match join_result {
             Ok((session, rt)) => {
-                self.session = Some(session);
                 self.runtime = rt;
+                session
             }
             Err(_) => {
                 return Err(PyRuntimeError::new_err(
                     "event loop background thread panicked",
                 ));
             }
-        }
-
-        // Rebuild cached views to point at the new session's buffers.
-        self.rebuild_cached_views(py)?;
+        };
 
         if let Some(err) = self.error_slot.lock().unwrap().take() {
-            Err(err)
-        } else {
-            Ok(())
+            return Err(err);
+        }
+
+        NativeSession::from_session(py, session, &self.node_info)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NativeSession — runtime state wrapper
+// ---------------------------------------------------------------------------
+
+/// Python-visible wrapper around the Rust [`Session`] runtime state.
+///
+/// Built by [`NativeScenario::run`] or [`NativeScenario::build_session`].
+/// Owns the per-session value buffers, channel receivers, and operator
+/// state, plus a cached Python view per node pointing into those buffers.
+///
+/// Multiple sessions can coexist over a single scenario's lifetime; each
+/// holds its own buffers, so views obtained from one session remain valid
+/// as long as that session itself is alive.
+#[pyclass]
+pub struct NativeSession {
+    /// Owned [`Session`] — kept alive for the duration of this wrapper so
+    /// that `cached_views`' raw pointers remain valid.  Wrapped in
+    /// `Option` so future methods can take `&mut Session` while the
+    /// wrapper is exposed as a pyclass; always `Some` between
+    /// construction and drop.
+    #[allow(dead_code)]
+    session: Option<Session>,
+    /// Cached Python view objects, indexed by node index.  Built once at
+    /// construction; pointers stay valid for the session's lifetime.
+    cached_views: Vec<Option<PyObject>>,
+}
+
+unsafe impl Send for NativeSession {}
+unsafe impl Sync for NativeSession {}
+
+impl NativeSession {
+    /// Build a [`NativeSession`] from a populated [`Session`] plus the
+    /// per-node Python metadata captured by the parent scenario.
+    fn from_session(
+        py: Python<'_>,
+        session: Session,
+        node_info: &[NodeInfo],
+    ) -> PyResult<Self> {
+        let mut cached_views = Vec::with_capacity(node_info.len());
+        for (idx, info) in node_info.iter().enumerate() {
+            let view = if info.kind == NativeNodeKind::Unit {
+                None
+            } else {
+                let ptr = session.value_ptr(idx);
+                Some(create_view(py, ptr, &info.shape, &info.dtype, info.kind)?)
+            };
+            cached_views.push(view);
+        }
+        Ok(Self {
+            session: Some(session),
+            cached_views,
+        })
+    }
+}
+
+#[pymethods]
+impl NativeSession {
+    /// Get the cached view for a node.
+    ///
+    /// Returns the same Python object on every call; the view's pointer
+    /// stays valid as long as this session is alive.
+    fn view(&self, py: Python<'_>, node_index: usize) -> PyResult<PyObject> {
+        match self.cached_views.get(node_index) {
+            Some(Some(view)) => Ok(view.clone_ref(py)),
+            Some(None) => Err(PyRuntimeError::new_err(format!(
+                "node {node_index} has no Python-representable view (Unit kind)"
+            ))),
+            None => Err(PyRuntimeError::new_err(format!(
+                "node {node_index} out of range"
+            ))),
         }
     }
 }

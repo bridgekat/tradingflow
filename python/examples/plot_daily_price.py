@@ -111,14 +111,14 @@ if __name__ == "__main__":
 
     # Run scenario.
     sc, handles = build_scenario(symbol, data_dir)
-    sc.run()
+    session = sc.run()
 
     # Extract results.
-    adj_close = sc.series_view(handles["adj_close"]).to_series()
-    ma = sc.series_view(handles["ma"]).to_series()
-    upper = sc.series_view(handles["upper"]).to_series()
-    lower = sc.series_view(handles["lower"]).to_series()
-    volume = sc.series_view(handles["volume"]).to_series()
+    adj_close = session.series_view(handles["adj_close"]).to_series()
+    ma = session.series_view(handles["ma"]).to_series()
+    upper = session.series_view(handles["upper"]).to_series()
+    lower = session.series_view(handles["lower"]).to_series()
+    volume = session.series_view(handles["volume"]).to_series()
 
     n = len(adj_close)
     if n == 0:

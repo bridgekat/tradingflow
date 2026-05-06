@@ -411,16 +411,16 @@ if __name__ == "__main__":
             progress.total = total
         progress.update(events - progress.n)
 
-    sc.run(on_flush=on_flush)
+    session = sc.run(on_flush=on_flush)
     progress.close()
 
     # Extract results.
-    index = sc.series_view(handles["index"]).to_dataframe(["holdings", "cash"])
-    strategy_frictionless = sc.series_view(handles["strategy_frictionless"]).to_dataframe(["holdings", "cash"])
-    strategy_actual = sc.series_view(handles["strategy_actual"]).to_dataframe(["holdings", "cash"])
-    sharpe = sc.series_view(handles["sharpe"]).to_series()
-    compound_return = sc.series_view(handles["compound_return"]).to_series()
-    drawdown = sc.series_view(handles["drawdown"]).to_series()
+    index = session.series_view(handles["index"]).to_dataframe(["holdings", "cash"])
+    strategy_frictionless = session.series_view(handles["strategy_frictionless"]).to_dataframe(["holdings", "cash"])
+    strategy_actual = session.series_view(handles["strategy_actual"]).to_dataframe(["holdings", "cash"])
+    sharpe = session.series_view(handles["sharpe"]).to_series()
+    compound_return = session.series_view(handles["compound_return"]).to_series()
+    drawdown = session.series_view(handles["drawdown"]).to_series()
 
     n = len(index)
     if n == 0:

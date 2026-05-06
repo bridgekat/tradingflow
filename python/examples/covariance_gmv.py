@@ -418,7 +418,7 @@ if __name__ == "__main__":
             progress.total = total
         progress.update(events - progress.n)
 
-    sc.run(on_flush=on_flush)
+    session = sc.run(on_flush=on_flush)
     progress.close()
 
     # ------------------------------------------------------------------
@@ -433,18 +433,18 @@ if __name__ == "__main__":
     def extract_per_rebalance(handles: dict) -> dict[str, pd.Series]:
         out = {}
         for name, handle in handles.items():
-            values = sc.series_view(handle).values()
+            values = session.series_view(handle).values()
             n = len(values)
             out[name] = pd.Series(values, index=pd.DatetimeIndex(rebalance_dates[:n]), name=name)
         return out
 
     def extract_daily(handles: dict) -> dict[str, pd.Series]:
-        return {name: sc.series_view(handle).to_series(name=name) for name, handle in handles.items()}
+        return {name: session.series_view(handle).to_series(name=name) for name, handle in handles.items()}
 
     mv_data = extract_per_rebalance(mv_handles)
     l_value_data = extract_daily(l_value_handles)
     ls_value_data = extract_daily(ls_value_handles)
-    index_value = sc.series_view(handles["index_value"]).to_series()
+    index_value = session.series_view(handles["index_value"]).to_series()
 
     for name in mv_handles:
         mv = mv_data[name]

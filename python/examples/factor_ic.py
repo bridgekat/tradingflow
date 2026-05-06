@@ -297,7 +297,7 @@ if __name__ == "__main__":
             progress.total = total
         progress.update(events - progress.n)
 
-    sc.run(on_flush=on_flush)
+    session = sc.run(on_flush=on_flush)
     progress.close()
 
     # ------------------------------------------------------------------
@@ -306,7 +306,7 @@ if __name__ == "__main__":
 
     eval_data = {}
     for name, handle in eval_handles.items():
-        values = sc.series_view(handle).values()
+        values = session.series_view(handle).values()
         n = len(values)
         # `values[i]` covers the window starting at rebalance_dates[i].
         series = pd.Series(values, index=pd.DatetimeIndex(rebalance_dates[:n]), name=name)

@@ -85,11 +85,11 @@ if __name__ == "__main__":
             progress.total = total
         progress.update(events - progress.n)
 
-    sc.run(on_flush=on_flush)
+    session = sc.run(on_flush=on_flush)
     progress.close()
 
     # Extract results.
-    total_market_cap = sc.series_view(handles["total_market_cap"]).to_series()
+    total_market_cap = session.series_view(handles["total_market_cap"]).to_series()
 
     n = len(total_market_cap)
     if n == 0:

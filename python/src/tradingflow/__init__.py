@@ -46,7 +46,7 @@ import tradingflow as tf
 timestamps = np.arange("2024-01-01", "2024-04-01", dtype="datetime64[D]")
 values = np.random.randn(len(timestamps)).cumsum() + 100.0
 
-# Create a scenario, which stores the computation graph.
+# Create a scenario, which stores the computation graph definition.
 sc = tf.Scenario()
 
 # Create a source which feeds timestamped values into the graph.
@@ -64,11 +64,11 @@ ma = sc.add_operator(tf.operators.rolling.RollingMean(history, window=10))
 # is available for inspection after the run.
 ma_history = sc.add_operator(tf.operators.Record(ma))
 
-# Run the event loop until all sources are exhausted.
-sc.run()
+# Build a fresh session and run the event loop until all sources are exhausted.
+session = sc.run()
 
 # Inspect the results via `series_view()`, which returns a `SeriesView` that can be converted to a Pandas `Series`.
-print(sc.series_view(ma_history).to_series().tail())
+print(session.series_view(ma_history).to_series().tail())
 ```
 
 The resulting computation graph:
@@ -104,7 +104,7 @@ types of value[^1] or choose to hold no value at all:
 - A **series** is the *full history* of array values written into it,
   with a parallel vector of timestamps.  Series are what you inspect
   at the end of a run (typically via
-  [`Scenario.series_view`][tradingflow.scenario.Scenario.series_view] → pandas).
+  [`Session.series_view`][tradingflow.scenario.Session.series_view] → pandas).
 
 The following operators can be used to convert between them:
 
@@ -144,23 +144,29 @@ See [`tradingflow.operators`][tradingflow.operators] for the full
 catalog — structural glue, numeric operators, rolling windows,
 predictors, portfolios, traders, metrics, and stock-specific helpers.
 
-## Scenarios
+## Scenarios and sessions
 
-A [`Scenario`][tradingflow.scenario.Scenario] owns the acyclic computation graph
-plus the event loop that drives it.
-[`Scenario.run`][tradingflow.scenario.Scenario.run] drains every source (first
-the historical streams, then the live ones) in timestamp order,
+A [`Scenario`][tradingflow.scenario.Scenario] is a *pure definition* of the
+computation graph — descriptors plus wiring, no per-run state.
+[`Scenario.run`][tradingflow.scenario.Scenario.run] builds a fresh
+[`Session`][tradingflow.scenario.Session], drains every source (first the
+historical streams, then the live ones) in timestamp order,
 **coalesces** events that share the same timestamp into a single *flush
-batch*, and propagates each batch through the graph in topological order.
-This guarantees that within a batch every operator sees a consistent
-cross-section of its inputs, and that successive batches have strictly
-increasing timestamps.
+batch*, and propagates each batch through the graph in topological
+order.  This guarantees that within a batch every operator sees a
+consistent cross-section of its inputs, and that successive batches
+have strictly increasing timestamps.
 
 The typed handles returned by
 [`add_source`][tradingflow.scenario.Scenario.add_source] and
 [`add_operator`][tradingflow.scenario.Scenario.add_operator] encode both the
 node's shape and its value kind (array vs. series), so wiring errors
 are caught before the event loop starts.
+
+The same scenario can drive any number of independent sessions over
+its lifetime — useful for parameter sweeps, repeated backtests, or
+any case where the graph topology stays the same but the per-run state
+needs to start fresh.
 
 # Notes
 
@@ -233,7 +239,8 @@ docstring.
 
 # Where to go next
 
-- **Runtime:** [`Scenario`][tradingflow.scenario.Scenario] — the computation graph and its event loop.
+- **Definition:** [`Scenario`][tradingflow.scenario.Scenario] — the computation graph and its registration API.
+- **Runtime:** [`Session`][tradingflow.scenario.Session] — a single live execution, with views into the populated buffers.
 - **Extension bases:** [`Source`][tradingflow.source.Source] / [`Operator`][tradingflow.operator.Operator] for Python implementations, [`NativeSource`][tradingflow.source.NativeSource] / [`NativeOperator`][tradingflow.operator.NativeOperator] for Rust-backed descriptors.
 - **Built-in catalogs:** [`tradingflow.sources`][tradingflow.sources] and [`tradingflow.operators`][tradingflow.operators].
 - **Types, handles, and views:** [`tradingflow.data`][tradingflow.data].
@@ -247,7 +254,7 @@ in the future.
 from .data import Array, ArrayView, Handle, NodeKind, Series, SeriesView, Unit
 from .source import Source, NativeSource
 from .operator import Operator, NativeOperator
-from .scenario import Scenario
+from .scenario import Scenario, Session
 from .utils import Schema
 
 from . import data
@@ -264,6 +271,7 @@ __all__ = [
     "NativeSource",
     "NativeOperator",
     "Scenario",
+    "Session",
     "NodeKind",
     "Handle",
     "Array",

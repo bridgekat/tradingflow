@@ -415,19 +415,19 @@ if __name__ == "__main__":
             progress.total = total
         progress.update(events - progress.n)
 
-    sc.run(on_flush=on_flush)
+    session = sc.run(on_flush=on_flush)
     progress.close()
 
     # Extract results.
     periods_per_year = 365.0 / args.rebalance_days
     results: dict[float, dict] = {}
-    index_value = sc.series_view(handles["index_value"]).to_series()
+    index_value = session.series_view(handles["index_value"]).to_series()
     for delta, variant in variants.items():
-        value = sc.series_view(variant["value"]).to_series()
-        sharpe = sc.series_view(variant["sharpe"]).to_series()
-        drawdown = sc.series_view(variant["drawdown"]).to_series()
-        compound = sc.series_view(variant["compound"]).to_series()
-        frontier = sc.series_view(variant["frontier"]).to_dataframe(["exp_return", "exp_risk"])
+        value = session.series_view(variant["value"]).to_series()
+        sharpe = session.series_view(variant["sharpe"]).to_series()
+        drawdown = session.series_view(variant["drawdown"]).to_series()
+        compound = session.series_view(variant["compound"]).to_series()
+        frontier = session.series_view(variant["frontier"]).to_dataframe(["exp_return", "exp_risk"])
         results[delta] = {
             "value": value,
             "sharpe": sharpe,

@@ -40,8 +40,8 @@ def ts(i: int) -> np.datetime64:
     return np.datetime64(i, "ns")
 
 
-def _run(sc: Scenario) -> None:
-    sc.run()
+def _run(sc: Scenario):
+    return sc.run()
 
 
 def _scalar_scenario(values: list[float]) -> tuple[Scenario, Handle, Handle]:
@@ -67,8 +67,8 @@ class TestLast:
         sc, h, s = _scalar_scenario([10.0, 20.0, 30.0])
         h_last = sc.add_operator(Last(s))
         s_last = sc.add_operator(Record(h_last))
-        _run(sc)
-        assert list(sc.series_view(s_last).values()) == pytest.approx([10.0, 20.0, 30.0])
+        session = _run(sc)
+        assert list(session.series_view(s_last).values()) == pytest.approx([10.0, 20.0, 30.0])
 
     def test_last_vector(self) -> None:
         """last works on vector-valued series."""
@@ -81,8 +81,8 @@ class TestLast:
         s = sc.add_operator(Record(h))
         h_last = sc.add_operator(Last(s))
         s_last = sc.add_operator(Record(h_last))
-        _run(sc)
-        vals = sc.series_view(s_last).values()
+        session = _run(sc)
+        vals = session.series_view(s_last).values()
         np.testing.assert_array_almost_equal(vals[-1], [3.0, 4.0])
 
     def test_last_scalar(self) -> None:
@@ -90,8 +90,8 @@ class TestLast:
         sc, _, s = _scalar_scenario([5.0])
         h_last = sc.add_operator(Last(s))
         s_last = sc.add_operator(Record(h_last))
-        _run(sc)
-        assert list(sc.series_view(s_last).values()) == pytest.approx([5.0])
+        session = _run(sc)
+        assert list(session.series_view(s_last).values()) == pytest.approx([5.0])
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +105,8 @@ class TestLag:
         sc, _, s = _scalar_scenario([10.0, 20.0, 30.0, 40.0])
         h_lag = sc.add_operator(Lag(s, offset=2))
         h_lag_rec = sc.add_operator(Record(h_lag))
-        _run(sc)
-        vals = list(sc.series_view(h_lag_rec).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_lag_rec).values())
         # steps 1,2: not enough history → fill=0
         # step 3: value from step 1 → 10.0
         # step 4: value from step 2 → 20.0
@@ -117,8 +117,8 @@ class TestLag:
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0])
         h_lag = sc.add_operator(Lag(s))
         h_lag_rec = sc.add_operator(Record(h_lag))
-        _run(sc)
-        vals = list(sc.series_view(h_lag_rec).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_lag_rec).values())
         assert vals == pytest.approx([0.0, 1.0, 2.0])
 
     def test_lag_timestamps_match(self) -> None:
@@ -126,10 +126,10 @@ class TestLag:
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0])
         h_lag = sc.add_operator(Lag(s))
         h_lag_rec = sc.add_operator(Record(h_lag))
-        _run(sc)
+        session = _run(sc)
         np.testing.assert_array_equal(
-            sc.series_view(h_lag_rec).timestamps(),
-            sc.series_view(s).timestamps(),
+            session.series_view(h_lag_rec).timestamps(),
+            session.series_view(s).timestamps(),
         )
 
 
@@ -144,8 +144,8 @@ class TestRollingSum:
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0, 4.0])
         h_rs = sc.add_operator(RollingSum(s, window=3))
         h_rs_recorded = sc.add_operator(Record(h_rs))
-        _run(sc)
-        vals = list(sc.series_view(h_rs_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_rs_recorded).values())
         # First 2 ticks are warmup (no output), ticks 3 and 4 produce output.
         assert vals == pytest.approx([6.0, 9.0])
 
@@ -154,8 +154,8 @@ class TestRollingSum:
         sc, _, s = _scalar_scenario([1.0, float("nan"), 3.0, 4.0, 5.0])
         h_rs = sc.add_operator(RollingSum(s, window=3))
         h_rs_recorded = sc.add_operator(Record(h_rs))
-        _run(sc)
-        vals = list(sc.series_view(h_rs_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_rs_recorded).values())
         # Ticks 1,2 are warmup → not recorded.
         # Tick 3: [1, NaN, 3] → NaN
         # Tick 4: [NaN, 3, 4] → NaN
@@ -176,8 +176,8 @@ class TestRollingSum:
         s = sc.add_operator(Record(h))
         h_rs = sc.add_operator(RollingSum(s, window=2))
         h_rs_recorded = sc.add_operator(Record(h_rs))
-        _run(sc)
-        vals = sc.series_view(h_rs_recorded).values()
+        session = _run(sc)
+        vals = session.series_view(h_rs_recorded).values()
         # Tick 1 is warmup → not recorded. Ticks 2,3 produce output.
         assert len(vals) == 2
         np.testing.assert_array_almost_equal(vals[-1], [5.0, 50.0])  # 2+3, 20+30
@@ -194,8 +194,8 @@ class TestRollingMean:
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0, 6.0])
         h_rm = sc.add_operator(RollingMean(s, window=3))
         h_rm_recorded = sc.add_operator(Record(h_rm))
-        _run(sc)
-        vals = list(sc.series_view(h_rm_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_rm_recorded).values())
         # First 2 ticks are warmup → not recorded.
         assert len(vals) == 2
         assert vals[0] == pytest.approx(2.0)  # mean([1,2,3])
@@ -206,8 +206,8 @@ class TestRollingMean:
         sc, _, s = _scalar_scenario([7.0] * 10)
         h_rm = sc.add_operator(RollingMean(s, window=5))
         h_rm_recorded = sc.add_operator(Record(h_rm))
-        _run(sc)
-        vals = list(sc.series_view(h_rm_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_rm_recorded).values())
         # 4 warmup ticks, 6 output ticks.
         assert len(vals) == 6
         assert vals[-1] == pytest.approx(7.0)
@@ -224,8 +224,8 @@ class TestRollingVariance:
         sc, _, s = _scalar_scenario([5.0] * 5)
         h_rv = sc.add_operator(RollingVariance(s, window=3))
         h_rv_recorded = sc.add_operator(Record(h_rv))
-        _run(sc)
-        vals = list(sc.series_view(h_rv_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_rv_recorded).values())
         # 2 warmup ticks, 3 output ticks.
         assert len(vals) == 3
         assert vals[-1] == pytest.approx(0.0, abs=1e-10)
@@ -235,8 +235,8 @@ class TestRollingVariance:
         sc, _, s = _scalar_scenario([1.0, 3.0])
         h_rv = sc.add_operator(RollingVariance(s, window=2))
         h_rv_recorded = sc.add_operator(Record(h_rv))
-        _run(sc)
-        vals = list(sc.series_view(h_rv_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_rv_recorded).values())
         # 1 warmup tick, 1 output tick.
         assert len(vals) == 1
         assert vals[-1] == pytest.approx(1.0)
@@ -259,8 +259,8 @@ class TestRollingCovariance:
         s = sc.add_operator(Record(h))
         h_rc = sc.add_operator(RollingCovariance(s, window=3))
         h_rc_recorded = sc.add_operator(Record(h_rc))
-        _run(sc)
-        vals = sc.series_view(h_rc_recorded).values()
+        session = _run(sc)
+        vals = session.series_view(h_rc_recorded).values()
         # 2 warmup ticks, 1 output tick.
         assert vals.shape == (1, 2, 2)
 
@@ -282,8 +282,8 @@ class TestEma:
         sc, _, s = _scalar_scenario([10.0] * 10)
         h_ema = sc.add_operator(EMA(s, window=3, alpha=0.5))
         h_ema_recorded = sc.add_operator(Record(h_ema))
-        _run(sc)
-        vals = list(sc.series_view(h_ema_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_ema_recorded).values())
         # 2 warmup ticks, 8 output ticks.
         assert len(vals) == 8
         assert vals[-1] == pytest.approx(10.0, abs=1e-6)
@@ -293,8 +293,8 @@ class TestEma:
         sc, _, s = _scalar_scenario([100.0, 200.0])
         h_ema = sc.add_operator(EMA(s, window=1, alpha=0.5))
         h_ema_recorded = sc.add_operator(Record(h_ema))
-        _run(sc)
-        vals = list(sc.series_view(h_ema_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_ema_recorded).values())
         assert len(vals) == 2
         assert vals[0] == pytest.approx(100.0)
 
@@ -303,8 +303,8 @@ class TestEma:
         sc, _, s = _scalar_scenario([10.0, 20.0])
         h_ema = sc.add_operator(EMA(s, window=2, alpha=0.5))
         h_ema_recorded = sc.add_operator(Record(h_ema))
-        _run(sc)
-        vals = list(sc.series_view(h_ema_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_ema_recorded).values())
         # 1 warmup tick, 1 output tick.
         assert len(vals) == 1
         # w0=0.5 (for 20), w1=0.25 (for 10)
@@ -316,8 +316,8 @@ class TestEma:
         sc, _, s = _scalar_scenario([10.0, 20.0])
         h_ema = sc.add_operator(EMA(s, window=2, span=3))
         h_ema_recorded = sc.add_operator(Record(h_ema))
-        _run(sc)
-        vals = list(sc.series_view(h_ema_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_ema_recorded).values())
         # 1 warmup tick, 1 output tick.
         assert len(vals) == 1
         expected = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25)
@@ -328,17 +328,17 @@ class TestEma:
         sc, _, s = _scalar_scenario([1.0, 2.0, 3.0])
         h_ema = sc.add_operator(EMA(s, window=2, half_life=2.0))
         h_ema_recorded = sc.add_operator(Record(h_ema))
-        _run(sc)
+        session = _run(sc)
         # 1 warmup tick, 2 output ticks.
-        assert len(sc.series_view(h_ema_recorded)) == 2
+        assert len(session.series_view(h_ema_recorded)) == 2
 
     def test_ema_window_eviction(self) -> None:
         """Old values are evicted when they leave the window."""
         sc, _, s = _scalar_scenario([100.0, 100.0, 0.0, 0.0])
         h_ema = sc.add_operator(EMA(s, window=2, alpha=0.5))
         h_ema_recorded = sc.add_operator(Record(h_ema))
-        _run(sc)
-        vals = list(sc.series_view(h_ema_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_ema_recorded).values())
         # 1 warmup tick, 3 output ticks.
         assert len(vals) == 3
         # After two 0.0s with window=2, 100.0s are fully evicted
@@ -364,8 +364,8 @@ class TestForwardFill:
         sc, h, _ = _scalar_scenario([1.0, float("nan"), float("nan"), 4.0, float("nan")])
         h_ff = sc.add_operator(ForwardFill(h))
         h_ff_recorded = sc.add_operator(Record(h_ff))
-        _run(sc)
-        vals = list(sc.series_view(h_ff_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_ff_recorded).values())
         assert vals[0] == pytest.approx(1.0)
         assert vals[1] == pytest.approx(1.0)
         assert vals[2] == pytest.approx(1.0)
@@ -377,8 +377,8 @@ class TestForwardFill:
         sc, h, _ = _scalar_scenario([float("nan"), float("nan"), 3.0])
         h_ff = sc.add_operator(ForwardFill(h))
         h_ff_recorded = sc.add_operator(Record(h_ff))
-        _run(sc)
-        vals = list(sc.series_view(h_ff_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_ff_recorded).values())
         assert np.isnan(vals[0])
         assert np.isnan(vals[1])
         assert vals[2] == pytest.approx(3.0)
@@ -388,8 +388,8 @@ class TestForwardFill:
         sc, h, _ = _scalar_scenario([1.0, 2.0, 3.0])
         h_ff = sc.add_operator(ForwardFill(h))
         h_ff_recorded = sc.add_operator(Record(h_ff))
-        _run(sc)
-        vals = list(sc.series_view(h_ff_recorded).values())
+        session = _run(sc)
+        vals = list(session.series_view(h_ff_recorded).values())
         assert vals == pytest.approx([1.0, 2.0, 3.0])
 
 
@@ -415,8 +415,8 @@ class TestSubtract:
         )
         h = sc.add_operator(Subtract(a, b))
         s = sc.add_operator(Record(h))
-        _run(sc)
-        assert list(sc.series_view(s).values()) == pytest.approx([7.0, 23.0])
+        session = _run(sc)
+        assert list(session.series_view(s).values()) == pytest.approx([7.0, 23.0])
 
 
 # ---------------------------------------------------------------------------
@@ -441,8 +441,8 @@ class TestDivide:
         )
         h = sc.add_operator(Divide(a, b))
         s = sc.add_operator(Record(h))
-        _run(sc)
-        assert list(sc.series_view(s).values()) == pytest.approx([5.0, 3.0])
+        session = _run(sc)
+        assert list(session.series_view(s).values()) == pytest.approx([5.0, 3.0])
 
 
 # ---------------------------------------------------------------------------
@@ -460,8 +460,8 @@ class TestSelect:
         h = sc.add_source(src)
         sel = sc.add_operator(Select(h, [0, 2]))
         s = sc.add_operator(Record(sel))
-        _run(sc)
-        vals = sc.series_view(s).values()
+        session = _run(sc)
+        vals = session.series_view(s).values()
         np.testing.assert_array_almost_equal(vals[0], [10.0, 30.0])
         np.testing.assert_array_almost_equal(vals[1], [40.0, 60.0])
 
@@ -488,8 +488,8 @@ class TestConcat:
         )
         h = sc.add_operator(Concat([a, b], axis=0))
         s = sc.add_operator(Record(h))
-        _run(sc)
-        vals = sc.series_view(s).values()
+        session = _run(sc)
+        vals = session.series_view(s).values()
         np.testing.assert_array_almost_equal(vals[0], [1.0, 2.0, 3.0, 4.0])
 
 
@@ -515,8 +515,8 @@ class TestStack:
         )
         h = sc.add_operator(Stack([a, b], axis=0))
         s = sc.add_operator(Record(h))
-        _run(sc)
-        vals = sc.series_view(s).values()
+        session = _run(sc)
+        vals = session.series_view(s).values()
         # stack axis=0: shape (2,2) → [[1,2],[3,4]]
         np.testing.assert_array_almost_equal(vals[0], [[1.0, 2.0], [3.0, 4.0]])
 
@@ -531,16 +531,16 @@ class TestMathUnary:
         sc, h, _ = _scalar_scenario([1.0, np.e, np.e**2])
         h_log = sc.add_operator(Log(h))
         s = sc.add_operator(Record(h_log))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([0.0, 1.0, 2.0], abs=1e-12)
 
     def test_exp(self) -> None:
         sc, h, _ = _scalar_scenario([0.0, 1.0])
         h_exp = sc.add_operator(Exp(h))
         s = sc.add_operator(Record(h_exp))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals[0] == pytest.approx(1.0)
         assert vals[1] == pytest.approx(np.e)
 
@@ -548,24 +548,24 @@ class TestMathUnary:
         sc, h, _ = _scalar_scenario([4.0, 9.0, 16.0])
         h_sqrt = sc.add_operator(Sqrt(h))
         s = sc.add_operator(Record(h_sqrt))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([2.0, 3.0, 4.0])
 
     def test_abs(self) -> None:
         sc, h, _ = _scalar_scenario([-3.0, 0.0, 5.0])
         h_abs = sc.add_operator(Abs(h))
         s = sc.add_operator(Record(h_abs))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([3.0, 0.0, 5.0])
 
     def test_recip(self) -> None:
         sc, h, _ = _scalar_scenario([2.0, 4.0, 0.5])
         h_recip = sc.add_operator(Recip(h))
         s = sc.add_operator(Record(h_recip))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([0.5, 0.25, 2.0])
 
 
@@ -579,24 +579,24 @@ class TestParameterized:
         sc, h, _ = _scalar_scenario([1.0, 2.0, 3.0])
         h_pow = sc.add_operator(Pow(h, 2.0))
         s = sc.add_operator(Record(h_pow))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([1.0, 4.0, 9.0])
 
     def test_clamp(self) -> None:
         sc, h, _ = _scalar_scenario([1.0, 3.0, 7.0])
         h_cl = sc.add_operator(Clamp(h, 2.0, 5.0))
         s = sc.add_operator(Record(h_cl))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([2.0, 3.0, 5.0])
 
     def test_nan_to_num(self) -> None:
         sc, h, _ = _scalar_scenario([1.0, float("nan"), 3.0])
         h_nn = sc.add_operator(Fillna(h, 0.0))
         s = sc.add_operator(Record(h_nn))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([1.0, 0.0, 3.0])
 
 
@@ -622,8 +622,8 @@ class TestBinaryMath:
         )
         h = sc.add_operator(Min(a, b))
         s = sc.add_operator(Record(h))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([1.0, 4.0, 3.0])
 
     def test_max(self) -> None:
@@ -642,8 +642,8 @@ class TestBinaryMath:
         )
         h = sc.add_operator(Max(a, b))
         s = sc.add_operator(Record(h))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([2.0, 5.0, 6.0])
 
 
@@ -671,6 +671,6 @@ class TestChained:
         ratio = sc.add_operator(Divide(a, b))
         log_ratio = sc.add_operator(Log(ratio))
         s = sc.add_operator(Record(log_ratio))
-        _run(sc)
-        vals = list(sc.series_view(s).values())
+        session = _run(sc)
+        vals = list(session.series_view(s).values())
         assert vals == pytest.approx([1.0, 2.0], abs=1e-12)

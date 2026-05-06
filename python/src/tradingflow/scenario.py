@@ -1,11 +1,13 @@
-"""Scenario — the Python entry point to the Rust computation graph.
+"""Scenario and Session — the Python entry points to the Rust runtime.
 
-A [`Scenario`][tradingflow.scenario.Scenario] is the single object you interact
-with to build and run a strategy.  It is a *pure definition* of the
+A [`Scenario`][tradingflow.scenario.Scenario] is a *pure definition* of the
 directed acyclic computation graph: the descriptors of every source and
-operator plus the wiring between them.  The actual per-run state — node
-value buffers, channel receivers, operator state — lives on a separate
-session built fresh on every call to [`run`][tradingflow.scenario.Scenario.run].
+operator plus the wiring between them.  It owns no per-run state — node
+value buffers, channel receivers, operator state — those live on a
+[`Session`][tradingflow.scenario.Session] built fresh by
+[`run`][tradingflow.scenario.Scenario.run] (or
+[`build_session`][tradingflow.scenario.Scenario.build_session]) every
+time it's called.
 
 Typical usage has three phases:
 
@@ -15,17 +17,14 @@ Typical usage has three phases:
    operators.  Every call returns a typed
    [`Handle`][tradingflow.data.types.Handle] that encodes the new node's value
    kind (array vs. series), shape, and dtype.
-3. **Run** — `sc.run()` builds a fresh session, drains every registered
-   source in timestamp order, propagates each flush batch through the
-   graph, and returns when every source is exhausted.  After it
-   returns, use `sc.array_view(handle)` or `sc.series_view(handle)` to
-   inspect the populated buffers.
+3. **Run** — `session = sc.run()` builds a fresh session, drains every
+   registered source in timestamp order, and returns the populated
+   session.  Inspect with `session.array_view(handle)` or
+   `session.series_view(handle)`.
 
-The same scenario instance can be re-run any number of times: every call
-to `run()` builds an independent session, so successive runs do not see
-each other's state.  Views obtained from `array_view` / `series_view`
-are scoped to the most recent run — calling `run()` again invalidates
-them.
+The same scenario instance can be re-run any number of times; each call
+produces an independent session, and views obtained from one session
+remain valid as long as that session is alive.
 
 This module is a thin Python wrapper over the Rust native backend;
 the bulk of the work happens inside the Rust core.
@@ -38,37 +37,40 @@ from typing import Any
 
 import numpy as np
 
-from tradingflow._native import NativeArrayView, NativeSeriesView, NativeScenario
+from tradingflow._native import (
+    NativeArrayView,
+    NativeScenario,
+    NativeSeriesView,
+    NativeSession,
+)
+
 from . import Array, Series, operators
-from .operator import Operator, NativeOperator
-from .source import Source, NativeSource
 from .data.types import Handle, NodeKind
 from .data.views import ArrayView, SeriesView
+from .operator import NativeOperator, Operator
+from .source import NativeSource, Source
 
 
 class Scenario:
-    """A directed acyclic graph of sources and operators.
+    """A pure definition of a computation graph.
 
     Sources and operators are registered via
     [`add_source`][tradingflow.scenario.Scenario.add_source] and
     [`add_operator`][tradingflow.scenario.Scenario.add_operator], each returning
     a [`Handle`][tradingflow.data.types.Handle].  Registration only records
-    descriptors; no node buffers are allocated until the first call to
-    [`run`][tradingflow.scenario.Scenario.run].
+    descriptors; no node buffers are allocated.
 
     Node output values are not historised automatically — attach a
     [`Record`][tradingflow.operators.record.Record] operator where a time
     series is required.
 
-    [`run`][tradingflow.scenario.Scenario.run] builds a fresh session by
-    replaying every descriptor's `init`, drives the async event loop, and
-    leaves the populated buffers reachable via
-    [`array_view`][tradingflow.scenario.Scenario.array_view] /
-    [`series_view`][tradingflow.scenario.Scenario.series_view].  The same
-    scenario instance can be re-run any number of times: every call
-    builds an independent session, so successive runs do not see each
-    other's state.  Views are scoped to the most recent run — calling
-    `run()` again invalidates them.
+    [`run`][tradingflow.scenario.Scenario.run] builds a fresh
+    [`Session`][tradingflow.scenario.Session] by replaying every
+    descriptor's `init`, drives the async event loop, and returns the
+    populated session.  The same scenario instance can drive any number
+    of independent sessions over its lifetime; each call to `run()`
+    produces a session whose views remain valid for that session's
+    lifetime.
 
     The event loop drains every source's historical and live channels in
     timestamp order, coalesces events that share the same timestamp into
@@ -83,30 +85,6 @@ class Scenario:
 
     def __init__(self) -> None:
         self._native = NativeScenario()
-
-    def array_view(self, handle: Handle[Array[Any]]) -> ArrayView:
-        """Get an ArrayView for an Array node.
-
-        Available only after the first successful
-        [`run`][tradingflow.scenario.Scenario.run].  The returned view
-        points into the most recent session's buffer and is invalidated
-        by any subsequent `run()`.
-        """
-        inner = self._native.view(handle.index)
-        assert isinstance(inner, NativeArrayView)
-        return ArrayView(inner)
-
-    def series_view(self, handle: Handle[Series[Any]]) -> SeriesView:
-        """Get a SeriesView for a Series node.
-
-        Available only after the first successful
-        [`run`][tradingflow.scenario.Scenario.run].  The returned view
-        points into the most recent session's buffer and is invalidated
-        by any subsequent `run()`.
-        """
-        inner = self._native.view(handle.index)
-        assert isinstance(inner, NativeSeriesView)
-        return SeriesView(inner)
 
     def add_const(self, value: np.ndarray) -> Handle:
         """Register a constant node with an initial value.
@@ -161,19 +139,30 @@ class Scenario:
         """
         return self._native.estimated_event_count()
 
+    def build_session(self) -> Session:
+        """Build a fresh [`Session`][tradingflow.scenario.Session]
+        without driving the event loop.
+
+        Each call replays every registered descriptor's `init` against
+        newly allocated buffers.  Useful for advanced use cases that want
+        to inspect the graph or step it manually before running.
+        """
+        return Session(self._native.build_session())
+
     def run(
         self,
         on_flush: Callable[[int, int, int | None], Any] | None = None,
-    ) -> None:
+    ) -> Session:
         """Build a fresh session and execute the event loop.
 
         Each call replays every registered descriptor's `init` against
         newly allocated buffers, drives the async event loop until every
-        source is exhausted, and leaves the populated buffers reachable
-        via [`array_view`][tradingflow.scenario.Scenario.array_view] /
-        [`series_view`][tradingflow.scenario.Scenario.series_view].
-        Calling `run()` again replaces the session and invalidates any
-        view obtained from a previous run.
+        source is exhausted, and returns the populated
+        [`Session`][tradingflow.scenario.Session].  Inspect the result
+        via `session.array_view(handle)` /
+        `session.series_view(handle)`.  Calling `run()` again produces
+        an independent session; views from a prior run remain valid as
+        long as that session is alive.
 
         Python sources are driven by Rust-side async tasks that iterate
         the source's async iterators via a background asyncio event loop.
@@ -192,4 +181,46 @@ class Scenario:
             `total_estimate` is the aggregate estimate (re-read per
             flush) or `None` when any source cannot estimate.
         """
-        self._native.run(on_flush)
+        return Session(self._native.run(on_flush))
+
+
+class Session:
+    """A single live execution of a [`Scenario`][tradingflow.scenario.Scenario].
+
+    Owns per-session value buffers and a cached Python view per node
+    pointing into those buffers.  Sessions are produced by
+    [`Scenario.run`][tradingflow.scenario.Scenario.run] (which builds and
+    drives) or
+    [`Scenario.build_session`][tradingflow.scenario.Scenario.build_session]
+    (which builds but does not drive).
+
+    Views returned by [`array_view`][tradingflow.scenario.Session.array_view]
+    / [`series_view`][tradingflow.scenario.Session.series_view] remain
+    valid for as long as this session is alive — multiple sessions from
+    the same scenario coexist independently.
+    """
+
+    __slots__ = ("_native",)
+
+    def __init__(self, native: NativeSession) -> None:
+        self._native = native
+
+    def array_view(self, handle: Handle[Array[Any]]) -> ArrayView:
+        """Get an ArrayView for an Array node.
+
+        The returned view points into this session's buffer and is
+        invalidated when this session is dropped.
+        """
+        inner = self._native.view(handle.index)
+        assert isinstance(inner, NativeArrayView)
+        return ArrayView(inner)
+
+    def series_view(self, handle: Handle[Series[Any]]) -> SeriesView:
+        """Get a SeriesView for a Series node.
+
+        The returned view points into this session's buffer and is
+        invalidated when this session is dropped.
+        """
+        inner = self._native.view(handle.index)
+        assert isinstance(inner, NativeSeriesView)
+        return SeriesView(inner)

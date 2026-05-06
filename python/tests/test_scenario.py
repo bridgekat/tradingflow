@@ -30,8 +30,8 @@ class TestNativeOperators:
         hb = sc.add_source(ArraySource([ts(1), ts(2)], [1.0, 2.0]))
         hc = sc.add_operator(Add(ha, hb))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        assert list(sc.series_view(hs).values()) == pytest.approx([11.0, 22.0])
+        session = sc.run()
+        assert list(session.series_view(hs).values()) == pytest.approx([11.0, 22.0])
 
     def test_subtract(self) -> None:
         sc = Scenario()
@@ -39,8 +39,8 @@ class TestNativeOperators:
         hb = sc.add_source(ArraySource([ts(1)], [3.0]))
         hc = sc.add_operator(Subtract(ha, hb))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        assert list(sc.series_view(hs).values()) == pytest.approx([7.0])
+        session = sc.run()
+        assert list(session.series_view(hs).values()) == pytest.approx([7.0])
 
     def test_multiply(self) -> None:
         sc = Scenario()
@@ -48,16 +48,16 @@ class TestNativeOperators:
         hb = sc.add_source(ArraySource([ts(1)], [5.0]))
         hc = sc.add_operator(Multiply(ha, hb))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        assert list(sc.series_view(hs).values()) == pytest.approx([20.0])
+        session = sc.run()
+        assert list(session.series_view(hs).values()) == pytest.approx([20.0])
 
     def test_negate(self) -> None:
         sc = Scenario()
         ha = sc.add_source(ArraySource([ts(1), ts(2)], [10.0, -5.0]))
         hc = sc.add_operator(Negate(ha))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        assert list(sc.series_view(hs).values()) == pytest.approx([-10.0, 5.0])
+        session = sc.run()
+        assert list(session.series_view(hs).values()) == pytest.approx([-10.0, 5.0])
 
     def test_chained_operators(self) -> None:
         sc = Scenario()
@@ -66,9 +66,9 @@ class TestNativeOperators:
         hab = sc.add_operator(Add(ha, hb))
         hout = sc.add_operator(Multiply(hab, ha))
         hs = sc.add_operator(Record(hout))
-        sc.run()
+        session = sc.run()
         # (2+3)*2=10, (5+10)*5=75
-        assert list(sc.series_view(hs).values()) == pytest.approx([10.0, 75.0])
+        assert list(session.series_view(hs).values()) == pytest.approx([10.0, 75.0])
 
     def test_interleaved_sources(self) -> None:
         sc = Scenario()
@@ -76,9 +76,9 @@ class TestNativeOperators:
         hb = sc.add_source(ArraySource([ts(2), ts(3)], [20.0, 40.0]))
         hc = sc.add_operator(Add(ha, hb))
         hs = sc.add_operator(Record(hc))
-        sc.run()
+        session = sc.run()
         # ts=1: 10+0=10, ts=2: 10+20=30, ts=3: 30+40=70
-        assert list(sc.series_view(hs).values()) == pytest.approx([10.0, 30.0, 70.0])
+        assert list(session.series_view(hs).values()) == pytest.approx([10.0, 30.0, 70.0])
 
     def test_strided_add(self) -> None:
         sc = Scenario()
@@ -86,16 +86,16 @@ class TestNativeOperators:
         hb = sc.add_source(ArraySource([ts(1)], [[10.0, 20.0]]))
         hc = sc.add_operator(Add(ha, hb))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        np.testing.assert_array_almost_equal(sc.series_view(hs).values().flatten(), [11.0, 22.0])
+        session = sc.run()
+        np.testing.assert_array_almost_equal(session.series_view(hs).values().flatten(), [11.0, 22.0])
 
     def test_select(self) -> None:
         sc = Scenario()
         ha = sc.add_source(ArraySource([ts(1)], [[10.0, 20.0, 30.0]]))
         hc = sc.add_operator(Select(ha, [0, 2]))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        np.testing.assert_array_almost_equal(sc.series_view(hs).values().flatten(), [10.0, 30.0])
+        session = sc.run()
+        np.testing.assert_array_almost_equal(session.series_view(hs).values().flatten(), [10.0, 30.0])
 
     def test_concat(self) -> None:
         sc = Scenario()
@@ -103,8 +103,8 @@ class TestNativeOperators:
         hb = sc.add_source(ArraySource([ts(1)], [[3.0, 4.0]]))
         hc = sc.add_operator(Concat([ha, hb]))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        np.testing.assert_array_almost_equal(sc.series_view(hs).values().flatten(), [1.0, 2.0, 3.0, 4.0])
+        session = sc.run()
+        np.testing.assert_array_almost_equal(session.series_view(hs).values().flatten(), [1.0, 2.0, 3.0, 4.0])
 
 
 # =========================================================================
@@ -123,11 +123,11 @@ class TestPythonOperators:
         downstream = sc.add_operator(Negate(filtered))
         fs = sc.add_operator(Record(filtered))
         ds = sc.add_operator(Record(downstream))
-        sc.run()
-        assert list(sc.series_view(fs).timestamps()) == [ts(1), ts(3)]
-        assert list(sc.series_view(fs).values()) == pytest.approx([-1.0, -3.0])
-        assert list(sc.series_view(ds).timestamps()) == [ts(1), ts(3)]
-        assert list(sc.series_view(ds).values()) == pytest.approx([1.0, 3.0])
+        session = sc.run()
+        assert list(session.series_view(fs).timestamps()) == [ts(1), ts(3)]
+        assert list(session.series_view(fs).values()) == pytest.approx([-1.0, -3.0])
+        assert list(session.series_view(ds).timestamps()) == [ts(1), ts(3)]
+        assert list(session.series_view(ds).values()) == pytest.approx([1.0, 3.0])
 
     def test_where_replaces_elements(self) -> None:
         source = ArraySource([ts(1)], [[1.0, 5.0, 2.0]])
@@ -135,8 +135,8 @@ class TestPythonOperators:
         s = sc.add_source(source)
         w = sc.add_operator(Where(s, lambda x: x > 3.0, fill=0.0))
         ws = sc.add_operator(Record(w))
-        sc.run()
-        np.testing.assert_array_almost_equal(sc.series_view(ws).values().flatten(), [0.0, 5.0, 0.0])
+        session = sc.run()
+        np.testing.assert_array_almost_equal(session.series_view(ws).values().flatten(), [0.0, 5.0, 0.0])
 
     def test_python_operator_chained_with_native(self) -> None:
         source = ArraySource([ts(1), ts(2), ts(3), ts(4)], [1.0, 5.0, 2.0, 10.0])
@@ -145,9 +145,9 @@ class TestPythonOperators:
         filtered = sc.add_operator(Filter(s, lambda v: float(v.flat[0]) > 3.0))
         negated = sc.add_operator(Negate(filtered))
         ns = sc.add_operator(Record(negated))
-        sc.run()
-        assert list(sc.series_view(ns).timestamps()) == [ts(2), ts(4)]
-        assert list(sc.series_view(ns).values()) == pytest.approx([-5.0, -10.0])
+        session = sc.run()
+        assert list(session.series_view(ns).timestamps()) == [ts(2), ts(4)]
+        assert list(session.series_view(ns).values()) == pytest.approx([-5.0, -10.0])
 
 
 # =========================================================================
@@ -161,23 +161,23 @@ class TestViews:
     def test_array_view(self) -> None:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(1)], [42.0]))
-        sc.run()
-        np.testing.assert_array_almost_equal(sc.array_view(h).value(), [42.0])
+        session = sc.run()
+        np.testing.assert_array_almost_equal(session.array_view(h).value(), [42.0])
 
     def test_series_view(self) -> None:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(1), ts(2)], [10.0, 20.0]))
         hs = sc.add_operator(Record(h))
-        sc.run()
-        sv = sc.series_view(hs)
+        session = sc.run()
+        sv = session.series_view(hs)
         assert len(sv) == 2
         np.testing.assert_array_almost_equal(sv.values().flatten(), [10.0, 20.0])
 
     def test_array_view_repr_and_dtype(self) -> None:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(1)], [42.0]))
-        sc.run()
-        view = sc.array_view(h)
+        session = sc.run()
+        view = session.array_view(h)
         assert view.dtype == np.dtype("float64")
         assert repr(view).startswith("ArrayView(")
 
@@ -185,38 +185,38 @@ class TestViews:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(1), ts(2)], [10.0, 20.0]))
         hs = sc.add_operator(Record(h))
-        sc.run()
-        view = sc.series_view(hs)
+        session = sc.run()
+        view = session.series_view(hs)
         assert repr(view).startswith("SeriesView(")
 
     def test_array_protocol(self) -> None:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(1)], [[1.0, 2.0, 3.0]]))
-        sc.run()
-        arr = np.asarray(sc.array_view(h))
+        session = sc.run()
+        arr = np.asarray(session.array_view(h))
         assert isinstance(arr, np.ndarray)
         np.testing.assert_array_equal(arr, [1.0, 2.0, 3.0])
 
     def test_numpy_ufunc(self) -> None:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(1)], [[1.0, 2.0, 3.0]]))
-        sc.run()
-        result = np.log(sc.array_view(h))
+        session = sc.run()
+        result = np.log(session.array_view(h))
         np.testing.assert_array_almost_equal(result, np.log([1.0, 2.0, 3.0]))
 
     def test_array_getitem(self) -> None:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(1)], [[1.0, 2.0, 3.0]]))
-        sc.run()
-        view = sc.array_view(h)
+        session = sc.run()
+        view = session.array_view(h)
         assert view[0] == 1.0
         np.testing.assert_array_equal(view[1:3], [2.0, 3.0])
 
     def test_array_arithmetic(self) -> None:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(1)], [[1.0, 2.0, 3.0]]))
-        sc.run()
-        view = sc.array_view(h)
+        session = sc.run()
+        view = session.array_view(h)
         np.testing.assert_array_equal(view + 10, [11.0, 12.0, 13.0])
         np.testing.assert_array_equal(view * 2, [2.0, 4.0, 6.0])
         np.testing.assert_array_equal(-view, [-1.0, -2.0, -3.0])
@@ -224,15 +224,15 @@ class TestViews:
     def test_array_to_numpy(self) -> None:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(1)], [[1.0, 2.0, 3.0]]))
-        sc.run()
-        np.testing.assert_array_equal(sc.array_view(h).to_numpy(), [1.0, 2.0, 3.0])
+        session = sc.run()
+        np.testing.assert_array_equal(session.array_view(h).to_numpy(), [1.0, 2.0, 3.0])
 
     def test_series_timestamps_dtype(self) -> None:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(100), ts(200), ts(300)], [10.0, 20.0, 30.0]))
         hs = sc.add_operator(Record(h))
-        sc.run()
-        t = sc.series_view(hs).timestamps()
+        session = sc.run()
+        t = session.series_view(hs).timestamps()
         assert t.dtype == np.dtype("datetime64[ns]")
         assert len(t) == 3
 
@@ -240,8 +240,8 @@ class TestViews:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(100), ts(200), ts(300)], [10.0, 20.0, 30.0]))
         hs = sc.add_operator(Record(h))
-        sc.run()
-        sv = sc.series_view(hs)
+        session = sc.run()
+        sv = session.series_view(hs)
         np.testing.assert_array_almost_equal(sv.at(0), [10.0])
         np.testing.assert_array_almost_equal(sv.at(2), [30.0])
         np.testing.assert_array_almost_equal(sv.at(-1), [30.0])
@@ -251,8 +251,8 @@ class TestViews:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(100), ts(200), ts(300)], [10.0, 20.0, 30.0]))
         hs = sc.add_operator(Record(h))
-        sc.run()
-        sv = sc.series_view(hs)
+        session = sc.run()
+        sv = session.series_view(hs)
         np.testing.assert_array_almost_equal(sv.asof(ts(200)), [20.0])  # type: ignore
         np.testing.assert_array_almost_equal(sv.asof(ts(250)), [20.0])  # type: ignore
         assert sv.asof(ts(50)) is None
@@ -261,8 +261,8 @@ class TestViews:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(100), ts(200), ts(300)], [10.0, 20.0, 30.0]))
         hs = sc.add_operator(Record(h))
-        sc.run()
-        t, vals = sc.series_view(hs).to_numpy()
+        session = sc.run()
+        t, vals = session.series_view(hs).to_numpy()
         assert t.dtype == np.dtype("datetime64[ns]")
         assert len(t) == 3
         np.testing.assert_array_almost_equal(vals.flatten(), [10.0, 20.0, 30.0])
@@ -271,8 +271,8 @@ class TestViews:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(100), ts(200), ts(300)], [10.0, 20.0, 30.0]))
         hs = sc.add_operator(Record(h))
-        sc.run()
-        sv = sc.series_view(hs)
+        session = sc.run()
+        sv = session.series_view(hs)
         np.testing.assert_array_almost_equal(sv[0], [10.0])
         np.testing.assert_array_almost_equal(sv[-1], [30.0])
         np.testing.assert_array_almost_equal(sv[1:3].flatten(), [20.0, 30.0])
@@ -283,8 +283,8 @@ class TestViews:
         sc = Scenario()
         h = sc.add_source(ArraySource([ts(100), ts(200), ts(300)], [10.0, 20.0, 30.0]))
         hs = sc.add_operator(Record(h))
-        sc.run()
-        s = sc.series_view(hs).to_series()
+        session = sc.run()
+        s = session.series_view(hs).to_series()
         assert isinstance(s, pd.Series)
         assert isinstance(s.index, pd.DatetimeIndex)
         assert len(s) == 3
@@ -306,9 +306,9 @@ class TestScenario:
         b = sc.add_source(source_b)
         hc = sc.add_operator(Add(a, b))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        assert list(sc.series_view(hs).timestamps()) == [ts(1)]
-        assert list(sc.series_view(hs).values()) == pytest.approx([5.0])
+        session = sc.run()
+        assert list(session.series_view(hs).timestamps()) == [ts(1)]
+        assert list(session.series_view(hs).values()) == pytest.approx([5.0])
 
     def test_run_rejects_decreasing_source_timestamps(self) -> None:
         with pytest.raises(ValueError, match="non-decreasing"):
@@ -328,8 +328,8 @@ class TestScenario:
         for o in obs[2:]:
             result_h = sc.add_operator(Add(result_h, o))
         hs = sc.add_operator(Record(result_h))
-        sc.run()
-        ts_arr = sc.series_view(hs).timestamps()
+        session = sc.run()
+        ts_arr = session.series_view(hs).timestamps()
         assert len(ts_arr) > 0
         for i in range(1, len(ts_arr)):
             assert ts_arr[i] > ts_arr[i - 1]
@@ -357,9 +357,9 @@ class TestScenario:
         b = sc.add_source(ArraySource(raw_ts_b, vals_b.astype(np.float64)))
         hc = sc.add_operator(Add(a, b))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        assert list(sc.series_view(hs).timestamps()) == exp_ts
-        np.testing.assert_array_almost_equal(list(sc.series_view(hs).values()), exp_vals)
+        session = sc.run()
+        assert list(session.series_view(hs).timestamps()) == exp_ts
+        np.testing.assert_array_almost_equal(list(session.series_view(hs).values()), exp_vals)
 
     def test_interleaved_sources_trigger_at_every_timestamp(self) -> None:
         ts_a = np.array([1, 3, 5, 7, 9], dtype="datetime64[ns]")
@@ -369,9 +369,9 @@ class TestScenario:
         b = sc.add_source(ArraySource(ts_b, [10.0, 20.0, 30.0, 40.0, 50.0]))
         hc = sc.add_operator(Add(a, b))
         hs = sc.add_operator(Record(hc))
-        sc.run()
+        session = sc.run()
         expected = [1.0, 11.0, 12.0, 22.0, 23.0, 33.0, 34.0, 44.0, 45.0, 55.0]
-        assert list(sc.series_view(hs).values()) == pytest.approx(expected)
+        assert list(session.series_view(hs).values()) == pytest.approx(expected)
 
     def test_run_updates_only_affected_downstream(self) -> None:
         sc = Scenario()
@@ -384,12 +384,12 @@ class TestScenario:
         sum_s = sc.add_operator(Record(sum_h))
         scaled_s = sc.add_operator(Record(scaled_h))
         neg_s = sc.add_operator(Record(neg_h))
-        sc.run()
-        assert list(sc.series_view(sum_s).timestamps()) == [ts(1), ts(2)]
-        assert list(sc.series_view(scaled_s).timestamps()) == [ts(1), ts(2), ts(3)]
-        assert list(sc.series_view(sum_s).values()) == pytest.approx([3.0, 6.0])
-        assert list(sc.series_view(scaled_s).values()) == pytest.approx([30.0, 60.0, 30.0])
-        assert list(sc.series_view(neg_s).values()) == pytest.approx([-30.0, -60.0, -30.0])
+        session = sc.run()
+        assert list(session.series_view(sum_s).timestamps()) == [ts(1), ts(2)]
+        assert list(session.series_view(scaled_s).timestamps()) == [ts(1), ts(2), ts(3)]
+        assert list(session.series_view(sum_s).values()) == pytest.approx([3.0, 6.0])
+        assert list(session.series_view(scaled_s).values()) == pytest.approx([30.0, 60.0, 30.0])
+        assert list(session.series_view(neg_s).values()) == pytest.approx([-30.0, -60.0, -30.0])
 
     def test_same_source_added_twice(self) -> None:
         source = ArraySource([ts(1), ts(2), ts(3)], [10.0, 20.0, 30.0])
@@ -399,8 +399,8 @@ class TestScenario:
         assert o1 is not o2
         hc = sc.add_operator(Add(o1, o2))
         hs = sc.add_operator(Record(hc))
-        sc.run()
-        assert list(sc.series_view(hs).values()) == pytest.approx([20.0, 40.0, 60.0])
+        session = sc.run()
+        assert list(session.series_view(hs).values()) == pytest.approx([20.0, 40.0, 60.0])
 
     def test_run_is_repeatable(self) -> None:
         rng = np.random.default_rng(7)
@@ -417,8 +417,8 @@ class TestScenario:
             h = sc.add_operator(Add(obs[0], obs[1]))
             h = sc.add_operator(Add(h, obs[2]))
             hs = sc.add_operator(Record(h))
-            sc.run()
-            return list(sc.series_view(hs).timestamps()), list(sc.series_view(hs).values())
+            session = sc.run()
+            return list(session.series_view(hs).timestamps()), list(session.series_view(hs).values())
 
         ts1, v1 = build_and_run()
         ts2, v2 = build_and_run()
@@ -436,8 +436,8 @@ class TestScenario:
 
         results: list[list[float]] = []
         for _ in range(3):
-            sc.run()
-            results.append(list(sc.series_view(hs).values()))
+            session = sc.run()
+            results.append(list(session.series_view(hs).values()))
 
         for r in results:
             assert r == pytest.approx([11.0, 22.0, 33.0])
@@ -463,8 +463,8 @@ class TestMixedSourcesAndOperators:
         )
         hc = sc.add_operator(Add(ha, hb))
         hr = sc.add_operator(Record(hc))
-        sc.run()
-        assert list(sc.series_view(hr).values()) == pytest.approx([110.0, 220.0, 330.0])
+        session = sc.run()
+        assert list(session.series_view(hr).values()) == pytest.approx([110.0, 220.0, 330.0])
 
     def test_native_and_py_sources_interleaved(self) -> None:
         sc = Scenario()
@@ -478,10 +478,10 @@ class TestMixedSourcesAndOperators:
         )
         hc = sc.add_operator(Add(ha, hb))
         hr = sc.add_operator(Record(hc))
-        sc.run()
+        session = sc.run()
         # ts=1: 10+0=10, ts=2: 10+20=30, ts=3: 30+40=70
-        assert list(sc.series_view(hr).timestamps()) == [ts(1), ts(2), ts(3)]
-        assert list(sc.series_view(hr).values()) == pytest.approx([10.0, 30.0, 70.0])
+        assert list(session.series_view(hr).timestamps()) == [ts(1), ts(2), ts(3)]
+        assert list(session.series_view(hr).values()) == pytest.approx([10.0, 30.0, 70.0])
 
     def test_py_source_native_op_py_op_chain(self) -> None:
         sc = Scenario()
@@ -496,8 +496,8 @@ class TestMixedSourcesAndOperators:
         hs = sc.add_operator(Multiply(h, c))
         hf = sc.add_operator(Filter(hs, lambda v: float(v.flat[0]) >= 50.0))
         hr = sc.add_operator(Record(hf))
-        sc.run()
-        assert list(sc.series_view(hr).values()) == pytest.approx([50.0, 60.0, 70.0])
+        session = sc.run()
+        assert list(session.series_view(hr).values()) == pytest.approx([50.0, 60.0, 70.0])
 
     def test_multiple_py_sources(self) -> None:
         sc = Scenario()
@@ -517,8 +517,8 @@ class TestMixedSourcesAndOperators:
         )
         hc = sc.add_operator(Add(ha, hb))
         hr = sc.add_operator(Record(hc))
-        sc.run()
-        assert list(sc.series_view(hr).values()) == pytest.approx([11.0, 22.0])
+        session = sc.run()
+        assert list(session.series_view(hr).values()) == pytest.approx([11.0, 22.0])
 
     def test_py_source_vector_values(self) -> None:
         sc = Scenario()
@@ -538,8 +538,8 @@ class TestMixedSourcesAndOperators:
         )
         hc = sc.add_operator(Add(ha, hb))
         hr = sc.add_operator(Record(hc))
-        sc.run()
-        np.testing.assert_array_almost_equal(sc.series_view(hr).values().flatten(), [11.0, 22.0])
+        session = sc.run()
+        np.testing.assert_array_almost_equal(session.series_view(hr).values().flatten(), [11.0, 22.0])
 
     def test_py_source_with_native_operator(self) -> None:
         sc = Scenario()
@@ -553,9 +553,9 @@ class TestMixedSourcesAndOperators:
         c = sc.add_const(np.array(2.0, dtype=np.float64))
         hs = sc.add_operator(Multiply(h, c))
         hr = sc.add_operator(Record(hs))
-        sc.run()
+        session = sc.run()
         expected = [float(i) * 2.0 for i in range(1, 11)]
-        assert list(sc.series_view(hr).values()) == pytest.approx(expected)
+        assert list(session.series_view(hr).values()) == pytest.approx(expected)
 
     def test_py_source_with_py_operator(self) -> None:
         """Python source + Python operator (Filter): the former deadlock case."""
@@ -569,5 +569,5 @@ class TestMixedSourcesAndOperators:
         )
         hf = sc.add_operator(Filter(h, lambda v: float(v.flat[0]) > 3.0))
         hr = sc.add_operator(Record(hf))
-        sc.run()
-        assert list(sc.series_view(hr).values()) == pytest.approx([4.0, 5.0])
+        session = sc.run()
+        assert list(session.series_view(hr).values()) == pytest.approx([4.0, 5.0])

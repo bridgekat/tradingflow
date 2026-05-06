@@ -45,8 +45,8 @@ class TestForwardAdjust:
         )
         adj = sc.add_operator(ForwardAdjust(prices, divs))
         adj_s = sc.add_operator(Record(adj))
-        sc.run()
-        vals = list(sc.series_view(adj_s).values())
+        session = sc.run()
+        vals = list(session.series_view(adj_s).values())
         assert vals == pytest.approx([10.0, 11.0, 12.0])
 
     def test_cash_dividend(self) -> None:
@@ -68,8 +68,8 @@ class TestForwardAdjust:
         )
         adj = sc.add_operator(ForwardAdjust(prices, divs))
         adj_s = sc.add_operator(Record(adj))
-        sc.run()
-        vals = list(sc.series_view(adj_s).values())
+        session = sc.run()
+        vals = list(session.series_view(adj_s).values())
         assert vals[0] == pytest.approx(10.0)
         factor = 1.0 + 0.5 / 9.5
         assert vals[1] == pytest.approx(9.5 * factor)
@@ -93,8 +93,8 @@ class TestForwardAdjust:
         )
         adj = sc.add_operator(ForwardAdjust(prices, divs))
         adj_s = sc.add_operator(Record(adj))
-        sc.run()
-        vals = list(sc.series_view(adj_s).values())
+        session = sc.run()
+        vals = list(session.series_view(adj_s).values())
         assert vals[0] == pytest.approx(20.0)
         assert vals[1] == pytest.approx(18.0 * 1.1)
 
@@ -120,8 +120,8 @@ class TestForwardAdjust:
         )
         adj = sc.add_operator(ForwardAdjust(prices, divs))
         adj_s = sc.add_operator(Record(adj))
-        sc.run()
-        vals = list(sc.series_view(adj_s).values())
+        session = sc.run()
+        vals = list(session.series_view(adj_s).values())
         f1 = 1.0 + 2.0 / (100.0 - 2.0)
         assert vals[2] == pytest.approx(99.0 * f1)
         f2 = f1 * (1.0 + 1.0 / (99.0 - 1.0))
@@ -209,10 +209,10 @@ class TestPythonNotify:
         # Reference: plain Record on messages.
         msg_series = sc.add_operator(Record(messages))
 
-        sc.run()
+        session = sc.run()
 
-        sel_view = sc.series_view(sel)
-        ref_view = sc.series_view(msg_series)
+        sel_view = session.series_view(sel)
+        ref_view = session.series_view(msg_series)
 
         # Same number of elements.
         assert len(sel_view) == len(ref_view)
@@ -249,9 +249,9 @@ class TestPythonNotify:
         )
 
         sel = sc.add_operator(SelectiveRecorder(background, messages))
-        sc.run()
+        session = sc.run()
 
-        assert len(sc.series_view(sel)) == 0
+        assert len(session.series_view(sel)) == 0
 
     def test_selective_recorder_coalesced_timestamps(self) -> None:
         """When both sources fire at the same timestamp, the message is recorded."""
@@ -272,9 +272,9 @@ class TestPythonNotify:
         )
 
         sel = sc.add_operator(SelectiveRecorder(background, messages))
-        sc.run()
+        session = sc.run()
 
-        sel_view = sc.series_view(sel)
+        sel_view = session.series_view(sel)
         assert len(sel_view) == 3
         np.testing.assert_array_almost_equal(
             sel_view.values().flatten(),

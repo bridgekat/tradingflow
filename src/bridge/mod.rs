@@ -15,7 +15,13 @@
 //!
 //! # Public types
 //!
-//! - [`NativeScenario`](scenario::NativeScenario) — the main pyclass.
+//! - [`NativeScenario`](scenario::NativeScenario) — the definition pyclass:
+//!   stores descriptors and per-node Python metadata.  Reusable across
+//!   any number of sessions.
+//! - [`NativeSession`](scenario::NativeSession) — the runtime-state
+//!   pyclass: built by [`NativeScenario::run`](scenario::NativeScenario::run)
+//!   or [`NativeScenario::build_session`](scenario::NativeScenario::build_session),
+//!   owns per-run buffers and exposes Python views into them.
 //! - [`NativeArrayView`] / [`NativeSeriesView`] — read-only Python views into
 //!   `Array<T>` and `Series<T>` node values, backed by raw pointers.
 //! - [`NativeNodeKind`] — `Array` / `Series` / `Unit` discriminator
@@ -50,7 +56,7 @@ use pyo3::prelude::*;
 
 pub use views::{NativeArrayView, NativeNodeKind, NativeSeriesView};
 
-use scenario::NativeScenario;
+use scenario::{NativeScenario, NativeSession};
 
 // ---------------------------------------------------------------------------
 // Error slot
@@ -75,6 +81,7 @@ fn set_error_msg(slot: &ErrorSlot, msg: String) {
 
 pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_class::<NativeScenario>()?;
+    m.add_class::<NativeSession>()?;
     m.add_class::<NativeArrayView>()?;
     m.add_class::<NativeSeriesView>()?;
     m.add_class::<NativeNodeKind>()?;

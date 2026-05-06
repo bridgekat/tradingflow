@@ -26,10 +26,10 @@ class TestIterSource:
         )
         h = sc.add_source(src)
         s = sc.add_operator(Record(h))
-        sc.run()
+        session = sc.run()
 
-        assert len(sc.series_view(s)) == 3
-        np.testing.assert_array_almost_equal(sc.series_view(s).values(), [10.0, 20.0, 30.0])
+        assert len(session.series_view(s)) == 3
+        np.testing.assert_array_almost_equal(session.series_view(s).values(), [10.0, 20.0, 30.0])
 
     def test_vector_values(self) -> None:
         """IterSource works with vector-valued elements."""
@@ -41,10 +41,10 @@ class TestIterSource:
         )
         h = sc.add_source(src)
         s = sc.add_operator(Record(h))
-        sc.run()
+        session = sc.run()
 
-        assert len(sc.series_view(s)) == 2
-        np.testing.assert_array_almost_equal(sc.series_view(s).values().flatten(), [1.0, 2.0, 3.0, 4.0])
+        assert len(session.series_view(s)) == 2
+        np.testing.assert_array_almost_equal(session.series_view(s).values().flatten(), [1.0, 2.0, 3.0, 4.0])
 
     def test_with_operator(self) -> None:
         """IterSource feeds into a native add operator."""
@@ -53,8 +53,8 @@ class TestIterSource:
         b = sc.add_source(IterSource([(ts(1), 1.0), (ts(2), 2.0)], shape=(), dtype=np.float64))
         c = sc.add_operator(Add(a, b))
         s = sc.add_operator(Record(c))
-        sc.run()
-        np.testing.assert_array_almost_equal(sc.series_view(s).values(), [11.0, 22.0])
+        session = sc.run()
+        np.testing.assert_array_almost_equal(session.series_view(s).values(), [11.0, 22.0])
 
     def test_repeated_run(self) -> None:
         """IterSource can be used across multiple scenario runs."""
@@ -63,8 +63,8 @@ class TestIterSource:
             sc = Scenario()
             h = sc.add_source(IterSource(data, shape=(), dtype=np.float64))
             s = sc.add_operator(Record(h))
-            sc.run()
-            np.testing.assert_array_almost_equal(sc.series_view(s).values(), [5.0, 10.0])
+            session = sc.run()
+            np.testing.assert_array_almost_equal(session.series_view(s).values(), [5.0, 10.0])
 
     def test_generator_expression(self) -> None:
         """IterSource works with a generator expression (consumed to list at init)."""
@@ -76,8 +76,8 @@ class TestIterSource:
         )
         h = sc.add_source(src)
         s = sc.add_operator(Record(h))
-        sc.run()
-        np.testing.assert_array_almost_equal(sc.series_view(s).values(), [10.0, 20.0, 30.0])
+        session = sc.run()
+        np.testing.assert_array_almost_equal(session.series_view(s).values(), [10.0, 20.0, 30.0])
 
 
 class TestClockSource:
@@ -98,7 +98,7 @@ class TestClockSource:
         )
         _clk = sc.add_source(Clock([ts(2)]))
         s = sc.add_operator(Record(data))
-        sc.run()
+        session = sc.run()
 
-        assert len(sc.series_view(s)) == 3
-        np.testing.assert_array_almost_equal(sc.series_view(s).values(), [10.0, 20.0, 30.0])
+        assert len(session.series_view(s)) == 3
+        np.testing.assert_array_almost_equal(session.series_view(s).values(), [10.0, 20.0, 30.0])

@@ -192,19 +192,19 @@ if __name__ == "__main__":
 
     # Run scenario.
     sc, handles = build_scenario(symbol, data_dir)
-    sc.run()
+    session = sc.run()
 
     # Extract results.
-    market_cap = sc.series_view(handles["market_cap"]).to_series()
-    assets = sc.series_view(handles["assets"]).to_series()
-    equity = sc.series_view(handles["equity"]).to_series()
-    parent_equity = sc.series_view(handles["parent_equity"]).to_series()
-    op_income = sc.series_view(handles["op_income"]).to_series()
-    net_profit = sc.series_view(handles["net_profit"]).to_series()
-    cash_flow = sc.series_view(handles["cash_flow"]).to_series()
-    ep = sc.series_view(handles["ep_ratio"]).to_series()
-    bp = sc.series_view(handles["bp_ratio"]).to_series()
-    roe = sc.series_view(handles["roe"]).to_series()
+    market_cap = session.series_view(handles["market_cap"]).to_series()
+    assets = session.series_view(handles["assets"]).to_series()
+    equity = session.series_view(handles["equity"]).to_series()
+    parent_equity = session.series_view(handles["parent_equity"]).to_series()
+    op_income = session.series_view(handles["op_income"]).to_series()
+    net_profit = session.series_view(handles["net_profit"]).to_series()
+    cash_flow = session.series_view(handles["cash_flow"]).to_series()
+    ep = session.series_view(handles["ep_ratio"]).to_series()
+    bp = session.series_view(handles["bp_ratio"]).to_series()
+    roe = session.series_view(handles["roe"]).to_series()
 
     n = len(market_cap)
     if n == 0:

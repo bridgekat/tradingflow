@@ -52,10 +52,10 @@ ma = sc.add_operator(tf.operators.rolling.RollingMean(history, window=10))
 ma_history = sc.add_operator(tf.operators.Record(ma))
 
 # Run the event loop until all sources are exhausted.
-sc.run()
+session = sc.run()
 
 # Inspect the results via `series_view()`, which returns a `SeriesView` that can be converted to a Pandas `Series`.
-print(sc.series_view(ma_history).to_series().tail())
+print(session.series_view(ma_history).to_series().tail())
 ```
 
 The resulting computation graph:
