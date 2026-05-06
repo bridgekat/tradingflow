@@ -1,6 +1,10 @@
 //! Benchmarks for the add operator across different dispatch paths.
 //!
 //! Run with: `cargo bench`
+//!
+//! Each `bencher.iter(...)` body builds a fresh [`Session`] from a
+//! pre-built [`Scenario`] definition, isolating per-run state from
+//! definition-construction overhead.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use tradingflow::operators::{Record, num::Add};
@@ -133,18 +137,20 @@ fn bench_direct_compute_series(c: &mut Criterion) {
 fn bench_scenario_operator(c: &mut Criterion) {
     let (ts, a, b) = make_data();
 
+    let mut sc = Scenario::new();
+    let ha = sc.add_const(Array::scalar(0.0_f64));
+    let hb = sc.add_const(Array::scalar(0.0_f64));
+    let ho = sc.add_operator(Add::new(), (ha, hb));
+
     c.bench_function("scenario_operator", |bencher| {
         bencher.iter(|| {
-            let mut sc = Scenario::new();
-            let ha = sc.add_const(Array::scalar(0.0_f64));
-            let hb = sc.add_const(Array::scalar(0.0_f64));
-            let ho = sc.add_operator(Add::new(), (ha, hb));
+            let mut session = sc.build_session();
             for i in 0..N {
-                sc.value_mut(ha)[0] = a[i];
-                sc.value_mut(hb)[0] = b[i];
-                sc.flush(ts[i], &[ha.index(), hb.index()]);
+                session.value_mut(ha)[0] = a[i];
+                session.value_mut(hb)[0] = b[i];
+                session.flush(ts[i], &[ha.index(), hb.index()]);
             }
-            black_box(sc.value(ho)[0]);
+            black_box(session.value(ho)[0]);
         });
     });
 }
@@ -156,19 +162,21 @@ fn bench_scenario_operator(c: &mut Criterion) {
 fn bench_scenario_operator_series(c: &mut Criterion) {
     let (ts, a, b) = make_data();
 
+    let mut sc = Scenario::new();
+    let ha = sc.add_const(Array::scalar(0.0_f64));
+    let hb = sc.add_const(Array::scalar(0.0_f64));
+    let ho = sc.add_operator(Add::new(), (ha, hb));
+    let hos = sc.add_operator(Record::new(), ho);
+
     c.bench_function("scenario_operator_series", |bencher| {
         bencher.iter(|| {
-            let mut sc = Scenario::new();
-            let ha = sc.add_const(Array::scalar(0.0_f64));
-            let hb = sc.add_const(Array::scalar(0.0_f64));
-            let ho = sc.add_operator(Add::new(), (ha, hb));
-            let hos = sc.add_operator(Record::new(), ho);
+            let mut session = sc.build_session();
             for i in 0..N {
-                sc.value_mut(ha)[0] = a[i];
-                sc.value_mut(hb)[0] = b[i];
-                sc.flush(ts[i], &[ha.index(), hb.index()]);
+                session.value_mut(ha)[0] = a[i];
+                session.value_mut(hb)[0] = b[i];
+                session.flush(ts[i], &[ha.index(), hb.index()]);
             }
-            black_box(sc.value::<Series<f64>>(hos).last().unwrap()[0]);
+            black_box(session.value::<Series<f64>>(hos).last().unwrap()[0]);
         });
     });
 }
@@ -180,22 +188,24 @@ fn bench_scenario_operator_series(c: &mut Criterion) {
 fn bench_scenario_source(c: &mut Criterion) {
     let (ts, a, b) = make_data();
 
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let series_a = Series::from_vec(&[], ts.clone(), a.clone());
+    let series_b = Series::from_vec(&[], ts.clone(), b.clone());
+    let default = Array::scalar(0.0_f64);
+
+    let mut sc = Scenario::new();
+    let ha = sc.add_source(ArraySource::new(series_a, default.clone()));
+    let hb = sc.add_source(ArraySource::new(series_b, default));
+    let ho = sc.add_operator(Add::new(), (ha, hb));
+
     c.bench_function("scenario_source", |bencher| {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let series_a = Series::from_vec(&[], ts.clone(), a.clone());
-        let series_b = Series::from_vec(&[], ts.clone(), b.clone());
-        let default = Array::scalar(0.0_f64);
         bencher.iter(|| {
             let _guard = rt.enter();
-            let mut sc = Scenario::new();
-            let ha = sc.add_source(ArraySource::new(series_a.clone(), default.clone()));
-            let hb = sc.add_source(ArraySource::new(series_b.clone(), default.clone()));
-            let ho = sc.add_operator(Add::new(), (ha, hb));
-            rt.block_on(sc.run(|_, _, _| {}));
-            black_box(sc.value(ho)[0]);
+            let session = rt.block_on(sc.run(|_, _, _| {}));
+            black_box(session.value(ho)[0]);
         });
     });
 }
@@ -207,23 +217,25 @@ fn bench_scenario_source(c: &mut Criterion) {
 fn bench_scenario_source_series(c: &mut Criterion) {
     let (ts, a, b) = make_data();
 
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let series_a = Series::from_vec(&[], ts.clone(), a.clone());
+    let series_b = Series::from_vec(&[], ts.clone(), b.clone());
+    let default = Array::scalar(0.0_f64);
+
+    let mut sc = Scenario::new();
+    let ha = sc.add_source(ArraySource::new(series_a, default.clone()));
+    let hb = sc.add_source(ArraySource::new(series_b, default));
+    let ho = sc.add_operator(Add::new(), (ha, hb));
+    let hos = sc.add_operator(Record::new(), ho);
+
     c.bench_function("scenario_source_series", |bencher| {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let series_a = Series::from_vec(&[], ts.clone(), a.clone());
-        let series_b = Series::from_vec(&[], ts.clone(), b.clone());
-        let default = Array::scalar(0.0_f64);
         bencher.iter(|| {
             let _guard = rt.enter();
-            let mut sc = Scenario::new();
-            let ha = sc.add_source(ArraySource::new(series_a.clone(), default.clone()));
-            let hb = sc.add_source(ArraySource::new(series_b.clone(), default.clone()));
-            let ho = sc.add_operator(Add::new(), (ha, hb));
-            let hos = sc.add_operator(Record::new(), ho);
-            rt.block_on(sc.run(|_, _, _| {}));
-            black_box(sc.value::<Series<f64>>(hos).last().unwrap()[0]);
+            let session = rt.block_on(sc.run(|_, _, _| {}));
+            black_box(session.value::<Series<f64>>(hos).last().unwrap()[0]);
         });
     });
 }
@@ -236,24 +248,25 @@ fn bench_scenario_chain(c: &mut Criterion) {
     let (ts, a, b) = make_data();
 
     for depth in [1, 5, 10] {
+        let mut sc = Scenario::new();
+        let ha = sc.add_const(Array::scalar(0.0_f64));
+        let hb = sc.add_const(Array::scalar(0.0_f64));
+
+        let mut prev = sc.add_operator(Add::new(), (ha, hb));
+        for i in 1..depth {
+            let other = if i % 2 == 0 { ha } else { hb };
+            prev = sc.add_operator(Add::new(), (prev, other));
+        }
+
         c.bench_function(&format!("scenario_chain_depth{depth}"), |bencher| {
             bencher.iter(|| {
-                let mut sc = Scenario::new();
-                let ha = sc.add_const(Array::scalar(0.0_f64));
-                let hb = sc.add_const(Array::scalar(0.0_f64));
-
-                let mut prev = sc.add_operator(Add::new(), (ha, hb));
-                for i in 1..depth {
-                    let other = if i % 2 == 0 { ha } else { hb };
-                    prev = sc.add_operator(Add::new(), (prev, other));
-                }
-
+                let mut session = sc.build_session();
                 for i in 0..N {
-                    sc.value_mut(ha)[0] = a[i];
-                    sc.value_mut(hb)[0] = b[i];
-                    sc.flush(ts[i], &[ha.index(), hb.index()]);
+                    session.value_mut(ha)[0] = a[i];
+                    session.value_mut(hb)[0] = b[i];
+                    session.flush(ts[i], &[ha.index(), hb.index()]);
                 }
-                black_box(sc.value(prev)[0]);
+                black_box(session.value(prev)[0]);
             });
         });
     }
@@ -267,37 +280,38 @@ fn bench_scenario_sparse(c: &mut Criterion) {
     let (ts, a, b) = make_data();
 
     for (total, active) in [(100, 5), (1000, 5)] {
+        let mut sc = Scenario::new();
+        let ha = sc.add_const(Array::scalar(0.0_f64));
+        let hb = sc.add_const(Array::scalar(0.0_f64));
+        let hc = sc.add_const(Array::scalar(0.0_f64));
+        let hd = sc.add_const(Array::scalar(0.0_f64));
+
+        // Active chain
+        let mut last = sc.add_operator(Add::new(), (ha, hb));
+        for _ in 1..active {
+            last = sc.add_operator(Add::new(), (last, ha));
+        }
+
+        // Inactive chain
+        let inactive = total - active;
+        if inactive > 0 {
+            let mut prev = sc.add_operator(Add::new(), (hc, hd));
+            for _ in 1..inactive {
+                prev = sc.add_operator(Add::new(), (prev, hc));
+            }
+        }
+
         c.bench_function(
             &format!("scenario_sparse_{total}total_{active}active"),
             |bencher| {
                 bencher.iter(|| {
-                    let mut sc = Scenario::new();
-                    let ha = sc.add_const(Array::scalar(0.0_f64));
-                    let hb = sc.add_const(Array::scalar(0.0_f64));
-                    let hc = sc.add_const(Array::scalar(0.0_f64));
-                    let hd = sc.add_const(Array::scalar(0.0_f64));
-
-                    // Active chain
-                    let mut last = sc.add_operator(Add::new(), (ha, hb));
-                    for _ in 1..active {
-                        last = sc.add_operator(Add::new(), (last, ha));
-                    }
-
-                    // Inactive chain
-                    let inactive = total - active;
-                    if inactive > 0 {
-                        let mut prev = sc.add_operator(Add::new(), (hc, hd));
-                        for _ in 1..inactive {
-                            prev = sc.add_operator(Add::new(), (prev, hc));
-                        }
-                    }
-
+                    let mut session = sc.build_session();
                     for i in 0..N {
-                        sc.value_mut(ha)[0] = a[i];
-                        sc.value_mut(hb)[0] = b[i];
-                        sc.flush(ts[i], &[ha.index(), hb.index()]);
+                        session.value_mut(ha)[0] = a[i];
+                        session.value_mut(hb)[0] = b[i];
+                        session.flush(ts[i], &[ha.index(), hb.index()]);
                     }
-                    black_box(sc.value(last)[0]);
+                    black_box(session.value(last)[0]);
                 });
             },
         );

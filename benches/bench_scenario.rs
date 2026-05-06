@@ -3,6 +3,12 @@
 //! Measures end-to-end throughput including channel creation, async event
 //! delivery, event ordering, and computation graph flush.
 //!
+//! Each [`Scenario`] is built once outside the timing loop; every
+//! [`bencher.iter`] body builds a fresh [`Session`](tradingflow::Session)
+//! via `sc.run(...)` (i.e. exercises the per-run path: descriptor replay
+//! + async drain + flush propagation), without re-paying scenario
+//! construction.
+//!
 //! Run with: `cargo bench --bench bench_scenario`
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
@@ -47,14 +53,15 @@ fn bench_single_source(c: &mut Criterion) {
         .unwrap();
     let (series, default) = make_series(N);
 
+    let mut sc = Scenario::new();
+    let h = sc.add_source(ArraySource::new(series, default));
+    let hs = sc.add_operator(Record::new(), h);
+
     c.bench_function("scenario_single_source", |bencher| {
         bencher.iter(|| {
             let _guard = rt.enter();
-            let mut sc = Scenario::new();
-            let h = sc.add_source(ArraySource::new(series.clone(), default.clone()));
-            let hs = sc.add_operator(Record::new(), h);
-            rt.block_on(sc.run(|_, _, _| {}));
-            black_box(sc.value::<Series<f64>>(hs).len());
+            let session = rt.block_on(sc.run(|_, _, _| {}));
+            black_box(session.value::<Series<f64>>(hs).len());
         });
     });
 }
@@ -71,16 +78,17 @@ fn bench_two_sources_add(c: &mut Criterion) {
     let (sa, da) = make_series(N);
     let (sb, db) = make_series(N);
 
+    let mut sc = Scenario::new();
+    let ha = sc.add_source(ArraySource::new(sa, da));
+    let hb = sc.add_source(ArraySource::new(sb, db));
+    let ho = sc.add_operator(Add::new(), (ha, hb));
+    let hs = sc.add_operator(Record::new(), ho);
+
     c.bench_function("scenario_two_sources_add", |bencher| {
         bencher.iter(|| {
             let _guard = rt.enter();
-            let mut sc = Scenario::new();
-            let ha = sc.add_source(ArraySource::new(sa.clone(), da.clone()));
-            let hb = sc.add_source(ArraySource::new(sb.clone(), db.clone()));
-            let ho = sc.add_operator(Add::new(), (ha, hb));
-            let hs = sc.add_operator(Record::new(), ho);
-            rt.block_on(sc.run(|_, _, _| {}));
-            black_box(sc.value::<Series<f64>>(hs).len());
+            let session = rt.block_on(sc.run(|_, _, _| {}));
+            black_box(session.value::<Series<f64>>(hs).len());
         });
     });
 }
@@ -97,17 +105,18 @@ fn bench_two_sources_chain(c: &mut Criterion) {
     let (sa, da) = make_series(N);
     let (sb, db) = make_series(N);
 
+    let mut sc = Scenario::new();
+    let ha = sc.add_source(ArraySource::new(sa, da));
+    let hb = sc.add_source(ArraySource::new(sb, db));
+    let ho = sc.add_operator(Add::new(), (ha, hb));
+    let hn = sc.add_operator(Negate::new(), ho);
+    let hs = sc.add_operator(Record::new(), hn);
+
     c.bench_function("scenario_two_sources_chain", |bencher| {
         bencher.iter(|| {
             let _guard = rt.enter();
-            let mut sc = Scenario::new();
-            let ha = sc.add_source(ArraySource::new(sa.clone(), da.clone()));
-            let hb = sc.add_source(ArraySource::new(sb.clone(), db.clone()));
-            let ho = sc.add_operator(Add::new(), (ha, hb));
-            let hn = sc.add_operator(Negate::new(), ho);
-            let hs = sc.add_operator(Record::new(), hn);
-            rt.block_on(sc.run(|_, _, _| {}));
-            black_box(sc.value::<Series<f64>>(hs).len());
+            let session = rt.block_on(sc.run(|_, _, _| {}));
+            black_box(session.value::<Series<f64>>(hs).len());
         });
     });
 }
@@ -123,23 +132,24 @@ fn bench_fan_in(c: &mut Criterion) {
         .unwrap();
 
     for n_sources in [2, 4, 8, 16] {
-        let sources: Vec<_> = (0..n_sources).map(|_| make_series(N)).collect();
+        let mut sc = Scenario::new();
+        let handles: Vec<_> = (0..n_sources)
+            .map(|_| {
+                let (s, d) = make_series(N);
+                sc.add_source(ArraySource::new(s, d))
+            })
+            .collect();
+        let mut acc = handles[0];
+        for &h in &handles[1..] {
+            acc = sc.add_operator(Add::new(), (acc, h));
+        }
+        let hs = sc.add_operator(Record::new(), acc);
 
         c.bench_function(&format!("scenario_fan_in_{n_sources}sources"), |bencher| {
             bencher.iter(|| {
                 let _guard = rt.enter();
-                let mut sc = Scenario::new();
-                let handles: Vec<_> = sources
-                    .iter()
-                    .map(|(s, d)| sc.add_source(ArraySource::new(s.clone(), d.clone())))
-                    .collect();
-                let mut acc = handles[0];
-                for &h in &handles[1..] {
-                    acc = sc.add_operator(Add::new(), (acc, h));
-                }
-                let hs = sc.add_operator(Record::new(), acc);
-                rt.block_on(sc.run(|_, _, _| {}));
-                black_box(sc.value::<Series<f64>>(hs).len());
+                let session = rt.block_on(sc.run(|_, _, _| {}));
+                black_box(session.value::<Series<f64>>(hs).len());
             });
         });
     }
@@ -163,16 +173,17 @@ fn bench_interleaved(c: &mut Criterion) {
     let sb = Series::from_vec(&[], ts_b, vals);
     let default = Array::scalar(0.0);
 
+    let mut sc = Scenario::new();
+    let ha = sc.add_source(ArraySource::new(sa, default.clone()));
+    let hb = sc.add_source(ArraySource::new(sb, default));
+    let ho = sc.add_operator(Add::new(), (ha, hb));
+    let hs = sc.add_operator(Record::new(), ho);
+
     c.bench_function("scenario_interleaved", |bencher| {
         bencher.iter(|| {
             let _guard = rt.enter();
-            let mut sc = Scenario::new();
-            let ha = sc.add_source(ArraySource::new(sa.clone(), default.clone()));
-            let hb = sc.add_source(ArraySource::new(sb.clone(), default.clone()));
-            let ho = sc.add_operator(Add::new(), (ha, hb));
-            let hs = sc.add_operator(Record::new(), ho);
-            rt.block_on(sc.run(|_, _, _| {}));
-            black_box(sc.value::<Series<f64>>(hs).len());
+            let session = rt.block_on(sc.run(|_, _, _| {}));
+            black_box(session.value::<Series<f64>>(hs).len());
         });
     });
 }
@@ -191,16 +202,17 @@ fn bench_strided(c: &mut Criterion) {
         let (sa, da) = make_series_vec(N, stride);
         let (sb, db) = make_series_vec(N, stride);
 
+        let mut sc = Scenario::new();
+        let ha = sc.add_source(ArraySource::new(sa, da));
+        let hb = sc.add_source(ArraySource::new(sb, db));
+        let ho = sc.add_operator(Add::new(), (ha, hb));
+        let hs = sc.add_operator(Record::new(), ho);
+
         c.bench_function(&format!("scenario_strided_{stride}"), |bencher| {
             bencher.iter(|| {
                 let _guard = rt.enter();
-                let mut sc = Scenario::new();
-                let ha = sc.add_source(ArraySource::new(sa.clone(), da.clone()));
-                let hb = sc.add_source(ArraySource::new(sb.clone(), db.clone()));
-                let ho = sc.add_operator(Add::new(), (ha, hb));
-                let hs = sc.add_operator(Record::new(), ho);
-                rt.block_on(sc.run(|_, _, _| {}));
-                black_box(sc.value::<Series<f64>>(hs).len());
+                let session = rt.block_on(sc.run(|_, _, _| {}));
+                black_box(session.value::<Series<f64>>(hs).len());
             });
         });
     }
@@ -218,17 +230,18 @@ fn bench_diamond(c: &mut Criterion) {
     let (sa, da) = make_series(N);
     let (sb, db) = make_series(N);
 
+    let mut sc = Scenario::new();
+    let ha = sc.add_source(ArraySource::new(sa, da));
+    let hb = sc.add_source(ArraySource::new(sb, db));
+    let hsum = sc.add_operator(Add::new(), (ha, hb));
+    let hprod = sc.add_operator(Multiply::new(), (ha, hsum));
+    let hs = sc.add_operator(Record::new(), hprod);
+
     c.bench_function("scenario_diamond", |bencher| {
         bencher.iter(|| {
             let _guard = rt.enter();
-            let mut sc = Scenario::new();
-            let ha = sc.add_source(ArraySource::new(sa.clone(), da.clone()));
-            let hb = sc.add_source(ArraySource::new(sb.clone(), db.clone()));
-            let hsum = sc.add_operator(Add::new(), (ha, hb));
-            let hprod = sc.add_operator(Multiply::new(), (ha, hsum));
-            let hs = sc.add_operator(Record::new(), hprod);
-            rt.block_on(sc.run(|_, _, _| {}));
-            black_box(sc.value::<Series<f64>>(hs).len());
+            let session = rt.block_on(sc.run(|_, _, _| {}));
+            black_box(session.value::<Series<f64>>(hs).len());
         });
     });
 }

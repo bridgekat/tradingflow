@@ -672,7 +672,7 @@ mod tests {
     /// Zero sources — must terminate immediately.
     #[tokio::test]
     async fn empty_scenario() {
-        let mut sc = Scenario::new();
+        let sc = Scenario::new();
         sc.run(|_, _, _| {}).await;
     }
 
@@ -687,9 +687,9 @@ mod tests {
         use crate::operators::Record;
 
         // Single-shot pre-built channel pair, shared via `Arc<Mutex<Option<…>>>`
-        // so the source spec is `Clone` (the trait now requires it).  The
-        // `init` method takes the receivers out on first call; a second
-        // call would panic, which is fine for this test.
+        // because `init(&self, ...)` cannot move the receivers out of `&self`
+        // directly.  The first call takes the receivers; a second call would
+        // panic, which is fine for this test.
         type ChannelPair =
             (mpsc::Receiver<(Instant, f64)>, mpsc::Receiver<(Instant, f64)>);
 
