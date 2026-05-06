@@ -11,6 +11,7 @@ use crate::{Array, Input, Operator, Scalar};
 ///
 /// Returns `NaN` until at least two period returns have been observed
 /// (need non-zero variance).
+#[derive(Clone)]
 pub struct SharpeRatio<T: Scalar + Float> {
     _phantom: PhantomData<T>,
 }

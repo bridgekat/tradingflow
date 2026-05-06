@@ -6,13 +6,14 @@ use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 
 /// Element-wise conditional operator: keeps the value if the condition
 /// returns `true`, otherwise replaces it with `fill`.
-pub struct Where<T: Scalar, F: Fn(T) -> bool> {
+#[derive(Clone)]
+pub struct Where<T: Scalar, F: Fn(T) -> bool + Clone> {
     condition: F,
     fill: T,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar, F: Fn(T) -> bool> Where<T, F> {
+impl<T: Scalar, F: Fn(T) -> bool + Clone> Where<T, F> {
     pub fn new(condition: F, fill: T) -> Self {
         Self {
             condition,
@@ -22,7 +23,7 @@ impl<T: Scalar, F: Fn(T) -> bool> Where<T, F> {
     }
 }
 
-impl<T: Scalar, F: Fn(T) -> bool + Send + 'static> Operator for Where<T, F> {
+impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + 'static> Operator for Where<T, F> {
     type State = Self;
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;

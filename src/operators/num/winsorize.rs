@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::marker::PhantomData;
 
-use num_traits::{Float, ToPrimitive};
+use num_traits::Float;
 
 use crate::Instant;
 use crate::{Array, Input, InputTypes, Operator, Scalar};
@@ -29,6 +29,7 @@ use crate::{Array, Input, InputTypes, Operator, Scalar};
 /// is `sorted[k]` and the upper bound is `sorted[n_valid - 1 - k]`.
 /// `k = 0` (e.g. `p = 0`, or `p` too small for the current `n_valid`)
 /// is a no-op.
+#[derive(Clone)]
 pub struct Winsorize<T: Scalar + Float> {
     p: T,
     _phantom: PhantomData<T>,

@@ -14,6 +14,7 @@ use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 /// This is the linear-return counterpart of [`Diff`](crate::operators::num::Diff):
 /// `PctChange` yields `p_t / p_{t-1} - 1`, while `Log -> Diff` yields
 /// `log p_t - log p_{t-1}`.
+#[derive(Clone)]
 pub struct PctChange<T: Scalar + Float>(PhantomData<T>);
 
 impl<T: Scalar + Float> PctChange<T> {

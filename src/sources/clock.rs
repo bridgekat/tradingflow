@@ -15,8 +15,12 @@ use super::iter_source::IterSource;
 
 /// Create a clock source from explicit timestamps.
 ///
-/// The output node holds `()` (zero-sized, purely a trigger).
+/// The output node holds `()` (zero-sized, purely a trigger).  The
+/// resulting [`IterSource`] is `Clone` and reusable across multiple
+/// scenario sessions.
 pub fn clock(timestamps: Vec<Instant>) -> IterSource<()> {
-    let count = timestamps.len();
-    IterSource::new(timestamps.into_iter().map(|ts| (ts, ())), ()).with_estimated_count(count)
+    IterSource::from_vec_with_default(
+        timestamps.into_iter().map(|ts| (ts, ())).collect(),
+        (),
+    )
 }

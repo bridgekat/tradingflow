@@ -54,6 +54,19 @@ pub struct Clocked<O, C = ()> {
     _phantom: PhantomData<fn() -> C>,
 }
 
+// Manual `Clone` impl: `C` only appears under `PhantomData<fn() -> C>`,
+// which is `Clone` regardless of `C`.  The derived impl would bound
+// `C: Clone`, which is unnecessary and rules out clock node types like
+// `()` placeholders behind generic call-site inference.
+impl<O: Clone, C> Clone for Clocked<O, C> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<O, C> Clocked<O, C> {
     /// Create a clock-gated wrapper around `inner`.
     pub fn new(inner: O) -> Self {
@@ -110,6 +123,18 @@ pub struct Resample<O, C>(Clocked<Id<O>, C>)
 where
     O: Clone + Send + 'static,
     C: Send + 'static;
+
+// Manual `Clone` impl: `C` is purely a phantom marker on the inner
+// `Clocked<Id<O>, C>`; the derived impl would unnecessarily bound `C: Clone`.
+impl<O, C> Clone for Resample<O, C>
+where
+    O: Clone + Send + 'static,
+    C: Send + 'static,
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<O, C> Resample<O, C>
 where

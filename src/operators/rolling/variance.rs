@@ -17,6 +17,7 @@ use super::accumulator::Accumulator;
 /// than added to the running sums, since `inf − inf` would corrupt the
 /// sums to NaN on eviction.  If any value in the window is non-finite for
 /// a given element position, the output for that position is NaN.
+#[derive(Clone)]
 pub struct VarianceAccumulator<T: Scalar + Float> {
     sum: Vec<T>,
     sum_sq: Vec<T>,

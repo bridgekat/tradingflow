@@ -20,17 +20,33 @@ pub struct Apply<I, T, F>
 where
     I: InputTypes + Send + 'static,
     T: Clone + Send + 'static,
-    F: for<'a> Fn(<I as InputTypes>::Refs<'a>) -> T + Send + 'static,
+    F: for<'a> Fn(<I as InputTypes>::Refs<'a>) -> T + Clone + Send + 'static,
 {
     f: F,
     _phantom: PhantomData<(I, T)>,
+}
+
+// Manual `Clone`: avoid the derived bound `I: Clone` (the type parameter
+// only appears under `PhantomData<(I, T)>`).
+impl<I, T, F> Clone for Apply<I, T, F>
+where
+    I: InputTypes + Send + 'static,
+    T: Clone + Send + 'static,
+    F: for<'a> Fn(<I as InputTypes>::Refs<'a>) -> T + Clone + Send + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            f: self.f.clone(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<I, T, F> Apply<I, T, F>
 where
     I: InputTypes + Send + 'static,
     T: Clone + Send + 'static,
-    F: for<'a> Fn(<I as InputTypes>::Refs<'a>) -> T + Send + 'static,
+    F: for<'a> Fn(<I as InputTypes>::Refs<'a>) -> T + Clone + Send + 'static,
 {
     pub fn new(f: F) -> Self {
         Self {
@@ -44,7 +60,7 @@ impl<I, T, F> Operator for Apply<I, T, F>
 where
     I: InputTypes + Send + 'static,
     T: Clone + Send + 'static,
-    F: for<'a> Fn(<I as InputTypes>::Refs<'a>) -> T + Send + 'static,
+    F: for<'a> Fn(<I as InputTypes>::Refs<'a>) -> T + Clone + Send + 'static,
 {
     type State = Self;
     type Inputs = I;
@@ -78,18 +94,35 @@ pub struct ApplyInplace<I, T, F>
 where
     I: InputTypes + Send + 'static,
     T: Clone + Send + 'static,
-    F: for<'a> Fn(<I as InputTypes>::Refs<'a>, &mut T) -> bool + Send + 'static,
+    F: for<'a> Fn(<I as InputTypes>::Refs<'a>, &mut T) -> bool + Clone + Send + 'static,
 {
     f: F,
     initial: T,
     _phantom: PhantomData<I>,
 }
 
+// Manual `Clone`: avoid the derived bound `I: Clone` (the type parameter
+// only appears under `PhantomData<I>`).
+impl<I, T, F> Clone for ApplyInplace<I, T, F>
+where
+    I: InputTypes + Send + 'static,
+    T: Clone + Send + 'static,
+    F: for<'a> Fn(<I as InputTypes>::Refs<'a>, &mut T) -> bool + Clone + Send + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            f: self.f.clone(),
+            initial: self.initial.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<I, T, F> ApplyInplace<I, T, F>
 where
     I: InputTypes + Send + 'static,
     T: Clone + Send + 'static,
-    F: for<'a> Fn(<I as InputTypes>::Refs<'a>, &mut T) -> bool + Send + 'static,
+    F: for<'a> Fn(<I as InputTypes>::Refs<'a>, &mut T) -> bool + Clone + Send + 'static,
 {
     pub fn new(f: F, initial: T) -> Self {
         Self {
@@ -104,7 +137,7 @@ impl<I, T, F> Operator for ApplyInplace<I, T, F>
 where
     I: InputTypes + Send + 'static,
     T: Clone + Send + 'static,
-    F: for<'a> Fn(<I as InputTypes>::Refs<'a>, &mut T) -> bool + Send + 'static,
+    F: for<'a> Fn(<I as InputTypes>::Refs<'a>, &mut T) -> bool + Clone + Send + 'static,
 {
     type State = Self;
     type Inputs = I;

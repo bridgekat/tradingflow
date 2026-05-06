@@ -34,6 +34,7 @@ use crate::{Array, Input, InputTypes, Operator};
 ///
 /// For a standard Q2 report: `days_elapsed = 181 − 90 = 91`, so
 /// `annualized ≈ delta × 4.01`.
+#[derive(Clone)]
 pub struct Annualize;
 
 impl Annualize {

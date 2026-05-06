@@ -49,8 +49,9 @@ unsafe impl Send for Node {}
 impl Node {
     /// Create a source node from an [`ErasedSource`].
     ///
-    /// Calls the deferred init and attaches the channel state.
-    pub fn from_erased_source(erased: ErasedSource, timestamp: Instant) -> Self {
+    /// Calls the deferred init and attaches the channel state.  Borrows
+    /// `erased` so the descriptor can drive future re-initialisations.
+    pub fn from_erased_source(erased: &ErasedSource, timestamp: Instant) -> Self {
         let output_type_id = erased.output_type_id();
         let poll_fn = erased.poll_fn();
         let write_fn = erased.write_fn();
@@ -70,9 +71,10 @@ impl Node {
     /// Create an operator node from an [`ErasedOperator`].
     ///
     /// Validates input types, calls the deferred init, and attaches the
-    /// compute state.  Panics on arity or `TypeId` mismatch.
+    /// compute state.  Borrows `erased` so the descriptor can drive future
+    /// re-initialisations.  Panics on arity or `TypeId` mismatch.
     pub fn from_erased_operator(
-        erased: ErasedOperator,
+        erased: &ErasedOperator,
         input_ptrs: Box<[*const u8]>,
         input_node_indices: Box<[usize]>,
         input_type_ids: &[TypeId],

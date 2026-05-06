@@ -20,6 +20,7 @@ use crate::{Array, Input, InputTypes, Operator, Scalar};
 /// which additionally applies `Φ⁻¹` to the percentile.
 ///
 /// Output has the same dtype and shape as the input.
+#[derive(Clone)]
 pub struct Percentile<T: Scalar + Float> {
     _phantom: PhantomData<T>,
 }

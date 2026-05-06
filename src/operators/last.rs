@@ -9,6 +9,7 @@ use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, Series};
 /// Two-sided inverse of [`Record`](super::Record):
 /// - `Last(Record(x))` recovers the latest array value.
 /// - `Record(Last(s)).last()` equals `s.last()`.
+#[derive(Clone)]
 pub struct Last<T: Scalar> {
     fill: T,
 }

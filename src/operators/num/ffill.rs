@@ -9,6 +9,7 @@ use crate::{Array, Input, InputTypes, Operator, Scalar};
 ///
 /// For each element position, outputs the most recent non-NaN value seen
 /// so far. If no valid value has been seen yet, outputs NaN.
+#[derive(Clone)]
 pub struct ForwardFill<T: Scalar + Float> {
     _phantom: std::marker::PhantomData<T>,
 }

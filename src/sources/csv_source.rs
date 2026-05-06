@@ -14,6 +14,7 @@ use crate::{Array, Source};
 /// event carrying an `Array<f64>` of the selected columns.
 ///
 /// Requires a tokio runtime to be active when added to a scenario.
+#[derive(Clone)]
 pub struct CsvSource {
     path: String,
     time_column: String,

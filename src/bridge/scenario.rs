@@ -3,6 +3,18 @@
 //! [`NativeScenario`] wraps the Rust [`Scenario`](crate::scenario::Scenario)
 //! and provides registration entry points for sources and operators from
 //! both Rust and Python.
+//!
+//! # Lifecycle
+//!
+//! - Registration (`add_*`) appends descriptors to the underlying
+//!   [`Scenario`] definition.  No node buffers are allocated and no
+//!   Python views are constructed at this point.
+//! - On [`run`](NativeScenario::run), a fresh [`Session`](crate::scenario::Session)
+//!   is built by replaying every descriptor's `init`; the bridge then
+//!   rebuilds its cached Python views to point at the new session's
+//!   buffers and drives the event loop.  After `run()` returns, view
+//!   accessors expose those buffers.  Calling `run()` again replaces
+//!   the session and invalidates any view obtained from the previous run.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,9 +24,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
 use crate::Scenario;
-use crate::scenario::ShutdownFlag;
+use crate::scenario::{Session, ShutdownFlag};
 
 use super::dispatch::resolve_type_id;
+use super::operator::PyInputInfo;
 use super::views::{NativeNodeKind, create_view};
 use super::{ErrorSlot, operator, operators, source, sources};
 
@@ -51,6 +64,21 @@ impl Drop for DoneGuard {
 unsafe impl Send for DoneGuard {}
 
 // ---------------------------------------------------------------------------
+// Per-node Python metadata
+// ---------------------------------------------------------------------------
+
+/// Per-node Python-side metadata captured at registration time.  Used to
+/// rebuild [`NativeArrayView`](super::views::NativeArrayView) /
+/// [`NativeSeriesView`](super::views::NativeSeriesView) wrappers against
+/// each freshly built [`Session`]'s buffers.
+#[derive(Clone)]
+struct NodeInfo {
+    dtype: String,
+    kind: NativeNodeKind,
+    shape: Vec<usize>,
+}
+
+// ---------------------------------------------------------------------------
 // NativeScenario
 // ---------------------------------------------------------------------------
 
@@ -61,11 +89,17 @@ unsafe impl Send for DoneGuard {}
 /// sources can use [`tokio::spawn`] during `init`.
 #[pyclass]
 pub struct NativeScenario {
-    scenario: Option<Scenario>,
+    /// Pure definition: descriptors only, no per-run state.
+    scenario: Scenario,
+    /// Most-recently-built session.  `None` until the first `run()`.
+    /// Replaced by every subsequent `run()`; views obtained from a
+    /// previous session are invalidated when this is overwritten.
+    session: Option<Session>,
     error_slot: ErrorSlot,
-    /// Per-node metadata: (dtype_str, view_kind).
-    node_info: Vec<(String, NativeNodeKind)>,
-    /// Cached Python view objects, indexed by node index.
+    /// Per-node metadata in registration order.
+    node_info: Vec<NodeInfo>,
+    /// Cached Python view objects, indexed by node index.  Built when
+    /// `session` is replaced; `None` for unit nodes.
     cached_views: Vec<Option<PyObject>>,
     /// Tokio runtime — kept alive for the scenario's lifetime.
     runtime: tokio::runtime::Runtime,
@@ -90,31 +124,32 @@ impl Drop for NativeScenario {
 }
 
 impl NativeScenario {
-    /// Record a node's metadata and eagerly create + cache its Python view.
-    fn push_node(
-        &mut self,
-        py: Python<'_>,
-        node_index: usize,
-        dtype: &str,
-        kind: NativeNodeKind,
-        shape: &[usize],
-    ) -> PyResult<()> {
-        // Ensure vectors are sized to accommodate node_index.
-        while self.node_info.len() <= node_index {
-            self.node_info.push((String::new(), NativeNodeKind::Unit)); // placeholder; overwritten below
-            self.cached_views.push(None);
-        }
-        self.node_info[node_index] = (dtype.to_string(), kind);
+    /// Append per-node metadata in registration order.
+    fn push_info(&mut self, dtype: &str, kind: NativeNodeKind, shape: &[usize]) {
+        self.node_info.push(NodeInfo {
+            dtype: dtype.to_string(),
+            kind,
+            shape: shape.to_vec(),
+        });
+        self.cached_views.push(None);
+    }
 
-        // Unit nodes carry no data; store Python None as the view.
-        let view = if kind == NativeNodeKind::Unit {
-            py.None()
-        } else {
-            let sc = self.scenario.as_ref().unwrap();
-            let ptr = sc.value_ptr(node_index);
-            create_view(py, ptr, shape, dtype, kind)?
-        };
-        self.cached_views[node_index] = Some(view);
+    /// Rebuild every cached view to point at the buffers of the current
+    /// session.  Called after each `run()` populates a new session.
+    fn rebuild_cached_views(&mut self, py: Python<'_>) -> PyResult<()> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no active session"))?;
+        for (idx, info) in self.node_info.iter().enumerate() {
+            let view = if info.kind == NativeNodeKind::Unit {
+                py.None()
+            } else {
+                let ptr = session.value_ptr(idx);
+                create_view(py, ptr, &info.shape, &info.dtype, info.kind)?
+            };
+            self.cached_views[idx] = Some(view);
+        }
         Ok(())
     }
 
@@ -143,7 +178,8 @@ impl NativeScenario {
             .build()
             .unwrap();
         Self {
-            scenario: Some(Scenario::new()),
+            scenario: Scenario::new(),
+            session: None,
             error_slot: Arc::new(Mutex::new(None)),
             node_info: Vec::new(),
             cached_views: Vec::new(),
@@ -153,12 +189,16 @@ impl NativeScenario {
         }
     }
 
-    /// Get a cached view for a node.
+    /// Get a cached view for a node.  Available only after the first
+    /// successful `run()`.
     fn view(&self, py: Python<'_>, node_index: usize) -> PyResult<PyObject> {
         match self.cached_views.get(node_index) {
             Some(Some(view)) => Ok(view.clone_ref(py)),
-            _ => Err(PyRuntimeError::new_err(format!(
-                "node {node_index} has no Python-representable view"
+            Some(None) => Err(PyRuntimeError::new_err(format!(
+                "node {node_index} has no view (run() the scenario first)"
+            ))),
+            None => Err(PyRuntimeError::new_err(format!(
+                "node {node_index} out of range"
             ))),
         }
     }
@@ -170,16 +210,15 @@ impl NativeScenario {
     #[pyo3(signature = (source_kind, dtype, shape, params))]
     fn add_native_source(
         &mut self,
-        py: Python<'_>,
         source_kind: &str,
         dtype: &str,
         shape: Vec<usize>,
         params: &Bound<'_, PyDict>,
     ) -> PyResult<usize> {
         let _guard = self.runtime.enter();
-        let sc = self.scenario.as_mut().unwrap();
-        let (idx, view_kind) = sources::dispatch_native_source(sc, source_kind, dtype, params)?;
-        self.push_node(py, idx, dtype, view_kind, &shape)?;
+        let (idx, view_kind) =
+            sources::dispatch_native_source(&mut self.scenario, source_kind, dtype, params)?;
+        self.push_info(dtype, view_kind, &shape);
         Ok(idx)
     }
 
@@ -192,7 +231,6 @@ impl NativeScenario {
     #[pyo3(signature = (kind, dtype, input_indices, shape, params))]
     fn add_native_operator(
         &mut self,
-        py: Python<'_>,
         kind: &str,
         dtype: Option<String>,
         input_indices: Vec<usize>,
@@ -206,18 +244,22 @@ impl NativeScenario {
         // For Unit outputs dtype is never consulted — the arm returns early
         // before dispatching on it.
         let dtype_str = dtype.as_deref().unwrap_or("");
-        let sc = self.scenario.as_mut().unwrap();
-        let (idx, view_kind) =
-            operators::dispatch_native_operator(sc, kind, dtype_str, &input_indices, params)?;
-        self.push_node(py, idx, dtype_str, view_kind, &shape)?;
+        let (idx, view_kind) = operators::dispatch_native_operator(
+            &mut self.scenario,
+            kind,
+            dtype_str,
+            &input_indices,
+            params,
+        )?;
+        self.push_info(dtype_str, view_kind, &shape);
         Ok(idx)
     }
 
     /// Register a Python source.
     ///
-    /// Immediately creates the graph node with channels.  A tokio driver task
-    /// is spawned that will call `source.init()` and iterate the returned
-    /// async iterators when the tokio runtime runs.
+    /// Appends a descriptor to the scenario.  The actual `init()` and
+    /// tokio driver task are deferred to session-build time inside
+    /// [`run`](Self::run).
     #[pyo3(signature = (py_source, output_kind, dtype, output_shape))]
     fn add_py_source(
         &mut self,
@@ -234,7 +276,6 @@ impl NativeScenario {
         let event_loop = self.ensure_event_loop(py)?;
 
         let erased = source::make_py_source(
-            py,
             output_type_id,
             dtype,
             output_kind,
@@ -243,9 +284,8 @@ impl NativeScenario {
             event_loop,
             self.error_slot.clone(),
         )?;
-        let sc = self.scenario.as_mut().unwrap();
-        let idx = sc.add_erased_source(erased);
-        self.push_node(py, idx, dtype, output_kind, &output_shape)?;
+        let idx = self.scenario.add_erased_source(erased);
+        self.push_info(dtype, output_kind, &output_shape);
         Ok(idx)
     }
 
@@ -257,11 +297,13 @@ impl NativeScenario {
     /// `dtype` strings are canonical numpy dtype names (e.g. `"float64"`).
     ///
     /// Input type validation is performed by
-    /// [`Scenario::add_erased_operator`].
+    /// [`Scenario::add_erased_operator`].  Each input's
+    /// `(kind, dtype, shape)` is captured into the operator's
+    /// [`InitFn`](crate::operator::InitFn) so the operator can rebuild
+    /// Python input views on every session start.
     #[pyo3(signature = (input_indices, input_types, output_type, output_shape, py_operator))]
     fn add_py_operator(
         &mut self,
-        py: Python<'_>,
         input_indices: Vec<usize>,
         input_types: Vec<(NativeNodeKind, String)>,
         output_type: (NativeNodeKind, String),
@@ -278,57 +320,40 @@ impl NativeScenario {
             .collect::<PyResult<Box<[_]>>>()?;
         let output_type_id = resolve_type_id(out_view_kind, &out_dtype)?;
 
-        // 2. Build input views (input nodes already exist).
-        //    Wrap NativeArrayView / NativeSeriesView in their Python-side
-        //    wrappers (ArrayView / SeriesView) so Python operators receive
-        //    the high-level types.
-        let views_mod = py.import("tradingflow.data.views")?;
-        let array_view_cls = views_mod.getattr("ArrayView")?;
-        let series_view_cls = views_mod.getattr("SeriesView")?;
-
-        let input_views: Vec<PyObject> = input_indices
+        // 2. Build per-input metadata for the operator's init closure.
+        //    The closure rebuilds views per session from this metadata
+        //    plus the input pointers handed in at session-build time.
+        let input_metadata: Vec<PyInputInfo> = input_indices
             .iter()
             .map(|&idx| {
-                let native = self.cached_views[idx]
-                    .as_ref()
-                    .map(|v| v.clone_ref(py))
-                    .ok_or_else(|| {
-                        PyRuntimeError::new_err(format!("node {idx} has no cached view"))
-                    })?;
-                let (_, kind) = &self.node_info[idx];
-                let wrapped: PyObject = match kind {
-                    NativeNodeKind::Array => array_view_cls.call1((native.bind(py),))?.unbind(),
-                    NativeNodeKind::Series => series_view_cls.call1((native.bind(py),))?.unbind(),
-                    // Unit inputs carry no data — pass None to the Python operator.
-                    NativeNodeKind::Unit => py.None(),
-                };
-                Ok(wrapped)
+                let info = &self.node_info[idx];
+                PyInputInfo {
+                    kind: info.kind,
+                    dtype: info.dtype.clone(),
+                    shape: info.shape.clone(),
+                }
             })
-            .collect::<PyResult<_>>()?;
-        let py_inputs: PyObject = pyo3::types::PyTuple::new(py, &input_views)?
-            .into_any()
-            .unbind();
+            .collect();
 
-        // 3. Construct the erased operator (calls operator.init internally).
+        // 3. Construct the erased operator (calls operator.init at
+        //    session-build time, not now).
         let erased = operator::make_py_operator(
-            py,
             input_type_ids,
+            input_metadata,
             output_type_id,
             &out_dtype,
             out_view_kind,
             &output_shape,
-            py_inputs,
             py_operator,
-            crate::data::Instant::MIN,
             self.error_slot.clone(),
         )?;
 
-        // 4. Register via the unified path (validates input TypeIds).
-        let sc = self.scenario.as_mut().unwrap();
-        let output_idx = sc.add_erased_operator(erased, &input_indices);
+        // 4. Register via the unified path (validates input TypeIds against
+        //    upstream descriptors).
+        let output_idx = self.scenario.add_erased_operator(erased, &input_indices);
 
-        // 5. Cache output node metadata and view.
-        self.push_node(py, output_idx, &out_dtype, out_view_kind, &output_shape)?;
+        // 5. Cache output node metadata.
+        self.push_info(&out_dtype, out_view_kind, &output_shape);
 
         Ok(output_idx)
     }
@@ -338,12 +363,16 @@ impl NativeScenario {
     /// Returns `Some(total)` only when every registered source provides an
     /// estimate; otherwise `None`.
     fn estimated_event_count(&self) -> Option<usize> {
-        self.scenario
-            .as_ref()
-            .and_then(|sc| sc.estimated_event_count())
+        self.scenario.estimated_event_count()
     }
 
     /// Run the event loop.
+    ///
+    /// Builds a fresh [`Session`] from the registered descriptors and
+    /// drives it to completion.  After return, [`view`](Self::view) can
+    /// be called to inspect the populated buffers.  Calling `run()` again
+    /// replaces the session and invalidates any view obtained from the
+    /// previous run.
     ///
     /// If Python sources have been registered, the asyncio event loop runs
     /// on the **main thread** (for proper signal handling) while the tokio
@@ -353,9 +382,20 @@ impl NativeScenario {
     /// `run_coroutine_threadsafe`.
     #[pyo3(signature = (on_flush=None))]
     fn run(&mut self, py: Python<'_>, on_flush: Option<PyObject>) -> PyResult<()> {
-        let mut scenario = self.scenario.take().ok_or_else(|| {
-            PyRuntimeError::new_err("scenario already consumed by a previous run()")
-        })?;
+        // Drop any prior session before building a fresh one.  Releases
+        // the previous session's buffers (and invalidates any user-held
+        // views from the prior run).
+        self.session = None;
+        // Reset error slot so a previous failed run does not poison the
+        // next one.
+        *self.error_slot.lock().unwrap() = None;
+
+        // Build a fresh session under the runtime guard so any
+        // tokio::spawn calls inside source `init` find an active runtime.
+        let mut session = {
+            let _guard = self.runtime.enter();
+            self.scenario.build_session()
+        };
 
         // Two-thread model:
         //   Background thread: tokio block_on(event loop + driver tasks)
@@ -432,8 +472,8 @@ impl NativeScenario {
                         }
                     };
 
-                rt.block_on(scenario.run_with_shutdown(on_flush_fn, shutdown));
-                (scenario, rt)
+                rt.block_on(session.run_with_shutdown(on_flush_fn, shutdown));
+                (session, rt)
             })
         };
 
@@ -444,6 +484,9 @@ impl NativeScenario {
             let wait_coro = event.call_method0(py, "wait")?;
             loop_.call_method1("run_until_complete", (wait_coro.bind(py),))?;
             loop_.call_method0("close")?;
+            // The loop has been closed, but `add_py_source` will create a
+            // fresh one on the next registration if needed.
+            self.event_loop = None;
         }
 
         // Join the background thread, periodically reacquiring the GIL
@@ -465,8 +508,8 @@ impl NativeScenario {
             }
         };
         match join_result {
-            Ok((scenario, rt)) => {
-                self.scenario = Some(scenario);
+            Ok((session, rt)) => {
+                self.session = Some(session);
                 self.runtime = rt;
             }
             Err(_) => {
@@ -475,6 +518,9 @@ impl NativeScenario {
                 ));
             }
         }
+
+        // Rebuild cached views to point at the new session's buffers.
+        self.rebuild_cached_views(py)?;
 
         if let Some(err) = self.error_slot.lock().unwrap().take() {
             Err(err)

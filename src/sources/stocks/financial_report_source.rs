@@ -41,6 +41,7 @@ use crate::{Array, Source};
 ///   are derived from the report date.
 ///
 /// Requires a tokio runtime to be active when added to a scenario.
+#[derive(Clone)]
 pub struct FinancialReportSource {
     path: String,
     report_date_column: String,

@@ -8,6 +8,7 @@ use crate::Instant;
 use crate::{Array, Input, Operator, Scalar};
 
 /// Average (arithmetic mean) of period returns since inception.
+#[derive(Clone)]
 pub struct AverageReturn<T: Scalar + Float> {
     _phantom: PhantomData<T>,
 }

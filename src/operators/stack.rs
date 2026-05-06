@@ -10,6 +10,7 @@ use num_traits::Float;
 use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, SliceProduced, SliceRefs};
 
 /// Stack N homogeneous arrays along a new axis.
+#[derive(Clone)]
 pub struct Stack<T: Scalar> {
     axis: usize,
     _phantom: std::marker::PhantomData<T>,
@@ -95,6 +96,7 @@ impl<T: Scalar> Operator for Stack<T> {
 /// sparse event streams).
 ///
 /// Float-only because `NaN` is used as the "no update" sentinel.
+#[derive(Clone)]
 pub struct StackSync<T: Scalar + Float> {
     axis: usize,
     _phantom: std::marker::PhantomData<T>,

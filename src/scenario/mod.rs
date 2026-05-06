@@ -1,17 +1,28 @@
-//! Scenario — the computation graph for event-driven computation.
+//! Scenario — a pure definition of an event-driven computation graph.
 //!
-//! A [`Scenario`] is a directed acyclic graph of nodes, where each node holds
-//! an arbitrary value of type `T: Send + 'static`.  Nodes are fed by
-//! [`Source`](crate::source::Source)s and connected by
-//! [`Operator`](crate::operator::Operator)s.
+//! A [`Scenario`] is an *immutable description* of a directed acyclic graph
+//! of nodes, where each node is either a [`Source`](crate::source::Source)
+//! producing timestamped events or an [`Operator`](crate::operator::Operator)
+//! consuming upstream values to produce its own.  The scenario itself owns
+//! no node values, channel receivers, or operator state — it stores only
+//! the type-erased descriptors ([`ErasedSource`](crate::source::ErasedSource),
+//! [`ErasedOperator`](crate::operator::ErasedOperator)) and the wiring
+//! between them.
+//!
+//! All runtime state lives on a [`Session`], built from a scenario by
+//! [`Scenario::build_session`].  Every call replays each descriptor's `init`
+//! against fresh buffers, so a single scenario can drive any number of
+//! independent sessions — useful for parameter sweeps, repeated
+//! backtests, and reproducibility.
 //!
 //! # Architecture
 //!
-//! Internally, nodes are stored as type-erased `(pointer, TypeId)` slots.
-//! Type safety is enforced at registration time via [`Handle<T>`] and
-//! [`TypeId`] checks.  After registration, operator dispatch uses raw pointer
-//! casts through monomorphised function pointers — zero dynamic dispatch
-//! overhead on the hot path.
+//! Internally, [`Session`] nodes are stored as type-erased
+//! `(pointer, TypeId)` slots.  Type safety is enforced at registration
+//! time on the scenario via [`Handle<T>`] and [`TypeId`] checks.  After
+//! registration, operator dispatch uses raw pointer casts through
+//! monomorphised function pointers — zero dynamic dispatch overhead on
+//! the hot path.
 //!
 //! Node indices encode topological order: if node `j` depends on node `i`,
 //! then `i < j`.  Flush propagation uses a min-heap keyed by node index to
@@ -21,26 +32,26 @@
 //!
 //! - [`Scenario::add_const`] — register a constant node (shorthand for
 //!   [`Const`](crate::operators::Const) operator).
-//! - [`Scenario::add_source`] — register a [`Source`](crate::source::Source),
-//!   creating an output node.  Requires a tokio runtime for sources that spawn
-//!   tasks internally.
+//! - [`Scenario::add_source`] — register a [`Source`](crate::source::Source).
 //! - [`Scenario::add_operator`] — register a concrete
-//!   [`Operator`](crate::operator::Operator), creating its output node.
-//!   Accepts typed [`Handle`]s for inputs and an optional trigger handle.
+//!   [`Operator`](crate::operator::Operator).  Accepts typed [`Handle`]s
+//!   for inputs.
 //!
 //! All operator registration flows through [`Scenario::add_erased_operator`],
-//! which accepts an [`ErasedOperator`](crate::operator::ErasedOperator).
-//! Source registration flows through [`Scenario::add_erased_source`], which
-//! accepts an [`ErasedSource`](crate::source::ErasedSource).
+//! and source registration through [`Scenario::add_erased_source`].
 //!
 //! # Execution
 //!
-//! - [`Scenario::flush`] — manually propagate updates through the graph for a
-//!   set of updated source node indices at a given timestamp.
-//! - [`Scenario::run`] — async event loop that drains all
-//!   historical and live source channels in timestamp order,
-//!   coalescing same-timestamp events before flushing.  See the [`queue`]
-//!   module for ordering guarantees and complexity.
+//! - [`Scenario::build_session`] — construct a fresh [`Session`] by
+//!   replaying every registered descriptor's `init` against newly
+//!   allocated buffers.
+//! - [`Scenario::run`] — convenience: build a session and drive its
+//!   async event loop until every source is exhausted, returning the
+//!   populated session for inspection.
+//!
+//! Per-session manual stepping ([`Session::flush`]) and the lower-level
+//! event loop ([`Session::run`], [`Session::run_with_shutdown`]) live on
+//! [`Session`].
 //!
 //! # Sub-modules
 //!
@@ -50,9 +61,11 @@ mod graph;
 pub mod handle;
 mod node;
 mod queue;
+mod session;
 
 pub use handle::{Handle, InputTypesHandles};
 pub use queue::ShutdownFlag;
+pub use session::Session;
 
 use std::any::TypeId;
 
@@ -64,7 +77,31 @@ use crate::source::{ErasedSource, Source};
 use graph::Graph;
 use node::Node;
 
-/// Type-erased computation graph for event-driven computation.
+/// One entry in a [`Scenario`] definition: either a source descriptor or
+/// an operator descriptor with its upstream input indices.
+enum NodeDescriptor {
+    Source(ErasedSource),
+    Operator {
+        erased: ErasedOperator,
+        input_indices: Box<[usize]>,
+    },
+}
+
+impl NodeDescriptor {
+    fn output_type_id(&self) -> TypeId {
+        match self {
+            NodeDescriptor::Source(s) => s.output_type_id(),
+            NodeDescriptor::Operator { erased, .. } => erased.output_type_id(),
+        }
+    }
+}
+
+/// Pure definition of a computation graph.
+///
+/// Holds [`ErasedSource`] / [`ErasedOperator`] descriptors and the input
+/// wiring between them.  Carries no per-run state — all runtime state
+/// (value buffers, channel receivers, operator state) lives on a
+/// [`Session`] built via [`build_session`](Self::build_session).
 ///
 /// # Type-safe API example
 ///
@@ -80,15 +117,19 @@ use node::Node;
 /// let hb = sc.add_const(Array::scalar(0.0));
 /// let hc = sc.add_operator(Add::new(), (ha, hb));
 ///
-/// sc.value_mut(ha)[0] = 10.0;
-/// sc.value_mut(hb)[0] = 3.0;
-/// sc.flush(Instant::from_nanos(1), &[ha.index(), hb.index()]);
+/// let mut session = sc.build_session();
+/// session.value_mut(ha)[0] = 10.0;
+/// session.value_mut(hb)[0] = 3.0;
+/// session.flush(Instant::from_nanos(1), &[ha.index(), hb.index()]);
 ///
-/// assert_eq!(sc.value(hc).as_slice(), &[13.0]);
+/// assert_eq!(session.value(hc).as_slice(), &[13.0]);
 /// ```
 pub struct Scenario {
-    graph: Graph,
-    source_indices: Vec<usize>,
+    /// Per-node descriptor in declaration (= topological) order.  Source
+    /// indices are derived from this on demand by
+    /// [`build_session`](Self::build_session) — no need to maintain a
+    /// separate vector.
+    descriptors: Vec<NodeDescriptor>,
     /// Cumulative estimated event count across all registered sources.
     /// Updated incrementally in [`Scenario::add_erased_source`]; becomes
     /// `None` and stays `None` as soon as any source reports `None`.
@@ -98,58 +139,43 @@ pub struct Scenario {
 impl Scenario {
     pub fn new() -> Self {
         Self {
-            graph: Graph::new(),
-            source_indices: Vec::new(),
+            descriptors: Vec::new(),
             estimated_event_count: Some(0),
         }
     }
 
-    /// Immutable access to a node's value.  Panics on TypeId mismatch.
-    #[inline(always)]
-    pub fn value<T: Send + 'static>(&self, h: Handle<T>) -> &T {
-        let node = &self.graph.nodes[h.index()];
-        assert_eq!(
-            node.type_id,
-            TypeId::of::<T>(),
-            "type mismatch at node {}",
-            h.index(),
-        );
-        unsafe { &*(node.value_ptr as *const T) }
+    /// Number of registered nodes.
+    pub fn len(&self) -> usize {
+        self.descriptors.len()
     }
 
-    /// Mutable access to a node's value.  Panics on TypeId mismatch.
-    #[inline(always)]
-    pub fn value_mut<T: Send + 'static>(&mut self, h: Handle<T>) -> &mut T {
-        let node = &self.graph.nodes[h.index()];
-        assert_eq!(
-            node.type_id,
-            TypeId::of::<T>(),
-            "type mismatch at node {}",
-            h.index(),
-        );
-        unsafe { &mut *(node.value_ptr as *mut T) }
+    /// Whether any nodes are registered.
+    pub fn is_empty(&self) -> bool {
+        self.descriptors.is_empty()
     }
 
-    /// Raw value pointer to a node.
-    pub fn value_ptr(&self, index: usize) -> *mut u8 {
-        self.graph.nodes[index].value_ptr
-    }
-
-    /// The output `TypeId` of a node.  Used by the Python bridge to build the
-    /// type-id list for operators with `!Sized` `Inputs` (e.g. Stack/Concat).
+    /// The output `TypeId` of a registered node.  Used by the Python
+    /// bridge to build the type-id list for operators with `!Sized`
+    /// `Inputs` (e.g. Stack/Concat).
+    #[cfg(feature = "python")]
     pub(crate) fn node_type_id(&self, index: usize) -> TypeId {
-        self.graph.nodes[index].type_id
+        self.descriptors[index].output_type_id()
     }
 
     /// Register a constant node with an initial value.
-    pub fn add_const<T: Send + 'static>(&mut self, value: T) -> Handle<T> {
+    pub fn add_const<T: Clone + Send + 'static>(&mut self, value: T) -> Handle<T> {
+        // `Clone` is required for the underlying `Const` operator: the
+        // erased layer clones its spec on every init, and the value is
+        // moved into the freshly built output.
         self.add_operator(Const::new(value), ())
     }
 
     /// Register a [`Source`], creating the output node.
     ///
     /// Sources that use [`tokio::spawn`] internally (e.g. [`ArraySource`],
-    /// [`IterSource`]) require a tokio runtime to be active.
+    /// [`IterSource`]) require a tokio runtime to be active when the
+    /// resulting session's event loop runs — registration itself does not
+    /// touch tokio.
     pub fn add_source<S: Source>(&mut self, source: S) -> Handle<S::Output> {
         let erased = ErasedSource::from_source(source);
         Handle::new(self.add_erased_source(erased))
@@ -189,65 +215,118 @@ impl Scenario {
     /// Register a type-erased source.
     pub fn add_erased_source(&mut self, erased: ErasedSource) -> usize {
         let estimate = erased.estimated_event_count();
-        let node = Node::from_erased_source(erased, Instant::MIN);
-        let output_idx = self.graph.add_node(node);
-        self.source_indices.push(output_idx);
         self.estimated_event_count = match (self.estimated_event_count, estimate) {
             (Some(acc), Some(n)) => Some(acc.saturating_add(n)),
             _ => None,
         };
-        output_idx
+        let idx = self.descriptors.len();
+        self.descriptors.push(NodeDescriptor::Source(erased));
+        idx
     }
 
     /// Register a type-erased operator.
+    ///
+    /// Validates that every input node already exists, and that its
+    /// declared input type-ids match the upstream nodes' output type-ids.
+    /// Panics on arity or TypeId mismatch — same diagnostics as the
+    /// previous in-place graph build, just at registration time against
+    /// the descriptor list.
     pub fn add_erased_operator(
         &mut self,
         erased: ErasedOperator,
         input_indices: &[usize],
     ) -> usize {
-        for &idx in input_indices {
+        // Validate inputs exist and types match before storing.
+        let expected_input_type_ids = erased.input_type_ids();
+        assert_eq!(
+            expected_input_type_ids.len(),
+            input_indices.len(),
+            "arity mismatch: operator expects {} inputs, got {}",
+            expected_input_type_ids.len(),
+            input_indices.len(),
+        );
+        for (i, &idx) in input_indices.iter().enumerate() {
             assert!(
-                idx < self.graph.len(),
-                "invalid index: node {idx} out of range"
+                idx < self.descriptors.len(),
+                "invalid index: node {idx} out of range",
+            );
+            let actual = self.descriptors[idx].output_type_id();
+            assert_eq!(
+                expected_input_type_ids[i], actual,
+                "type mismatch at input {i}",
             );
         }
-        let input_ptrs: Box<[*const u8]> = input_indices
-            .iter()
-            .map(|&idx| self.graph.nodes[idx].value_ptr as *const u8)
-            .collect();
-        let input_type_ids: Box<[TypeId]> = input_indices
-            .iter()
-            .map(|&idx| self.graph.nodes[idx].type_id)
-            .collect();
-        let input_node_indices: Box<[usize]> = input_indices.into();
-        let node = Node::from_erased_operator(
+
+        let idx = self.descriptors.len();
+        self.descriptors.push(NodeDescriptor::Operator {
             erased,
-            input_ptrs,
-            input_node_indices,
-            &input_type_ids,
-            Instant::MIN,
-        );
-        let output_idx = self.graph.add_node(node);
-        for (pos, &input_idx) in input_indices.iter().enumerate() {
-            self.graph.add_trigger_edge(input_idx, output_idx, pos);
-        }
-        output_idx
+            input_indices: input_indices.to_vec().into_boxed_slice(),
+        });
+        idx
     }
 
     /// Sum of estimated event counts across all sources.
     ///
     /// Returns `Some(total)` only when **every** registered source provides
     /// an estimate; otherwise `None`.  Cached — updated incrementally as
-    /// sources are registered.  Used by
-    /// [`Scenario::run`](crate::Scenario::run) to report progress.
+    /// sources are registered.  Used by [`Session::run`] for progress
+    /// reporting.
     #[inline]
     pub fn estimated_event_count(&self) -> Option<usize> {
         self.estimated_event_count
     }
 
-    /// Propagate updates through the graph.
-    pub fn flush(&mut self, timestamp: Instant, updated_sources: &[usize]) {
-        self.graph.flush(timestamp, updated_sources);
+    /// Build a fresh [`Session`] by replaying every registered descriptor.
+    ///
+    /// Each call allocates fresh node buffers and operator state via the
+    /// descriptors' [`init`](crate::source::ErasedSource::init) closures
+    /// (which take `&self` and clone the captured spec on every call).
+    /// The returned session is independent of any other previously built
+    /// from the same scenario.
+    pub fn build_session(&self) -> Session {
+        let mut graph = Graph::new();
+        let mut source_indices = Vec::new();
+
+        for (idx, descriptor) in self.descriptors.iter().enumerate() {
+            match descriptor {
+                NodeDescriptor::Source(erased) => {
+                    let node = Node::from_erased_source(erased, Instant::MIN);
+                    graph.add_node(node);
+                    source_indices.push(idx);
+                }
+                NodeDescriptor::Operator {
+                    erased,
+                    input_indices,
+                } => {
+                    let input_ptrs: Box<[*const u8]> = input_indices
+                        .iter()
+                        .map(|&i| graph.nodes[i].value_ptr as *const u8)
+                        .collect();
+                    let input_type_ids: Box<[TypeId]> = input_indices
+                        .iter()
+                        .map(|&i| graph.nodes[i].type_id)
+                        .collect();
+                    let input_node_indices: Box<[usize]> = input_indices.clone();
+                    let node = Node::from_erased_operator(
+                        erased,
+                        input_ptrs,
+                        input_node_indices,
+                        &input_type_ids,
+                        Instant::MIN,
+                    );
+                    let output_idx = graph.add_node(node);
+                    for (pos, &input_idx) in input_indices.iter().enumerate() {
+                        graph.add_trigger_edge(input_idx, output_idx, pos);
+                    }
+                }
+            }
+        }
+
+        Session {
+            graph,
+            source_indices,
+            estimated_event_count: self.estimated_event_count,
+        }
     }
 }
 
@@ -287,8 +366,9 @@ mod tests {
         let mut sc = Scenario::new();
         let h = sc.add_const(BTreeMap::<String, f64>::new());
 
-        sc.value_mut(h).insert("price".to_string(), 42.0);
-        assert_eq!(sc.value(h).get("price"), Some(&42.0));
+        let mut session = sc.build_session();
+        session.value_mut(h).insert("price".to_string(), 42.0);
+        assert_eq!(session.value(h).get("price"), Some(&42.0));
     }
 
     // -- Simple operator tests ------------------------------------------------
@@ -300,11 +380,12 @@ mod tests {
         let hb = sc.add_const(Array::scalar(0.0_f64));
         let hc = sc.add_operator(Add::new(), (ha, hb));
 
-        sc.value_mut(ha)[0] = 10.0;
-        sc.value_mut(hb)[0] = 3.0;
-        sc.flush(ts(1), &[ha.index(), hb.index()]);
+        let mut session = sc.build_session();
+        session.value_mut(ha)[0] = 10.0;
+        session.value_mut(hb)[0] = 3.0;
+        session.flush(ts(1), &[ha.index(), hb.index()]);
 
-        assert_eq!(sc.value(hc).as_slice(), &[13.0]);
+        assert_eq!(session.value(hc).as_slice(), &[13.0]);
     }
 
     #[test]
@@ -314,8 +395,9 @@ mod tests {
         let hb = sc.add_const(Array::from_vec(&[2], vec![10.0_f64, 20.0]));
         let hc = sc.add_operator(Add::new(), (ha, hb));
 
-        sc.flush(ts(1), &[ha.index(), hb.index()]);
-        assert_eq!(sc.value(hc).as_slice(), &[11.0, 22.0]);
+        let mut session = sc.build_session();
+        session.flush(ts(1), &[ha.index(), hb.index()]);
+        assert_eq!(session.value(hc).as_slice(), &[11.0, 22.0]);
     }
 
     #[test]
@@ -328,9 +410,10 @@ mod tests {
         use crate::operators::num::Multiply;
         let hout = sc.add_operator(Multiply::new(), (hab, ha));
 
-        sc.flush(ts(1), &[ha.index(), hb.index()]);
+        let mut session = sc.build_session();
+        session.flush(ts(1), &[ha.index(), hb.index()]);
         // (2+3) * 2 = 10
-        assert_eq!(sc.value(hout).as_slice(), &[10.0]);
+        assert_eq!(session.value(hout).as_slice(), &[10.0]);
     }
 
     #[test]
@@ -341,18 +424,45 @@ mod tests {
         let hsum = sc.add_operator(Add::new(), (ha, hb));
         let hseries = sc.add_operator(Record::<f64>::new(), hsum);
 
-        sc.value_mut(ha)[0] = 10.0;
-        sc.value_mut(hb)[0] = 3.0;
-        sc.flush(ts(1), &[ha.index(), hb.index()]);
+        let mut session = sc.build_session();
+        session.value_mut(ha)[0] = 10.0;
+        session.value_mut(hb)[0] = 3.0;
+        session.flush(ts(1), &[ha.index(), hb.index()]);
 
-        sc.value_mut(ha)[0] = 20.0;
-        sc.value_mut(hb)[0] = 7.0;
-        sc.flush(ts(2), &[ha.index(), hb.index()]);
+        session.value_mut(ha)[0] = 20.0;
+        session.value_mut(hb)[0] = 7.0;
+        session.flush(ts(2), &[ha.index(), hb.index()]);
 
-        let series: &Series<f64> = sc.value(hseries);
+        let series: &Series<f64> = session.value(hseries);
         assert_eq!(series.len(), 2);
         assert_eq!(series.timestamps(), tss(&[1, 2]).as_slice());
         assert_eq!(series.values(), &[13.0, 27.0]);
+    }
+
+    #[test]
+    fn scenario_reusable_definition() {
+        // The same scenario can drive multiple independent sessions.
+        let mut sc = Scenario::new();
+        let ha = sc.add_const(Array::scalar(0.0_f64));
+        let hb = sc.add_const(Array::scalar(0.0_f64));
+        let hc = sc.add_operator(Add::new(), (ha, hb));
+
+        let mut s1 = sc.build_session();
+        s1.value_mut(ha)[0] = 10.0;
+        s1.value_mut(hb)[0] = 3.0;
+        s1.flush(ts(1), &[ha.index(), hb.index()]);
+        assert_eq!(s1.value(hc).as_slice(), &[13.0]);
+
+        let mut s2 = sc.build_session();
+        // Fresh session — no state carried over from s1.
+        assert_eq!(s2.value(hc).as_slice(), &[0.0]);
+        s2.value_mut(ha)[0] = 100.0;
+        s2.value_mut(hb)[0] = 200.0;
+        s2.flush(ts(1), &[ha.index(), hb.index()]);
+        assert_eq!(s2.value(hc).as_slice(), &[300.0]);
+
+        // s1 still has its own state.
+        assert_eq!(s1.value(hc).as_slice(), &[13.0]);
     }
 
     // -- Async run tests ------------------------------------------------------
@@ -366,9 +476,9 @@ mod tests {
         ));
         let hseries = sc.add_operator(Record::<f64>::new(), ha);
 
-        sc.run(|_, _, _| {}).await;
+        let session = sc.run(|_, _, _| {}).await;
 
-        let series: &Series<f64> = sc.value(hseries);
+        let series: &Series<f64> = session.value(hseries);
         assert_eq!(series.len(), 3);
         assert_eq!(series.timestamps(), tss(&[1, 2, 3]).as_slice());
         assert_eq!(series.values(), &[10.0, 20.0, 30.0]);
@@ -388,9 +498,9 @@ mod tests {
         let ho = sc.add_operator(Add::new(), (ha, hb));
         let hseries = sc.add_operator(Record::<f64>::new(), ho);
 
-        sc.run(|_, _, _| {}).await;
+        let session = sc.run(|_, _, _| {}).await;
 
-        let series: &Series<f64> = sc.value(hseries);
+        let series: &Series<f64> = session.value(hseries);
         // ts=1: 10+0=10, ts=2: 10+20=30, ts=3: 30+40=70
         assert_eq!(series.len(), 3);
         assert_eq!(series.timestamps(), tss(&[1, 2, 3]).as_slice());
@@ -411,9 +521,9 @@ mod tests {
         let ho = sc.add_operator(Add::new(), (ha, hb));
         let hseries = sc.add_operator(Record::<f64>::new(), ho);
 
-        sc.run(|_, _, _| {}).await;
+        let session = sc.run(|_, _, _| {}).await;
 
-        let series: &Series<f64> = sc.value(hseries);
+        let series: &Series<f64> = session.value(hseries);
         assert_eq!(series.len(), 2);
         assert_eq!(series.timestamps(), tss(&[1, 2]).as_slice());
         assert_eq!(series.values(), &[110.0, 220.0]);
@@ -436,9 +546,9 @@ mod tests {
         let hout = sc.add_operator(Multiply::new(), (hab, ha));
         let hseries = sc.add_operator(Record::<f64>::new(), hout);
 
-        sc.run(|_, _, _| {}).await;
+        let session = sc.run(|_, _, _| {}).await;
 
-        let series: &Series<f64> = sc.value(hseries);
+        let series: &Series<f64> = session.value(hseries);
         assert_eq!(series.len(), 2);
         // ts=1: (2+3)*2=10, ts=2: (5+10)*5=75
         assert_eq!(series.values(), &[10.0, 75.0]);
@@ -454,9 +564,9 @@ mod tests {
         let ho = sc.add_operator(Filter::new(|v: &Array<f64>| v[0] > 3.0), ha);
         let hseries = sc.add_operator(Record::<f64>::new(), ho);
 
-        sc.run(|_, _, _| {}).await;
+        let session = sc.run(|_, _, _| {}).await;
 
-        let series: &Series<f64> = sc.value(hseries);
+        let series: &Series<f64> = session.value(hseries);
         // passes: ts=2(5.0), ts=4(10.0)
         assert_eq!(series.len(), 2);
         assert_eq!(series.timestamps(), tss(&[2, 4]).as_slice());
@@ -481,9 +591,9 @@ mod tests {
         );
         let hs = sc.add_operator(Record::<f64>::new(), ho);
 
-        sc.run(|_, _, _| {}).await;
+        let session = sc.run(|_, _, _| {}).await;
 
-        let series: &Series<f64> = sc.value(hs);
+        let series: &Series<f64> = session.value(hs);
         assert_eq!(series.len(), 1);
         assert_eq!(series.timestamps(), tss(&[2]).as_slice());
         assert_eq!(series.values(), &[20.0]);
@@ -508,9 +618,9 @@ mod tests {
         let ho = sc.add_operator(Clocked::new(Add::new()), (hclock, (ha, hb)));
         let hs = sc.add_operator(Record::<f64>::new(), ho);
 
-        sc.run(|_, _, _| {}).await;
+        let session = sc.run(|_, _, _| {}).await;
 
-        let series: &Series<f64> = sc.value(hs);
+        let series: &Series<f64> = session.value(hs);
         assert_eq!(series.len(), 1);
         assert_eq!(series.timestamps(), tss(&[2]).as_slice());
         assert_eq!(series.values(), &[12.0]);
@@ -538,11 +648,32 @@ mod tests {
         );
         let hs = sc.add_operator(Record::<f64>::new(), ho);
 
-        sc.run(|_, _, _| {}).await;
+        let session = sc.run(|_, _, _| {}).await;
 
-        let series: &Series<f64> = sc.value(hs);
+        let series: &Series<f64> = session.value(hs);
         assert_eq!(series.len(), 2);
         assert_eq!(series.timestamps(), tss(&[2, 4]).as_slice());
         assert_eq!(series.values(), &[20.0, 40.0]);
+    }
+
+    #[tokio::test]
+    async fn scenario_repeated_run() {
+        // The same scenario definition can drive multiple independent
+        // event-loop sessions.  Each session is built fresh from the
+        // descriptors — no state carries over.
+        let mut sc = Scenario::new();
+        let ha = sc.add_source(ArraySource::new(
+            Series::from_vec(&[], tss(&[1, 2, 3]), vec![10.0, 20.0, 30.0]),
+            Array::scalar(0.0),
+        ));
+        let hseries = sc.add_operator(Record::<f64>::new(), ha);
+
+        for _ in 0..3 {
+            let session = sc.run(|_, _, _| {}).await;
+            let series: &Series<f64> = session.value(hseries);
+            assert_eq!(series.len(), 3);
+            assert_eq!(series.timestamps(), tss(&[1, 2, 3]).as_slice());
+            assert_eq!(series.values(), &[10.0, 20.0, 30.0]);
+        }
     }
 }

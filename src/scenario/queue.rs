@@ -13,7 +13,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use crate::Instant;
 use crate::source::PollFn;
 
-use super::Scenario;
+use super::Session;
 use super::node::{ChannelKind, SourceState};
 
 /// Shared shutdown flag for cooperative cancellation of the event loop.
@@ -196,15 +196,15 @@ async fn drain_live(
 }
 
 // ---------------------------------------------------------------------------
-// Scenario — event loop
+// Session — event loop
 // ---------------------------------------------------------------------------
 
-impl Scenario {
+impl Session {
     /// Run the unified event loop.
     ///
     /// Consumes all historical and live events from every registered source
     /// in timestamp order, propagating each batch through the graph via
-    /// [`Graph::flush`].
+    /// [`Graph::flush`](super::graph::Graph::flush).
     ///
     /// # Ordering guarantees
     ///
@@ -410,6 +410,35 @@ impl Scenario {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario — convenience entry points that build a fresh session
+// ---------------------------------------------------------------------------
+
+impl super::Scenario {
+    /// Build a fresh [`Session`] and drive its event loop until every
+    /// source is exhausted.  Equivalent to `self.build_session().run(...)`,
+    /// returning the populated session for inspection.
+    pub async fn run(
+        &self,
+        on_flush: impl FnMut(Instant, usize, Option<usize>),
+    ) -> Session {
+        let mut session = self.build_session();
+        session.run(on_flush).await;
+        session
+    }
+
+    /// Like [`run`](Self::run), but accepts a shared [`ShutdownFlag`].
+    pub async fn run_with_shutdown(
+        &self,
+        on_flush: impl FnMut(Instant, usize, Option<usize>),
+        shutdown: ShutdownFlag,
+    ) -> Session {
+        let mut session = self.build_session();
+        session.run_with_shutdown(on_flush, shutdown).await;
+        session
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests — randomized event loop invariant checks
 // ---------------------------------------------------------------------------
 
@@ -435,6 +464,7 @@ mod tests {
     // -- Test source ----------------------------------------------------------
 
     /// A source backed by pre-filled bounded channels.
+    #[derive(Clone)]
     struct PrefilledSource {
         hist_events: Vec<(Instant, f64)>,
         live_events: Vec<(Instant, f64)>,
@@ -482,6 +512,7 @@ mod tests {
 
     // -- Global logger operator -----------------------------------------------
 
+    #[derive(Clone)]
     struct GlobalLogger {
         source_id: usize,
         log: Arc<Mutex<Vec<(Instant, usize)>>>,
@@ -655,9 +686,16 @@ mod tests {
     async fn live_clamping() {
         use crate::operators::Record;
 
+        // Single-shot pre-built channel pair, shared via `Arc<Mutex<Option<…>>>`
+        // so the source spec is `Clone` (the trait now requires it).  The
+        // `init` method takes the receivers out on first call; a second
+        // call would panic, which is fine for this test.
+        type ChannelPair =
+            (mpsc::Receiver<(Instant, f64)>, mpsc::Receiver<(Instant, f64)>);
+
+        #[derive(Clone)]
         struct ManualChannel {
-            hist_rx: mpsc::Receiver<(Instant, f64)>,
-            live_rx: mpsc::Receiver<(Instant, f64)>,
+            channels: Arc<Mutex<Option<ChannelPair>>>,
         }
 
         impl Source for ManualChannel {
@@ -672,7 +710,13 @@ mod tests {
                 mpsc::Receiver<(Instant, f64)>,
                 Array<f64>,
             ) {
-                (self.hist_rx, self.live_rx, Array::scalar(0.0_f64))
+                let (hist_rx, live_rx) = self
+                    .channels
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("ManualChannel.init called more than once");
+                (hist_rx, live_rx, Array::scalar(0.0_f64))
             }
 
             fn write(event: f64, output: &mut Array<f64>, _timestamp: Instant) -> bool {
@@ -687,16 +731,18 @@ mod tests {
         drop(hist_tx);
 
         let mut sc = Scenario::new();
-        let hs = sc.add_source(ManualChannel { hist_rx, live_rx });
+        let hs = sc.add_source(ManualChannel {
+            channels: Arc::new(Mutex::new(Some((hist_rx, live_rx)))),
+        });
         let hrec = sc.add_operator(Record::<f64>::new(), hs);
 
         tokio::spawn(async move {
             live_tx.send((ts(50), 2.0_f64)).await.unwrap();
         });
 
-        sc.run(|_, _, _| {}).await;
+        let session = sc.run(|_, _, _| {}).await;
 
-        let series: &Series<f64> = sc.value(hrec);
+        let series: &Series<f64> = session.value(hrec);
         assert_eq!(series.len(), 1);
         assert_eq!(series.timestamps(), &[ts(100)]);
     }
@@ -728,10 +774,10 @@ mod tests {
                 source_data.push((hist, live));
             }
 
-            sc.run(|_, _, _| {}).await;
+            let session = sc.run(|_, _, _| {}).await;
 
             for (i, (hr, (hist, live))) in records.iter().zip(source_data.iter()).enumerate() {
-                let series: &Series<f64> = sc.value(*hr);
+                let series: &Series<f64> = session.value(*hr);
                 check_invariants(series, hist, live, i, seed);
             }
             check_global_log(&log.lock().unwrap(), seed);

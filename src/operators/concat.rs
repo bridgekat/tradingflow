@@ -10,6 +10,7 @@ use num_traits::Float;
 use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, SliceProduced, SliceRefs};
 
 /// Concatenate N homogeneous arrays along an existing axis.
+#[derive(Clone)]
 pub struct Concat<T: Scalar> {
     axis: usize,
     _phantom: std::marker::PhantomData<T>,
@@ -86,6 +87,7 @@ impl<T: Scalar> Operator for Concat<T> {
 /// motivation.
 ///
 /// Float-only because `NaN` is used as the "no update" sentinel.
+#[derive(Clone)]
 pub struct ConcatSync<T: Scalar + Float> {
     axis: usize,
     _phantom: std::marker::PhantomData<T>,

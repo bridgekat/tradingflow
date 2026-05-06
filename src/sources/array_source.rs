@@ -12,6 +12,7 @@ use crate::{Array, Scalar, Series, Source};
 /// empty.
 ///
 /// Requires a tokio runtime to be active when added to a scenario.
+#[derive(Clone)]
 pub struct ArraySource<T: Scalar> {
     series: Series<T>,
     default: Array<T>,

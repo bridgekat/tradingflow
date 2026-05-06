@@ -10,6 +10,7 @@ use crate::{Array, Input, InputTypes, Operator, Scalar};
 /// Drawdown from the running maximum: `(current - max) / max`.
 ///
 /// Always non-positive.  Zero when at a new high.
+#[derive(Clone)]
 pub struct Drawdown<T: Scalar + Float> {
     _phantom: PhantomData<T>,
 }

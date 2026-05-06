@@ -8,6 +8,7 @@ use crate::{Input, InputTypes, Instant, Operator};
 ///
 /// Generic over any `T: Clone + Send + 'static`. Useful as a trigger-gated
 /// passthrough when combined with a clock trigger.
+#[derive(Clone)]
 pub struct Id<T: Clone + Send + 'static> {
     _phantom: PhantomData<T>,
 }

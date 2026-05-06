@@ -6,6 +6,7 @@ use crate::Instant;
 use crate::{Array, Input, InputTypes, Operator, Scalar};
 
 /// Element-wise NaN replacement: replaces each NaN with `val`.
+#[derive(Clone)]
 pub struct Fillna<T: Scalar> {
     val: T,
 }

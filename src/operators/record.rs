@@ -5,6 +5,7 @@ use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, Series};
 /// Record an array stream into a time series.
 ///
 /// Shape is inferred from the input at init time.
+#[derive(Clone)]
 pub struct Record<T: Scalar> {
     _phantom: std::marker::PhantomData<T>,
 }

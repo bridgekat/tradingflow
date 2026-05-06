@@ -7,6 +7,7 @@ use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, Series};
 ///
 /// If there are fewer than `offset + 1` values in the input series,
 /// the output is filled with the provided `fill` value.
+#[derive(Clone)]
 pub struct Lag<T: Scalar> {
     offset: usize,
     fill: T,

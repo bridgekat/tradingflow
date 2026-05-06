@@ -9,12 +9,13 @@ use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 /// When the predicate returns `true`, the input is copied to the output and
 /// `compute` returns `true`. Otherwise the output is left unchanged and
 /// `compute` returns `false`.
-pub struct Filter<T: Scalar, F: Fn(&Array<T>) -> bool> {
+#[derive(Clone)]
+pub struct Filter<T: Scalar, F: Fn(&Array<T>) -> bool + Clone> {
     predicate: F,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar, F: Fn(&Array<T>) -> bool> Filter<T, F> {
+impl<T: Scalar, F: Fn(&Array<T>) -> bool + Clone> Filter<T, F> {
     pub fn new(predicate: F) -> Self {
         Self {
             predicate,
@@ -23,7 +24,7 @@ impl<T: Scalar, F: Fn(&Array<T>) -> bool> Filter<T, F> {
     }
 }
 
-impl<T: Scalar, F: Fn(&Array<T>) -> bool + Send + 'static> Operator for Filter<T, F> {
+impl<T: Scalar, F: Fn(&Array<T>) -> bool + Clone + Send + 'static> Operator for Filter<T, F> {
     type State = Self;
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;

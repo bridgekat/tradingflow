@@ -8,6 +8,7 @@ use crate::Instant;
 use crate::{Array, Input, Operator, Scalar};
 
 /// Population standard deviation of period returns since inception.
+#[derive(Clone)]
 pub struct Volatility<T: Scalar + Float> {
     _phantom: PhantomData<T>,
 }

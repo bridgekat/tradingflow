@@ -425,6 +425,23 @@ class TestScenario:
         assert ts1 == ts2
         np.testing.assert_array_equal(v1, v2)
 
+    def test_same_scenario_can_be_rerun(self) -> None:
+        """A single scenario instance is reusable: each `run()` builds a
+        fresh session and yields the same result for deterministic inputs."""
+        sc = Scenario()
+        a = sc.add_source(ArraySource([ts(1), ts(2), ts(3)], [10.0, 20.0, 30.0]))
+        b = sc.add_source(ArraySource([ts(1), ts(2), ts(3)], [1.0, 2.0, 3.0]))
+        c = sc.add_operator(Add(a, b))
+        hs = sc.add_operator(Record(c))
+
+        results: list[list[float]] = []
+        for _ in range(3):
+            sc.run()
+            results.append(list(sc.series_view(hs).values()))
+
+        for r in results:
+            assert r == pytest.approx([11.0, 22.0, 33.0])
+
 
 # =========================================================================
 # Mixed Rust + Python sources and operators

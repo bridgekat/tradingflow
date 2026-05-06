@@ -6,6 +6,7 @@ use crate::Instant;
 use crate::{Array, Input, InputTypes, Operator, Scalar};
 
 /// Element-wise clamp to `[lo, hi]`.
+#[derive(Clone)]
 pub struct Clamp<T: Scalar> {
     lo: T,
     hi: T,

@@ -70,14 +70,16 @@ impl DoneCallback {
 
 /// Construct an [`ErasedSource`] for a Python-implemented source.
 ///
-/// Allocates the output value, creates its Python view, and packages
-/// everything into a type-erased source.  The caller provides the
-/// resolved `output_type_id` and `out_view_kind`, mirroring how
-/// [`make_py_operator`](super::operator::make_py_operator) receives
-/// these from the scenario.  Dtype dispatch is only needed for the
-/// output allocation — the write function is non-generic.
+/// Packages the source spec into a type-erased source whose [`InitFn`] is
+/// `Fn`: every invocation allocates a fresh output value, creates fresh
+/// Python views, and spawns a fresh `drive_source` task.  The descriptor
+/// itself is therefore reusable across multiple scenario sessions.
+///
+/// The caller provides the resolved `output_type_id` and `out_view_kind`,
+/// mirroring how [`make_py_operator`](super::operator::make_py_operator)
+/// receives these from the scenario.  Dtype dispatch is only needed for
+/// the output allocation — the write function is non-generic.
 pub fn make_py_source(
-    py: Python<'_>,
     output_type_id: TypeId,
     out_dtype: &str,
     out_view_kind: NativeNodeKind,
@@ -86,47 +88,75 @@ pub fn make_py_source(
     event_loop: PyObject,
     error_slot: ErrorSlot,
 ) -> PyResult<ErasedSource> {
-    // Allocate output and create its Python view.
-    let (output_ptr, output_drop_fn): (*mut u8, unsafe fn(*mut u8)) =
-        if out_view_kind == NativeNodeKind::Unit {
-            (Box::into_raw(Box::new(())) as *mut u8, drop_fn::<()>)
-        } else {
-            macro_rules! alloc_output {
-                ($T:ty) => {
-                    match out_view_kind {
-                        NativeNodeKind::Array => (
-                            Box::into_raw(Box::new(Array::<$T>::zeros(output_shape))) as *mut u8,
-                            drop_fn::<Array<$T>> as unsafe fn(*mut u8),
-                        ),
-                        NativeNodeKind::Series => (
-                            Box::into_raw(Box::new(Series::<$T>::new(output_shape))) as *mut u8,
-                            drop_fn::<Series<$T>> as unsafe fn(*mut u8),
-                        ),
-                        NativeNodeKind::Unit => unreachable!(),
-                    }
-                };
-            }
-            dispatch_dtype!(out_dtype, alloc_output)
-        };
+    // Resolve the per-init allocator for the output value.  The dtype
+    // dispatch happens here once; the resulting function pointer is then
+    // called inside the (Fn) init closure on every session start.
+    let (alloc_output_fn, output_drop_fn): (
+        fn(&[usize]) -> *mut u8,
+        unsafe fn(*mut u8),
+    ) = if out_view_kind == NativeNodeKind::Unit {
+        (alloc_unit, drop_fn::<()>)
+    } else {
+        macro_rules! resolve_alloc {
+            ($T:ty) => {
+                match out_view_kind {
+                    NativeNodeKind::Array => (
+                        alloc_array::<$T> as fn(&[usize]) -> *mut u8,
+                        drop_fn::<Array<$T>> as unsafe fn(*mut u8),
+                    ),
+                    NativeNodeKind::Series => (
+                        alloc_series::<$T> as fn(&[usize]) -> *mut u8,
+                        drop_fn::<Series<$T>> as unsafe fn(*mut u8),
+                    ),
+                    NativeNodeKind::Unit => unreachable!(),
+                }
+            };
+        }
+        dispatch_dtype!(out_dtype, resolve_alloc)
+    };
 
-    let py_output = create_view(py, output_ptr, output_shape, out_dtype, out_view_kind)?;
+    // Owned, clone-able captures for the closure.
+    let out_dtype_owned = out_dtype.to_string();
+    let output_shape_owned: Vec<usize> = output_shape.to_vec();
 
-    // Clone the view for each receiver (hist + live share the same output).
-    let view_for_hist = py_output.clone_ref(py);
-    let view_for_live = py_output;
-    let error_for_driver = error_slot.clone();
-
-    let init_fn: Box<dyn FnOnce(Instant) -> (*mut u8, *mut u8, *mut u8)> =
+    let init_fn: Box<dyn Fn(Instant) -> (*mut u8, *mut u8, *mut u8)> =
         Box::new(move |timestamp: Instant| {
+            let output_ptr = alloc_output_fn(&output_shape_owned);
+
+            // Build per-receiver Python views and refcount-bump the source/loop
+            // handles for the spawned driver — all under a single GIL acquire.
+            // `create_view` only fails on dtype/view-kind mismatches, which the
+            // outer dispatch above has already validated, so an error here
+            // would indicate a bridge bug.
+            let (view_for_hist, view_for_live, py_source_clone, event_loop_clone) =
+                Python::attach(|py| -> PyResult<_> {
+                    let py_output = create_view(
+                        py,
+                        output_ptr,
+                        &output_shape_owned,
+                        &out_dtype_owned,
+                        out_view_kind,
+                    )?;
+                    let view_for_hist = py_output.clone_ref(py);
+                    let view_for_live = py_output;
+                    Ok((
+                        view_for_hist,
+                        view_for_live,
+                        py_source.clone_ref(py),
+                        event_loop.clone_ref(py),
+                    ))
+                })
+                .expect("make_py_source: create_view failed during init");
+
             let (hist_tx, hist_rx) = mpsc::channel(64);
             let (live_tx, live_rx) = mpsc::channel(64);
 
             tokio::spawn(drive_source(
-                py_source,
-                event_loop,
+                py_source_clone,
+                event_loop_clone,
                 hist_tx,
                 live_tx,
-                error_for_driver,
+                error_slot.clone(),
                 timestamp,
             ));
 
@@ -138,7 +168,7 @@ pub fn make_py_source(
             let live_state = PySourceState {
                 rx: PeekableReceiver::new(live_rx),
                 py_output: view_for_live,
-                error_slot,
+                error_slot: error_slot.clone(),
             };
 
             let hist_ptr = Box::into_raw(Box::new(hist_state)) as *mut u8;
@@ -160,6 +190,22 @@ pub fn make_py_source(
             output_drop_fn,
         )
     })
+}
+
+// ---------------------------------------------------------------------------
+// Per-init output allocators
+// ---------------------------------------------------------------------------
+
+fn alloc_unit(_shape: &[usize]) -> *mut u8 {
+    Box::into_raw(Box::new(())) as *mut u8
+}
+
+fn alloc_array<T: crate::Scalar>(shape: &[usize]) -> *mut u8 {
+    Box::into_raw(Box::new(Array::<T>::zeros(shape))) as *mut u8
+}
+
+fn alloc_series<T: crate::Scalar>(shape: &[usize]) -> *mut u8 {
+    Box::into_raw(Box::new(Series::<T>::new(shape))) as *mut u8
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 /// When `squeeze` is `true` and exactly one index is selected, the
 /// selected axis is removed from the output shape (e.g. selecting one
 /// element from a `[5]` array yields a scalar `[]` instead of `[1]`).
+#[derive(Clone)]
 pub struct Select<T: Scalar> {
     indices: Vec<usize>,
     axis: usize,

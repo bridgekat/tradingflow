@@ -21,7 +21,11 @@ use crate::{Array, Input, Operator, Scalar, Series};
 ///
 /// Implementors maintain running aggregates that are updated incrementally
 /// as elements enter and leave the window.
-pub trait Accumulator: Send + 'static {
+///
+/// Requires `Clone` so that the enclosing [`Rolling`] operator inherits
+/// `Clone` from the type parameter — see the reusability notes on
+/// [`Operator`](crate::Operator).
+pub trait Accumulator: Clone + Send + 'static {
     /// Scalar element type.
     type Scalar: Scalar + Float;
 
@@ -75,6 +79,7 @@ pub enum Window {
 ///
 /// Manages the sliding window (adding the newest element, evicting stale
 /// elements) and delegates the actual computation to the accumulator.
+#[derive(Clone)]
 pub struct Rolling<A: Accumulator> {
     window: Window,
     _phantom: PhantomData<A>,

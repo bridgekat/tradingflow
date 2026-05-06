@@ -11,17 +11,18 @@ use crate::{InputTypes, Instant, Operator};
 /// Without a trigger the operator has no triggers and compute is never
 /// invoked, so the return value is inert.  The value can still be mutated
 /// externally via [`Scenario::value_mut`](crate::Scenario::value_mut).
-pub struct Const<T: Send + 'static> {
+#[derive(Clone)]
+pub struct Const<T: Clone + Send + 'static> {
     value: T,
 }
 
-impl<T: Send + 'static> Const<T> {
+impl<T: Clone + Send + 'static> Const<T> {
     pub fn new(value: T) -> Self {
         Self { value }
     }
 }
 
-impl<T: Send + 'static> Operator for Const<T> {
+impl<T: Clone + Send + 'static> Operator for Const<T> {
     type State = ();
     type Inputs = ();
     type Output = T;

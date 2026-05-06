@@ -77,11 +77,6 @@ impl Graph {
         self.nodes[from].trigger_edges.push((to, input_pos));
     }
 
-    /// Number of nodes.
-    pub fn len(&self) -> usize {
-        self.nodes.len()
-    }
-
     /// Propagate updates through the graph.
     ///
     /// For each updated source node, schedules its downstream operator nodes

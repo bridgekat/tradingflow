@@ -29,6 +29,7 @@ use crate::{Array, Input, Operator};
 /// If `output_prices` is `true` (default): forward-adjusted stock price
 /// (`raw_price * factor`).  If `false`: the cumulative adjustment factor
 /// itself.
+#[derive(Clone)]
 pub struct ForwardAdjust {
     output_prices: bool,
 }

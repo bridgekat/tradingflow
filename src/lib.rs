@@ -27,9 +27,16 @@
 //!
 //! # Runtime
 //!
-//! * [`Scenario`] — computation graph with type-erased dispatch. Nodes are
-//!   connected via typed [`Handle`](scenario::Handle)s. Execution is driven
-//!   by [`Scenario::flush`] (manual) or [`Scenario::run`] (async event loop).
+//! * [`Scenario`] — pure definition of the computation graph: descriptor
+//!   list plus input wiring, with type-erased dispatch.  Nodes are
+//!   connected via typed [`Handle`](scenario::Handle)s.  Carries no
+//!   per-run state.
+//! * [`Session`] — a single live execution of a [`Scenario`].  Owns the
+//!   per-run state (node value buffers, channel receivers, operator
+//!   state) and exposes [`value`](Session::value),
+//!   [`flush`](Session::flush), and [`run`](Session::run).  Built fresh
+//!   by [`Scenario::build_session`] or [`Scenario::run`]; multiple
+//!   independent sessions can coexist over a single scenario's lifetime.
 //!
 //! # Modules
 //!
@@ -71,7 +78,7 @@ pub use data::{
 };
 pub use operator::{ErasedOperator, Operator};
 pub use operators::Clocked;
-pub use scenario::Scenario;
+pub use scenario::{Scenario, Session};
 pub use source::{ErasedSource, Source};
 pub use utils::Schema;
 

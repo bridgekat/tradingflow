@@ -14,7 +14,17 @@ use crate::PeekableReceiver;
 ///    (historical + live) and the initial [`Output`](Self::Output).
 /// 2. [`write`](Self::write) is called for each received event to update the
 ///    output.
-pub trait Source: 'static {
+///
+/// # Reusability
+///
+/// `Source` requires `Clone` so a single spec can drive multiple
+/// scenario sessions: the type-erasure layer ([`ErasedSource`]) keeps the
+/// spec by value and `clone()`s it before each [`init`](Self::init) call,
+/// preserving the `init(self, …)` signature while making the descriptor a
+/// pure definition.  Implementations should treat `clone()` as a cheap
+/// snapshot of configuration only — any mutable per-run state belongs in
+/// [`Output`](Self::Output) (built fresh by `init`).
+pub trait Source: Clone + 'static {
     /// Channel event type.
     type Event: Send + 'static;
     /// Output type.
@@ -49,6 +59,12 @@ pub trait Source: 'static {
 
 /// Type-erased initialization closure for a source.
 ///
+/// `Fn` rather than `FnOnce`: an [`ErasedSource`] is a *definition* that
+/// can be re-initialised any number of times.  Each call allocates a fresh
+/// pair of channel receivers and a fresh output, and (for typed sources
+/// constructed via [`ErasedSource::from_source`]) clones the captured spec
+/// before consuming it via [`Source::init`].
+///
 /// # Parameters
 ///
 /// * `timestamp: Instant` — initial timestamp.
@@ -60,7 +76,7 @@ pub trait Source: 'static {
 /// * `live_rx_ptr: *mut u8` — from [`Box::into_raw`], points to
 ///   [`PeekableReceiver<(Instant, E)>`].
 /// * `output_ptr: *mut u8` — from [`Box::into_raw`], points to `S::Output`.
-pub type InitFn = Box<dyn FnOnce(Instant) -> (*mut u8, *mut u8, *mut u8)>;
+pub type InitFn = Box<dyn Fn(Instant) -> (*mut u8, *mut u8, *mut u8)>;
 
 /// Type-erased poll function pointer for a source channel.
 ///
@@ -95,9 +111,11 @@ pub type WriteFn = unsafe fn(*mut u8, *mut u8, Instant) -> bool;
 ///
 /// 1. Created via [`from_source`](ErasedSource::from_source) (safe, typed)
 ///    or [`new`](ErasedSource::new) (`unsafe`, raw).
-/// 2. Consumed by [`Scenario::add_erased_source`], which calls
-///    [`init`](ErasedSource::init), constructs the graph node, and stores
-///    channel state in `SourceState`.
+/// 2. Held by `Scenario::add_erased_source`, which borrows it to call
+///    [`init`](ErasedSource::init) and construct the graph node, storing
+///    channel state in `SourceState`.  Because [`init`](ErasedSource::init)
+///    takes `&self`, the same `ErasedSource` can drive multiple initialisations
+///    — one per scenario session — without being consumed.
 pub struct ErasedSource {
     event_type_id: TypeId,
     output_type_id: TypeId,
@@ -111,6 +129,11 @@ pub struct ErasedSource {
 
 impl ErasedSource {
     /// Construct from a typed [`Source`].
+    ///
+    /// The spec is captured by value into the [`InitFn`] closure and
+    /// `clone()`d before each call to [`Source::init`], which lets the
+    /// erased descriptor be reused across multiple sessions while keeping
+    /// the typed `Source::init(self, …)` signature intact.
     pub fn from_source<S: Source>(source: S) -> Self {
         let estimated_event_count = source.estimated_event_count();
         Self {
@@ -118,7 +141,7 @@ impl ErasedSource {
             output_type_id: TypeId::of::<S::Output>(),
             estimated_event_count,
             init_fn: Box::new(move |timestamp: Instant| {
-                let (hist, live, output) = source.init(timestamp);
+                let (hist, live, output) = source.clone().init(timestamp);
                 let hist_rx_ptr = Box::into_raw(Box::new(PeekableReceiver::new(hist))) as *mut u8;
                 let live_rx_ptr = Box::into_raw(Box::new(PeekableReceiver::new(live))) as *mut u8;
                 let output_ptr = Box::into_raw(Box::new(output)) as *mut u8;
@@ -205,8 +228,12 @@ impl ErasedSource {
         self.output_drop_fn
     }
 
-    /// Consume the init closure, producing `(hist_rx_ptr, live_rx_ptr, output_ptr)`.
-    pub fn init(self, timestamp: Instant) -> (*mut u8, *mut u8, *mut u8) {
+    /// Invoke the init closure, producing `(hist_rx_ptr, live_rx_ptr, output_ptr)`.
+    ///
+    /// Takes `&self` rather than `self` — each call allocates a fresh set of
+    /// channel receivers and a fresh output, so an [`ErasedSource`] can
+    /// drive multiple sessions over its lifetime.
+    pub fn init(&self, timestamp: Instant) -> (*mut u8, *mut u8, *mut u8) {
         (self.init_fn)(timestamp)
     }
 }
@@ -238,4 +265,61 @@ unsafe fn erased_write_fn<S: Source>(
 /// Type-erased box drop function, monomorphised per value type.
 unsafe fn erased_drop_fn<T>(ptr: *mut u8) {
     unsafe { drop(Box::from_raw(ptr as *mut T)) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Trivial stateless source whose [`init`](Source::init) clones the
+    /// captured spec.  Used to exercise reusability of [`ErasedSource`].
+    #[derive(Clone)]
+    struct FixedSource {
+        value: i64,
+    }
+
+    impl Source for FixedSource {
+        type Event = i64;
+        type Output = i64;
+
+        fn init(
+            self,
+            _timestamp: Instant,
+        ) -> (
+            tokio::sync::mpsc::Receiver<(Instant, i64)>,
+            tokio::sync::mpsc::Receiver<(Instant, i64)>,
+            i64,
+        ) {
+            let (_, hist_rx) = tokio::sync::mpsc::channel(1);
+            let (_, live_rx) = tokio::sync::mpsc::channel(1);
+            (hist_rx, live_rx, self.value)
+        }
+
+        fn write(event: i64, output: &mut i64, _timestamp: Instant) -> bool {
+            *output = event;
+            true
+        }
+    }
+
+    /// `ErasedSource::init` takes `&self`, so the descriptor can drive
+    /// multiple sessions; each call yields fresh receivers and a fresh
+    /// output cell.
+    #[test]
+    fn erased_source_can_reinit() {
+        let erased = ErasedSource::from_source(FixedSource { value: 42 });
+        let output_drop = erased.output_drop_fn();
+        let rx_drop = erased.rx_drop_fn();
+
+        for _ in 0..3 {
+            let (hist_ptr, live_ptr, output_ptr) = erased.init(Instant::MIN);
+            assert!(!hist_ptr.is_null());
+            assert!(!live_ptr.is_null());
+            assert_eq!(unsafe { *(output_ptr as *const i64) }, 42);
+            unsafe {
+                rx_drop(hist_ptr);
+                rx_drop(live_ptr);
+                output_drop(output_ptr);
+            }
+        }
+    }
 }

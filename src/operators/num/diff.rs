@@ -13,6 +13,7 @@ use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 ///
 /// Combined with [`Log`](crate::operators::num::Log) upstream this produces
 /// log returns: `Log -> Diff`.
+#[derive(Clone)]
 pub struct Diff<T: Scalar + Float>(PhantomData<T>);
 
 impl<T: Scalar + Float> Diff<T> {

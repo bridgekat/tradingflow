@@ -21,6 +21,7 @@ use crate::{Array, Input, InputTypes, Operator, Scalar, Series};
 /// `inf − inf` would corrupt the sum to NaN on eviction.  If any value
 /// in the window is non-finite for an element, the output for that
 /// element is NaN (same as the other rolling operators).
+#[derive(Clone)]
 pub struct Ema<T: Scalar + Float> {
     alpha: T,
     window: usize,

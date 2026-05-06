@@ -10,6 +10,7 @@ use crate::{Array, Input, InputTypes, Instant, Operator, Scalar};
 ///
 /// Uses [`num_traits::AsPrimitive`] for the scalar conversion, which
 /// corresponds to Rust's `as` semantics (truncating / saturating).
+#[derive(Clone)]
 pub struct Cast<S: Scalar, T: Scalar> {
     _phantom: PhantomData<(S, T)>,
 }

@@ -18,7 +18,17 @@ use super::data::{BitRead, FlatRead, FlatWrite, InputTypes};
 
 /// A synchronous computation node that reads typed inputs and writes a typed
 /// output.
-pub trait Operator: 'static {
+///
+/// # Reusability
+///
+/// `Operator` requires `Clone` so a single spec can drive multiple
+/// scenario sessions: the type-erasure layer ([`ErasedOperator`]) keeps the
+/// spec by value and `clone()`s it before each [`init`](Self::init) call,
+/// preserving the `init(self, …)` signature while making the descriptor a
+/// pure definition.  Implementations should treat `clone()` as a cheap
+/// snapshot of configuration only — any mutable per-run state belongs in
+/// [`State`](Self::State) and [`Output`](Self::Output) (built fresh by `init`).
+pub trait Operator: Clone + 'static {
     /// Mutable runtime state.
     type State: Send + 'static;
     /// Input tree (e.g. `(Input<Array<f64>>, Input<Array<f64>>)`).
@@ -52,9 +62,15 @@ pub trait Operator: 'static {
 
 /// Type-erased initialization closure.
 ///
+/// `Fn` rather than `FnOnce`: an [`ErasedOperator`] is a *definition* that
+/// can be re-initialised any number of times.  Each call allocates a fresh
+/// state object and a fresh output, and (for typed operators constructed via
+/// [`ErasedOperator::from_operator`]) clones the captured spec before
+/// consuming it via [`Operator::init`].
+///
 /// Receives the flat input pointer buffer and timestamp; returns
 /// `(state_ptr, output_ptr)` from `Box::into_raw`.
-pub type InitFn = Box<dyn FnOnce(&[*const u8], Instant) -> (*mut u8, *mut u8)>;
+pub type InitFn = Box<dyn Fn(&[*const u8], Instant) -> (*mut u8, *mut u8)>;
 
 /// Type-erased compute function pointer.
 ///
@@ -111,6 +127,11 @@ impl ErasedOperator {
     }
 
     /// Construct from a typed [`Operator`] whose `Inputs` is `Sized`.
+    ///
+    /// The spec is captured by value into the [`InitFn`] closure and
+    /// `clone()`d before each call to [`Operator::init`], keeping the
+    /// typed `Operator::init(self, …)` signature intact while allowing
+    /// the erased descriptor to be reused across multiple sessions.
     pub fn from_operator<O: Operator>(op: O) -> Self
     where
         O::Inputs: Sized,
@@ -130,7 +151,10 @@ impl ErasedOperator {
     /// Used for operators with `!Sized` `Inputs` (e.g. `[Input<T>]`), where
     /// the element count and per-element `TypeId`s are derived from the
     /// handles rather than from the type alone.
-    pub fn from_operator_with_type_ids<O: Operator>(op: O, input_type_ids: Box<[TypeId]>) -> Self {
+    pub fn from_operator_with_type_ids<O: Operator>(
+        op: O,
+        input_type_ids: Box<[TypeId]>,
+    ) -> Self {
         Self {
             state_type_id: TypeId::of::<O::State>(),
             input_type_ids,
@@ -138,7 +162,7 @@ impl ErasedOperator {
             init_fn: Box::new(move |input_ptrs: &[*const u8], timestamp: Instant| {
                 let mut reader = FlatRead::new(input_ptrs);
                 let inputs = unsafe { O::Inputs::refs_from_flat(&mut reader) };
-                let (state, output) = op.init(inputs, timestamp);
+                let (state, output) = op.clone().init(inputs, timestamp);
                 (
                     Box::into_raw(Box::new(state)) as *mut u8,
                     Box::into_raw(Box::new(output)) as *mut u8,
@@ -174,12 +198,16 @@ impl ErasedOperator {
         self.output_drop_fn
     }
 
-    /// Consume the init closure, producing `(state_ptr, output_ptr)`.
+    /// Invoke the init closure, producing `(state_ptr, output_ptr)`.
+    ///
+    /// Takes `&self` rather than `self` — each call allocates fresh state
+    /// and a fresh output, so an [`ErasedOperator`] can drive multiple
+    /// sessions over its lifetime.
     ///
     /// # Safety
     ///
     /// `input_ptrs` must point to valid objects matching `input_type_ids`.
-    pub unsafe fn init(self, input_ptrs: &[*const u8], timestamp: Instant) -> (*mut u8, *mut u8) {
+    pub unsafe fn init(&self, input_ptrs: &[*const u8], timestamp: Instant) -> (*mut u8, *mut u8) {
         (self.init_fn)(input_ptrs, timestamp)
     }
 }
@@ -212,4 +240,103 @@ unsafe fn erased_compute_fn<O: Operator>(
 /// Type-erased box drop function, monomorphised per value type.
 unsafe fn erased_drop_fn<T>(ptr: *mut u8) {
     unsafe { drop(Box::from_raw(ptr as *mut T)) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::Input;
+
+    /// Trivial 0-input operator: writes its captured constant to the
+    /// output and counts inits via a shared cell.  Used to verify that
+    /// [`ErasedOperator::init`] can be called more than once.
+    #[derive(Clone)]
+    struct ConstOp {
+        value: i64,
+    }
+
+    impl crate::operator::Operator for ConstOp {
+        type State = ();
+        type Inputs = ();
+        type Output = i64;
+
+        fn init(self, _inputs: (), _timestamp: Instant) -> ((), i64) {
+            ((), self.value)
+        }
+
+        fn compute(
+            _state: &mut (),
+            _inputs: (),
+            _output: &mut i64,
+            _timestamp: Instant,
+            _produced: <() as crate::data::InputTypes>::Produced<'_>,
+        ) -> bool {
+            true
+        }
+    }
+
+    /// `ErasedOperator::init` takes `&self`, so the descriptor can drive
+    /// multiple sessions; each call yields fresh state and output cells
+    /// produced by `clone()`-ing the captured spec.
+    #[test]
+    fn erased_operator_can_reinit() {
+        let erased = ErasedOperator::from_operator(ConstOp { value: 7 });
+        let state_drop = erased.state_drop_fn();
+        let output_drop = erased.output_drop_fn();
+
+        for _ in 0..3 {
+            let (state_ptr, output_ptr) = unsafe { erased.init(&[], Instant::MIN) };
+            assert_eq!(unsafe { *(output_ptr as *const i64) }, 7);
+            unsafe {
+                state_drop(state_ptr);
+                output_drop(output_ptr);
+            }
+        }
+    }
+
+    /// Sanity check: a 1-input operator can also be reinitialised; the
+    /// init closure rebuilds the input refs tree on every call from the
+    /// caller-supplied flat pointer buffer.
+    #[derive(Clone)]
+    struct EchoOp;
+
+    impl crate::operator::Operator for EchoOp {
+        type State = ();
+        type Inputs = Input<i64>;
+        type Output = i64;
+
+        fn init(self, inputs: &i64, _timestamp: Instant) -> ((), i64) {
+            ((), *inputs)
+        }
+
+        fn compute(
+            _state: &mut (),
+            inputs: &i64,
+            output: &mut i64,
+            _timestamp: Instant,
+            _produced: <Input<i64> as crate::data::InputTypes>::Produced<'_>,
+        ) -> bool {
+            *output = *inputs;
+            true
+        }
+    }
+
+    #[test]
+    fn erased_operator_reinit_with_input() {
+        let erased = ErasedOperator::from_operator(EchoOp);
+        let state_drop = erased.state_drop_fn();
+        let output_drop = erased.output_drop_fn();
+
+        let input_value: i64 = 99;
+        let input_ptrs = [&input_value as *const i64 as *const u8];
+
+        for _ in 0..3 {
+            let (state_ptr, output_ptr) = unsafe { erased.init(&input_ptrs, Instant::MIN) };
+            assert_eq!(unsafe { *(output_ptr as *const i64) }, 99);
+            unsafe {
+                state_drop(state_ptr);
+                output_drop(output_ptr);
+            }
+        }
+    }
 }

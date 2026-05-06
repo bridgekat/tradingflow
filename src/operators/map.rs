@@ -10,11 +10,12 @@ use crate::{Input, InputTypes, Instant, Operator};
 /// Generic over any input `S` and output `T` that satisfy
 /// `Clone + Send + 'static`.  The function receives an immutable
 /// reference to the input and must return the output by value.
+#[derive(Clone)]
 pub struct Map<S, T, F>
 where
     S: Clone + Send + 'static,
     T: Clone + Send + 'static,
-    F: Fn(&S) -> T + Send + 'static,
+    F: Fn(&S) -> T + Clone + Send + 'static,
 {
     f: F,
     _phantom: std::marker::PhantomData<(S, T)>,
@@ -24,7 +25,7 @@ impl<S, T, F> Map<S, T, F>
 where
     S: Clone + Send + 'static,
     T: Clone + Send + 'static,
-    F: Fn(&S) -> T + Send + 'static,
+    F: Fn(&S) -> T + Clone + Send + 'static,
 {
     pub fn new(f: F) -> Self {
         Self {
@@ -38,7 +39,7 @@ impl<S, T, F> Operator for Map<S, T, F>
 where
     S: Clone + Send + 'static,
     T: Clone + Send + 'static,
-    F: Fn(&S) -> T + Send + 'static,
+    F: Fn(&S) -> T + Clone + Send + 'static,
 {
     type State = Self;
     type Inputs = Input<S>;
@@ -68,11 +69,12 @@ where
 /// Unlike [`Map`], the function does not allocate a new output — it
 /// receives `(&S, &mut T)` and mutates the existing output in place.
 /// The return value controls downstream propagation.
+#[derive(Clone)]
 pub struct MapInplace<S, T, F>
 where
     S: Clone + Send + 'static,
     T: Clone + Send + 'static,
-    F: Fn(&S, &mut T) -> bool + Send + 'static,
+    F: Fn(&S, &mut T) -> bool + Clone + Send + 'static,
 {
     f: F,
     initial: T,
@@ -83,7 +85,7 @@ impl<S, T, F> MapInplace<S, T, F>
 where
     S: Clone + Send + 'static,
     T: Clone + Send + 'static,
-    F: Fn(&S, &mut T) -> bool + Send + 'static,
+    F: Fn(&S, &mut T) -> bool + Clone + Send + 'static,
 {
     pub fn new(f: F, initial: T) -> Self {
         Self {
@@ -98,7 +100,7 @@ impl<S, T, F> Operator for MapInplace<S, T, F>
 where
     S: Clone + Send + 'static,
     T: Clone + Send + 'static,
-    F: Fn(&S, &mut T) -> bool + Send + 'static,
+    F: Fn(&S, &mut T) -> bool + Clone + Send + 'static,
 {
     type State = Self;
     type Inputs = Input<S>;

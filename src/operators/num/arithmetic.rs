@@ -15,6 +15,7 @@ use crate::{Array, Input, InputTypes, Operator, Scalar};
 macro_rules! define_unary_op {
     ($(#[$meta:meta])* $Name:ident [$($bounds:tt)*], |$x:ident| $body:expr) => {
         $(#[$meta])*
+        #[derive(Clone)]
         pub struct $Name<T: Scalar>(PhantomData<T>);
 
         impl<T: Scalar + $($bounds)*> $Name<T> {
@@ -127,6 +128,7 @@ define_unary_op!(
 macro_rules! define_binary_op {
     ($(#[$meta:meta])* $Name:ident [$($bounds:tt)*], |$a:ident, $b:ident| $body:expr) => {
         $(#[$meta])*
+        #[derive(Clone)]
         pub struct $Name<T: Scalar>(PhantomData<T>);
 
         impl<T: Scalar + $($bounds)*> $Name<T> {
@@ -204,6 +206,7 @@ define_binary_op!(
 // ===========================================================================
 
 /// Element-wise power: `x.powf(n)`.
+#[derive(Clone)]
 pub struct Pow<T: Scalar> {
     n: T,
 }

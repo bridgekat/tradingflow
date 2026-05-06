@@ -9,6 +9,7 @@ use crate::{Array, Input, Operator, Scalar};
 
 /// Compound return: `(current / first)^(1/n) - 1` where `n` is the
 /// number of periods elapsed.
+#[derive(Clone)]
 pub struct CompoundReturn<T: Scalar + Float> {
     _phantom: PhantomData<T>,
 }

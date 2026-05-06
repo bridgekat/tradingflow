@@ -19,6 +19,7 @@ use super::accumulator::Accumulator;
 /// than added to the running sums, since `inf − inf` would corrupt the
 /// sums to NaN on eviction.  If any value in the window is non-finite for
 /// either element `i` or `j`, the output `Cov(i,j)` is NaN.
+#[derive(Clone)]
 pub struct CovarianceAccumulator<T: Scalar + Float> {
     k: usize,
     sum: Vec<T>,

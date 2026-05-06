@@ -19,6 +19,7 @@ use crate::{Array, Input, InputTypes, Operator, Scalar};
 /// Output has the same dtype and shape as the input.  The inverse CDF
 /// is computed via Acklam's rational approximation (max rel error
 /// ~1.15e-9), always in `f64` and cast back to `T` at the end.
+#[derive(Clone)]
 pub struct Gaussianize<T: Scalar + Float> {
     _phantom: PhantomData<T>,
 }

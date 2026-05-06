@@ -1,8 +1,11 @@
 """Scenario — the Python entry point to the Rust computation graph.
 
 A [`Scenario`][tradingflow.scenario.Scenario] is the single object you interact
-with to build and run a strategy.  It owns the directed acyclic
-computation graph plus the event loop that drives it.
+with to build and run a strategy.  It is a *pure definition* of the
+directed acyclic computation graph: the descriptors of every source and
+operator plus the wiring between them.  The actual per-run state — node
+value buffers, channel receivers, operator state — lives on a separate
+session built fresh on every call to [`run`][tradingflow.scenario.Scenario.run].
 
 Typical usage has three phases:
 
@@ -12,11 +15,17 @@ Typical usage has three phases:
    operators.  Every call returns a typed
    [`Handle`][tradingflow.data.types.Handle] that encodes the new node's value
    kind (array vs. series), shape, and dtype.
-3. **Run** — `sc.run()` drains every registered source in timestamp
-   order, propagates each flush batch through the graph, and returns
-   when every source is exhausted.  After it returns, use
-   `sc.array_view(handle)` or `sc.series_view(handle)` to inspect the
-   final state of any node.
+3. **Run** — `sc.run()` builds a fresh session, drains every registered
+   source in timestamp order, propagates each flush batch through the
+   graph, and returns when every source is exhausted.  After it
+   returns, use `sc.array_view(handle)` or `sc.series_view(handle)` to
+   inspect the populated buffers.
+
+The same scenario instance can be re-run any number of times: every call
+to `run()` builds an independent session, so successive runs do not see
+each other's state.  Views obtained from `array_view` / `series_view`
+are scoped to the most recent run — calling `run()` again invalidates
+them.
 
 This module is a thin Python wrapper over the Rust native backend;
 the bulk of the work happens inside the Rust core.
@@ -43,18 +52,30 @@ class Scenario:
     Sources and operators are registered via
     [`add_source`][tradingflow.scenario.Scenario.add_source] and
     [`add_operator`][tradingflow.scenario.Scenario.add_operator], each returning
-    a [`Handle`][tradingflow.data.types.Handle].  Node output values are not
-    historised automatically — attach a
+    a [`Handle`][tradingflow.data.types.Handle].  Registration only records
+    descriptors; no node buffers are allocated until the first call to
+    [`run`][tradingflow.scenario.Scenario.run].
+
+    Node output values are not historised automatically — attach a
     [`Record`][tradingflow.operators.record.Record] operator where a time
     series is required.
 
-    [`run`][tradingflow.scenario.Scenario.run] drives the async event loop: it
-    drains every source's historical and live channels in timestamp
-    order, coalesces events that share the same timestamp into a single
-    flush batch, and propagates the batch through the graph before
-    advancing to the next timestamp.  Within a batch, each operator's
-    `produced` mask reports which of its inputs actually produced this
-    cycle (see the "Notification semantics" section in
+    [`run`][tradingflow.scenario.Scenario.run] builds a fresh session by
+    replaying every descriptor's `init`, drives the async event loop, and
+    leaves the populated buffers reachable via
+    [`array_view`][tradingflow.scenario.Scenario.array_view] /
+    [`series_view`][tradingflow.scenario.Scenario.series_view].  The same
+    scenario instance can be re-run any number of times: every call
+    builds an independent session, so successive runs do not see each
+    other's state.  Views are scoped to the most recent run — calling
+    `run()` again invalidates them.
+
+    The event loop drains every source's historical and live channels in
+    timestamp order, coalesces events that share the same timestamp into
+    a single flush batch, and propagates the batch through the graph
+    before advancing to the next timestamp.  Within a batch, each
+    operator's `produced` mask reports which of its inputs actually
+    produced this cycle (see the "Notification semantics" section in
     [`tradingflow`][tradingflow]).
     """
 
@@ -64,13 +85,25 @@ class Scenario:
         self._native = NativeScenario()
 
     def array_view(self, handle: Handle[Array[Any]]) -> ArrayView:
-        """Get an ArrayView for an Array node."""
+        """Get an ArrayView for an Array node.
+
+        Available only after the first successful
+        [`run`][tradingflow.scenario.Scenario.run].  The returned view
+        points into the most recent session's buffer and is invalidated
+        by any subsequent `run()`.
+        """
         inner = self._native.view(handle.index)
         assert isinstance(inner, NativeArrayView)
         return ArrayView(inner)
 
     def series_view(self, handle: Handle[Series[Any]]) -> SeriesView:
-        """Get a SeriesView for a Series node."""
+        """Get a SeriesView for a Series node.
+
+        Available only after the first successful
+        [`run`][tradingflow.scenario.Scenario.run].  The returned view
+        points into the most recent session's buffer and is invalidated
+        by any subsequent `run()`.
+        """
         inner = self._native.view(handle.index)
         assert isinstance(inner, NativeSeriesView)
         return SeriesView(inner)
@@ -132,7 +165,15 @@ class Scenario:
         self,
         on_flush: Callable[[int, int, int | None], Any] | None = None,
     ) -> None:
-        """Execute the event loop.
+        """Build a fresh session and execute the event loop.
+
+        Each call replays every registered descriptor's `init` against
+        newly allocated buffers, drives the async event loop until every
+        source is exhausted, and leaves the populated buffers reachable
+        via [`array_view`][tradingflow.scenario.Scenario.array_view] /
+        [`series_view`][tradingflow.scenario.Scenario.series_view].
+        Calling `run()` again replaces the session and invalidates any
+        view obtained from a previous run.
 
         Python sources are driven by Rust-side async tasks that iterate
         the source's async iterators via a background asyncio event loop.
