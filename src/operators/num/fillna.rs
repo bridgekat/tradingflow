@@ -23,7 +23,7 @@ impl<T: Scalar + Float> Operator for Fillna<T> {
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (T, Array<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> (T, Array<T>) {
         (self.val, Array::zeros(inputs.shape()))
     }
 

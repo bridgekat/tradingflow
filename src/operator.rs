@@ -21,14 +21,17 @@ use super::data::{BitRead, FlatRead, FlatWrite, InputTypes};
 ///
 /// # Reusability
 ///
-/// `Operator` requires `Clone` so a single spec can drive multiple
-/// scenario sessions: the type-erasure layer ([`ErasedOperator`]) keeps the
-/// spec by value and `clone()`s it before each [`init`](Self::init) call,
-/// preserving the `init(self, …)` signature while making the descriptor a
-/// pure definition.  Implementations should treat `clone()` as a cheap
-/// snapshot of configuration only — any mutable per-run state belongs in
-/// [`State`](Self::State) and [`Output`](Self::Output) (built fresh by `init`).
-pub trait Operator: Clone + 'static {
+/// `init` takes `&self`, so a single spec can drive multiple scenario
+/// sessions — the type-erasure layer ([`ErasedOperator`]) keeps the spec
+/// by value and calls `init` against the shared reference on every
+/// session start.  Implementations should treat the spec as immutable
+/// configuration; any per-session state lives in
+/// [`State`](Self::State) and [`Output`](Self::Output) (built fresh by
+/// `init`).  Implementations that need to capture spec data into `State`
+/// should clone the relevant fields out of `&self` (or store `Self`
+/// itself as `State` when they want to forward the whole spec — typically
+/// requires `Self: Clone`).
+pub trait Operator: 'static {
     /// Mutable runtime state.
     type State: Send + 'static;
     /// Input tree (e.g. `(Input<Array<f64>>, Input<Array<f64>>)`).
@@ -36,9 +39,9 @@ pub trait Operator: Clone + 'static {
     /// Output type.
     type Output: Send + 'static;
 
-    /// Consume the spec and produce initial state and output.
+    /// Build initial state and output from a borrow of the spec.
     fn init(
-        self,
+        &self,
         inputs: <Self::Inputs as InputTypes>::Refs<'_>,
         timestamp: Instant,
     ) -> (Self::State, Self::Output);
@@ -129,9 +132,8 @@ impl ErasedOperator {
     /// Construct from a typed [`Operator`] whose `Inputs` is `Sized`.
     ///
     /// The spec is captured by value into the [`InitFn`] closure and
-    /// `clone()`d before each call to [`Operator::init`], keeping the
-    /// typed `Operator::init(self, …)` signature intact while allowing
-    /// the erased descriptor to be reused across multiple sessions.
+    /// borrowed by every call to [`Operator::init`] — no `Clone` bound
+    /// is required on `O`, since `init` takes `&self`.
     pub fn from_operator<O: Operator>(op: O) -> Self
     where
         O::Inputs: Sized,
@@ -162,7 +164,7 @@ impl ErasedOperator {
             init_fn: Box::new(move |input_ptrs: &[*const u8], timestamp: Instant| {
                 let mut reader = FlatRead::new(input_ptrs);
                 let inputs = unsafe { O::Inputs::refs_from_flat(&mut reader) };
-                let (state, output) = op.clone().init(inputs, timestamp);
+                let (state, output) = op.init(inputs, timestamp);
                 (
                     Box::into_raw(Box::new(state)) as *mut u8,
                     Box::into_raw(Box::new(output)) as *mut u8,
@@ -250,7 +252,6 @@ mod tests {
     /// Trivial 0-input operator: writes its captured constant to the
     /// output and counts inits via a shared cell.  Used to verify that
     /// [`ErasedOperator::init`] can be called more than once.
-    #[derive(Clone)]
     struct ConstOp {
         value: i64,
     }
@@ -260,7 +261,7 @@ mod tests {
         type Inputs = ();
         type Output = i64;
 
-        fn init(self, _inputs: (), _timestamp: Instant) -> ((), i64) {
+        fn init(&self, _inputs: (), _timestamp: Instant) -> ((), i64) {
             ((), self.value)
         }
 
@@ -297,7 +298,6 @@ mod tests {
     /// Sanity check: a 1-input operator can also be reinitialised; the
     /// init closure rebuilds the input refs tree on every call from the
     /// caller-supplied flat pointer buffer.
-    #[derive(Clone)]
     struct EchoOp;
 
     impl crate::operator::Operator for EchoOp {
@@ -305,7 +305,7 @@ mod tests {
         type Inputs = Input<i64>;
         type Output = i64;
 
-        fn init(self, inputs: &i64, _timestamp: Instant) -> ((), i64) {
+        fn init(&self, inputs: &i64, _timestamp: Instant) -> ((), i64) {
             ((), *inputs)
         }
 

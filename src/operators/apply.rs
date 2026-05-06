@@ -66,9 +66,9 @@ where
     type Inputs = I;
     type Output = T;
 
-    fn init(self, inputs: <I as InputTypes>::Refs<'_>, _timestamp: Instant) -> (Self, T) {
+    fn init(&self, inputs: <I as InputTypes>::Refs<'_>, _timestamp: Instant) -> (Self, T) {
         let output = (self.f)(inputs);
-        (self, output)
+        (self.clone(), output)
     }
 
     #[inline(always)]
@@ -143,10 +143,10 @@ where
     type Inputs = I;
     type Output = T;
 
-    fn init(self, inputs: <I as InputTypes>::Refs<'_>, _timestamp: Instant) -> (Self, T) {
+    fn init(&self, inputs: <I as InputTypes>::Refs<'_>, _timestamp: Instant) -> (Self, T) {
         let mut output = self.initial.clone();
         (self.f)(inputs, &mut output);
-        (self, output)
+        (self.clone(), output)
     }
 
     #[inline(always)]

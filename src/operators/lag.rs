@@ -30,13 +30,13 @@ impl<T: Scalar> Operator for Lag<T> {
     type Inputs = Input<Series<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Series<T>, _timestamp: Instant) -> (LagState<T>, Array<T>) {
+    fn init(&self, inputs: &Series<T>, _timestamp: Instant) -> (LagState<T>, Array<T>) {
         let shape = inputs.shape();
         let stride: usize = shape.iter().product();
         let fill = Array::from_vec(shape, vec![self.fill.clone(); stride]);
         let state = LagState {
             offset: self.offset,
-            fill: self.fill,
+            fill: self.fill.clone(),
         };
         (state, fill)
     }

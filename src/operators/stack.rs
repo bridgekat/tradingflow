@@ -38,7 +38,7 @@ impl<T: Scalar> Operator for Stack<T> {
     type Output = Array<T>;
 
     fn init(
-        self,
+        &self,
         inputs: SliceRefs<'_, Input<Array<T>>>,
         _timestamp: Instant,
     ) -> (StackState, Array<T>) {
@@ -124,7 +124,7 @@ impl<T: Scalar + Float> Operator for StackSync<T> {
     type Output = Array<T>;
 
     fn init(
-        self,
+        &self,
         inputs: SliceRefs<'_, Input<Array<T>>>,
         _timestamp: Instant,
     ) -> (StackSyncState, Array<T>) {

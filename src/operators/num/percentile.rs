@@ -44,7 +44,7 @@ impl<T: Scalar + Float> Operator for Percentile<T> {
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (Vec<usize>, Array<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> (Vec<usize>, Array<T>) {
         let n = inputs.as_slice().len();
         (vec![0; n], Array::zeros(inputs.shape()))
     }

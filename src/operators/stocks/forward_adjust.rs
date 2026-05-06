@@ -67,7 +67,7 @@ impl Operator for ForwardAdjust {
     type Output = Array<f64>;
 
     fn init(
-        self,
+        &self,
         inputs: (&Array<f64>, &Array<f64>),
         _timestamp: Instant,
     ) -> (ForwardAdjustState, Array<f64>) {

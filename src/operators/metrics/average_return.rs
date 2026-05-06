@@ -32,7 +32,7 @@ impl<T: Scalar + Float> Operator for AverageReturn<T> {
     type Inputs = (Input<Array<T>>, Input<()>);
     type Output = Array<T>;
 
-    fn init(self, _inputs: (&Array<T>, &()), _timestamp: Instant) -> (Self::State, Array<T>) {
+    fn init(&self, _inputs: (&Array<T>, &()), _timestamp: Instant) -> (Self::State, Array<T>) {
         (
             AverageReturnState {
                 prev: T::nan(),

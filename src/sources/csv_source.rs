@@ -361,7 +361,7 @@ impl Source for CsvSource {
     }
 
     fn init(
-        self,
+        &self,
         _timestamp: Instant,
     ) -> (
         mpsc::Receiver<(Instant, Array<f64>)>,
@@ -372,6 +372,17 @@ impl Source for CsvSource {
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
 
+        // Snapshot config into owned values so the spawned driver can
+        // outlive `&self` — the spec stays borrowable for future sessions.
+        let path = self.path.clone();
+        let time_column = self.time_column.clone();
+        let value_columns = self.value_columns.clone();
+        let timestamp_offset = self.timestamp_offset;
+        let start = self.start;
+        let end = self.end;
+        let is_utc = self.is_utc;
+        let tz_offset = self.tz_offset;
+
         // Stream rows asynchronously from the CSV file.  Each row is sent
         // through the bounded channel with back-pressure, avoiding
         // buffering the entire file in memory.
@@ -379,10 +390,10 @@ impl Source for CsvSource {
         // Assumes timestamps are non-decreasing (true for crawler output
         // and most historical data).
         tokio::spawn(async move {
-            let file = match tokio::fs::File::open(&self.path).await {
+            let file = match tokio::fs::File::open(&path).await {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("CsvSource error: cannot open {}: {e}", self.path);
+                    eprintln!("CsvSource error: cannot open {path}: {e}");
                     return;
                 }
             };
@@ -395,18 +406,13 @@ impl Source for CsvSource {
                 }
             };
             let (time_idx, value_indices) =
-                match resolve_columns(&headers, &self.time_column, &self.value_columns) {
+                match resolve_columns(&headers, &time_column, &value_columns) {
                     Ok(v) => v,
                     Err(e) => {
                         eprintln!("CsvSource error: {e}");
                         return;
                     }
                 };
-
-            let start = self.start;
-            let end = self.end;
-            let is_utc = self.is_utc;
-            let tz_offset = self.tz_offset;
 
             // When `start` is set, track the last row before the window
             // so it can be emitted as the initial value at `start`.
@@ -425,7 +431,7 @@ impl Source for CsvSource {
                     Ok(true) => {}
                 }
                 let ts = match parse_gregorian_date(&record[time_idx]) {
-                    Ok(epoch) => epoch_to_instant(epoch, is_utc, tz_offset) + self.timestamp_offset,
+                    Ok(epoch) => epoch_to_instant(epoch, is_utc, tz_offset) + timestamp_offset,
                     Err(e) => {
                         eprintln!("CsvSource error: {e}");
                         return;
@@ -433,8 +439,7 @@ impl Source for CsvSource {
                 };
                 assert!(
                     ts >= prev_ts,
-                    "CsvSource: timestamps not sorted in {}",
-                    self.path,
+                    "CsvSource: timestamps not sorted in {path}",
                 );
                 prev_ts = ts;
 

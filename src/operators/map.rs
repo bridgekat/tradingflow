@@ -45,9 +45,9 @@ where
     type Inputs = Input<S>;
     type Output = T;
 
-    fn init(self, inputs: &S, _timestamp: Instant) -> (Self, T) {
+    fn init(&self, inputs: &S, _timestamp: Instant) -> (Self, T) {
         let output = (self.f)(inputs);
-        (self, output)
+        (self.clone(), output)
     }
 
     #[inline(always)]
@@ -106,10 +106,10 @@ where
     type Inputs = Input<S>;
     type Output = T;
 
-    fn init(self, inputs: &S, _timestamp: Instant) -> (Self, T) {
+    fn init(&self, inputs: &S, _timestamp: Instant) -> (Self, T) {
         let mut output = self.initial.clone();
         (self.f)(inputs, &mut output);
-        (self, output)
+        (self.clone(), output)
     }
 
     #[inline(always)]

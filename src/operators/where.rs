@@ -28,8 +28,8 @@ impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + 'static> Operator for Where<T,
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (Self, Array<T>) {
-        (self, inputs.clone())
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> (Self, Array<T>) {
+        (self.clone(), inputs.clone())
     }
 
     #[inline(always)]

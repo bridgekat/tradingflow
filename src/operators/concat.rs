@@ -38,7 +38,7 @@ impl<T: Scalar> Operator for Concat<T> {
     type Output = Array<T>;
 
     fn init(
-        self,
+        &self,
         inputs: SliceRefs<'_, Input<Array<T>>>,
         _timestamp: Instant,
     ) -> (ConcatState, Array<T>) {
@@ -115,7 +115,7 @@ impl<T: Scalar + Float> Operator for ConcatSync<T> {
     type Output = Array<T>;
 
     fn init(
-        self,
+        &self,
         inputs: SliceRefs<'_, Input<Array<T>>>,
         _timestamp: Instant,
     ) -> (ConcatSyncState, Array<T>) {

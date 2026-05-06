@@ -16,7 +16,6 @@ use super::accumulator::Accumulator;
 /// than added to the running sum, since `inf − inf` would corrupt the sum
 /// to NaN on eviction.  If any value in the window is non-finite for a
 /// given element position, the output for that position is NaN.
-#[derive(Clone)]
 pub struct MeanAccumulator<T: Scalar + Float> {
     sum: Vec<T>,
     nonfinite_count: Vec<u32>,

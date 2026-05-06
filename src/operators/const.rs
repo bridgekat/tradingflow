@@ -27,8 +27,8 @@ impl<T: Clone + Send + 'static> Operator for Const<T> {
     type Inputs = ();
     type Output = T;
 
-    fn init(self, _inputs: (), _timestamp: Instant) -> ((), T) {
-        ((), self.value)
+    fn init(&self, _inputs: (), _timestamp: Instant) -> ((), T) {
+        ((), self.value.clone())
     }
 
     #[inline(always)]

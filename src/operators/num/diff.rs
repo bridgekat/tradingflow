@@ -40,7 +40,7 @@ impl<T: Scalar + Float> Operator for Diff<T> {
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (DiffState<T>, Array<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> (DiffState<T>, Array<T>) {
         let shape = inputs.shape();
         let stride: usize = shape.iter().product();
         let out = Array::from_vec(shape, vec![T::nan(); stride]);

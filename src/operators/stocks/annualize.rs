@@ -62,7 +62,7 @@ impl Operator for Annualize {
     type Inputs = Input<Array<f64>>;
     type Output = Array<f64>;
 
-    fn init(self, inputs: &Array<f64>, _timestamp: Instant) -> (AnnualizeState, Array<f64>) {
+    fn init(&self, inputs: &Array<f64>, _timestamp: Instant) -> (AnnualizeState, Array<f64>) {
         let input_len = inputs.as_slice().len();
         assert!(
             input_len >= 3,

@@ -85,7 +85,7 @@ impl<O: Operator, C: Send + 'static> Operator for Clocked<O, C> {
     type Output = O::Output;
 
     fn init(
-        self,
+        &self,
         inputs: (&C, <O::Inputs as InputTypes>::Refs<'_>),
         timestamp: Instant,
     ) -> (O::State, O::Output) {
@@ -167,7 +167,7 @@ where
     type Output = <Clocked<Id<O>, C> as Operator>::Output;
 
     fn init(
-        self,
+        &self,
         inputs: <Self::Inputs as InputTypes>::Refs<'_>,
         timestamp: Instant,
     ) -> (Self::State, Self::Output) {

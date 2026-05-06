@@ -112,7 +112,7 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
     }
 
     fn init(
-        self,
+        &self,
         _timestamp: Instant,
     ) -> (
         mpsc::Receiver<(Instant, T)>,
@@ -131,7 +131,7 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
             }
         });
 
-        (hist_rx, live_rx, self.default)
+        (hist_rx, live_rx, self.default.clone())
     }
 
     fn write(payload: T, output: &mut T, _timestamp: Instant) -> bool {

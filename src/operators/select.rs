@@ -61,7 +61,7 @@ impl<T: Scalar> Operator for Select<T> {
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (SelectState, Array<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> (SelectState, Array<T>) {
         let input_shape = inputs.shape();
         let index_map = compute_select_map(input_shape, &self.indices, self.axis);
         let mut output_shape = input_shape.to_vec();

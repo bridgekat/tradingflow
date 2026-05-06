@@ -25,14 +25,14 @@ impl<T: Scalar> Operator for Last<T> {
     type Inputs = Input<Series<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Series<T>, _timestamp: Instant) -> (T, Array<T>) {
+    fn init(&self, inputs: &Series<T>, _timestamp: Instant) -> (T, Array<T>) {
         let shape = inputs.shape();
         let out = if let Some(last) = inputs.last() {
             Array::from_vec(shape, last.to_vec())
         } else {
             Array::full(shape, self.fill.clone())
         };
-        (self.fill, out)
+        (self.fill.clone(), out)
     }
 
     fn compute(

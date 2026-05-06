@@ -32,7 +32,7 @@ impl<T: Clone + Send + 'static> Operator for Id<T> {
     type Inputs = Input<T>;
     type Output = T;
 
-    fn init(self, inputs: &T, _timestamp: Instant) -> ((), T) {
+    fn init(&self, inputs: &T, _timestamp: Instant) -> ((), T) {
         ((), inputs.clone())
     }
 

@@ -24,7 +24,7 @@ impl<T: Scalar + Float> Operator for Clamp<T> {
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> ((T, T), Array<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> ((T, T), Array<T>) {
         ((self.lo, self.hi), Array::zeros(inputs.shape()))
     }
 

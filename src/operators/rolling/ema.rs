@@ -79,7 +79,7 @@ impl<T: Scalar + Float> Operator for Ema<T> {
     type Inputs = Input<Series<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Series<T>, _timestamp: Instant) -> (EmaState<T>, Array<T>) {
+    fn init(&self, inputs: &Series<T>, _timestamp: Instant) -> (EmaState<T>, Array<T>) {
         let stride = inputs.stride();
         let one_minus_alpha = T::one() - self.alpha;
         let mut decay_factor = T::one();

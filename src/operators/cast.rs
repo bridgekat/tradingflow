@@ -38,7 +38,7 @@ where
     type Inputs = Input<Array<S>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<S>, _timestamp: Instant) -> ((), Array<T>) {
+    fn init(&self, inputs: &Array<S>, _timestamp: Instant) -> ((), Array<T>) {
         let src = inputs.as_slice();
         let data: Vec<T> = src.iter().map(|&v| v.as_()).collect();
         ((), Array::from_vec(inputs.shape(), data))

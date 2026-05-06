@@ -34,7 +34,7 @@ impl<T: Scalar + Float> Operator for ForwardFill<T> {
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> ((), Array<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> ((), Array<T>) {
         let shape = inputs.shape();
         let stride: usize = shape.iter().product();
         ((), Array::from_vec(shape, vec![T::nan(); stride]))

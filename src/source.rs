@@ -10,30 +10,33 @@ use crate::PeekableReceiver;
 ///
 /// # Lifecycle
 ///
-/// 1. [`init`](Self::init) consumes the spec, producing two channel receivers
-///    (historical + live) and the initial [`Output`](Self::Output).
+/// 1. [`init`](Self::init) reads the spec by reference and produces two
+///    channel receivers (historical + live) plus the initial
+///    [`Output`](Self::Output).
 /// 2. [`write`](Self::write) is called for each received event to update the
 ///    output.
 ///
 /// # Reusability
 ///
-/// `Source` requires `Clone` so a single spec can drive multiple
-/// scenario sessions: the type-erasure layer ([`ErasedSource`]) keeps the
-/// spec by value and `clone()`s it before each [`init`](Self::init) call,
-/// preserving the `init(self, …)` signature while making the descriptor a
-/// pure definition.  Implementations should treat `clone()` as a cheap
-/// snapshot of configuration only — any mutable per-run state belongs in
-/// [`Output`](Self::Output) (built fresh by `init`).
-pub trait Source: Clone + 'static {
+/// `init` takes `&self`, so a single spec can drive multiple scenario
+/// sessions — the type-erasure layer ([`ErasedSource`]) keeps the spec by
+/// value and calls `init` against the shared reference on every session
+/// start.  Implementations should treat the spec as immutable
+/// configuration; any per-session state lives in
+/// [`Output`](Self::Output) (built fresh by `init`) and any per-event
+/// state is threaded through `Output` as well.  Clone any field that
+/// needs to move into an async driver task (e.g. into
+/// [`tokio::spawn`]) explicitly.
+pub trait Source: 'static {
     /// Channel event type.
     type Event: Send + 'static;
     /// Output type.
     type Output: Send + 'static;
 
-    /// Consume the spec and produce channel receivers and initial output.
+    /// Build channel receivers and initial output from a borrow of the spec.
     #[allow(clippy::type_complexity)]
     fn init(
-        self,
+        &self,
         timestamp: Instant,
     ) -> (
         mpsc::Receiver<(Instant, Self::Event)>,
@@ -131,9 +134,10 @@ impl ErasedSource {
     /// Construct from a typed [`Source`].
     ///
     /// The spec is captured by value into the [`InitFn`] closure and
-    /// `clone()`d before each call to [`Source::init`], which lets the
-    /// erased descriptor be reused across multiple sessions while keeping
-    /// the typed `Source::init(self, …)` signature intact.
+    /// borrowed by every call to [`Source::init`] — no `Clone` bound is
+    /// required on `S`, since `init` takes `&self`.  Implementations that
+    /// need to move owned data into spawned tasks should clone the
+    /// relevant fields out of `&self` themselves.
     pub fn from_source<S: Source>(source: S) -> Self {
         let estimated_event_count = source.estimated_event_count();
         Self {
@@ -141,7 +145,7 @@ impl ErasedSource {
             output_type_id: TypeId::of::<S::Output>(),
             estimated_event_count,
             init_fn: Box::new(move |timestamp: Instant| {
-                let (hist, live, output) = source.clone().init(timestamp);
+                let (hist, live, output) = source.init(timestamp);
                 let hist_rx_ptr = Box::into_raw(Box::new(PeekableReceiver::new(hist))) as *mut u8;
                 let live_rx_ptr = Box::into_raw(Box::new(PeekableReceiver::new(live))) as *mut u8;
                 let output_ptr = Box::into_raw(Box::new(output)) as *mut u8;
@@ -271,9 +275,9 @@ unsafe fn erased_drop_fn<T>(ptr: *mut u8) {
 mod tests {
     use super::*;
 
-    /// Trivial stateless source whose [`init`](Source::init) clones the
-    /// captured spec.  Used to exercise reusability of [`ErasedSource`].
-    #[derive(Clone)]
+    /// Trivial stateless source whose [`init`](Source::init) reads the
+    /// captured spec by reference.  Used to exercise reusability of
+    /// [`ErasedSource`] without requiring `Clone`.
     struct FixedSource {
         value: i64,
     }
@@ -283,7 +287,7 @@ mod tests {
         type Output = i64;
 
         fn init(
-            self,
+            &self,
             _timestamp: Instant,
         ) -> (
             tokio::sync::mpsc::Receiver<(Instant, i64)>,

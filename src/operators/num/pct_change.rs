@@ -41,7 +41,7 @@ impl<T: Scalar + Float> Operator for PctChange<T> {
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (PctChangeState<T>, Array<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> (PctChangeState<T>, Array<T>) {
         let shape = inputs.shape();
         let stride: usize = shape.iter().product();
         let out = Array::from_vec(shape, vec![T::nan(); stride]);

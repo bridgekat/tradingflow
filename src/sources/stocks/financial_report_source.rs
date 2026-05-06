@@ -274,7 +274,7 @@ impl Source for FinancialReportSource {
     }
 
     fn init(
-        self,
+        &self,
         _timestamp: Instant,
     ) -> (
         mpsc::Receiver<(Instant, Array<f64>)>,
@@ -291,16 +291,28 @@ impl Source for FinancialReportSource {
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
 
+        // Snapshot config into owned values for the spawned driver.
+        let path = self.path.clone();
+        let report_date_column = self.report_date_column.clone();
+        let notice_date_column = self.notice_date_column.clone();
+        let value_columns = self.value_columns.clone();
+        let use_effective_date = self.use_effective_date;
+        let notice_date_fallback = self.notice_date_fallback;
+        let is_utc = self.is_utc;
+        let tz_offset = self.tz_offset;
+        let start = self.start;
+        let end = self.end;
+
         tokio::spawn(async move {
             let rows = match read_csv(
-                &self.path,
-                &self.report_date_column,
-                &self.notice_date_column,
-                &self.value_columns,
-                self.use_effective_date,
-                self.notice_date_fallback,
-                self.is_utc,
-                self.tz_offset,
+                &path,
+                &report_date_column,
+                &notice_date_column,
+                &value_columns,
+                use_effective_date,
+                notice_date_fallback,
+                is_utc,
+                tz_offset,
             ) {
                 Ok(r) => r,
                 Err(e) => {
@@ -308,8 +320,6 @@ impl Source for FinancialReportSource {
                     return;
                 }
             };
-            let start = self.start;
-            let end = self.end;
 
             // When start is set, find the last row before the window
             // and emit it at start as the initial value.

@@ -475,7 +475,7 @@ mod tests {
         type Output = Array<f64>;
 
         fn init(
-            self,
+            &self,
             _ts: Instant,
         ) -> (
             mpsc::Receiver<(Instant, f64)>,
@@ -524,11 +524,11 @@ mod tests {
         type Output = ();
 
         fn init(
-            self,
+            &self,
             _inputs: &Array<f64>,
             _ts: Instant,
         ) -> ((usize, Arc<Mutex<Vec<(Instant, usize)>>>), ()) {
-            ((self.source_id, self.log), ())
+            ((self.source_id, self.log.clone()), ())
         }
 
         fn compute(
@@ -703,7 +703,7 @@ mod tests {
             type Output = Array<f64>;
 
             fn init(
-                self,
+                &self,
                 _timestamp: Instant,
             ) -> (
                 mpsc::Receiver<(Instant, f64)>,

@@ -36,7 +36,7 @@ impl<T: Scalar> Source for ArraySource<T> {
     }
 
     fn init(
-        self,
+        &self,
         _timestamp: Instant,
     ) -> (
         mpsc::Receiver<(Instant, Array<T>)>,
@@ -46,19 +46,22 @@ impl<T: Scalar> Source for ArraySource<T> {
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
 
+        // Clone the series for the spawned driver; the spec stays
+        // borrowable so the same source can drive multiple sessions.
+        let series = self.series.clone();
         tokio::spawn(async move {
-            for (i, &ts) in self.series.timestamps().iter().enumerate() {
-                let stride = self.series.stride();
+            for (i, &ts) in series.timestamps().iter().enumerate() {
+                let stride = series.stride();
                 let start = i * stride;
-                let slice = &self.series.values()[start..start + stride];
-                let arr = Array::from_vec(self.series.shape(), slice.to_vec());
+                let slice = &series.values()[start..start + stride];
+                let arr = Array::from_vec(series.shape(), slice.to_vec());
                 if hist_tx.send((ts, arr)).await.is_err() {
                     break;
                 }
             }
         });
 
-        (hist_rx, live_rx, self.default)
+        (hist_rx, live_rx, self.default.clone())
     }
 
     fn write(payload: Array<T>, output: &mut Array<T>, _timestamp: Instant) -> bool {

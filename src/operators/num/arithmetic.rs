@@ -32,7 +32,7 @@ macro_rules! define_unary_op {
             type Inputs = Input<Array<T>>;
             type Output = Array<T>;
 
-            fn init(self, inputs: &Array<T>, _timestamp: Instant) -> ((), Array<T>) {
+            fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> ((), Array<T>) {
                 ((), Array::zeros(inputs.shape()))
             }
 
@@ -145,7 +145,7 @@ macro_rules! define_binary_op {
             type Inputs = (Input<Array<T>>, Input<Array<T>>);
             type Output = Array<T>;
 
-            fn init(self, inputs: (&Array<T>, &Array<T>), _timestamp: Instant) -> ((), Array<T>) {
+            fn init(&self, inputs: (&Array<T>, &Array<T>), _timestamp: Instant) -> ((), Array<T>) {
                 ((), Array::zeros(inputs.0.shape()))
             }
 
@@ -223,7 +223,7 @@ impl<T: Scalar + Float> Operator for Pow<T> {
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (T, Array<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> (T, Array<T>) {
         (self.n, Array::zeros(inputs.shape()))
     }
 

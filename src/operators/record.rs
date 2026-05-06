@@ -29,7 +29,7 @@ impl<T: Scalar> Operator for Record<T> {
     type Inputs = Input<Array<T>>;
     type Output = Series<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> ((), Series<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> ((), Series<T>) {
         ((), Series::new(inputs.shape()))
     }
 

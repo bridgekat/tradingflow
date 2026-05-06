@@ -61,7 +61,7 @@ impl<T: Scalar + Float> Operator for Winsorize<T> {
     type Inputs = Input<Array<T>>;
     type Output = Array<T>;
 
-    fn init(self, inputs: &Array<T>, _timestamp: Instant) -> (WinsorizeState<T>, Array<T>) {
+    fn init(&self, inputs: &Array<T>, _timestamp: Instant) -> (WinsorizeState<T>, Array<T>) {
         let n = inputs.as_slice().len();
         (
             WinsorizeState {
