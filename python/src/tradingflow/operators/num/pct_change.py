@@ -1,4 +1,4 @@
-"""Percentage-change operator — element-wise linear returns across ticks."""
+"""Percentage-change operator - element-wise linear returns across ticks."""
 
 from __future__ import annotations
 

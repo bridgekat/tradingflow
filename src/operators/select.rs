@@ -1,4 +1,4 @@
-//! Select operator — index selection along an axis.
+//! Select operator - index selection along an axis.
 
 use std::marker::PhantomData;
 
@@ -22,9 +22,9 @@ pub struct Select<T: Scalar> {
 impl<T: Scalar> Select<T> {
     /// Create a new `Select` operator.
     ///
-    /// * `indices` — positions to select along `axis`.
-    /// * `axis` — the axis to select from.
-    /// * `squeeze` — if `true` and `indices.len() == 1`, the selected
+    /// * `indices` - positions to select along `axis`.
+    /// * `axis` - the axis to select from.
+    /// * `squeeze` - if `true` and `indices.len() == 1`, the selected
     ///   axis is removed from the output shape.
     pub fn new(indices: Vec<usize>, axis: usize, squeeze: bool) -> Self {
         assert!(

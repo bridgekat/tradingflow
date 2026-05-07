@@ -96,7 +96,7 @@ flowchart LR
 When using the Python wrapper, every node in the graph can hold one of two
 types of value[^1] or choose to hold no value at all:
 
-- An **array** is a fixed-shape NumPy-like tensor — the current
+- An **array** is a fixed-shape NumPy-like tensor - the current
   *snapshot* of something.  For example, today's closing price for
   every instrument in the universe is one array of shape `(N,)`; a
   covariance matrix is an array of shape `(N, N)`.  Arrays are updated
@@ -108,9 +108,9 @@ types of value[^1] or choose to hold no value at all:
 
 The following operators can be used to convert between them:
 
-- [`Record`][tradingflow.operators.record.Record] — append every upstream
+- [`Record`][tradingflow.operators.record.Record] - append every upstream
   array value into a series (array → series).
-- [`Last`][tradingflow.operators.last.Last] — expose the most recent series
+- [`Last`][tradingflow.operators.last.Last] - expose the most recent series
   value as an array (series → array).
 
 Under the hood, both arrays and series are backed by contiguous `Vec<T>`
@@ -122,11 +122,11 @@ read from the Python side.
 A **source** is a node that produces timestamped values from somewhere
 outside the graph.  Conceptually it is a pair of async iterators: a
 *historical* stream (replayed as fast as possible at run start) and a
-*live* stream (merged in in real time).  Either may be empty — most
+*live* stream (merged in in real time).  Either may be empty - most
 backtests only use the historical one.
 
-Typical sources are raw market data feeds or pre-computed factors —
-snapshot prices, financial reports, order flows — plus unit-valued
+Typical sources are raw market data feeds or pre-computed factors -
+snapshot prices, financial reports, order flows - plus unit-valued
 **clocks** that just *tick* on a schedule.
 
 See [`tradingflow.sources`][tradingflow.sources] for the full catalog
@@ -141,13 +141,13 @@ output data, and decides whether to propagate the notification further
 downstream.
 
 See [`tradingflow.operators`][tradingflow.operators] for the full
-catalog — structural glue, numeric operators, rolling windows,
+catalog - structural glue, numeric operators, rolling windows,
 predictors, portfolios, traders, metrics, and stock-specific helpers.
 
 ## Scenarios and sessions
 
 A [`Scenario`][tradingflow.scenario.Scenario] is a *pure definition* of the
-computation graph — descriptors plus wiring, no per-run state.
+computation graph - descriptors plus wiring, no per-run state.
 [`Scenario.run`][tradingflow.scenario.Scenario.run] builds a fresh
 [`Session`][tradingflow.scenario.Session], drains every source (first the
 historical streams, then the live ones) in timestamp order,
@@ -164,7 +164,7 @@ node's shape and its value kind (array vs. series), so wiring errors
 are caught before the event loop starts.
 
 The same scenario can drive any number of independent sessions over
-its lifetime — useful for parameter sweeps, repeated backtests, or
+its lifetime - useful for parameter sweeps, repeated backtests, or
 any case where the graph topology stays the same but the per-run state
 needs to start fresh.
 
@@ -185,9 +185,9 @@ If incoming data contains UTC timestamps, or when output data is resolved as
 UTC timestamps, use the conversion helpers in
 [`tradingflow.data.time`][tradingflow.data.time]:
 
-- [`utc_to_tai`][tradingflow.data.time.utc_to_tai] — accepts a scalar
+- [`utc_to_tai`][tradingflow.data.time.utc_to_tai] - accepts a scalar
   or NumPy array, adds the current TAI-UTC offset.
-- [`tai_to_utc`][tradingflow.data.time.tai_to_utc] — the inverse.
+- [`tai_to_utc`][tradingflow.data.time.tai_to_utc] - the inverse.
 
 String-parsing sources ([`CSVSource`][tradingflow.sources.csv_source.CSVSource],
 [`FinancialReportSource`][tradingflow.sources.stocks.financial_report_source.FinancialReportSource])
@@ -239,8 +239,8 @@ docstring.
 
 # Where to go next
 
-- **Definition:** [`Scenario`][tradingflow.scenario.Scenario] — the computation graph and its registration API.
-- **Runtime:** [`Session`][tradingflow.scenario.Session] — a single live execution, with views into the populated buffers.
+- **Definition:** [`Scenario`][tradingflow.scenario.Scenario] - the computation graph and its registration API.
+- **Runtime:** [`Session`][tradingflow.scenario.Session] - a single live execution, with views into the populated buffers.
 - **Extension bases:** [`Source`][tradingflow.source.Source] / [`Operator`][tradingflow.operator.Operator] for Python implementations, [`NativeSource`][tradingflow.source.NativeSource] / [`NativeOperator`][tradingflow.operator.NativeOperator] for Rust-backed descriptors.
 - **Built-in catalogs:** [`tradingflow.sources`][tradingflow.sources] and [`tradingflow.operators`][tradingflow.operators].
 - **Types, handles, and views:** [`tradingflow.data`][tradingflow.data].
@@ -261,7 +261,6 @@ from . import data
 from . import sources
 from . import operators
 from . import utils
-
 
 __all__ = [
     "ArrayView",

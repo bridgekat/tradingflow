@@ -6,10 +6,10 @@ the generic sources in the parent
 this module are [`NativeSource`][tradingflow.source.NativeSource]
 subclasses dispatched entirely to Rust.
 
-- [`FinancialReportSource`][tradingflow.sources.stocks.financial_report_source.FinancialReportSource] —
+- [`FinancialReportSource`][tradingflow.sources.stocks.financial_report_source.FinancialReportSource] -
   historical source for financial-report CSVs.  Unlike price data,
   financial reports have two relevant timestamps per row: the *report
-  date* (the period the numbers describe — e.g. 2024-Q1) and the
+  date* (the period the numbers describe - e.g. 2024-Q1) and the
   *notice date* (when the filing was actually released, which is when
   the market first knew about it).  This source emits events at the
   notice date but carries both dates in the payload, so downstream

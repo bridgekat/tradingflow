@@ -22,7 +22,7 @@ class FinancialReportSource(NativeSource):
     `report_date + notice_date_fallback` when the notice date is missing.
     Reports whose report date is earlier than a previously emitted report
     date are dropped (retrospective updates).  This mode ensures backtesting
-    correctness — data cannot be used before publication.
+    correctness - data cannot be used before publication.
 
     When `use_effective_date` is `False`, the report date is used directly
     as the event timestamp.  This is useful for analysis that should align

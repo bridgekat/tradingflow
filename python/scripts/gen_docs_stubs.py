@@ -3,19 +3,18 @@
 Walks `python/src/tradingflow/` and writes one `:::<module>` stub per
 module into `python/docs/`, mirroring the directory layout. Runs
 before `zensical build` to keep the docs tree in sync with the source
-tree automatically — no manual maintenance of per-module stubs.
+tree automatically - no manual maintenance of per-module stubs.
 
 Package `__init__.py` files in this project contain only re-exports
 (no native class/function definitions), so their stubs disable member
 rendering (`members: false`) to avoid duplicating full docs for each
-re-exported symbol — the canonical docs live on the leaf-module pages,
+re-exported symbol - the canonical docs live on the leaf-module pages,
 and the package page shows only the module overview docstring with
 cross-links.
 """
 
 from collections.abc import Iterator
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "tradingflow"

@@ -30,7 +30,7 @@ class MeanVariancePortfolio(
 ):
     r"""Abstract portfolio constructor from predicted returns and covariance.
 
-    Triggered by `universe` updates — the universe is the canonical
+    Triggered by `universe` updates - the universe is the canonical
     rebalance signal.  On each trigger, delegates to `positions_fn` to
     compute position weights.  Only stocks with positive universe
     weights, finite predicted returns, and finite diagonal covariance
@@ -41,7 +41,7 @@ class MeanVariancePortfolio(
     typically clocked by a rebalance clock (e.g. via
     [`Clocked`][tradingflow.operators.clocked.Clocked]), so this operator runs
     at that cadence.  `predicted_returns` and `predicted_covariances`
-    are read as the latest stored predictions at the trigger — neither
+    are read as the latest stored predictions at the trigger - neither
     need produce on the same cycle.
 
     ## Expected prediction semantics
@@ -61,7 +61,7 @@ class MeanVariancePortfolio(
       units and are forwarded to `positions_fn` unchanged.
 
     Either way, `positions_fn` always sees matched linear-return
-    mean/covariance pairs — exactly the units Markowitz-style
+    mean/covariance pairs - exactly the units Markowitz-style
     objectives \(\mu^T w - \frac{\gamma}{2} w^T \Sigma w\) expect.
     Training the upstream predictors on log returns (more symmetric,
     closer to Gaussian) while letting this boundary handle the
@@ -72,7 +72,7 @@ class MeanVariancePortfolio(
     ## NaN behavior
 
     `predicted_returns` and `predicted_covariances` are allowed to
-    contain `NaN` entries — per the
+    contain `NaN` entries - per the
     [`MeanPredictor`][tradingflow.operators.predictors.mean_predictor.MeanPredictor]
     and
     [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor]

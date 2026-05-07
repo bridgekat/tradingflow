@@ -39,12 +39,12 @@ pub struct CsvSource {
 impl CsvSource {
     /// Create a new CSV source.
     ///
-    /// * `path` — filesystem path to the CSV file.
-    /// * `time_column` — header name of the date/datetime column
+    /// * `path` - filesystem path to the CSV file.
+    /// * `time_column` - header name of the date/datetime column
     ///   (parsed as `YYYY-MM-DD`).
-    /// * `value_columns` — header names of columns to include as values,
+    /// * `value_columns` - header names of columns to include as values,
     ///   in order.  Each is parsed as `f64`.
-    /// * `timestamp_offset` — constant offset added to every parsed
+    /// * `timestamp_offset` - constant offset added to every parsed
     ///   timestamp before it is used as the event timestamp.  Useful when
     ///   the CSV contains low-precision timestamps (e.g. dates) that would
     ///   otherwise cause forward-looking bias against higher-precision
@@ -73,11 +73,11 @@ impl CsvSource {
 
     /// Set the interpretation of the date strings in the CSV.
     ///
-    /// * `is_utc` — if `true` (default), date strings are interpreted as
+    /// * `is_utc` - if `true` (default), date strings are interpreted as
     ///   UTC wall-clock instants; conversion to TAI applies the IERS
     ///   leap-second offset.  If `false`, they are interpreted as TAI
     ///   wall-clock directly (no leap-second math).
-    /// * `tz_offset` — offset of the local wall-clock timezone from the
+    /// * `tz_offset` - offset of the local wall-clock timezone from the
     ///   reference timescale (UTC or TAI as selected by `is_utc`).  For
     ///   example, `Duration::from_hours(8)` for Asia/Shanghai.
     pub fn with_timescale(mut self, is_utc: bool, tz_offset: Duration) -> Self {
@@ -373,7 +373,7 @@ impl Source for CsvSource {
         let (_, live_rx) = mpsc::channel(1);
 
         // Snapshot config into owned values so the spawned driver can
-        // outlive `&self` — the spec stays borrowable for future sessions.
+        // outlive `&self` - the spec stays borrowable for future sessions.
         let path = self.path.clone();
         let time_column = self.time_column.clone();
         let value_columns = self.value_columns.clone();
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn parse_date_tai_interpretation() {
         // Under is_utc=false, "2024-01-15" labels TAI 2024-01-15 00:00:00
-        // directly — no leap-second offset.
+        // directly - no leap-second offset.
         let tai = epoch_to_instant(parse_gregorian_date("2024-01-15").unwrap(), false, Duration::ZERO);
         let utc = parse_utc("2024-01-15");
         // TAI interpretation is 37 s earlier on the TAI timeline than the

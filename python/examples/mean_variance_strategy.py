@@ -32,7 +32,19 @@ from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Apply, Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract
+from tradingflow.operators.num import (
+    Diff,
+    Divide,
+    Log,
+    Max,
+    Min,
+    Multiply,
+    Negate,
+    Percentile,
+    Sqrt,
+    Subtract,
+    Winsorize,
+)
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.predictors.variance import Shrinkage
 from tradingflow.operators.portfolios.mean_variance import Markowitz, Mode
@@ -42,7 +54,6 @@ from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 
 from stocks import load_symbols, calculate_index_weights, resolve_data_start, add_market_argument
-
 
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
@@ -72,11 +83,11 @@ def build_scenario(
 
     # Per-stock handles grouped by cadence.
     #
-    # * `per_stock_sync` — values produced in lockstep across all stocks
+    # * `per_stock_sync` - values produced in lockstep across all stocks
     #   (e.g., daily prices/equity on trading days).  Stacked with
     #   `StackSync` to give message-passing semantics: slots of stocks
     #   that did not produce this cycle are filled with `NaN`.
-    # * `per_stock_irregular` — values updated on stock-specific dates
+    # * `per_stock_irregular` - values updated on stock-specific dates
     #   (e.g., quarterly financial reports filed on different dates).
     #   Stacked with `Stack` to give time-series semantics: slots keep
     #   their last-known value across quiet periods.
@@ -167,15 +178,13 @@ def build_scenario(
     # ------------------------------------------------------------------
 
     num_stocks = len(symbols)
+    window = 20
 
     # Stack per-stock handles into (num_stocks, ...) arrays.
     stacked = {
         **{k: sc.add_operator(StackSync(v)) for k, v in per_stock_sync.items()},
         **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
     }
-
-    # Window size for rolling features (in trading days, not calendar days).
-    window = 20
 
     # Total market cap.
     market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
@@ -197,13 +206,23 @@ def build_scenario(
     log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
     momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
 
+    # Price volatility (rolling std dev of daily log-returns of adjusted close).
+    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
+
     # Turnover MA (rolling mean of daily turnover).
     turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
     turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
 
-    # Price volatility (rolling std dev of daily log-returns of adjusted close).
-    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
+    # Volume ratio (latest volume / rolling-mean of volume over window).
+    volume_series = sc.add_operator(Record(stacked["volume"]))
+    volume_ma = sc.add_operator(RollingMean(volume_series, window=window))
+    volume_ratio = sc.add_operator(Divide(stacked["volume"], volume_ma))
+
+    # Volume-by-momentum interaction factors.
+    zero_const = sc.add_const(np.zeros(num_stocks, dtype=np.float64))
+    positive_momentum_magnitude = sc.add_operator(Max(momentum_ma, zero_const))
+    volume_rally = sc.add_operator(Multiply(volume_ratio, positive_momentum_magnitude))
 
     # Cross-sectional features.
     features = {
@@ -212,30 +231,40 @@ def build_scenario(
         "rank_ttm_ep": sc.add_operator(Percentile(ttm_ep)),
         "rank_ttm_roe": sc.add_operator(Percentile(ttm_roe)),
         f"momentum_ma_{window}": momentum_ma,
-        f"turnover_ma_{window}": turnover_ma,
         f"volatility_{window}": volatility,
+        f"turnover_ma_{window}": turnover_ma,
+        f"volume_ratio_{window}": volume_ratio,
+        f"volume_rally_{window}": volume_rally,
     }
     stacked_features = sc.add_operator(Stack(list(features.values()), axis=1))
 
-    # Record feature and target history for predictors.  The mean and
-    # variance predictors train on log returns (more symmetric, closer
-    # to Gaussian) and `MeanVariancePortfolio` does the lognormal
-    # conversion to linear-return moments internally before running
-    # Markowitz.
+    # Record feature and target history for predictors.  Features are
+    # percentile-ranked per day; the regression target is the 1-step
+    # log return, winsorized at the cross-sectional 1st/99th percentile
+    # so outlier days don't dominate the pooled OLS.  Preserving
+    # magnitudes (vs. another rank transform) matters because rank-only
+    # prediction can still lose money under skewed return distributions
+    # - winsorization caps tail leverage without erasing scale.
     #
-    # `stacked_features` ticks on trading days *and* on irregular
-    # corporate-event days (balance-sheet / income-statement notices,
-    # equity structure changes).  The returns target only ticks on
-    # trading days.  `Resample` gates feature recording on the
-    # trading-day pulse (`stacked["adjusted_close"]`) so the features
-    # and target records advance lock-step, satisfying the predictor's
-    # `len(features) == len(target)` equal-length contract.
-    # `target_offset=1` below then pairs feature[i] with target[i+1],
-    # i.e. the return from day t to day t+1.
+    # `stacked_features` ticks whenever any of its component factors
+    # updates, which includes irregular corporate-event days (balance-
+    # sheet / income-statement notices, equity structure changes) on
+    # top of trading days.  `Diff(Log(stacked["adjusted_close"]))`, by
+    # contrast, only ticks on trading days (`stacked["adjusted_close"]`
+    # is a `StackSync` over per-stock daily adjusted prices).  Recording
+    # `stacked_features` directly would make the features record strictly
+    # longer than the target record and break the predictor's equal-
+    # length alignment contract (`len(features) == len(target)`).
+    #
+    # `Resample` re-emits the features on the trading-day pulse so both
+    # records advance lock-step on trading days.  The predictor pairs
+    # feature[i] with target[i + target_offset] - here target_offset=1,
+    # so feature at day t predicts the return from t to t+1.
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))
     log_returns = sc.add_operator(Diff(log_adj))
-    target_series = sc.add_operator(Record(log_returns))
+    target = sc.add_operator(Winsorize(log_returns, p=0.01))
+    target_series = sc.add_operator(Record(target))
 
     # ------------------------------------------------------------------
     # Strategy pipeline

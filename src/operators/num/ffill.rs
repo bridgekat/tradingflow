@@ -1,4 +1,4 @@
-//! Forward-fill operator — fills NaN values with the last valid observation.
+//! Forward-fill operator - fills NaN values with the last valid observation.
 
 use num_traits::Float;
 

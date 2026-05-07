@@ -1,4 +1,4 @@
-"""Lag operator — outputs the value from N steps ago."""
+"""Lag operator - outputs the value from N steps ago."""
 
 from __future__ import annotations
 
@@ -25,6 +25,4 @@ class Lag(NativeOperator):
         params: dict = {"offset": offset}
         if fill != 0:
             params["fill"] = fill
-        super().__init__(
-            native_id="lag", inputs=(a,), kind=NodeKind.ARRAY, dtype=a.dtype, shape=a.shape, params=params
-        )
+        super().__init__(native_id="lag", inputs=(a,), kind=NodeKind.ARRAY, dtype=a.dtype, shape=a.shape, params=params)

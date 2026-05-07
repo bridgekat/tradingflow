@@ -14,12 +14,12 @@ use crate::{Array, Input, InputTypes, Operator, Scalar};
 /// Non-NaN entries are sorted; values below the p-quantile are replaced
 /// by the p-quantile itself, and values above the (1-p)-quantile are
 /// replaced by the (1-p)-quantile.  NaN inputs propagate to NaN outputs.
-/// Identical sort / NaN logic to [`Percentile`](super::Percentile) —
+/// Identical sort / NaN logic to [`Percentile`](super::Percentile) -
 /// the difference is that `Winsorize` preserves magnitudes (merely
 /// clipped at the tails) rather than mapping to ranks.
 ///
 /// With `p` fixed cross-sectionally, the clip bounds automatically
-/// adapt to per-period volatility — a high-vol day winsorizes at wider
+/// adapt to per-period volatility - a high-vol day winsorizes at wider
 /// absolute bounds than a quiet day.  This is the Barra/AQR-style
 /// per-period winsorization typically applied to factor inputs or
 /// daily returns before pooled OLS; `p = 0.01` (1st / 99th percentile)

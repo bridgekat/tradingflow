@@ -57,7 +57,7 @@ impl<T: Scalar + Float> Ema<T> {
 
 /// Runtime state for EMA.
 ///
-/// `weight_sum` is not stored — it equals `1 - (1-α)^min(len, window)`
+/// `weight_sum` is not stored - it equals `1 - (1-α)^min(len, window)`
 /// and is computed each tick via `fill_decay`.
 pub struct EmaState<T: Scalar + Float> {
     alpha: T,

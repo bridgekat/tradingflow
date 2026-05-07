@@ -1,4 +1,4 @@
-//! Diff operator — element-wise first difference across ticks.
+//! Diff operator - element-wise first difference across ticks.
 
 use std::marker::PhantomData;
 

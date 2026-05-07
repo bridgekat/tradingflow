@@ -21,7 +21,6 @@ from tradingflow.operators.num import Add, Multiply, Sqrt, Subtract
 from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import ForwardAdjust
 
-
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 DIVIDEND_SCHEMA = Schema(CSVSchema.dividends().iter_field_ids())
 WINDOW = 252

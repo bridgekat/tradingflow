@@ -1,4 +1,4 @@
-//! Constant operator — a 0-input node holding a fixed initial value.
+//! Constant operator - a 0-input node holding a fixed initial value.
 
 use crate::{InputTypes, Instant, Operator};
 

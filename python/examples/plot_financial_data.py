@@ -21,7 +21,6 @@ from tradingflow.operators.num import Divide, Multiply, Negate
 from tradingflow.operators.rolling import RollingMean
 from tradingflow.operators.stocks import Annualize
 
-
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
 DIVIDEND_SCHEMA = Schema(CSVSchema.dividends().iter_field_ids())
@@ -236,7 +235,7 @@ if __name__ == "__main__":
     )
     ax.plot(market_cap.index, market_cap / 1e8, label="Market cap", color="C2", linewidth=0.8)
     ax.set_ylabel("CNY (100M)")
-    ax.set_title(f"{symbol} — Balance sheet & market cap")
+    ax.set_title(f"{symbol} - Balance sheet & market cap")
     ax.legend(loc="upper left", fontsize=8)
 
     # Panel 2: Annualized income statement, cash flows.
@@ -246,7 +245,7 @@ if __name__ == "__main__":
     ax.plot(net_profit.index, net_profit / 1e8, label="Net profit", color="C1", linewidth=0.8)
     ax.plot(cash_flow.index, cash_flow / 1e8, label="Cash flow", color="C2", linewidth=0.8)
     ax.set_ylabel("CNY (100M, annualized)")
-    ax.set_title(f"{symbol} — Income & cash flow (annualized)")
+    ax.set_title(f"{symbol} - Income & cash flow (annualized)")
     ax.legend(loc="upper left", fontsize=8)
 
     # Panel 3: Valuation ratios.
@@ -256,7 +255,7 @@ if __name__ == "__main__":
     ax.plot(bp.index, bp * 100, label="B/P", color="C1", linewidth=0.8)
     ax.plot(roe.index, roe * 100, label="ROE (TTM)", color="C2", linewidth=0.8)
     ax.set_ylabel("%")
-    ax.set_title(f"{symbol} — Valuation & profitability")
+    ax.set_title(f"{symbol} - Valuation & profitability")
     ax.legend(loc="upper left", fontsize=8)
     ax.set_xlabel("Date")
 

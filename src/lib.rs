@@ -1,24 +1,24 @@
-//! `tradingflow` — Rust core for TradingFlow.
+//! `tradingflow` - Rust core for TradingFlow.
 //!
 //! This crate provides the performance-critical data structures and runtime
 //! for the TradingFlow event-driven computation framework.
 //!
 //! # Core data types
 //!
-//! * [`Array`] — dense N-dimensional array in standard (C-contiguous) layout.
+//! * [`Array`] - dense N-dimensional array in standard (C-contiguous) layout.
 //!   Parameterised by a [`Scalar`] element type.
-//! * [`Series`] — append-only time series with temporal (as-of) lookups.
+//! * [`Series`] - append-only time series with temporal (as-of) lookups.
 //!   Each element is a uniformly-shaped `Array`-compatible slice.
-//! * [`Schema`] — bidirectional name ↔ position mapping for labelling array
+//! * [`Schema`] - bidirectional name ↔ position mapping for labelling array
 //!   axes.
 //!
 //! # Traits
 //!
-//! * [`Source`] — asynchronous data source feeding events into the graph via
+//! * [`Source`] - asynchronous data source feeding events into the graph via
 //!   historical and live channels. Provides an optional
 //!   [`estimated_event_count`](Source::estimated_event_count) method for
 //!   progress reporting. Type-erased form: [`ErasedSource`].
-//! * [`Operator`] — synchronous computation node that reads typed inputs and
+//! * [`Operator`] - synchronous computation node that reads typed inputs and
 //!   writes a typed output. Type-erased form: [`ErasedOperator`].  The
 //!   `compute` method receives two structurally parallel hierarchical trees:
 //!   `inputs: <Inputs as InputTypes>::Refs<'_>` and
@@ -27,11 +27,11 @@
 //!
 //! # Runtime
 //!
-//! * [`Scenario`] — pure definition of the computation graph: descriptor
+//! * [`Scenario`] - pure definition of the computation graph: descriptor
 //!   list plus input wiring, with type-erased dispatch.  Nodes are
 //!   connected via typed [`Handle`](scenario::Handle)s.  Carries no
 //!   per-run state.
-//! * [`Session`] — a single live execution of a [`Scenario`].  Owns the
+//! * [`Session`] - a single live execution of a [`Scenario`].  Owns the
 //!   per-run state (node value buffers, channel receivers, operator
 //!   state) and exposes [`value`](Session::value),
 //!   [`flush`](Session::flush), and [`run`](Session::run).  Built fresh
@@ -40,26 +40,26 @@
 //!
 //! # Modules
 //!
-//! * [`data`] — primitive data types and operator-input trait machinery:
-//!   * [`data::array`] — `Array`.
-//!   * [`data::series`] — `Series`.
-//!   * [`data::time`] — `Instant` (SI nanoseconds since 1970-01-01 00:00:00
+//! * [`data`] - primitive data types and operator-input trait machinery:
+//!   * [`data::array`] - `Array`.
+//!   * [`data::series`] - `Series`.
+//!   * [`data::time`] - `Instant` (SI nanoseconds since 1970-01-01 00:00:00
 //!     TAI) and `Duration` (SI nanoseconds).
-//!   * [`data::inputs`] — `InputTypes`, `Input<T>`, `FlatRead` / `BitRead`
+//!   * [`data::inputs`] - `InputTypes`, `Input<T>`, `FlatRead` / `BitRead`
 //!     cursors, and related machinery.
 //!   * Flat: `Scalar`, `PeekableReceiver`.
-//! * [`source`] — `Source` trait, `ErasedSource`.
-//! * [`operator`] — `Operator` trait, `ErasedOperator`.
-//! * [`scenario`] — `Scenario`, `Handle`, `InputTypesHandles`.
-//! * [`operators`] — built-in operators: structural (`Const`, `Id`, `Filter`,
+//! * [`source`] - `Source` trait, `ErasedSource`.
+//! * [`operator`] - `Operator` trait, `ErasedOperator`.
+//! * [`scenario`] - `Scenario`, `Handle`, `InputTypesHandles`.
+//! * [`operators`] - built-in operators: structural (`Const`, `Id`, `Filter`,
 //!   `Where`, `Select`, `Concat`, `Stack`, `Cast`), series (`Record`, `Last`,
 //!   `Lag`), element-wise numeric ([`operators::num`]), rolling-window
 //!   ([`operators::rolling`]), and stock-specific ([`operators::stocks`]).
-//! * [`sources`] — built-in data sources: `ArraySource`, `CsvSource`,
+//! * [`sources`] - built-in data sources: `ArraySource`, `CsvSource`,
 //!   `IterSource`, and the `clock` trigger source.  Calendar-aligned
 //!   clock schedules live in the Python wrapper.
-//! * [`utils`] — `Schema`.
-//! * [`bridge`] — PyO3 bindings (behind the `python` feature).
+//! * [`utils`] - `Schema`.
+//! * [`bridge`] - PyO3 bindings (behind the `python` feature).
 //!
 //! When compiled with the `python` feature, the crate also produces a PyO3
 //! `cdylib` exposing the runtime to Python.

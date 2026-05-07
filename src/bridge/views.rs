@@ -1,14 +1,14 @@
 //! Python-visible views for Array and Series node values.
 //!
-//! - [`NativeArrayView`] — copy-in / copy-out view of a Rust `Array<T>` node.
-//! - [`NativeSeriesView`] — copy-out view (plus `push`) of a Rust `Series<T>`
+//! - [`NativeArrayView`] - copy-in / copy-out view of a Rust `Array<T>` node.
+//! - [`NativeSeriesView`] - copy-out view (plus `push`) of a Rust `Series<T>`
 //!   node.
 //!
 //! All views hold raw pointers into graph-owned memory; reads copy out and
 //! writes copy in, so no reference to graph memory is ever exposed to
 //! Python.
 //!
-//! The per-operator produced bitset is **not** exposed as a view class —
+//! The per-operator produced bitset is **not** exposed as a view class -
 //! Python operators receive `produced` directly as a flat
 //! `tuple[bool, ...]` parallel to their flat `inputs` tuple.  See
 //! [`operator::py_compute_fn`](super::operator).
@@ -58,7 +58,7 @@ pub enum NativeNodeKind {
     Array,
     /// A time-indexed append-only series.
     Series,
-    /// The unit type `()` — carries no data, only a trigger signal.
+    /// The unit type `()` - carries no data, only a trigger signal.
     Unit,
 }
 

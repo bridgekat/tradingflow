@@ -3,7 +3,7 @@
 //! [`NativeScenario`] wraps the Rust [`Scenario`](crate::scenario::Scenario)
 //! definition and provides registration entry points for sources and
 //! operators from both Rust and Python.  Registration only updates the
-//! definition — no buffers are allocated and no Python views are
+//! definition - no buffers are allocated and no Python views are
 //! constructed at this point.
 //!
 //! [`NativeSession`] wraps the Rust [`Session`](crate::scenario::Session)
@@ -13,8 +13,8 @@
 //! independent of every other and exposes Python views into its own
 //! buffers.
 //!
-//! Multiple sessions can coexist over a single scenario's lifetime —
-//! reusing the scenario as a pure config carrier — and old views remain
+//! Multiple sessions can coexist over a single scenario's lifetime -
+//! reusing the scenario as a pure config carrier - and old views remain
 //! valid as long as the session that built them is still alive.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,7 +35,7 @@ use super::{ErrorSlot, operator, operators, source, sources};
 type PyObject = Py<PyAny>;
 
 // ---------------------------------------------------------------------------
-// DoneGuard — panic-safe asyncio Event signalling
+// DoneGuard - panic-safe asyncio Event signalling
 // ---------------------------------------------------------------------------
 
 /// Signals an `asyncio.Event` via `call_soon_threadsafe(event.set)` on drop.
@@ -49,7 +49,7 @@ impl Drop for DoneGuard {
     fn drop(&mut self) {
         if let Some(set_fn) = self.0.take() {
             // Best-effort: if GIL acquisition or the call fails (e.g.
-            // interpreter shutting down), we silently ignore — the main
+            // interpreter shutting down), we silently ignore - the main
             // thread will notice the join failure.
             let _ = Python::attach(|py| -> PyResult<()> {
                 let loop_ = self.1.bind(py);
@@ -80,7 +80,7 @@ struct NodeInfo {
 }
 
 // ---------------------------------------------------------------------------
-// NativeScenario — pure definition wrapper
+// NativeScenario - pure definition wrapper
 // ---------------------------------------------------------------------------
 
 /// Python-visible wrapper around the Rust [`Scenario`] definition.
@@ -99,7 +99,7 @@ pub struct NativeScenario {
     scenario: Scenario,
     /// Per-node metadata in registration order.
     node_info: Vec<NodeInfo>,
-    /// Tokio runtime — kept alive for the scenario's lifetime so sessions
+    /// Tokio runtime - kept alive for the scenario's lifetime so sessions
     /// can spawn driver tasks.
     runtime: tokio::runtime::Runtime,
     /// Asyncio event loop for Python source coroutines, created lazily
@@ -107,7 +107,7 @@ pub struct NativeScenario {
     /// [`run`](Self::run) for proper signal handling; the tokio event
     /// loop runs on a background thread.
     event_loop: Option<PyObject>,
-    /// Cooperative shutdown flag — set on drop to stop any in-flight event
+    /// Cooperative shutdown flag - set on drop to stop any in-flight event
     /// loop background threads.
     shutdown: ShutdownFlag,
     /// Shared error slot that surfaces failures from Python operators /
@@ -139,7 +139,7 @@ impl NativeScenario {
     /// Ensure the asyncio event loop exists.
     ///
     /// Created lazily on the first `add_py_source` call.  The loop is
-    /// **not** started here — it runs on the main thread during
+    /// **not** started here - it runs on the main thread during
     /// [`run`](Self::run).
     fn ensure_event_loop(&mut self, py: Python<'_>) -> PyResult<PyObject> {
         if let Some(ref loop_) = self.event_loop {
@@ -173,7 +173,7 @@ impl NativeScenario {
 
     /// Register a Rust-native source by `(source_kind, dtype)` + params.
     ///
-    /// The output [`NativeNodeKind`] is determined by the Rust source type — the
+    /// The output [`NativeNodeKind`] is determined by the Rust source type - the
     /// Python caller does not need to specify it.
     #[pyo3(signature = (source_kind, dtype, shape, params))]
     fn add_native_source(
@@ -207,7 +207,7 @@ impl NativeScenario {
         // For Array/Series outputs each dispatch arm consults dtype via
         // `dispatch_dtype!`, which itself errors on an unknown dtype string;
         // an absent dtype surfaces through the same path as an empty string.
-        // For Unit outputs dtype is never consulted — the arm returns early
+        // For Unit outputs dtype is never consulted - the arm returns early
         // before dispatching on it.
         let dtype_str = dtype.as_deref().unwrap_or("");
         let (idx, view_kind) = operators::dispatch_native_operator(
@@ -501,7 +501,7 @@ impl NativeScenario {
 }
 
 // ---------------------------------------------------------------------------
-// NativeSession — runtime state wrapper
+// NativeSession - runtime state wrapper
 // ---------------------------------------------------------------------------
 
 /// Python-visible wrapper around the Rust [`Session`] runtime state.
@@ -515,7 +515,7 @@ impl NativeScenario {
 /// as long as that session itself is alive.
 #[pyclass]
 pub struct NativeSession {
-    /// Owned [`Session`] — kept alive for the duration of this wrapper so
+    /// Owned [`Session`] - kept alive for the duration of this wrapper so
     /// that `cached_views`' raw pointers remain valid.  Wrapped in
     /// `Option` so future methods can take `&mut Session` while the
     /// wrapper is exposed as a pyclass; always `Some` between

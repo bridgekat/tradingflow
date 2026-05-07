@@ -20,11 +20,11 @@ use crate::{Array, Source};
 ///
 /// Financial reports are characterised by two dates:
 ///
-/// - **Report date** — the period end (e.g. 2024-03-31 for Q1 2024).
-/// - **Notice date** — the date the report was publicly released.
+/// - **Report date** - the period end (e.g. 2024-03-31 for Q1 2024).
+/// - **Notice date** - the date the report was publicly released.
 ///
 /// When `use_effective_date` is `true` (the default), the event timestamp
-/// is the later of the two dates for backtesting correctness — data is not
+/// is the later of the two dates for backtesting correctness - data is not
 /// available until the notice date.  When the notice date is missing, a
 /// configurable fallback offset (`notice_date_fallback_ns`) is added to the
 /// report date.
@@ -61,10 +61,10 @@ pub struct FinancialReportSource {
 impl FinancialReportSource {
     /// Create a new financial report source.
     ///
-    /// * `use_effective_date` — if `true`, the event timestamp is
+    /// * `use_effective_date` - if `true`, the event timestamp is
     ///   `max(report_date, notice_date)`; if `false`, the report date is
     ///   used directly.
-    /// * `notice_date_fallback` — offset added to the report date when the
+    /// * `notice_date_fallback` - offset added to the report date when the
     ///   notice date is missing (only relevant when `use_effective_date` is
     ///   `true`).
     ///
@@ -410,7 +410,7 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    /// 90 days — default fallback for tests.
+    /// 90 days - default fallback for tests.
     const FALLBACK_90D: Duration = Duration::from_days(90);
 
     fn make_csv(content: &str) -> NamedTempFile {

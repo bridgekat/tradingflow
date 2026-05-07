@@ -19,14 +19,14 @@ class Target(IntEnum):
     The three targets surveyed in Pantaleo et al. (2010), Section III.D:
 
     - [`COMMON_COVARIANCE`][tradingflow.operators.predictors.variance.shrinkage.Target.COMMON_COVARIANCE]
-      — diagonal = average sample variance, off-diagonal = average
+      - diagonal = average sample variance, off-diagonal = average
       sample covariance.
     - [`CONSTANT_CORRELATION`][tradingflow.operators.predictors.variance.shrinkage.Target.CONSTANT_CORRELATION]
-      — diagonal = sample variances, off-diagonal =
+      - diagonal = sample variances, off-diagonal =
       \(\bar{r} \cdot \mathrm{std}_i \cdot \mathrm{std}_j\) with
       \(\bar{r}\) the average off-diagonal sample correlation.
     - [`SINGLE_INDEX`][tradingflow.operators.predictors.variance.shrinkage.Target.SINGLE_INDEX]
-      — single-index factor-model covariance
+      - single-index factor-model covariance
       \(\sigma_f^{2} \beta \beta^T + \mathrm{diag}(\sigma_\epsilon^{2})\)
       using the equal-weighted cross-sectional mean as the market proxy.
     """

@@ -654,7 +654,7 @@ class TestBinaryMath:
 
 class TestChained:
     def test_log_ratio(self) -> None:
-        """log(a / b) — the log-ratio pattern for factors like log(book/price)."""
+        """log(a / b) - the log-ratio pattern for factors like log(book/price)."""
         sc = Scenario()
         a = sc.add_source(
             ArraySource(

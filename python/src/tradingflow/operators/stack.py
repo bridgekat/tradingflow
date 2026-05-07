@@ -1,4 +1,4 @@
-"""Stack N arrays along a new axis — time-series (`Stack`) and
+"""Stack N arrays along a new axis - time-series (`Stack`) and
 message-passing (`StackSync`) variants."""
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ class StackSync(NativeOperator):
 
     Typical use: pair with
     [`ForwardFill`][tradingflow.operators.num.ffill.ForwardFill] downstream
-    to get "fresh where available, last-known otherwise" semantics —
+    to get "fresh where available, last-known otherwise" semantics -
     correct for suspended stocks, multi-frequency sensors, sparse
     event streams, and any cross-sectional aggregation where inputs
     update at heterogeneous cadences.

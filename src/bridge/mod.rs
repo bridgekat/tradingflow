@@ -1,46 +1,46 @@
-//! PyO3 bridge — exposes the Rust runtime to Python.
+//! PyO3 bridge - exposes the Rust runtime to Python.
 //!
 //! [`NativeScenario`](scenario::NativeScenario) wraps the Rust
 //! [`Scenario`](crate::scenario::Scenario), providing four registration
 //! entry points:
 //!
-//! * `add_native_source` — register a Rust-implemented source by kind string.
-//! * `add_native_operator` — register a Rust-implemented operator by kind
+//! * `add_native_source` - register a Rust-implemented source by kind string.
+//! * `add_native_operator` - register a Rust-implemented operator by kind
 //!   string + dtype + params.
-//! * `add_py_source` — register a Python source whose `init()` returns
+//! * `add_py_source` - register a Python source whose `init()` returns
 //!   async iterators.  Driver tasks on the tokio runtime iterate them and
 //!   feed events into bounded channels consumed by the event loop.
-//! * `add_py_operator` — register a Python-implemented operator whose
+//! * `add_py_operator` - register a Python-implemented operator whose
 //!   `compute()` is called via GIL during flush.
 //!
 //! # Public types
 //!
-//! - [`NativeScenario`](scenario::NativeScenario) — the definition pyclass:
+//! - [`NativeScenario`](scenario::NativeScenario) - the definition pyclass:
 //!   stores descriptors and per-node Python metadata.  Reusable across
 //!   any number of sessions.
-//! - [`NativeSession`](scenario::NativeSession) — the runtime-state
+//! - [`NativeSession`](scenario::NativeSession) - the runtime-state
 //!   pyclass: built by [`NativeScenario::run`](scenario::NativeScenario::run)
 //!   or [`NativeScenario::build_session`](scenario::NativeScenario::build_session),
 //!   owns per-run buffers and exposes Python views into them.
-//! - [`NativeArrayView`] / [`NativeSeriesView`] — read-only Python views into
+//! - [`NativeArrayView`] / [`NativeSeriesView`] - read-only Python views into
 //!   `Array<T>` and `Series<T>` node values, backed by raw pointers.
-//! - [`NativeNodeKind`] — `Array` / `Series` / `Unit` discriminator
+//! - [`NativeNodeKind`] - `Array` / `Series` / `Unit` discriminator
 //!   exposed to Python so node-kind tags travel as an enum across the FFI
 //!   boundary instead of strings.
-//! - [`DoneCallback`](source::DoneCallback) — pyclass used internally to
+//! - [`DoneCallback`](source::DoneCallback) - pyclass used internally to
 //!   bridge `concurrent.futures.Future` completion to tokio oneshot channels.
 //!
 //! # Sub-modules
 //!
-//! - [`dispatch`] — dtype normalisation and monomorphised dispatch helpers.
-//! - [`operator`] — Python operator machinery (`make_py_operator`,
+//! - [`dispatch`] - dtype normalisation and monomorphised dispatch helpers.
+//! - [`operator`] - Python operator machinery (`make_py_operator`,
 //!   `resolve_type_id`).
-//! - [`operators`] — native operator dispatch (`dispatch_native_operator`).
-//! - [`scenario`] — [`NativeScenario`](scenario::NativeScenario) pyclass.
-//! - [`source`] — Python source machinery (`register_py_source`,
+//! - [`operators`] - native operator dispatch (`dispatch_native_operator`).
+//! - [`scenario`] - [`NativeScenario`](scenario::NativeScenario) pyclass.
+//! - [`source`] - Python source machinery (`register_py_source`,
 //!   `DoneCallback`).
-//! - [`sources`] — native source dispatch (`dispatch_native_source`).
-//! - [`views`] — [`NativeArrayView`] and [`NativeSeriesView`] pyclasses.
+//! - [`sources`] - native source dispatch (`dispatch_native_source`).
+//! - [`views`] - [`NativeArrayView`] and [`NativeSeriesView`] pyclasses.
 
 mod dispatch;
 mod operator;

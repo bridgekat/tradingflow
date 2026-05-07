@@ -1,4 +1,4 @@
-//! Where operator — element-wise conditional replacement.
+//! Where operator - element-wise conditional replacement.
 
 use std::marker::PhantomData;
 

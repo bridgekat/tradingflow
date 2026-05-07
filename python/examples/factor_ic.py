@@ -1,4 +1,4 @@
-"""Evaluate factor RankIC on all A-shares stocks.
+"""Evaluate factor IC on all A-shares stocks.
 
 For each stock the following features are computed every trading day:
 
@@ -11,13 +11,23 @@ For each stock the following features are computed every trading day:
 - ``momentum_ma`` -- rolling mean of daily log-returns of adjusted close
 - ``volatility`` -- rolling standard deviation of daily log-returns of
   adjusted close
+- ``volume_ratio`` -- latest daily volume divided by its rolling mean
+  over the rebalance window
+- ``high_volume_rally`` -- ``max(volume_ratio, 1) * max(momentum_ma, 0)``:
+  positive momentum gated by elevated volume (zero on down/flat days)
+- ``high_volume_decline`` -- ``max(volume_ratio, 1) * -min(momentum_ma, 0)``:
+  decline magnitude gated by elevated volume (zero on up/flat days)
+- ``low_volume_rally`` -- ``-min(volume_ratio, 1) * max(momentum_ma, 0)``:
+  positive momentum reflected through a light-volume gate (always non-positive)
+- ``low_volume_decline`` -- ``-min(volume_ratio, 1) * -min(momentum_ma, 0)``:
+  decline magnitude reflected through a light-volume gate (always non-positive)
 
 Each factor is mapped to its cross-sectional ``Percentile`` rank
 (NaN-preserving, so missing stocks stay NaN rather than clustering at the
 top rank).
 
 The realised target fed to the evaluator is
-``Winsorize(Diff(Log(adjusted_close)), p=0.01)`` — cross-sectional log
+``Winsorize(Diff(Log(adjusted_close)), p=0.01)`` - cross-sectional log
 returns clipped at the 1st / 99th percentile each day.  Combined with
 the percentile-ranked factors, the reported IC is the per-period
 cross-sectional correlation between ranked factors and realised
@@ -25,6 +35,12 @@ log-return magnitudes: a rank-vs.-magnitude measure that penalises
 factors whose top-rank stocks consistently fail to deliver large
 positive returns, rather than the pure Spearman rank correlation a
 rank-on-rank evaluator would report.
+
+Two figures are produced: cumulative IC by factor over time, and the
+pooled Pearson correlation matrix across (date, stock) pairs of the
+feature panel.  The correlation heatmap exposes rank-vs-raw block
+structure and residual cross-factor overlap that would drive
+multicollinearity in any downstream linear model.
 
 Requires ``pip install -e ".[examples]"`` and A-shares market data downloaded
 via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
@@ -46,13 +62,24 @@ from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Lag, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract, Winsorize
+from tradingflow.operators.num import (
+    Diff,
+    Divide,
+    Log,
+    Max,
+    Min,
+    Multiply,
+    Negate,
+    Percentile,
+    Sqrt,
+    Subtract,
+    Winsorize,
+)
 from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.metrics.mean import InformationCoefficient
 
 from stocks import load_symbols, resolve_data_start, add_market_argument
-
 
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
@@ -70,19 +97,36 @@ def build_scenario(
     data_start: np.datetime64,
     eval_start: np.datetime64,
     end: np.datetime64,
-) -> tuple[Scenario, dict, np.ndarray]:
-    """Build the factor IC evaluation scenario."""
+) -> tuple[Scenario, dict, Handle, list[str], np.ndarray]:
+    """Build the factor IC evaluation scenario.
+
+    Returns
+    -------
+    sc
+        The constructed [`Scenario`][tradingflow.Scenario].
+    eval_handles
+        Per-feature `Record(InformationCoefficient(...))` handles, keyed
+        by feature name.
+    features_handle
+        `Record` of the trading-day-aligned ``(num_stocks, n_features)``
+        feature panel.  Used downstream to compute the cross-feature
+        correlation matrix.
+    feature_names
+        Column names matching the last axis of ``features_handle``.
+    rebalance_dates
+        Dates at which the rebalance clock fires.
+    """
 
     history_dir = data_dir / "a_shares_history"
     sc = Scenario()
 
     # Per-stock handles grouped by cadence.
     #
-    # * `per_stock_sync` — values produced in lockstep across all stocks
+    # * `per_stock_sync` - values produced in lockstep across all stocks
     #   (e.g., daily prices/equity on trading days).  Stacked with
     #   `StackSync` to give message-passing semantics: slots of stocks
     #   that did not produce this cycle are filled with `NaN`.
-    # * `per_stock_irregular` — values updated on stock-specific dates
+    # * `per_stock_irregular` - values updated on stock-specific dates
     #   (e.g., quarterly financial reports filed on different dates).
     #   Stacked with `Stack` to give time-series semantics: slots keep
     #   their last-known value across quiet periods.
@@ -166,17 +210,16 @@ def build_scenario(
         per_stock_irregular["net_profit"].append(net_profit)
 
     # ------------------------------------------------------------------
-    # Cross-sectional stacking
+    # Cross-sectional operators
     # ------------------------------------------------------------------
 
+    num_stocks = len(symbols)
+
+    # Stack per-stock handles into (num_stocks, ...) arrays.
     stacked = {
         **{k: sc.add_operator(StackSync(v)) for k, v in per_stock_sync.items()},
         **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
     }
-
-    # ------------------------------------------------------------------
-    # Features
-    # ------------------------------------------------------------------
 
     # Total market cap.
     market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
@@ -198,13 +241,43 @@ def build_scenario(
     log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
     momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
 
+    # Price volatility (rolling std dev of daily log-returns of adjusted close).
+    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
+
     # Turnover MA (rolling mean of daily turnover).
     turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
     turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
 
-    # Price volatility (rolling std dev of daily log-returns of adjusted close).
-    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
+    # Volume ratio (latest volume / rolling-mean of volume over window).
+    volume_series = sc.add_operator(Record(stacked["volume"]))
+    volume_ma = sc.add_operator(RollingMean(volume_series, window=window))
+    volume_ratio = sc.add_operator(Divide(stacked["volume"], volume_ma))
+
+    # # Volume-by-momentum interaction factors.  The volume ratio is
+    # # decomposed into two halves anchored at 1.0:
+    # #
+    # # - `Max(volume_ratio, 1)` saturates at 1 when volume is at or below
+    # #   its window mean; otherwise grows with the elevation.  Active
+    # #   gate when volume is heavy.
+    # # - `-Min(volume_ratio, 1)` ranges in `[-1, 0)`: equals `-1` when
+    # #   volume is at or above its mean; otherwise the negated ratio.
+    # #   Active (in magnitude) gate when volume is light.
+    # #
+    # # Momentum is split into two non-negative half-waves
+    # # `Max(momentum_ma, 0)` and `-Min(momentum_ma, 0)`, so the four
+    # # cross products are non-zero only when both legs match in
+    # # direction.
+    # zero_const = sc.add_const(np.zeros(num_stocks, dtype=np.float64))
+    # one_const = sc.add_const(np.ones(num_stocks, dtype=np.float64))
+    # high_volume_gate = sc.add_operator(Max(volume_ratio, one_const))
+    # low_volume_gate = sc.add_operator(Negate(sc.add_operator(Min(volume_ratio, one_const))))
+    # positive_momentum_magnitude = sc.add_operator(Max(momentum_ma, zero_const))
+    # negative_momentum_magnitude = sc.add_operator(Negate(sc.add_operator(Min(momentum_ma, zero_const))))
+    # high_volume_rally = sc.add_operator(Multiply(high_volume_gate, positive_momentum_magnitude))
+    # high_volume_decline = sc.add_operator(Multiply(high_volume_gate, negative_momentum_magnitude))
+    # low_volume_rally = sc.add_operator(Multiply(low_volume_gate, positive_momentum_magnitude))
+    # low_volume_decline = sc.add_operator(Multiply(low_volume_gate, negative_momentum_magnitude))
 
     # Cross-sectional features.
     features = {
@@ -213,22 +286,46 @@ def build_scenario(
         "rank_ttm_ep": sc.add_operator(Percentile(ttm_ep)),
         "rank_ttm_roe": sc.add_operator(Percentile(ttm_roe)),
         f"momentum_ma_{window}": momentum_ma,
-        f"turnover_ma_{window}": turnover_ma,
         f"volatility_{window}": volatility,
+        f"turnover_ma_{window}": turnover_ma,
+        f"volume_ratio_{window}": volume_ratio,
+        # f"high_volume_rally_{window}": high_volume_rally,
+        # f"high_volume_decline_{window}": high_volume_decline,
+        # f"low_volume_rally_{window}": low_volume_rally,
+        # f"low_volume_decline_{window}": low_volume_decline,
     }
+    stacked_features = sc.add_operator(Stack(list(features.values()), axis=1))
 
-    # Cross-sectional log returns, winsorized at the 1st / 99th
-    # percentile each day.  Keeping magnitudes (rather than ranking the
-    # target) turns the downstream IC metric into a rank-factor vs.
-    # realised-magnitude correlation — a factor whose top-rank stocks
-    # reliably deliver large positive returns scores high, while one
-    # whose ranks merely track direction (a Spearman-OK but skewed
-    # factor) gets penalised for the missing magnitude.
+    # Record feature and target history for predictors.  Features are
+    # percentile-ranked per day; the regression target is the 1-step
+    # log return, winsorized at the cross-sectional 1st/99th percentile
+    # so outlier days don't dominate the pooled OLS.  Preserving
+    # magnitudes (vs. another rank transform) matters because rank-only
+    # prediction can still lose money under skewed return distributions
+    # - winsorization caps tail leverage without erasing scale.
+    #
+    # `stacked_features` ticks whenever any of its component factors
+    # updates, which includes irregular corporate-event days (balance-
+    # sheet / income-statement notices, equity structure changes) on
+    # top of trading days.  `Diff(Log(stacked["adjusted_close"]))`, by
+    # contrast, only ticks on trading days (`stacked["adjusted_close"]`
+    # is a `StackSync` over per-stock daily adjusted prices).  Recording
+    # `stacked_features` directly would make the features record strictly
+    # longer than the target record and break the predictor's equal-
+    # length alignment contract (`len(features) == len(target)`).
+    #
+    # `Resample` re-emits the features on the trading-day pulse so both
+    # records advance lock-step on trading days.  The predictor pairs
+    # feature[i] with target[i + target_offset] - here target_offset=1,
+    # so feature at day t predicts the return from t to t+1.
+    sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
+    features_series = sc.add_operator(Record(sampled_features))
     log_returns = sc.add_operator(Diff(log_adj))
     target = sc.add_operator(Winsorize(log_returns, p=0.01))
+    target_series = sc.add_operator(Record(target))
 
     # ------------------------------------------------------------------
-    # IC / RankIC evaluation
+    # IC evaluation
     # ------------------------------------------------------------------
 
     # Rebalance clock: the single periodic signal in this scenario.
@@ -245,7 +342,7 @@ def build_scenario(
         metric = sc.add_operator(InformationCoefficient(aligned, target))
         eval_handles[name] = sc.add_operator(Record(metric))
 
-    return sc, eval_handles, rebalance_dates
+    return sc, eval_handles, features_series, list(features.keys()), rebalance_dates
 
 
 if __name__ == "__main__":
@@ -276,7 +373,7 @@ if __name__ == "__main__":
     print(f"Discovered {len(symbols)} symbols.")
 
     window = args.window if args.window is not None else args.rebalance_days
-    sc, eval_handles, rebalance_dates = build_scenario(
+    sc, eval_handles, features_handle, feature_names, rebalance_dates = build_scenario(
         symbols,
         data_dir,
         rebalance_days=args.rebalance_days,
@@ -322,21 +419,66 @@ if __name__ == "__main__":
             print(f"{name}: no valid values")
 
     # ------------------------------------------------------------------
-    # Plot cumulative RankIC
+    # Plot cumulative IC
     # ------------------------------------------------------------------
 
     plt.style.use(["fast"])
     fig, ax = plt.subplots(figsize=(14, 6))
-    ax.set_title("Cumulative RankIC by factor")
-    ax.set_ylabel("Cumulative RankIC")
+    ax.set_title("Cumulative IC by factor")
+    ax.set_ylabel("Cumulative IC")
     ax.set_xlabel("Date")
     for d in rebalance_dates:
         ax.axvline(d, color="lightgray", linestyle="--", linewidth=0.4, zorder=0)
     ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
 
     for i, (name, series) in enumerate(eval_data.items()):
-        ax.plot(series.index, series.fillna(0.0).cumsum(), label=name, color=f"C{i}")
+        ax.plot(
+            series.index,
+            series.fillna(0.0).cumsum(),
+            label=name,
+            color=f"C{i}",
+            linestyle="--" if "rank" in name else "-",
+        )
 
     ax.legend(fontsize=9)
     fig.tight_layout()
+
+    # ------------------------------------------------------------------
+    # Plot feature correlation matrix
+    # ------------------------------------------------------------------
+
+    # Pool every (date, stock) observation of the feature panel and
+    # compute the Pearson correlation matrix (NaN handled pairwise).
+    # Raw factors mix scale (e.g. log market cap) with bounded ratios
+    # (percentile ranks); pooled Pearson on the panel still highlights
+    # the block structure between each raw factor and its rank twin and
+    # the residual cross-factor overlap that would drive multicollinearity
+    # in any downstream linear model.
+    feature_panel = session.series_view(features_handle).values()
+    n_features = feature_panel.shape[-1]
+    feature_df = pd.DataFrame(feature_panel.reshape(-1, n_features), columns=feature_names)
+    corr = feature_df.corr(method="pearson")
+
+    fig_corr, ax_corr = plt.subplots(figsize=(10, 8))
+    im = ax_corr.imshow(corr.values, cmap="RdBu_r", vmin=-1.0, vmax=1.0)
+    ax_corr.set_title("Feature correlation (Pearson, pooled across (date, stock) pairs)")
+    ax_corr.set_xticks(range(n_features))
+    ax_corr.set_yticks(range(n_features))
+    ax_corr.set_xticklabels(feature_names, rotation=45, ha="right")
+    ax_corr.set_yticklabels(feature_names)
+    for i in range(n_features):
+        for j in range(n_features):
+            v = corr.values[i, j]
+            ax_corr.text(
+                j,
+                i,
+                f"{v:.2f}",
+                ha="center",
+                va="center",
+                color="white" if abs(v) > 0.5 else "black",
+                fontsize=8,
+            )
+    fig_corr.colorbar(im, ax=ax_corr)
+    fig_corr.tight_layout()
+
     plt.show()

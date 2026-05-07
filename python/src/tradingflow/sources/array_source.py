@@ -15,7 +15,7 @@ class ArraySource(NativeSource):
     """Historical source backed by `(timestamps, values)` array bundles.
 
     Dispatched entirely to the Rust `ArraySource` implementation for
-    maximum throughput — no Python async iterators or channel overhead.
+    maximum throughput - no Python async iterators or channel overhead.
 
     Parameters
     ----------

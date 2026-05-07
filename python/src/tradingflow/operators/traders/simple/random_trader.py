@@ -1,4 +1,4 @@
-"""Random trader — randomly selects stocks weighted by soft positions."""
+"""Random trader - randomly selects stocks weighted by soft positions."""
 
 from __future__ import annotations
 

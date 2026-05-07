@@ -1,9 +1,9 @@
-//! Schema — bidirectional name↔position mapping for array axes.
+//! Schema - bidirectional name↔position mapping for array axes.
 
 use std::collections::HashMap;
 
 /// A [`Schema`] maps string labels to integer positions along a single
-/// array axis.  It is a construction-time helper — not embedded in the
+/// array axis.  It is a construction-time helper - not embedded in the
 /// graph or carried by arrays at runtime.
 /// # Examples
 ///

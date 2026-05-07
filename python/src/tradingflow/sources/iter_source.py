@@ -1,4 +1,4 @@
-"""Iterator-based source — feeds events from a Python iterable."""
+"""Iterator-based source - feeds events from a Python iterable."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from ..source import Source, empty_live_gen
 class IterSource(Source):
     """Source driven by an iterable of `(timestamp, value)` pairs.
 
-    More flexible than `ArraySource` — supports lazy or computed
+    More flexible than `ArraySource` - supports lazy or computed
     timestamp sequences and arbitrary value shapes.
 
     Parameters

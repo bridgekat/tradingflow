@@ -1,13 +1,13 @@
 //! Clock-gated operator transformer and simple resampler.
 //!
-//! [`Clocked<O, C>`] wraps any [`Operator`] `O` — including those with
-//! `!Sized` `Inputs` such as slice-input operators — and prepends a single
+//! [`Clocked<O, C>`] wraps any [`Operator`] `O` - including those with
+//! `!Sized` `Inputs` such as slice-input operators - and prepends a single
 //! clock input of node type `C`.  The inner operator runs only when the
 //! clock produces; it reads the latest values from all its data inputs
 //! regardless of whether they produced this cycle (time-series semantics).
 //!
-//! The clock's value is ignored — only its per-cycle `produced` bit is
-//! consulted — so `C` can be any node type: `()` for a standard unit
+//! The clock's value is ignored - only its per-cycle `produced` bit is
+//! consulted - so `C` can be any node type: `()` for a standard unit
 //! clock, `Array<T>` to gate on another array node's ticks, `Series<T>`
 //! for a series.  Type inference usually picks `C` up from the clock
 //! handle's type at `add_operator` time, so call sites rarely need to
@@ -23,14 +23,14 @@
 //!
 //! # Resample
 //!
-//! [`Resample<O, C>`] is the common special case `Clocked<Id<O>, C>` —
+//! [`Resample<O, C>`] is the common special case `Clocked<Id<O>, C>` -
 //! re-emit the data input's latest value on every clock tick.  The clock
 //! (type `C`) and data (type `O`) can be any pair of node types: 9
 //! combinations overall across `()` / `Array<T>` / `Series<T>`, with the
 //! two dtypes independent of one another (the clock's value is never
 //! read, so its element type never has to match the data's).  This is
 //! the primitive to reach for when you need to align two records that
-//! would otherwise tick at heterogeneous cadences — e.g. cross-sectional
+//! would otherwise tick at heterogeneous cadences - e.g. cross-sectional
 //! features driven by irregular financial-report updates being recorded
 //! alongside a trading-day-only returns target.
 
@@ -111,13 +111,13 @@ impl<O: Operator, C: Send + 'static> Operator for Clocked<O, C> {
 ///
 /// A thin newtype over `Clocked<Id<O>, C>`: the inner `Id<O>` forwards
 /// the data input, so the output matches the data node at the moment
-/// the clock fires.  Clock and data are independent node types — `O`
-/// for the data/output side, `C` for the clock side — because the
+/// the clock fires.  Clock and data are independent node types - `O`
+/// for the data/output side, `C` for the clock side - because the
 /// clock's value is never read, only its produced bit is consulted.
 ///
 /// # Input layout
 ///
-/// `Resample<O, C>::Inputs = (Input<C>, Input<O>)` — clock at position 0,
+/// `Resample<O, C>::Inputs = (Input<C>, Input<O>)` - clock at position 0,
 /// data at position 1.  `Resample<O, C>::Output = O`.
 pub struct Resample<O, C>(Clocked<Id<O>, C>)
 where
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn resample_array_array_cross_dtype() {
-        // Clock dtype doesn't have to match data dtype — only the
+        // Clock dtype doesn't have to match data dtype - only the
         // clock's produced bit is consulted.
         let clock = Array::scalar(0_i32);
         let data = Array::scalar(3.15_f64);

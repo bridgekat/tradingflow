@@ -15,25 +15,25 @@
 //!
 //! # Window strategies
 //!
-//! - **Count-based** ([`Rolling::count`](accumulator::Rolling::count)) — the
+//! - **Count-based** ([`Rolling::count`](accumulator::Rolling::count)) - the
 //!   window contains the last N elements.  Output is produced only once the
 //!   window is full.
 //! - **Time-delta-based** ([`Rolling::time_delta`](accumulator::Rolling::time_delta))
-//!   — the window contains all elements within a time range of the most
+//!   - the window contains all elements within a time range of the most
 //!   recent timestamp.  Output is produced as soon as at least one element is
 //!   in the window.
 //!
 //! # Rolling operators
 //!
-//! - [`RollingSum`] — incremental sum via add/subtract.
-//! - [`RollingMean`] — incremental mean via add/subtract.
-//! - [`RollingVariance`] — population variance via `E[x²] − E[x]²`.
-//! - [`RollingCovariance`] — pairwise covariance matrix of a 1D `[K]` input,
+//! - [`RollingSum`] - incremental sum via add/subtract.
+//! - [`RollingMean`] - incremental mean via add/subtract.
+//! - [`RollingVariance`] - population variance via `E[x²] − E[x]²`.
+//! - [`RollingCovariance`] - pairwise covariance matrix of a 1D `[K]` input,
 //!   producing a `[K, K]` output.
 //!
 //! # Other operators
 //!
-//! - [`Ema`] — exponential moving average with window-bounded weights (does
+//! - [`Ema`] - exponential moving average with window-bounded weights (does
 //!   not use the `Accumulator` abstraction).
 
 pub mod accumulator;

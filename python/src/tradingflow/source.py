@@ -1,18 +1,18 @@
-"""Source interface — how data enters the computation graph.
+"""Source interface - how data enters the computation graph.
 
 This module defines the two abstract bases for sources, which are
 nodes that produce timestamped values from outside the graph:
 
-- [`Source`][tradingflow.source.Source] — base for **Python sources**.
+- [`Source`][tradingflow.source.Source] - base for **Python sources**.
   Subclasses implement `init()`, returning a pair of async iterators
   (a historical stream and a live stream) that together cover the
   underlying event stream without overlap.  Convenient when the data
   is most easily produced by a Python generator or a third-party
   Python client.
-- [`NativeSource`][tradingflow.source.NativeSource] — descriptor for
+- [`NativeSource`][tradingflow.source.NativeSource] - descriptor for
   **Rust sources**.  Subclasses are thin Python shims that carry
   enough metadata for the Rust runtime to construct and drive the
-  underlying native source on its own — no async Python machinery is
+  underlying native source on its own - no async Python machinery is
   involved at run time.
 
 Most users won't subclass either of these directly; the built-in
@@ -98,14 +98,14 @@ class Source(ABC):
         execution of `init()`.  The runtime drains `historical` fully
         (in timestamp order) and interleaves `live` events as they
         arrive; either iterator may be immediately exhausted for a
-        history-only or live-only source — see
+        history-only or live-only source - see
         [`empty_historical_gen`][tradingflow.source.empty_historical_gen]
         and
         [`empty_live_gen`][tradingflow.source.empty_live_gen].
 
         Both iterators yield `(timestamp, value)` tuples.  Timestamps
         are `int64` TAI nanoseconds since the PTP epoch (1970-01-01
-        00:00:00 TAI) — the same convention NumPy `datetime64[ns]` uses
+        00:00:00 TAI) - the same convention NumPy `datetime64[ns]` uses
         numerically.  The bridge reinterprets them directly; no
         leap-second math runs here.
 

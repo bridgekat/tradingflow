@@ -2,14 +2,14 @@
 //!
 //! # Public items
 //!
-//! - [`Operator`] — synchronous computation trait.  Two hierarchical views
+//! - [`Operator`] - synchronous computation trait.  Two hierarchical views
 //!   are built from flat graph buffers and passed to
 //!   [`compute`](Operator::compute): `inputs` (nested references via
 //!   [`FlatRead`]) and `produced` (nested bits via [`BitRead`]).  The two
-//!   are structurally parallel — same tree shape, different leaf types.
-//! - [`ErasedOperator`] — type-erased operator combining init/compute/drop
+//!   are structurally parallel - same tree shape, different leaf types.
+//! - [`ErasedOperator`] - type-erased operator combining init/compute/drop
 //!   function pointers and `TypeId`s for runtime validation.
-//! - [`InitFn`] / [`ComputeFn`] — type aliases for the erased signatures.
+//! - [`InitFn`] / [`ComputeFn`] - type aliases for the erased signatures.
 
 use std::any::TypeId;
 
@@ -22,14 +22,14 @@ use super::data::{BitRead, FlatRead, FlatWrite, InputTypes};
 /// # Reusability
 ///
 /// `init` takes `&self`, so a single spec can drive multiple scenario
-/// sessions — the type-erasure layer ([`ErasedOperator`]) keeps the spec
+/// sessions - the type-erasure layer ([`ErasedOperator`]) keeps the spec
 /// by value and calls `init` against the shared reference on every
 /// session start.  Implementations should treat the spec as immutable
 /// configuration; any per-session state lives in
 /// [`State`](Self::State) and [`Output`](Self::Output) (built fresh by
 /// `init`).  Implementations that need to capture spec data into `State`
 /// should clone the relevant fields out of `&self` (or store `Self`
-/// itself as `State` when they want to forward the whole spec — typically
+/// itself as `State` when they want to forward the whole spec - typically
 /// requires `Self: Clone`).
 pub trait Operator: 'static {
     /// Mutable runtime state.
@@ -50,7 +50,7 @@ pub trait Operator: 'static {
     ///
     /// `produced` mirrors `inputs` in shape: each leaf is a `bool` flagging
     /// whether that input produced in this flush cycle.  Slice branches
-    /// expose a lazy [`SliceProduced`](crate::data::SliceProduced) view —
+    /// expose a lazy [`SliceProduced`](crate::data::SliceProduced) view -
     /// bits are only read when the operator descends into elements.
     ///
     /// Returns `true` if downstream propagation should occur.
@@ -132,7 +132,7 @@ impl ErasedOperator {
     /// Construct from a typed [`Operator`] whose `Inputs` is `Sized`.
     ///
     /// The spec is captured by value into the [`InitFn`] closure and
-    /// borrowed by every call to [`Operator::init`] — no `Clone` bound
+    /// borrowed by every call to [`Operator::init`] - no `Clone` bound
     /// is required on `O`, since `init` takes `&self`.
     pub fn from_operator<O: Operator>(op: O) -> Self
     where
@@ -153,10 +153,7 @@ impl ErasedOperator {
     /// Used for operators with `!Sized` `Inputs` (e.g. `[Input<T>]`), where
     /// the element count and per-element `TypeId`s are derived from the
     /// handles rather than from the type alone.
-    pub fn from_operator_with_type_ids<O: Operator>(
-        op: O,
-        input_type_ids: Box<[TypeId]>,
-    ) -> Self {
+    pub fn from_operator_with_type_ids<O: Operator>(op: O, input_type_ids: Box<[TypeId]>) -> Self {
         Self {
             state_type_id: TypeId::of::<O::State>(),
             input_type_ids,
@@ -202,7 +199,7 @@ impl ErasedOperator {
 
     /// Invoke the init closure, producing `(state_ptr, output_ptr)`.
     ///
-    /// Takes `&self` rather than `self` — each call allocates fresh state
+    /// Takes `&self` rather than `self` - each call allocates fresh state
     /// and a fresh output, so an [`ErasedOperator`] can drive multiple
     /// sessions over its lifetime.
     ///
@@ -232,8 +229,7 @@ unsafe fn erased_compute_fn<O: Operator>(
     let state = unsafe { &mut *(state_ptr as *mut O::State) };
     let mut ptr_reader = FlatRead::new(input_ptrs);
     let inputs = unsafe { O::Inputs::refs_from_flat(&mut ptr_reader) };
-    let mut bit_reader =
-        BitRead::from_parts(produced_words, produced_bit_off, produced_num_inputs);
+    let mut bit_reader = BitRead::from_parts(produced_words, produced_bit_off, produced_num_inputs);
     let produced = O::Inputs::produced_from_flat(&mut bit_reader);
     let output = unsafe { &mut *(output_ptr as *mut O::Output) };
     O::compute(state, inputs, output, timestamp, produced)

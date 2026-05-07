@@ -17,10 +17,10 @@
 ///
 /// An optional third argument selects a type subset:
 ///
-/// * *(omitted)* — all supported dtypes.
-/// * `numeric` — integer and floating-point types (excludes `bool`).
-/// * `signed` — signed integers and floating-point types.
-/// * `float` — floating-point types only (`f32`, `f64`).
+/// * *(omitted)* - all supported dtypes.
+/// * `numeric` - integer and floating-point types (excludes `bool`).
+/// * `signed` - signed integers and floating-point types.
+/// * `float` - floating-point types only (`f32`, `f64`).
 macro_rules! dispatch_dtype {
     // Internal: shared match body.
     (@match $dtype:expr, $action:ident, $label:literal,
@@ -81,7 +81,7 @@ use super::views::NativeNodeKind;
 
 /// Resolve a `(kind, dtype)` pair to a Rust [`TypeId`].
 ///
-/// The dtype string is ignored for [`NativeNodeKind::Unit`] — unit nodes
+/// The dtype string is ignored for [`NativeNodeKind::Unit`] - unit nodes
 /// always map to `TypeId::of::<()>()`.
 pub fn resolve_type_id(kind: NativeNodeKind, dtype: &str) -> pyo3::PyResult<TypeId> {
     if kind == NativeNodeKind::Unit {

@@ -19,7 +19,7 @@ class MeanPredictorState[T]:
     min_periods: int | None
     fit_fn: Callable[[np.ndarray, np.ndarray], T]
     predict_fn: Callable[["MeanPredictorState[T]", np.ndarray, T], np.ndarray]
-    # Updated across compute() calls — the fitted params from the last
+    # Updated across compute() calls - the fitted params from the last
     # refit tick are reused until the next cadence-driven refit.
     # `fitted` gates prediction: it flips to True after the first
     # successful fit.  `cached_params` may legitimately be `None` after
@@ -46,9 +46,9 @@ class MeanPredictor[T](
     `Series` inputs, calls `fit_fn` and `predict_fn`, and emits a
     per-stock prediction.  Non-rebalance ticks are ignored.
 
-    The estimator itself is agnostic to what the target represents —
+    The estimator itself is agnostic to what the target represents -
     log returns, linear returns, a rank-transformed return, a custom
-    signal — so the **meaning of the prediction is defined by how the
+    signal - so the **meaning of the prediction is defined by how the
     target series is constructed upstream**.  The standard choice is
     log returns ([`Log`][tradingflow.operators.num.arithmetic.Log]
     followed by [`Diff`][tradingflow.operators.num.diff.Diff]), which
@@ -72,7 +72,7 @@ class MeanPredictor[T](
     `target_offset` parameter then defines the training pairing:
     `features_series[i]` is paired with `target_series[i + target_offset]`.
     For i out of range (the last `target_offset` features), no training
-    pair exists — those rows are skipped.  The latest feature
+    pair exists - those rows are skipped.  The latest feature
     (`features_series[-1]`) is used to emit the prediction.
 
     Typical use is `target_offset = 1` with a 1-step return target: feature
@@ -84,7 +84,7 @@ class MeanPredictor[T](
     for stocks that are out of the universe, have non-finite features at
     the rebalance timestamp, or have fewer than `min_periods` valid
     historical observations.  Finite entries are the outputs of
-    `predict_fn` on a fully-masked (all-finite) feature subset — so
+    `predict_fn` on a fully-masked (all-finite) feature subset - so
     `predict_fn` itself never needs to handle `NaN`.  Downstream
     portfolio constructors must accept `NaN` entries and subset to the
     finite ones (see
@@ -215,7 +215,7 @@ class MeanPredictor[T](
         if not universe_produced:
             return False
 
-        # Check data alignment — features and target must tick in lock-step.
+        # Check data alignment - features and target must tick in lock-step.
         n_features = len(features_series_view)
         n_target = len(target_series_view)
 
@@ -228,9 +228,7 @@ class MeanPredictor[T](
 
         # Refit if we've never fit, or if this rebalance hits the cadence.
         # Otherwise reuse the cached parameters from the last refit.
-        should_refit = (not state.fitted) or (
-            state.rebalance_count % state.refit_every == 0
-        )
+        should_refit = (not state.fitted) or (state.rebalance_count % state.refit_every == 0)
         state.rebalance_count += 1
 
         # Available (feature, target) training pairs: features[i] paired

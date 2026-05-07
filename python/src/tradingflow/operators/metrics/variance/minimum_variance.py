@@ -67,7 +67,7 @@ class MinimumVariance(
     prediction emission.  Output is 0 if no target tick was accumulated
     during the period (e.g. no stocks had finite covariance diagonal).
 
-    **Memory.** Both `predictions` and `target` are `Array` inputs —
+    **Memory.** Both `predictions` and `target` are `Array` inputs -
     the operator only reads the latest cross-section of each.
     No `Record` is required upstream.
 
@@ -109,7 +109,7 @@ class MinimumVariance(
     @staticmethod
     def _set_weights(state: MinimumVarianceState, sigma_log: np.ndarray) -> None:
         """Compute and store GMV weights from a log-return covariance
-        matrix (converted to linear returns before solving GMV — zero-mean
+        matrix (converted to linear returns before solving GMV - zero-mean
         specialisation of the lognormal moment map).
 
         Stocks with non-finite covariance diagonal are excluded; their

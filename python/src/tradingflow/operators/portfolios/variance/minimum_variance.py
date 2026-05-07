@@ -21,7 +21,7 @@ class MinimumVariance(VariancePortfolio):
     \text{subject to} \quad \mathbf{1}^T x = 1, \quad x \geq 0 \text{ (if long-only)}
     \]
 
-    When `long_only=False` this reproduces — modulo solver tolerance —
+    When `long_only=False` this reproduces - modulo solver tolerance -
     the analytical GMV solution \(x = \Sigma^{+} \mathbf{1} / (\mathbf{1}^T \Sigma^{+} \mathbf{1})\) used by the
     evaluation metric
     [`MinimumVariance`][tradingflow.operators.metrics.variance.minimum_variance.MinimumVariance].

@@ -1,4 +1,4 @@
-//! Iterator-based source — feeds events from an arbitrary iterator factory.
+//! Iterator-based source - feeds events from an arbitrary iterator factory.
 
 use std::rc::Rc;
 
@@ -22,7 +22,7 @@ type IterFactory<T> = Rc<dyn Fn() -> EventIter<T>>;
 
 /// A source driven by a factory of `(timestamp, event)` iterators.
 ///
-/// More flexible than [`ArraySource`](super::ArraySource) — supports lazy
+/// More flexible than [`ArraySource`](super::ArraySource) - supports lazy
 /// or computed timestamp sequences, and arbitrary output types.  The
 /// factory is invoked once per scenario session to produce a fresh
 /// iterator; the `IterSource` spec itself is `Clone` and reusable.

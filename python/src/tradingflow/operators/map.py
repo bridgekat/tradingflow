@@ -1,4 +1,4 @@
-"""Map operator — apply a function to transform array values."""
+"""Map operator - apply a function to transform array values."""
 
 from __future__ import annotations
 

@@ -6,55 +6,55 @@
 //!
 //! # Structural operators
 //!
-//! - [`Const`] — 0-input node holding a fixed initial value; output can be
+//! - [`Const`] - 0-input node holding a fixed initial value; output can be
 //!   mutated externally via [`Scenario::value_mut`](crate::Scenario::value_mut).
-//! - [`Id`] — identity passthrough (`T → T`); useful as a trigger-gated node.
-//! - [`Map`] — applies a function `S → T` to transform input into output.
-//! - [`MapInplace`] — applies a function `(&S, &mut T) → bool` in place.
-//! - [`Apply`] — applies a function `Inputs → T` to transform tuple inputs
+//! - [`Id`] - identity passthrough (`T → T`); useful as a trigger-gated node.
+//! - [`Map`] - applies a function `S → T` to transform input into output.
+//! - [`MapInplace`] - applies a function `(&S, &mut T) → bool` in place.
+//! - [`Apply`] - applies a function `Inputs → T` to transform tuple inputs
 //!   into output.
-//! - [`ApplyInplace`] — applies a function `(Inputs, &mut T) → bool` in place.
-//! - [`Filter`] — passes or drops the entire input `Array<T>` based on a
+//! - [`ApplyInplace`] - applies a function `(Inputs, &mut T) → bool` in place.
+//! - [`Filter`] - passes or drops the entire input `Array<T>` based on a
 //!   predicate closure.
-//! - [`Where`] — element-wise conditional replacement: keeps values where the
+//! - [`Where`] - element-wise conditional replacement: keeps values where the
 //!   condition holds, fills with a constant otherwise.
-//! - [`Clocked`] — gate any operator so it only fires when a leading clock
+//! - [`Clocked`] - gate any operator so it only fires when a leading clock
 //!   input produces.  Generic over the clock's node type (`()`, `Array<T>`,
-//!   or `Series<T>`) — only the produced bit is consulted.
-//! - [`Resample`] — `Clocked<Id<T>, T>`: re-emit a data input's latest value
+//!   or `Series<T>`) - only the produced bit is consulted.
+//! - [`Resample`] - `Clocked<Id<T>, T>`: re-emit a data input's latest value
 //!   on every clock tick.  Used to align records that would otherwise tick
 //!   at heterogeneous cadences.
 //!
 //! # Array reshape / selection operators
 //!
-//! - [`Select`] — index selection along an axis (precomputed flat index map).
-//! - [`Concat`] — concatenate N arrays along an existing axis (variadic input).
-//! - [`Stack`] — stack N arrays along a new axis (variadic input).
-//! - [`ConcatSync`] — message-passing variant of [`Concat`] for float types:
+//! - [`Select`] - index selection along an axis (precomputed flat index map).
+//! - [`Concat`] - concatenate N arrays along an existing axis (variadic input).
+//! - [`Stack`] - stack N arrays along a new axis (variadic input).
+//! - [`ConcatSync`] - message-passing variant of [`Concat`] for float types:
 //!   slots of inputs that did not produce this cycle are filled with `NaN`,
 //!   so downstream sees only the synchronised slice of inputs that fired
 //!   together.
-//! - [`StackSync`] — message-passing variant of [`Stack`] for float types:
+//! - [`StackSync`] - message-passing variant of [`Stack`] for float types:
 //!   slots of inputs that did not produce this cycle are filled with `NaN`,
 //!   so downstream sees only the synchronised slice of inputs that fired
 //!   together.
-//! - [`Cast`] — element-wise type conversion between `Array<S>` and `Array<T>`
+//! - [`Cast`] - element-wise type conversion between `Array<S>` and `Array<T>`
 //!   via `num_traits::AsPrimitive`.
 //!
 //! # Series operators
 //!
-//! - [`Record`] — records each `Array<T>` tick into a `Series<T>`.
-//! - [`Last`] — extracts the most recent element from a `Series<T>` as an
+//! - [`Record`] - records each `Array<T>` tick into a `Series<T>`.
+//! - [`Last`] - extracts the most recent element from a `Series<T>` as an
 //!   `Array<T>`. Two-sided inverse of `Record`.
-//! - [`Lag`] — outputs the value from N steps ago in a `Series<T>`, with a fill
+//! - [`Lag`] - outputs the value from N steps ago in a `Series<T>`, with a fill
 //!   value for insufficient history.
 //!
 //! # Sub-modules
 //!
-//! - [`metrics`] — clock-driven financial metrics.
-//! - [`num`] — element-wise numeric operators.
-//! - [`rolling`] — rolling (windowed) operators.
-//! - [`stocks`] — stock-specific operators.
+//! - [`metrics`] - clock-driven financial metrics.
+//! - [`num`] - element-wise numeric operators.
+//! - [`rolling`] - rolling (windowed) operators.
+//! - [`stocks`] - stock-specific operators.
 
 pub mod apply;
 pub mod cast;

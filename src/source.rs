@@ -19,7 +19,7 @@ use crate::PeekableReceiver;
 /// # Reusability
 ///
 /// `init` takes `&self`, so a single spec can drive multiple scenario
-/// sessions — the type-erasure layer ([`ErasedSource`]) keeps the spec by
+/// sessions - the type-erasure layer ([`ErasedSource`]) keeps the spec by
 /// value and calls `init` against the shared reference on every session
 /// start.  Implementations should treat the spec as immutable
 /// configuration; any per-session state lives in
@@ -53,7 +53,7 @@ pub trait Source: 'static {
     /// lifetime.  `None` for live / unbounded sources.
     ///
     /// Used only for progress reporting via
-    /// [`Scenario::run`](crate::Scenario::run)'s `on_flush` callback —
+    /// [`Scenario::run`](crate::Scenario::run)'s `on_flush` callback -
     /// treated as advisory.  The default returns `None`.
     fn estimated_event_count(&self) -> Option<usize> {
         None
@@ -70,23 +70,23 @@ pub trait Source: 'static {
 ///
 /// # Parameters
 ///
-/// * `timestamp: Instant` — initial timestamp.
+/// * `timestamp: Instant` - initial timestamp.
 ///
 /// # Returns
 ///
-/// * `hist_rx_ptr: *mut u8` — from [`Box::into_raw`], points to
+/// * `hist_rx_ptr: *mut u8` - from [`Box::into_raw`], points to
 ///   [`PeekableReceiver<(Instant, E)>`].
-/// * `live_rx_ptr: *mut u8` — from [`Box::into_raw`], points to
+/// * `live_rx_ptr: *mut u8` - from [`Box::into_raw`], points to
 ///   [`PeekableReceiver<(Instant, E)>`].
-/// * `output_ptr: *mut u8` — from [`Box::into_raw`], points to `S::Output`.
+/// * `output_ptr: *mut u8` - from [`Box::into_raw`], points to `S::Output`.
 pub type InitFn = Box<dyn Fn(Instant) -> (*mut u8, *mut u8, *mut u8)>;
 
 /// Type-erased poll function pointer for a source channel.
 ///
 /// # Parameters
 ///
-/// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(Instant, E)>`].
-/// * `cx: &mut Context<'_>` — async task context.
+/// * `rx_ptr: *mut u8` - points to [`PeekableReceiver<(Instant, E)>`].
+/// * `cx: &mut Context<'_>` - async task context.
 ///
 /// # Returns
 ///
@@ -99,9 +99,9 @@ pub type PollFn = unsafe fn(*mut u8, &mut Context<'_>) -> Poll<Option<Instant>>;
 ///
 /// # Parameters
 ///
-/// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(Instant, E)>`].
-/// * `output_ptr: *mut u8` — points to `S::Output`.
-/// * `timestamp: Instant` — coalesced batch timestamp (overrides event timestamp).
+/// * `rx_ptr: *mut u8` - points to [`PeekableReceiver<(Instant, E)>`].
+/// * `output_ptr: *mut u8` - points to `S::Output`.
+/// * `timestamp: Instant` - coalesced batch timestamp (overrides event timestamp).
 ///
 /// # Returns
 ///
@@ -118,7 +118,7 @@ pub type WriteFn = unsafe fn(*mut u8, *mut u8, Instant) -> bool;
 ///    [`init`](ErasedSource::init) and construct the graph node, storing
 ///    channel state in `SourceState`.  Because [`init`](ErasedSource::init)
 ///    takes `&self`, the same `ErasedSource` can drive multiple initialisations
-///    — one per scenario session — without being consumed.
+///    - one per scenario session - without being consumed.
 pub struct ErasedSource {
     event_type_id: TypeId,
     output_type_id: TypeId,
@@ -134,7 +134,7 @@ impl ErasedSource {
     /// Construct from a typed [`Source`].
     ///
     /// The spec is captured by value into the [`InitFn`] closure and
-    /// borrowed by every call to [`Source::init`] — no `Clone` bound is
+    /// borrowed by every call to [`Source::init`] - no `Clone` bound is
     /// required on `S`, since `init` takes `&self`.  Implementations that
     /// need to move owned data into spawned tasks should clone the
     /// relevant fields out of `&self` themselves.
@@ -234,7 +234,7 @@ impl ErasedSource {
 
     /// Invoke the init closure, producing `(hist_rx_ptr, live_rx_ptr, output_ptr)`.
     ///
-    /// Takes `&self` rather than `self` — each call allocates a fresh set of
+    /// Takes `&self` rather than `self` - each call allocates a fresh set of
     /// channel receivers and a fresh output, so an [`ErasedSource`] can
     /// drive multiple sessions over its lifetime.
     pub fn init(&self, timestamp: Instant) -> (*mut u8, *mut u8, *mut u8) {

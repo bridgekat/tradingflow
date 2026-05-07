@@ -7,11 +7,11 @@
 //!
 //! # Metrics
 //!
-//! - [`CompoundReturn`] — `(current / first)^(1/n) - 1`
-//! - [`AverageReturn`] — mean of period returns
-//! - [`Volatility`] — population standard deviation of period returns
-//! - [`SharpeRatio`] — mean / std of period returns
-//! - [`Drawdown`] — `(current - running_max) / running_max`
+//! - [`CompoundReturn`] - `(current / first)^(1/n) - 1`
+//! - [`AverageReturn`] - mean of period returns
+//! - [`Volatility`] - population standard deviation of period returns
+//! - [`SharpeRatio`] - mean / std of period returns
+//! - [`Drawdown`] - `(current - running_max) / running_max`
 
 pub mod average_return;
 pub mod compound_return;

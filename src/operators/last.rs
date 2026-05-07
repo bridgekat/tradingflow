@@ -1,4 +1,4 @@
-//! Last operator — extracts the most recent element from a Series.
+//! Last operator - extracts the most recent element from a Series.
 
 use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, Series};
 

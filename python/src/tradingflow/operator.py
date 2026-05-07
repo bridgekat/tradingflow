@@ -1,20 +1,20 @@
-"""Operator interface — how new transformations are added to the graph.
+"""Operator interface - how new transformations are added to the graph.
 
 An **operator** is a node that reads from one or more upstream nodes
 and writes to its own output node.  This module defines the two
 abstract bases for operators:
 
-- [`Operator`][tradingflow.operator.Operator] — base for **Python operators**.
+- [`Operator`][tradingflow.operator.Operator] - base for **Python operators**.
   Subclasses implement `compute()` (and optionally `init()`), which is
   invoked under the GIL whenever an upstream input produces.
   Convenient when the per-tick cost is dominated by something already
   in Python (CVXPY solves, scikit-learn fits, NumPy linear algebra),
   and when prototyping new ideas where the iteration speed of editing
   Python far outweighs the runtime cost of the GIL.
-- [`NativeOperator`][tradingflow.operator.NativeOperator] — descriptor for
+- [`NativeOperator`][tradingflow.operator.NativeOperator] - descriptor for
   **Rust operators**.  Subclasses are thin Python shims that carry
   enough metadata for the Rust runtime to construct and dispatch the
-  native operator entirely on its own — no Python is involved on the
+  native operator entirely on its own - no Python is involved on the
   hot path.
 
 Most users won't subclass either of these directly; the built-in
@@ -46,13 +46,13 @@ class Operator[*Views, Output, State](ABC):
 
     Generic parameters describe the operator's compute-time signature:
 
-    - ***Views** — element-wise view types of the upstream inputs, in
+    - ***Views** - element-wise view types of the upstream inputs, in
       order.  Each entry is the view class a Python operator actually
       sees at compute time, e.g. [`ArrayView[T]`][tradingflow.data.views.ArrayView],
       [`SeriesView[T]`][tradingflow.data.views.SeriesView], or `None` for clock
       (`Unit`) inputs.
-    - **Output** — view type of the operator's output node.
-    - **State** — mutable state object carried across invocations.
+    - **Output** - view type of the operator's output node.
+    - **State** - mutable state object carried across invocations.
 
     The flat shape mirrors the bridge: Python operators always receive a
     flat `inputs: tuple[*Views]` and a flat `produced: tuple[bool, ...]`,
@@ -109,7 +109,7 @@ class Operator[*Views, Output, State](ABC):
             Tuple of input views (the same views passed to `compute`).
         timestamp
             Initial timestamp in **TAI nanoseconds** (`int64` since the
-            PTP epoch 1970-01-01 00:00:00 TAI — matches numpy
+            PTP epoch 1970-01-01 00:00:00 TAI - matches numpy
             `datetime64[ns]` numerically).
 
         Returns
@@ -146,7 +146,7 @@ class Operator[*Views, Output, State](ABC):
             Output view to write results into.
         timestamp
             Current event timestamp in **TAI nanoseconds** (`int64`
-            since the PTP epoch 1970-01-01 00:00:00 TAI — matches numpy
+            since the PTP epoch 1970-01-01 00:00:00 TAI - matches numpy
             `datetime64[ns]` numerically).
         produced
             Flat `tuple[bool, ...]` parallel to `inputs`: element `i`
@@ -193,7 +193,7 @@ class Operator[*Views, Output, State](ABC):
         """Return `(input_types, output_type)` for Rust TypeId validation.
 
         Derived directly from the upstream handles' kind/dtype and the
-        operator's declared output kind/dtype — no runtime inspection
+        operator's declared output kind/dtype - no runtime inspection
         of generic parameters.  The class-level `*Views`/`Output` are
         purely static-typing aids for pyright.
         """
@@ -220,7 +220,7 @@ class Operator[*Views, Output, State](ABC):
 class NativeOperator:
     """Descriptor for a Rust-implemented operator.
 
-    Carries `native_id` + `params` — dispatched entirely on the native side.
+    Carries `native_id` + `params` - dispatched entirely on the native side.
 
     Parameters
     ----------

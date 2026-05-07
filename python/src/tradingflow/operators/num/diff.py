@@ -1,4 +1,4 @@
-"""Diff operator — element-wise first difference across ticks."""
+"""Diff operator - element-wise first difference across ticks."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ class Diff(NativeOperator):
 
     This is the unit-step counterpart of a k-step diff: multi-step
     differences can be expressed as `Subtract(a, Last(Lag(Record(a), k)))`
-    if needed — in practice, predictor alignment is handled by the
+    if needed - in practice, predictor alignment is handled by the
     `target_offset` parameter on
     [`MeanPredictor`][tradingflow.operators.predictors.mean_predictor.MeanPredictor]
     and friends, not by varying the diff stride.

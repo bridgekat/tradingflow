@@ -1,8 +1,8 @@
-"""Clock sources — scheduling triggers at fixed timestamps.
+"""Clock sources - scheduling triggers at fixed timestamps.
 
 A clock is a [`NodeKind.UNIT`][tradingflow.data.types.NodeKind] source: its output
 node carries no data, only a produce bit.  Downstream operators consume
-it as a trigger to gate their compute — typically via the
+it as a trigger to gate their compute - typically via the
 [`Clocked`][tradingflow.operators.clocked.Clocked] transformer or as an extra
 input on performance-metric operators that fire on a schedule.
 

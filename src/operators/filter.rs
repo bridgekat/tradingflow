@@ -1,4 +1,4 @@
-//! Filter operator — whole-element filter by predicate.
+//! Filter operator - whole-element filter by predicate.
 
 use std::marker::PhantomData;
 

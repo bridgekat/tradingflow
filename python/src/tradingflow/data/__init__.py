@@ -6,15 +6,15 @@ storage of every node's value (`Array<T>`, `Series<T>`, `Instant`,
 `Duration`, plus the `InputTypes` and `Scalar` machinery).  Across the
 FFI boundary those values appear here as:
 
-- **Type markers** — zero-sized classes that encode a node's value
+- **Type markers** - zero-sized classes that encode a node's value
   kind in the type system (e.g. `Handle[Array[np.float64]]`), used
   purely for static typing.
-- **Views** — thin Python wrappers around Rust-owned buffers that let
+- **Views** - thin Python wrappers around Rust-owned buffers that let
   Python operators read and write node values without copying.
-- **Time helpers** — small utilities for converting between TAI (the
+- **Time helpers** - small utilities for converting between TAI (the
   internal wire format) and UTC at program boundaries.
 
-Most users never import from this module directly — the commonly used
+Most users never import from this module directly - the commonly used
 names ([`Handle`][tradingflow.data.types.Handle], [`Array`][tradingflow.data.types.Array],
 [`Series`][tradingflow.data.types.Series], [`ArrayView`][tradingflow.data.views.ArrayView],
 [`SeriesView`][tradingflow.data.views.SeriesView], [`NodeKind`][tradingflow.data.types.NodeKind],
@@ -22,15 +22,15 @@ names ([`Handle`][tradingflow.data.types.Handle], [`Array`][tradingflow.data.typ
 
 ## Sub-modules
 
-- [`types`][tradingflow.data.types] — type markers and
+- [`types`][tradingflow.data.types] - type markers and
   [`Handle`][tradingflow.data.types.Handle], the typed reference returned by
   `Scenario.add_source` / `add_operator`.
-- [`views`][tradingflow.data.views] —
+- [`views`][tradingflow.data.views] -
   [`ArrayView`][tradingflow.data.views.ArrayView] and
   [`SeriesView`][tradingflow.data.views.SeriesView], plus the
   [`ensure_contiguous`][tradingflow.data.views.ensure_contiguous]
   helper that normalizes NumPy inputs at the FFI edge.
-- [`time`][tradingflow.data.time] — TAI ↔ UTC conversion helpers
+- [`time`][tradingflow.data.time] - TAI ↔ UTC conversion helpers
   ([`utc_to_tai`][tradingflow.data.time.utc_to_tai],
   [`tai_to_utc`][tradingflow.data.time.tai_to_utc]) and the
   [`coerce_timestamp`][tradingflow.data.time.coerce_timestamp] FFI

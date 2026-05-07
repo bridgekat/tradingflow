@@ -1,4 +1,4 @@
-"""Gaussianize operator — cross-sectional rank-to-Gaussian transform."""
+"""Gaussianize operator - cross-sectional rank-to-Gaussian transform."""
 
 from __future__ import annotations
 

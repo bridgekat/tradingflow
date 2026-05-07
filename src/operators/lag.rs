@@ -1,4 +1,4 @@
-//! Lag operator — outputs the value from N steps ago.
+//! Lag operator - outputs the value from N steps ago.
 
 use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, Series};
 
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn lag_offset_zero() {
-        // Offset 0 — always outputs the most recent value.
+        // Offset 0 - always outputs the most recent value.
         let mut s = Series::<f64>::new(&[]);
         let (mut state, mut out) = Lag::new(0, 0.0).init(&s, Instant::MIN);
 

@@ -44,7 +44,7 @@ def _to_native_node_kind(kind: NodeKind) -> NativeNodeKind:
 class Array[T: np.generic]:
     """Marker for a Rust `Array<T>` node value type.
 
-    Not instantiated — used only as a generic type parameter.
+    Not instantiated - used only as a generic type parameter.
     """
 
     pass
@@ -53,7 +53,7 @@ class Array[T: np.generic]:
 class Series[T: np.generic]:
     """Marker for a Rust `Series<T>` node value type.
 
-    Not instantiated — used only as a generic type parameter.
+    Not instantiated - used only as a generic type parameter.
     """
 
     pass
@@ -62,7 +62,7 @@ class Series[T: np.generic]:
 class Unit:
     """Marker for a Rust `()` (unit) node value type.
 
-    Used for clock sources and operators that carry no data — only a
+    Used for clock sources and operators that carry no data - only a
     trigger signal.  Not instantiated; used only as a type parameter.
     """
 
@@ -127,7 +127,7 @@ class Handle[T]:
     expecting `Handle[Array[np.float64]]` inputs doesn't receive a
     `Handle[Array[np.int32]]`.
 
-    At runtime, the type parameter is not enforced — Rust validates TypeIds
+    At runtime, the type parameter is not enforced - Rust validates TypeIds
     when the operator is registered.
     """
 

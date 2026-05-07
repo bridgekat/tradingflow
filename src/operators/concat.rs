@@ -1,8 +1,8 @@
-//! Concat operators — concatenate N arrays along an existing axis.
+//! Concat operators - concatenate N arrays along an existing axis.
 //!
-//! * [`Concat`] — time-series semantics: copies all inputs on every
+//! * [`Concat`] - time-series semantics: copies all inputs on every
 //!   trigger.
-//! * [`ConcatSync`] — message-passing semantics: fills non-produced
+//! * [`ConcatSync`] - message-passing semantics: fills non-produced
 //!   input slots with `NaN` (float-only).
 
 use num_traits::Float;
@@ -160,7 +160,7 @@ impl<T: Scalar + Float> Operator for ConcatSync<T> {
 /// Copy data from N input arrays into an output array with interleaved
 /// outer × chunk layout.  Used by [`Concat`] and [`Stack`].
 ///
-/// Iterates `inputs` exactly once — safe for single-pass iterators from
+/// Iterates `inputs` exactly once - safe for single-pass iterators from
 /// [`SliceRefs::iter`].
 #[inline(always)]
 pub(super) fn interleaved_copy<'a, T: Scalar>(

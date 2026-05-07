@@ -29,7 +29,7 @@ class VariancePortfolio(
 ):
     """Abstract portfolio constructor from covariance alone (no expected returns).
 
-    Triggered by `universe` updates — the universe is the canonical
+    Triggered by `universe` updates - the universe is the canonical
     rebalance signal.  On each trigger, delegates to `positions_fn` to
     compute position weights.  Only stocks with positive universe
     weights and finite diagonal covariance entries are passed to
@@ -40,7 +40,7 @@ class VariancePortfolio(
     typically clocked by a rebalance clock (e.g. via
     [`Clocked`][tradingflow.operators.clocked.Clocked]), so this operator runs
     at that cadence.  `predicted_covariances` is read as the latest
-    stored prediction at the trigger — it need not produce on the same
+    stored prediction at the trigger - it need not produce on the same
     cycle.
 
     ## Expected prediction semantics
@@ -71,7 +71,7 @@ class VariancePortfolio(
     ## NaN behavior
 
     `predicted_covariances` is allowed to contain `NaN` rows and columns
-    — per the
+    - per the
     [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor]
     contract, these mark stocks with insufficient data.  The base class
     subsets to `(universe > 0) & np.isfinite(np.diag(Sigma))` before

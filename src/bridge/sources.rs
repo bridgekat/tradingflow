@@ -16,7 +16,7 @@ use super::dispatch::{ContiguousArrayInfo, dispatch_dtype};
 /// Register a Rust-native source and return `(node_index, output_view_kind)`.
 ///
 /// The output [`NativeNodeKind`] is determined by the Rust source type, not by the
-/// Python caller — mirrors how [`dispatch_native_operator`] works.
+/// Python caller - mirrors how [`dispatch_native_operator`] works.
 pub fn dispatch_native_source(
     sc: &mut Scenario,
     kind: &str,

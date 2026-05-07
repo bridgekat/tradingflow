@@ -18,23 +18,23 @@
 //! This means **no `Shape` type is needed**:
 //!
 //! * Sized types consume a fixed, type-determined number of slots from the
-//!   cursor — no runtime descriptor required.
+//!   cursor - no runtime descriptor required.
 //! * `[T]` always occupies the **tail** of the flat buffer; `refs_from_flat`
 //!   simply reads all remaining slots.
 //!
 //! # Cursor traversal
 //!
 //! [`FlatRead`] / [`FlatWrite`] thread position state through the recursive
-//! tree so each leaf is visited exactly once — O(total_leaves).
+//! tree so each leaf is visited exactly once - O(total_leaves).
 //!
 //! # Public types
 //!
-//! * [`Input<T>`] — leaf marker wrapping any `T: Send + 'static`.
-//! * [`SliceRefs<'a, T>`] / [`SliceProduced<'a, T>`] — zero-allocation views
+//! * [`Input<T>`] - leaf marker wrapping any `T: Send + 'static`.
+//! * [`SliceRefs<'a, T>`] / [`SliceProduced<'a, T>`] - zero-allocation views
 //!   over a trailing slice branch.
-//! * [`FlatRead`] / [`FlatWrite`] — single-pass cursors over `&[T]`, used on
+//! * [`FlatRead`] / [`FlatWrite`] - single-pass cursors over `&[T]`, used on
 //!   the [`Refs<'a>`](InputTypes::Refs) path.
-//! * [`BitRead`] — single-pass cursor over a packed bit buffer `&[u64]`,
+//! * [`BitRead`] - single-pass cursor over a packed bit buffer `&[u64]`,
 //!   used on the [`Produced<'a>`](InputTypes::Produced) path.  Symmetric to
 //!   [`FlatRead<bool>`]: same `new` / `remaining` / `take` / `pop` surface,
 //!   but storage is 1 bit per slot instead of 1 byte.
@@ -257,7 +257,7 @@ impl<'a, T> FlatWrite<'a, T> {
 ///
 /// Every leaf of an operator's `Inputs` is `Input<T>` for some value type
 /// `T: Send + 'static`.  `Input<T>::Refs<'a> = &'a T`, so compute bodies
-/// see `&T` directly — the wrapper is invisible past the trait system.
+/// see `&T` directly - the wrapper is invisible past the trait system.
 pub struct Input<T: Send + 'static>(PhantomData<fn() -> T>);
 
 /// Recursive description of an operator's inputs.
@@ -281,7 +281,7 @@ pub trait InputTypes {
     ///
     /// For all `Sized` implementations this is a compile-time-constant
     /// determined by the type alone.  For `!Sized` implementations (`[T]`
-    /// and tuples with a trailing `[T]`) this method is dead — the `[T]`
+    /// and tuples with a trailing `[T]`) this method is dead - the `[T]`
     /// impl panics with `unreachable!()`, and the only legitimate runtime
     /// path to registering a `!Sized` `Inputs` operator goes through
     /// `ErasedOperator::from_operator_with_type_ids`, which never calls
@@ -434,7 +434,7 @@ impl_input_types_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I
 
 // -- Compound: trailing slice branch ([T]) -----------------------------------
 //
-// `[T]` is `!Sized` — it is valid only as the trailing type in an operator's
+// `[T]` is `!Sized` - it is valid only as the trailing type in an operator's
 // `Inputs`.  `refs_from_flat` and `produced_from_flat` drain all remaining
 // cursor slots.
 //
@@ -606,7 +606,7 @@ mod tests {
     }
 
     fn read_produced<I: InputTypes + ?Sized>(bits: &[bool]) -> I::Produced<'static> {
-        // Leak the packed storage — test-only, short-lived, keeps the
+        // Leak the packed storage - test-only, short-lived, keeps the
         // returned `Produced<'a>` usable without lifetime gymnastics.
         let packed: &'static [u64] = Box::leak(pack_bits(bits).into_boxed_slice());
         let mut reader = BitRead::new(packed, bits.len());
@@ -694,7 +694,7 @@ mod tests {
 
     #[test]
     fn slice_of_pairs() {
-        // [(Input<u32>, Input<u64>)] — slice of 2-leaf pairs.
+        // [(Input<u32>, Input<u64>)] - slice of 2-leaf pairs.
         let a0: u32 = 1;
         let b0: u64 = 10;
         let a1: u32 = 2;
@@ -725,7 +725,7 @@ mod tests {
     //
     // These verify the (prefix..., [S]) impls: Sized branches consume fixed
     // counts, the trailing slice drains the remainder.  The notation
-    // mirrors `Input<(bool, u32, [f64])>` — a tree with two scalar leaves
+    // mirrors `Input<(bool, u32, [f64])>` - a tree with two scalar leaves
     // and a variable-length float tail.
     // -----------------------------------------------------------------------
 

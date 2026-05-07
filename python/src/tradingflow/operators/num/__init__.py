@@ -1,7 +1,7 @@
 """Element-wise numeric operators.
 
 Stateless arithmetic and math applied element-by-element to array
-nodes — the low-level building blocks you reach for when composing a
+nodes - the low-level building blocks you reach for when composing a
 formulaic factor or a small derived signal.  All operators in this
 module are [`NativeOperator`][tradingflow.operator.NativeOperator] subclasses
 dispatched entirely to Rust, so they run at roughly NumPy speed with
@@ -48,13 +48,13 @@ the event loop starts.
 These take a constant parameter at construction time and apply it
 element-wise at compute time:
 
-- [`Pow`][tradingflow.operators.num.arithmetic.Pow] — raise each element
+- [`Pow`][tradingflow.operators.num.arithmetic.Pow] - raise each element
   to a constant exponent.
-- [`Clamp`][tradingflow.operators.num.clamp.Clamp] — clip values into a
+- [`Clamp`][tradingflow.operators.num.clamp.Clamp] - clip values into a
   given `[lo, hi]` range.
-- [`Fillna`][tradingflow.operators.num.fillna.Fillna] — replace NaNs with a
+- [`Fillna`][tradingflow.operators.num.fillna.Fillna] - replace NaNs with a
   constant.
-- [`ForwardFill`][tradingflow.operators.num.ffill.ForwardFill] — replace
+- [`ForwardFill`][tradingflow.operators.num.ffill.ForwardFill] - replace
   NaNs with the last non-NaN value seen so far (stateful).
 
 ## Cross-tick (stateful)
@@ -62,9 +62,9 @@ element-wise at compute time:
 Single-step stateful operators that remember the previous tick.  Output
 is `NaN` on the first tick.
 
-- [`Diff`][tradingflow.operators.num.diff.Diff] — first difference:
+- [`Diff`][tradingflow.operators.num.diff.Diff] - first difference:
   `a_t - a_{t-1}`.
-- [`PctChange`][tradingflow.operators.num.pct_change.PctChange] — linear
+- [`PctChange`][tradingflow.operators.num.pct_change.PctChange] - linear
   return: `a_t / a_{t-1} - 1`.
 
 Use `PctChange` for linear returns and `Log -> Diff` for log returns.
@@ -77,14 +77,14 @@ not ``n``) and NaN inputs propagate to NaN outputs, so downstream
 ``np.isfinite`` masks still filter missing entries.  1-D float inputs
 only.
 
-- [`Gaussianize`][tradingflow.operators.num.gaussianize.Gaussianize] —
+- [`Gaussianize`][tradingflow.operators.num.gaussianize.Gaussianize] -
   cross-sectional rank-to-Gaussian transform: map each non-NaN element
   to ``Φ⁻¹((rank + 0.5) / n_valid)``.
-- [`Percentile`][tradingflow.operators.num.percentile.Percentile] —
+- [`Percentile`][tradingflow.operators.num.percentile.Percentile] -
   cross-sectional rank-to-percentile transform: map each non-NaN
   element to ``(rank + 0.5) / n_valid ∈ (0, 1)``.  Same sort and NaN
   logic as ``Gaussianize``, just without the ``Φ⁻¹`` step.
-- [`Winsorize`][tradingflow.operators.num.winsorize.Winsorize] —
+- [`Winsorize`][tradingflow.operators.num.winsorize.Winsorize] -
   cross-sectional percentile clipping: clip each non-NaN element to
   the ``[p, 1-p]``-quantile range of the input.  Preserves magnitudes;
   use to cap tail leverage on regression inputs / targets without

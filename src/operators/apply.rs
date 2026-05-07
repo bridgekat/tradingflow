@@ -1,10 +1,10 @@
-//! Apply operators — apply functions to transform tuple inputs into outputs.
+//! Apply operators - apply functions to transform tuple inputs into outputs.
 //!
 //! These are the multi-input counterparts of [`Map`](super::Map) and
 //! [`MapInplace`](super::MapInplace):
 //!
-//! - [`Apply`] — allocating: `Fn(Inputs::Refs<'_>) -> T`.
-//! - [`ApplyInplace`] — in-place: `Fn(Inputs::Refs<'_>, &mut T) -> bool`.
+//! - [`Apply`] - allocating: `Fn(Inputs::Refs<'_>) -> T`.
+//! - [`ApplyInplace`] - in-place: `Fn(Inputs::Refs<'_>, &mut T) -> bool`.
 
 use std::marker::PhantomData;
 
@@ -87,7 +87,7 @@ where
 /// In-place apply operator: reads tuple inputs, writes into output `T`
 /// via a mutable reference, and returns whether to propagate.
 ///
-/// Unlike [`Apply`], the function does not allocate a new output — it
+/// Unlike [`Apply`], the function does not allocate a new output - it
 /// receives the inputs and `&mut T` and mutates the existing output.
 /// The return value controls downstream propagation.
 pub struct ApplyInplace<I, T, F>

@@ -1,4 +1,4 @@
-"""Percentile operator — NaN-preserving cross-sectional rank-to-percentile transform."""
+"""Percentile operator - NaN-preserving cross-sectional rank-to-percentile transform."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ class Percentile(NativeOperator):
 
     Non-NaN elements are ranked ascending and mapped to
     ``(rank + 0.5) / n_valid`` in `(0, 1)`.  NaN inputs propagate to NaN
-    outputs — they do not occupy ranks, so the denominator only counts
+    outputs - they do not occupy ranks, so the denominator only counts
     finite values and the percentile distribution is not squeezed by
     missing entries.
 

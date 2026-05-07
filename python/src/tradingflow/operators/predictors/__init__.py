@@ -8,13 +8,13 @@ rather than on every tick.
 
 The two abstract bases below separate the two kinds of prediction:
 
-- [`MeanPredictor`][tradingflow.operators.predictors.mean_predictor.MeanPredictor] —
+- [`MeanPredictor`][tradingflow.operators.predictors.mean_predictor.MeanPredictor] -
   predicts the target value per stock.  Fit once over a pooled sample
   of aligned feature/target rows; emit a cross-sectional vector.  Feeds
   naturally into
   [`portfolios.mean`][tradingflow.operators.portfolios.mean] or
   [`portfolios.mean_variance`][tradingflow.operators.portfolios.mean_variance].
-- [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor] —
+- [`VariancePredictor`][tradingflow.operators.predictors.variance_predictor.VariancePredictor] -
   predicts the target's covariance matrix over the universe.  Emit
   an N × N matrix.  Feeds naturally into
   [`portfolios.variance`][tradingflow.operators.portfolios.variance] or
@@ -28,16 +28,16 @@ defined by how this target series is constructed upstream** in the
 graph.  The recommended choice matching the portfolio operators' input
 contract is log returns:
 
-- `Record(Diff(Log(prices)))` — log returns.  Predictions are in
+- `Record(Diff(Log(prices)))` - log returns.  Predictions are in
   log-return units; `MeanPortfolio` / `VariancePortfolio` /
   `MeanVariancePortfolio` convert to linear-return moments internally
   before solving their optimization.
-- `Record(Percentile(Diff(Log(prices))))` — rank-transformed log
+- `Record(Percentile(Diff(Log(prices))))` - rank-transformed log
   returns.  Predictions are on the rank scale; suitable for
   `MeanPortfolio` subclasses whose rebalance logic only consumes
   *ordering* (top-N, rank-linear, softmax).  **Not suitable** for
   `MeanVariancePortfolio` / `VariancePortfolio`, which require
-  magnitudes — the conversion those operators apply would map
+  magnitudes - the conversion those operators apply would map
   percentile inputs through `exp(·) - 1` but the numeric values no
   longer have any risk-return interpretation.
 
@@ -45,7 +45,7 @@ The `target_offset` parameter expresses how many periods ahead of
 the feature each training target is taken from the target series
 (e.g. `target_offset=1` pairs features at time t with returns from
 t to t+1).  At every recompute the invariant
-`len(features_series) == len(target_series)` is asserted — both
+`len(features_series) == len(target_series)` is asserted - both
 series must tick in lock-step upstream (use
 [`Resample`][tradingflow.operators.resample.Resample] to align
 heterogeneous-cadence feature components onto a common trading-day
@@ -55,10 +55,10 @@ and only the very latest drives the emitted prediction.
 
 ## Sub-modules
 
-- [`mean`][tradingflow.operators.predictors.mean] — concrete mean
+- [`mean`][tradingflow.operators.predictors.mean] - concrete mean
   predictors (historical sample mean, single-feature pass-through,
   pooled OLS linear regression).
-- [`variance`][tradingflow.operators.predictors.variance] — concrete
+- [`variance`][tradingflow.operators.predictors.variance] - concrete
   covariance estimators (sample covariance, Ledoit-Wolf / Schafer-
   Strimmer shrinkage, single-index, hierarchical, random-matrix
   theory).

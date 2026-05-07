@@ -12,9 +12,9 @@ class EMA(NativeOperator):
 
     Exactly one of *alpha*, *span*, or *half_life* must be provided:
 
-    - `alpha` — explicit smoothing factor \(\alpha \in (0, 1]\).
-    - `span` — equivalent to \(\alpha = 2 / (\text{span} + 1)\) (pandas convention).
-    - `half_life` — equivalent to \(\alpha = 1 - \exp(-\ln 2 / \text{half\_life})\).
+    - `alpha` - explicit smoothing factor \(\alpha \in (0, 1]\).
+    - `span` - equivalent to \(\alpha = 2 / (\text{span} + 1)\) (pandas convention).
+    - `half_life` - equivalent to \(\alpha = 1 - \exp(-\ln 2 / \text{half\_life})\).
 
     Parameters
     ----------

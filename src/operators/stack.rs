@@ -1,8 +1,8 @@
-//! Stack operators — stacks N arrays along a new axis.
+//! Stack operators - stacks N arrays along a new axis.
 //!
-//! * [`Stack`] — time-series semantics: copies all inputs on every
+//! * [`Stack`] - time-series semantics: copies all inputs on every
 //!   trigger.
-//! * [`StackSync`] — message-passing semantics: fills non-produced
+//! * [`StackSync`] - message-passing semantics: fills non-produced
 //!   input slots with `NaN` (float-only).
 
 use num_traits::Float;
@@ -83,7 +83,7 @@ impl<T: Scalar> Operator for Stack<T> {
 /// the slots corresponding to inputs that produced in the current
 /// flush cycle are copied in.  All other slots remain `NaN`.
 ///
-/// This is the message-passing counterpart to [`Stack`] — where
+/// This is the message-passing counterpart to [`Stack`] - where
 /// `Stack` reads the latest value from every input (time-series
 /// semantics), `StackSync` carries only values from inputs that
 /// actually updated this cycle (message-passing semantics), i.e. it
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn notify_only_first_produced_nans_second() {
-        // Input 0 produced; input 1 did not — its slot is NaN.
+        // Input 0 produced; input 1 did not - its slot is NaN.
         let (a, b) = ab();
         let arrays: [&Array<f64>; 2] = [&a, &b];
         let ptrs = make_ptrs(&arrays);

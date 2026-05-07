@@ -59,8 +59,8 @@ class SimpleTrader(
        adjustment factor changes.
     2. If the soft-positions input was updated (rebalance signal), first
        force-liquidates held positions in stocks with no valid exec
-       price today (suspended or delisted) at their last valid close —
-       each forced sale charged the same fee as a normal trade — then
+       price today (suspended or delisted) at their last valid close -
+       each forced sale charged the same fee as a normal trade - then
        calls `trade_fn` with the post-liquidation state to obtain
        net-delta lots for the rest, and executes those lots at today's
        open.  Tradable stocks therefore incur at most one trade (one
@@ -126,10 +126,10 @@ class SimpleTrader(
       paying one round of fees.  Stocks with non-finite or non-positive
       open cannot be traded on the open market; if we held any, the
       simulator force-closes them at their last valid close (charged the
-      same fee as a normal trade — an idealisation that is not
+      same fee as a normal trade - an idealisation that is not
       achievable in live trading) so they hold zero shares
       post-rebalance.  No fresh entry is ever made into a stock whose
-      current open is invalid — `trade_fn` is free to return lots for
+      current open is invalid - `trade_fn` is free to return lots for
       such stocks, but the per-stock execution loop enforces the skip.
     """
 
@@ -224,7 +224,7 @@ class SimpleTrader(
 
             # Step 1: force-liquidate positions in stocks with no valid
             # exec price today (suspended or delisted) at their last
-            # valid close — the simulator assumes an idealised exit even
+            # valid close - the simulator assumes an idealised exit even
             # when no open-market trade is actually possible.  Each
             # forced sale is charged the same fee as a normal trade.
             exec_price = opens

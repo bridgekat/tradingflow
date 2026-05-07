@@ -6,7 +6,7 @@
 //! on the main-thread asyncio event loop via `run_coroutine_threadsafe`
 //! and awaiting completion through a [`DoneCallback`].
 //!
-//! The write function ([`py_write_fn`]) is **not** generic — it delegates
+//! The write function ([`py_write_fn`]) is **not** generic - it delegates
 //! to the Python output view's `write` method, mirroring the operator
 //! bridge pattern.  Dtype dispatch is only needed for output allocation
 //! and view creation.
@@ -33,7 +33,7 @@ type PyObject = Py<PyAny>;
 
 /// Per-channel receiver state for the non-generic [`py_write_fn`].
 ///
-/// Holds the channel receiver, output view, and error slot — mirroring
+/// Holds the channel receiver, output view, and error slot - mirroring
 /// [`PyOperatorState`](super::operator) which stores views alongside
 /// the compute callback.
 struct PySourceState {
@@ -78,7 +78,7 @@ impl DoneCallback {
 /// The caller provides the resolved `output_type_id` and `out_view_kind`,
 /// mirroring how [`make_py_operator`](super::operator::make_py_operator)
 /// receives these from the scenario.  Dtype dispatch is only needed for
-/// the output allocation — the write function is non-generic.
+/// the output allocation - the write function is non-generic.
 pub fn make_py_source(
     output_type_id: TypeId,
     out_dtype: &str,
@@ -124,7 +124,7 @@ pub fn make_py_source(
             let output_ptr = alloc_output_fn(&output_shape_owned);
 
             // Build per-receiver Python views and refcount-bump the source/loop
-            // handles for the spawned driver — all under a single GIL acquire.
+            // handles for the spawned driver - all under a single GIL acquire.
             // `create_view` only fails on dtype/view-kind mismatches, which the
             // outer dispatch above has already validated, so an error here
             // would indicate a bridge bug.
@@ -214,7 +214,7 @@ fn alloc_series<T: crate::Scalar>(shape: &[usize]) -> *mut u8 {
 
 /// Poll function for Python source channels.
 ///
-/// Not generic — delegates to the inner [`PeekableReceiver`].
+/// Not generic - delegates to the inner [`PeekableReceiver`].
 ///
 /// # Safety
 ///
@@ -230,7 +230,7 @@ unsafe fn py_poll_fn(
 /// Write function for Python source channels.
 ///
 /// Delegates to the output view's `write` method, mirroring the operator
-/// bridge's [`py_compute_fn`](super::operator).  Not generic — works
+/// bridge's [`py_compute_fn`](super::operator).  Not generic - works
 /// entirely through the Python view in [`PySourceState`].
 ///
 /// # Safety
@@ -244,7 +244,7 @@ unsafe fn py_write_fn(state_ptr: *mut u8, _output_ptr: *mut u8, _ts: Instant) ->
     }
 
     if let Some((_ts, py_value)) = state.rx.take_pending() {
-        // Unit outputs carry no data — just consume the event and signal
+        // Unit outputs carry no data - just consume the event and signal
         // downstream propagation without calling .write().
         let is_none = Python::attach(|py| state.py_output.is_none(py));
         if is_none {

@@ -19,7 +19,7 @@ class VariancePredictorState[T]:
     min_periods: int | None
     fit_fn: Callable[[np.ndarray, np.ndarray], T]
     predict_fn: Callable[["VariancePredictorState[T]", np.ndarray, T], np.ndarray]
-    # Updated across compute() calls — the fitted params from the last
+    # Updated across compute() calls - the fitted params from the last
     # refit tick are reused until the next cadence-driven refit.
     # `fitted` gates prediction: it flips to True after the first
     # successful fit.  `cached_params` may legitimately be `None` after
@@ -47,9 +47,9 @@ class VariancePredictor[T](
     `predict_fn`, and emits the predicted covariance matrix.  Non-
     rebalance ticks are ignored.
 
-    The estimator itself is agnostic to what the target represents —
+    The estimator itself is agnostic to what the target represents -
     log returns, linear returns, a rank-transformed return, a custom
-    signal — so the **meaning of the prediction is defined by how the
+    signal - so the **meaning of the prediction is defined by how the
     target series is constructed upstream**.  The standard choice is
     log returns ([`Log`][tradingflow.operators.num.arithmetic.Log]
     followed by [`Diff`][tradingflow.operators.num.diff.Diff]), which
@@ -73,7 +73,7 @@ class VariancePredictor[T](
     `target_offset` parameter then defines the training pairing:
     `features_series[i]` is paired with `target_series[i + target_offset]`.
     For i out of range (the last `target_offset` features), no training
-    pair exists — those rows are skipped.  The latest feature
+    pair exists - those rows are skipped.  The latest feature
     (`features_series[-1]`) is used to emit the prediction.
 
     ## NaN behavior
@@ -83,7 +83,7 @@ class VariancePredictor[T](
     non-finite features at the rebalance timestamp, or have fewer than
     `min_periods` valid historical observations.  The finite submatrix
     (indexed by the remaining stocks) is the output of `predict_fn` on a
-    fully-masked feature subset — so `predict_fn` itself never needs to
+    fully-masked feature subset - so `predict_fn` itself never needs to
     handle `NaN`.  Downstream portfolio constructors must accept `NaN`
     rows/columns and subset to the finite ones (see
     [`VariancePortfolio`][tradingflow.operators.portfolios.variance_portfolio.VariancePortfolio]
@@ -217,7 +217,7 @@ class VariancePredictor[T](
         if not universe_produced:
             return False
 
-        # Check data alignment — features and target must tick in lock-step.
+        # Check data alignment - features and target must tick in lock-step.
         n_features = len(features_series_view)
         n_target = len(target_series_view)
 
@@ -230,9 +230,7 @@ class VariancePredictor[T](
 
         # Refit if we've never fit, or if this rebalance hits the cadence.
         # Otherwise reuse the cached parameters from the last refit.
-        should_refit = (not state.fitted) or (
-            state.rebalance_count % state.refit_every == 0
-        )
+        should_refit = (not state.fitted) or (state.rebalance_count % state.refit_every == 0)
         state.rebalance_count += 1
 
         # Available (feature, target) training pairs: features[i] paired

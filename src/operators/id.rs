@@ -1,4 +1,4 @@
-//! Identity operator — passes input through unchanged.
+//! Identity operator - passes input through unchanged.
 
 use std::marker::PhantomData;
 

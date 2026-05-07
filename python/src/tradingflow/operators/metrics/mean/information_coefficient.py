@@ -33,7 +33,7 @@ class InformationCoefficient(
     next prediction arrives, emits the mean daily IC over the
     evaluation period and updates the stored scores.
 
-    Output is a scalar — the mean daily cross-sectional correlation
+    Output is a scalar - the mean daily cross-sectional correlation
     over one evaluation period.  `Record(output)` produces a directly
     plottable time series.
 
@@ -43,7 +43,7 @@ class InformationCoefficient(
     stores scores without emitting), the operator emits exactly once per
     prediction emission (NaN when data is unavailable).
 
-    **Memory.** Both `predictions` and `target` are `Array` inputs —
+    **Memory.** Both `predictions` and `target` are `Array` inputs -
     the operator only reads the latest cross-section of each.
     No `Record` is required upstream.
 

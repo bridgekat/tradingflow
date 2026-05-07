@@ -16,7 +16,7 @@ replaced:
   zero (Rosenow et al., 2002) and forces the diagonal of the filtered
   correlation matrix to 1.
 - [`RMTM`][tradingflow.operators.predictors.variance.rmt.RMTM] replaces them
-  with their mean (Potters et al., 2005) — preserving the trace — and
+  with their mean (Potters et al., 2005) - preserving the trace - and
   then renormalizes the off-diagonals so the correlation diagonal is 1.
 
 Both forms then rescale by the sample standard deviations to recover
@@ -65,8 +65,8 @@ class RMTM(VariancePredictor[np.ndarray]):
     """RMT covariance estimator with mean replacement (Potters et al.).
 
     Replaces every eigenvalue below the Marchenko-Pastur bound with
-    the mean of the sub-threshold block — preserving the trace of the
-    correlation matrix — then renormalizes off-diagonals so that the
+    the mean of the sub-threshold block - preserving the trace of the
+    correlation matrix - then renormalizes off-diagonals so that the
     filtered correlation has unit diagonal, and rescales by the
     sample standard deviations.  Ignores features.
 

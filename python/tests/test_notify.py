@@ -1,4 +1,4 @@
-"""Tests for the produced-tuple mechanism — both native (ForwardAdjust) and Python operators."""
+"""Tests for the produced-tuple mechanism - both native (ForwardAdjust) and Python operators."""
 
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ class TestForwardAdjust:
 
 
 # =========================================================================
-# Python operator using produced tuple — message-queue semantics
+# Python operator using produced tuple - message-queue semantics
 # =========================================================================
 
 
@@ -146,7 +146,7 @@ class SelectiveRecorder(
     Input 0 is a "background" source that fires frequently but whose
     values are ignored.  Input 1 is a sparse "message" source.  The
     output Series should contain exactly the same elements as
-    ``Record(input_1)`` — regardless of how often input 0 fires.
+    ``Record(input_1)`` - regardless of how often input 0 fires.
     """
 
     def __init__(self, background: Handle, messages: Handle) -> None:

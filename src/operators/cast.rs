@@ -1,4 +1,4 @@
-//! Cast operator — element-wise type conversion between arrays.
+//! Cast operator - element-wise type conversion between arrays.
 
 use std::marker::PhantomData;
 

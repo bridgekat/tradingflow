@@ -16,7 +16,7 @@ use crate::{ErasedOperator, Operator};
 use super::dispatch::dispatch_dtype;
 use super::views::NativeNodeKind;
 
-/// Register a fixed-arity operator (Sized Inputs — tuples of Input<T>).
+/// Register a fixed-arity operator (Sized Inputs - tuples of Input<T>).
 fn add_operator_from_indices<O: Operator>(
     sc: &mut Scenario,
     operator: O,
@@ -29,7 +29,7 @@ where
     sc.add_erased_operator(erased, input_indices)
 }
 
-/// Register a variable-arity operator (unsized Inputs — e.g. Stack/Concat).
+/// Register a variable-arity operator (unsized Inputs - e.g. Stack/Concat).
 ///
 /// Type IDs are derived from the actual graph node output types, which are
 /// guaranteed correct by handle typing.
@@ -165,7 +165,7 @@ pub fn dispatch_native_operator(
                 .ok_or_else(|| PyTypeError::new_err("resample requires 'clock_kind' param"))?
                 .extract()?;
             // `clock_dtype` may be Python `None` when the clock is a Unit
-            // node — the unit clock arms never consult it, so default to
+            // node - the unit clock arms never consult it, so default to
             // an empty string that `dispatch_dtype!` never sees.
             let clock_dtype: String = match params.get_item("clock_dtype")? {
                 Some(v) if !v.is_none() => v.extract::<String>()?,
@@ -264,7 +264,7 @@ pub fn dispatch_native_operator(
                     Ok((dispatch_dtype!(dtype, go_o), NativeNodeKind::Series))
                 }
                 (d, c) => Err(PyTypeError::new_err(format!(
-                    "resample: unsupported (data_kind={d}, clock_kind={c}) — each must be 'unit', 'array', or 'series'"
+                    "resample: unsupported (data_kind={d}, clock_kind={c}) - each must be 'unit', 'array', or 'series'"
                 ))),
             }
         }

@@ -12,7 +12,7 @@ use crate::{Array, Input, InputTypes, Operator, Scalar};
 ///
 /// Non-NaN elements are ranked ascending and mapped to
 /// `(rank + 0.5) / n_valid ∈ (0, 1)`.  NaN inputs propagate to NaN
-/// outputs — they do not occupy ranks, so the denominator only counts
+/// outputs - they do not occupy ranks, so the denominator only counts
 /// finite values and the percentile distribution is not squeezed by
 /// missing entries.
 ///

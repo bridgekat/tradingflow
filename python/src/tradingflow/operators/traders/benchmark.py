@@ -1,4 +1,4 @@
-"""Benchmark operator — frictionless ideal portfolio replication."""
+"""Benchmark operator - frictionless ideal portfolio replication."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ class Benchmark(
       force-closes them at their last valid close (an idealisation that
       is not achievable in live trading) so they hold zero shares
       post-rebalance.  No fresh entry is ever made into a stock whose
-      current open is invalid — capital earmarked for it remains in
+      current open is invalid - capital earmarked for it remains in
       cash.
     """
 
@@ -171,7 +171,7 @@ class Benchmark(
 
             # Step 1: force-liquidate positions in stocks with no valid
             # exec price today (suspended or delisted) at their last
-            # valid close — the simulator assumes an idealised exit even
+            # valid close - the simulator assumes an idealised exit even
             # when no open-market trade is actually possible.
             valid_exec = np.isfinite(opens) & (opens > 0)
             force_liq = (state.shares != 0) & ~valid_exec & np.isfinite(state.last_close)

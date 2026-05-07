@@ -18,16 +18,16 @@ class Mode(IntEnum):
     mode-dependent.
 
     - [`MIN_VARIANCE_GIVEN_RETURN`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode]
-      — minimize \(x^T \Sigma x\) subject to \(\mu^T x \geq \text{bound}\).  `bound` is
+      - minimize \(x^T \Sigma x\) subject to \(\mu^T x \geq \text{bound}\).  `bound` is
       the minimum admissible expected return \(\mu_{\min}\).
     - [`MAX_RETURN_GIVEN_STD_DEV`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode]
-      — maximize \(\mu^T x\) subject to \(\sqrt{x^T \Sigma x} \leq \text{bound}\).  `bound`
+      - maximize \(\mu^T x\) subject to \(\sqrt{x^T \Sigma x} \leq \text{bound}\).  `bound`
       is the maximum admissible portfolio standard deviation \(\sigma_{\max}\).
     - [`MIN_MEAN_VARIANCE`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode]
-      — maximize \(\mu^T x - \text{bound} \cdot x^T \Sigma x\).  `bound` is the
+      - maximize \(\mu^T x - \text{bound} \cdot x^T \Sigma x\).  `bound` is the
       variance-penalty coefficient \(\delta\) (quadratic risk aversion).
     - [`MIN_MEAN_STD_DEV`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode]
-      — maximize \(\mu^T x - \text{bound} \cdot \sqrt{x^T \Sigma x}\).  `bound` is the
+      - maximize \(\mu^T x - \text{bound} \cdot \sqrt{x^T \Sigma x}\).  `bound` is the
       std-dev-penalty coefficient \(\delta\) (linear risk aversion).
     """
 
@@ -64,7 +64,7 @@ class Markowitz(MeanVariancePortfolio):
         Optimization mode, a member of
         [`Mode`][tradingflow.operators.portfolios.mean_variance.markowitz.Mode].
     bound
-        Scalar parameter whose meaning depends on `mode` — minimum
+        Scalar parameter whose meaning depends on `mode` - minimum
         return \(\mu_{\min}\), maximum standard deviation \(\sigma_{\max}\), or
         risk-aversion coefficient \(\delta\).  See `Mode` for details.
         If the resulting problem is infeasible (e.g. \(\mu_{\min}\) above

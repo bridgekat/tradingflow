@@ -2,7 +2,7 @@
 //!
 //! [`Graph`] owns [`Node`]s and implements topological flush via a min-heap.
 //! Each flush cycle maintains a per-node bitset (`incoming_bits`) that
-//! records which input positions produced — the compute function reads it
+//! records which input positions produced - the compute function reads it
 //! via a [`BitRead`](crate::data::BitRead) cursor to build the operator's
 //! nested `Produced<'_>` tree.  A parallel `pending` boolean vector tracks
 //! whether each node is currently in the heap.

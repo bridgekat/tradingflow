@@ -23,7 +23,6 @@ from tradingflow.operators.num import Multiply
 
 from stocks import load_symbols, add_market_argument
 
-
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
 

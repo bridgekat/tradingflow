@@ -9,17 +9,17 @@ deviations.  They differ only in the rule that defines the similarity
 between a newly-merged cluster \(L = A \cup B\) and another active
 cluster \(F\):
 
-- [`UPGMA`][tradingflow.operators.predictors.variance.hierarchical.UPGMA] — unweighted
+- [`UPGMA`][tradingflow.operators.predictors.variance.hierarchical.UPGMA] - unweighted
   pair-group method with arithmetic mean:
   \[
   \sigma(L, F) = \frac{N_A \cdot \sigma(A, F) + N_B \cdot \sigma(B, F)}{N_A + N_B}.
   \]
-- [`WPGMA`][tradingflow.operators.predictors.variance.hierarchical.WPGMA] — weighted
+- [`WPGMA`][tradingflow.operators.predictors.variance.hierarchical.WPGMA] - weighted
   pair-group method with arithmetic mean:
   \[
   \sigma(L, F) = \frac{\sigma(A, F) + \sigma(B, F)}{2}.
   \]
-- [`Hausdorff`][tradingflow.operators.predictors.variance.hierarchical.Hausdorff] —
+- [`Hausdorff`][tradingflow.operators.predictors.variance.hierarchical.Hausdorff] -
   Hausdorff linkage using the original pairwise similarities:
   \[
   \sigma(L, F) = \min\!\left\{
@@ -186,7 +186,7 @@ def _cophenetic_similarity(C: np.ndarray, *, method: str) -> np.ndarray:
                 new_sim = 0.5 * (s_aF + s_bF)
             elif method == "hausdorff":
                 # Paper's formula uses the ORIGINAL pairwise similarities
-                # from C — not the running cluster-cluster similarities.
+                # from C - not the running cluster-cluster similarities.
                 sub = C[np.ix_(members[new_id], members[F])]
                 term1 = sub.max(axis=1).min()  # min_i max_j
                 term2 = sub.min(axis=1).max()  # max_i min_j

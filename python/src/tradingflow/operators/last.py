@@ -1,4 +1,4 @@
-"""Last operator — extracts the most recent element from a Series."""
+"""Last operator - extracts the most recent element from a Series."""
 
 from __future__ import annotations
 

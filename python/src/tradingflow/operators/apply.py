@@ -1,4 +1,4 @@
-"""Apply operator — apply a function to multiple array inputs."""
+"""Apply operator - apply a function to multiple array inputs."""
 
 from __future__ import annotations
 

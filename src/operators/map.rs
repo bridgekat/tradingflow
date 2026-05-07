@@ -1,7 +1,7 @@
-//! Map operators — apply functions to transform inputs into outputs.
+//! Map operators - apply functions to transform inputs into outputs.
 //!
-//! - [`Map`] — allocating: `Fn(&S) -> T`.
-//! - [`MapInplace`] — in-place: `Fn(&S, &mut T) -> bool`.
+//! - [`Map`] - allocating: `Fn(&S) -> T`.
+//! - [`MapInplace`] - in-place: `Fn(&S, &mut T) -> bool`.
 
 use crate::{Input, InputTypes, Instant, Operator};
 
@@ -66,7 +66,7 @@ where
 /// In-place map operator: reads input `S`, writes into output `T` via
 /// a mutable reference, and returns whether to propagate.
 ///
-/// Unlike [`Map`], the function does not allocate a new output — it
+/// Unlike [`Map`], the function does not allocate a new output - it
 /// receives `(&S, &mut T)` and mutates the existing output in place.
 /// The return value controls downstream propagation.
 #[derive(Clone)]

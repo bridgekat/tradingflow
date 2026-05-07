@@ -2,18 +2,18 @@
 
 Provides:
 
-- [`Market`](stocks.py) — enum of the five A-shares markets currently
+- [`Market`](stocks.py) - enum of the five A-shares markets currently
   supported: `SZSE`, `CHINEXT`, `SSE`, `STAR`, `BSE`.
-- [`parse_market`](stocks.py) — classify a `CODE.SUFFIX` symbol (e.g.
+- [`parse_market`](stocks.py) - classify a `CODE.SUFFIX` symbol (e.g.
   `"000001.SZ"`) into its `Market`, based on the suffix and the code's
   leading digits.
-- [`add_market_argument`](stocks.py) — attach a ``--markets`` option to
+- [`add_market_argument`](stocks.py) - attach a ``--markets`` option to
   an `argparse` parser, letting examples restrict the symbol universe
   to a subset of markets.
-- [`load_symbols`](stocks.py) — read the crawler's `symbol_list.csv`,
+- [`load_symbols`](stocks.py) - read the crawler's `symbol_list.csv`,
   optionally filtering by market.
 - [`resolve_data_start`](stocks.py),
-  [`calculate_index_weights`](stocks.py) — scenario-building helpers
+  [`calculate_index_weights`](stocks.py) - scenario-building helpers
   unrelated to market classification.
 """
 
@@ -33,13 +33,13 @@ class Market(StrEnum):
 
     Classification rules (see [`parse_market`][stocks.parse_market]):
 
-    - `SZSE` — Shenzhen Stock Exchange main board (``.SZ``, code begins
+    - `SZSE` - Shenzhen Stock Exchange main board (``.SZ``, code begins
       with ``0``: historical 000/001 main board plus 002/003 expansion).
-    - `CHINEXT` — ChiNext (``.SZ``, code begins with ``3``).
-    - `SSE` — Shanghai Stock Exchange main board (``.SH``, code begins
+    - `CHINEXT` - ChiNext (``.SZ``, code begins with ``3``).
+    - `SSE` - Shanghai Stock Exchange main board (``.SH``, code begins
       with ``6``: 600/601/603/605).
-    - `STAR` — Shanghai STAR Market (``.SH``, code begins with ``68``).
-    - `BSE` — Beijing Stock Exchange (any ``.BJ`` symbol).
+    - `STAR` - Shanghai STAR Market (``.SH``, code begins with ``68``).
+    - `BSE` - Beijing Stock Exchange (any ``.BJ`` symbol).
     """
 
     SZSE = "SZSE"

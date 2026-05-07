@@ -1,4 +1,4 @@
-//! Clock source — emits `()` events at supplied timestamps.
+//! Clock source - emits `()` events at supplied timestamps.
 //!
 //! The output node holds `()` (zero-sized, purely a trigger signal).
 //! On the Python side this corresponds to [`NodeKind.UNIT`], and clock

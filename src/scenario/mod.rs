@@ -1,10 +1,10 @@
-//! Scenario — a pure definition of an event-driven computation graph.
+//! Scenario - a pure definition of an event-driven computation graph.
 //!
 //! A [`Scenario`] is an *immutable description* of a directed acyclic graph
 //! of nodes, where each node is either a [`Source`](crate::source::Source)
 //! producing timestamped events or an [`Operator`](crate::operator::Operator)
 //! consuming upstream values to produce its own.  The scenario itself owns
-//! no node values, channel receivers, or operator state — it stores only
+//! no node values, channel receivers, or operator state - it stores only
 //! the type-erased descriptors ([`ErasedSource`](crate::source::ErasedSource),
 //! [`ErasedOperator`](crate::operator::ErasedOperator)) and the wiring
 //! between them.
@@ -12,7 +12,7 @@
 //! All runtime state lives on a [`Session`], built from a scenario by
 //! [`Scenario::build_session`].  Every call replays each descriptor's `init`
 //! against fresh buffers, so a single scenario can drive any number of
-//! independent sessions — useful for parameter sweeps, repeated
+//! independent sessions - useful for parameter sweeps, repeated
 //! backtests, and reproducibility.
 //!
 //! # Architecture
@@ -21,7 +21,7 @@
 //! `(pointer, TypeId)` slots.  Type safety is enforced at registration
 //! time on the scenario via [`Handle<T>`] and [`TypeId`] checks.  After
 //! registration, operator dispatch uses raw pointer casts through
-//! monomorphised function pointers — zero dynamic dispatch overhead on
+//! monomorphised function pointers - zero dynamic dispatch overhead on
 //! the hot path.
 //!
 //! Node indices encode topological order: if node `j` depends on node `i`,
@@ -30,10 +30,10 @@
 //!
 //! # Registration API
 //!
-//! - [`Scenario::add_const`] — register a constant node (shorthand for
+//! - [`Scenario::add_const`] - register a constant node (shorthand for
 //!   [`Const`](crate::operators::Const) operator).
-//! - [`Scenario::add_source`] — register a [`Source`](crate::source::Source).
-//! - [`Scenario::add_operator`] — register a concrete
+//! - [`Scenario::add_source`] - register a [`Source`](crate::source::Source).
+//! - [`Scenario::add_operator`] - register a concrete
 //!   [`Operator`](crate::operator::Operator).  Accepts typed [`Handle`]s
 //!   for inputs.
 //!
@@ -42,10 +42,10 @@
 //!
 //! # Execution
 //!
-//! - [`Scenario::build_session`] — construct a fresh [`Session`] by
+//! - [`Scenario::build_session`] - construct a fresh [`Session`] by
 //!   replaying every registered descriptor's `init` against newly
 //!   allocated buffers.
-//! - [`Scenario::run`] — convenience: build a session and drive its
+//! - [`Scenario::run`] - convenience: build a session and drive its
 //!   async event loop until every source is exhausted, returning the
 //!   populated session for inspection.
 //!
@@ -55,7 +55,7 @@
 //!
 //! # Sub-modules
 //!
-//! - [`handle`] — [`Handle<T>`] typed index and [`InputTypesHandles`] trait.
+//! - [`handle`] - [`Handle<T>`] typed index and [`InputTypesHandles`] trait.
 
 mod graph;
 pub mod handle;
@@ -99,7 +99,7 @@ impl NodeDescriptor {
 /// Pure definition of a computation graph.
 ///
 /// Holds [`ErasedSource`] / [`ErasedOperator`] descriptors and the input
-/// wiring between them.  Carries no per-run state — all runtime state
+/// wiring between them.  Carries no per-run state - all runtime state
 /// (value buffers, channel receivers, operator state) lives on a
 /// [`Session`] built via [`build_session`](Self::build_session).
 ///
@@ -127,7 +127,7 @@ impl NodeDescriptor {
 pub struct Scenario {
     /// Per-node descriptor in declaration (= topological) order.  Source
     /// indices are derived from this on demand by
-    /// [`build_session`](Self::build_session) — no need to maintain a
+    /// [`build_session`](Self::build_session) - no need to maintain a
     /// separate vector.
     descriptors: Vec<NodeDescriptor>,
     /// Cumulative estimated event count across all registered sources.
@@ -174,7 +174,7 @@ impl Scenario {
     ///
     /// Sources that use [`tokio::spawn`] internally (e.g. [`ArraySource`],
     /// [`IterSource`]) require a tokio runtime to be active when the
-    /// resulting session's event loop runs — registration itself does not
+    /// resulting session's event loop runs - registration itself does not
     /// touch tokio.
     pub fn add_source<S: Source>(&mut self, source: S) -> Handle<S::Output> {
         let erased = ErasedSource::from_source(source);
@@ -199,7 +199,7 @@ impl Scenario {
         }
 
         // Pre-size the type-id buffer using the handles arity (accounts for
-        // runtime slice lengths).  Then call type_ids_to_flat — for Sized
+        // runtime slice lengths).  Then call type_ids_to_flat - for Sized
         // inputs it fills the whole buffer; for a trailing [T] slice it
         // fills the remaining space using the buffer length as the count.
         let mut type_ids = vec![std::any::TypeId::of::<()>(); arity];
@@ -228,7 +228,7 @@ impl Scenario {
     ///
     /// Validates that every input node already exists, and that its
     /// declared input type-ids match the upstream nodes' output type-ids.
-    /// Panics on arity or TypeId mismatch — same diagnostics as the
+    /// Panics on arity or TypeId mismatch - same diagnostics as the
     /// previous in-place graph build, just at registration time against
     /// the descriptor list.
     pub fn add_erased_operator(
@@ -268,7 +268,7 @@ impl Scenario {
     /// Sum of estimated event counts across all sources.
     ///
     /// Returns `Some(total)` only when **every** registered source provides
-    /// an estimate; otherwise `None`.  Cached — updated incrementally as
+    /// an estimate; otherwise `None`.  Cached - updated incrementally as
     /// sources are registered.  Used by [`Session::run`] for progress
     /// reporting.
     #[inline]
@@ -454,7 +454,7 @@ mod tests {
         assert_eq!(s1.value(hc).as_slice(), &[13.0]);
 
         let mut s2 = sc.build_session();
-        // Fresh session — no state carried over from s1.
+        // Fresh session - no state carried over from s1.
         assert_eq!(s2.value(hc).as_slice(), &[0.0]);
         s2.value_mut(ha)[0] = 100.0;
         s2.value_mut(hb)[0] = 200.0;
@@ -660,7 +660,7 @@ mod tests {
     async fn scenario_repeated_run() {
         // The same scenario definition can drive multiple independent
         // event-loop sessions.  Each session is built fresh from the
-        // descriptors — no state carries over.
+        // descriptors - no state carries over.
         let mut sc = Scenario::new();
         let ha = sc.add_source(ArraySource::new(
             Series::from_vec(&[], tss(&[1, 2, 3]), vec![10.0, 20.0, 30.0]),

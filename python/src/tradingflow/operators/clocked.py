@@ -1,4 +1,4 @@
-"""Clocked operator transformer — gates a Python operator on a clock input."""
+"""Clocked operator transformer - gates a Python operator on a clock input."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class Clocked(Operator):
     `Clocked<O>` layout.  On each flush, if the clock did not produce,
     the operator returns immediately without computing.  When the clock ticks, the inner operator's `compute` is
     called with the data inputs (`inputs[1:]`) and the correspondingly
-    sliced `produced[1:]` tuple — symmetric slicing on both arguments.
+    sliced `produced[1:]` tuple - symmetric slicing on both arguments.
 
     Parameters
     ----------

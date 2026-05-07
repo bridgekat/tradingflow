@@ -19,7 +19,7 @@ def coerce_timestamp(ts: np.datetime64 | int | np.integer) -> np.int64:
 
     TradingFlow uses TAI throughout, on both sides of the PyO3 bridge.
     A `datetime64[ns]` value is reinterpreted as its stored `int64`
-    directly — no timescale math, no leap-second correction.  The
+    directly - no timescale math, no leap-second correction.  The
     resulting integer is `int64` SI nanoseconds since the PTP epoch
     1970-01-01 00:00:00 TAI (the Rust `Instant` encoding).
 

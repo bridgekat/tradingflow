@@ -3,9 +3,9 @@
 //! Operators in this module implement domain logic for equity market data
 //! processing.
 //!
-//! - [`Annualize`] — convert year-to-date financial report values into
+//! - [`Annualize`] - convert year-to-date financial report values into
 //!   annualised quarterly values using days-based scaling.
-//! - [`ForwardAdjust`] — forward price adjustment for corporate actions
+//! - [`ForwardAdjust`] - forward price adjustment for corporate actions
 //!   (cash dividends and share dividends / bonus shares).
 
 pub mod annualize;

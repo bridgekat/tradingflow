@@ -41,8 +41,8 @@ class LogLikelihood(
     \log |\Sigma| + \frac{1}{T} \sum_t r_t^T \Sigma^+ r_t
     \]
 
-    — the multivariate-normal log-density with the \(N \log(2\pi)\)
-    constant and the \(1/2\) prefactor dropped (lower is better) — and
+    - the multivariate-normal log-density with the \(N \log(2\pi)\)
+    constant and the \(1/2\) prefactor dropped (lower is better) - and
     updates the cache.  Matches the `ll_metric` in
     <https://osquant.com/papers/a-quants-guide-to-covariance-matrix-estimation/>.
 
@@ -54,14 +54,14 @@ class LogLikelihood(
     -----
     **Alignment guarantee.** After the initial warmup (first prediction
     caches \(\Sigma^+\) / \(\log |\Sigma|\) without emitting), the
-    operator emits exactly once per prediction emission — **the same
+    operator emits exactly once per prediction emission - **the same
     cadence as**
     [`MinimumVariance`][tradingflow.operators.metrics.variance.minimum_variance.MinimumVariance],
     so corresponding records line up element-by-element.  Output is 0
     if no target tick was accumulated during the period (e.g. no
     stocks had finite covariance diagonal).
 
-    **Memory.** Both `predictions` and `target` are `Array` inputs —
+    **Memory.** Both `predictions` and `target` are `Array` inputs -
     the operator only reads the latest cross-section of each.
     No `Record` is required upstream.
 
@@ -170,7 +170,7 @@ def _log_pdet_and_pinv(sigma: np.ndarray) -> tuple[float, np.ndarray]:
     - the log-pseudo-determinant is \(\sum_{s_i > \text{cutoff}} \log s_i\);
     - the Moore-Penrose pseudo-inverse is
       \(V \, \operatorname{diag}(1/s_{\text{retained}}) \, U^T\) on the
-      retained subspace and zero elsewhere — equivalent to
+      retained subspace and zero elsewhere - equivalent to
       [`scipy.linalg.pinv`][scipy.linalg.pinv] on symmetric PSD inputs.
 
     The cutoff \(\max(M, N) \cdot \varepsilon \cdot s_{\max}\) matches

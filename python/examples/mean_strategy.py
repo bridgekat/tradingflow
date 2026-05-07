@@ -1,41 +1,41 @@
 """Backtest a linear regression strategy on all A-shares stocks.
 
 Features fed to the linear regression are cross-sectional
-**percentile ranks** of six per-stock factors — each non-NaN value is
+**percentile ranks** of six per-stock factors - each non-NaN value is
 replaced with ``(rank + 0.5) / n_valid`` so every feature is
 uniformly distributed in `(0, 1)` across the universe at every
 rebalance.  NaN factor values stay NaN and are ignored by the
 regression:
 
-- ``market_cap`` — circulating market capitalisation (close × circ_shares)
-- ``bp`` — book-to-price ratio (parent equity / market cap)
-- ``turnover_ma_20`` — 20-day moving average of daily turnover
+- ``market_cap`` - circulating market capitalisation (close × circ_shares)
+- ``bp`` - book-to-price ratio (parent equity / market cap)
+- ``turnover_ma_20`` - 20-day moving average of daily turnover
   (volume / circulating shares)
-- ``ttm_ep`` — trailing-twelve-month earnings-to-price
+- ``ttm_ep`` - trailing-twelve-month earnings-to-price
   (annualised net profit / market cap, 365-day rolling mean)
-- ``momentum_ma_20`` — 20-day moving average of daily log-returns of
+- ``momentum_ma_20`` - 20-day moving average of daily log-returns of
   adjusted close
-- ``volatility_20`` — 20-day rolling standard deviation of daily
+- ``volatility_20`` - 20-day rolling standard deviation of daily
   log-returns of adjusted close
 
 The training target is the **1-step-forward log return, winsorized
 at the cross-sectional 1st / 99th percentile each day**.  Keeping
 magnitudes (instead of ranking the target too) preserves the scale
 information pooled OLS needs for well-conditioned coefficients, while
-the per-day winsorization caps tail leverage — a rank-only target
+the per-day winsorization caps tail leverage - a rank-only target
 can still lose money under skewed return distributions, since a
 predictor that robustly predicts *ranks* provides no guarantee on
 realized magnitudes.
 
 The pipeline consists of four independent, composable operators:
 
-1. **MeanPredictor** — periodically fits a model and predicts future returns.
+1. **MeanPredictor** - periodically fits a model and predicts future returns.
    Subclass: ``LinearRegression`` (pooled OLS regression).
-2. **MeanPortfolio** — converts predicted returns into soft positions.
+2. **MeanPortfolio** - converts predicted returns into soft positions.
    Subclass: ``RankLinear`` (rank-linear top-fraction selection).
-3. **RandomTrader** — converts soft positions into actual trades
+3. **RandomTrader** - converts soft positions into actual trades
    (lots of 100 shares), deducts transaction fees, and tracks the portfolio.
-4. **Metric computation** — post-hoc analysis of the portfolio value series.
+4. **Metric computation** - post-hoc analysis of the portfolio value series.
 
 Requires ``pip install -e ".[examples]"`` and A-shares market data downloaded
 via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
@@ -56,7 +56,19 @@ from tradingflow import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
 from tradingflow.operators import Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Diff, Divide, Log, Multiply, Percentile, Sqrt, Subtract, Winsorize
+from tradingflow.operators.num import (
+    Diff,
+    Divide,
+    Log,
+    Max,
+    Min,
+    Multiply,
+    Negate,
+    Percentile,
+    Sqrt,
+    Subtract,
+    Winsorize,
+)
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
@@ -68,8 +80,6 @@ from tradingflow.sources import Clock
 
 from stocks import load_symbols, calculate_index_weights, resolve_data_start, add_market_argument
 
-
-DAY_NS = 86_400_000_000_000
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
 DIVIDEND_SCHEMA = Schema(CSVSchema.dividends().iter_field_ids())
@@ -95,11 +105,11 @@ def build_scenario(
 
     # Per-stock handles grouped by cadence.
     #
-    # * `per_stock_sync` — values produced in lockstep across all stocks
+    # * `per_stock_sync` - values produced in lockstep across all stocks
     #   (e.g., daily prices/equity on trading days).  Stacked with
     #   `StackSync` to give message-passing semantics: slots of stocks
     #   that did not produce this cycle are filled with `NaN`.
-    # * `per_stock_irregular` — values updated on stock-specific dates
+    # * `per_stock_irregular` - values updated on stock-specific dates
     #   (e.g., quarterly financial reports filed on different dates).
     #   Stacked with `Stack` to give time-series semantics: slots keep
     #   their last-known value across quiet periods.
@@ -190,15 +200,13 @@ def build_scenario(
     # ------------------------------------------------------------------
 
     num_stocks = len(symbols)
+    window = 20
 
     # Stack per-stock handles into (num_stocks, ...) arrays.
     stacked = {
         **{k: sc.add_operator(StackSync(v)) for k, v in per_stock_sync.items()},
         **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
     }
-
-    # Window size for rolling features (in trading days, not calendar days).
-    window = 20
 
     # Total market cap.
     market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
@@ -220,13 +228,23 @@ def build_scenario(
     log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
     momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
 
+    # Price volatility (rolling std dev of daily log-returns of adjusted close).
+    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
+
     # Turnover MA (rolling mean of daily turnover).
     turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
     turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
 
-    # Price volatility (rolling std dev of daily log-returns of adjusted close).
-    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
+    # Volume ratio (latest volume / rolling-mean of volume over window).
+    volume_series = sc.add_operator(Record(stacked["volume"]))
+    volume_ma = sc.add_operator(RollingMean(volume_series, window=window))
+    volume_ratio = sc.add_operator(Divide(stacked["volume"], volume_ma))
+
+    # Volume-by-momentum interaction factors.
+    zero_const = sc.add_const(np.zeros(num_stocks, dtype=np.float64))
+    positive_momentum_magnitude = sc.add_operator(Max(momentum_ma, zero_const))
+    volume_rally = sc.add_operator(Multiply(volume_ratio, positive_momentum_magnitude))
 
     # Cross-sectional features.
     features = {
@@ -235,8 +253,10 @@ def build_scenario(
         "rank_ttm_ep": sc.add_operator(Percentile(ttm_ep)),
         "rank_ttm_roe": sc.add_operator(Percentile(ttm_roe)),
         f"momentum_ma_{window}": momentum_ma,
-        f"turnover_ma_{window}": turnover_ma,
         f"volatility_{window}": volatility,
+        f"turnover_ma_{window}": turnover_ma,
+        f"volume_ratio_{window}": volume_ratio,
+        f"volume_rally_{window}": volume_rally,
     }
     stacked_features = sc.add_operator(Stack(list(features.values()), axis=1))
 
@@ -246,7 +266,7 @@ def build_scenario(
     # so outlier days don't dominate the pooled OLS.  Preserving
     # magnitudes (vs. another rank transform) matters because rank-only
     # prediction can still lose money under skewed return distributions
-    # — winsorization caps tail leverage without erasing scale.
+    # - winsorization caps tail leverage without erasing scale.
     #
     # `stacked_features` ticks whenever any of its component factors
     # updates, which includes irregular corporate-event days (balance-
@@ -260,7 +280,7 @@ def build_scenario(
     #
     # `Resample` re-emits the features on the trading-day pulse so both
     # records advance lock-step on trading days.  The predictor pairs
-    # feature[i] with target[i + target_offset] — here target_offset=1,
+    # feature[i] with target[i + target_offset] - here target_offset=1,
     # so feature at day t predicts the return from t to t+1.
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))

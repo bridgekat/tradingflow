@@ -1,4 +1,4 @@
-"""Resample operator — re-emit a data input on every tick of a clock input."""
+"""Resample operator - re-emit a data input on every tick of a clock input."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from .. import Handle, NativeOperator, NodeKind
 class Resample(NativeOperator):
     """Re-emit `data`'s latest value on every tick of `clock`.
 
-    The clock input's payload is never read — only its per-cycle produced
-    bit is consulted — so the clock and data can be **any pair of node
+    The clock input's payload is never read - only its per-cycle produced
+    bit is consulted - so the clock and data can be **any pair of node
     types**: `Unit`, `Array<T>`, or `Series<T>`, with independent dtypes.
     The Rust side monomorphises all nine `(data_kind × clock_kind)`
     combinations, so no kind- or dtype-matching is required at the Python
@@ -30,7 +30,7 @@ class Resample(NativeOperator):
     Parameters
     ----------
     clock
-        Clock handle.  Only its produced bit is read — any node kind
+        Clock handle.  Only its produced bit is read - any node kind
         and dtype is accepted.
     data
         Data handle.  The output re-emits its latest value whenever

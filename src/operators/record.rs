@@ -1,4 +1,4 @@
-//! Record operator — records array values into a time series.
+//! Record operator - records array values into a time series.
 
 use crate::{Array, Input, InputTypes, Instant, Operator, Scalar, Series};
 

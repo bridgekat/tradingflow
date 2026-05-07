@@ -76,7 +76,7 @@ flowchart LR
     classDef series fill:#f5f5f5,stroke:#6b7280,color:#111827
 ```
 
-This is the whole pattern. An actual strategy can contain many more operators — `ForwardAdjust`, `LinearRegression`, `Shrinkage`, `MeanVariancePortfolio`, `RandomTrader`, `SharpeRatio` — but the structure stays the same.
+This is the whole pattern. An actual strategy can contain many more operators - `ForwardAdjust`, `LinearRegression`, `Shrinkage`, `MeanVariancePortfolio`, `RandomTrader`, `SharpeRatio` - but the structure stays the same.
 
 You may read the [full documentation here](https://bridgekat.github.io/tradingflow/).[^1]
 
@@ -91,18 +91,18 @@ python -m a_shares_crawler --help  # For configuration & download instructions
 
 **Visualizations** (good starting points to see the data flow):
 
-- [**Daily prices**](python/examples/plot_daily_price.py) — loads daily prices, computes forward-adjusted prices, a moving average, and Bollinger Bands.
-- [**Financial data**](python/examples/plot_financial_data.py) — loads equity structure, balance sheet, income statement, and cash flow data; computes market cap and annualized metrics.
-- [**Total market cap**](python/examples/plot_total_market_cap.py) — sums per-stock circulating market cap across the whole A-shares market over time.
+- [**Daily prices**](python/examples/plot_daily_price.py) - loads daily prices, computes forward-adjusted prices, a moving average, and Bollinger Bands.
+- [**Financial data**](python/examples/plot_financial_data.py) - loads equity structure, balance sheet, income statement, and cash flow data; computes market cap and annualized metrics.
+- [**Total market cap**](python/examples/plot_total_market_cap.py) - sums per-stock circulating market cap across the whole A-shares market over time.
 
 **Research utilities** (for factor mining):
 
-- [**Mean estimator comparison**](python/examples/factor_ic.py) — computes daily cross-sectional factors (log market cap, log book-to-price, turnover MA), evaluates each one's predictive power using ICs (information coefficients: the rank correlation coefficients), plots cumulative IC curves, and reports their respective IRs (information ratios: the Sharpe ratios of IC curves).
-- [**Variance estimator comparison**](python/examples/covariance_gmv.py) — compares the sample covariance estimator with and without Ledoit-Wolf shrinkage, by measuring the realized variance of their respective GMV (global minimum variance) portfolios.
+- [**Mean estimator comparison**](python/examples/factor_ic.py) - computes daily cross-sectional factors (log market cap, log book-to-price, turnover MA), evaluates each one's predictive power using ICs (information coefficients: the rank correlation coefficients), plots cumulative IC curves, and reports their respective IRs (information ratios: the Sharpe ratios of IC curves).
+- [**Variance estimator comparison**](python/examples/covariance_gmv.py) - compares the sample covariance estimator with and without Ledoit-Wolf shrinkage, by measuring the realized variance of their respective GMV (global minimum variance) portfolios.
 
 **Backtests** (full strategies with portfolio construction and performance metrics):
 
-- [**Mean-only strategy**](python/examples/mean_strategy.py) — fits a periodic linear regression to predict cross-sectional stock returns, picks the top-ranked names with rank-linear weights, simulates trading with transaction costs, and plots portfolio value, rolling Sharpe, and drawdown vs. a market-cap-weighted index.
-- [**Mean-variance strategy**](python/examples/mean_variance_strategy.py) — extends the mean strategy with Ledoit-Wolf shrinkage covariance estimator and Markowitz portfolio optimization, comparing several risk-aversion levels.
+- [**Mean-only strategy**](python/examples/mean_strategy.py) - fits a periodic linear regression to predict cross-sectional stock returns, picks the top-ranked names with rank-linear weights, simulates trading with transaction costs, and plots portfolio value, rolling Sharpe, and drawdown vs. a market-cap-weighted index.
+- [**Mean-variance strategy**](python/examples/mean_variance_strategy.py) - extends the mean strategy with Ledoit-Wolf shrinkage covariance estimator and Markowitz portfolio optimization, comparing several risk-aversion levels.
 
 [^1]: Currently, most documentations are LLM-generated, and may not be concise enough for human readers. The situation will be improved after core modules are stabilized.

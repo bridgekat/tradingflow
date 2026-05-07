@@ -1,9 +1,9 @@
-"""Scenario and Session — the Python entry points to the Rust runtime.
+"""Scenario and Session - the Python entry points to the Rust runtime.
 
 A [`Scenario`][tradingflow.scenario.Scenario] is a *pure definition* of the
 directed acyclic computation graph: the descriptors of every source and
-operator plus the wiring between them.  It owns no per-run state — node
-value buffers, channel receivers, operator state — those live on a
+operator plus the wiring between them.  It owns no per-run state - node
+value buffers, channel receivers, operator state - those live on a
 [`Session`][tradingflow.scenario.Session] built fresh by
 [`run`][tradingflow.scenario.Scenario.run] (or
 [`build_session`][tradingflow.scenario.Scenario.build_session]) every
@@ -11,13 +11,13 @@ time it's called.
 
 Typical usage has three phases:
 
-1. **Construct** — `sc = Scenario()`.
-2. **Populate** — call `sc.add_source(...)` and `sc.add_operator(...)`,
+1. **Construct** - `sc = Scenario()`.
+2. **Populate** - call `sc.add_source(...)` and `sc.add_operator(...)`,
    passing the handles returned by earlier calls as inputs to later
    operators.  Every call returns a typed
    [`Handle`][tradingflow.data.types.Handle] that encodes the new node's value
    kind (array vs. series), shape, and dtype.
-3. **Run** — `session = sc.run()` builds a fresh session, drains every
+3. **Run** - `session = sc.run()` builds a fresh session, drains every
    registered source in timestamp order, and returns the populated
    session.  Inspect with `session.array_view(handle)` or
    `session.series_view(handle)`.
@@ -60,7 +60,7 @@ class Scenario:
     a [`Handle`][tradingflow.data.types.Handle].  Registration only records
     descriptors; no node buffers are allocated.
 
-    Node output values are not historised automatically — attach a
+    Node output values are not historised automatically - attach a
     [`Record`][tradingflow.operators.record.Record] operator where a time
     series is required.
 
@@ -196,7 +196,7 @@ class Session:
 
     Views returned by [`array_view`][tradingflow.scenario.Session.array_view]
     / [`series_view`][tradingflow.scenario.Session.series_view] remain
-    valid for as long as this session is alive — multiple sessions from
+    valid for as long as this session is alive - multiple sessions from
     the same scenario coexist independently.
     """
 

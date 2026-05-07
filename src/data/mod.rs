@@ -5,21 +5,21 @@
 //!
 //! # Sub-modules
 //!
-//! * [`array`] — [`Array`](array::Array): dense N-dimensional array with
+//! * [`array`] - [`Array`](array::Array): dense N-dimensional array with
 //!   row-major contiguous layout.
-//! * [`series`] — [`Series`](series::Series): append-only time series of
+//! * [`series`] - [`Series`](series::Series): append-only time series of
 //!   uniformly-shaped arrays.
-//! * [`time`] — [`Instant`](time::Instant) and [`Duration`](time::Duration):
+//! * [`time`] - [`Instant`](time::Instant) and [`Duration`](time::Duration):
 //!   SI-nanosecond timestamps anchored at the PTP epoch (1970-01-01 TAI).
-//! * [`inputs`] — [`InputTypes`](inputs::InputTypes) and friends: recursive
+//! * [`inputs`] - [`InputTypes`](inputs::InputTypes) and friends: recursive
 //!   description of operator inputs, cursor-style readers/writers, and the
 //!   leaf ([`Input<T>`](inputs::Input)) / slice ([`Slice<T>`](inputs::Slice))
 //!   wrappers.
 //!
 //! # This-module items
 //!
-//! * [`Scalar`] — marker trait for permitted array element types.
-//! * [`PeekableReceiver`] — tokio mpsc wrapper with one-slot peek buffer,
+//! * [`Scalar`] - marker trait for permitted array element types.
+//! * [`PeekableReceiver`] - tokio mpsc wrapper with one-slot peek buffer,
 //!   used by sources.
 
 pub mod array;

@@ -16,7 +16,7 @@ class SingleFeature(MeanPredictor[None]):
     native update cadence).
 
     No fitting is performed.  `max_periods` and `min_periods` are
-    fixed to `1` since no historical window is needed — only the
+    fixed to `1` since no historical window is needed - only the
     latest feature row is used.  The `target_series` input is still
     required (for alignment consistency with the base class) but is
     not consulted.

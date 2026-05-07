@@ -4,7 +4,7 @@
 //! Python-implemented operator.  [`resolve_type_id`] maps `(kind, dtype)`
 //! strings to Rust [`TypeId`]s.
 //!
-//! The compute function ([`py_compute_fn`]) is **not** generic — it works
+//! The compute function ([`py_compute_fn`]) is **not** generic - it works
 //! entirely through Python views stored in [`PyOperatorState`].  Dtype
 //! dispatch is only needed for output allocation and view creation.
 
@@ -69,7 +69,7 @@ unsafe impl Send for PyOperatorState {}
 /// supplied by the [`Session`](crate::scenario::Session) plus the
 /// captured `input_metadata`), and calls the Python operator's
 /// `init(...)` to produce fresh state.  The descriptor itself is therefore
-/// reusable across multiple scenario sessions — the Python operator is
+/// reusable across multiple scenario sessions - the Python operator is
 /// treated as a pure configuration carrier and `init()` is expected to
 /// return a fresh state object on each call.
 ///
@@ -78,7 +78,7 @@ unsafe impl Send for PyOperatorState {}
 /// `NativeArrayView` / `NativeSeriesView` (and then in the Python-side
 /// `ArrayView` / `SeriesView`) on every session start.
 ///
-/// Dtype dispatch is only needed for the output allocation — the compute
+/// Dtype dispatch is only needed for the output allocation - the compute
 /// function is non-generic.
 pub fn make_py_operator(
     input_type_ids: Box<[TypeId]>,
@@ -100,7 +100,7 @@ pub fn make_py_operator(
     // dispatch happens here once; the resulting function pointer is then
     // called inside the (Fn) init closure on every session start.
     //
-    // Unit outputs carry no data — use a 1-byte dummy allocation that is
+    // Unit outputs carry no data - use a 1-byte dummy allocation that is
     // never written to or read from; the Python operator receives None.
     let (alloc_output_fn, output_drop_fn): (
         fn(&[usize]) -> *mut u8,
@@ -142,7 +142,7 @@ pub fn make_py_operator(
 
             // Build fresh input + output Python views, wrap them in the
             // user-facing view classes, and call the Python operator's
-            // `init(...)` — all under a single GIL acquire.  `create_view`
+            // `init(...)` - all under a single GIL acquire.  `create_view`
             // only fails on dtype/view-kind mismatches that the caller
             // has already validated.
             let (py_output_wrapped, py_state, py_inputs, py_operator_clone) =
@@ -269,10 +269,10 @@ fn alloc_series<T: crate::Scalar>(shape: &[usize]) -> *mut u8 {
 /// Compute function for Python operators.
 ///
 /// Calls `operator.compute(state, inputs, output, timestamp, produced)`
-/// via GIL.  State is modified in-place by Python.  Not generic — works
+/// via GIL.  State is modified in-place by Python.  Not generic - works
 /// entirely through Python objects in [`PyOperatorState`].
 ///
-/// Builds a fresh flat `tuple[bool, ...]` for `produced` each call — same
+/// Builds a fresh flat `tuple[bool, ...]` for `produced` each call - same
 /// arity as `inputs`, same shape, same indexing (`produced[i]` parallel
 /// to `inputs[i]`).  Owned by the tuple object: safe to hold beyond
 /// compute scope.

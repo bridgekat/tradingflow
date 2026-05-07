@@ -1,4 +1,4 @@
-"""Winsorize operator — cross-sectional percentile clipping."""
+"""Winsorize operator - cross-sectional percentile clipping."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ class Winsorize(NativeOperator):
     (1-p)-quantile).  NaN inputs propagate to NaN outputs.  Identical
     sort / NaN logic to
     [`Percentile`][tradingflow.operators.num.percentile.Percentile],
-    but preserves magnitudes — values within the central `(p, 1-p)`
+    but preserves magnitudes - values within the central `(p, 1-p)`
     range pass through unchanged.
 
     Typical use: cap tail leverage on daily cross-sectional factor

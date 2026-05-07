@@ -1,4 +1,4 @@
-"""Concatenate N arrays along an existing axis — time-series (`Concat`)
+"""Concatenate N arrays along an existing axis - time-series (`Concat`)
 and message-passing (`ConcatSync`) variants."""
 
 from __future__ import annotations
@@ -70,9 +70,7 @@ class ConcatSync(NativeOperator):
             raise ValueError("ConcatSync requires at least one input.")
         dtype = np.dtype(inputs[0].dtype)
         if dtype.kind != "f":
-            raise TypeError(
-                f"ConcatSync requires a float dtype (got {dtype}); NaN is used as the no-update sentinel."
-            )
+            raise TypeError(f"ConcatSync requires a float dtype (got {dtype}); NaN is used as the no-update sentinel.")
         shapes = [inp.shape for inp in inputs]
         ndim = len(shapes[0])
         if not 0 <= axis < ndim:

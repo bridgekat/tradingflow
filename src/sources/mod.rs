@@ -8,13 +8,13 @@
 //!
 //! # Data sources
 //!
-//! - [`ArraySource`] — historical-only source backed by pre-loaded timestamp
+//! - [`ArraySource`] - historical-only source backed by pre-loaded timestamp
 //!   and value arrays. Each event carries an `Array<T>`. Requires a tokio
 //!   runtime.
-//! - [`CsvSource`] — historical-only source that reads a timestamp column and
+//! - [`CsvSource`] - historical-only source that reads a timestamp column and
 //!   named value columns from a CSV file on disk. Outputs `Array<f64>`. Requires
 //!   a tokio runtime.
-//! - [`IterSource`] — source driven by an arbitrary `(timestamp, value)`
+//! - [`IterSource`] - source driven by an arbitrary `(timestamp, value)`
 //!   iterator. More flexible than `ArraySource`; supports lazy/computed sequences
 //!   and arbitrary output types. Requires a tokio runtime.
 //!
@@ -23,14 +23,14 @@
 //! Clock sources emit `()` events at specified timestamps and are used as
 //! triggers for periodic operators.
 //!
-//! - [`clock`] — clock from explicit timestamps.  Calendar-aligned schedules
+//! - [`clock`] - clock from explicit timestamps.  Calendar-aligned schedules
 //!   (daily / monthly in a given timezone) are constructed in Python via
 //!   `zoneinfo` and passed in as a pre-computed list, keeping the Rust core
 //!   free of timezone data.
 //!
 //! # Sub-modules
 //!
-//! - [`stocks`] — stock-specific data sources.
+//! - [`stocks`] - stock-specific data sources.
 
 pub mod array_source;
 pub mod clock;

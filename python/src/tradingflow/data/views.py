@@ -34,7 +34,7 @@ class ArrayView[T: np.generic]:
     Implements the numpy array protocol (`__array__`), so instances can
     be used directly in numpy operations: `np.log(view)`, `view + 1`, etc.
 
-    Instances are created by the runtime during operator registration —
+    Instances are created by the runtime during operator registration -
     users do not construct these directly.
     """
 
@@ -138,7 +138,7 @@ class SeriesView[T: np.generic]:
     All reads copy data out. Series buffers can reallocate during graph
     execution; copies prevent dangling.
 
-    Instances are created by the runtime during operator registration —
+    Instances are created by the runtime during operator registration -
     users do not construct these directly.
     """
 
@@ -202,7 +202,7 @@ class SeriesView[T: np.generic]:
 
         Wraps `slice` with a view cast to `datetime64[ns]`.  The Rust
         core stores TAI `Instant`s and the bridge reinterprets them
-        directly — the returned int64 values are TAI ns since the PTP
+        directly - the returned int64 values are TAI ns since the PTP
         epoch.  For plotting against UTC wall-clock axes, pass the
         result through [`tai_to_utc`][tradingflow.data.time.tai_to_utc]
         first.

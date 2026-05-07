@@ -1,4 +1,4 @@
-"""Where operator — element-wise conditional replacement."""
+"""Where operator - element-wise conditional replacement."""
 
 from __future__ import annotations
 

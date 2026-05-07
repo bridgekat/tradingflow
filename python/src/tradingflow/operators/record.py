@@ -1,4 +1,4 @@
-"""Record operator — accumulates Array values into a Series."""
+"""Record operator - accumulates Array values into a Series."""
 
 from __future__ import annotations
 

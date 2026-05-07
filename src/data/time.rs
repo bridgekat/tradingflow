@@ -12,7 +12,7 @@
 //!
 //! # Timeline convention
 //!
-//! This crate — and the Python wrapper above it — uses TAI throughout.  An
+//! This crate - and the Python wrapper above it - uses TAI throughout.  An
 //! `Instant`'s numerical value is SI nanoseconds since 1970-01-01 00:00:00
 //! TAI.  This matches NumPy / pandas naïve `datetime64[ns]` arithmetic:
 //! every calendar day is exactly 86 400 SI seconds and subtraction yields
@@ -20,14 +20,14 @@
 //! No conversion happens at the FFI edge.
 //!
 //! A parsed `"2024-01-01"` therefore labels the instant 2024-01-01 00:00:00
-//! TAI — which is 2023-12-31 23:59:23 UTC, 37 SI seconds earlier than the
+//! TAI - which is 2023-12-31 23:59:23 UTC, 37 SI seconds earlier than the
 //! same string would mean under a UTC interpretation.  For almost any
 //! backtest this offset is absorbed uniformly and invisible.  When data
 //! must be anchored to a wall-clock UTC reference (e.g. external systems,
 //! sub-second plots), use the UTC ↔ TAI helpers:
 //!
-//! * [`Instant::from_utc_nanos`] / [`Instant::to_utc_nanos`] — method form.
-//! * [`utc_to_tai`] / [`tai_to_utc`] — free-function form (exposed to Python).
+//! * [`Instant::from_utc_nanos`] / [`Instant::to_utc_nanos`] - method form.
+//! * [`utc_to_tai`] / [`tai_to_utc`] - free-function form (exposed to Python).
 //!
 //! Both delegate to [`hifitime`]'s IERS leap-second table.  Pre-1972 dates
 //! receive no offset (IERS Bulletin C starts in 1972); for any modern date
@@ -109,7 +109,7 @@ impl Instant {
         Epoch::from_tai_duration(*PTP_EPOCH_TAI_DUR + elapsed)
     }
 
-    /// Convert from UTC nanoseconds — i.e. nanoseconds since
+    /// Convert from UTC nanoseconds - i.e. nanoseconds since
     /// 1970-01-01 00:00:00 UTC under the UNIX time convention (every day
     /// = 86 400 seconds, leap seconds skipped).  Use this when ingesting
     /// a timestamp that was generated under a leap-second-aware UTC
@@ -122,7 +122,7 @@ impl Instant {
         Self::from_hifitime_epoch(Epoch::from_unix_duration(utc_dur))
     }
 
-    /// Return UTC nanoseconds — the UNIX-time representation of this
+    /// Return UTC nanoseconds - the UNIX-time representation of this
     /// instant.  Use this when emitting a timestamp to an external
     /// leap-second-aware system, or for plotting against UTC wall-clock
     /// axes.
@@ -237,7 +237,7 @@ impl Duration {
         Self(h * 3600 * 1_000_000_000)
     }
 
-    /// Create from SI days (86 400 SI seconds — not calendar days, which vary
+    /// Create from SI days (86 400 SI seconds - not calendar days, which vary
     /// around DST and leap seconds).
     #[inline(always)]
     pub const fn from_days(d: i64) -> Self {

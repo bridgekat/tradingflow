@@ -1,4 +1,4 @@
-//! Session — a single live execution of a [`Scenario`](super::Scenario).
+//! Session - a single live execution of a [`Scenario`](super::Scenario).
 //!
 //! A [`Scenario`](super::Scenario) is a *pure definition*: a list of source
 //! and operator descriptors plus the wiring between them.  It does not own
@@ -23,8 +23,8 @@ use super::handle::Handle;
 
 /// A live execution of a [`Scenario`](super::Scenario).
 ///
-/// Owns the per-run state — node value buffers, channel receivers,
-/// operator state — and exposes the per-run API.  Constructed via
+/// Owns the per-run state - node value buffers, channel receivers,
+/// operator state - and exposes the per-run API.  Constructed via
 /// [`Scenario::build_session`](super::Scenario::build_session); each
 /// session is independent of every other and can be dropped without
 /// affecting the underlying definition.

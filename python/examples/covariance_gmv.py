@@ -1,12 +1,12 @@
 """Compare covariance estimators inside a Markowitz mean-variance strategy.
 
 Selects representative covariance estimators from the survey of
-Pantaleo, Tumminello, Lillo, and Mantegna (arXiv:1004.4272) — one from
-each filtering family — and compares them on a configurable A-shares
+Pantaleo, Tumminello, Lillo, and Mantegna (arXiv:1004.4272) - one from
+each filtering family - and compares them on a configurable A-shares
 universe.  Each estimator is plugged into a Markowitz mean-variance
 portfolio that shares a single
 [`LinearRegression`][tradingflow.operators.predictors.mean.LinearRegression]
-mean predictor (pooled OLS on `log_mcap`, `log_bp`, `turnover_ma` — the
+mean predictor (pooled OLS on `log_mcap`, `log_bp`, `turnover_ma` - the
 same features as the
 [`mean_variance_strategy`](mean_variance_strategy.py) example), so any
 difference in portfolio performance is attributable to the covariance
@@ -14,17 +14,17 @@ estimator alone.
 
 Three complementary outputs are reported for every estimator:
 
-1. ``MinimumVariance`` metric — realized variance of the global minimum
+1. ``MinimumVariance`` metric - realized variance of the global minimum
    variance portfolio built from each prediction.  Plotted as annualized
    realized volatility; lower is better.
-2. Frictionless long-only Markowitz portfolio total value — the
+2. Frictionless long-only Markowitz portfolio total value - the
    mean-variance portfolio from the
    [`Markowitz`][tradingflow.operators.portfolios.mean_variance.Markowitz]
    operator (``Mode.MIN_MEAN_VARIANCE``, risk-aversion ``δ``, ``long_only=True``),
    traded frictionlessly via
    [`Benchmark`][tradingflow.operators.traders.Benchmark] with dividend
    reinvestment.
-3. Frictionless long-short Markowitz portfolio total value — same
+3. Frictionless long-short Markowitz portfolio total value - same
    Markowitz operator with ``long_only=False``.
 
 The ``MinimumVariance`` metric is fed the predicted covariance directly
@@ -52,9 +52,21 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Map, Record, Resample, Select, Stack, StackSync
-from tradingflow.operators.num import Diff, Divide, Log, Multiply
-from tradingflow.operators.rolling import RollingMean
+from tradingflow.operators import Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
+from tradingflow.operators.num import (
+    Diff,
+    Divide,
+    Log,
+    Max,
+    Min,
+    Multiply,
+    Negate,
+    Percentile,
+    Sqrt,
+    Subtract,
+    Winsorize,
+)
+from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.predictors.variance import RMT0, RMTM, Sample, Shrinkage, Target, SingleIndex
@@ -63,7 +75,6 @@ from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.metrics.variance import MinimumVariance
 
 from stocks import load_symbols, calculate_index_weights, resolve_data_start, add_market_argument
-
 
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
@@ -93,7 +104,7 @@ def build_scenario(
     mv_handles
         ``{estimator_name: record handle}`` for the
         [`MinimumVariance`][tradingflow.operators.metrics.variance.MinimumVariance]
-        metric (realized GMV variance per period) — fed the predicted
+        metric (realized GMV variance per period) - fed the predicted
         covariance directly, independent of the mean predictor.
     l_value_handles
         ``{estimator_name: record handle}`` for the total value
@@ -108,7 +119,7 @@ def build_scenario(
     rebalance_dates
         The rebalance clock dates, used for timestamp alignment when
         extracting metric values.  Predicted return vectors and covariance
-        matrices are *not* recorded — each is fed to the metrics and
+        matrices are *not* recorded - each is fed to the metrics and
         portfolio operators directly, so only one matrix per estimator
         is ever resident in memory.
     handles
@@ -123,21 +134,25 @@ def build_scenario(
 
     # Per-stock handles grouped by cadence.
     #
-    # * `per_stock_sync` — values produced in lockstep across all stocks
+    # * `per_stock_sync` - values produced in lockstep across all stocks
     #   (e.g., daily prices/equity on trading days).  Stacked with
     #   `StackSync` to give message-passing semantics: slots of stocks
     #   that did not produce this cycle are filled with `NaN`.
-    # * `per_stock_irregular` — values updated on stock-specific dates
+    # * `per_stock_irregular` - values updated on stock-specific dates
     #   (e.g., quarterly financial reports filed on different dates).
     #   Stacked with `Stack` to give time-series semantics: slots keep
     #   their last-known value across quiet periods.
-    per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("ohlcv", "adjusted_close")}
+    per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("ohlcv", "close", "volume", "adjusted_close")}
     per_stock_irregular: dict[str, list[Handle]] = {
-        k: [] for k in ("adjusts", "circ_shares", "parent_equity", "net_profit")
+        k: [] for k in ("adjusts", "total_shares", "circ_shares", "parent_equity", "net_profit")
     }
 
     for symbol in tqdm(symbols, desc="Building scenario"):
         h = history_dir / symbol
+
+        # ------------------------------------------------------------------
+        # Sources
+        # ------------------------------------------------------------------
 
         prices = sc.add_source(
             CSVSource(f"{h}.daily_prices.csv", PRICE_SCHEMA, time_column="date", start=data_start, end=end)
@@ -172,10 +187,16 @@ def build_scenario(
             )
         )
 
+        # ------------------------------------------------------------------
+        # Operators
+        # ------------------------------------------------------------------
+
         ohlcv = sc.add_operator(Select(prices, OHLCV_INDICES))
         close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
+        volume = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.volume")))
         adjusts = sc.add_operator(ForwardAdjust(close, dividends, output_prices=False))
         adjusted_close = sc.add_operator(Multiply(close, adjusts))
+        total_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.total")))
         circ_shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
         income_ann = sc.add_operator(Annualize(income_ytd))
         net_profit = sc.add_operator(Select(income_ann, INC_SCHEMA.index("income_statement.profit")))
@@ -194,8 +215,11 @@ def build_scenario(
         parent_equity = sc.add_operator(Map(neg_peq, lambda x: -x.sum(), shape=(), dtype=np.float64))
 
         per_stock_sync["ohlcv"].append(ohlcv)
+        per_stock_sync["close"].append(close)
+        per_stock_sync["volume"].append(volume)
         per_stock_sync["adjusted_close"].append(adjusted_close)
         per_stock_irregular["adjusts"].append(adjusts)
+        per_stock_irregular["total_shares"].append(total_shares)
         per_stock_irregular["circ_shares"].append(circ_shares)
         per_stock_irregular["parent_equity"].append(parent_equity)
         per_stock_irregular["net_profit"].append(net_profit)
@@ -205,6 +229,7 @@ def build_scenario(
     # ------------------------------------------------------------------
 
     num_stocks = len(symbols)
+    window = 20
 
     # Stack per-stock handles into (num_stocks, ...) arrays.
     stacked = {
@@ -212,43 +237,85 @@ def build_scenario(
         **{k: sc.add_operator(Stack(v)) for k, v in per_stock_irregular.items()},
     }
 
-    # Extract close and volume from stacked OHLCV for feature computation.
-    close = sc.add_operator(Select(stacked["ohlcv"], 3, axis=1))
-    volume = sc.add_operator(Select(stacked["ohlcv"], 4, axis=1))
+    # Total market cap.
+    market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
 
-    # Market cap and log(market cap).
-    market_cap = sc.add_operator(Multiply(close, stacked["circ_shares"]))
-    log_mcap = sc.add_operator(Log(market_cap))
-
-    # log(B/P) = log(parent_equity / market_cap).
+    # Book-to-price ratio.
     bp = sc.add_operator(Divide(stacked["parent_equity"], market_cap))
-    log_bp = sc.add_operator(Log(bp))
 
-    # Turnover MA.
-    turnover = sc.add_operator(Divide(volume, stacked["circ_shares"]))
+    # TTM net profit via 365-day rolling mean of annualized net profit.
+    net_profit_series = sc.add_operator(Record(stacked["net_profit"]))
+    net_profit_ttm = sc.add_operator(RollingMean(net_profit_series, window=np.timedelta64(365, "D")))
+
+    # TTM E/P and TTM ROE.
+    ttm_ep = sc.add_operator(Divide(net_profit_ttm, market_cap))
+    ttm_roe = sc.add_operator(Divide(net_profit_ttm, stacked["parent_equity"]))
+
+    # Momentum MA (rolling mean of daily log-returns of adjusted close).
+    log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
+    log_adj_series = sc.add_operator(Record(log_adj))
+    log_adj_lag = sc.add_operator(Lag(log_adj_series, offset=window, fill=np.float64(np.nan)))
+    momentum_ma = sc.add_operator(Subtract(log_adj, log_adj_lag))
+
+    # Price volatility (rolling std dev of daily log-returns of adjusted close).
+    volatility = sc.add_operator(Sqrt(sc.add_operator(RollingVariance(log_adj_series, window=window))))
+
+    # Turnover MA (rolling mean of daily turnover).
+    turnover = sc.add_operator(Divide(stacked["volume"], stacked["circ_shares"]))
     turnover_series = sc.add_operator(Record(turnover))
-    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=rebalance_days))
+    turnover_ma = sc.add_operator(RollingMean(turnover_series, window=window))
 
-    # Stack features into (num_stocks, num_features).
-    stacked_features = sc.add_operator(Stack([log_mcap, log_bp, turnover_ma], axis=1))
+    # Volume ratio (latest volume / rolling-mean of volume over window).
+    volume_series = sc.add_operator(Record(stacked["volume"]))
+    volume_ma = sc.add_operator(RollingMean(volume_series, window=window))
+    volume_ratio = sc.add_operator(Divide(stacked["volume"], volume_ma))
 
-    # Record feature and target history for predictors.  Covariance
-    # estimators train on log returns (more symmetric, closer to
-    # Gaussian); `VariancePortfolio` / `MeanVariancePortfolio` and the
-    # `MinimumVariance` metric perform the lognormal conversion to
-    # linear-return moments internally.
+    # Volume-by-momentum interaction factors.
+    zero_const = sc.add_const(np.zeros(num_stocks, dtype=np.float64))
+    positive_momentum_magnitude = sc.add_operator(Max(momentum_ma, zero_const))
+    volume_rally = sc.add_operator(Multiply(volume_ratio, positive_momentum_magnitude))
+
+    # Cross-sectional features.
+    features = {
+        "rank_market_cap": sc.add_operator(Percentile(market_cap)),
+        "rank_bp": sc.add_operator(Percentile(bp)),
+        "rank_ttm_ep": sc.add_operator(Percentile(ttm_ep)),
+        "rank_ttm_roe": sc.add_operator(Percentile(ttm_roe)),
+        f"momentum_ma_{window}": momentum_ma,
+        f"volatility_{window}": volatility,
+        f"turnover_ma_{window}": turnover_ma,
+        f"volume_ratio_{window}": volume_ratio,
+        f"volume_rally_{window}": volume_rally,
+    }
+    stacked_features = sc.add_operator(Stack(list(features.values()), axis=1))
+
+    # Record feature and target history for predictors.  Features are
+    # percentile-ranked per day; the regression target is the 1-step
+    # log return, winsorized at the cross-sectional 1st/99th percentile
+    # so outlier days don't dominate the pooled OLS.  Preserving
+    # magnitudes (vs. another rank transform) matters because rank-only
+    # prediction can still lose money under skewed return distributions
+    # - winsorization caps tail leverage without erasing scale.
     #
-    # `stacked_features` ticks on trading days *and* on irregular
-    # corporate-event days (balance-sheet notices, equity structure
-    # changes), while the returns target only ticks on trading days.
-    # Gate feature recording on the trading-day pulse so the features
-    # and target records advance lock-step, satisfying the predictor's
-    # positional alignment contract.
+    # `stacked_features` ticks whenever any of its component factors
+    # updates, which includes irregular corporate-event days (balance-
+    # sheet / income-statement notices, equity structure changes) on
+    # top of trading days.  `Diff(Log(stacked["adjusted_close"]))`, by
+    # contrast, only ticks on trading days (`stacked["adjusted_close"]`
+    # is a `StackSync` over per-stock daily adjusted prices).  Recording
+    # `stacked_features` directly would make the features record strictly
+    # longer than the target record and break the predictor's equal-
+    # length alignment contract (`len(features) == len(target)`).
+    #
+    # `Resample` re-emits the features on the trading-day pulse so both
+    # records advance lock-step on trading days.  The predictor pairs
+    # feature[i] with target[i + target_offset] - here target_offset=1,
+    # so feature at day t predicts the return from t to t+1.
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))
-    log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
     log_returns = sc.add_operator(Diff(log_adj))
-    target_series = sc.add_operator(Record(log_returns))
+    target = sc.add_operator(Winsorize(log_returns, p=0.01))
+    target_series = sc.add_operator(Record(target))
 
     # ------------------------------------------------------------------
     # Shared predictors
@@ -326,7 +393,7 @@ def build_scenario(
     ls_value_handles = {}
     for name, predicted_covariance in predicted_covariances.items():
         # GMV realized-variance metric (top plot).  NOTE: `predicted_covariance`
-        # is fed directly as an `Array` input — the metric only reads the
+        # is fed directly as an `Array` input - the metric only reads the
         # latest covariance, so recording the full (N, N) history per
         # rebalance would waste O(periods · N²) memory for no benefit.
         mv_metric = sc.add_operator(MinimumVariance(predicted_covariance, log_returns))
@@ -452,12 +519,12 @@ if __name__ == "__main__":
         ls_v = ls_value_data[name]
         mv_finite = mv[np.isfinite(mv)]
         mv_str = f"ann vol={np.sqrt(mv_finite.mean() * TRADING_DAYS):.4f}" if len(mv_finite) > 0 else "no valid MV"
-        l_final = f"{l_v.iloc[-1]:,.0f}" if len(l_v) > 0 else "—"
-        ls_final = f"{ls_v.iloc[-1]:,.0f}" if len(ls_v) > 0 else "—"
+        l_final = f"{l_v.iloc[-1]:,.0f}" if len(l_v) > 0 else "-"
+        ls_final = f"{ls_v.iloc[-1]:,.0f}" if len(ls_v) > 0 else "-"
         print(f"{name}: {mv_str}, long-only final={l_final} CNY, long-short final={ls_final} CNY ({len(mv)} periods)")
 
     # ------------------------------------------------------------------
-    # Plots — three panels stacked in one figure with shared time axis
+    # Plots - three panels stacked in one figure with shared time axis
     # ------------------------------------------------------------------
 
     plt.style.use(["fast"])

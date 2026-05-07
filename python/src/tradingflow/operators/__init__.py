@@ -1,4 +1,4 @@
-"""Built-in operators — the reusable building blocks of every strategy.
+"""Built-in operators - the reusable building blocks of every strategy.
 
 See the root [`tradingflow`][tradingflow] page for the conceptual
 overview (what an operator is, notification semantics, etc.) and
@@ -15,18 +15,18 @@ top of this file cover the glue pieces you need in nearly every graph.
 Plumbing for moving data between nodes without mathematical
 transformation.
 
-- [`Id`][tradingflow.operators.id.Id] — identity passthrough.  Useful for
+- [`Id`][tradingflow.operators.id.Id] - identity passthrough.  Useful for
   alias handles or for benchmarking.
-- [`Cast`][tradingflow.operators.cast.Cast] — element-wise dtype
+- [`Cast`][tradingflow.operators.cast.Cast] - element-wise dtype
   conversion (e.g. `int32` → `float64`).
-- [`Const`][tradingflow.operators.const.Const] — zero-input node that always
+- [`Const`][tradingflow.operators.const.Const] - zero-input node that always
   produces the same constant array.
-- [`Select`][tradingflow.operators.select.Select] — pick specific elements
+- [`Select`][tradingflow.operators.select.Select] - pick specific elements
   out of an array by flat index (e.g. extract the "close" column from
   a prices row).
-- [`Concat`][tradingflow.operators.concat.Concat] — concatenate N arrays
+- [`Concat`][tradingflow.operators.concat.Concat] - concatenate N arrays
   along an existing axis.
-- [`Stack`][tradingflow.operators.stack.Stack] — stack N arrays along a new
+- [`Stack`][tradingflow.operators.stack.Stack] - stack N arrays along a new
   axis.
 
 ### Synchronized (message-passing) variants
@@ -40,35 +40,35 @@ slots are filled with `NaN`).
 
 Bridges between snapshot arrays and their full-history counterparts.
 
-- [`Record`][tradingflow.operators.record.Record] — accumulate every `Array`
+- [`Record`][tradingflow.operators.record.Record] - accumulate every `Array`
   value into a `Series`.  This is how you materialize histories for
   end-of-run inspection or as input to rolling / predictor operators.
-- [`Last`][tradingflow.operators.last.Last] — expose a `Series`'s most
+- [`Last`][tradingflow.operators.last.Last] - expose a `Series`'s most
   recent value as an `Array`.
-- [`Lag`][tradingflow.operators.lag.Lag] — output the value from N steps
+- [`Lag`][tradingflow.operators.lag.Lag] - output the value from N steps
   ago.
 
 ## Custom-function operators (Python)
 
 For quick experiments without writing a full operator subclass.
 
-- [`Map`][tradingflow.operators.map.Map] — apply a Python callable to
+- [`Map`][tradingflow.operators.map.Map] - apply a Python callable to
   every upstream array value.
-- [`Apply`][tradingflow.operators.apply.Apply] — apply a Python callable
+- [`Apply`][tradingflow.operators.apply.Apply] - apply a Python callable
   that takes multiple array inputs.
-- [`Filter`][tradingflow.operators.filter.Filter] — predicate-gated
+- [`Filter`][tradingflow.operators.filter.Filter] - predicate-gated
   passthrough; when the predicate returns `False`, the element is
   *dropped* and downstream nodes are not notified.
-- [`Where`][tradingflow.operators.where.Where] — element-wise conditional
+- [`Where`][tradingflow.operators.where.Where] - element-wise conditional
   replacement; always produces output (never halts propagation).
 
 ## Scheduling
 
-- [`Clocked`][tradingflow.operators.clocked.Clocked] — wrap any operator so
+- [`Clocked`][tradingflow.operators.clocked.Clocked] - wrap any operator so
   that it only fires when a clock input ticks.  Convenient for turning
   a purely data-driven operator into a periodic one without modifying
   its implementation.
-- [`Resample`][tradingflow.operators.resample.Resample] — re-emit a data
+- [`Resample`][tradingflow.operators.resample.Resample] - re-emit a data
   input's latest value on every clock tick.  Clock and data must share
   the same node type (`Unit`, `Array<T>`, or `Series<T>`); only the
   clock's produced bit is consulted.  Use to align two records that

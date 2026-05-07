@@ -20,7 +20,7 @@ use super::node::{ChannelKind, SourceState};
 pub type ShutdownFlag = Arc<AtomicBool>;
 
 // ---------------------------------------------------------------------------
-// recv_future — queue-specific extension on SourceState
+// recv_future - queue-specific extension on SourceState
 // ---------------------------------------------------------------------------
 
 impl SourceState {
@@ -39,12 +39,12 @@ impl SourceState {
 }
 
 // ---------------------------------------------------------------------------
-// ErasedRecvFuture — one pending channel receive
+// ErasedRecvFuture - one pending channel receive
 // ---------------------------------------------------------------------------
 
 /// A `'static + Send` future representing one pending channel receive.
 ///
-/// Resolves to `(source_idx, kind, Option<Instant>)` — `None` means the channel
+/// Resolves to `(source_idx, kind, Option<Instant>)` - `None` means the channel
 /// closed.  Designed for use in [`FuturesUnordered`] so the event loop can
 /// concurrently await many channels with O(log N) heap inserts.
 ///
@@ -73,7 +73,7 @@ impl ErasedRecvFuture {
 }
 
 impl std::future::Future for ErasedRecvFuture {
-    /// `(source_idx, kind, Option<Instant>)` — `None` timestamp means channel closed.
+    /// `(source_idx, kind, Option<Instant>)` - `None` timestamp means channel closed.
     type Output = (usize, ChannelKind, Option<Instant>);
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
@@ -84,7 +84,7 @@ impl std::future::Future for ErasedRecvFuture {
 }
 
 // ---------------------------------------------------------------------------
-// HeapEntry — one timestamped event in the merge heap
+// HeapEntry - one timestamped event in the merge heap
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
@@ -95,7 +95,7 @@ struct HeapEntry {
 }
 
 // ---------------------------------------------------------------------------
-// drain_hist — blocking drain with early-exit
+// drain_hist - blocking drain with early-exit
 // ---------------------------------------------------------------------------
 
 /// Drain `hist_refills` until the historical constraint is satisfied.
@@ -156,7 +156,7 @@ async fn drain_hist(
 }
 
 // ---------------------------------------------------------------------------
-// drain_live — non-blocking drain of live_refills
+// drain_live - non-blocking drain of live_refills
 // ---------------------------------------------------------------------------
 
 /// Drain all currently-ready futures from `live_refills` without blocking.
@@ -186,7 +186,7 @@ async fn drain_live(
                     }));
                 }
                 Poll::Ready(Some((_src, _kind, None))) => {
-                    // Live channel closed; source exhausted — no re-queue.
+                    // Live channel closed; source exhausted - no re-queue.
                 }
                 Poll::Ready(None) | Poll::Pending => return Poll::Ready(()),
             }
@@ -196,7 +196,7 @@ async fn drain_live(
 }
 
 // ---------------------------------------------------------------------------
-// Session — event loop
+// Session - event loop
 // ---------------------------------------------------------------------------
 
 impl Session {
@@ -216,7 +216,7 @@ impl Session {
     ///
     /// # Complexity
     ///
-    /// O(log N) per event for N sources — no O(N) scans.
+    /// O(log N) per event for N sources - no O(N) scans.
     pub async fn run(&mut self, on_flush: impl FnMut(Instant, usize, Option<usize>)) {
         self.run_with_shutdown(on_flush, Arc::new(AtomicBool::new(false)))
             .await;
@@ -331,7 +331,7 @@ impl Session {
             };
 
             // ----------------------------------------------------------------
-            // Step 4: Coalesce — flush accumulated batch when ts advances.
+            // Step 4: Coalesce - flush accumulated batch when ts advances.
             // ----------------------------------------------------------------
             if let Some(qts) = queue_ts
                 && min_ts > qts
@@ -410,7 +410,7 @@ impl Session {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario — convenience entry points that build a fresh session
+// Scenario - convenience entry points that build a fresh session
 // ---------------------------------------------------------------------------
 
 impl super::Scenario {
@@ -439,7 +439,7 @@ impl super::Scenario {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — randomized event loop invariant checks
+// Tests - randomized event loop invariant checks
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -579,13 +579,13 @@ mod tests {
 
     /// Check the event loop output invariants for one source.
     ///
-    /// 1. Monotonicity — recorded timestamps are non-decreasing.
-    /// 2. Historical stability — every distinct hist timestamp appears
+    /// 1. Monotonicity - recorded timestamps are non-decreasing.
+    /// 2. Historical stability - every distinct hist timestamp appears
     ///    at its original value.
-    /// 3. Live delay-only — entries after the hist block have timestamps
+    /// 3. Live delay-only - entries after the hist block have timestamps
     ///    ≥ the minimum original live timestamp.
-    /// 4. Completeness — at least as many entries as distinct hist timestamps.
-    /// 5. No fabrication — no recorded timestamp below the minimum original.
+    /// 4. Completeness - at least as many entries as distinct hist timestamps.
+    /// 5. No fabrication - no recorded timestamp below the minimum original.
     fn check_invariants(
         series: &Series<f64>,
         hist_events: &[(Instant, f64)],
@@ -669,7 +669,7 @@ mod tests {
 
     // -- Tests ----------------------------------------------------------------
 
-    /// Zero sources — must terminate immediately.
+    /// Zero sources - must terminate immediately.
     #[tokio::test]
     async fn empty_scenario() {
         let sc = Scenario::new();

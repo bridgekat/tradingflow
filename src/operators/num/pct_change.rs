@@ -1,4 +1,4 @@
-//! Percentage-change operator — element-wise linear returns across ticks.
+//! Percentage-change operator - element-wise linear returns across ticks.
 
 use std::marker::PhantomData;
 
