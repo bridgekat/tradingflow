@@ -121,6 +121,9 @@ pub fn dispatch_native_operator(
         // -- Percentile (Array<T:Float> → Array<T>) ---------------------------
         "percentile" => Ok((dispatch_op!(dtype, num::Percentile, float, sc, input_indices), NativeNodeKind::Array)),
 
+        // -- Standardize (Array<T:Float> → Array<T>) --------------------------
+        "standardize" => Ok((dispatch_op!(dtype, num::Standardize, float, sc, input_indices), NativeNodeKind::Array)),
+
         // -- Winsorize (Array<T:Float> → Array<T>, parameterised by p) --------
         "winsorize" => {
             macro_rules! go {

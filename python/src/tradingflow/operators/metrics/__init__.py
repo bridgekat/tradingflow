@@ -38,7 +38,7 @@ the kind of prediction under evaluation:
 - [`mean`][tradingflow.operators.metrics.mean] - evaluators for
   mean-return predictions.  Contains the Information Coefficient
   family (Pearson or Spearman correlation between predicted and
-  realized returns).
+  realized returns) and pooled OLS regression-coefficient extraction.
 - [`variance`][tradingflow.operators.metrics.variance] - evaluators
   for covariance-matrix predictions.  Contains the realized Global
   Minimum Variance variance (how small-variance is the GMV portfolio

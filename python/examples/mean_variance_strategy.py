@@ -262,8 +262,28 @@ def build_scenario(
     # so feature at day t predicts the return from t to t+1.
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))
+    # Winsorize raw log returns at the 1st / 99th cross-sectional
+    # percentile to clip outliers at their natural distribution tails,
+    # then subtract the per-day cross-sectional mean of the winsorized
+    # values so the predictor learns the idiosyncratic component
+    # instead of the time-varying market drift.  The full-position
+    # optimization objective is invariant under per-day additive
+    # shifts (sum(w) = 1 absorbs the constant in `E[r_p]`, variance is
+    # shift-invariant), and rank-based portfolio constructors only see
+    # the ordering, so the resulting portfolios are unchanged.
     log_returns = sc.add_operator(Diff(log_adj))
-    target = sc.add_operator(Winsorize(log_returns, p=0.01))
+    winsorized_log_returns = sc.add_operator(Winsorize(log_returns, p=0.01))
+    winsorized_xs_mean = sc.add_operator(
+        Map(winsorized_log_returns, np.nanmean, shape=(), dtype=np.float64)
+    )
+    target = sc.add_operator(
+        Apply(
+            (winsorized_log_returns, winsorized_xs_mean),
+            lambda r, m: r - m,
+            shape=(num_stocks,),
+            dtype=np.float64,
+        )
+    )
     target_series = sc.add_operator(Record(target))
 
     # ------------------------------------------------------------------

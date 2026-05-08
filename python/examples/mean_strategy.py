@@ -55,7 +55,7 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
+from tradingflow.operators import Apply, Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
 from tradingflow.operators.num import (
     Diff,
     Divide,
@@ -74,6 +74,7 @@ from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.traders.simple import RandomTrader
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
+from tradingflow.operators.metrics.mean import RegressionCoefficients
 from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
 from tradingflow.sources import Clock
@@ -284,8 +285,26 @@ def build_scenario(
     # so feature at day t predicts the return from t to t+1.
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))
+    # Winsorize raw log returns at the 1st / 99th cross-sectional
+    # percentile to clip outliers at their natural distribution tails,
+    # then subtract the per-day cross-sectional mean of the winsorized
+    # values so the predictor learns the idiosyncratic component
+    # instead of the time-varying market drift.  The full-position
+    # optimization objective is invariant under per-day additive
+    # shifts (sum(w) = 1 absorbs the constant in `E[r_p]`, variance is
+    # shift-invariant), and rank-based portfolio constructors only see
+    # the ordering, so the resulting portfolios are unchanged.
     log_returns = sc.add_operator(Diff(log_adj))
-    target = sc.add_operator(Winsorize(log_returns, p=0.01))
+    winsorized_log_returns = sc.add_operator(Winsorize(log_returns, p=0.01))
+    winsorized_xs_mean = sc.add_operator(Map(winsorized_log_returns, np.nanmean, shape=(), dtype=np.float64))
+    target = sc.add_operator(
+        Apply(
+            (winsorized_log_returns, winsorized_xs_mean),
+            lambda r, m: r - m,
+            shape=(num_stocks,),
+            dtype=np.float64,
+        )
+    )
     target_series = sc.add_operator(Record(target))
 
     # ------------------------------------------------------------------
@@ -374,6 +393,29 @@ def build_scenario(
     compound_ret = sc.add_operator(CompoundReturn(actual_value, rebalance_clock))
     drawdown = sc.add_operator(Drawdown(actual_value))  # Triggers on every update
 
+    # Market beta / alpha vs. the cap-weighted index, computed on
+    # trading-day log returns of total portfolio value.  `actual_value`
+    # and `index_value` both tick on the trading-day pulse driven by
+    # `stacked["ohlcv"]`, so `Diff(Log(...))` produces aligned daily
+    # log returns; `Stack([..., axis=0)` lifts the scalar index log
+    # return into a 1-element baseline vector for the regressor.  The
+    # regressor adds the intercept column itself, so the emitted
+    # coefficient vector has shape (2,): [beta, alpha].
+    index_value = sc.add_operator(Map(index, np.sum, shape=(), dtype=np.float64))
+    strategy_log_return = sc.add_operator(Diff(sc.add_operator(Log(actual_value))))
+    index_log_return = sc.add_operator(Diff(sc.add_operator(Log(index_value))))
+    strategy_log_return_series = sc.add_operator(Record(strategy_log_return))
+    index_log_return_series = sc.add_operator(Record(sc.add_operator(Stack([index_log_return], axis=0))))
+    beta_alpha = sc.add_operator(
+        RegressionCoefficients(
+            rebalance_clock,
+            strategy_log_return_series,
+            index_log_return_series,
+            max_periods=252,
+            min_periods=20,
+        )
+    )
+
     return (
         sc,
         {
@@ -383,6 +425,7 @@ def build_scenario(
             "sharpe": sc.add_operator(Record(sharpe)),
             "compound_return": sc.add_operator(Record(compound_ret)),
             "drawdown": sc.add_operator(Record(drawdown)),
+            "beta_alpha": sc.add_operator(Record(beta_alpha)),
         },
         rebalance_dates,
     )
@@ -469,12 +512,21 @@ if __name__ == "__main__":
         print(f"Max drawdown: {max_drawdown:.2%}")
     print()
 
+    # Rolling 1-year market beta / alpha vs. the cap-weighted index.
+    beta_alpha_view = session.series_view(handles["beta_alpha"])
+    beta_alpha_ts = beta_alpha_view.timestamps()
+    beta_alpha_vals = beta_alpha_view.values()  # (n_rebalances, 2): [beta, alpha_daily]
+    rolling_beta = beta_alpha_vals[:, 0] if len(beta_alpha_vals) else np.empty(0)
+    # Log returns are additive, so daily-log alpha annualizes by simple
+    # multiplication by trading days per year.
+    rolling_alpha_annualized = beta_alpha_vals[:, 1] * 252 if len(beta_alpha_vals) else np.empty(0)
+
     # ------------------------------------------------------------------
     # Plot
     # ------------------------------------------------------------------
 
     plt.style.use(["fast"])
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True, gridspec_kw={"height_ratios": [3, 1, 1]})
+    fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True, gridspec_kw={"height_ratios": [3, 1, 1, 1]})
 
     def draw_rebalances(ax):
         for d in rebalance_dates:
@@ -520,9 +572,23 @@ if __name__ == "__main__":
     ax = axes[2]
     ax.set_title("Drawdown (since previous high)")
     ax.set_ylabel("Drawdown (%)")
-    ax.set_xlabel("Date")
     draw_rebalances(ax)
     ax.fill_between(drawdown.index, drawdown * 100, 0, alpha=0.4, color="C3")
+
+    ax = axes[3]
+    ax.set_title("Rolling 1-year market beta / alpha (vs. cap-weighted index, 252-day window)")
+    ax.set_ylabel("Beta")
+    ax.set_xlabel("Date")
+    draw_rebalances(ax)
+    ax.axhline(1.0, color="gray", linewidth=0.5, linestyle="--")
+    (line_beta,) = ax.plot(beta_alpha_ts, rolling_beta, color="C2", label="Beta")
+    ax_alpha = ax.twinx()
+    ax_alpha.set_ylabel("Alpha annualized (%)")
+    ax_alpha.axhline(0, color="lightgray", linewidth=0.5, linestyle=":")
+    (line_alpha,) = ax_alpha.plot(
+        beta_alpha_ts, rolling_alpha_annualized * 100, color="C4", linestyle="--", label="Alpha (annualized)"
+    )
+    ax.legend(handles=[line_beta, line_alpha], loc="upper left", fontsize=8)
 
     fig.tight_layout()
     plt.show()

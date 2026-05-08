@@ -26,15 +26,25 @@ Each factor is mapped to its cross-sectional ``Percentile`` rank
 (NaN-preserving, so missing stocks stay NaN rather than clustering at the
 top rank).
 
-The realised target fed to the evaluator is
-``Winsorize(Diff(Log(adjusted_close)), p=0.01)`` - cross-sectional log
-returns clipped at the 1st / 99th percentile each day.  Combined with
-the percentile-ranked factors, the reported IC is the per-period
-cross-sectional correlation between ranked factors and realised
-log-return magnitudes: a rank-vs.-magnitude measure that penalises
-factors whose top-rank stocks consistently fail to deliver large
-positive returns, rather than the pure Spearman rank correlation a
-rank-on-rank evaluator would report.
+The realised target fed to the evaluator is the cross-sectionally
+de-meaned daily log return, with winsorization applied first to clip
+outliers at the 1st / 99th percentile of the raw cross-section.
+Combined with the percentile-ranked factors, the reported IC is the
+per-period cross-sectional correlation between ranked factors and
+realised log-return magnitudes: a rank-vs.-magnitude measure that
+penalises factors whose top-rank stocks consistently fail to deliver
+large positive returns, rather than the pure Spearman rank correlation
+a rank-on-rank evaluator would report.  IC is invariant under per-row
+additive shifts, so the demean step leaves the metric unchanged - it
+is included here to keep the target construction identical across the
+mean-forecast examples (`mean_strategy.py`, `mean_variance_strategy.py`,
+`covariance_gmv.py`), where it does help the predictor learn the
+idiosyncratic component instead of the time-varying market drift.
+
+The IC evaluator is restricted to the cap-weighted top-``index_size``
+universe (same construction as ``mean_strategy.py``): out-of-universe
+stocks are NaN-masked at each rebalance so they don't dilute the
+cross-sectional rank correlation.
 
 Two figures are produced: cumulative IC by factor over time, and the
 pooled Pearson correlation matrix across (date, stock) pairs of the
@@ -61,7 +71,7 @@ from tradingflow import Scenario, Schema
 from tradingflow import Handle
 from tradingflow.sources import Clock, CSVSource
 from tradingflow.sources.stocks import FinancialReportSource
-from tradingflow.operators import Lag, Map, Record, Resample, Select, Stack, StackSync
+from tradingflow.operators import Apply, Clocked, Lag, Map, Record, Resample, Select, Stack, StackSync
 from tradingflow.operators.num import (
     Diff,
     Divide,
@@ -77,15 +87,18 @@ from tradingflow.operators.num import (
 )
 from tradingflow.operators.rolling import RollingMean, RollingVariance
 from tradingflow.operators.stocks import Annualize, ForwardAdjust
-from tradingflow.operators.metrics.mean import InformationCoefficient
+from tradingflow.operators.portfolios.mean import RankBucket
+from tradingflow.operators.traders import Benchmark
+from tradingflow.operators.metrics.mean import InformationCoefficient, RegressionCoefficients
 
-from stocks import load_symbols, resolve_data_start, add_market_argument
+from stocks import calculate_index_weights, load_symbols, resolve_data_start, add_market_argument
 
 PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
 EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
 DIVIDEND_SCHEMA = Schema(CSVSchema.dividends().iter_field_ids())
 BS_SCHEMA = Schema(CSVSchema.balance_sheet().iter_field_ids())
 INC_SCHEMA = Schema(CSVSchema.income_statement().iter_field_ids())
+OHLCV_INDICES = PRICE_SCHEMA.indices(["prices.open", "prices.high", "prices.low", "prices.close", "prices.volume"])
 
 
 def build_scenario(
@@ -94,10 +107,13 @@ def build_scenario(
     rebalance_days: int,
     window: int,
     index_size: int,
+    initial_cash: float,
     data_start: np.datetime64,
     eval_start: np.datetime64,
     end: np.datetime64,
-) -> tuple[Scenario, dict, Handle, list[str], np.ndarray]:
+    *,
+    decile_analysis: bool = False,
+) -> tuple[Scenario, dict, Handle, Handle, list[str], np.ndarray, dict | None]:
     """Build the factor IC evaluation scenario.
 
     Returns
@@ -110,11 +126,23 @@ def build_scenario(
     features_handle
         `Record` of the trading-day-aligned ``(num_stocks, n_features)``
         feature panel.  Used downstream to compute the cross-feature
-        correlation matrix.
+        correlation matrix and decile portfolio returns.
+    target_handle
+        `Record` of the per-stock realized log returns (winsorized at
+        the 1st / 99th cross-sectional percentile).  Aligned to
+        ``features_handle`` row-by-row.
     feature_names
         Column names matching the last axis of ``features_handle``.
     rebalance_dates
         Dates at which the rebalance clock fires.
+    decile_handles
+        ``None`` when ``decile_analysis=False``.  Otherwise a dict with
+        ``"index_value"`` (recorded scalar handle for the cap-weighted
+        index portfolio value) and ``"features"`` (per-feature dict
+        with keys ``"decile_values"`` (list of 10 recorded scalar
+        handles, bottom -> top), ``"long_short_value"`` (recorded
+        scalar handle), and ``"beta_alpha"`` (recorded ``(2,)``
+        handle for ``[beta, alpha_daily]``)).
     """
 
     history_dir = data_dir / "a_shares_history"
@@ -130,9 +158,9 @@ def build_scenario(
     #   (e.g., quarterly financial reports filed on different dates).
     #   Stacked with `Stack` to give time-series semantics: slots keep
     #   their last-known value across quiet periods.
-    per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("close", "volume", "adjusted_close")}
+    per_stock_sync: dict[str, list[Handle]] = {k: [] for k in ("ohlcv", "close", "volume", "adjusted_close")}
     per_stock_irregular: dict[str, list[Handle]] = {
-        k: [] for k in ("total_shares", "circ_shares", "parent_equity", "net_profit")
+        k: [] for k in ("adjusts", "total_shares", "circ_shares", "parent_equity", "net_profit")
     }
 
     for symbol in tqdm(symbols, desc="Building scenario"):
@@ -179,6 +207,7 @@ def build_scenario(
         # Operators
         # ------------------------------------------------------------------
 
+        ohlcv = sc.add_operator(Select(prices, OHLCV_INDICES))
         close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
         volume = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.volume")))
         adjusts = sc.add_operator(ForwardAdjust(close, dividends, output_prices=False))
@@ -201,9 +230,11 @@ def build_scenario(
         )
         parent_equity = sc.add_operator(Map(neg_peq, lambda x: -x.sum(), shape=(), dtype=np.float64))
 
+        per_stock_sync["ohlcv"].append(ohlcv)
         per_stock_sync["close"].append(close)
         per_stock_sync["volume"].append(volume)
         per_stock_sync["adjusted_close"].append(adjusted_close)
+        per_stock_irregular["adjusts"].append(adjusts)
         per_stock_irregular["total_shares"].append(total_shares)
         per_stock_irregular["circ_shares"].append(circ_shares)
         per_stock_irregular["parent_equity"].append(parent_equity)
@@ -320,15 +351,34 @@ def build_scenario(
     # so feature at day t predicts the return from t to t+1.
     sampled_features = sc.add_operator(Resample(stacked["adjusted_close"], stacked_features))
     features_series = sc.add_operator(Record(sampled_features))
+    # Winsorize-then-demean: same construction as the mean-forecast
+    # examples for code style consistency.  IC is rank- (and Pearson-)
+    # invariant under per-row additive shifts, so the demean step
+    # leaves the reported IC unchanged - the chain is here purely to
+    # keep the target construction identical across examples.
     log_returns = sc.add_operator(Diff(log_adj))
-    target = sc.add_operator(Winsorize(log_returns, p=0.01))
+    winsorized_log_returns = sc.add_operator(Winsorize(log_returns, p=0.01))
+    winsorized_xs_mean = sc.add_operator(Map(winsorized_log_returns, np.nanmean, shape=(), dtype=np.float64))
+    target = sc.add_operator(
+        Apply(
+            (winsorized_log_returns, winsorized_xs_mean),
+            lambda r, m: r - m,
+            shape=(num_stocks,),
+            dtype=np.float64,
+        )
+    )
     target_series = sc.add_operator(Record(target))
 
     # ------------------------------------------------------------------
-    # IC evaluation
+    # Universe and rebalance clock
     # ------------------------------------------------------------------
+    #
+    # Cap-weighted top-`index_size` universe, identical construction to
+    # `mean_strategy.py`.  Used both to restrict the IC evaluator to the
+    # working universe (so out-of-universe stocks don't dilute the
+    # cross-sectional rank correlation) and as the soft-position /
+    # rebalance signal for the optional decile portfolio analysis below.
 
-    # Rebalance clock: the single periodic signal in this scenario.
     rebalance_dates = np.arange(
         eval_start,
         end + np.timedelta64(1, "D"),
@@ -336,13 +386,221 @@ def build_scenario(
     )
     rebalance_clock = sc.add_source(Clock(rebalance_dates))
 
+    universe = sc.add_operator(
+        Clocked(
+            rebalance_clock,
+            Map(
+                market_cap,
+                lambda m: calculate_index_weights(m, index_size),
+                shape=(num_stocks,),
+                dtype=np.float64,
+            ),
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # IC evaluation
+    # ------------------------------------------------------------------
+
     eval_handles: dict[str, Handle] = {}
     for name, feature in features.items():
         aligned = sc.add_operator(Resample(rebalance_clock, feature))
-        metric = sc.add_operator(InformationCoefficient(aligned, target))
+        # NaN-mask out-of-universe stocks at each rebalance.  IC's
+        # `np.isfinite(s)` filter then drops these slots from the
+        # cross-sectional rank correlation, so the reported IC reflects
+        # only the cap-weighted top-`index_size` universe.
+        masked = sc.add_operator(
+            Apply(
+                (aligned, universe),
+                lambda f, u: np.where(u > 0, f, np.nan),
+                shape=(num_stocks,),
+                dtype=np.float64,
+            )
+        )
+        metric = sc.add_operator(InformationCoefficient(masked, target))
         eval_handles[name] = sc.add_operator(Record(metric))
 
-    return sc, eval_handles, features_series, list(features.keys()), rebalance_dates
+    # ------------------------------------------------------------------
+    # Per-feature decile / long-short / rolling beta-alpha (optional)
+    # ------------------------------------------------------------------
+    #
+    # Builds, for each factor:
+    #
+    # 1. 10 `RankBucket` operators carving the universe into deciles by
+    #    factor rank, each fed to a frictionless `Benchmark` to track
+    #    the per-decile portfolio value (rebalanced on the same clock
+    #    as the IC evaluator, marked-to-market every trading day).
+    # 2. A dollar-neutral long-short portfolio constructed as
+    #    `Subtract(top_decile_weights, bottom_decile_weights)` (sum 0,
+    #    gross 2x) with its own `Benchmark`.
+    # 3. Rolling 1-year market beta / alpha of the long-short
+    #    portfolio versus the cap-weighted index, via
+    #    `RegressionCoefficients` on the same rebalance clock with
+    #    a 252-day trailing window.
+    #
+    # The `universe` handle constructed above doubles as the rebalance
+    # signal / mask for `RankBucket` and as the soft-position input to
+    # the index `Benchmark` (= the cap-weighted index used as the
+    # regression baseline).
+
+    decile_handles: dict | None = None
+    if decile_analysis:
+        # Cap-weighted index Benchmark: doubles as the market baseline
+        # for the long-short beta / alpha regression below.
+        index_value_arr = sc.add_operator(
+            Benchmark(
+                universe,
+                stacked["ohlcv"],
+                stacked["adjusts"],
+                initial_cash=initial_cash,
+                use_adjusts=True,
+            )
+        )
+        index_value = sc.add_operator(Map(index_value_arr, np.sum, shape=(), dtype=np.float64))
+        index_log_return = sc.add_operator(Diff(sc.add_operator(Log(index_value))))
+        index_log_return_series = sc.add_operator(Record(sc.add_operator(Stack([index_log_return], axis=0))))
+
+        n_deciles = 10
+        per_feature: dict[str, dict] = {}
+        for name, feature in features.items():
+            decile_weights = [
+                sc.add_operator(RankBucket(universe, feature, low=d / n_deciles, high=(d + 1) / n_deciles))
+                for d in range(n_deciles)
+            ]
+            decile_value_records: list[Handle] = []
+            for w in decile_weights:
+                bench = sc.add_operator(
+                    Benchmark(
+                        w,
+                        stacked["ohlcv"],
+                        stacked["adjusts"],
+                        initial_cash=initial_cash,
+                        use_adjusts=True,
+                    )
+                )
+                total = sc.add_operator(Map(bench, np.sum, shape=(), dtype=np.float64))
+                decile_value_records.append(sc.add_operator(Record(total)))
+
+            ls_weights = sc.add_operator(Subtract(decile_weights[-1], decile_weights[0]))
+            ls_bench = sc.add_operator(
+                Benchmark(
+                    ls_weights,
+                    stacked["ohlcv"],
+                    stacked["adjusts"],
+                    initial_cash=initial_cash,
+                    use_adjusts=True,
+                )
+            )
+            ls_value = sc.add_operator(Map(ls_bench, np.sum, shape=(), dtype=np.float64))
+            ls_log_return = sc.add_operator(Diff(sc.add_operator(Log(ls_value))))
+            ls_log_return_series = sc.add_operator(Record(ls_log_return))
+
+            beta_alpha = sc.add_operator(
+                RegressionCoefficients(
+                    rebalance_clock,
+                    ls_log_return_series,
+                    index_log_return_series,
+                    max_periods=252,
+                    min_periods=20,
+                )
+            )
+
+            per_feature[name] = {
+                "decile_values": decile_value_records,
+                "long_short_value": sc.add_operator(Record(ls_value)),
+                "beta_alpha": sc.add_operator(Record(beta_alpha)),
+            }
+
+        decile_handles = {
+            "index_value": sc.add_operator(Record(index_value)),
+            "features": per_feature,
+        }
+
+    return (
+        sc,
+        eval_handles,
+        features_series,
+        target_series,
+        list(features.keys()),
+        rebalance_dates,
+        decile_handles,
+    )
+
+
+def plot_individual_feature_returns(
+    session,
+    decile_handles: dict,
+    initial_cash: float,
+) -> None:
+    """Plot per-feature decile / long-short / rolling beta-alpha figures.
+
+    Reads recorded portfolio-value series from the runtime session and
+    renders one figure per feature with three stacked panels sharing
+    the X axis: cumulative log returns of the 10 decile portfolios,
+    cumulative log return of the long-top / short-bottom portfolio,
+    and the long-short's rolling 252-day beta / alpha relative to the
+    cap-weighted index.
+
+    The decile and long-short cumulative log returns are computed as
+    ``log(value / initial_cash)``; for a long-short portfolio with
+    sum-zero weights, ``value`` stays close to ``initial_cash`` and
+    the log of its ratio is approximately the cumulative spread P&L
+    in fractional units.
+    """
+    decile_cmap = plt.cm.RdYlGn
+
+    for name, handles in decile_handles["features"].items():
+        decile_value_series = [session.series_view(h) for h in handles["decile_values"]]
+        ls_value_series = session.series_view(handles["long_short_value"])
+        ba_view = session.series_view(handles["beta_alpha"])
+
+        decile_ts = pd.DatetimeIndex(decile_value_series[0].timestamps())
+        decile_cum_log = np.column_stack(
+            [np.log(np.maximum(s.values(), 1e-30) / initial_cash) for s in decile_value_series]
+        )
+        ls_ts = pd.DatetimeIndex(ls_value_series.timestamps())
+        ls_cum_log = np.log(np.maximum(ls_value_series.values(), 1e-30) / initial_cash)
+        ba_ts = pd.DatetimeIndex(ba_view.timestamps())
+        ba_vals = ba_view.values()  # (n_rebalances, 2): [beta, alpha_daily]
+
+        fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True, gridspec_kw={"height_ratios": [3, 2, 2]})
+
+        n_deciles = decile_cum_log.shape[1]
+        ax = axes[0]
+        ax.set_title(f"Decile portfolios (equal-weighted within decile, cap-weighted universe) - {name}")
+        ax.set_ylabel("Cumulative log return")
+        ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+        for d in range(n_deciles):
+            ax.plot(
+                decile_ts,
+                decile_cum_log[:, d],
+                color=decile_cmap(d / (n_deciles - 1)),
+                linewidth=1.0,
+                label=f"D{d + 1}",
+            )
+        ax.legend(ncol=n_deciles, fontsize=7, loc="upper left")
+
+        ax = axes[1]
+        ax.set_title(f"Long top 10% / short bottom 10% - {name}")
+        ax.set_ylabel("Cumulative log return")
+        ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+        ax.plot(ls_ts, ls_cum_log, color="C0", linewidth=1.0)
+
+        ax = axes[2]
+        ax.set_title(f"Long-short rolling 252-day beta / alpha (vs cap-weighted index) - {name}")
+        ax.set_ylabel("Beta")
+        ax.set_xlabel("Date")
+        ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+        if len(ba_vals):
+            (line_b,) = ax.plot(ba_ts, ba_vals[:, 0], color="C2", label="Beta")
+            ax_a = ax.twinx()
+            ax_a.set_ylabel("Alpha annualized (%)")
+            (line_a,) = ax_a.plot(
+                ba_ts, ba_vals[:, 1] * 252 * 100, color="C4", linestyle="--", label="Alpha (annualized)"
+            )
+            ax.legend(handles=[line_b, line_a], loc="upper left", fontsize=8)
+
+        fig.tight_layout()
 
 
 if __name__ == "__main__":
@@ -359,6 +617,17 @@ if __name__ == "__main__":
         help="rolling window (in samples) for windowed features; defaults to --rebalance-days",
     )
     parser.add_argument("--index-size", type=int, default=100, help="number of stocks in the universe")
+    parser.add_argument("--initial-cash", type=float, default=1000000.0, help="starting capital per portfolio (CNY)")
+    parser.add_argument(
+        "--plot-individual-feature-returns",
+        action="store_true",
+        help=(
+            "for every factor, open a figure with three stacked panels: cumulative log returns of "
+            "the 10 decile portfolios (cap-weighted top-N universe, rebalanced on the IC clock), "
+            "the long-top-10%% / short-bottom-10%% portfolio, and the long-short's rolling 252-day "
+            "beta / alpha vs the cap-weighted index"
+        ),
+    )
     add_market_argument(parser)
     args = parser.parse_args()
 
@@ -373,15 +642,25 @@ if __name__ == "__main__":
     print(f"Discovered {len(symbols)} symbols.")
 
     window = args.window if args.window is not None else args.rebalance_days
-    sc, eval_handles, features_handle, feature_names, rebalance_dates = build_scenario(
+    (
+        sc,
+        eval_handles,
+        features_handle,
+        target_handle,
+        feature_names,
+        rebalance_dates,
+        decile_handles,
+    ) = build_scenario(
         symbols,
         data_dir,
         rebalance_days=args.rebalance_days,
         window=window,
         index_size=args.index_size,
+        initial_cash=args.initial_cash,
         data_start=resolve_data_start(args.sample_begin, args.begin, max(args.rebalance_days, window)),
         eval_start=args.begin,
         end=args.end,
+        decile_analysis=args.plot_individual_feature_returns,
     )
 
     mid = args.begin
@@ -480,5 +759,16 @@ if __name__ == "__main__":
             )
     fig_corr.colorbar(im, ax=ax_corr)
     fig_corr.tight_layout()
+
+    # ------------------------------------------------------------------
+    # Per-feature decile / long-short / rolling-beta-alpha figures
+    # ------------------------------------------------------------------
+
+    if decile_handles is not None:
+        plot_individual_feature_returns(
+            session=session,
+            decile_handles=decile_handles,
+            initial_cash=args.initial_cash,
+        )
 
     plt.show()

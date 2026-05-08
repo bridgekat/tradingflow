@@ -89,6 +89,13 @@ only.
   the ``[p, 1-p]``-quantile range of the input.  Preserves magnitudes;
   use to cap tail leverage on regression inputs / targets without
   destroying scale information.
+- [`Standardize`][tradingflow.operators.num.standardize.Standardize] -
+  cross-sectional z-score: subtract the mean and divide by the
+  population standard deviation of non-NaN entries.  Linear rescale
+  that preserves the input's distribution shape; pick this over
+  ``Gaussianize`` when downstream code consumes magnitudes (linear
+  regression, mean-variance objective) and the input is already
+  approximately Gaussian.
 """
 
 from .arithmetic import (
@@ -120,6 +127,7 @@ from .fillna import Fillna
 from .gaussianize import Gaussianize
 from .pct_change import PctChange
 from .percentile import Percentile
+from .standardize import Standardize
 from .winsorize import Winsorize
 
 __all__ = [
@@ -150,5 +158,6 @@ __all__ = [
     "Fillna",
     "PctChange",
     "Percentile",
+    "Standardize",
     "Winsorize",
 ]

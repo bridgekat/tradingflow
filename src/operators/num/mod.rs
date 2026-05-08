@@ -63,6 +63,11 @@
 //!   non-NaN element to the `[p, 1-p]`-quantile range of the input,
 //!   preserving magnitudes.  Use to cap tail leverage on regression
 //!   inputs / targets without destroying scale information.
+//! - [`Standardize`] - cross-sectional z-score: subtract the mean and
+//!   divide by the population standard deviation of non-NaN entries.
+//!   A linear rescale that preserves the input's distribution shape -
+//!   pick this over `Gaussianize` when downstream code consumes
+//!   magnitudes (linear regression, mean-variance objective).
 
 mod arithmetic;
 mod clamp;
@@ -72,6 +77,7 @@ mod fillna;
 mod gaussianize;
 mod pct_change;
 mod percentile;
+mod standardize;
 mod winsorize;
 
 pub use arithmetic::{
@@ -85,4 +91,5 @@ pub use fillna::Fillna;
 pub use gaussianize::Gaussianize;
 pub use pct_change::PctChange;
 pub use percentile::Percentile;
+pub use standardize::Standardize;
 pub use winsorize::Winsorize;
