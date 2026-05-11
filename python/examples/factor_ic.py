@@ -47,7 +47,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from tradingflow import Scenario, Handle
-from tradingflow.operators import Apply, Map, Record, Resample
+from tradingflow.operators import Apply, Lag, Map, Record, Resample
 from tradingflow.operators.num import Log, Multiply, Subtract
 from tradingflow.operators.portfolios.mean import RankBucket
 from tradingflow.operators.traders import Benchmark
@@ -73,7 +73,6 @@ def build_scenario(
     rebalance_days: int,
     window: int,
     index_size: int,
-    initial_cash: float,
     data_start: np.datetime64,
     eval_start: np.datetime64,
     end: np.datetime64,
@@ -167,7 +166,19 @@ def build_scenario(
 
     eval_handles: dict[str, Handle] = {}
     for name, feature in features.items():
-        aligned = sc.add_operator(Resample(rebalance_clock, feature))
+        # Lag the feature by one trading day so the IC at tick `T` pairs
+        # `feature[T-2]` with `target[T] = log(close[T]/close[T-1])` -
+        # exactly the (signal, realised-return) window the decile
+        # Benchmark captures, since a signal observed at close[T-2] is
+        # executed at close[T-1] and exits at close[T] (one-tick MOC
+        # delay).  Note that `InformationCoefficient` already adds one
+        # implicit tick of lag on its predictions input (the accumulator
+        # pairs the *previously* stored prediction with each subsequent
+        # target tick), so a single explicit `Lag(offset=1)` closes the
+        # remaining one-day gap to the portfolio's holding window.
+        feature_series = sc.add_operator(Record(feature))
+        lagged = sc.add_operator(Lag(feature_series, offset=1, fill=float("nan")))
+        aligned = sc.add_operator(Resample(rebalance_clock, lagged))
         # NaN-mask out-of-universe stocks at each rebalance.  IC's
         # `np.isfinite(s)` filter then drops these slots from the
         # cross-sectional rank correlation, so the reported IC reflects
@@ -235,7 +246,7 @@ def build_scenario(
                         stacked["adjusts"],
                         upper_limit,
                         lower_limit,
-                        initial_cash=initial_cash,
+                        initial_cash=1.0,
                         use_adjusts=True,
                     )
                 )
@@ -244,9 +255,7 @@ def build_scenario(
 
             inverted = name in inverted_features
             long_leg, short_leg = (
-                (decile_weights[0], decile_weights[-1])
-                if inverted
-                else (decile_weights[-1], decile_weights[0])
+                (decile_weights[0], decile_weights[-1]) if inverted else (decile_weights[-1], decile_weights[0])
             )
             ls_weights = sc.add_operator(Subtract(long_leg, short_leg))
             ls_bench = sc.add_operator(
@@ -256,7 +265,7 @@ def build_scenario(
                     stacked["adjusts"],
                     upper_limit,
                     lower_limit,
-                    initial_cash=initial_cash,
+                    initial_cash=1.0,
                     use_adjusts=True,
                 )
             )
@@ -284,7 +293,6 @@ def build_scenario(
 def plot_individual_feature_returns(
     session,
     decile_handles: dict,
-    initial_cash: float,
 ) -> None:
     """Plot per-feature decile / long-short cumulative log return figures.
 
@@ -293,9 +301,11 @@ def plot_individual_feature_returns(
     X axis: cumulative log returns of the 10 decile portfolios and of
     the long-top / short-bottom portfolio.
 
-    Returns are computed as ``log(value / initial_cash)``; for a
-    long-short portfolio with sum-zero weights, ``value`` stays close
-    to ``initial_cash`` while the spread P&L drives the curve.  Once a
+    The upstream Benchmarks run with ``initial_cash=1.0`` and all
+    rebalance on a common clock, so every decile / long-short NAV is
+    already 1.0 until its first trade; no anchor rebasing is needed
+    and the plotted curves simply show ``log(value)`` - cumulative log
+    return from the inception of the recorded series.  Once a
     portfolio's NAV crosses zero the trader force-liquidates and emits
     ``(0, 0)``; the helper plots those ticks as `NaN` so the curve
     breaks visibly at the blowup date.
@@ -303,14 +313,14 @@ def plot_individual_feature_returns(
     decile_cmap = plt.cm.RdYlGn  # type: ignore
 
     def cum_log_or_nan(values: np.ndarray) -> np.ndarray:
-        """``log(values / initial_cash)``, with `NaN` wherever the
-        portfolio NAV has gone to zero or below.  The trader operators
-        force-liquidate (and emit `(0, 0)`) on a margin call, so the
-        post-blowup tail of the time series is identically zero -
-        matplotlib draws `NaN` segments as gaps, which is the
-        intended "this portfolio stopped existing" reading."""
+        """``log(values)``, with `NaN` wherever the portfolio NAV has
+        gone to zero or below.  The trader operators force-liquidate
+        (and emit `(0, 0)`) on a margin call, so the post-blowup tail
+        of the time series is identically zero - matplotlib draws
+        `NaN` segments as gaps, which is the intended "this portfolio
+        stopped existing" reading."""
         with np.errstate(divide="ignore", invalid="ignore"):
-            return np.where(values > 0, np.log(values / initial_cash), np.nan)
+            return np.where(values > 0, np.log(values), np.nan)
 
     for name, handles in decile_handles["features"].items():
         decile_value_series = [session.series_view(h) for h in handles["decile_values"]]
@@ -352,7 +362,7 @@ def plot_individual_feature_returns(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    add_common_arguments(parser, include_initial_cash=True)
+    add_common_arguments(parser)
     parser.add_argument(
         "--window",
         type=int,
@@ -387,7 +397,6 @@ if __name__ == "__main__":
         rebalance_days=args.rebalance_days,
         window=window,
         index_size=args.index_size,
-        initial_cash=args.initial_cash,
         data_start=resolve_data_start(args.sample_begin, args.begin, max(args.rebalance_days, window)),
         eval_start=args.begin,
         end=args.end,
@@ -490,7 +499,6 @@ if __name__ == "__main__":
         plot_individual_feature_returns(
             session=session,
             decile_handles=decile_handles,
-            initial_cash=args.initial_cash,
         )
 
     plt.show()

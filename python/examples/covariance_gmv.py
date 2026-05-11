@@ -62,8 +62,10 @@ from common import (
     build_price_limits,
     build_rebalance_clock,
     build_stacked,
+    find_effective_trading_start,
     make_progress_tracker,
     resolve_data_start,
+    scale_to_initial_cash,
     validate_data_dir,
 )
 
@@ -73,7 +75,6 @@ def build_scenario(
     data_dir: Path,
     rebalance_days: int,
     index_size: int,
-    initial_cash: float,
     risk_aversion: float,
     data_start: np.datetime64,
     trading_start: np.datetime64,
@@ -203,7 +204,7 @@ def build_scenario(
             stacked["adjusts"],
             upper_limit,
             lower_limit,
-            initial_cash=initial_cash,
+            initial_cash=1.0,
             use_adjusts=True,
         )
     )
@@ -241,7 +242,7 @@ def build_scenario(
                     stacked["adjusts"],
                     upper_limit,
                     lower_limit,
-                    initial_cash=initial_cash,
+                    initial_cash=1.0,
                     use_adjusts=True,
                 )
             )
@@ -277,7 +278,6 @@ if __name__ == "__main__":
         data_dir,
         rebalance_days=args.rebalance_days,
         index_size=args.index_size,
-        initial_cash=args.initial_cash,
         risk_aversion=args.risk_aversion,
         data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
@@ -313,10 +313,29 @@ if __name__ == "__main__":
     ls_value_data = extract_daily(ls_value_handles)
     index_value = session.series_view(handles["index_value"]).to_series()
 
+    # Effective trading start: the earliest date any long-only
+    # Markowitz variant first deviates from `1.0`.  The index baseline
+    # runs frictionlessly with `initial_cash=1.0` from the first
+    # universe tick, so by the time the strategies start trading it
+    # has already drifted away from 1.0; rebasing the index to equal
+    # `args.initial_cash` on this anchor keeps the visual comparison
+    # fair.  The strategy variants all start trading at this anchor
+    # (shared predictor and clock), so anchor-based scaling reduces
+    # to a plain `* initial_cash` for them.
+    strategy_starts = [
+        s
+        for s in (find_effective_trading_start(v, initial_cash=1.0) for v in l_value_data.values())
+        if s is not None
+    ]
+    trading_start = min(strategy_starts) if strategy_starts else None
+    l_value_scaled = {name: v * args.initial_cash for name, v in l_value_data.items()}
+    ls_value_scaled = {name: v * args.initial_cash for name, v in ls_value_data.items()}
+    index_value_scaled = scale_to_initial_cash(index_value, args.initial_cash, trading_start)
+
     for name in mv_handles:
         mv = mv_data[name]
-        l_v = l_value_data[name]
-        ls_v = ls_value_data[name]
+        l_v = l_value_scaled[name]
+        ls_v = ls_value_scaled[name]
         mv_finite = mv[np.isfinite(mv)]
         mv_str = f"ann vol={np.sqrt(mv_finite.mean() * TRADING_DAYS):.4f}" if len(mv_finite) > 0 else "no valid MV"
         l_final = f"{l_v.iloc[-1]:,.0f}" if len(l_v) > 0 else "-"
@@ -354,13 +373,13 @@ if __name__ == "__main__":
     draw_rebalances(ax_l_val)
     ax_l_val.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
     ax_l_val.plot(
-        index_value.index,
-        index_value / 1e4,
+        index_value_scaled.index,
+        index_value_scaled / 1e4,
         color="gray",
         linewidth=0.8,
         label=f"Index (top {args.index_size})",
     )
-    for i, (name, series) in enumerate(l_value_data.items()):
+    for i, (name, series) in enumerate(l_value_scaled.items()):
         ax_l_val.plot(series.index, series / 1e4, label=name, color=f"C{i}", linewidth=0.8)
     ax_l_val.set_ylim(value_ylim)
     ax_l_val.legend(fontsize=9)
@@ -374,13 +393,13 @@ if __name__ == "__main__":
     draw_rebalances(ax_ls_val)
     ax_ls_val.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
     ax_ls_val.plot(
-        index_value.index,
-        index_value / 1e4,
+        index_value_scaled.index,
+        index_value_scaled / 1e4,
         color="gray",
         linewidth=0.8,
         label=f"Index (top {args.index_size})",
     )
-    for i, (name, series) in enumerate(ls_value_data.items()):
+    for i, (name, series) in enumerate(ls_value_scaled.items()):
         ax_ls_val.plot(series.index, series / 1e4, label=name, color=f"C{i}", linewidth=0.8)
     ax_ls_val.set_ylim(value_ylim)
     ax_ls_val.legend(fontsize=9)

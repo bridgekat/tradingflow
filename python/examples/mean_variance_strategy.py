@@ -41,8 +41,10 @@ from common import (
     build_price_limits,
     build_rebalance_clock,
     build_stacked,
+    find_effective_trading_start,
     make_progress_tracker,
     resolve_data_start,
+    scale_to_initial_cash,
     validate_data_dir,
 )
 
@@ -54,7 +56,6 @@ def build_scenario(
     data_dir: Path,
     risk_aversions: list[float],
     rebalance_days: int,
-    initial_cash: float,
     index_size: int,
     data_start: np.datetime64,
     trading_start: np.datetime64,
@@ -138,7 +139,7 @@ def build_scenario(
             stacked["adjusts"],
             upper_limit,
             lower_limit,
-            initial_cash=initial_cash,
+            initial_cash=1.0,
             use_adjusts=True,
         )
     )
@@ -166,7 +167,7 @@ def build_scenario(
                 stacked["adjusts"],
                 upper_limit,
                 lower_limit,
-                initial_cash=initial_cash,
+                initial_cash=1.0,
                 use_adjusts=True,
             )
         )
@@ -225,7 +226,6 @@ if __name__ == "__main__":
         data_dir,
         risk_aversions=RISK_AVERSIONS,
         rebalance_days=args.rebalance_days,
-        initial_cash=args.initial_cash,
         index_size=args.index_size,
         data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
@@ -255,10 +255,38 @@ if __name__ == "__main__":
             "compound": compound,
             "frontier": frontier,
         }
+
+    # Effective trading start: the earliest date on which any Markowitz
+    # variant first deviates from `1.0`.  The index baseline runs
+    # frictionlessly with `initial_cash=1.0` from the first universe
+    # tick, so by the time the strategies start trading it has already
+    # drifted away from 1.0; rebasing the index to equal
+    # `args.initial_cash` on this anchor keeps the visual comparison
+    # fair.  The Markowitz variants all start trading at this anchor
+    # (shared predictor and clock), so anchor-based scaling reduces to
+    # a plain `* initial_cash` for them.
+    strategy_starts = [
+        s
+        for s in (find_effective_trading_start(r["value"], initial_cash=1.0) for r in results.values())
+        if s is not None
+    ]
+    trading_start = min(strategy_starts) if strategy_starts else None
+    for delta, result in results.items():
+        result["value_scaled"] = result["value"] * args.initial_cash
+    index_value_scaled = scale_to_initial_cash(index_value, args.initial_cash, trading_start)
+
+    for delta, result in results.items():
+        compound = result["compound"]
+        sharpe = result["sharpe"]
+        drawdown = result["drawdown"]
+        value_scaled = result["value_scaled"]
         car = ((compound.iloc[-1] + 1) ** periods_per_year - 1) if len(compound) > 0 else 0.0
         sr = sharpe.iloc[-1] * np.sqrt(periods_per_year) if len(sharpe) > 0 else 0.0
         mdd = drawdown.min() if len(drawdown) > 0 else 0.0
-        print(f"delta={delta:.1f}: final={value.iloc[-1]:,.0f} CNY, annual={car:.2%}, sharpe={sr:.3f}, mdd={mdd:.2%}")
+        print(
+            f"delta={delta:.1f}: final={value_scaled.iloc[-1]:,.0f} CNY, "
+            f"annual={car:.2%}, sharpe={sr:.3f}, mdd={mdd:.2%}"
+        )
 
     # ------------------------------------------------------------------
     # Plot
@@ -282,16 +310,16 @@ if __name__ == "__main__":
     draw_rebalances(ax)
     ax.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
     ax.plot(
-        index_value.index,
-        index_value / 1e4,
+        index_value_scaled.index,
+        index_value_scaled / 1e4,
         color="gray",
         linewidth=0.8,
         label=f"Index (top {args.index_size})",
     )
     for (delta, result), color in zip(results.items(), colors):
         ax.plot(
-            result["value"].index,
-            result["value"] / 1e4,
+            result["value_scaled"].index,
+            result["value_scaled"] / 1e4,
             color=color,
             linewidth=0.8,
             label=f"delta={delta}",

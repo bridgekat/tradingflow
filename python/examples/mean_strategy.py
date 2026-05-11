@@ -57,8 +57,10 @@ from common import (
     build_price_limits,
     build_rebalance_clock,
     build_stacked,
+    find_effective_trading_start,
     make_progress_tracker,
     resolve_data_start,
+    scale_to_initial_cash,
     validate_data_dir,
 )
 
@@ -142,7 +144,7 @@ def build_scenario(
             stacked["adjusts"],
             upper_limit,
             lower_limit,
-            initial_cash=initial_cash,
+            initial_cash=1.0,
             use_adjusts=True,
         )
     )
@@ -154,7 +156,7 @@ def build_scenario(
             stacked["adjusts"],
             upper_limit,
             lower_limit,
-            initial_cash=initial_cash,
+            initial_cash=1.0,
             use_adjusts=True,
         )
     )
@@ -257,6 +259,19 @@ if __name__ == "__main__":
 
     total_value = strategy_actual.sum(axis=1)
 
+    # Effective trading start: the first date on which the strategy NAV
+    # first deviates from `initial_cash`.  The index baseline runs
+    # frictionlessly with `initial_cash=1.0` from the very first
+    # universe tick, so by the time the strategy starts trading it has
+    # already moved away from 1.0; rebasing the index to equal
+    # `args.initial_cash` on this date keeps the visual comparison
+    # fair.  The frictionless strategy starts trading at the same date
+    # as the actual one (shared soft positions), so anchor-based
+    # scaling reduces to a plain `* initial_cash` for it.
+    trading_start = find_effective_trading_start(total_value, initial_cash=args.initial_cash)
+    index_total_scaled = scale_to_initial_cash(index.sum(axis=1), args.initial_cash, trading_start)
+    strategy_frictionless_total_scaled = strategy_frictionless.sum(axis=1) * args.initial_cash
+
     # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
@@ -304,16 +319,16 @@ if __name__ == "__main__":
     draw_rebalances(ax)
     ax.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
     ax.plot(
-        index.index,
-        index.sum(axis=1) / 1e4,
+        index_total_scaled.index,
+        index_total_scaled / 1e4,
         color="gray",
         linestyle="--",
         linewidth=0.8,
         label=f"Index (top {args.index_size})",
     )
     ax.plot(
-        strategy_frictionless.index,
-        strategy_frictionless.sum(axis=1) / 1e4,
+        strategy_frictionless_total_scaled.index,
+        strategy_frictionless_total_scaled / 1e4,
         color="C0",
         linestyle="--",
         linewidth=0.8,

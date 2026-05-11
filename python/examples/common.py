@@ -29,7 +29,10 @@ beyond their strategy-specific logic.  Sections:
    [`build_demeaned_log_return_target`][common.build_demeaned_log_return_target],
    [`build_price_limits`][common.build_price_limits],
    [`calculate_index_weights`][common.calculate_index_weights].
-7. **Progress reporting** --
+7. **Benchmark scaling for plots** --
+   [`find_effective_trading_start`][common.find_effective_trading_start],
+   [`scale_to_initial_cash`][common.scale_to_initial_cash].
+8. **Progress reporting** --
    [`make_progress_tracker`][common.make_progress_tracker].
 
 Routing every example through these helpers keeps mean_strategy.py,
@@ -48,6 +51,7 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 
 from a_shares_crawler.types import Schema as CSVSchema
@@ -170,7 +174,11 @@ def add_common_arguments(parser: argparse.ArgumentParser, *, include_initial_cas
     Adds ``--data-dir``, ``--sample-begin``, ``-b/--begin``, ``-e/--end``,
     ``--rebalance-days``, ``--index-size``, ``--markets``.  Pass
     ``include_initial_cash=True`` to also add ``--initial-cash`` (used
-    by the trading examples; factor_ic.py for portfolio scaling too).
+    by the trading examples to set the
+    [`RandomTrader`][tradingflow.operators.traders.simple.RandomTrader]
+    starting capital and to rebase unit-cash :class:`Benchmark` curves
+    to a comparable y-axis via
+    [`scale_to_initial_cash`][common.scale_to_initial_cash]).
     """
     parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
     parser.add_argument("--sample-begin", type=np.datetime64, default=None, help="data sampling start date")
@@ -653,6 +661,47 @@ def build_price_limits(
         Apply((prev_close,), lambda c: np.round(c * (1.0 - limit_pct), 2), shape=(num_stocks,), dtype=np.float64)
     )
     return upper, lower
+
+
+# =====================================================================
+# Benchmark scaling for plots
+# =====================================================================
+
+
+def find_effective_trading_start(value: pd.Series, initial_cash: float = 1.0) -> pd.Timestamp | None:
+    """First date on which a recorded NAV first deviates from ``initial_cash``.
+
+    Every example wires :class:`Benchmark` with ``initial_cash=1.0`` so
+    its output stays at ``1.0`` until upstream soft positions trigger
+    the first non-trivial trade.  This helper returns the date of that
+    first trade, used as the anchor for
+    [`scale_to_initial_cash`][common.scale_to_initial_cash] so a unit-
+    cash baseline can be lined up with a strategy NAV that starts at a
+    larger nominal capital.  Returns ``None`` if `value` is constant at
+    ``initial_cash`` across the whole series.
+    """
+    mask = ~np.isclose(value.to_numpy(), initial_cash)
+    if not mask.any():
+        return None
+    return value.index[int(mask.argmax())]
+
+
+def scale_to_initial_cash(value: pd.Series, initial_cash: float, anchor: pd.Timestamp | None) -> pd.Series:
+    """Rescale a unit-cash NAV so that ``value.asof(anchor) == initial_cash``.
+
+    Pair with [`find_effective_trading_start`][common.find_effective_trading_start]
+    to align a unit-cash :class:`Benchmark` curve with a strategy NAV
+    that starts at a larger ``initial_cash``: both curves then equal
+    ``initial_cash`` on the strategy's effective trading start date.
+    Falls back to plain ``value * initial_cash`` when ``anchor`` is
+    ``None`` or no value at or before ``anchor`` is available.
+    """
+    if anchor is None:
+        return value * initial_cash
+    v = value.asof(anchor)
+    if not np.isfinite(v) or v == 0:
+        return value * initial_cash
+    return value * (initial_cash / float(v))
 
 
 # =====================================================================
