@@ -19,10 +19,14 @@ class RandomTrader(SimpleTrader):
     ----------
     soft_positions
         Soft position weights, shape `(num_stocks,)`.
-    prices
-        Stacked OHLCV prices, shape `(num_stocks, 5)`.
+    close
+        Stacked unadjusted close prices, shape `(num_stocks,)`.
     adjusts
         Stacked forward adjustment factors, shape `(num_stocks,)`.
+    upper_limit, lower_limit
+        Today's daily price-limit thresholds, shape `(num_stocks,)`.
+        Forwarded to
+        [`SimpleTrader`][tradingflow.operators.traders.simple_trader.SimpleTrader].
     portfolio_size
         Number of stocks to hold.
     **kwargs
@@ -32,8 +36,10 @@ class RandomTrader(SimpleTrader):
     def __init__(
         self,
         soft_positions,
-        prices,
+        close,
         adjusts,
+        upper_limit,
+        lower_limit,
         *,
         portfolio_size: int = 20,
         **kwargs,
@@ -41,8 +47,10 @@ class RandomTrader(SimpleTrader):
         rng = np.random.default_rng()
         super().__init__(
             soft_positions,
-            prices,
+            close,
             adjusts,
+            upper_limit,
+            lower_limit,
             trade_fn=lambda state, sp: _trade_fn(state, sp, portfolio_size, rng),
             **kwargs,
         )

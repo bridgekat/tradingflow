@@ -14,17 +14,12 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
-from a_shares_crawler.types import Schema as CSVSchema
-
-from tradingflow import Scenario, Schema
+from tradingflow import Scenario
 from tradingflow.sources import CSVSource
 from tradingflow.operators import Map, Record, Select, Stack
 from tradingflow.operators.num import Multiply
 
-from stocks import load_symbols, add_market_argument
-
-PRICE_SCHEMA = Schema(CSVSchema.daily_prices().iter_field_ids())
-EQUITY_SCHEMA = Schema(CSVSchema.equity_structures().iter_field_ids())
+from common import EQUITY_SCHEMA, PRICE_SCHEMA, add_market_argument, load_symbols
 
 
 def build_scenario(
