@@ -23,6 +23,13 @@ class BenchmarkState:
     last_adjust: np.ndarray = field(default_factory=lambda: np.empty(0))
     last_close: np.ndarray = field(default_factory=lambda: np.empty(0))
 
+    # Rebalance signal observed on the previous tick, awaiting
+    # execution at today's open.  `None` when there is no pending
+    # signal.  Deferring execution by one tick keeps the signal's
+    # information set (universe construction, factor values, ...)
+    # strictly older than the execution price.
+    pending_positions: np.ndarray | None = None
+
 
 class Benchmark(
     Operator[
@@ -39,16 +46,22 @@ class Benchmark(
 
     1. Adjusts held shares for dividend reinvestment via forward
        adjustment factor changes.
-    2. If the soft-positions input was updated (rebalance signal), first
-       force-liquidates held positions in stocks with no valid exec
-       price today (suspended or delisted) at their last valid close,
-       then rebalances the remaining tradable stocks to their target
-       allocations via a single net trade at today's open:
-       `target_shares = soft_positions * current_value / open_price`,
+    2. If a rebalance signal was received on the **previous** tick,
+       first force-liquidates held positions in stocks with no valid
+       exec price today (suspended or delisted) at their last valid
+       close, then rebalances the remaining tradable stocks to their
+       target allocations via a single net trade at today's open:
+       `target_shares = pending_positions * current_value / open_price`,
        executed as fractional shares with no transaction fees and no lot
        rounding.  Suspended or delisted stocks hold zero shares
        post-rebalance.
-    3. Outputs a 2-element array `(holdings_value, cash)` where
+    3. If the soft-positions input was updated this tick, stores it as
+       the pending signal for execution on the **next** tick.  Trading
+       is therefore deferred by one tick, so today's signal (derived
+       from data observable at today's close) is executed at tomorrow's
+       open - the universe construction never has access to the
+       execution-price information set.
+    4. Outputs a 2-element array `(holdings_value, cash)` where
        `holdings_value` is positions valued at closing prices and
        `cash` is the cash balance.  Total portfolio value is their sum.
 
@@ -144,7 +157,6 @@ class Benchmark(
         timestamp: int,
         produced: tuple[bool, ...],
     ) -> bool:
-        N = state.num_stocks
         soft_positions = inputs[0].value()
         prices = inputs[1].value()
         adjusts = inputs[2].value()
@@ -154,48 +166,60 @@ class Benchmark(
         # Adjust shares for dividends (reinvesting all dividends).
         if state.use_adjusts:
             valid_adjusts = np.isfinite(adjusts) & (adjusts > 0)
-            valid_last_adjusts = state.last_adjust > 0
-            adjust_mask = valid_adjusts & valid_last_adjusts
+            adjust_mask = valid_adjusts & (state.last_adjust > 0)
             state.shares[adjust_mask] *= adjusts[adjust_mask] / state.last_adjust[adjust_mask]
             state.last_adjust[valid_adjusts] = adjusts[valid_adjusts]
 
-        # Update the last-valid-close carry-forward for stocks that
-        # ticked this cycle; suspended stocks retain their previous
-        # last-valid close.
-        close_tick = np.isfinite(closes)
-        state.last_close[close_tick] = closes[close_tick]
-
-        # Rebalance if soft positions input was updated.
-        rebalance = produced[0]
-        if rebalance:
-
-            # Step 1: force-liquidate positions in stocks with no valid
-            # exec price today (suspended or delisted) at their last
-            # valid close - the simulator assumes an idealised exit even
-            # when no open-market trade is actually possible.
+        # Execute pending rebalance from the previous tick: signal
+        # observed one tick ago, executed at today's open, sized at
+        # yesterday's close.  Performed BEFORE the `last_close` update
+        # so valuation uses yesterday's close (= the close of the tick
+        # on which the signal was generated) - this eliminates both the
+        # intraday open/close lookahead and the upstream "signal sees
+        # today's data, trades at today's open" lookahead in one step.
+        if state.pending_positions is not None:
+            pending = state.pending_positions
             valid_exec = np.isfinite(opens) & (opens > 0)
+
+            # Step 1: force-liquidate held positions in stocks with no
+            # valid exec price today (suspended or delisted) at their
+            # last valid close - the simulator assumes an idealised
+            # exit even when no open-market trade is actually possible.
             force_liq = (state.shares != 0) & ~valid_exec & np.isfinite(state.last_close)
             state.cash += np.sum(state.shares[force_liq] * state.last_close[force_liq])
             state.shares[force_liq] = 0.0
 
-            # Step 2: compute portfolio value post force-liquidation,
-            # then rebalance tradable stocks to target via a single net
-            # trade.  (In a frictionless benchmark this coincides with
-            # full liquidate + re-enter; the delta form keeps the logic
-            # consistent with `SimpleTrader`, which must use it to avoid
-            # doubling fees.)
+            # Step 2: compute portfolio value post force-liquidation
+            # using yesterday's close, then rebalance tradable stocks to
+            # target via a single net trade at today's open.  (In a
+            # frictionless benchmark this coincides with full liquidate
+            # + re-enter; the delta form keeps the logic consistent
+            # with `SimpleTrader`, which must use it to avoid doubling
+            # fees.)
             held = (state.shares != 0) & np.isfinite(state.last_close)
             current_value = state.cash + np.sum(state.shares[held] * state.last_close[held])
-            for i in range(N):
-                if not valid_exec[i]:
-                    continue
-                p = opens[i]
-                target_shares = soft_positions[i] * current_value / p
-                trade_shares = target_shares - state.shares[i]
-                state.cash -= trade_shares * p
-                state.shares[i] += trade_shares
+            safe_opens = np.where(valid_exec, opens, 1.0)
+            target_shares = pending * current_value / safe_opens
+            trade_shares = np.where(valid_exec, target_shares - state.shares, 0.0)
+            state.cash -= np.sum(trade_shares * safe_opens)
+            state.shares += trade_shares
 
-        # Output (holdings_value, cash).  Total portfolio value = sum.
+            state.pending_positions = None
+
+        # Store new rebalance signal for execution on the NEXT tick.
+        # `.value()` already returns a fresh copy, but `.copy()` makes
+        # the one-tick-delay intent explicit at the storage site.
+        if produced[0]:
+            state.pending_positions = soft_positions.copy()
+
+        # Update the last-valid-close carry-forward for stocks that
+        # ticked this cycle; suspended stocks retain their previous
+        # last-valid close.  Done AFTER the rebalance so today's close
+        # is only ever used for end-of-day mark-to-market.
+        close_tick = np.isfinite(closes)
+        state.last_close[close_tick] = closes[close_tick]
+
+        # Output `(holdings_value, cash)`.  Total portfolio value = sum.
         held = (state.shares != 0) & np.isfinite(state.last_close)
         holdings_value = np.sum(state.shares[held] * state.last_close[held])
         output.write(np.array([holdings_value, state.cash], dtype=np.float64))

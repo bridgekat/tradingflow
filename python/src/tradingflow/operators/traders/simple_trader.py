@@ -27,6 +27,12 @@ class SimpleTraderState:
     last_adjust: np.ndarray = field(default_factory=lambda: np.empty(0))
     last_close: np.ndarray = field(default_factory=lambda: np.empty(0))
 
+    # Rebalance signal observed on the previous tick, awaiting
+    # execution at today's open.  `None` when there is no pending
+    # signal.  Deferring execution by one tick keeps the signal's
+    # information set strictly older than the execution price.
+    pending_positions: np.ndarray | None = None
+
     # Transient values set by compute() before calling trade_fn().
     _current_value: np.ndarray = field(default_factory=lambda: np.array(0.0))
     _exec_price: np.ndarray = field(default_factory=lambda: np.empty(0))
@@ -57,16 +63,22 @@ class SimpleTrader(
 
     1. Adjusts held shares for dividend reinvestment via forward
        adjustment factor changes.
-    2. If the soft-positions input was updated (rebalance signal), first
-       force-liquidates held positions in stocks with no valid exec
-       price today (suspended or delisted) at their last valid close -
-       each forced sale charged the same fee as a normal trade - then
-       calls `trade_fn` with the post-liquidation state to obtain
-       net-delta lots for the rest, and executes those lots at today's
-       open.  Tradable stocks therefore incur at most one trade (one
-       fee) per rebalance, not two.  Suspended / delisted stocks receive
-       zero shares post-rebalance.
-    3. Outputs a 2-element array `(holdings_value, cash)` where
+    2. If a rebalance signal was received on the **previous** tick,
+       first force-liquidates held positions in stocks with no valid
+       exec price today (suspended or delisted) at their last valid
+       close - each forced sale charged the same fee as a normal
+       trade - then calls `trade_fn` with the post-liquidation state
+       to obtain net-delta lots for the rest, and executes those lots
+       at today's open.  Tradable stocks therefore incur at most one
+       trade (one fee) per rebalance, not two.  Suspended / delisted
+       stocks receive zero shares post-rebalance.
+    3. If the soft-positions input was updated this tick, stores it as
+       the pending signal for execution on the **next** tick.  Trading
+       is therefore deferred by one tick, so today's signal (derived
+       from data observable at today's close) is executed at tomorrow's
+       open - the upstream signal construction never has access to the
+       execution-price information set.
+    4. Outputs a 2-element array `(holdings_value, cash)` where
        *holdings_value* is positions valued at closing prices and
        *cash* is the cash balance.  Total portfolio value is their sum.
 
@@ -107,8 +119,8 @@ class SimpleTrader(
     - **Fixed market impact**: transaction costs are modelled as a flat
         fee plus a proportional rate.  There is no slippage, spread, or
         volume-dependent impact.
-    - **Immediate execution**: all trades execute instantly at the
-        opening price of the current tick.
+    - **One-tick-delayed execution**: a signal received this tick is
+        executed at the opening price of the **next** tick.
 
     These assumptions are a reasonable approximation when trading sizes
     are small relative to market liquidity, but become inaccurate as
@@ -206,38 +218,34 @@ class SimpleTrader(
 
         # Adjust shares for dividends (reinvesting all dividends).
         valid_adjusts = np.isfinite(adjusts) & (adjusts > 0)
-        valid_last_adjusts = state.last_adjust > 0
-        adjust_mask = valid_adjusts & valid_last_adjusts
+        adjust_mask = valid_adjusts & (state.last_adjust > 0)
         state.shares[adjust_mask] *= adjusts[adjust_mask] / state.last_adjust[adjust_mask]
         state.last_adjust[valid_adjusts] = adjusts[valid_adjusts]
 
-        # Update the last-valid-close carry-forward for stocks that
-        # ticked this cycle; suspended stocks retain their previous
-        # last-valid close.
-        close_tick = np.isfinite(closes)
-        state.last_close[close_tick] = closes[close_tick]
-
-        # Rebalance if soft positions input was updated.
-        rebalance = produced[0]
+        # Execute pending rebalance from the previous tick: signal
+        # observed one tick ago, executed at today's open, sized at
+        # yesterday's close.  Performed BEFORE the `last_close` update
+        # so valuation uses yesterday's close (= the close of the tick
+        # on which the signal was generated) - this eliminates both the
+        # intraday open/close lookahead and the upstream "signal sees
+        # today's data, trades at today's open" lookahead in one step.
         traded = False
-        if rebalance:
+        if state.pending_positions is not None:
+            pending = state.pending_positions
+            valid_exec = np.isfinite(opens) & (opens > 0)
 
-            # Step 1: force-liquidate positions in stocks with no valid
-            # exec price today (suspended or delisted) at their last
-            # valid close - the simulator assumes an idealised exit even
-            # when no open-market trade is actually possible.  Each
-            # forced sale is charged the same fee as a normal trade.
-            exec_price = opens
-            valid_exec = np.isfinite(exec_price) & (exec_price > 0)
-            force_liq_idx = np.where((state.shares != 0) & ~valid_exec & np.isfinite(state.last_close))[0]
-
-            for i in force_liq_idx:
-                sell_value = state.shares[i] * state.last_close[i]
-                state.cash += sell_value
-                fee = max(state.fee_base, abs(sell_value) * state.fee_rate)
-                state.cash -= fee
-                state.shares[i] = 0.0
-                traded = True
+            # Step 1: force-liquidate held positions in stocks with no
+            # valid exec price today (suspended or delisted) at their
+            # last valid close - the simulator assumes an idealised
+            # exit even when no open-market trade is actually possible.
+            # Each forced sale is charged the same fee as a normal
+            # trade.
+            force_liq = (state.shares != 0) & ~valid_exec & np.isfinite(state.last_close)
+            sell_values = state.shares[force_liq] * state.last_close[force_liq]
+            fees = np.maximum(state.fee_base, np.abs(sell_values) * state.fee_rate)
+            state.cash += np.sum(sell_values - fees)
+            state.shares[force_liq] = 0.0
+            traded |= bool(force_liq.any())
 
             # Step 2: compute portfolio value post force-liquidation,
             # then ask `trade_fn` for net delta lots.  Tradable stocks
@@ -245,16 +253,16 @@ class SimpleTrader(
             # rebalance, not two.
             held = (state.shares != 0) & np.isfinite(state.last_close)
             state._current_value = state.cash + np.sum(state.shares[held] * state.last_close[held])
-            state._exec_price = exec_price
-
-            trade_lots = state.trade_fn(state, soft_positions)
+            state._exec_price = opens
+            trade_lots = state.trade_fn(state, pending)
 
             # Step 3: execute the net delta lots at today's open for
-            # tradable stocks only.
+            # tradable stocks only.  Per-stock loop because of
+            # sub-lot-remnant liquidation and per-trade fees.
             for i in range(N):
-                p = state._exec_price[i]
-                if not np.isfinite(p) or p <= 0:
+                if not valid_exec[i]:
                     continue
+                p = opens[i]
 
                 # Get share counts from lot counts.
                 trade_shares = trade_lots[i] * state.lot_size
@@ -265,9 +273,8 @@ class SimpleTrader(
 
                 if trade_shares != 0:
                     trade_value = trade_shares * p
-                    state.cash -= trade_value
                     fee = max(state.fee_base, abs(trade_value) * state.fee_rate)
-                    state.cash -= fee
+                    state.cash -= trade_value + fee
                     state.shares[i] += trade_shares
                     traded = True
 
@@ -277,7 +284,22 @@ class SimpleTrader(
                     idx = np.where(held_mask)[0]
                     print(f"  positions: { {int(i): state.shares[i] for i in idx} }")
 
-        # Output (holdings_value, cash).  Total portfolio value = sum.
+            state.pending_positions = None
+
+        # Store new rebalance signal for execution on the NEXT tick.
+        # `.value()` already returns a fresh copy, but `.copy()` makes
+        # the one-tick-delay intent explicit at the storage site.
+        if produced[0]:
+            state.pending_positions = soft_positions.copy()
+
+        # Update the last-valid-close carry-forward for stocks that
+        # ticked this cycle; suspended stocks retain their previous
+        # last-valid close.  Done AFTER the rebalance so today's close
+        # is only ever used for end-of-day mark-to-market.
+        close_tick = np.isfinite(closes)
+        state.last_close[close_tick] = closes[close_tick]
+
+        # Output `(holdings_value, cash)`.  Total portfolio value = sum.
         held = (state.shares != 0) & np.isfinite(state.last_close)
         holdings_value = np.sum(state.shares[held] * state.last_close[held])
         output.write(np.array([holdings_value, state.cash], dtype=np.float64))
