@@ -3,7 +3,7 @@
 Compares multiple portfolios optimized with the following formulation:
 
     ```
-    maximize:       mu' x - δ * sqrt(x' Σ x)
+    maximize:       mu' x - δ * x' Σ x
     subject to:     1' x = 1
                     x >= 0
     ```
@@ -29,7 +29,7 @@ from tradingflow.operators import Apply, Map, Record
 from tradingflow.operators.num import Log, Multiply
 from tradingflow.operators.predictors.mean import LinearRegression
 from tradingflow.operators.predictors.variance import Shrinkage
-from tradingflow.operators.portfolios.mean_variance import Markowitz, Mode
+from tradingflow.operators.portfolios.mean_variance import Markowitz, MarkowitzADMM, Mode
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
 
@@ -48,7 +48,7 @@ from common import (
     validate_data_dir,
 )
 
-RISK_AVERSIONS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0]
+RISK_AVERSIONS = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0]
 
 
 def build_scenario(
@@ -60,6 +60,7 @@ def build_scenario(
     data_start: np.datetime64,
     trading_start: np.datetime64,
     end: np.datetime64,
+    optimizer: str = "CVXPY",
 ) -> tuple[Scenario, dict, dict, np.ndarray]:
     """Build the full backtesting scenario."""
 
@@ -146,14 +147,21 @@ def build_scenario(
 
     index_value = sc.add_operator(Map(index, np.sum, shape=(), dtype=np.float64))
 
+    if optimizer == "CVXPY":
+        markowitz_cls = Markowitz
+    elif optimizer == "ADMM":
+        markowitz_cls = MarkowitzADMM
+    else:
+        raise ValueError(f"unknown optimizer={optimizer!r}, expected 'CVXPY' or 'ADMM'")
+
     variants: dict[float, dict[str, Handle]] = {}
     for delta in risk_aversions:
         soft_positions = sc.add_operator(
-            Markowitz(
+            markowitz_cls(
                 universe,
                 predicted_returns,
                 predicted_covariances,
-                mode=Mode.MIN_MEAN_STD_DEV,
+                mode=Mode.MIN_MEAN_VARIANCE,
                 bound=delta,
                 long_only=True,
                 verbose=True,
@@ -217,6 +225,13 @@ def build_scenario(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     add_common_arguments(parser, include_initial_cash=True)
+    parser.add_argument(
+        "--optimizer",
+        choices=["CVXPY", "ADMM"],
+        default="CVXPY",
+        help="Optimization backend: 'CVXPY' uses Markowitz (SCS via CVXPY), "
+        "'ADMM' uses MarkowitzADMM (augmented-saddle ADMM, NumPy/SciPy only).",
+    )
     args = parser.parse_args()
 
     data_dir, symbols = validate_data_dir(args)
@@ -230,6 +245,7 @@ if __name__ == "__main__":
         data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
         end=args.end,
+        optimizer=args.optimizer,
     )
 
     on_flush, progress = make_progress_tracker(
