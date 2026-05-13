@@ -93,7 +93,7 @@ python -m a_shares_crawler --help  # For configuration & download instructions
 
 - [**Daily prices**](python/examples/plot_daily_price.py) - loads daily prices, computes forward-adjusted prices, a moving average, and Bollinger Bands.
 - [**Financial data**](python/examples/plot_financial_data.py) - loads equity structure, balance sheet, income statement, and cash flow data; computes market cap and annualized metrics.
-- [**Total market cap**](python/examples/plot_total_market_cap.py) - sums per-stock circulating market cap across the whole A-shares market over time.
+- [**Total market cap**](python/examples/plot_total_market_cap.py) - builds a cap-weighted A-shares index (top-N by circulating market cap, periodically rebalanced) and plots the sum of constituents' circulating market cap alongside the index's total-return NAV curve.
 
 **Research utilities** (for factor mining):
 

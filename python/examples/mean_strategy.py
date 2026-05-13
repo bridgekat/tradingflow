@@ -13,15 +13,20 @@ The training target is the **cross-sectionally de-meaned, winsorized
 1-step-forward log return** (winsorize first at the 1st / 99th
 percentile, then subtract the per-day cross-sectional mean).  Keeping
 magnitudes (instead of ranking the target too) preserves the scale
-information pooled OLS needs for well-conditioned coefficients; the
-per-day winsorization caps tail leverage; the demean step removes the
-common market-drift component so the predictor focuses on the
+information pooled regression needs for well-conditioned coefficients;
+the per-day winsorization caps tail leverage; the demean step removes
+the common market-drift component so the predictor focuses on the
 idiosyncratic spread.
 
 The pipeline consists of four independent, composable operators:
 
 1. **MeanPredictor** - periodically fits a model and predicts future returns.
-   Subclass: ``LinearRegression`` (pooled OLS regression).
+   Subclass: ``Ridge`` (pooled L2-penalised regression on
+   pool-standardised features; ``alpha=1.0`` under our
+   ``(1/m) ||y - Xβ||² + α ||β||²`` convention gives sample-size-invariant
+   moderate shrinkage - roughly ~50% damping of each coefficient -
+   throughout the backtest, regardless of how the pooled sample count
+   grows from rebalance to rebalance).
 2. **MeanPortfolio** - converts predicted returns into soft positions.
    Subclass: ``RankLinear`` (rank-linear top-fraction selection).
 3. **RandomTrader** - converts soft positions into actual trades
@@ -42,7 +47,7 @@ import matplotlib.pyplot as plt
 from tradingflow import Scenario
 from tradingflow.operators import Map, Record, Stack
 from tradingflow.operators.num import Diff, Log, Multiply
-from tradingflow.operators.predictors.mean import LinearRegression
+from tradingflow.operators.predictors.mean import Ridge
 from tradingflow.operators.portfolios.mean import RankLinear
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.traders.simple import RandomTrader
@@ -118,10 +123,11 @@ def build_scenario(
     )
 
     predicted_returns = sc.add_operator(
-        LinearRegression(
+        Ridge(
             universe,
             features_series,
             target_series,
+            alpha=1.0,
             universe_size=index_size,
             target_offset=1,
             min_periods=100,

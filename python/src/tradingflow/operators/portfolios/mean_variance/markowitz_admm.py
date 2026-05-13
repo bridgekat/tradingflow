@@ -102,8 +102,8 @@ class MarkowitzADMM(MeanVariancePortfolio):
         full_position: bool = True,
         verbose: bool = False,
         rho: float = 1.0,
-        inner_rtol: float = 1e-6,
-        outer_tol: float = 1e-6,
+        inner_rtol: float = 1e-4,
+        outer_tol: float = 1e-4,
         max_outer: int = 2000,
         **kwargs,
     ) -> None:

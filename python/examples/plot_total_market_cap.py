@@ -1,107 +1,193 @@
-"""Plot the total market capitalisation of all A-shares stocks over time.
+"""Plot the total circulating market cap and returns curve of a cap-weighted
+A-shares index.
 
-For each stock: market_cap = close_price * total_shares.  The per-stock
-market caps are stacked into a vector and summed via a Map operator.
+At every rebalance, the top ``--index-size`` A-shares stocks by circulating
+market cap (``close * shares.circulating``) form the index universe; weights
+are proportional to circulating market cap and renormalised to 1, matching
+the selection / weighting convention of CSI / SSE / SZSE indices (which use
+free-float-adjusted cap; circulating cap is the closest proxy available in
+the crawler data).  Two views of the same index are plotted:
 
-Requires `pip install -e ".[examples]"` and A-shares market data downloaded
-via the crawler. See `python -m a_shares_crawler --help` for configuration
+1. **Circulating market cap of the index** -- the sum, across the current
+   index constituents, of per-stock circulating market cap
+   (``close * shares.circulating``).  Updates every trading day as
+   prices move; the constituent set is held fixed between rebalances.
+2. **Index returns curve** -- a frictionless :class:`Benchmark` is wired
+   on the same cap-weighted universe with unit cash and adjusted prices,
+   so its NAV is the total-return curve of the cap-weighted index, with
+   the same one-tick MOC execution semantics used by the strategy
+   examples.
+
+Requires ``pip install -e ".[examples]"`` and A-shares market data downloaded
+via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
 and download instructions.
 """
 
 from pathlib import Path
-from tqdm import tqdm
 import argparse
+
 import numpy as np
 import matplotlib.pyplot as plt
 
 from tradingflow import Scenario
-from tradingflow.sources import CSVSource
-from tradingflow.operators import Map, Record, Select, Stack
+from tradingflow.operators import Apply, Map, Record, Resample
 from tradingflow.operators.num import Multiply
+from tradingflow.operators.traders import Benchmark
 
-from common import EQUITY_SCHEMA, PRICE_SCHEMA, add_market_argument, load_symbols
+from common import (
+    add_common_arguments,
+    build_cap_weighted_universe,
+    build_price_limits,
+    build_rebalance_clock,
+    build_stacked,
+    make_progress_tracker,
+    resolve_data_start,
+    validate_data_dir,
+)
 
 
 def build_scenario(
     symbols: list[str],
     data_dir: Path,
-    start: np.datetime64,
+    rebalance_days: int,
+    index_size: int,
+    data_start: np.datetime64,
+    trading_start: np.datetime64,
     end: np.datetime64,
-) -> tuple[Scenario, dict]:
-    """Build a scenario that sums per-stock market caps."""
+) -> tuple[Scenario, dict, np.ndarray]:
+    """Build a scenario that tracks an A-shares cap-weighted index."""
 
-    history_dir = data_dir / "a_shares_history"
     sc = Scenario()
 
-    market_caps: list = []
-    for symbol in tqdm(symbols, desc="Building scenario"):
-        price_path = history_dir / f"{symbol}.daily_prices.csv"
-        equity_path = history_dir / f"{symbol}.equity_structures.csv"
-        prices = sc.add_source(CSVSource(price_path, PRICE_SCHEMA, time_column="date", start=start, end=end))
-        equity = sc.add_source(CSVSource(equity_path, EQUITY_SCHEMA, time_column="date", start=start, end=end))
-        close = sc.add_operator(Select(prices, PRICE_SCHEMA.index("prices.close")))
-        shares = sc.add_operator(Select(equity, EQUITY_SCHEMA.index("shares.circulating")))
-        market_cap = sc.add_operator(Multiply(close, shares))
-        market_caps.append(market_cap)
+    # Per-stock canonical handles (close, circ_shares, total_shares, adjusts, ...).
+    stacked = build_stacked(sc, symbols, data_dir, data_start=data_start, end=end)
+    num_stocks = len(symbols)
 
-    # Stack all per-stock market caps into (N,), then sum via Map.
-    stacked = sc.add_operator(Stack(market_caps))
-    total = sc.add_operator(Map(stacked, np.nansum, shape=(), dtype=np.float64))
+    # Per-stock circulating market cap, ticking every trading day.  Used
+    # both to rank the universe (matching CSI / SSE / SZSE methodology,
+    # which selects and weights by free-float / circulating cap rather
+    # than total cap) and to plot the index's summed market cap.
+    circ_market_cap = sc.add_operator(Multiply(stacked["close"], stacked["circ_shares"]))
 
-    return sc, {"total_market_cap": sc.add_operator(Record(total))}
+    rebalance_clock, rebalance_dates = build_rebalance_clock(sc, trading_start, end, rebalance_days)
+    universe = build_cap_weighted_universe(
+        sc, circ_market_cap, rebalance_clock, num_stocks=num_stocks, index_size=index_size,
+    )
+
+    # Re-emit the rebalance-day universe weights onto the daily close pulse so
+    # the constituent set is held fixed between rebalances while prices move.
+    daily_universe = sc.add_operator(Resample(stacked["close"], universe))
+
+    # Sum the circulating market cap of the current index constituents.
+    index_circ_market_cap = sc.add_operator(
+        Apply(
+            (daily_universe, circ_market_cap),
+            lambda u, c: np.nansum(np.where(u > 0, c, 0.0)),
+            shape=(),
+            dtype=np.float64,
+        )
+    )
+
+    # Frictionless cap-weighted index NAV with unit cash and dividend
+    # reinvestment, matching the strategy examples' baseline.
+    upper_limit, lower_limit = build_price_limits(sc, stacked["close"], num_stocks=num_stocks)
+    index = sc.add_operator(
+        Benchmark(
+            universe,
+            stacked["close"],
+            stacked["adjusts"],
+            upper_limit,
+            lower_limit,
+            initial_cash=1.0,
+            use_adjusts=True,
+        )
+    )
+    index_value = sc.add_operator(Map(index, np.sum, shape=(), dtype=np.float64))
+
+    return (
+        sc,
+        {
+            "index_circ_market_cap": sc.add_operator(Record(index_circ_market_cap)),
+            "index_value": sc.add_operator(Record(index_value)),
+        },
+        rebalance_dates,
+    )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--data-dir", type=Path, required=True, help="path to crawler data directory")
-    parser.add_argument("-b", "--begin", type=np.datetime64, required=True, help="start date (e.g. 2020-01-01)")
-    parser.add_argument("-e", "--end", type=np.datetime64, required=True, help="end date (e.g. 2025-12-31)")
-    add_market_argument(parser)
+    add_common_arguments(parser)
     args = parser.parse_args()
 
-    data_dir: Path = args.data_dir
-    if not data_dir.is_dir():
-        raise SystemExit(
-            f"Data directory not found: {data_dir}\n"
-            "Run `python -m a_shares_crawler --help` for download instructions."
-        )
+    data_dir, symbols = validate_data_dir(args)
 
-    symbols = load_symbols(data_dir, markets=args.markets)
-    print(f"Discovered {len(symbols)} symbols.")
+    sc, handles, rebalance_dates = build_scenario(
+        symbols,
+        data_dir,
+        rebalance_days=args.rebalance_days,
+        index_size=args.index_size,
+        data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
+        trading_start=args.begin,
+        end=args.end,
+    )
 
-    # Run scenario.
-    sc, handles = build_scenario(symbols, data_dir, start=args.begin, end=args.end)
-
-    progress = tqdm(total=sc.estimated_event_count(), unit=" events", desc="Running scenario")
-
-    def on_flush(_ts: int, events: int, total: int | None) -> None:
-        if total != progress.total:
-            progress.total = total
-        progress.update(events - progress.n)
-
+    on_flush, progress = make_progress_tracker(
+        sc, args.begin, before_desc="Loading samples", after_desc="Running scenario"
+    )
     session = sc.run(on_flush=on_flush)
     progress.close()
 
     # Extract results.
-    total_market_cap = session.series_view(handles["total_market_cap"]).to_series()
+    index_circ_market_cap = session.series_view(handles["index_circ_market_cap"]).to_series()
+    index_value = session.series_view(handles["index_value"]).to_series()
 
-    n = len(total_market_cap)
+    # Restrict to the trading window (drop any warmup before `args.begin`).
+    begin_ts = np.datetime64(args.begin, "ns")
+    index_circ_market_cap = index_circ_market_cap[index_circ_market_cap.index >= begin_ts]
+    index_value = index_value[index_value.index >= begin_ts]
+
+    n = len(index_circ_market_cap)
     if n == 0:
         raise SystemExit("No data produced.")
 
-    print(f"{n} trading days, {total_market_cap.index[0].date()} to {total_market_cap.index[-1].date()}")
+    print(
+        f"{n} trading days, {index_circ_market_cap.index[0].date()} "
+        f"to {index_circ_market_cap.index[-1].date()}"
+    )
+    print(
+        f"Index circulating market cap: "
+        f"{index_circ_market_cap.iloc[0] / 1e12:.2f} -> "
+        f"{index_circ_market_cap.iloc[-1] / 1e12:.2f} CNY (trillion)"
+    )
+    print(
+        f"Index NAV (unit cash, total return): "
+        f"{index_value.iloc[0]:.4f} -> {index_value.iloc[-1]:.4f}"
+    )
 
     # ------------------------------------------------------------------
     # Plot
     # ------------------------------------------------------------------
 
     plt.style.use(["fast"])
-    fig, ax = plt.subplots(figsize=(14, 6))
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 
-    ax.plot(total_market_cap.index, total_market_cap / 1e12, linewidth=0.8)
+    def draw_rebalances(ax):
+        for d in rebalance_dates:
+            ax.axvline(d, color="lightgray", linestyle="--", linewidth=0.4, zorder=0)
+
+    ax = axes[0]
+    ax.set_title(f"Index circulating market cap (top {args.index_size} by circulating market cap)")
     ax.set_ylabel("CNY (trillion)")
+    draw_rebalances(ax)
+    ax.plot(index_circ_market_cap.index, index_circ_market_cap / 1e12, color="C0", linewidth=0.8)
+
+    ax = axes[1]
+    ax.set_title("Index returns (cap-weighted, total return, unit cash)")
+    ax.set_ylabel("NAV")
     ax.set_xlabel("Date")
-    ax.set_title(f"A-shares total circulating market cap ({len(symbols)} stocks)")
+    draw_rebalances(ax)
+    ax.axhline(1.0, color="gray", linewidth=0.5, linestyle="--")
+    ax.plot(index_value.index, index_value, color="C0", linewidth=0.8)
 
     fig.tight_layout()
     plt.show()

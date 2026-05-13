@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 from tradingflow import Scenario, Handle
 from tradingflow.operators import Apply, Map, Record
 from tradingflow.operators.num import Log, Multiply
-from tradingflow.operators.predictors.mean import LinearRegression
+from tradingflow.operators.predictors.mean import Ridge
 from tradingflow.operators.predictors.variance import Shrinkage
 from tradingflow.operators.portfolios.mean_variance import Markowitz, MarkowitzADMM, Mode
 from tradingflow.operators.traders import Benchmark
@@ -106,10 +106,11 @@ def build_scenario(
     )
 
     predicted_returns = sc.add_operator(
-        LinearRegression(
+        Ridge(
             universe,
             features_series,
             target_series,
+            alpha=1.0,
             universe_size=index_size,
             target_offset=1,
             min_periods=100,
