@@ -8,20 +8,14 @@ every rebalance; the remaining rolling price/volume factors are passed
 through as magnitudes (NaN-preserving, so missing stocks stay NaN
 rather than clustering at the top rank).
 
-The realised target fed to the evaluator is the cross-sectionally
-de-meaned daily log return, with winsorization applied first to clip
-outliers at the 1st / 99th percentile of the raw cross-section.
-Combined with the percentile-ranked factors, the reported IC is the
-per-period cross-sectional correlation between ranked factors and
-realised log-return magnitudes: a rank-vs.-magnitude measure that
-penalises factors whose top-rank stocks consistently fail to deliver
-large positive returns, rather than the pure Spearman rank correlation
-a rank-on-rank evaluator would report.  IC is invariant under per-row
-additive shifts, so the demean step leaves the metric unchanged - it
-is included here to keep the target construction identical across the
-mean-forecast examples (`mean_strategy.py`, `mean_variance_strategy.py`,
-`covariance_gmv.py`), where it does help the predictor learn the
-idiosyncratic component instead of the time-varying market drift.
+The realised target fed to the evaluator is the daily log return,
+winsorized at the 1st / 99th percentile of the raw cross-section to
+clip outliers.  Combined with the percentile-ranked factors, the
+reported IC is the per-period cross-sectional correlation between
+ranked factors and realised log-return magnitudes: a rank-vs.-magnitude
+measure that penalises factors whose top-rank stocks consistently
+fail to deliver large positive returns, rather than the pure Spearman
+rank correlation a rank-on-rank evaluator would report.
 
 The IC evaluator is restricted to the cap-weighted top-``index_size``
 universe (same construction as ``mean_strategy.py``): out-of-universe
@@ -41,6 +35,7 @@ and download instructions.
 
 from pathlib import Path
 import argparse
+import json
 
 import numpy as np
 import pandas as pd
@@ -56,7 +51,7 @@ from tradingflow.operators.metrics.mean import InformationCoefficient
 from common import (
     add_common_arguments,
     build_cap_weighted_universe,
-    build_demeaned_log_return_target,
+    build_log_return_target,
     build_features,
     build_price_limits,
     build_rebalance_clock,
@@ -122,18 +117,15 @@ def build_scenario(
     # Cross-sectional features (canonical factor set; see `features.py`).
     features, features_series = build_features(sc, stacked, num_stocks=num_stocks, window=window)
 
-    # `market_cap` for the cap-weighted universe, `log_adj` for the
+    # `circ_market_cap` for the cap-weighted universe, `log_adj` for the
     # daily log-return target.  Both are also built inside
     # `build_features`; the duplication is intentional to keep the
     # helper's return signature minimal.
-    market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
+    circ_market_cap = sc.add_operator(Multiply(stacked["close"], stacked["circ_shares"]))
     log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
 
-    # Winsorize-then-demean target.  IC is rank- (and Pearson-)
-    # invariant under per-row additive shifts, so the demean step
-    # leaves the reported IC unchanged - the chain is here purely to
-    # keep the target construction identical across examples.
-    target, target_series = build_demeaned_log_return_target(sc, log_adj, num_stocks=num_stocks)
+    # Winsorized log-return target.
+    target, target_series, _ = build_log_return_target(sc, log_adj, num_stocks=num_stocks)
 
     # Daily price-limit handles (constant ±10% for now).  Only the
     # optional decile / long-short Benchmark block below actually
@@ -154,7 +146,7 @@ def build_scenario(
     rebalance_clock, rebalance_dates = build_rebalance_clock(sc, eval_start, end, rebalance_days)
     universe = build_cap_weighted_universe(
         sc,
-        market_cap,
+        circ_market_cap,
         rebalance_clock,
         num_stocks=num_stocks,
         index_size=index_size,
@@ -378,6 +370,18 @@ if __name__ == "__main__":
             "and of the long-top-10%% / short-bottom-10%% portfolio"
         ),
     )
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=None,
+        help="if set, save the cumulative-IC and correlation figures plus a stats JSON to this directory",
+    )
+    parser.add_argument(
+        "--stats-out",
+        type=Path,
+        default=None,
+        help="if set, write per-factor IC stats JSON to this path (overrides --save-dir naming)",
+    )
     args = parser.parse_args()
 
     data_dir, symbols = validate_data_dir(args)
@@ -412,6 +416,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
 
     eval_data = {}
+    ic_stats: dict[str, dict] = {}
     for name, handle in eval_handles.items():
         values = session.series_view(handle).values()
         n = len(values)
@@ -425,8 +430,16 @@ if __name__ == "__main__":
             ic_std = finite.std()
             icir = ic_mean / ic_std if ic_std > 0 else np.nan
             print(f"{name}: mean={ic_mean:.4f}, std={ic_std:.4f}, IR={icir:.4f} ({n} periods)")
+            ic_stats[name] = {
+                "mean": float(ic_mean),
+                "std": float(ic_std),
+                "icir": float(icir) if np.isfinite(icir) else None,
+                "n_finite": int(len(finite)),
+                "n_periods": int(n),
+            }
         else:
             print(f"{name}: no valid values")
+            ic_stats[name] = None
 
     # ------------------------------------------------------------------
     # Plot cumulative IC
@@ -500,5 +513,30 @@ if __name__ == "__main__":
             session=session,
             decile_handles=decile_handles,
         )
+
+    # ------------------------------------------------------------------
+    # Optional: save figures and stats JSON
+    # ------------------------------------------------------------------
+
+    if args.save_dir is not None:
+        args.save_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(args.save_dir / f"ic_{args.index_size}.png", dpi=150, bbox_inches="tight")
+        fig_corr.savefig(args.save_dir / f"correlations_{args.index_size}.png", dpi=150, bbox_inches="tight")
+        stats_path = args.stats_out or (args.save_dir / f"stats_factor_ic_k{args.index_size}.json")
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        stats_path.write_text(
+            json.dumps(
+                {
+                    "index_size": args.index_size,
+                    "rebalance_days": args.rebalance_days,
+                    "window": window,
+                    "begin": str(args.begin),
+                    "end": str(args.end),
+                    "factors": ic_stats,
+                },
+                indent=2,
+            )
+        )
+        print(f"Saved figures and stats to {args.save_dir}")
 
     plt.show()

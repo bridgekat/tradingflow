@@ -1,17 +1,26 @@
-"""Backtest Markowitz mean-variance strategies with different risk aversions.
+"""Backtest benchmark-relative (index-enhancement) strategies with different tracking-error budgets.
 
 Compares multiple portfolios optimized with the following formulation:
 
     ```
-    maximize:       mu' x - δ * x' Σ x
-    subject to:     1' x = 1
+    maximize:       mu' x
+    subject to:     (x - x_bm)' Σ (x - x_bm) <= γ_TE²
+                    1' x = 1
                     x >= 0
     ```
 
-where `δ` (risk aversion) is varied across runs.  All variants share
-the same data sources, features, return predictor, and covariance estimator
-within a single computation graph; they diverge only at the portfolio
-construction and trading stages.
+where `γ_TE` (tracking-error budget) is varied across runs and `x_bm`
+is the cap-weighted universe taken as the benchmark.  All variants
+share the same data sources, features, return predictor, and
+covariance estimator within a single computation graph; they diverge
+only at the portfolio construction and trading stages.  Structurally
+parallel to ``mean_variance_strategy.py`` (which sweeps the absolute
+variance-penalty `δ` instead of the active-risk budget `γ_TE`).
+
+Tracking-error budgets are specified in *annualised* fraction (e.g.
+``0.05`` for a 5\\% tracking-error budget) and converted to *daily*
+units (γ_daily = γ_ann / √252) before being passed to the operator,
+which works on the daily moments produced by Ridge and Shrinkage.
 
 Requires ``pip install -e ".[examples]"`` and A-shares market data downloaded
 via the crawler.  See ``python -m a_shares_crawler --help`` for configuration
@@ -31,7 +40,7 @@ from tradingflow.operators import Apply, Map, Record
 from tradingflow.operators.num import Log, Multiply
 from tradingflow.operators.predictors.mean import Ridge
 from tradingflow.operators.predictors.variance import Shrinkage
-from tradingflow.operators.portfolios.mean_variance import Markowitz, MarkowitzADMM, Mode
+from tradingflow.operators.portfolios.mean_variance import BenchmarkRelative
 from tradingflow.operators.traders import Benchmark
 from tradingflow.operators.metrics import CompoundReturn, SharpeRatio, Drawdown
 
@@ -50,19 +59,22 @@ from common import (
     validate_data_dir,
 )
 
-RISK_AVERSIONS = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0]
+# Annualised tracking-error budgets.  Tight (2%) / standard (5%) /
+# loose (10%) tiers for an enhanced-index mandate.  Same length and
+# role as ``RISK_AVERSIONS`` in mean_variance_strategy.py.
+TRACKING_ERRORS_ANN = [0.02, 0.05, 0.10]
+TRADING_DAYS = 252
 
 
 def build_scenario(
     symbols: list[str],
     data_dir: Path,
-    risk_aversions: list[float],
+    tracking_errors_ann: list[float],
     rebalance_days: int,
     index_size: int,
     data_start: np.datetime64,
     trading_start: np.datetime64,
     end: np.datetime64,
-    optimizer: str = "CVXPY",
     noise_alpha: float = 0.0,
     noise_seed: int = 0,
 ) -> tuple[Scenario, dict, dict, np.ndarray]:
@@ -71,26 +83,23 @@ def build_scenario(
     sc = Scenario()
 
     # Load per-stock CSVs and stack into the cross-sectional panel.
-    # See `per_stock.py` for the canonical data pipeline.
+    # See `common.py` for the canonical data pipeline.
     stacked = build_stacked(sc, symbols, data_dir, data_start=data_start, end=end)
 
     num_stocks = len(symbols)
     window = 20
 
-    # Cross-sectional features (canonical factor set; see `features.py`).
+    # Cross-sectional features (canonical factor set; see `common.py`).
     features, features_series = build_features(sc, stacked, num_stocks=num_stocks, window=window)
 
-    # `circ_market_cap` for the cap-weighted universe, `log_adj` for the
-    # daily log-return target.  Both are also built inside
-    # `build_features`; the duplication is intentional to keep the
-    # helper's return signature minimal.
+    # `circ_market_cap` for the cap-weighted universe / benchmark,
+    # `log_adj` for the daily log-return target.
     circ_market_cap = sc.add_operator(Multiply(stacked["close"], stacked["circ_shares"]))
     log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
 
     # Regression target: winsorized daily
-    # log returns.  The predictor pairs feature[i] with
-    # target[i + target_offset] - here target_offset=1, so feature at
-    # day t predicts the return from t to t+1.
+    # log returns.  target_offset=1 → feature at day t predicts the
+    # return from t to t+1.
     target, target_series, demeaned_series = build_log_return_target(sc, log_adj, num_stocks=num_stocks)
 
     # Daily price-limit handles (constant ±10% for now).
@@ -123,8 +132,9 @@ def build_scenario(
     )
 
     # Optional noise injection on the mean predictor: mu' = noise_alpha
-    # * rho + (1 - noise_alpha) * mu, with rho_i iid N(0, std(mu_finite))
-    # per rebalance.  Sigma is NOT perturbed.
+    # * eps + (1 - noise_alpha) * mu, with eps_i iid N(0, std(mu_finite))
+    # per rebalance.  Sigma is NOT perturbed.  Matches the convention in
+    # mean_variance_strategy.py.
     if noise_alpha > 0.0:
         rng = np.random.default_rng(noise_seed)
         a = float(noise_alpha)
@@ -137,8 +147,8 @@ def build_scenario(
             sigma = float(np.std(mu[finite]))
             if sigma <= 0.0:
                 return out
-            rho = rng.normal(0.0, sigma, size=mu.shape)
-            out[finite] = a * rho[finite] + (1.0 - a) * mu[finite]
+            eps = rng.normal(0.0, sigma, size=mu.shape)
+            out[finite] = a * eps[finite] + (1.0 - a) * mu[finite]
             return out
 
         predicted_returns = sc.add_operator(
@@ -158,7 +168,7 @@ def build_scenario(
     )
 
     # ------------------------------------------------------------------
-    # Multiple Markowitz variants (one per risk_aversion)
+    # Multiple BenchmarkRelative variants (one per tracking-error budget)
     # ------------------------------------------------------------------
 
     index = sc.add_operator(
@@ -175,23 +185,20 @@ def build_scenario(
 
     index_value = sc.add_operator(Map(index, np.sum, shape=(), dtype=np.float64))
 
-    if optimizer == "CVXPY":
-        markowitz_cls = Markowitz
-    elif optimizer == "ADMM":
-        markowitz_cls = MarkowitzADMM
-    else:
-        raise ValueError(f"unknown optimizer={optimizer!r}, expected 'CVXPY' or 'ADMM'")
-
     variants: dict[float, dict[str, Handle]] = {}
-    for delta in risk_aversions:
+    for gamma_ann in tracking_errors_ann:
+        # Convert annualised TE budget to the daily scale used by the
+        # operator (matches the 1-day moments produced by Ridge / Shrinkage).
+        gamma_daily = float(gamma_ann) / np.sqrt(TRADING_DAYS)
+
         soft_positions = sc.add_operator(
-            markowitz_cls(
+            BenchmarkRelative(
                 universe,
                 predicted_returns,
                 predicted_covariances,
-                mode=Mode.MIN_MEAN_VARIANCE,
-                bound=delta,
+                bound=gamma_daily,
                 long_only=True,
+                full_position=True,
                 verbose=True,
             )
         )
@@ -210,36 +217,38 @@ def build_scenario(
 
         frictionless_value = sc.add_operator(Map(strategy_frictionless, np.sum, shape=(), dtype=np.float64))
 
-        def _expected_return_risk(x, mu_log, sigma_log):
-            # Markowitz internally converts log-return predictions to
-            # linear-return moments via the lognormal moment map before
-            # optimising; evaluate the resulting weights against the
-            # same linear-return moments so the plotted frontier matches
-            # the objective that was actually maximised.  Evaluating in
-            # log space here would systematically penalise concentrated
-            # high-variance portfolios (via the −½σ² drag) and produce
-            # a non-monotonic frontier at the high-risk end.
-            mask = np.isfinite(x) & (x > 0)
+        def _active_return_risk(x, mu_log, sigma_log, x_bm):
+            # Compute predicted active return and predicted tracking
+            # error against the cap-weighted benchmark, both in the
+            # *linear-return* space that the operator actually optimises
+            # over (after the lognormal moment map).  Mirrors the
+            # `_expected_return_risk` helper in mean_variance_strategy.py
+            # but expressed as benchmark-relative quantities.
+            mask = np.isfinite(x) & np.isfinite(x_bm) & np.isfinite(mu_log)
             x = x[mask]
             mu_log = mu_log[mask]
             sigma_log = sigma_log[np.ix_(mask, mask)]
-            mu = np.expm1(mu_log + 0.5 * np.diag(sigma_log))
-            factor = 1.0 + mu
-            sigma = np.outer(factor, factor) * np.expm1(sigma_log)
-            exp_ret = mu @ x
-            exp_risk = np.sqrt(np.max(x @ sigma @ x, 0))
-            return np.array([exp_ret, exp_risk])
+            x_bm_sub = x_bm[mask]
+            s = x_bm_sub.sum()
+            x_bm_sub = x_bm_sub / s if s > 0 else np.full_like(x_bm_sub, 1.0 / x_bm_sub.size)
+            mu_lin = np.expm1(mu_log + 0.5 * np.diag(sigma_log))
+            factor = 1.0 + mu_lin
+            sigma_lin = np.outer(factor, factor) * np.expm1(sigma_log)
+            active = x - x_bm_sub
+            exp_active_ret = mu_lin @ active
+            exp_te = np.sqrt(max(active @ sigma_lin @ active, 0.0))
+            return np.array([exp_active_ret, exp_te])
 
         frontier_point = sc.add_operator(
             Apply(
-                (soft_positions, predicted_returns, predicted_covariances),
-                _expected_return_risk,
+                (soft_positions, predicted_returns, predicted_covariances, universe),
+                _active_return_risk,
                 shape=(2,),
                 dtype=np.float64,
             )
         )
 
-        variants[delta] = {
+        variants[gamma_ann] = {
             "value": sc.add_operator(Record(frictionless_value)),
             "sharpe": sc.add_operator(Record(sc.add_operator(SharpeRatio(frictionless_value, rebalance_clock)))),
             "drawdown": sc.add_operator(Record(sc.add_operator(Drawdown(frictionless_value)))),
@@ -254,31 +263,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     add_common_arguments(parser, include_initial_cash=True)
     parser.add_argument(
-        "--optimizer",
-        choices=["CVXPY", "ADMM"],
-        default="CVXPY",
-        help="Optimization backend: 'CVXPY' uses Markowitz (SCS via CVXPY), "
-        "'ADMM' uses MarkowitzADMM (augmented-saddle ADMM, NumPy/SciPy only).",
-    )
-    parser.add_argument(
-        "--deltas",
+        "--tracking-errors",
         type=float,
         nargs="+",
         default=None,
-        help=f"override the hardcoded risk-aversion sweep (default {RISK_AVERSIONS})",
+        help=f"override the hardcoded annualised TE budget sweep (default {TRACKING_ERRORS_ANN})",
     )
     parser.add_argument(
         "--save-dir",
         type=Path,
         default=None,
-        help="if set, save the 4-panel figure and per-delta stats JSON to this directory",
+        help="if set, save the 4-panel figure and per-γ stats JSON to this directory",
     )
     parser.add_argument(
         "--noise-alpha",
         type=float,
         default=0.0,
         help="if > 0, inject Gaussian noise into the mean predictor before optimisation: "
-        "mu' = noise_alpha * rho + (1 - noise_alpha) * mu, rho ~ N(0, std(mu)) i.i.d. per stock. "
+        "mu' = noise_alpha * eps + (1 - noise_alpha) * mu, eps ~ N(0, std(mu)) i.i.d. per stock. "
         "Sigma is not perturbed.",
     )
     parser.add_argument(
@@ -290,18 +292,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     data_dir, symbols = validate_data_dir(args)
-    risk_aversions = args.deltas if args.deltas is not None else RISK_AVERSIONS
+    tracking_errors_ann = args.tracking_errors if args.tracking_errors is not None else TRACKING_ERRORS_ANN
 
     sc, variants, handles, rebalance_dates = build_scenario(
         symbols,
         data_dir,
-        risk_aversions=risk_aversions,
+        tracking_errors_ann=tracking_errors_ann,
         rebalance_days=args.rebalance_days,
         index_size=args.index_size,
         data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
         end=args.end,
-        optimizer=args.optimizer,
         noise_alpha=args.noise_alpha,
         noise_seed=args.noise_seed,
     )
@@ -316,13 +317,13 @@ if __name__ == "__main__":
     periods_per_year = 365.0 / args.rebalance_days
     results: dict[float, dict] = {}
     index_value = session.series_view(handles["index_value"]).to_series()
-    for delta, variant in variants.items():
+    for gamma_ann, variant in variants.items():
         value = session.series_view(variant["value"]).to_series()
         sharpe = session.series_view(variant["sharpe"]).to_series()
         drawdown = session.series_view(variant["drawdown"]).to_series()
         compound = session.series_view(variant["compound"]).to_series()
-        frontier = session.series_view(variant["frontier"]).to_dataframe(["exp_return", "exp_risk"])
-        results[delta] = {
+        frontier = session.series_view(variant["frontier"]).to_dataframe(["exp_active_return", "exp_tracking_error"])
+        results[gamma_ann] = {
             "value": value,
             "sharpe": sharpe,
             "drawdown": drawdown,
@@ -330,26 +331,26 @@ if __name__ == "__main__":
             "frontier": frontier,
         }
 
-    # Effective trading start: the earliest date on which any Markowitz
-    # variant first deviates from `1.0`.  The index baseline runs
-    # frictionlessly with `initial_cash=1.0` from the first universe
-    # tick, so by the time the strategies start trading it has already
-    # drifted away from 1.0; rebasing the index to equal
+    # Effective trading start: the earliest date on which any
+    # benchmark-relative variant first deviates from `1.0`.  The index
+    # baseline runs frictionlessly with `initial_cash=1.0` from the
+    # first universe tick, so by the time the strategies start trading
+    # it has already drifted away from 1.0; rebasing the index to equal
     # `args.initial_cash` on this anchor keeps the visual comparison
-    # fair.  The Markowitz variants all start trading at this anchor
-    # (shared predictor and clock), so anchor-based scaling reduces to
-    # a plain `* initial_cash` for them.
+    # fair.  All BR variants start trading at this anchor (shared
+    # predictor and clock), so anchor-based scaling reduces to a plain
+    # `* initial_cash` for them.
     strategy_starts = [
         s
         for s in (find_effective_trading_start(r["value"], initial_cash=1.0) for r in results.values())
         if s is not None
     ]
     trading_start = min(strategy_starts) if strategy_starts else None
-    for delta, result in results.items():
+    for gamma_ann, result in results.items():
         result["value_scaled"] = result["value"] * args.initial_cash
     index_value_scaled = scale_to_initial_cash(index_value, args.initial_cash, trading_start)
 
-    for delta, result in results.items():
+    for gamma_ann, result in results.items():
         compound = result["compound"]
         sharpe = result["sharpe"]
         drawdown = result["drawdown"]
@@ -358,7 +359,7 @@ if __name__ == "__main__":
         sr = sharpe.iloc[-1] * np.sqrt(periods_per_year) if len(sharpe) > 0 else 0.0
         mdd = drawdown.min() if len(drawdown) > 0 else 0.0
         print(
-            f"delta={delta:.1f}: final={value_scaled.iloc[-1]:,.0f} CNY, "
+            f"gamma_ann={gamma_ann:.3f}: final={value_scaled.iloc[-1]:,.0f} CNY, "
             f"annual={car:.2%}, sharpe={sr:.3f}, mdd={mdd:.2%}"
         )
 
@@ -388,23 +389,27 @@ if __name__ == "__main__":
     ax.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
     idx_trim = _trim(index_value_scaled)
     ax.plot(idx_trim.index, idx_trim / 1e4, color="gray", linewidth=1.2, label=f"Index (top {args.index_size})")
-    for (delta, result), color in zip(results.items(), colors):
+    for (gamma_ann, result), color in zip(results.items(), colors):
         v = _trim(result["value_scaled"])
-        ax.plot(v.index, v / 1e4, color=color, linewidth=1.0, label=f"δ={delta}")
+        ax.plot(v.index, v / 1e4, color=color, linewidth=1.0, label=f"BR γ_ann={gamma_ann:.0%}")
     ax.legend(loc="upper left", fontsize=9)
 
     fig.tight_layout()
 
     # ------------------------------------------------------------------
-    # Optional: save figure and per-delta stats JSON
+    # Optional: save figure and per-γ stats JSON
     # ------------------------------------------------------------------
 
     if args.save_dir is not None:
         args.save_dir.mkdir(parents=True, exist_ok=True)
         tag = f"_noise{args.noise_alpha:.1f}" if args.noise_alpha > 0.0 else ""
-        fig.savefig(args.save_dir / f"mean_variance_strategy_{args.index_size}{tag}.png", dpi=150, bbox_inches="tight")
+        fig.savefig(
+            args.save_dir / f"benchmark_relative_strategy_{args.index_size}{tag}.png",
+            dpi=150,
+            bbox_inches="tight",
+        )
 
-        def _stats(value: pd.Series, index: pd.Series, td: int = 252) -> dict | None:
+        def _stats(value: pd.Series, index: pd.Series, td: int = TRADING_DAYS) -> dict | None:
             mask = ~np.isclose(value.to_numpy(), value.iloc[0])
             if not mask.any():
                 return None
@@ -426,26 +431,33 @@ if __name__ == "__main__":
                 beta = float(np.cov(rs, ri, ddof=0)[0, 1] / np.var(ri, ddof=0))
                 alpha_daily = float(rs.mean() - beta * ri.mean())
                 alpha_ann = alpha_daily * td
+                # Realised tracking error = std of (strategy log return -
+                # index log return).  IR = annualised mean active return
+                # over realised annualised TE.
+                active = rs - ri
+                te_ann = float(active.std(ddof=0) * np.sqrt(td))
+                ir = (active.mean() * td) / te_ann if te_ann > 0 else float("nan")
             else:
-                beta = alpha_ann = float("nan")
+                beta = alpha_ann = te_ann = ir = float("nan")
             return {
                 "cagr": float(cagr), "ann_vol": ann_vol, "sharpe": float(sharpe),
                 "mdd": mdd, "beta": beta, "alpha_ann": float(alpha_ann),
+                "tracking_error_ann": float(te_ann), "information_ratio": float(ir),
                 "days": int(len(df)),
             }
 
         stats = {
             "index_size": args.index_size,
             "rebalance_days": args.rebalance_days,
-            "deltas": list(risk_aversions),
+            "tracking_errors_ann": list(tracking_errors_ann),
             "noise_alpha": float(args.noise_alpha),
             "noise_seed": int(args.noise_seed),
             "begin": str(args.begin),
             "end": str(args.end),
             "index": _stats(index_value, index_value),
-            "mv": {str(delta): _stats(result["value"], index_value) for delta, result in results.items()},
+            "br": {f"{g:.3f}": _stats(result["value"], index_value) for g, result in results.items()},
         }
-        stats_path = args.save_dir / f"stats_mean_variance_strategy_k{args.index_size}{tag}.json"
+        stats_path = args.save_dir / f"stats_benchmark_relative_strategy_k{args.index_size}{tag}.json"
         stats_path.write_text(json.dumps(stats, indent=2))
         print(f"Saved figure and stats to {args.save_dir}")
 

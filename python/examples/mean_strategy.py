@@ -9,14 +9,11 @@ rebalance; the remaining rolling price/volume factors are passed
 through as magnitudes.  NaN factor values stay NaN and are ignored by
 the regression.
 
-The training target is the **cross-sectionally de-meaned, winsorized
-1-step-forward log return** (winsorize first at the 1st / 99th
-percentile, then subtract the per-day cross-sectional mean).  Keeping
+The training target is the **winsorized 1-step-forward log return**
+(winsorize at the 1st / 99th percentile of the cross-section).  Keeping
 magnitudes (instead of ranking the target too) preserves the scale
 information pooled regression needs for well-conditioned coefficients;
-the per-day winsorization caps tail leverage; the demean step removes
-the common market-drift component so the predictor focuses on the
-idiosyncratic spread.
+the per-day winsorization caps tail leverage.
 
 The pipeline consists of four independent, composable operators:
 
@@ -40,12 +37,14 @@ and download instructions.
 
 from pathlib import Path
 import argparse
+import json
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
 from tradingflow import Scenario
-from tradingflow.operators import Map, Record, Stack
+from tradingflow.operators import Apply, Map, Record, Stack
 from tradingflow.operators.num import Diff, Log, Multiply
 from tradingflow.operators.predictors.mean import Ridge
 from tradingflow.operators.portfolios.mean import RankLinear
@@ -57,7 +56,7 @@ from tradingflow.operators.metrics.mean import RegressionCoefficients
 from common import (
     add_common_arguments,
     build_cap_weighted_universe,
-    build_demeaned_log_return_target,
+    build_log_return_target,
     build_features,
     build_price_limits,
     build_rebalance_clock,
@@ -79,6 +78,8 @@ def build_scenario(
     data_start: np.datetime64,
     trading_start: np.datetime64,
     end: np.datetime64,
+    noise_alpha: float = 0.0,
+    noise_seed: int = 0,
 ) -> tuple[Scenario, dict, np.ndarray]:
     """Build the full backtesting scenario."""
 
@@ -96,18 +97,18 @@ def build_scenario(
     # Cross-sectional features (canonical factor set; see `common.py`).
     features, features_series = build_features(sc, stacked, num_stocks=num_stocks, window=window)
 
-    # `market_cap` for the cap-weighted universe, `log_adj` for the
+    # `circ_market_cap` for the cap-weighted universe, `log_adj` for the
     # daily log-return target.  Both are also built inside
     # `build_features`; the duplication is intentional to keep the
     # helper's return signature minimal.
-    market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
+    circ_market_cap = sc.add_operator(Multiply(stacked["close"], stacked["circ_shares"]))
     log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
 
-    # Regression target: cross-sectionally de-meaned, winsorized daily
+    # Regression target: winsorized daily
     # log returns.  The predictor pairs feature[i] with
     # target[i + target_offset] - here target_offset=1, so feature at
     # day t predicts the return from t to t+1.
-    target, target_series = build_demeaned_log_return_target(sc, log_adj, num_stocks=num_stocks)
+    target, target_series, demeaned_series = build_log_return_target(sc, log_adj, num_stocks=num_stocks)
 
     # Daily price-limit handles (constant ±10% for now; per-board
     # limits and ST / IPO exceptions are not yet modelled).
@@ -119,14 +120,18 @@ def build_scenario(
 
     rebalance_clock, rebalance_dates = build_rebalance_clock(sc, trading_start, end, rebalance_days)
     universe = build_cap_weighted_universe(
-        sc, market_cap, rebalance_clock, num_stocks=num_stocks, index_size=index_size,
+        sc,
+        circ_market_cap,
+        rebalance_clock,
+        num_stocks=num_stocks,
+        index_size=index_size,
     )
 
     predicted_returns = sc.add_operator(
         Ridge(
             universe,
             features_series,
-            target_series,
+            demeaned_series,
             alpha=1.0,
             universe_size=index_size,
             target_offset=1,
@@ -134,6 +139,31 @@ def build_scenario(
             verbose=True,
         ),
     )
+
+    # Optional noise injection on the mean predictor:
+    # mu' = noise_alpha * rho + (1 - noise_alpha) * mu,
+    # rho_i iid ~ N(0, sigma) with sigma = cross-sectional std of the
+    # finite entries of mu at the current rebalance.  NaN entries are
+    # preserved (out-of-universe / insufficient-data stocks stay NaN).
+    if noise_alpha > 0.0:
+        rng = np.random.default_rng(noise_seed)
+        a = float(noise_alpha)
+
+        def _add_noise(mu: np.ndarray) -> np.ndarray:
+            out = mu.copy()
+            finite = np.isfinite(mu)
+            if not finite.any():
+                return out
+            sigma = float(np.std(mu[finite]))
+            if sigma <= 0.0:
+                return out
+            rho = rng.normal(0.0, sigma, size=mu.shape)
+            out[finite] = a * rho[finite] + (1.0 - a) * mu[finite]
+            return out
+
+        predicted_returns = sc.add_operator(
+            Apply((predicted_returns,), _add_noise, shape=(num_stocks,), dtype=np.float64)
+        )
 
     soft_positions = sc.add_operator(
         RankLinear(
@@ -229,9 +259,70 @@ def build_scenario(
     )
 
 
+def _summary_stats(value: pd.Series, index: pd.Series, trading_days: int = 252) -> dict | None:
+    """Annualised stats over the effective trading window vs an index baseline.
+
+    Both `value` and `index` are NAV series at any common cadence (the
+    Benchmark/RandomTrader records tick daily).  We restrict to the
+    window from the first NAV deviation onwards, align on common dates,
+    drop non-positive NAVs (post-blowup zeros from the bankruptcy guard),
+    and compute CAGR, annualised volatility, Sharpe (rf=0), max drawdown,
+    and full-sample beta / annualised Jensen alpha on daily log returns
+    versus the index.
+    """
+
+    mask = ~np.isclose(value.to_numpy(), value.iloc[0])
+    if not mask.any():
+        return None
+    start = int(mask.argmax())
+    df = pd.concat([value.iloc[start:].rename("s"), index.rename("i")], axis=1).dropna()
+    df = df[(df["s"] > 0) & (df["i"] > 0)]
+    if len(df) < 10:
+        return None
+    s = df["s"].to_numpy()
+    years = len(df) / trading_days
+    cagr = (s[-1] / s[0]) ** (1.0 / years) - 1.0
+    rs = np.diff(np.log(s))
+    ann_vol = float(rs.std(ddof=0) * np.sqrt(trading_days))
+    sharpe = (rs.mean() * trading_days) / ann_vol if ann_vol > 0 else float("nan")
+    peak = np.maximum.accumulate(s)
+    mdd = float((s / peak - 1.0).min())
+    ri = np.diff(np.log(df["i"].to_numpy()))
+    if ri.std(ddof=0) > 0:
+        beta = float(np.cov(rs, ri, ddof=0)[0, 1] / np.var(ri, ddof=0))
+        alpha_daily = float(rs.mean() - beta * ri.mean())
+        alpha_ann = alpha_daily * trading_days
+    else:
+        beta = alpha_ann = float("nan")
+    return {
+        "cagr": float(cagr), "ann_vol": ann_vol, "sharpe": float(sharpe),
+        "mdd": mdd, "beta": beta, "alpha_ann": float(alpha_ann),
+        "days": int(len(df)),
+    }
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     add_common_arguments(parser, include_initial_cash=True)
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=None,
+        help="if set, save the 4-panel figure and frictionless/actual stats JSON to this directory",
+    )
+    parser.add_argument(
+        "--noise-alpha",
+        type=float,
+        default=0.0,
+        help="if > 0, inject Gaussian noise into the mean predictor before the portfolio: "
+        "mu' = noise_alpha * rho + (1 - noise_alpha) * mu, rho ~ N(0, std(mu)) i.i.d. per stock",
+    )
+    parser.add_argument(
+        "--noise-seed",
+        type=int,
+        default=0,
+        help="seed for the noise RNG (deterministic per run)",
+    )
     args = parser.parse_args()
 
     data_dir, symbols = validate_data_dir(args)
@@ -245,9 +336,13 @@ if __name__ == "__main__":
         data_start=resolve_data_start(args.sample_begin, args.begin, args.rebalance_days),
         trading_start=args.begin,
         end=args.end,
+        noise_alpha=args.noise_alpha,
+        noise_seed=args.noise_seed,
     )
 
-    on_flush, progress = make_progress_tracker(sc, args.begin, before_desc="Loading samples", after_desc="Running strategy")
+    on_flush, progress = make_progress_tracker(
+        sc, args.begin, before_desc="Loading samples", after_desc="Running strategy"
+    )
     session = sc.run(on_flush=on_flush)
     progress.close()
 
@@ -309,73 +404,60 @@ if __name__ == "__main__":
     rolling_alpha_annualized = beta_alpha_vals[:, 1] * 252 if len(beta_alpha_vals) else np.empty(0)
 
     # ------------------------------------------------------------------
-    # Plot
+    # Plot: portfolio value vs benchmark only, restricted to the trading
+    # period.  The recorded NAV series begin at the sample-begin date
+    # (2005-01-01) and stay flat at `initial_cash` through the warm-up
+    # until the first rebalance trades (~`begin`); we trim everything
+    # before the effective trading start so only the live segment shows.
     # ------------------------------------------------------------------
 
     plt.style.use(["fast"])
-    fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True, gridspec_kw={"height_ratios": [3, 1, 1, 1]})
+    fig, ax = plt.subplots(figsize=(14, 7))
 
-    def draw_rebalances(ax):
-        for d in rebalance_dates:
-            ax.axvline(d, color="lightgray", linestyle="--", linewidth=0.4, zorder=0)
+    def _trim(s):
+        return s[s.index >= trading_start] if trading_start is not None else s
 
-    ax = axes[0]
-    ax.set_title(f"Portfolio value")
+    ax.set_title(f"Portfolio value vs benchmark (top {args.index_size})")
     ax.set_ylabel("CNY (10k)")
-    draw_rebalances(ax)
-    ax.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
-    ax.plot(
-        index_total_scaled.index,
-        index_total_scaled / 1e4,
-        color="gray",
-        linestyle="--",
-        linewidth=0.8,
-        label=f"Index (top {args.index_size})",
-    )
-    ax.plot(
-        strategy_frictionless_total_scaled.index,
-        strategy_frictionless_total_scaled / 1e4,
-        color="C0",
-        linestyle="--",
-        linewidth=0.8,
-        label="Strategy (frictionless)",
-    )
-    ax.plot(
-        strategy_actual.index,
-        strategy_actual.sum(axis=1) / 1e4,
-        color="C0",
-        linewidth=0.8,
-        label="Strategy (actual)",
-    )
-    ax.legend(loc="upper left", fontsize=8)
-
-    ax = axes[1]
-    ax.set_title("Sharpe ratio annualized (since inception)")
-    ax.set_ylabel("Sharpe ratio")
-    draw_rebalances(ax)
-    ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
-    ax.plot(sharpe.index, sharpe * np.sqrt(periods_per_year), color="C1")
-
-    ax = axes[2]
-    ax.set_title("Drawdown (since previous high)")
-    ax.set_ylabel("Drawdown (%)")
-    draw_rebalances(ax)
-    ax.fill_between(drawdown.index, drawdown * 100, 0, alpha=0.4, color="C3")
-
-    ax = axes[3]
-    ax.set_title("Rolling 1-year market beta / alpha (vs. cap-weighted index, 252-day window)")
-    ax.set_ylabel("Beta")
     ax.set_xlabel("Date")
-    draw_rebalances(ax)
-    ax.axhline(1.0, color="gray", linewidth=0.5, linestyle="--")
-    (line_beta,) = ax.plot(beta_alpha_ts, rolling_beta, color="C2", label="Beta")
-    ax_alpha = ax.twinx()
-    ax_alpha.set_ylabel("Alpha annualized (%)")
-    ax_alpha.axhline(0, color="lightgray", linewidth=0.5, linestyle=":")
-    (line_alpha,) = ax_alpha.plot(
-        beta_alpha_ts, rolling_alpha_annualized * 100, color="C4", linestyle="--", label="Alpha (annualized)"
-    )
-    ax.legend(handles=[line_beta, line_alpha], loc="upper left", fontsize=8)
+    for d in rebalance_dates:
+        ax.axvline(d, color="lightgray", linestyle="--", linewidth=0.4, zorder=0)
+    ax.axhline(args.initial_cash / 1e4, color="gray", linewidth=0.5, linestyle="--", label="Initial")
+    idx_trim = _trim(index_total_scaled)
+    ax.plot(idx_trim.index, idx_trim / 1e4, color="gray", linewidth=1.2, label=f"Index (top {args.index_size})")
+    fric_trim = _trim(strategy_frictionless_total_scaled)
+    ax.plot(fric_trim.index, fric_trim / 1e4, color="C0", linestyle="--", linewidth=1.0, label="Strategy (frictionless)")
+    act_trim = _trim(strategy_actual.sum(axis=1))
+    ax.plot(act_trim.index, act_trim / 1e4, color="C0", linewidth=1.0, label="Strategy (actual)")
+    ax.legend(loc="upper left", fontsize=9)
 
     fig.tight_layout()
+
+    # ------------------------------------------------------------------
+    # Optional: save figure and frictionless/actual stats JSON
+    # ------------------------------------------------------------------
+
+    if args.save_dir is not None:
+        args.save_dir.mkdir(parents=True, exist_ok=True)
+        tag = f"_noise{args.noise_alpha:.1f}" if args.noise_alpha > 0.0 else ""
+        fig.savefig(args.save_dir / f"mean_strategy_{args.index_size}{tag}.png", dpi=150, bbox_inches="tight")
+        # Build pandas value series indexed by tick timestamp.
+        index_value_series = index.sum(axis=1)
+        frictionless_series = strategy_frictionless.sum(axis=1)
+        actual_series = strategy_actual.sum(axis=1)
+        stats = {
+            "index_size": args.index_size,
+            "rebalance_days": args.rebalance_days,
+            "noise_alpha": float(args.noise_alpha),
+            "noise_seed": int(args.noise_seed),
+            "begin": str(args.begin),
+            "end": str(args.end),
+            "index": _summary_stats(index_value_series, index_value_series),
+            "mean_only_frictionless": _summary_stats(frictionless_series, index_value_series),
+            "mean_only_actual": _summary_stats(actual_series, index_value_series),
+        }
+        stats_path = args.save_dir / f"stats_mean_strategy_k{args.index_size}{tag}.json"
+        stats_path.write_text(json.dumps(stats, indent=2))
+        print(f"Saved figure and stats to {args.save_dir}")
+
     plt.show()

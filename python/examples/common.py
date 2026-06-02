@@ -26,7 +26,7 @@ beyond their strategy-specific logic.  Sections:
 6. **Scenario building blocks** --
    [`build_rebalance_clock`][common.build_rebalance_clock],
    [`build_cap_weighted_universe`][common.build_cap_weighted_universe],
-   [`build_demeaned_log_return_target`][common.build_demeaned_log_return_target],
+   [`build_log_return_target`][common.build_log_return_target],
    [`build_price_limits`][common.build_price_limits],
    [`calculate_index_weights`][common.calculate_index_weights].
 7. **Benchmark scaling for plots** --
@@ -471,10 +471,10 @@ def build_features(
         "rank_market_cap": sc.add_operator(Percentile(market_cap)),
         "rank_bp": sc.add_operator(Percentile(bp)),
         "rank_ttm_roe": sc.add_operator(Percentile(ttm_roe)),
-        f"momentum_ma_{window}": momentum_ma,
-        f"volatility_{window}": volatility,
-        f"turnover_ma_{window}": turnover_ma,
-        f"volume_ratio_{window}": volume_ratio,
+        f"momentum_ma_{window}": sc.add_operator(Winsorize(momentum_ma, p=0.01)),
+        f"volatility_{window}": sc.add_operator(Winsorize(volatility, p=0.01)),
+        f"turnover_ma_{window}": sc.add_operator(Winsorize(turnover_ma, p=0.01)),
+        f"volume_ratio_{window}": sc.add_operator(Winsorize(volume_ratio, p=0.01)),
     }
 
     stacked_features = sc.add_operator(Stack(list(features.values()), axis=1))
@@ -561,46 +561,62 @@ def build_cap_weighted_universe(
     )
 
 
-def build_demeaned_log_return_target(
+def build_log_return_target(
     sc: Scenario,
     log_adj: Handle,
     *,
     num_stocks: int,
     p: float = 0.01,
-) -> tuple[Handle, Handle]:
-    """Winsorize-then-demean log returns to use as a regression target.
+) -> tuple[Handle, Handle, Handle]:
+    r"""Winsorize daily log returns; return raw and demeaned variants.
 
-    Returns ``(target, target_series)``: the live cross-sectional
-    target handle and its `Record`.
+    Returns ``(target, target_series, demeaned_series)``:
+
+    - ``target`` -- live winsorized log-return handle (raw, i.e. *not*
+      cross-sectionally demeaned).
+    - ``target_series`` -- `Record` of the raw winsorized returns.
+      **Feed this to the covariance predictor.**
+    - ``demeaned_series`` -- `Record` of the cross-sectionally demeaned
+      winsorized returns.  **Feed this to the mean predictor.**
 
     Order of operations:
 
     1. ``Diff(log_adj)`` to get raw daily log returns.
     2. ``Winsorize(p=p)`` clips outliers at the ``[p, 1-p]``-quantile
        range of the input cross-section.
-    3. ``Apply(... lambda r, m: r - m)`` subtracts the per-day
-       cross-sectional mean of the winsorized values, so the predictor
-       learns the idiosyncratic component instead of the time-varying
-       market drift.
+    3. ``Apply(... r - nanmean(r))`` subtracts the per-day cross-
+       sectional mean (only for ``demeaned_series``).
 
-    The full-position optimization objective is invariant under
-    per-day additive shifts (sum(w) = 1 absorbs the constant in
-    ``E[r_p]``, variance / covariance are shift-invariant), and rank-
-    based portfolio constructors only see the ordering, so the
-    resulting portfolios are unchanged.
+    ## Demean the mean target, but NOT the covariance target
+
+    Cross-sectionally demeaning the target serves the mean predictor:
+    it removes the time-varying market drift so the regression focuses
+    on the idiosyncratic spread (and the rank-based / full-position
+    portfolios are invariant to the per-day level shift this induces in
+    the prediction).
+
+    But the *covariance* predictor must see the **raw** returns.
+    Cross-sectional demeaning is not a per-cross-section additive
+    constant; subtracting the equal-weighted market return
+    \(\bar r(t)\) at each \(t\) removes the common market component of
+    every stock's return, so the resulting sample covariance reflects
+    only idiosyncratic plus \((\beta-1)\)-residual exposure --
+    materially smaller than the true return covariance.  Feeding the
+    demeaned series to the covariance estimator used to produce
+    realised tracking errors 1.8--3.2x larger than the budgeted
+    \(\gamma_{TE}\) in the benchmark-relative strategy.
+
+    Hence the split: mean predictor consumes ``demeaned_series``,
+    covariance predictor consumes ``target_series``.
     """
     log_returns = sc.add_operator(Diff(log_adj))
-    winsorized_log_returns = sc.add_operator(Winsorize(log_returns, p=p))
-    target = sc.add_operator(
-        Apply(
-            (winsorized_log_returns,),
-            lambda r: r - np.nanmean(r),
-            shape=(num_stocks,),
-            dtype=np.float64,
-        )
-    )
+    target = sc.add_operator(Winsorize(log_returns, p=p))
     target_series = sc.add_operator(Record(target))
-    return target, target_series
+    demeaned = sc.add_operator(
+        Apply((target,), lambda r: r - np.nanmean(r), shape=(num_stocks,), dtype=np.float64)
+    )
+    demeaned_series = sc.add_operator(Record(demeaned))
+    return target, target_series, demeaned_series
 
 
 def build_price_limits(

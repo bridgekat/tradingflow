@@ -16,7 +16,7 @@ class MeanVariancePortfolioState:
 
     num_stocks: int
     logarithmic: bool
-    positions_fn: Callable[["MeanVariancePortfolioState", np.ndarray, np.ndarray], np.ndarray]
+    positions_fn: Callable[["MeanVariancePortfolioState", np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 
 
 class MeanVariancePortfolio(
@@ -98,8 +98,15 @@ class MeanVariancePortfolio(
         `(num_stocks, num_stocks)`.  Log or linear depending on
         `logarithmic`.
     positions_fn
-        `(state, mu, Sigma) -> weights`.  Receives only the
+        `(state, mu, Sigma, x_bm) -> weights`.  Receives only the
         universe-active subset, with both moments in linear-return units.
+        `x_bm` is the benchmark weight vector restricted to the same
+        active subset and renormalised to sum to 1, suitable for
+        benchmark-relative formulations (e.g.
+        [`BenchmarkRelative`][tradingflow.operators.portfolios.mean_variance.benchmark_relative.BenchmarkRelative]).
+        Subclasses that don't need the benchmark (e.g.
+        [`Markowitz`][tradingflow.operators.portfolios.mean_variance.markowitz.Markowitz])
+        may accept and ignore it.
     logarithmic
         If `True` (default), the two inputs are interpreted as
         log-return moments and converted via the full lognormal moment
@@ -113,7 +120,9 @@ class MeanVariancePortfolio(
         predicted_returns: Handle,
         predicted_covariances: Handle,
         *,
-        positions_fn: Callable[[MeanVariancePortfolioState, np.ndarray, np.ndarray], np.ndarray],
+        positions_fn: Callable[
+            [MeanVariancePortfolioState, np.ndarray, np.ndarray, np.ndarray], np.ndarray
+        ],
         logarithmic: bool = True,
     ) -> None:
         assert len(universe.shape) == 1
@@ -189,7 +198,18 @@ class MeanVariancePortfolio(
 
         positions = np.zeros_like(universe, dtype=np.float64)
         if mask.any():
-            positions[mask] = state.positions_fn(state, sub_mu, sub_sigma)
+            # Benchmark subset, renormalised to sum to 1 over the active
+            # subset.  When some universe>0 stocks are masked out (NaN
+            # in mu or sigma diagonal), their cap weight is redistributed
+            # proportionally over the kept names so that x_bm still
+            # represents a valid full-position benchmark for the same
+            # subset that x will be optimised over.  Falls back to equal
+            # weights if the kept benchmark mass is non-positive
+            # (shouldn't happen in normal operation since mask ⊆ {universe>0}).
+            sub_universe = universe[mask]
+            s = float(sub_universe.sum())
+            sub_universe = sub_universe / s if s > 0 else np.full(sub_universe.shape, 1.0 / sub_universe.size)
+            positions[mask] = state.positions_fn(state, sub_mu, sub_sigma, sub_universe)
 
         output.write(positions)
         return True

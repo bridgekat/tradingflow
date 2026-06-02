@@ -57,7 +57,7 @@ from tradingflow.operators.metrics.variance import MinimumVariance
 from common import (
     add_common_arguments,
     build_cap_weighted_universe,
-    build_demeaned_log_return_target,
+    build_log_return_target,
     build_features,
     build_price_limits,
     build_rebalance_clock,
@@ -127,21 +127,18 @@ def build_scenario(
     features, features_series = build_features(sc, stacked, num_stocks=num_stocks, window=window)
 
     # Re-compute the handles examples need downstream: `market_cap` for
-    # `market_cap` for the cap-weighted universe, `log_adj` for the
+    # `circ_market_cap` for the cap-weighted universe, `log_adj` for the
     # daily log-return target.  Both are also built inside
     # `build_features`; the duplication is intentional to keep the
     # helper's return signature minimal.
-    market_cap = sc.add_operator(Multiply(stacked["close"], stacked["total_shares"]))
+    circ_market_cap = sc.add_operator(Multiply(stacked["close"], stacked["circ_shares"]))
     log_adj = sc.add_operator(Log(stacked["adjusted_close"]))
 
-    # Regression target: cross-sectionally de-meaned, winsorized daily
-    # log returns.  Both the mean predictor and the covariance
-    # estimators consume `target_series`; both are shift-invariant
-    # under per-day additive shifts, so the demean step changes no
-    # downstream portfolio under full-position constraints.
-    target, target_series = build_demeaned_log_return_target(sc, log_adj, num_stocks=num_stocks)
+    # Regression target: winsorized daily log returns.  Both the mean
+    # predictor and the covariance estimators consume `target_series`.
+    target, target_series, demeaned_series = build_log_return_target(sc, log_adj, num_stocks=num_stocks)
 
-    # Raw (non-winsorized, non-demeaned) daily log returns, used by the
+    # Raw (non-winsorized) daily log returns, used by the
     # `MinimumVariance` metric to score each covariance estimator on
     # realized portfolio variance.
     log_returns = sc.add_operator(Diff(log_adj))
@@ -156,7 +153,7 @@ def build_scenario(
     rebalance_clock, rebalance_dates = build_rebalance_clock(sc, trading_start, end, rebalance_days)
     universe = build_cap_weighted_universe(
         sc,
-        market_cap,
+        circ_market_cap,
         rebalance_clock,
         num_stocks=num_stocks,
         index_size=index_size,
@@ -166,7 +163,7 @@ def build_scenario(
         LinearRegression(
             universe,
             features_series,
-            target_series,
+            demeaned_series,
             universe_size=index_size,
             target_offset=1,
             min_periods=100,
@@ -174,6 +171,7 @@ def build_scenario(
         ),
     )
 
+    # Covariance estimators consume the raw (un-demeaned) target series.
     common_args = (universe, features_series, target_series)
     common_kwargs = dict(universe_size=index_size, target_offset=1, max_periods=rebalance_days)
 
@@ -323,9 +321,7 @@ if __name__ == "__main__":
     # (shared predictor and clock), so anchor-based scaling reduces
     # to a plain `* initial_cash` for them.
     strategy_starts = [
-        s
-        for s in (find_effective_trading_start(v, initial_cash=1.0) for v in l_value_data.values())
-        if s is not None
+        s for s in (find_effective_trading_start(v, initial_cash=1.0) for v in l_value_data.values()) if s is not None
     ]
     trading_start = min(strategy_starts) if strategy_starts else None
     l_value_scaled = {name: v * args.initial_cash for name, v in l_value_data.items()}

@@ -116,7 +116,7 @@ class MarkowitzADMM(MeanVariancePortfolio):
             universe,
             predicted_returns,
             covariance,
-            positions_fn=lambda state, mu, sigma: _solve(
+            positions_fn=lambda state, mu, sigma, x_bm: _solve(
                 mu,
                 sigma,
                 delta=float(bound),
