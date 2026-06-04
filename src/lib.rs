@@ -65,6 +65,7 @@
 //! `cdylib` exposing the runtime to Python.
 
 pub mod data;
+pub mod flow;
 pub mod operator;
 pub mod operators;
 pub mod scenario;

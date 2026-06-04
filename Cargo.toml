@@ -26,6 +26,8 @@ num-traits = "0.2.19"
 csv = "1.3"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 csv-async = { version = "1.3.1", features = ["tokio"] }
+# New synchronous parallel engine (migration branch: see `flow` module).
+flowgraph = { path = "../flowgraph" }
 
 [dev-dependencies]
 criterion = "0.5"
