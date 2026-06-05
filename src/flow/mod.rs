@@ -25,12 +25,15 @@
 //! # Python operators (feature `pyflow`)
 //!
 //! `PyOperator` runs a Python callable as a graph node, taking N `f64` array
-//! inputs to one `f64` array output, with real NumPy and true parallelism on a
-//! free-threaded interpreter. Inputs are copied in (NumPy-owned snapshots) and
-//! the output is exposed zero-copy. Register via `Scenario::add_py_operator`
-//! (return mode) or `Scenario::add_py_operator_writing` (write mode). The
-//! `python` submodule docs cover the contracts, the copy-in/zero-copy data
-//! model, the retention/safety contract, and the free-threaded build/run setup.
+//! inputs to one `f64` array output, with real NumPy. It runs on a single shared
+//! embedded interpreter (GIL by default — NumPy/SciPy/solver work parallelizes
+//! on the pool via GIL release; build against free-threaded CPython for
+//! pure-Python parallelism too, no code change). Inputs are copied in
+//! (NumPy-owned snapshots), output exposed zero-copy. Register via
+//! `Scenario::add_py_operator` (return mode) / `add_py_operator_writing` (write
+//! mode) for lambdas, or `add_py_operator_file` / `PyClassOperator` for
+//! class-based operators loaded from `.py` files (see `flowops`). The `python`
+//! and `pyhost` submodule docs cover the contracts, data model, and setup.
 //!
 //! # Status
 //!

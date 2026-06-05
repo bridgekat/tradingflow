@@ -2,19 +2,19 @@
 //! writing results to CSV for plotting with matplotlib (`examples/plot.py`).
 //!
 //! This is the "compute in Rust, plot in Python" pattern: the whole computation
-//! runs on the flow engine (with Python operators on a free-threaded
-//! interpreter), results are recorded into `Series` and dumped to CSV, and a
-//! small standalone matplotlib script renders them — so the example binary needs
-//! no plotting/GUI dependency.
+//! runs on the flow engine (Python operators on a single embedded interpreter),
+//! results are recorded into `Series` and dumped to CSV, and a small standalone
+//! matplotlib script renders them — so the example binary needs no plotting/GUI
+//! dependency.
 //!
-//! Run (free-threaded interpreter required for `pyflow`):
+//! Run (`pyflow` needs a venv with NumPy; a standard GIL venv is fine):
 //!
 //! ```text
-//! set PYO3_PYTHON=...\.venv-ft\Scripts\python.exe
-//! set PATH=...\pythoncore-3.13t-64;%PATH%          # python3.13t.dll
-//! set PYTHONPATH=...\python;...\.venv-ft\Lib\site-packages   # flowops + numpy
+//! set PYO3_PYTHON=...\.venv\Scripts\python.exe
+//! set PATH=...\pythoncore-3.13-64;%PATH%               # python3.13.dll
+//! set PYTHONPATH=...\python;...\.venv\Lib\site-packages   # flowops + numpy
 //! cargo run --example flowops_demo --features pyflow
-//! python examples/plot.py target/flowops_demo.csv  # render with matplotlib
+//! python examples/plot.py target/flowops_demo.csv      # render with matplotlib
 //! ```
 
 use std::fmt::Write as _;

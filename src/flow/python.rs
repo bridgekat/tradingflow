@@ -1,12 +1,10 @@
-//! Python operators with **true parallelism** and **real NumPy** (feature
-//! `pyflow`).
+//! Python operators with **real NumPy** on a single embedded interpreter
+//! (feature `pyflow`).
 //!
 //! A [`PyOperator`] is a graph node whose compute step is a Python callable. It
 //! takes N `f64` array inputs and produces one `f64` array output; the operator
-//! body is ordinary Python and may use NumPy freely. Operators run on the
-//! [`flowgraph`](flowgraph) work-stealing pool, and on a free-threaded
-//! interpreter they execute **genuinely in parallel** — pure-Python and NumPy
-//! alike.
+//! body is ordinary Python and may use NumPy/SciPy/cvxpy freely. Operators run
+//! on the [`flowgraph`](flowgraph) work-stealing pool.
 //!
 //! This is the *only* form of Python support in the `flow` engine: Python
 //! operators (Python called from Rust). There is **no** Python-as-host API
@@ -14,49 +12,52 @@
 //! embedded. (The legacy `bridge` module provides the host-API wrapper for the
 //! old engine; it is removed at cutover.)
 //!
-//! # Why free-threaded
+//! # Interpreter model (single shared interpreter; easy to switch)
 //!
-//! Standard CPython has one global interpreter lock (GIL), so pure-Python code
-//! cannot run in parallel within one interpreter. Two ways out, and why this
-//! module takes the first:
+//! The bridge embeds **one shared CPython** and enters it per `compute` via
+//! PyO3's [`Python::attach`]. This same code runs, with **no change**, on any of:
 //!
-//! * **Free-threaded CPython** (PEP 703, `python3.13t`, `Py_GIL_DISABLED=1`) —
-//!   no GIL, so threads run Python in parallel within *one* interpreter, and
-//!   NumPy imports and works normally. **This is what `pyflow` targets.**
-//! * Own-GIL sub-interpreters (PEP 684) — also give pure-Python parallelism, but
-//!   can never `import numpy`: NumPy declares no multiple-interpreter support and
-//!   own-GIL forces `check_multi_interp_extensions=1`, so the import is rejected.
-//!   Abandoned for that reason.
+//! * **Standard GIL CPython — the default.** Only one thread runs *Python* at a
+//!   time, but operator work that **releases the GIL** runs truly in parallel on
+//!   the pool: NumPy ufuncs/BLAS, SciPy, and convex solvers (cvxpy + CLARABEL /
+//!   SCS / OSQP) all drop the GIL during their native solve. In quant operators
+//!   that native/solve time *is* the cost, so solve-bound graphs parallelize;
+//!   only pure-Python glue serializes. This is the default because the cvxpy
+//!   solver stack has no free-threaded wheels yet.
+//! * **Free-threaded CPython** (PEP 703, `python3.13t`): no GIL, so pure-Python
+//!   parallelizes too. Build against it by pointing `PYO3_PYTHON` at a
+//!   free-threaded venv — nothing in this module assumes one interpreter mode.
+//! * **Own-GIL sub-interpreters** (PEP 684) are a possible future direction but
+//!   cannot `import numpy` (NumPy declares no multiple-interpreter support), so
+//!   they are not used here.
 //!
-//! On a **standard GIL build** the bridge still produces correct results, but
-//! `compute` calls serialize (no parallelism). The module tests assert a
-//! free-threaded interpreter so the parallelism guarantee is actually exercised.
+//! Because operators only touch Python under `Python::attach` and never assume
+//! the GIL is present or absent, switching modes is a build/runtime config change
+//! (`PYO3_PYTHON` + the venv), not a code change.
 //!
-//! # Setup (free-threaded toolchain)
+//! # Setup
 //!
-//! Install a free-threaded interpreter and a venv with NumPy, e.g. on Windows
-//! via the Python Install Manager:
+//! A venv with the operators' deps (NumPy, and SciPy/cvxpy for the optimizers):
 //!
 //! ```console
-//! py install 3.13t-64                       # free-threaded CPython 3.13t
-//! <path>\python3.13t.exe -m venv .venv-ft   # a free-threaded venv
-//! .venv-ft\Scripts\python -m pip install numpy
+//! python -m venv .venv && .venv\Scripts\python -m pip install numpy scipy cvxpy
 //! ```
 //!
-//! PyO3 links the interpreter named by `PYO3_PYTHON` at build time. The
-//! *embedded* interpreter computes `sys.path` from the base install, so the
-//! environment that actually has NumPy must be made visible at runtime via
-//! `PYTHONPATH` (or `PYTHONHOME`). Build and test with:
+//! PyO3 links the interpreter named by `PYO3_PYTHON` at build time; the embedded
+//! interpreter computes `sys.path` from the base install, so make the venv's
+//! packages (and `python/`, for the `flowops` operator package) visible at
+//! runtime via `PYTHONPATH`. Build and test with:
 //!
 //! ```console
-//! set PYO3_PYTHON=<abs>\.venv-ft\Scripts\python.exe
-//! set PATH=<dir containing python3.13t.dll>;%PATH%
-//! set PYTHONPATH=<abs>\.venv-ft\Lib\site-packages
+//! set PYO3_PYTHON=<abs>\.venv\Scripts\python.exe
+//! set PATH=<dir containing python3xx.dll>;%PATH%
+//! set PYTHONPATH=<repo>\python;<abs>\.venv\Lib\site-packages
 //! cargo test --features pyflow flow::python
 //! ```
 //!
-//! In production, point `PYTHONPATH`/`PYTHONHOME` at the deployment environment,
-//! or install the operators' dependencies into the base interpreter.
+//! For free-threaded instead, swap the venv for a `python3.13t` one (`py install
+//! 3.13t-64`) and the dll dir accordingly. In production, point
+//! `PYTHONPATH`/`PYTHONHOME` at the deployment environment.
 //!
 //! # Writing operators
 //!
@@ -334,24 +335,6 @@ mod tests {
     use crate::Array;
     use crate::flow::{Adapt, Const, Map};
 
-    /// Sanity: the interpreter is genuinely free-threaded (no GIL).
-    #[test]
-    fn interpreter_is_free_threaded() {
-        use pyo3::prelude::*;
-        Python::attach(|py| {
-            let gil_on: bool = py
-                .import("sys")
-                .unwrap()
-                .getattr("_is_gil_enabled")
-                .unwrap()
-                .call0()
-                .unwrap()
-                .extract()
-                .unwrap();
-            assert!(!gil_on, "tests must run on a free-threaded build (python3.13t)");
-        });
-    }
-
     /// Return mode: element-wise NumPy add over two inputs.
     #[test]
     fn numpy_return_mode() {
@@ -439,14 +422,18 @@ mod tests {
         assert_eq!(g.cell(out).as_slice(), &[5.0]);
     }
 
-    /// True parallelism on the free-threaded build: K CPU-bound pure-Python
-    /// operators run far faster on a K-worker pool than on a serial one (no GIL).
+    /// Operators whose work releases the GIL run in parallel on the pool — on a
+    /// **GIL** build (NumPy ufuncs / BLAS / solver calls drop the GIL) as well as
+    /// free-threaded. (Pure-Python-bound operators only parallelize free-threaded;
+    /// this is the GIL-releasing case the engine relies on for NumPy/cvxpy work.)
+    /// The heavy body is a single-threaded NumPy ufunc loop (GIL-released, not
+    /// BLAS-multithreaded, so the outer pool parallelism is the speedup measured).
     #[test]
     fn operators_run_in_parallel() {
         const K: usize = 4;
         let heavy = "lambda out, xs: out.__setitem__(0, \
-                      sum((i * 1103515245 + 12345) % 2147483647 \
-                      for i in range(400000)) * 0 + xs[0])";
+                      sum(float(np.sin(np.arange(1, 1500000, dtype=np.float64) * 1.0000001).sum()) \
+                      for _ in range(6)) * 0 + xs[0])";
 
         let mut b = GraphBuilder::new();
         let src = b.push(Adapt::new(Const(Array::from_vec(&[1], vec![0.0_f64]))), ());
@@ -474,7 +461,7 @@ mod tests {
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
         let speedup = t_serial.as_secs_f64() / t_parallel.as_secs_f64();
         eprintln!(
-            "{K} heavy pure-Python ops, cores={cores}: serial={t_serial:?} \
+            "{K} GIL-releasing NumPy ops, cores={cores}: serial={t_serial:?} \
              parallel={t_parallel:?} speedup={speedup:.2}x"
         );
 
@@ -482,8 +469,8 @@ mod tests {
             assert_eq!(g.cell(o).as_slice(), &[3.0]);
         }
         assert!(
-            speedup > 1.7,
-            "expected GIL-free parallelism, got {speedup:.2}x"
+            speedup > 1.5,
+            "expected parallel speedup from GIL-releasing operators, got {speedup:.2}x"
         );
     }
 }
