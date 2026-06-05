@@ -33,12 +33,17 @@ mod metrics;
 mod num;
 mod op;
 mod ops;
+#[cfg(feature = "pyflow")]
+mod python;
 mod reshape;
 mod rolling;
 mod session;
 mod stocks;
 mod structural;
 mod transform;
+
+#[cfg(feature = "pyflow")]
+pub use python::PyOperator;
 
 pub use op::{Adapt, Clock, Operator};
 pub use session::{Scenario, Session, ShutdownFlag};

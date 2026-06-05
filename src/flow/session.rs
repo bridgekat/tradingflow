@@ -178,6 +178,21 @@ impl Scenario {
         self.clock.clone()
     }
 
+    /// Register a Python operator (feature `pyflow`). `source` is a Python
+    /// expression evaluating to a callable that takes `inputs.len()`
+    /// `list[float]` arguments and returns a `list[float]` of length `out_len`.
+    /// Each runs in its own sub-interpreter, so they execute truly in parallel.
+    #[cfg(feature = "pyflow")]
+    pub fn add_py_operator(
+        &mut self,
+        source: &str,
+        inputs: &[Handle<Array<f64>>],
+        out_len: usize,
+    ) -> Handle<Array<f64>> {
+        self.builder
+            .push(Adapt::new(super::python::PyOperator::new(source, out_len)), inputs)
+    }
+
     /// Register a [`Source`]. Its output cell is a `Const(initial)`; the async
     /// feed is wired up at [`build`](Self::build) time.
     pub fn add_source<S: Source>(&mut self, source: S, initial: S::Output) -> Handle<S::Output>
