@@ -49,6 +49,33 @@ required-features = ["pyflow"]
 [[example]]
 name = "plot_daily_price"
 
+[[example]]
+name = "plot_financial_data"
+
+[[example]]
+name = "plot_total_market_cap"
+required-features = ["pyflow"]
+
+[[example]]
+name = "mean_strategy"
+required-features = ["pyflow"]
+
+[[example]]
+name = "mean_variance_strategy"
+required-features = ["pyflow"]
+
+[[example]]
+name = "benchmark_relative_strategy"
+required-features = ["pyflow"]
+
+[[example]]
+name = "covariance_gmv"
+required-features = ["pyflow"]
+
+[[example]]
+name = "factor_ic"
+required-features = ["pyflow"]
+
 [[bench]]
 name = "bench_add"
 harness = false
