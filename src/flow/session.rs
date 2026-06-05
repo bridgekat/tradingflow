@@ -222,13 +222,42 @@ impl Scenario {
     pub fn add_py_class_operator(
         &mut self,
         source: &str,
+        params: super::pyhost::PyParams,
         inputs: &[Handle<Array<f64>>],
         out_shape: &[usize],
     ) -> Handle<Array<f64>> {
         self.builder.push(
             Adapt::new(
-                super::pyhost::PyClassOperator::<[flowgraph::typed::Port<Array<f64>>]>::new(
+                super::pyhost::PyClassOperator::<[flowgraph::typed::Port<Array<f64>>]>::from_source(
                     source,
+                    params,
+                    out_shape.to_vec(),
+                    self.clock.clone(),
+                ),
+            ),
+            inputs,
+        )
+    }
+
+    /// Register a class-based Python operator loaded from a plain `.py` file
+    /// (feature `pyflow`). The file defines `build(**kwargs)` (called with
+    /// `params`) or binds `__op__`; see [`super::pyhost`]. Convenience for
+    /// all-`Array<f64>` inputs; heterogeneous (Array + Series) operators register
+    /// via [`add_operator`](Self::add_operator) with
+    /// `PyClassOperator::<I>::from_file(..)`.
+    #[cfg(feature = "pyflow")]
+    pub fn add_py_operator_file(
+        &mut self,
+        path: impl AsRef<std::path::Path>,
+        params: super::pyhost::PyParams,
+        inputs: &[Handle<Array<f64>>],
+        out_shape: &[usize],
+    ) -> Handle<Array<f64>> {
+        self.builder.push(
+            Adapt::new(
+                super::pyhost::PyClassOperator::<[flowgraph::typed::Port<Array<f64>>]>::from_file(
+                    path,
+                    params,
                     out_shape.to_vec(),
                     self.clock.clone(),
                 ),

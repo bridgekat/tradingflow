@@ -335,20 +335,165 @@ tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
 // PyClassOperator — hosts a Python operator object over inputs `I`
 // ===========================================================================
 
+/// A typed keyword argument passed to a Python operator's `build(**kwargs)`.
+#[derive(Clone)]
+enum Param {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+    Ints(Vec<i64>),
+    Floats(Vec<f64>),
+}
+
+/// Keyword arguments for a Python operator factory. Build with the chainable
+/// setters, e.g. `PyParams::new().int("num_stocks", 500).float("lam", 0.1)`.
+#[derive(Clone, Default)]
+pub struct PyParams(Vec<(String, Param)>);
+
+impl PyParams {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn int(mut self, k: &str, v: i64) -> Self {
+        self.0.push((k.into(), Param::Int(v)));
+        self
+    }
+    pub fn float(mut self, k: &str, v: f64) -> Self {
+        self.0.push((k.into(), Param::Float(v)));
+        self
+    }
+    pub fn bool(mut self, k: &str, v: bool) -> Self {
+        self.0.push((k.into(), Param::Bool(v)));
+        self
+    }
+    pub fn str(mut self, k: &str, v: impl Into<String>) -> Self {
+        self.0.push((k.into(), Param::Str(v.into())));
+        self
+    }
+    pub fn ints(mut self, k: &str, v: Vec<i64>) -> Self {
+        self.0.push((k.into(), Param::Ints(v)));
+        self
+    }
+    pub fn floats(mut self, k: &str, v: Vec<f64>) -> Self {
+        self.0.push((k.into(), Param::Floats(v)));
+        self
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        for (k, v) in &self.0 {
+            match v {
+                Param::Int(x) => d.set_item(k, x)?,
+                Param::Float(x) => d.set_item(k, x)?,
+                Param::Bool(x) => d.set_item(k, x)?,
+                Param::Str(x) => d.set_item(k, x)?,
+                Param::Ints(x) => d.set_item(k, x.clone())?,
+                Param::Floats(x) => d.set_item(k, x.clone())?,
+            }
+        }
+        Ok(d)
+    }
+}
+
+/// Where a Python operator's definition comes from. Each defines a factory
+/// `build(**kwargs) -> operator` (called with [`PyParams`]) or binds the
+/// instance to `__op__` directly.
+#[derive(Clone)]
+enum Loader {
+    /// Inline Python program (statements).
+    Source(String),
+    /// An importable module on the embedded interpreter's path.
+    Module(String),
+}
+
+/// Resolve the operator instance from its [`Loader`] + [`PyParams`].
+fn resolve_operator<'py>(
+    py: Python<'py>,
+    loader: &Loader,
+    params: &PyParams,
+) -> PyResult<Bound<'py, PyAny>> {
+    let kwargs = params.to_dict(py)?;
+    let (build, op_obj) = match loader {
+        Loader::Source(src) => {
+            let g = PyDict::new(py);
+            let np = py.import("numpy")?;
+            g.set_item("np", &np)?;
+            g.set_item("numpy", &np)?;
+            let code = CString::new(src.as_str())
+                .map_err(|_| PyValueError::new_err("python source has interior NUL"))?;
+            py.run(code.as_c_str(), Some(&g), None)?;
+            (g.get_item("build")?, g.get_item("__op__")?)
+        }
+        Loader::Module(name) => {
+            let module = py.import(name.as_str())?;
+            (module.getattr("build").ok(), module.getattr("__op__").ok())
+        }
+    };
+    if let Some(build) = build {
+        build.call((), Some(&kwargs))
+    } else if let Some(op) = op_obj {
+        Ok(op)
+    } else {
+        Err(PyValueError::new_err(
+            "python operator must define `build(**kwargs)` or bind `__op__`",
+        ))
+    }
+}
+
 /// A class-based Python operator over input ports `I` (e.g. `[Port<Array<f64>>]`
-/// or `(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)`). `source` is a
-/// Python program binding the operator instance to `__op__`.
+/// or `(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)`). Load its
+/// definition from a `.py` file, an importable module, or an inline source; each
+/// defines `build(**kwargs)` (called with [`PyParams`]) or binds `__op__`.
 pub struct PyClassOperator<I: PyArgs + ?Sized = [Port<Array<f64>>]> {
-    source: String,
+    loader: Loader,
+    params: PyParams,
     out_shape: Vec<usize>,
     clock: Clock,
     _marker: PhantomData<fn() -> Box<I>>,
 }
 
 impl<I: PyArgs + ?Sized> PyClassOperator<I> {
-    pub fn new(source: impl Into<String>, out_shape: Vec<usize>, clock: Clock) -> Self {
+    /// Load from a `.py` file on disk (read now).
+    pub fn from_file(
+        path: impl AsRef<std::path::Path>,
+        params: PyParams,
+        out_shape: Vec<usize>,
+        clock: Clock,
+    ) -> Self {
+        let path = path.as_ref();
+        let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            panic!("cannot read python operator file {}: {e}", path.display())
+        });
+        Self::from_source(src, params, out_shape, clock)
+    }
+
+    /// Load from an importable module (on the embedded interpreter's path).
+    pub fn from_module(
+        module: impl Into<String>,
+        params: PyParams,
+        out_shape: Vec<usize>,
+        clock: Clock,
+    ) -> Self {
         Self {
-            source: source.into(),
+            loader: Loader::Module(module.into()),
+            params,
+            out_shape,
+            clock,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Load from an inline Python program (handy for tests / one-offs).
+    pub fn from_source(
+        source: impl Into<String>,
+        params: PyParams,
+        out_shape: Vec<usize>,
+        clock: Clock,
+    ) -> Self {
+        Self {
+            loader: Loader::Source(source.into()),
+            params,
             out_shape,
             clock,
             _marker: PhantomData,
@@ -369,18 +514,10 @@ impl<I: PyArgs + ?Sized + 'static> Operator for PyClassOperator<I> {
     type State = PyClassState;
 
     fn init(&self, inputs: I::Refs<'_>) -> (PyClassState, Array<f64>) {
-        let code = CString::new(self.source.as_str()).expect("python source has interior NUL");
         let ts = self.clock.get().as_nanos();
         let (operator, py_state) = Python::attach(|py| {
             let run = || -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-                let globals = PyDict::new(py);
-                let np = py.import("numpy")?;
-                globals.set_item("np", &np)?;
-                globals.set_item("numpy", &np)?;
-                py.run(code.as_c_str(), Some(&globals), None)?;
-                let operator = globals.get_item("__op__")?.ok_or_else(|| {
-                    PyValueError::new_err("python operator source must bind `__op__`")
-                })?;
+                let operator = resolve_operator(py, &self.loader, &self.params)?;
                 let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
                 I::append_views(py, inputs, &mut views)?;
                 let state = operator.call_method1("init", (PyTuple::new(py, views)?, ts))?;
@@ -442,7 +579,7 @@ impl<I: PyArgs + ?Sized + 'static> Operator for PyClassOperator<I> {
 
 #[cfg(test)]
 mod tests {
-    use super::PyClassOperator;
+    use super::{PyClassOperator, PyParams};
     use flowgraph::core::Pool;
     use flowgraph::typed::{Graph, GraphBuilder, Port};
 
@@ -483,7 +620,12 @@ __op__ = Turnover()
         let mut b = GraphBuilder::new();
         let src = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![0.5_f64, 0.5]))), ());
         let out = b.push(
-            Adapt::new(PyClassOperator::<[Port<Array<f64>>]>::new(TURNOVER, vec![], clock.clone())),
+            Adapt::new(PyClassOperator::<[Port<Array<f64>>]>::from_source(
+                TURNOVER,
+                PyParams::new(),
+                vec![],
+                clock.clone(),
+            )),
             &[src][..],
         );
         let mut g = Graph::from_builder(b);
@@ -531,8 +673,9 @@ __op__ = HistDot()
         // Record needs the clock; build via Record::new(clock).
         let series = b.push(Adapt::new(Record::new(clock.clone())), feed);
         let out = b.push(
-            Adapt::new(PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>)>::new(
+            Adapt::new(PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>)>::from_source(
                 HIST_DOT,
+                PyParams::new(),
                 vec![],
                 clock.clone(),
             )),
@@ -553,5 +696,53 @@ __op__ = HistDot()
         *g.cell_mut(feed) = Array::from_vec(&[2], vec![3.0, 4.0]);
         g.stabilize(&mut pool);
         assert!((g.cell(out).as_slice()[0] - 5.0).abs() < 1e-12);
+    }
+
+    /// Loading an operator from a plain `.py` file via a `build(**kwargs)`
+    /// factory parameterized from Rust with [`PyParams`].
+    #[test]
+    fn py_class_operator_from_file_with_params() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scaler.py");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(
+                br#"
+import numpy as np
+class Scaler:
+    def __init__(self, scale):
+        self.scale = scale
+    def init(self, inputs, timestamp):
+        return {"scale": self.scale}
+    @staticmethod
+    def compute(state, inputs, output, timestamp, produced):
+        total = float(np.sum(inputs[0].value())) * state["scale"]
+        output.write(np.array(total, dtype=np.float64))
+        return True
+def build(scale=1.0):
+    return Scaler(scale)
+"#,
+            )
+            .unwrap();
+
+        let clock = Clock::new();
+        let mut b = GraphBuilder::new();
+        let src = b.push(Adapt::new(Const(Array::from_vec(&[4], vec![1.0_f64, 2.0, 3.0, 4.0]))), ());
+        let out = b.push(
+            Adapt::new(PyClassOperator::<[Port<Array<f64>>]>::from_file(
+                &path,
+                PyParams::new().float("scale", 3.0),
+                vec![],
+                clock.clone(),
+            )),
+            &[src][..],
+        );
+        let mut g = Graph::from_builder(b);
+        let mut pool = Pool::new(0);
+
+        *g.cell_mut(src) = Array::from_vec(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+        g.stabilize(&mut pool);
+        assert!((g.cell(out).as_slice()[0] - 30.0).abs() < 1e-12); // sum(1..4)=10 * 3
     }
 }

@@ -57,7 +57,7 @@ mod structural;
 mod transform;
 
 #[cfg(feature = "pyflow")]
-pub use pyhost::{NativeArrayView, PyClassOperator};
+pub use pyhost::{NativeArrayView, NativeSeriesView, PyClassOperator, PyParams};
 #[cfg(feature = "pyflow")]
 pub use python::PyOperator;
 
