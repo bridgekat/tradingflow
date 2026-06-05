@@ -46,6 +46,9 @@ tempfile = "3"
 name = "flowops_demo"
 required-features = ["pyflow"]
 
+[[example]]
+name = "plot_daily_price"
+
 [[bench]]
 name = "bench_add"
 harness = false
