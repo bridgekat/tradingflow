@@ -1,0 +1,817 @@
+//! External async driver for the `flow` engine.
+//!
+//! [`Scenario`] builds a `flowgraph` graph whose source nodes are `Const`
+//! cells, and registers a [`Source`](crate::source::Source) per source cell.
+//! [`Session`] owns the built graph + a worker [`Pool`] + the shared [`Clock`]
+//! + the per-source channel state, and drives them via [`Session::run`].
+//!
+//! The event loop is lifted from the legacy `scenario::queue` loop (timestamp
+//! merge-heap + same-timestamp coalescing + historical-ordering constraint +
+//! live-event clamping). The only change is the per-batch apply step: instead
+//! of the legacy `Graph::flush`, the driver writes each fired source's event
+//! into its cell via `cell_mut_ptr_by_index` (which marks the dirty cone),
+//! advances the [`Clock`] to the batch timestamp, and runs one `stabilize`.
+
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
+use std::future::poll_fn;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
+
+use futures::stream::{FuturesUnordered, StreamExt};
+
+use flowgraph::core::Pool;
+use flowgraph::typed::{Graph, GraphBuilder, Handle, PortsHandles};
+
+use super::op::{Clock, Operator};
+use super::ops::Const;
+use crate::source::{ErasedSource, PollFn, Source, WriteFn};
+use crate::Instant;
+
+/// Shared shutdown flag for cooperative cancellation of the event loop.
+pub type ShutdownFlag = Arc<AtomicBool>;
+
+// ---------------------------------------------------------------------------
+// Channels / merge entries / receive future (mirrors scenario::queue)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
+enum ChannelKind {
+    Hist,
+    Live,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
+struct HeapEntry {
+    ts: Instant,
+    source_idx: usize,
+    kind: ChannelKind,
+}
+
+/// One pending channel receive; resolves to `(source_idx, kind, Option<ts>)`.
+/// Holds a raw `rx_ptr` so it does not borrow the owning [`SourceSlot`]; must
+/// not outlive the [`Session`] (whose `slots` own the receivers).
+struct ErasedRecvFuture {
+    rx_ptr: *mut u8,
+    poll_fn: PollFn,
+    source_idx: usize,
+    kind: ChannelKind,
+}
+
+// SAFETY: rx_ptr points to a `PeekableReceiver<E>`, which is `Send`.
+unsafe impl Send for ErasedRecvFuture {}
+
+impl std::future::Future for ErasedRecvFuture {
+    type Output = (usize, ChannelKind, Option<Instant>);
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let source_idx = self.source_idx;
+        let kind = self.kind;
+        unsafe { (self.poll_fn)(self.rx_ptr, cx) }.map(|opt_ts| (source_idx, kind, opt_ts))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SourceSlot — per-source channel state pointing at a flowgraph cell
+// ---------------------------------------------------------------------------
+
+struct SourceSlot {
+    /// Flowgraph cell index of this source's `Const` output node.
+    cell_index: usize,
+    hist_rx_ptr: *mut u8,
+    live_rx_ptr: *mut u8,
+    poll_fn: PollFn,
+    write_fn: WriteFn,
+    rx_drop_fn: unsafe fn(*mut u8),
+}
+
+// SAFETY: the slot owns the two receiver allocations, which are `Send`.
+unsafe impl Send for SourceSlot {}
+
+impl SourceSlot {
+    fn rx_ptr(&self, kind: ChannelKind) -> *mut u8 {
+        match kind {
+            ChannelKind::Hist => self.hist_rx_ptr,
+            ChannelKind::Live => self.live_rx_ptr,
+        }
+    }
+
+    /// # Safety
+    /// The returned future must not outlive this slot.
+    unsafe fn recv_future(&self, source_idx: usize, kind: ChannelKind) -> ErasedRecvFuture {
+        ErasedRecvFuture {
+            rx_ptr: self.rx_ptr(kind),
+            poll_fn: self.poll_fn,
+            source_idx,
+            kind,
+        }
+    }
+}
+
+impl Drop for SourceSlot {
+    fn drop(&mut self) {
+        unsafe {
+            (self.rx_drop_fn)(self.hist_rx_ptr);
+            (self.rx_drop_fn)(self.live_rx_ptr);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scenario — builder
+// ---------------------------------------------------------------------------
+
+struct SourceDescriptor {
+    cell_index: usize,
+    erased: ErasedSource,
+}
+
+/// Builds a `flow` graph plus its source registrations.
+pub struct Scenario {
+    builder: GraphBuilder,
+    clock: Clock,
+    sources: Vec<SourceDescriptor>,
+}
+
+impl Scenario {
+    pub fn new() -> Self {
+        Self {
+            builder: GraphBuilder::new(),
+            clock: Clock::new(),
+            sources: Vec::new(),
+        }
+    }
+
+    /// Register a constant node (an externally-set source cell with no async
+    /// feed). Mutate it via [`Session::cell_mut`] + [`Session::flush`].
+    pub fn add_const<T: Clone + Send + Sync + 'static>(&mut self, value: T) -> Handle<T> {
+        self.builder.push(self.clock.op(Const(value)), ())
+    }
+
+    /// Register an [`Operator`]. `inputs` are the upstream handles.
+    pub fn add_operator<O>(
+        &mut self,
+        operator: O,
+        inputs: <O::Inputs as PortsHandles>::InputHandles<'_>,
+    ) -> Handle<O::Output>
+    where
+        O: Operator,
+        O::Inputs: PortsHandles,
+        O::Output: Send + Sync + 'static,
+    {
+        self.builder.push(self.clock.op(operator), inputs)
+    }
+
+    /// Register a [`Source`]. Its output cell is a `Const(initial)`; the async
+    /// feed is wired up at [`build`](Self::build) time.
+    pub fn add_source<S: Source>(&mut self, source: S, initial: S::Output) -> Handle<S::Output>
+    where
+        S::Output: Clone + Send + Sync + 'static,
+    {
+        let handle = self.builder.push(self.clock.op(Const(initial)), ());
+        self.sources.push(SourceDescriptor {
+            cell_index: handle.index(),
+            erased: ErasedSource::from_source(source),
+        });
+        handle
+    }
+
+    /// Finalize the graph and initialise every source (creating its channels),
+    /// producing a runnable [`Session`] with a single-threaded pool.
+    pub fn build(self) -> Session {
+        self.build_with_threads(0)
+    }
+
+    /// Like [`build`](Self::build) but with `n` extra worker threads in the pool.
+    pub fn build_with_threads(self, n: usize) -> Session {
+        let Scenario {
+            builder,
+            clock,
+            sources,
+        } = self;
+        let graph = Graph::from_builder(builder);
+
+        let mut slots = Vec::with_capacity(sources.len());
+        for desc in &sources {
+            assert!(
+                graph.inner().cell_type_id(desc.cell_index) == desc.erased.output_type_id(),
+                "source cell type does not match source output type",
+            );
+            let (hist_rx_ptr, live_rx_ptr, output_ptr) = desc.erased.init(Instant::MIN);
+            // The flowgraph cell already holds the `Const(initial)` value, so
+            // the source's freshly-allocated init output is unused here.
+            unsafe { (desc.erased.output_drop_fn())(output_ptr) };
+            slots.push(SourceSlot {
+                cell_index: desc.cell_index,
+                hist_rx_ptr,
+                live_rx_ptr,
+                poll_fn: desc.erased.poll_fn(),
+                write_fn: desc.erased.write_fn(),
+                rx_drop_fn: desc.erased.rx_drop_fn(),
+            });
+        }
+
+        Session {
+            graph,
+            pool: Pool::new(n),
+            clock,
+            slots,
+        }
+    }
+}
+
+impl Default for Scenario {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session — runtime + event loop
+// ---------------------------------------------------------------------------
+
+/// A live execution: owns the graph, the worker pool, the clock, and the
+/// per-source channel state.
+pub struct Session {
+    graph: Graph,
+    pool: Pool,
+    clock: Clock,
+    slots: Vec<SourceSlot>,
+}
+
+// SAFETY: the graph is Send+Sync; the pool and slots are Send; the clock is an
+// Arc<AtomicI64>. The session is driven from a single task.
+unsafe impl Send for Session {}
+
+impl Session {
+    /// Immutable access to a node value.
+    pub fn value<T: Send + Sync + 'static>(&self, handle: Handle<T>) -> &T {
+        self.graph.cell(handle)
+    }
+
+    /// Mutable access to a node value (marks its dirty cone).
+    pub fn cell_mut<T: Send + Sync + 'static>(&mut self, handle: Handle<T>) -> &mut T {
+        self.graph.cell_mut(handle)
+    }
+
+    /// Manually advance the clock and stabilize (the synchronous-step API).
+    /// Call after mutating one or more source cells via [`cell_mut`](Self::cell_mut).
+    pub fn flush(&mut self, timestamp: Instant) {
+        self.clock.set(timestamp);
+        self.graph.stabilize(&mut self.pool);
+    }
+
+    /// Drive the unified event loop until every source is exhausted.
+    ///
+    /// `on_flush(batch_ts, events_processed_so_far)` is invoked once per
+    /// coalesced batch.
+    pub async fn run(&mut self, on_flush: impl FnMut(Instant, usize)) {
+        self.run_with_shutdown(on_flush, Arc::new(AtomicBool::new(false)))
+            .await;
+    }
+
+    /// Like [`run`](Self::run), but cooperatively cancellable.
+    pub async fn run_with_shutdown(
+        &mut self,
+        mut on_flush: impl FnMut(Instant, usize),
+        shutdown: ShutdownFlag,
+    ) {
+        let n = self.slots.len();
+        if n == 0 {
+            return;
+        }
+
+        let mut heap: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::new();
+        let mut hist_refills: FuturesUnordered<ErasedRecvFuture> = FuturesUnordered::new();
+        let mut live_refills: FuturesUnordered<ErasedRecvFuture> = FuturesUnordered::new();
+        let mut current_ts: Instant = Instant::MIN;
+        let mut events_processed: usize = 0;
+
+        let mut last_hist_ts: Vec<Instant> = vec![Instant::MIN; n];
+        let mut hist_pending_ts: BTreeMap<Instant, usize> = BTreeMap::new();
+
+        // Seed one hist + one live future per source.
+        for i in 0..n {
+            // SAFETY: the slots outlive every future created here.
+            let slot = &self.slots[i];
+            hist_refills.push(unsafe { slot.recv_future(i, ChannelKind::Hist) });
+            *hist_pending_ts.entry(Instant::MIN).or_insert(0) += 1;
+            live_refills.push(unsafe { slot.recv_future(i, ChannelKind::Live) });
+        }
+
+        drain_hist(&mut hist_refills, &mut heap, &mut last_hist_ts, &mut hist_pending_ts).await;
+        drain_live(&mut live_refills, &mut heap, current_ts).await;
+
+        let mut queue_ts: Option<Instant> = None;
+        let mut pending = false;
+
+        loop {
+            drain_hist(&mut hist_refills, &mut heap, &mut last_hist_ts, &mut hist_pending_ts).await;
+            drain_live(&mut live_refills, &mut heap, current_ts).await;
+
+            let Some(&Reverse(HeapEntry { ts: min_ts, .. })) = heap.peek() else {
+                if live_refills.is_empty() {
+                    break;
+                }
+                while let Some((src, kind, opt_ts)) = live_refills.next().await {
+                    if let Some(ts) = opt_ts {
+                        let ts = ts.max(current_ts);
+                        heap.push(Reverse(HeapEntry {
+                            ts,
+                            source_idx: src,
+                            kind,
+                        }));
+                        break;
+                    }
+                    if live_refills.is_empty() {
+                        break;
+                    }
+                }
+                continue;
+            };
+
+            // Coalescing boundary: stabilize the previous batch when ts advances.
+            // `pending` is only false before the very first batch; thereafter
+            // the pop loop below always writes >=1 entry, so it stays true and
+            // simply means "a batch is waiting to stabilize when ts advances".
+            if pending && min_ts > queue_ts.unwrap() {
+                let qts = queue_ts.unwrap();
+                self.clock.set(qts);
+                self.graph.stabilize(&mut self.pool);
+                on_flush(qts, events_processed);
+                if shutdown.load(Ordering::Relaxed) {
+                    return;
+                }
+            }
+
+            // Pop and apply every entry at min_ts.
+            while let Some(&Reverse(HeapEntry { ts, .. })) = heap.peek() {
+                if ts > min_ts {
+                    break;
+                }
+                let Reverse(HeapEntry {
+                    ts: _,
+                    source_idx,
+                    kind,
+                }) = heap.pop().unwrap();
+
+                let slot = &self.slots[source_idx];
+                let rx_ptr = slot.rx_ptr(kind);
+                let write_fn = slot.write_fn;
+                let cell_index = slot.cell_index;
+                // Mark the cone + write the event value into the cell. The event
+                // was peeked, so `write_fn` finds it pending and returns true.
+                let cell_ptr = self.graph.inner_mut().cell_mut_ptr(cell_index) as *mut u8;
+                unsafe { (write_fn)(rx_ptr, cell_ptr, min_ts) };
+                events_processed = events_processed.saturating_add(1);
+
+                // Re-queue the consumed channel's future.
+                let slot = &self.slots[source_idx];
+                match kind {
+                    ChannelKind::Hist => {
+                        last_hist_ts[source_idx] = min_ts;
+                        *hist_pending_ts.entry(min_ts).or_insert(0) += 1;
+                        hist_refills.push(unsafe { slot.recv_future(source_idx, ChannelKind::Hist) });
+                    }
+                    ChannelKind::Live => {
+                        live_refills.push(unsafe { slot.recv_future(source_idx, ChannelKind::Live) });
+                    }
+                }
+            }
+            current_ts = min_ts;
+            queue_ts = Some(min_ts);
+            pending = true;
+        }
+
+        // Final batch.
+        if pending {
+            let qts = queue_ts.unwrap();
+            self.clock.set(qts);
+            self.graph.stabilize(&mut self.pool);
+            on_flush(qts, events_processed);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// drain_hist / drain_live (ported verbatim from scenario::queue)
+// ---------------------------------------------------------------------------
+
+async fn drain_hist(
+    hist_refills: &mut FuturesUnordered<ErasedRecvFuture>,
+    heap: &mut BinaryHeap<Reverse<HeapEntry>>,
+    last_hist_ts: &mut [Instant],
+    hist_pending_ts: &mut BTreeMap<Instant, usize>,
+) {
+    while let Some((src, _kind, opt_ts)) = hist_refills.next().await {
+        let lower = last_hist_ts[src];
+        if let Some(cnt) = hist_pending_ts.get_mut(&lower) {
+            *cnt -= 1;
+            if *cnt == 0 {
+                hist_pending_ts.remove(&lower);
+            }
+        }
+
+        if let Some(ts) = opt_ts {
+            last_hist_ts[src] = ts;
+            heap.push(Reverse(HeapEntry {
+                ts,
+                source_idx: src,
+                kind: ChannelKind::Hist,
+            }));
+        }
+
+        if hist_refills.is_empty() {
+            break;
+        }
+
+        let heap_min = heap.peek().map(|&Reverse(e)| e.ts).unwrap_or(Instant::MAX);
+        let pending_lower = hist_pending_ts.keys().next().copied().unwrap_or(Instant::MAX);
+        if pending_lower > heap_min {
+            break;
+        }
+    }
+}
+
+async fn drain_live(
+    live_refills: &mut FuturesUnordered<ErasedRecvFuture>,
+    heap: &mut BinaryHeap<Reverse<HeapEntry>>,
+    current_ts: Instant,
+) {
+    poll_fn(|cx| {
+        loop {
+            match Pin::new(&mut *live_refills).poll_next_unpin(cx) {
+                Poll::Ready(Some((src, kind, Some(ts)))) => {
+                    let ts = ts.max(current_ts);
+                    heap.push(Reverse(HeapEntry {
+                        ts,
+                        source_idx: src,
+                        kind,
+                    }));
+                }
+                Poll::Ready(Some((_src, _kind, None))) => {}
+                Poll::Ready(None) | Poll::Pending => return Poll::Ready(()),
+            }
+        }
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// Tests: reproduce the legacy `scenario_run_*` replay outcomes.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flow::{Add, Filter, Record};
+    use crate::sources::ArraySource;
+    use crate::{Array, Series};
+
+    fn tss(xs: &[i64]) -> Vec<Instant> {
+        xs.iter().copied().map(Instant::from_nanos).collect()
+    }
+
+    fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64> {
+        ArraySource::new(
+            Series::from_vec(&[], tss(ts), vals.to_vec()),
+            Array::scalar(0.0),
+        )
+    }
+
+    /// scenario_run_single_source: replay [10,20,30] @ [1,2,3] into a Record.
+    #[tokio::test]
+    async fn run_single_source_record() {
+        let mut sc = Scenario::new();
+        let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]), Array::scalar(0.0));
+        let hrec = sc.add_operator(Record::<f64>::new(), h);
+
+        let mut session = sc.build();
+        session.run(|_, _| {}).await;
+
+        let s: &Series<f64> = session.value(hrec);
+        assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
+        assert_eq!(s.values(), &[10.0, 20.0, 30.0]);
+    }
+
+    /// scenario_run_two_sources_add: staggered timestamps; the un-fired input
+    /// keeps its stale value. ts1:10+0, ts2:10+20, ts3:30+40 → [10,30,70].
+    #[tokio::test]
+    async fn run_two_sources_add() {
+        let mut sc = Scenario::new();
+        let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]), Array::scalar(0.0));
+        let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]), Array::scalar(0.0));
+        let ho = sc.add_operator(Add::<f64>::new(), (ha, hb));
+        let hrec = sc.add_operator(Record::<f64>::new(), ho);
+
+        let mut session = sc.build();
+        session.run(|_, _| {}).await;
+
+        let s: &Series<f64> = session.value(hrec);
+        assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
+        assert_eq!(s.values(), &[10.0, 30.0, 70.0]);
+    }
+
+    /// scenario_run_coalescing: two sources at the same timestamps → one batch
+    /// each. ts1:10+100, ts2:20+200 → [110,220].
+    #[tokio::test]
+    async fn run_coalescing() {
+        let mut sc = Scenario::new();
+        let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]), Array::scalar(0.0));
+        let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]), Array::scalar(0.0));
+        let ho = sc.add_operator(Add::<f64>::new(), (ha, hb));
+        let hrec = sc.add_operator(Record::<f64>::new(), ho);
+
+        let mut session = sc.build();
+        session.run(|_, _| {}).await;
+
+        let s: &Series<f64> = session.value(hrec);
+        assert_eq!(s.timestamps(), tss(&[1, 2]).as_slice());
+        assert_eq!(s.values(), &[110.0, 220.0]);
+    }
+
+    /// scenario_run_filter: the cutoff must survive the driver — dropped ticks
+    /// produce no Record row. [1,5,2,10] keep >3 → (2,5),(4,10).
+    #[tokio::test]
+    async fn run_filter_cutoff() {
+        let mut sc = Scenario::new();
+        let h = sc.add_source(
+            src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]),
+            Array::scalar(0.0),
+        );
+        let hf = sc.add_operator(Filter(|v: &Array<f64>| v[0] > 3.0), h);
+        let hrec = sc.add_operator(Record::<f64>::new(), hf);
+
+        let mut session = sc.build();
+        session.run(|_, _| {}).await;
+
+        let s: &Series<f64> = session.value(hrec);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s.timestamps(), tss(&[2, 4]).as_slice());
+        assert_eq!(s.values(), &[5.0, 10.0]);
+    }
+
+    /// on_flush fires once per coalesced batch (3 distinct timestamps here).
+    #[tokio::test]
+    async fn on_flush_per_batch() {
+        let mut sc = Scenario::new();
+        let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]), Array::scalar(0.0));
+        let _ = sc.add_operator(Record::<f64>::new(), h);
+
+        let mut session = sc.build();
+        let mut batches = Vec::new();
+        session.run(|ts, _| batches.push(ts.as_nanos())).await;
+        assert_eq!(batches, vec![1, 2, 3]);
+    }
+
+    // -- Adversarial guards (ported from scenario::queue tests) --------------
+
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
+    use flowgraph::typed::Port;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+    use tokio::sync::mpsc;
+
+    use crate::flow::Operator as FlowOperator;
+
+    /// A source backed by pre-filled bounded hist + live channels.
+    #[derive(Clone)]
+    struct PrefilledSource {
+        hist_events: Vec<(Instant, f64)>,
+        live_events: Vec<(Instant, f64)>,
+    }
+
+    impl Source for PrefilledSource {
+        type Event = f64;
+        type Output = Array<f64>;
+
+        fn init(
+            &self,
+            _ts: Instant,
+        ) -> (
+            mpsc::Receiver<(Instant, f64)>,
+            mpsc::Receiver<(Instant, f64)>,
+            Array<f64>,
+        ) {
+            let (hist_tx, hist_rx) = mpsc::channel(self.hist_events.len().max(1));
+            for evt in &self.hist_events {
+                hist_tx.try_send(*evt).unwrap();
+            }
+            drop(hist_tx);
+            let (live_tx, live_rx) = mpsc::channel(self.live_events.len().max(1));
+            for evt in &self.live_events {
+                live_tx.try_send(*evt).unwrap();
+            }
+            drop(live_tx);
+            (hist_rx, live_rx, Array::scalar(0.0))
+        }
+
+        fn write(event: f64, output: &mut Array<f64>, _ts: Instant) -> bool {
+            output[0] = event;
+            true
+        }
+    }
+
+    /// Sink operator that records `(batch_ts, source_id)` in execution order —
+    /// reads the clock-provided timestamp to check global ordering.
+    struct GlobalLogger {
+        source_id: usize,
+        log: Arc<Mutex<Vec<(i64, usize)>>>,
+    }
+
+    impl FlowOperator for GlobalLogger {
+        type Inputs = Port<Array<f64>>;
+        type Output = ();
+        type State = (usize, Arc<Mutex<Vec<(i64, usize)>>>);
+
+        fn init(&self, _inputs: &Array<f64>, _ts: Instant) -> (Self::State, ()) {
+            ((self.source_id, self.log.clone()), ())
+        }
+
+        fn compute(
+            state: &mut Self::State,
+            _inputs: &Array<f64>,
+            _output: &mut (),
+            timestamp: Instant,
+            _produced: bool,
+        ) -> bool {
+            state.1.lock().unwrap().push((timestamp.as_nanos(), state.0));
+            false
+        }
+    }
+
+    type EventVec = Vec<(Instant, f64)>;
+
+    fn generate_events(rng: &mut StdRng, source_id: usize) -> (EventVec, EventVec) {
+        let hist_count: usize = rng.gen_range(0..=15);
+        let live_count: usize = rng.gen_range(0..=15);
+
+        let mut hist_ts: Vec<i64> = (0..hist_count).map(|_| rng.gen_range(0..=100)).collect();
+        hist_ts.sort();
+        let hist_max = hist_ts.last().copied().unwrap_or(0);
+        let mut live_ts: Vec<i64> = (0..live_count)
+            .map(|_| rng.gen_range(hist_max..=200))
+            .collect();
+        live_ts.sort();
+
+        let hist: EventVec = hist_ts
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| (Instant::from_nanos(t), source_id as f64 * 10000.0 + i as f64))
+            .collect();
+        let live: EventVec = live_ts
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| (Instant::from_nanos(t), source_id as f64 * 10000.0 + 1000.0 + i as f64))
+            .collect();
+        (hist, live)
+    }
+
+    fn check_invariants(
+        series: &Series<f64>,
+        hist_events: &[(Instant, f64)],
+        live_events: &[(Instant, f64)],
+        source_id: usize,
+        seed: u64,
+    ) {
+        let tsr = series.timestamps();
+        for w in tsr.windows(2) {
+            assert!(w[0] <= w[1], "seed {seed}, src {source_id}: monotonicity");
+        }
+        let distinct_hist: BTreeSet<Instant> = hist_events.iter().map(|e| e.0).collect();
+        let recorded: BTreeSet<Instant> = tsr.iter().copied().collect();
+        for &ht in &distinct_hist {
+            assert!(recorded.contains(&ht), "seed {seed}, src {source_id}: hist {ht:?} missing");
+        }
+        let hist_expected: Vec<Instant> = distinct_hist.iter().copied().collect();
+        if tsr.len() >= hist_expected.len() {
+            assert_eq!(&tsr[..hist_expected.len()], &hist_expected[..], "seed {seed}, src {source_id}: hist prefix");
+        }
+        if !live_events.is_empty() {
+            let min_live_ts = live_events[0].0;
+            for &t in tsr.iter().skip(hist_expected.len()) {
+                assert!(t >= min_live_ts, "seed {seed}, src {source_id}: live before min");
+            }
+        }
+        assert!(tsr.len() >= distinct_hist.len(), "seed {seed}, src {source_id}: too few");
+        if !tsr.is_empty() {
+            let min_original = hist_events
+                .iter()
+                .chain(live_events.iter())
+                .map(|e| e.0)
+                .min()
+                .unwrap();
+            assert!(tsr[0] >= min_original, "seed {seed}, src {source_id}: fabricated");
+        }
+    }
+
+    /// 100 random scenarios interleaving hist + live across multiple sources.
+    #[tokio::test]
+    async fn random_interleaving() {
+        for seed in 0..100u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let n_sources: usize = rng.gen_range(1..=4);
+
+            let mut sc = Scenario::new();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let mut source_data: Vec<(EventVec, EventVec)> = Vec::new();
+            let mut records = Vec::new();
+
+            for i in 0..n_sources {
+                let (hist, live) = generate_events(&mut rng, i);
+                let h = sc.add_source(
+                    PrefilledSource {
+                        hist_events: hist.clone(),
+                        live_events: live.clone(),
+                    },
+                    Array::scalar(0.0),
+                );
+                records.push(sc.add_operator(Record::<f64>::new(), h));
+                sc.add_operator(
+                    GlobalLogger {
+                        source_id: i,
+                        log: log.clone(),
+                    },
+                    h,
+                );
+                source_data.push((hist, live));
+            }
+
+            let mut session = sc.build();
+            session.run(|_, _| {}).await;
+
+            for (i, (hr, (hist, live))) in records.iter().zip(source_data.iter()).enumerate() {
+                let series: &Series<f64> = session.value(*hr);
+                check_invariants(series, hist, live, i, seed);
+            }
+            // Global monotonicity: the logged batch timestamps are non-decreasing.
+            let log = log.lock().unwrap();
+            for w in log.windows(2) {
+                assert!(w[0].0 <= w[1].0, "seed {seed}: global monotonicity");
+            }
+        }
+    }
+
+    /// A stale live event (ts=50) arriving after hist advances current_ts to
+    /// 100 must be clamped to 100 and coalesced, not ingested at 50.
+    #[tokio::test]
+    async fn live_clamping() {
+        type ChannelPair = (mpsc::Receiver<(Instant, f64)>, mpsc::Receiver<(Instant, f64)>);
+
+        #[derive(Clone)]
+        struct ManualChannel {
+            channels: Arc<Mutex<Option<ChannelPair>>>,
+        }
+
+        impl Source for ManualChannel {
+            type Event = f64;
+            type Output = Array<f64>;
+
+            fn init(
+                &self,
+                _ts: Instant,
+            ) -> (
+                mpsc::Receiver<(Instant, f64)>,
+                mpsc::Receiver<(Instant, f64)>,
+                Array<f64>,
+            ) {
+                let (hist_rx, live_rx) = self.channels.lock().unwrap().take().expect("init once");
+                (hist_rx, live_rx, Array::scalar(0.0))
+            }
+
+            fn write(event: f64, output: &mut Array<f64>, _ts: Instant) -> bool {
+                output[0] = event;
+                true
+            }
+        }
+
+        let (hist_tx, hist_rx) = mpsc::channel(1);
+        let (live_tx, live_rx) = mpsc::channel(1);
+        hist_tx.send((Instant::from_nanos(100), 1.0)).await.unwrap();
+        drop(hist_tx);
+
+        let mut sc = Scenario::new();
+        let hs = sc.add_source(
+            ManualChannel {
+                channels: Arc::new(Mutex::new(Some((hist_rx, live_rx)))),
+            },
+            Array::scalar(0.0),
+        );
+        let hrec = sc.add_operator(Record::<f64>::new(), hs);
+
+        tokio::spawn(async move {
+            live_tx.send((Instant::from_nanos(50), 2.0)).await.unwrap();
+        });
+
+        let mut session = sc.build();
+        session.run(|_, _| {}).await;
+
+        let s: &Series<f64> = session.value(hrec);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.timestamps(), &[Instant::from_nanos(100)]);
+    }
+}

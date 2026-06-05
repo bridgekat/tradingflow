@@ -35,11 +35,13 @@ mod op;
 mod ops;
 mod reshape;
 mod rolling;
+mod session;
 mod stocks;
 mod structural;
 mod transform;
 
 pub use op::{Adapt, Clock, Operator};
+pub use session::{Scenario, Session, ShutdownFlag};
 pub use ops::{Clocked, Const, Count, Filter, Last, Record};
 pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
