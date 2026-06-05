@@ -46,6 +46,8 @@ mod num;
 mod op;
 mod ops;
 #[cfg(feature = "pyflow")]
+mod pyhost;
+#[cfg(feature = "pyflow")]
 mod python;
 mod reshape;
 mod rolling;
@@ -54,6 +56,8 @@ mod stocks;
 mod structural;
 mod transform;
 
+#[cfg(feature = "pyflow")]
+pub use pyhost::{NativeArrayView, PyClassOperator};
 #[cfg(feature = "pyflow")]
 pub use python::PyOperator;
 

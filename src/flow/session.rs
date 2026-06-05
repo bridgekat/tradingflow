@@ -212,6 +212,29 @@ impl Scenario {
             .push(Adapt::new(super::python::PyOperator::writing(source, out_len)), inputs)
     }
 
+    /// Register a class-based Python operator (feature `pyflow`). `source` is a
+    /// Python program binding the operator instance to `__op__`, implementing the
+    /// legacy contract `init(inputs, timestamp) -> state` and
+    /// `compute(state, inputs, output, timestamp, produced) -> bool`. The driver
+    /// [`Clock`] is wired through so the operator sees event time. `out_shape` is
+    /// the output element shape (`[]` for a scalar). See [`super::pyhost`].
+    #[cfg(feature = "pyflow")]
+    pub fn add_py_class_operator(
+        &mut self,
+        source: &str,
+        inputs: &[Handle<Array<f64>>],
+        out_shape: &[usize],
+    ) -> Handle<Array<f64>> {
+        self.builder.push(
+            Adapt::new(super::pyhost::PyClassOperator::new(
+                source,
+                out_shape.to_vec(),
+                self.clock.clone(),
+            )),
+            inputs,
+        )
+    }
+
     /// Register a [`Source`]. Its output cell is a `Const(initial)`; the async
     /// feed is wired up at [`build`](Self::build) time.
     pub fn add_source<S: Source>(&mut self, source: S, initial: S::Output) -> Handle<S::Output>
