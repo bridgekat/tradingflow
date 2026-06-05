@@ -745,4 +745,83 @@ def build(scale=1.0):
         g.stabilize(&mut pool);
         assert!((g.cell(out).as_slice()[0] - 30.0).abs() < 1e-12); // sum(1..4)=10 * 3
     }
+
+    // -- Integration with the real `flowops` package (needs python/ on -----------
+    //    PYTHONPATH + numpy on the embedded interpreter's path). -----------------
+
+    /// The ported Turnover operator loaded from `flowops.metrics.turnover` runs
+    /// through the real Rust host + engine (not just the pure-Python testkit).
+    #[test]
+    fn flowops_turnover_via_module() {
+        let clock = Clock::new();
+        let mut b = GraphBuilder::new();
+        let src = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![0.5_f64, 0.5]))), ());
+        let out = b.push(
+            Adapt::new(PyClassOperator::<[Port<Array<f64>>]>::from_module(
+                "flowops.metrics.turnover",
+                PyParams::new().int("num_stocks", 2),
+                vec![],
+                clock.clone(),
+            )),
+            &[src][..],
+        );
+        let mut g = Graph::from_builder(b);
+        let mut pool = Pool::new(0);
+
+        *g.cell_mut(src) = Array::from_vec(&[2], vec![0.5, 0.5]);
+        g.stabilize(&mut pool); // warmup
+        *g.cell_mut(src) = Array::from_vec(&[2], vec![0.3, 0.7]);
+        g.stabilize(&mut pool);
+        assert!((g.cell(out).as_slice()[0] - 0.4).abs() < 1e-12);
+    }
+
+    /// A real predictor (LinearRegression) end-to-end: Array universe + two
+    /// Series-history inputs (features (N,F), target (N)), produced-gated
+    /// rebalance, emitting an (N,) prediction. Validates the heterogeneous
+    /// Series path through the engine.
+    #[test]
+    fn flowops_linear_regression_predictor() {
+        const N: usize = 3;
+        const F: usize = 2;
+        let clock = Clock::new();
+        let mut b = GraphBuilder::new();
+        let universe = b.push(Adapt::new(Const(Array::from_vec(&[N], vec![1.0; N]))), ());
+        let feat_feed = b.push(Adapt::new(Const(Array::zeros(&[N, F]))), ());
+        let tgt_feed = b.push(Adapt::new(Const(Array::zeros(&[N]))), ());
+        let feat_series = b.push(Adapt::new(Record::new(clock.clone())), feat_feed);
+        let tgt_series = b.push(Adapt::new(Record::new(clock.clone())), tgt_feed);
+        let pred = b.push(
+            Adapt::new(
+                PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+                    "flowops.predictors.mean.linear_regression",
+                    PyParams::new()
+                        .int("num_stocks", N as i64)
+                        .int("num_features", F as i64)
+                        .int("universe_size", N as i64)
+                        .int("target_offset", 1),
+                    vec![N],
+                    clock.clone(),
+                ),
+            ),
+            (universe, feat_series, tgt_series),
+        );
+        let mut g = Graph::from_builder(b);
+        let mut pool = Pool::new(0);
+
+        // Feed a few ticks of features/targets with a linear relationship so the
+        // pooled OLS is well-posed; rebalance each tick (universe produces).
+        for t in 1..=5_i64 {
+            let x: Vec<f64> = (0..N * F).map(|k| (t as f64) + 0.1 * k as f64).collect();
+            let y: Vec<f64> = (0..N).map(|i| 0.5 * (t as f64) + i as f64).collect();
+            clock.set(Instant::from_nanos(t * 100));
+            *g.cell_mut(feat_feed) = Array::from_vec(&[N, F], x);
+            *g.cell_mut(tgt_feed) = Array::from_vec(&[N], y);
+            *g.cell_mut(universe) = Array::from_vec(&[N], vec![1.0; N]);
+            g.stabilize(&mut pool);
+        }
+
+        let mu = g.cell(pred).as_slice();
+        assert_eq!(mu.len(), N);
+        assert!(mu.iter().all(|v| v.is_finite()), "prediction has non-finite entries: {mu:?}");
+    }
 }
