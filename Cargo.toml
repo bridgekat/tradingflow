@@ -27,7 +27,8 @@ csv = "1.3"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 csv-async = { version = "1.3.1", features = ["tokio"] }
 # New synchronous parallel engine (migration branch: see `flow` module).
-flowgraph = { path = "../flowgraph" }
+# Vendored as a git submodule -> https://github.com/bridgekat/flowgraph
+flowgraph = { path = "extern/flowgraph" }
 
 [dev-dependencies]
 criterion = "0.5"
