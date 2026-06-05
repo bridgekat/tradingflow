@@ -5,7 +5,7 @@
 use flowgraph::typed::Port;
 
 use super::op::Operator;
-use crate::{Array, Instant};
+use crate::Array;
 
 // ---------------------------------------------------------------------------
 // Annualize
@@ -40,7 +40,7 @@ impl Operator for Annualize {
     type Inputs = Port<Array<f64>>;
     type Output = Array<f64>;
 
-    fn init(&self, inputs: &Array<f64>, _ts: Instant) -> (AnnualizeState, Array<f64>) {
+    fn init(&self, inputs: &Array<f64>) -> (AnnualizeState, Array<f64>) {
         let input_len = inputs.as_slice().len();
         assert!(
             input_len >= 3,
@@ -60,7 +60,6 @@ impl Operator for Annualize {
         state: &mut AnnualizeState,
         inputs: &Array<f64>,
         output: &mut Array<f64>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let input = inputs.as_slice();
@@ -145,7 +144,6 @@ impl Operator for ForwardAdjust {
     fn init(
         &self,
         inputs: (&Array<f64>, &Array<f64>),
-        _ts: Instant,
     ) -> (ForwardAdjustState, Array<f64>) {
         assert_eq!(inputs.0.as_slice().len(), 1, "stock price must be scalar");
         assert_eq!(
@@ -166,7 +164,6 @@ impl Operator for ForwardAdjust {
         state: &mut ForwardAdjustState,
         inputs: (&Array<f64>, &Array<f64>),
         output: &mut Array<f64>,
-        _ts: Instant,
         produced: (bool, bool),
     ) -> bool {
         let (produced_price, produced_dividend) = produced;

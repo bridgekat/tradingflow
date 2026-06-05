@@ -22,9 +22,9 @@ fn ts(n: i64) -> Instant {
 fn simple_add() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let ha = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let hb = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let hc = b.push(clock.op(Add::<f64>::new()), (ha, hb));
+    let ha = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let hb = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let hc = b.push(Adapt::new(Add::<f64>::new()), (ha, hb));
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -42,10 +42,10 @@ fn simple_add() {
 fn chain_add_then_mul() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let bb = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let ab = b.push(clock.op(Add::<f64>::new()), (a, bb));
-    let out = b.push(clock.op(Multiply::<f64>::new()), (ab, a));
+    let a = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let bb = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let ab = b.push(Adapt::new(Add::<f64>::new()), (a, bb));
+    let out = b.push(Adapt::new(Multiply::<f64>::new()), (ab, a));
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -62,10 +62,10 @@ fn chain_add_then_mul() {
 fn record_series() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let ha = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let hb = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let sum = b.push(clock.op(Add::<f64>::new()), (ha, hb));
-    let rec = b.push(clock.op(Record::<f64>::new()), sum);
+    let ha = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let hb = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let sum = b.push(Adapt::new(Add::<f64>::new()), (ha, hb));
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), sum);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -91,9 +91,9 @@ fn record_series() {
 fn filter_gates_record() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let flt = b.push(clock.op(Filter(|a: &Array<f64>| a[0] > 3.0)), src);
-    let rec = b.push(clock.op(Record::<f64>::new()), flt);
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let flt = b.push(Adapt::new(Filter(|a: &Array<f64>| a[0] > 3.0)), src);
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), flt);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -114,9 +114,9 @@ fn filter_gates_record() {
 fn last_of_record() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let rec = b.push(clock.op(Record::<f64>::new()), src);
-    let lst = b.push(clock.op(Last::new(0.0_f64)), rec);
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), src);
+    let lst = b.push(Adapt::new(Last::new(0.0_f64)), rec);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -135,13 +135,13 @@ fn last_of_record() {
 fn clocked_periodic() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let data = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let tick = b.push(clock.op(Const(())), ());
+    let data = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let tick = b.push(Adapt::new(Const(())), ());
     let gated = b.push(
-        clock.op(Clocked::<_, ()>::new(Filter(|_: &Array<f64>| true))),
+        Adapt::new(Clocked::<_, ()>::new(Filter(|_: &Array<f64>| true))),
         (tick, data),
     );
-    let rec = b.push(clock.op(Record::<f64>::new()), gated);
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), gated);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -167,10 +167,10 @@ fn clocked_periodic() {
 fn coalesced_two_source_add() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let bb = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let sum = b.push(clock.op(Add::<f64>::new()), (a, bb));
-    let rec = b.push(clock.op(Record::<f64>::new()), sum);
+    let a = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let bb = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let sum = b.push(Adapt::new(Add::<f64>::new()), (a, bb));
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), sum);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -190,11 +190,11 @@ fn coalesced_two_source_add() {
 fn slice_stack_and_sync() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let s0 = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let s1 = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let s2 = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let stacked = b.push(clock.op(Stack::<f64>::new(0)), &[s0, s1, s2][..]);
-    let synced = b.push(clock.op(StackSync::<f64>::new(0)), &[s0, s1, s2][..]);
+    let s0 = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let s1 = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let s2 = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let stacked = b.push(Adapt::new(Stack::<f64>::new(0)), &[s0, s1, s2][..]);
+    let synced = b.push(Adapt::new(StackSync::<f64>::new(0)), &[s0, s1, s2][..]);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -223,9 +223,9 @@ fn slice_stack_and_sync() {
 fn rolling_mean_count_warmup_and_value() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let rec = b.push(clock.op(Record::<f64>::new()), src);
-    let rm = b.push(clock.op(RollingMean::<f64>::count(3)), rec);
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), src);
+    let rm = b.push(Adapt::new(RollingMean::<f64>::count(3)), rec);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -249,12 +249,12 @@ fn rolling_mean_count_warmup_and_value() {
 fn arith_unary_and_binary() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push(clock.op(Const(Array::from_vec(&[3], vec![1.0_f64, -2.0, 3.0]))), ());
-    let neg = b.push(clock.op(Negate::<f64>::new()), a);
-    let x = b.push(clock.op(Const(Array::scalar(20.0_f64))), ());
-    let y = b.push(clock.op(Const(Array::scalar(4.0_f64))), ());
-    let sub = b.push(clock.op(Subtract::<f64>::new()), (x, y));
-    let div = b.push(clock.op(Divide::<f64>::new()), (x, y));
+    let a = b.push(Adapt::new(Const(Array::from_vec(&[3], vec![1.0_f64, -2.0, 3.0]))), ());
+    let neg = b.push(Adapt::new(Negate::<f64>::new()), a);
+    let x = b.push(Adapt::new(Const(Array::scalar(20.0_f64))), ());
+    let y = b.push(Adapt::new(Const(Array::scalar(4.0_f64))), ());
+    let sub = b.push(Adapt::new(Subtract::<f64>::new()), (x, y));
+    let div = b.push(Adapt::new(Divide::<f64>::new()), (x, y));
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -274,11 +274,11 @@ fn arith_unary_and_binary() {
 fn arith_min_max_pow() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push(clock.op(Const(Array::from_vec(&[3], vec![1.0_f64, 5.0, 3.0]))), ());
-    let bb = b.push(clock.op(Const(Array::from_vec(&[3], vec![2.0_f64, 4.0, 6.0]))), ());
-    let mn = b.push(clock.op(Min::<f64>::new()), (a, bb));
-    let mx = b.push(clock.op(Max::<f64>::new()), (a, bb));
-    let p = b.push(clock.op(Pow::new(2.0_f64)), a);
+    let a = b.push(Adapt::new(Const(Array::from_vec(&[3], vec![1.0_f64, 5.0, 3.0]))), ());
+    let bb = b.push(Adapt::new(Const(Array::from_vec(&[3], vec![2.0_f64, 4.0, 6.0]))), ());
+    let mn = b.push(Adapt::new(Min::<f64>::new()), (a, bb));
+    let mx = b.push(Adapt::new(Max::<f64>::new()), (a, bb));
+    let p = b.push(Adapt::new(Pow::new(2.0_f64)), a);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -297,10 +297,10 @@ fn arith_min_max_pow() {
 fn rolling_sum_and_variance() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let rec = b.push(clock.op(Record::<f64>::new()), src);
-    let rsum = b.push(clock.op(RollingSum::<f64>::count(3)), rec);
-    let rvar = b.push(clock.op(RollingVariance::<f64>::count(3)), rec);
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), src);
+    let rsum = b.push(Adapt::new(RollingSum::<f64>::count(3)), rec);
+    let rvar = b.push(Adapt::new(RollingVariance::<f64>::count(3)), rec);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -323,9 +323,9 @@ fn rolling_sum_and_variance() {
 fn rolling_covariance_2d() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::<f64>::zeros(&[2]))), ());
-    let rec = b.push(clock.op(Record::<f64>::new()), src);
-    let cov = b.push(clock.op(RollingCovariance::<f64>::count(3)), rec);
+    let src = b.push(Adapt::new(Const(Array::<f64>::zeros(&[2]))), ());
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), src);
+    let cov = b.push(Adapt::new(RollingCovariance::<f64>::count(3)), rec);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -345,9 +345,9 @@ fn rolling_covariance_2d() {
 fn ema_two_values() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let rec = b.push(clock.op(Record::<f64>::new()), src);
-    let e = b.push(clock.op(Ema::<f64>::new(0.5, 2)), rec);
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), src);
+    let e = b.push(Adapt::new(Ema::<f64>::new(0.5, 2)), rec);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -365,11 +365,11 @@ fn ema_two_values() {
 fn structural_where_cast_id() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push(clock.op(Const(Array::from_vec(&[3], vec![1.0_f64, 5.0, 2.0]))), ());
-    let w = b.push(clock.op(Where::new(|v: f64| v > 3.0, 0.0_f64)), a);
-    let i = b.push(clock.op(Id::<Array<f64>>::new()), a);
-    let ci = b.push(clock.op(Const(Array::from_vec(&[3], vec![1_i32, 2, 3]))), ());
-    let c = b.push(clock.op(Cast::<i32, f64>::new()), ci);
+    let a = b.push(Adapt::new(Const(Array::from_vec(&[3], vec![1.0_f64, 5.0, 2.0]))), ());
+    let w = b.push(Adapt::new(Where::new(|v: f64| v > 3.0, 0.0_f64)), a);
+    let i = b.push(Adapt::new(Id::<Array<f64>>::new()), a);
+    let ci = b.push(Adapt::new(Const(Array::from_vec(&[3], vec![1_i32, 2, 3]))), ());
+    let c = b.push(Adapt::new(Cast::<i32, f64>::new()), ci);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -390,11 +390,11 @@ fn structural_where_cast_id() {
 fn num_clamp_fillna_ffill() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push(clock.op(Const(Array::from_vec(&[3], vec![1.0_f64, 3.0, 7.0]))), ());
-    let clamp = b.push(clock.op(Clamp::new(2.0_f64, 5.0)), a);
-    let na = b.push(clock.op(Const(Array::from_vec(&[3], vec![1.0_f64, f64::NAN, 3.0]))), ());
-    let fill = b.push(clock.op(Fillna::new(0.0_f64)), na);
-    let ff = b.push(clock.op(ForwardFill::<f64>::new()), na);
+    let a = b.push(Adapt::new(Const(Array::from_vec(&[3], vec![1.0_f64, 3.0, 7.0]))), ());
+    let clamp = b.push(Adapt::new(Clamp::new(2.0_f64, 5.0)), a);
+    let na = b.push(Adapt::new(Const(Array::from_vec(&[3], vec![1.0_f64, f64::NAN, 3.0]))), ());
+    let fill = b.push(Adapt::new(Fillna::new(0.0_f64)), na);
+    let ff = b.push(Adapt::new(ForwardFill::<f64>::new()), na);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -416,9 +416,9 @@ fn num_clamp_fillna_ffill() {
 fn num_diff_and_pct_change() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let d = b.push(clock.op(Diff::<f64>::new()), src);
-    let pc = b.push(clock.op(PctChange::<f64>::new()), src);
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let d = b.push(Adapt::new(Diff::<f64>::new()), src);
+    let pc = b.push(Adapt::new(PctChange::<f64>::new()), src);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -441,13 +441,13 @@ fn num_diff_and_pct_change() {
 fn num_cross_sectional() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let five = b.push(clock.op(Const(Array::from_vec(&[5], vec![30.0_f64, 10.0, 50.0, 20.0, 40.0]))), ());
-    let gau = b.push(clock.op(Gaussianize::<f64>::new()), five);
-    let pct = b.push(clock.op(Percentile::<f64>::new()), five);
-    let std_in = b.push(clock.op(Const(Array::from_vec(&[5], vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]))), ());
-    let zsc = b.push(clock.op(Standardize::<f64>::new()), std_in);
-    let win_in = b.push(clock.op(Const(Array::from_vec(&[10], (0..10).map(|i| i as f64).collect()))), ());
-    let win = b.push(clock.op(Winsorize::<f64>::new(0.1)), win_in);
+    let five = b.push(Adapt::new(Const(Array::from_vec(&[5], vec![30.0_f64, 10.0, 50.0, 20.0, 40.0]))), ());
+    let gau = b.push(Adapt::new(Gaussianize::<f64>::new()), five);
+    let pct = b.push(Adapt::new(Percentile::<f64>::new()), five);
+    let std_in = b.push(Adapt::new(Const(Array::from_vec(&[5], vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]))), ());
+    let zsc = b.push(Adapt::new(Standardize::<f64>::new()), std_in);
+    let win_in = b.push(Adapt::new(Const(Array::from_vec(&[10], (0..10).map(|i| i as f64).collect()))), ());
+    let win = b.push(Adapt::new(Winsorize::<f64>::new(0.1)), win_in);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -479,9 +479,9 @@ fn num_cross_sectional() {
 fn map_doubles() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
     let m = b.push(
-        clock.op(Map::new(|a: &Array<f64>| {
+        Adapt::new(Map::new(|a: &Array<f64>| {
             let mut o = a.clone();
             o[0] *= 2.0;
             o
@@ -502,10 +502,10 @@ fn map_doubles() {
 fn apply_add_and_select() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push(clock.op(Const(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]))), ());
-    let bb = b.push(clock.op(Const(Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0]))), ());
+    let a = b.push(Adapt::new(Const(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]))), ());
+    let bb = b.push(Adapt::new(Const(Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0]))), ());
     let ap = b.push(
-        clock.op(Apply::<(Port<Array<f64>>, Port<Array<f64>>), _, _>::new(
+        Adapt::new(Apply::<(Port<Array<f64>>, Port<Array<f64>>), _, _>::new(
             |(a, b): (&Array<f64>, &Array<f64>)| {
                 let mut out = a.clone();
                 for (o, &v) in out.as_mut_slice().iter_mut().zip(b.as_slice()) {
@@ -516,8 +516,8 @@ fn apply_add_and_select() {
         )),
         (a, bb),
     );
-    let five = b.push(clock.op(Const(Array::from_vec(&[5], vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]))), ());
-    let sel = b.push(clock.op(Select::<f64>::flat(vec![1, 3])), five);
+    let five = b.push(Adapt::new(Const(Array::from_vec(&[5], vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]))), ());
+    let sel = b.push(Adapt::new(Select::<f64>::flat(vec![1, 3])), five);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -535,9 +535,9 @@ fn apply_add_and_select() {
 fn lag_offset_two() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let rec = b.push(clock.op(Record::<f64>::new()), src);
-    let lag = b.push(clock.op(Lag::new(2, f64::NAN)), rec);
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let rec = b.push(Adapt::new(Record::new(clock.clone())), src);
+    let lag = b.push(Adapt::new(Lag::new(2, f64::NAN)), rec);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -554,9 +554,9 @@ fn lag_offset_two() {
 fn concat_axis0() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push(clock.op(Const(Array::from_vec(&[2], vec![1.0_f64, 2.0]))), ());
-    let bb = b.push(clock.op(Const(Array::from_vec(&[2], vec![3.0_f64, 4.0]))), ());
-    let cc = b.push(clock.op(Concat::<f64>::new(0)), &[a, bb][..]);
+    let a = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![1.0_f64, 2.0]))), ());
+    let bb = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![3.0_f64, 4.0]))), ());
+    let cc = b.push(Adapt::new(Concat::<f64>::new(0)), &[a, bb][..]);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -575,11 +575,11 @@ fn concat_axis0() {
 fn metrics_clock_gated() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let data = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let tick = b.push(clock.op(Const(())), ());
-    let cr = b.push(clock.op(CompoundReturn::<f64>::new()), (data, tick));
-    let ar = b.push(clock.op(AverageReturn::<f64>::new()), (data, tick));
-    let vol = b.push(clock.op(Volatility::<f64>::new()), (data, tick));
+    let data = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let tick = b.push(Adapt::new(Const(())), ());
+    let cr = b.push(Adapt::new(CompoundReturn::<f64>::new()), (data, tick));
+    let ar = b.push(Adapt::new(AverageReturn::<f64>::new()), (data, tick));
+    let vol = b.push(Adapt::new(Volatility::<f64>::new()), (data, tick));
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -606,8 +606,8 @@ fn metrics_clock_gated() {
 fn metrics_drawdown() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let data = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
-    let dd = b.push(clock.op(Drawdown::<f64>::new()), data);
+    let data = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
+    let dd = b.push(Adapt::new(Drawdown::<f64>::new()), data);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -625,10 +625,10 @@ fn stocks_annualize() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
     let src = b.push(
-        clock.op(Const(Array::from_vec(&[4], vec![2024.0_f64, 91.0, 100.0, 20.0]))),
+        Adapt::new(Const(Array::from_vec(&[4], vec![2024.0_f64, 91.0, 100.0, 20.0]))),
         (),
     );
-    let ann = b.push(clock.op(Annualize::new()), src);
+    let ann = b.push(Adapt::new(Annualize::new()), src);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -646,9 +646,9 @@ fn stocks_annualize() {
 fn stocks_forward_adjust() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let price = b.push(clock.op(Const(Array::scalar(10.0_f64))), ());
-    let divd = b.push(clock.op(Const(Array::from_vec(&[2], vec![0.0_f64, 0.0]))), ());
-    let fa = b.push(clock.op(ForwardAdjust::new()), (price, divd));
+    let price = b.push(Adapt::new(Const(Array::scalar(10.0_f64))), ());
+    let divd = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![0.0_f64, 0.0]))), ());
+    let fa = b.push(Adapt::new(ForwardAdjust::new()), (price, divd));
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
@@ -677,11 +677,11 @@ fn parallel_fanout_matches_sequential() {
     const K: usize = 16;
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
     let recs: Vec<_> = (0..K)
         .map(|_| {
-            let f = b.push(clock.op(Filter(|a: &Array<f64>| a[0] > 3.0)), src);
-            b.push(clock.op(Record::<f64>::new()), f)
+            let f = b.push(Adapt::new(Filter(|a: &Array<f64>| a[0] > 3.0)), src);
+            b.push(Adapt::new(Record::new(clock.clone())), f)
         })
         .collect();
     let mut g = Graph::from_builder(b);
@@ -707,11 +707,11 @@ fn parallel_stress_stateful_counts() {
     const GENS: usize = 500;
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push(clock.op(Const(Array::scalar(0.0_f64))), ());
+    let src = b.push(Adapt::new(Const(Array::scalar(0.0_f64))), ());
     let cnts: Vec<_> = (0..K)
         .map(|_| {
-            let f = b.push(clock.op(Filter(|a: &Array<f64>| a[0] > 0.0)), src);
-            b.push(clock.op(Count), f)
+            let f = b.push(Adapt::new(Filter(|a: &Array<f64>| a[0] > 0.0)), src);
+            b.push(Adapt::new(Count), f)
         })
         .collect();
     let mut g = Graph::from_builder(b);

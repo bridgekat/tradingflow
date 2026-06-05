@@ -7,7 +7,7 @@ use num_traits::Float;
 use flowgraph::typed::{Port, SliceNotify, SliceRefs};
 
 use super::op::Operator;
-use crate::{Array, Instant, Scalar};
+use crate::{Array, Scalar};
 
 /// Shared runtime state for all four operators (outer × chunk layout).
 pub struct ReshapeState {
@@ -84,7 +84,7 @@ impl<T: Scalar> Operator for Stack<T> {
     type Inputs = [Port<Array<T>>];
     type Output = Array<T>;
 
-    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>, _ts: Instant) -> (ReshapeState, Array<T>) {
+    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>) -> (ReshapeState, Array<T>) {
         assert!(!inputs.is_empty(), "Stack requires at least one input");
         let first = inputs.get(0).shape();
         assert!(self.axis <= first.len(), "axis out of bounds");
@@ -105,7 +105,6 @@ impl<T: Scalar> Operator for Stack<T> {
         state: &mut ReshapeState,
         inputs: SliceRefs<'_, Port<Array<T>>>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: SliceNotify<'_, Port<Array<T>>>,
     ) -> bool {
         interleaved_copy(
@@ -145,7 +144,7 @@ impl<T: Scalar + Float> Operator for StackSync<T> {
     type Inputs = [Port<Array<T>>];
     type Output = Array<T>;
 
-    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>, _ts: Instant) -> (ReshapeState, Array<T>) {
+    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>) -> (ReshapeState, Array<T>) {
         assert!(!inputs.is_empty(), "StackSync requires at least one input");
         let first = inputs.get(0).shape();
         assert!(self.axis <= first.len(), "axis out of bounds");
@@ -167,7 +166,6 @@ impl<T: Scalar + Float> Operator for StackSync<T> {
         state: &mut ReshapeState,
         inputs: SliceRefs<'_, Port<Array<T>>>,
         output: &mut Array<T>,
-        _ts: Instant,
         produced: SliceNotify<'_, Port<Array<T>>>,
     ) -> bool {
         for v in output.as_mut_slice().iter_mut() {
@@ -210,7 +208,7 @@ impl<T: Scalar> Operator for Concat<T> {
     type Inputs = [Port<Array<T>>];
     type Output = Array<T>;
 
-    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>, _ts: Instant) -> (ReshapeState, Array<T>) {
+    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>) -> (ReshapeState, Array<T>) {
         assert!(!inputs.is_empty(), "Concat requires at least one input");
         let first = inputs.get(0).shape();
         assert!(self.axis < first.len(), "axis out of bounds");
@@ -229,7 +227,6 @@ impl<T: Scalar> Operator for Concat<T> {
         state: &mut ReshapeState,
         inputs: SliceRefs<'_, Port<Array<T>>>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: SliceNotify<'_, Port<Array<T>>>,
     ) -> bool {
         interleaved_copy(
@@ -269,7 +266,7 @@ impl<T: Scalar + Float> Operator for ConcatSync<T> {
     type Inputs = [Port<Array<T>>];
     type Output = Array<T>;
 
-    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>, _ts: Instant) -> (ReshapeState, Array<T>) {
+    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>) -> (ReshapeState, Array<T>) {
         assert!(!inputs.is_empty(), "ConcatSync requires at least one input");
         let first = inputs.get(0).shape();
         assert!(self.axis < first.len(), "axis out of bounds");
@@ -289,7 +286,6 @@ impl<T: Scalar + Float> Operator for ConcatSync<T> {
         state: &mut ReshapeState,
         inputs: SliceRefs<'_, Port<Array<T>>>,
         output: &mut Array<T>,
-        _ts: Instant,
         produced: SliceNotify<'_, Port<Array<T>>>,
     ) -> bool {
         for v in output.as_mut_slice().iter_mut() {

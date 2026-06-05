@@ -10,7 +10,7 @@ use num_traits::Float;
 use flowgraph::typed::Port;
 
 use super::op::Operator;
-use crate::{Array, Instant, Scalar};
+use crate::{Array, Scalar};
 
 // ---------------------------------------------------------------------------
 // CompoundReturn
@@ -46,7 +46,7 @@ impl<T: Scalar + Float> Operator for CompoundReturn<T> {
     type Inputs = (Port<Array<T>>, Port<()>);
     type Output = Array<T>;
 
-    fn init(&self, _inputs: (&Array<T>, &()), _ts: Instant) -> (Self::State, Array<T>) {
+    fn init(&self, _inputs: (&Array<T>, &())) -> (Self::State, Array<T>) {
         (
             CompoundReturnState {
                 first_value: T::nan(),
@@ -60,7 +60,6 @@ impl<T: Scalar + Float> Operator for CompoundReturn<T> {
         state: &mut CompoundReturnState<T>,
         inputs: (&Array<T>, &()),
         output: &mut Array<T>,
-        _ts: Instant,
         produced: (bool, bool),
     ) -> bool {
         let (_produced_data, produced_clock) = produced;
@@ -131,7 +130,7 @@ impl<T: Scalar + Float> Operator for AverageReturn<T> {
     type Inputs = (Port<Array<T>>, Port<()>);
     type Output = Array<T>;
 
-    fn init(&self, _inputs: (&Array<T>, &()), _ts: Instant) -> (Self::State, Array<T>) {
+    fn init(&self, _inputs: (&Array<T>, &())) -> (Self::State, Array<T>) {
         (
             AverageReturnState {
                 prev: T::nan(),
@@ -146,7 +145,6 @@ impl<T: Scalar + Float> Operator for AverageReturn<T> {
         state: &mut AverageReturnState<T>,
         inputs: (&Array<T>, &()),
         output: &mut Array<T>,
-        _ts: Instant,
         produced: (bool, bool),
     ) -> bool {
         let (_produced_data, produced_clock) = produced;
@@ -206,7 +204,7 @@ impl<T: Scalar + Float> Operator for Volatility<T> {
     type Inputs = (Port<Array<T>>, Port<()>);
     type Output = Array<T>;
 
-    fn init(&self, _inputs: (&Array<T>, &()), _ts: Instant) -> (Self::State, Array<T>) {
+    fn init(&self, _inputs: (&Array<T>, &())) -> (Self::State, Array<T>) {
         (
             VolatilityState {
                 prev: T::nan(),
@@ -222,7 +220,6 @@ impl<T: Scalar + Float> Operator for Volatility<T> {
         state: &mut VolatilityState<T>,
         inputs: (&Array<T>, &()),
         output: &mut Array<T>,
-        _ts: Instant,
         produced: (bool, bool),
     ) -> bool {
         let (_produced_data, produced_clock) = produced;
@@ -286,7 +283,7 @@ impl<T: Scalar + Float> Operator for SharpeRatio<T> {
     type Inputs = (Port<Array<T>>, Port<()>);
     type Output = Array<T>;
 
-    fn init(&self, _inputs: (&Array<T>, &()), _ts: Instant) -> (Self::State, Array<T>) {
+    fn init(&self, _inputs: (&Array<T>, &())) -> (Self::State, Array<T>) {
         (
             SharpeRatioState {
                 prev: T::nan(),
@@ -302,7 +299,6 @@ impl<T: Scalar + Float> Operator for SharpeRatio<T> {
         state: &mut SharpeRatioState<T>,
         inputs: (&Array<T>, &()),
         output: &mut Array<T>,
-        _ts: Instant,
         produced: (bool, bool),
     ) -> bool {
         let (_produced_data, produced_clock) = produced;
@@ -369,7 +365,7 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, _inputs: &Array<T>, _ts: Instant) -> (Self::State, Array<T>) {
+    fn init(&self, _inputs: &Array<T>) -> (Self::State, Array<T>) {
         (
             DrawdownState {
                 running_max: T::nan(),
@@ -382,7 +378,6 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
         state: &mut DrawdownState<T>,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let current = inputs[0];

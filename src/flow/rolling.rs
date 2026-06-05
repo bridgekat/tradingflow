@@ -14,7 +14,7 @@ use num_traits::Float;
 use flowgraph::typed::Port;
 
 use super::op::Operator;
-use crate::{Array, Duration, Instant, Scalar, Series};
+use crate::{Array, Duration, Scalar, Series};
 
 // ===========================================================================
 // Accumulator trait + Window
@@ -97,7 +97,6 @@ impl<A: Accumulator> Operator for Rolling<A> {
     fn init(
         &self,
         inputs: &Series<A::Scalar>,
-        _ts: Instant,
     ) -> (RollingState<A>, Array<A::Scalar>) {
         let input_shape = inputs.shape();
         let output_shape = A::output_shape(input_shape);
@@ -118,7 +117,6 @@ impl<A: Accumulator> Operator for Rolling<A> {
         state: &mut RollingState<A>,
         inputs: &Series<A::Scalar>,
         output: &mut Array<A::Scalar>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let series = inputs;
@@ -479,7 +477,7 @@ impl<T: Scalar + Float> Operator for Ema<T> {
     type Inputs = Port<Series<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Series<T>, _ts: Instant) -> (EmaState<T>, Array<T>) {
+    fn init(&self, inputs: &Series<T>) -> (EmaState<T>, Array<T>) {
         let stride = inputs.stride();
         let one_minus_alpha = T::one() - self.alpha;
         let mut decay_factor = T::one();
@@ -504,7 +502,6 @@ impl<T: Scalar + Float> Operator for Ema<T> {
         state: &mut EmaState<T>,
         inputs: &Series<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let series = inputs;

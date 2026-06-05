@@ -7,8 +7,8 @@ use std::marker::PhantomData;
 
 use flowgraph::typed::{Port, Ports};
 
-use super::op::Operator;
-use crate::{Array, Instant, Scalar, Series};
+use super::op::{Clock, Operator};
+use crate::{Array, Scalar, Series};
 
 // ---------------------------------------------------------------------------
 // Const — externally-set constant / source cell.
@@ -23,11 +23,11 @@ impl<T: Clone + Send + Sync + 'static> Operator for Const<T> {
     type Output = T;
     type State = ();
 
-    fn init(&self, _inputs: (), _ts: Instant) -> ((), T) {
+    fn init(&self, _inputs: ()) -> ((), T) {
         ((), self.0.clone())
     }
 
-    fn compute(_s: &mut (), _i: (), _o: &mut T, _ts: Instant, _p: ()) -> bool {
+    fn compute(_s: &mut (), _i: (), _o: &mut T, _p: ()) -> bool {
         true
     }
 }
@@ -51,7 +51,7 @@ where
     type Output = Array<f64>;
     type State = F;
 
-    fn init(&self, inputs: &Array<f64>, _ts: Instant) -> (F, Array<f64>) {
+    fn init(&self, inputs: &Array<f64>) -> (F, Array<f64>) {
         (self.0.clone(), inputs.clone())
     }
 
@@ -59,7 +59,6 @@ where
         state: &mut F,
         inputs: &Array<f64>,
         output: &mut Array<f64>,
-        _ts: Instant,
         _p: bool,
     ) -> bool {
         if state(inputs) {
@@ -76,38 +75,39 @@ where
 // ---------------------------------------------------------------------------
 
 /// Records an `Array<T>` stream into a `Series<T>`, stamping each row with the
-/// clock-provided event time. The operator that genuinely consumes `timestamp`.
-pub struct Record<T: Scalar>(PhantomData<T>);
-
-impl<T: Scalar> Record<T> {
-    pub fn new() -> Self {
-        Self(PhantomData)
-    }
+/// event time read from the [`Clock`] in its state. The one operator that needs
+/// time — constructed via [`Scenario::add_record`](super::Scenario::add_record),
+/// which supplies the driver's clock.
+pub struct Record<T: Scalar> {
+    clock: Clock,
+    _p: PhantomData<T>,
 }
 
-impl<T: Scalar> Default for Record<T> {
-    fn default() -> Self {
-        Self::new()
+impl<T: Scalar> Record<T> {
+    pub fn new(clock: Clock) -> Self {
+        Self {
+            clock,
+            _p: PhantomData,
+        }
     }
 }
 
 impl<T: Scalar> Operator for Record<T> {
     type Inputs = Port<Array<T>>;
     type Output = Series<T>;
-    type State = ();
+    type State = Clock;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> ((), Series<T>) {
-        ((), Series::new(inputs.shape()))
+    fn init(&self, inputs: &Array<T>) -> (Clock, Series<T>) {
+        (self.clock.clone(), Series::new(inputs.shape()))
     }
 
     fn compute(
-        _s: &mut (),
+        state: &mut Clock,
         inputs: &Array<T>,
         output: &mut Series<T>,
-        timestamp: Instant,
-        _p: bool,
+        _produced: bool,
     ) -> bool {
-        output.push(timestamp, inputs.as_slice());
+        output.push(state.get(), inputs.as_slice());
         true
     }
 }
@@ -133,7 +133,7 @@ impl<T: Scalar> Operator for Last<T> {
     type Output = Array<T>;
     type State = T;
 
-    fn init(&self, inputs: &Series<T>, _ts: Instant) -> (T, Array<T>) {
+    fn init(&self, inputs: &Series<T>) -> (T, Array<T>) {
         let shape = inputs.shape();
         let out = match inputs.last() {
             Some(last) => Array::from_vec(shape, last.to_vec()),
@@ -146,7 +146,6 @@ impl<T: Scalar> Operator for Last<T> {
         state: &mut T,
         inputs: &Series<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _p: bool,
     ) -> bool {
         match inputs.last() {
@@ -174,7 +173,7 @@ impl Operator for Count {
     type Output = Array<f64>;
     type State = i64;
 
-    fn init(&self, _i: &Array<f64>, _ts: Instant) -> (i64, Array<f64>) {
+    fn init(&self, _i: &Array<f64>) -> (i64, Array<f64>) {
         (0, Array::scalar(0.0))
     }
 
@@ -182,7 +181,6 @@ impl Operator for Count {
         state: &mut i64,
         _i: &Array<f64>,
         out: &mut Array<f64>,
-        _ts: Instant,
         _p: bool,
     ) -> bool {
         *state += 1;
@@ -229,23 +227,21 @@ impl<O: Operator, C: Send + Sync + 'static> Operator for Clocked<O, C> {
     fn init(
         &self,
         inputs: (&C, <O::Inputs as Ports>::Refs<'_>),
-        ts: Instant,
     ) -> (O::State, O::Output) {
-        self.inner.init(inputs.1, ts)
+        self.inner.init(inputs.1)
     }
 
     fn compute(
         state: &mut O::State,
         inputs: (&C, <O::Inputs as Ports>::Refs<'_>),
         output: &mut O::Output,
-        ts: Instant,
         produced: (bool, <O::Inputs as Ports>::Notify<'_>),
     ) -> bool {
         let (clock_fired, inner_produced) = produced;
         if !clock_fired {
             return false;
         }
-        O::compute(state, inputs.1, output, ts, inner_produced)
+        O::compute(state, inputs.1, output, inner_produced)
     }
 }
 

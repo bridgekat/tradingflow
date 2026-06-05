@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use flowgraph::typed::{Port, Ports};
 
 use super::op::Operator;
-use crate::{Array, Instant, Scalar, Series};
+use crate::{Array, Scalar, Series};
 
 // ---------------------------------------------------------------------------
 // Map / MapInplace (single input)
@@ -49,13 +49,13 @@ where
     type Inputs = Port<S>;
     type Output = T;
 
-    fn init(&self, inputs: &S, _ts: Instant) -> (Self, T) {
+    fn init(&self, inputs: &S) -> (Self, T) {
         let output = (self.f)(inputs);
         (self.clone(), output)
     }
 
     #[inline(always)]
-    fn compute(state: &mut Self, inputs: &S, output: &mut T, _ts: Instant, _produced: bool) -> bool {
+    fn compute(state: &mut Self, inputs: &S, output: &mut T, _produced: bool) -> bool {
         *output = (state.f)(inputs);
         true
     }
@@ -99,14 +99,14 @@ where
     type Inputs = Port<S>;
     type Output = T;
 
-    fn init(&self, inputs: &S, _ts: Instant) -> (Self, T) {
+    fn init(&self, inputs: &S) -> (Self, T) {
         let mut output = self.initial.clone();
         (self.f)(inputs, &mut output);
         (self.clone(), output)
     }
 
     #[inline(always)]
-    fn compute(state: &mut Self, inputs: &S, output: &mut T, _ts: Instant, _produced: bool) -> bool {
+    fn compute(state: &mut Self, inputs: &S, output: &mut T, _produced: bool) -> bool {
         (state.f)(inputs, output)
     }
 }
@@ -164,7 +164,7 @@ where
     type Inputs = I;
     type Output = T;
 
-    fn init(&self, inputs: <I as Ports>::Refs<'_>, _ts: Instant) -> (Self, T) {
+    fn init(&self, inputs: <I as Ports>::Refs<'_>) -> (Self, T) {
         let output = (self.f)(inputs);
         (self.clone(), output)
     }
@@ -174,7 +174,6 @@ where
         state: &mut Self,
         inputs: <I as Ports>::Refs<'_>,
         output: &mut T,
-        _ts: Instant,
         _produced: <I as Ports>::Notify<'_>,
     ) -> bool {
         *output = (state.f)(inputs);
@@ -234,7 +233,7 @@ where
     type Inputs = I;
     type Output = T;
 
-    fn init(&self, inputs: <I as Ports>::Refs<'_>, _ts: Instant) -> (Self, T) {
+    fn init(&self, inputs: <I as Ports>::Refs<'_>) -> (Self, T) {
         let mut output = self.initial.clone();
         (self.f)(inputs, &mut output);
         (self.clone(), output)
@@ -245,7 +244,6 @@ where
         state: &mut Self,
         inputs: <I as Ports>::Refs<'_>,
         output: &mut T,
-        _ts: Instant,
         _produced: <I as Ports>::Notify<'_>,
     ) -> bool {
         (state.f)(inputs, output)
@@ -299,7 +297,7 @@ impl<T: Scalar> Operator for Select<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> (SelectState, Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> (SelectState, Array<T>) {
         let input_shape = inputs.shape();
         let index_map = compute_select_map(input_shape, &self.indices, self.axis);
         let mut output_shape = input_shape.to_vec();
@@ -319,7 +317,6 @@ impl<T: Scalar> Operator for Select<T> {
         state: &mut SelectState,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let src = inputs.as_slice();
@@ -377,7 +374,7 @@ impl<T: Scalar> Operator for Lag<T> {
     type Inputs = Port<Series<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Series<T>, _ts: Instant) -> (LagState<T>, Array<T>) {
+    fn init(&self, inputs: &Series<T>) -> (LagState<T>, Array<T>) {
         let shape = inputs.shape();
         let stride: usize = shape.iter().product();
         let fill = Array::from_vec(shape, vec![self.fill.clone(); stride]);
@@ -392,7 +389,6 @@ impl<T: Scalar> Operator for Lag<T> {
         state: &mut LagState<T>,
         inputs: &Series<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let series = inputs;

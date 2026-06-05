@@ -8,7 +8,7 @@ use flowgraph::typed::{Port, Ports};
 
 use super::op::Operator;
 use super::ops::Clocked;
-use crate::{Array, Instant, Scalar};
+use crate::{Array, Scalar};
 
 /// Identity passthrough: clones input to output unchanged.
 #[derive(Clone)]
@@ -35,12 +35,12 @@ impl<T: Clone + Send + Sync + 'static> Operator for Id<T> {
     type Inputs = Port<T>;
     type Output = T;
 
-    fn init(&self, inputs: &T, _ts: Instant) -> ((), T) {
+    fn init(&self, inputs: &T) -> ((), T) {
         ((), inputs.clone())
     }
 
     #[inline(always)]
-    fn compute(_state: &mut (), inputs: &T, output: &mut T, _ts: Instant, _produced: bool) -> bool {
+    fn compute(_state: &mut (), inputs: &T, output: &mut T, _produced: bool) -> bool {
         output.clone_from(inputs);
         true
     }
@@ -70,7 +70,7 @@ impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static> Operator for W
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> (Self, Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> (Self, Array<T>) {
         (self.clone(), inputs.clone())
     }
 
@@ -79,7 +79,6 @@ impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static> Operator for W
         state: &mut Self,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let a = inputs.as_slice();
@@ -124,7 +123,7 @@ where
     type Inputs = Port<Array<S>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<S>, _ts: Instant) -> ((), Array<T>) {
+    fn init(&self, inputs: &Array<S>) -> ((), Array<T>) {
         let src = inputs.as_slice();
         let data: Vec<T> = src.iter().map(|&v| v.as_()).collect();
         ((), Array::from_vec(inputs.shape(), data))
@@ -135,7 +134,6 @@ where
         _state: &mut (),
         inputs: &Array<S>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let src = inputs.as_slice();
@@ -197,18 +195,16 @@ where
     fn init(
         &self,
         inputs: <Self::Inputs as Ports>::Refs<'_>,
-        ts: Instant,
     ) -> (Self::State, Self::Output) {
-        self.0.init(inputs, ts)
+        self.0.init(inputs)
     }
 
     fn compute(
         state: &mut Self::State,
         inputs: <Self::Inputs as Ports>::Refs<'_>,
         output: &mut Self::Output,
-        ts: Instant,
         produced: <Self::Inputs as Ports>::Notify<'_>,
     ) -> bool {
-        <Clocked<Id<O>, C> as Operator>::compute(state, inputs, output, ts, produced)
+        <Clocked<Id<O>, C> as Operator>::compute(state, inputs, output, produced)
     }
 }

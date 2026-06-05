@@ -1,5 +1,12 @@
 //! The new [`Operator`] trait, the [`Adapt`] bridge onto `flowgraph`, and the
-//! shared [`Clock`] that threads event time.
+//! shared [`Clock`].
+//!
+//! Operators are **pure** (no `timestamp` parameter), so `Adapt<O>` is a trivial
+//! bool→notify wrapper with no per-operator state injection — operators are
+//! directly `Adapt`-able. Event time is needed by exactly one operator
+//! ([`Record`](super::Record)); it receives the [`Clock`] in its own state via
+//! [`Scenario::add_record`](super::Scenario::add_record), so the clock is never
+//! a universal dependency.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -9,16 +16,14 @@ use flowgraph::typed::{Operator as FgOperator, Port, Ports};
 use crate::Instant;
 
 // ===========================================================================
-// Clock — time-as-data, shared between the driver and every operator's state.
+// Clock — driver-advanced event time, held only by operators that need it.
 // ===========================================================================
 
-/// A driver-advanced clock cloned into every adapted operator's state.
-///
-/// The driver calls [`set`](Self::set) before each `stabilize`; operators that
-/// stamp event time (e.g. [`Record`](super::Record)) read it via
-/// [`get`](Self::get). `Arc<AtomicI64>` is `Send + Sync`, so it is a legal cell
-/// payload. `Release`/`Acquire` make the clock self-synchronizing so a worker
-/// thread always observes the latest `set`.
+/// A clock the driver advances before each `stabilize`. The operators that stamp
+/// event time ([`Record`](super::Record)) hold a clone in their own state and
+/// read it via [`get`](Self::get). `Arc<AtomicI64>` is `Send + Sync`;
+/// `Release`/`Acquire` make it self-synchronizing so a worker thread always
+/// observes the latest `set`.
 #[derive(Clone)]
 pub struct Clock(Arc<AtomicI64>);
 
@@ -36,15 +41,6 @@ impl Clock {
     pub fn get(&self) -> Instant {
         Instant::from_nanos(self.0.load(Ordering::Acquire))
     }
-
-    /// Wrap an [`Operator`] into a `flowgraph`-registerable [`Adapt`] sharing
-    /// this clock.
-    pub fn op<O>(&self, inner: O) -> Adapt<O> {
-        Adapt {
-            inner,
-            clock: self.clone(),
-        }
-    }
 }
 
 impl Default for Clock {
@@ -54,16 +50,13 @@ impl Default for Clock {
 }
 
 // ===========================================================================
-// Operator — the TradingFlow operator contract, on flowgraph `Ports`.
+// Operator — the (pure) TradingFlow operator contract, on flowgraph `Ports`.
 // ===========================================================================
 
 /// A synchronous computation node: reads typed inputs and writes a single typed
 /// output, returning whether downstream should treat the output as newly
-/// produced.
-///
-/// This mirrors [`crate::operator::Operator`] but over `flowgraph`'s
-/// [`Ports`] (so `Inputs` and the `produced` tree are the engine's own types)
-/// and with `Send + Sync` cell bounds.
+/// produced. Pure with respect to time — operators that need event time take it
+/// as data (e.g. via the [`Clock`] in their state).
 pub trait Operator: 'static {
     /// Input tree, e.g. `Port<Array<f64>>`, `(Port<A>, Port<B>)`, or `[Port<T>]`.
     type Inputs: Ports + ?Sized;
@@ -73,11 +66,7 @@ pub trait Operator: 'static {
     /// Mutable per-run state.
     type State: Send + Sync + 'static;
 
-    fn init(
-        &self,
-        inputs: <Self::Inputs as Ports>::Refs<'_>,
-        timestamp: Instant,
-    ) -> (Self::State, Self::Output);
+    fn init(&self, inputs: <Self::Inputs as Ports>::Refs<'_>) -> (Self::State, Self::Output);
 
     /// Returns `true` iff this output should be treated as newly produced
     /// (downstream sees it as notified). `produced` is the per-input notify
@@ -86,7 +75,6 @@ pub trait Operator: 'static {
         state: &mut Self::State,
         inputs: <Self::Inputs as Ports>::Refs<'_>,
         output: &mut Self::Output,
-        timestamp: Instant,
         produced: <Self::Inputs as Ports>::Notify<'_>,
     ) -> bool;
 }
@@ -95,21 +83,26 @@ pub trait Operator: 'static {
 // Adapt — the bridge: `O: Operator`  ==>  `Adapt<O>: flowgraph::typed::Operator`.
 // ===========================================================================
 
-/// Wraps an [`Operator`] so it can be pushed into a `flowgraph` graph. Maps the
-/// `bool` return onto the output notify flag and threads time via the [`Clock`].
+/// Wraps an [`Operator`] so it can be pushed into a `flowgraph` graph: maps the
+/// `bool` return onto the output notify flag. No clock, no extra state.
 pub struct Adapt<O> {
     pub inner: O,
-    pub clock: Clock,
+}
+
+impl<O> Adapt<O> {
+    pub fn new(inner: O) -> Self {
+        Self { inner }
+    }
 }
 
 impl<O: Operator> FgOperator for Adapt<O> {
     type Inputs = O::Inputs;
     type Outputs = Port<O::Output>;
-    type State = (O::State, Clock);
+    type State = O::State;
 
-    fn init(&self, inputs: <O::Inputs as Ports>::Refs<'_>) -> (O::Output, (O::State, Clock)) {
-        let (state, output) = self.inner.init(inputs, self.clock.get());
-        (output, (state, self.clock.clone()))
+    fn init(&self, inputs: <O::Inputs as Ports>::Refs<'_>) -> (O::Output, O::State) {
+        let (state, output) = self.inner.init(inputs);
+        (output, state)
     }
 
     fn compute(
@@ -117,10 +110,9 @@ impl<O: Operator> FgOperator for Adapt<O> {
         inputs_notify: <O::Inputs as Ports>::Notify<'_>,
         output: &mut O::Output,
         output_notify: &mut bool,
-        state: &mut (O::State, Clock),
+        state: &mut O::State,
     ) {
-        let ts = state.1.get();
         // The TradingFlow propagation bool *is* the output notify flag.
-        *output_notify = O::compute(&mut state.0, inputs, output, ts, inputs_notify);
+        *output_notify = O::compute(state, inputs, output, inputs_notify);
     }
 }

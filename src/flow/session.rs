@@ -25,10 +25,10 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use flowgraph::core::Pool;
 use flowgraph::typed::{Graph, GraphBuilder, Handle, PortsHandles};
 
-use super::op::{Clock, Operator};
-use super::ops::Const;
+use super::op::{Adapt, Clock, Operator};
+use super::ops::{Const, Record};
 use crate::source::{ErasedSource, PollFn, Source, WriteFn};
-use crate::Instant;
+use crate::{Array, Instant, Scalar, Series};
 
 /// Shared shutdown flag for cooperative cancellation of the event loop.
 pub type ShutdownFlag = Arc<AtomicBool>;
@@ -147,7 +147,7 @@ impl Scenario {
     /// Register a constant node (an externally-set source cell with no async
     /// feed). Mutate it via [`Session::cell_mut`] + [`Session::flush`].
     pub fn add_const<T: Clone + Send + Sync + 'static>(&mut self, value: T) -> Handle<T> {
-        self.builder.push(self.clock.op(Const(value)), ())
+        self.builder.push(Adapt::new(Const(value)), ())
     }
 
     /// Register an [`Operator`]. `inputs` are the upstream handles.
@@ -161,7 +161,21 @@ impl Scenario {
         O::Inputs: PortsHandles,
         O::Output: Send + Sync + 'static,
     {
-        self.builder.push(self.clock.op(operator), inputs)
+        self.builder.push(Adapt::new(operator), inputs)
+    }
+
+    /// Register a [`Record`] for a data stream, wiring the driver's [`Clock`]
+    /// so each recorded row is stamped with the current event time. `Record`
+    /// needs the clock, so it cannot go through [`add_operator`](Self::add_operator).
+    pub fn add_record<T: Scalar>(&mut self, data: Handle<Array<T>>) -> Handle<Series<T>> {
+        self.builder
+            .push(Adapt::new(Record::new(self.clock.clone())), data)
+    }
+
+    /// The driver's [`Clock`]. For building custom time-reading operators (held
+    /// in their own state, like [`Record`]); ordinary operators are clock-free.
+    pub fn clock(&self) -> Clock {
+        self.clock.clone()
     }
 
     /// Register a [`Source`]. Its output cell is a `Const(initial)`; the async
@@ -170,7 +184,7 @@ impl Scenario {
     where
         S::Output: Clone + Send + Sync + 'static,
     {
-        let handle = self.builder.push(self.clock.op(Const(initial)), ());
+        let handle = self.builder.push(Adapt::new(Const(initial)), ());
         self.sources.push(SourceDescriptor {
             cell_index: handle.index(),
             erased: ErasedSource::from_source(source),
@@ -466,7 +480,7 @@ async fn drain_live(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::{Add, Filter, Record};
+    use crate::flow::{Add, Filter};
     use crate::sources::ArraySource;
     use crate::{Array, Series};
 
@@ -486,7 +500,7 @@ mod tests {
     async fn run_single_source_record() {
         let mut sc = Scenario::new();
         let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]), Array::scalar(0.0));
-        let hrec = sc.add_operator(Record::<f64>::new(), h);
+        let hrec = sc.add_record(h);
 
         let mut session = sc.build();
         session.run(|_, _| {}).await;
@@ -504,7 +518,7 @@ mod tests {
         let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]), Array::scalar(0.0));
         let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]), Array::scalar(0.0));
         let ho = sc.add_operator(Add::<f64>::new(), (ha, hb));
-        let hrec = sc.add_operator(Record::<f64>::new(), ho);
+        let hrec = sc.add_record(ho);
 
         let mut session = sc.build();
         session.run(|_, _| {}).await;
@@ -522,7 +536,7 @@ mod tests {
         let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]), Array::scalar(0.0));
         let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]), Array::scalar(0.0));
         let ho = sc.add_operator(Add::<f64>::new(), (ha, hb));
-        let hrec = sc.add_operator(Record::<f64>::new(), ho);
+        let hrec = sc.add_record(ho);
 
         let mut session = sc.build();
         session.run(|_, _| {}).await;
@@ -542,7 +556,7 @@ mod tests {
             Array::scalar(0.0),
         );
         let hf = sc.add_operator(Filter(|v: &Array<f64>| v[0] > 3.0), h);
-        let hrec = sc.add_operator(Record::<f64>::new(), hf);
+        let hrec = sc.add_record(hf);
 
         let mut session = sc.build();
         session.run(|_, _| {}).await;
@@ -558,7 +572,7 @@ mod tests {
     async fn on_flush_per_batch() {
         let mut sc = Scenario::new();
         let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]), Array::scalar(0.0));
-        let _ = sc.add_operator(Record::<f64>::new(), h);
+        let _ = sc.add_record(h);
 
         let mut session = sc.build();
         let mut batches = Vec::new();
@@ -617,29 +631,30 @@ mod tests {
     }
 
     /// Sink operator that records `(batch_ts, source_id)` in execution order —
-    /// reads the clock-provided timestamp to check global ordering.
+    /// reads the [`Clock`] (held in its state, like `Record`) to check global
+    /// ordering across sources.
     struct GlobalLogger {
         source_id: usize,
         log: Arc<Mutex<Vec<(i64, usize)>>>,
+        clock: Clock,
     }
 
     impl FlowOperator for GlobalLogger {
         type Inputs = Port<Array<f64>>;
         type Output = ();
-        type State = (usize, Arc<Mutex<Vec<(i64, usize)>>>);
+        type State = (usize, Arc<Mutex<Vec<(i64, usize)>>>, Clock);
 
-        fn init(&self, _inputs: &Array<f64>, _ts: Instant) -> (Self::State, ()) {
-            ((self.source_id, self.log.clone()), ())
+        fn init(&self, _inputs: &Array<f64>) -> (Self::State, ()) {
+            ((self.source_id, self.log.clone(), self.clock.clone()), ())
         }
 
         fn compute(
             state: &mut Self::State,
             _inputs: &Array<f64>,
             _output: &mut (),
-            timestamp: Instant,
             _produced: bool,
         ) -> bool {
-            state.1.lock().unwrap().push((timestamp.as_nanos(), state.0));
+            state.1.lock().unwrap().push((state.2.get().as_nanos(), state.0));
             false
         }
     }
@@ -730,11 +745,13 @@ mod tests {
                     },
                     Array::scalar(0.0),
                 );
-                records.push(sc.add_operator(Record::<f64>::new(), h));
+                records.push(sc.add_record(h));
+                let clk = sc.clock();
                 sc.add_operator(
                     GlobalLogger {
                         source_id: i,
                         log: log.clone(),
+                        clock: clk,
                     },
                     h,
                 );
@@ -801,7 +818,7 @@ mod tests {
             },
             Array::scalar(0.0),
         );
-        let hrec = sc.add_operator(Record::<f64>::new(), hs);
+        let hrec = sc.add_record(hs);
 
         tokio::spawn(async move {
             live_tx.send((Instant::from_nanos(50), 2.0)).await.unwrap();

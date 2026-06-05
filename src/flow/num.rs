@@ -10,7 +10,7 @@ use num_traits::Float;
 use flowgraph::typed::Port;
 
 use super::op::Operator;
-use crate::{Array, Instant, Scalar};
+use crate::{Array, Scalar};
 
 // ---------------------------------------------------------------------------
 // Clamp
@@ -34,7 +34,7 @@ impl<T: Scalar + Float> Operator for Clamp<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> ((T, T), Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> ((T, T), Array<T>) {
         ((self.lo, self.hi), Array::zeros(inputs.shape()))
     }
 
@@ -43,7 +43,6 @@ impl<T: Scalar + Float> Operator for Clamp<T> {
         state: &mut (T, T),
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let (lo, hi) = *state;
@@ -77,7 +76,7 @@ impl<T: Scalar + Float> Operator for Fillna<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> (T, Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> (T, Array<T>) {
         (self.val, Array::zeros(inputs.shape()))
     }
 
@@ -86,7 +85,6 @@ impl<T: Scalar + Float> Operator for Fillna<T> {
         state: &mut T,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let val = *state;
@@ -128,7 +126,7 @@ impl<T: Scalar + Float> Operator for ForwardFill<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> ((), Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> ((), Array<T>) {
         let shape = inputs.shape();
         let stride: usize = shape.iter().product();
         ((), Array::from_vec(shape, vec![T::nan(); stride]))
@@ -138,7 +136,6 @@ impl<T: Scalar + Float> Operator for ForwardFill<T> {
         _state: &mut (),
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let src = inputs.as_slice();
@@ -182,7 +179,7 @@ impl<T: Scalar + Float> Operator for Diff<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> (DiffState<T>, Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> (DiffState<T>, Array<T>) {
         let shape = inputs.shape();
         let stride: usize = shape.iter().product();
         let out = Array::from_vec(shape, vec![T::nan(); stride]);
@@ -198,7 +195,6 @@ impl<T: Scalar + Float> Operator for Diff<T> {
         state: &mut DiffState<T>,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let src = inputs.as_slice();
@@ -241,7 +237,7 @@ impl<T: Scalar + Float> Operator for PctChange<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> (PctChangeState<T>, Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> (PctChangeState<T>, Array<T>) {
         let shape = inputs.shape();
         let stride: usize = shape.iter().product();
         let out = Array::from_vec(shape, vec![T::nan(); stride]);
@@ -257,7 +253,6 @@ impl<T: Scalar + Float> Operator for PctChange<T> {
         state: &mut PctChangeState<T>,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let src = inputs.as_slice();
@@ -300,7 +295,7 @@ impl<T: Scalar + Float> Operator for Gaussianize<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> (Vec<usize>, Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> (Vec<usize>, Array<T>) {
         let n = inputs.as_slice().len();
         (vec![0; n], Array::zeros(inputs.shape()))
     }
@@ -310,7 +305,6 @@ impl<T: Scalar + Float> Operator for Gaussianize<T> {
         state: &mut Vec<usize>,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let src = inputs.as_slice();
@@ -422,7 +416,7 @@ impl<T: Scalar + Float> Operator for Percentile<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> (Vec<usize>, Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> (Vec<usize>, Array<T>) {
         let n = inputs.as_slice().len();
         (vec![0; n], Array::zeros(inputs.shape()))
     }
@@ -432,7 +426,6 @@ impl<T: Scalar + Float> Operator for Percentile<T> {
         state: &mut Vec<usize>,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let src = inputs.as_slice();
@@ -493,7 +486,7 @@ impl<T: Scalar + Float> Operator for Standardize<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> ((), Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> ((), Array<T>) {
         ((), Array::zeros(inputs.shape()))
     }
 
@@ -502,7 +495,6 @@ impl<T: Scalar + Float> Operator for Standardize<T> {
         _state: &mut (),
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let src = inputs.as_slice();
@@ -589,7 +581,7 @@ impl<T: Scalar + Float> Operator for Winsorize<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> (WinsorizeState<T>, Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> (WinsorizeState<T>, Array<T>) {
         let n = inputs.as_slice().len();
         (
             WinsorizeState {
@@ -605,7 +597,6 @@ impl<T: Scalar + Float> Operator for Winsorize<T> {
         state: &mut WinsorizeState<T>,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let src = inputs.as_slice();

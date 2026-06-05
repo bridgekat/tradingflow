@@ -11,7 +11,7 @@ use num_traits::{Float, Signed};
 use flowgraph::typed::Port;
 
 use super::op::Operator;
-use crate::{Array, Instant, Scalar};
+use crate::{Array, Scalar};
 
 // ===========================================================================
 // Unary
@@ -36,7 +36,7 @@ macro_rules! define_unary_op {
             type Inputs = Port<Array<T>>;
             type Output = Array<T>;
 
-            fn init(&self, inputs: &Array<T>, _ts: Instant) -> ((), Array<T>) {
+            fn init(&self, inputs: &Array<T>) -> ((), Array<T>) {
                 ((), Array::zeros(inputs.shape()))
             }
 
@@ -45,7 +45,6 @@ macro_rules! define_unary_op {
                 _state: &mut (),
                 inputs: &Array<T>,
                 output: &mut Array<T>,
-                _ts: Instant,
                 _produced: bool,
             ) -> bool {
                 let a = inputs.as_slice();
@@ -110,7 +109,7 @@ macro_rules! define_binary_op {
             type Inputs = (Port<Array<T>>, Port<Array<T>>);
             type Output = Array<T>;
 
-            fn init(&self, inputs: (&Array<T>, &Array<T>), _ts: Instant) -> ((), Array<T>) {
+            fn init(&self, inputs: (&Array<T>, &Array<T>)) -> ((), Array<T>) {
                 ((), Array::zeros(inputs.0.shape()))
             }
 
@@ -119,7 +118,6 @@ macro_rules! define_binary_op {
                 _state: &mut (),
                 inputs: (&Array<T>, &Array<T>),
                 output: &mut Array<T>,
-                _ts: Instant,
                 _produced: (bool, bool),
             ) -> bool {
                 let a_sl = inputs.0.as_slice();
@@ -170,7 +168,7 @@ impl<T: Scalar + Float> Operator for Pow<T> {
     type Inputs = Port<Array<T>>;
     type Output = Array<T>;
 
-    fn init(&self, inputs: &Array<T>, _ts: Instant) -> (T, Array<T>) {
+    fn init(&self, inputs: &Array<T>) -> (T, Array<T>) {
         (self.n, Array::zeros(inputs.shape()))
     }
 
@@ -179,7 +177,6 @@ impl<T: Scalar + Float> Operator for Pow<T> {
         state: &mut T,
         inputs: &Array<T>,
         output: &mut Array<T>,
-        _ts: Instant,
         _produced: bool,
     ) -> bool {
         let n = *state;
