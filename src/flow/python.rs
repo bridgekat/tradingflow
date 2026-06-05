@@ -1,78 +1,161 @@
-//! Python operators with **true parallelism** and **real NumPy**, on a single
-//! free-threaded interpreter (feature `pyflow`).
+//! Python operators with **true parallelism** and **real NumPy** (feature
+//! `pyflow`).
 //!
-//! Build/run against a free-threaded CPython (`python3.13t`): point
-//! `PYO3_PYTHON` at a free-threaded venv, put its `python3xxt.dll` directory on
-//! `PATH`, and point the embedded interpreter at the environment that has NumPy
-//! via `PYTHONPATH` (or `PYTHONHOME`). On a free-threaded build there is no
-//! global GIL, so operator nodes run genuinely in parallel on the work-stealing
-//! pool — pure-Python *and* NumPy — within one shared interpreter. On a standard
-//! GIL-enabled build the bridge is still correct, but `compute` calls serialize
-//! (no parallelism). (The earlier own-GIL sub-interpreter design was abandoned:
-//! it gave pure-Python parallelism but could never `import numpy`, which declares
-//! no multiple-interpreter support.)
+//! A [`PyOperator`] is a graph node whose compute step is a Python callable. It
+//! takes N `f64` array inputs and produces one `f64` array output; the operator
+//! body is ordinary Python and may use NumPy freely. Operators run on the
+//! [`flowgraph`](flowgraph) work-stealing pool, and on a free-threaded
+//! interpreter they execute **genuinely in parallel** — pure-Python and NumPy
+//! alike.
+//!
+//! This is the *only* form of Python support in the `flow` engine: Python
+//! operators (Python called from Rust). There is **no** Python-as-host API
+//! wrapper — graphs are built and driven from Rust, and the interpreter is
+//! embedded. (The legacy `bridge` module provides the host-API wrapper for the
+//! old engine; it is removed at cutover.)
+//!
+//! # Why free-threaded
+//!
+//! Standard CPython has one global interpreter lock (GIL), so pure-Python code
+//! cannot run in parallel within one interpreter. Two ways out, and why this
+//! module takes the first:
+//!
+//! * **Free-threaded CPython** (PEP 703, `python3.13t`, `Py_GIL_DISABLED=1`) —
+//!   no GIL, so threads run Python in parallel within *one* interpreter, and
+//!   NumPy imports and works normally. **This is what `pyflow` targets.**
+//! * Own-GIL sub-interpreters (PEP 684) — also give pure-Python parallelism, but
+//!   can never `import numpy`: NumPy declares no multiple-interpreter support and
+//!   own-GIL forces `check_multi_interp_extensions=1`, so the import is rejected.
+//!   Abandoned for that reason.
+//!
+//! On a **standard GIL build** the bridge still produces correct results, but
+//! `compute` calls serialize (no parallelism). The module tests assert a
+//! free-threaded interpreter so the parallelism guarantee is actually exercised.
+//!
+//! # Setup (free-threaded toolchain)
+//!
+//! Install a free-threaded interpreter and a venv with NumPy, e.g. on Windows
+//! via the Python Install Manager:
+//!
+//! ```console
+//! py install 3.13t-64                       # free-threaded CPython 3.13t
+//! <path>\python3.13t.exe -m venv .venv-ft   # a free-threaded venv
+//! .venv-ft\Scripts\python -m pip install numpy
+//! ```
+//!
+//! PyO3 links the interpreter named by `PYO3_PYTHON` at build time. The
+//! *embedded* interpreter computes `sys.path` from the base install, so the
+//! environment that actually has NumPy must be made visible at runtime via
+//! `PYTHONPATH` (or `PYTHONHOME`). Build and test with:
+//!
+//! ```console
+//! set PYO3_PYTHON=<abs>\.venv-ft\Scripts\python.exe
+//! set PATH=<dir containing python3.13t.dll>;%PATH%
+//! set PYTHONPATH=<abs>\.venv-ft\Lib\site-packages
+//! cargo test --features pyflow flow::python
+//! ```
+//!
+//! In production, point `PYTHONPATH`/`PYTHONHOME` at the deployment environment,
+//! or install the operators' dependencies into the base interpreter.
+//!
+//! # Writing operators
+//!
+//! `source` is a Python **expression that evaluates to a callable**. `np` and
+//! `numpy` are pre-injected into each operator's globals (each operator gets its
+//! own globals dict — no shared mutable state between operators), so the
+//! expression can use NumPy directly. There are two contracts:
+//!
+//! * [`PyOperator::new`] — **return mode** (ergonomic default). The callable
+//!   takes `n` input ndarrays and returns a 1-D `float64` array of length
+//!   `out_len`, which is copied into the output:
+//!   ```python
+//!   lambda a, b: a + b                       # elementwise
+//!   lambda a:    np.cumsum(a)                 # one input
+//!   lambda a, b: np.where(a > 0, a, b)        # branching
+//!   ```
+//! * [`PyOperator::writing`] — **write mode** (zero-copy output). The callable
+//!   takes a writable `out` ndarray (aliasing the output buffer) followed by the
+//!   inputs, and writes results into `out` in place; its return value is ignored:
+//!   ```python
+//!   lambda out, a, b: np.add(a, b, out=out)   # numpy `out=` writes Rust memory
+//!   lambda out, a:    out.__setitem__(slice(None), np.sqrt(a))
+//!   ```
+//!
+//! Operators must be expressions; for multi-statement logic, wrap a factory:
+//! `"(lambda f: f)(lambda a: ...)"`, or define the function elsewhere and pass a
+//! reference. A raised Python exception (or a wrong-length / non-`float64`
+//! return) aborts the current `stabilize` with the traceback printed.
+//!
+//! # Building graphs
+//!
+//! High level, via [`Scenario`](crate::flow::Scenario):
+//! ```ignore
+//! let a = sc.add_source(/* ... */, Array::zeros(&[n]));
+//! let b = sc.add_source(/* ... */, Array::zeros(&[n]));
+//! let sum = sc.add_py_operator("lambda a, b: a + b", &[a, b], n);          // return mode
+//! let dbl = sc.add_py_operator_writing("lambda out, a: np.multiply(a, 2.0, out=out)", &[a], n);
+//! ```
+//! Low level, via [`GraphBuilder`](flowgraph::typed::GraphBuilder) +
+//! [`Adapt`](crate::flow::Adapt):
+//! ```ignore
+//! let out = b.push(Adapt::new(PyOperator::new("lambda a, b: a + b", n)), &[a, bb][..]);
+//! ```
 //!
 //! # Data model — copy-in inputs, zero-copy output
 //!
-//! Operators see real `numpy.ndarray`s. Only Rust-owned `Array<f64>` cross node
-//! boundaries; the marshaling follows what is *address-stable for the graph's
+//! Only Rust-owned `Array<f64>` cross node boundaries; no Python object crosses
+//! an edge. The marshaling rule follows what is *address-stable for the graph's
 //! lifetime*:
 //!
 //! * **Output is zero-copy.** A `PyOperator` allocates its output buffer once in
-//!   [`init`](Operator::init) and only ever writes it in place, so its address
-//!   is invariant for the graph's life. In *write mode* it is wrapped — without
-//!   copying — as a writable 1-D `float64` ndarray (via
-//!   [`PyArray1::borrow_from_array`] with a `None` base), and the operator
-//!   writes results straight into Rust memory (e.g. `np.add(a, b, out=out)`).
+//!   [`init`](Operator::init) and only ever writes it in place, so its address is
+//!   invariant for the graph's life. In write mode it is wrapped — without
+//!   copying — as a writable `float64` ndarray (via
+//!   [`PyArray1::borrow_from_array`] with a `None` base), so the operator writes
+//!   straight into Rust memory.
 //! * **Inputs are copied.** An input array is owned by an *upstream* node whose
 //!   allocation is NOT graph-invariant (an upstream `Map`/`Apply` reassigns its
 //!   `Array` each tick, freeing the old buffer). Each input is therefore copied
-//!   into a fresh, NumPy-owned ndarray ([`PyArray1::from_slice`]). A view the
-//!   operator retains across calls then reads that owned snapshot — never freed
-//!   Rust heap. The copy is a single bulk memcpy.
+//!   into a fresh, NumPy-owned ndarray ([`PyArray1::from_slice`], one bulk
+//!   memcpy). A view the operator retains then reads that owned snapshot — never
+//!   freed Rust heap.
 //!
-//! Two operator contracts (pick at construction):
+//! All arrays are 1-D `float64` (the flat buffer of the cell's `Array<f64>`).
 //!
-//! * [`PyOperator::new`] — *return mode*. `f(*inputs) -> ndarray`; the returned
-//!   1-D `float64` array of length `out_len` is copied into the output. Drop-in
-//!   for `lambda a, b: a + b`.
-//! * [`PyOperator::writing`] — *write mode*. `f(out, *inputs)`; `out` is the
-//!   zero-copy output ndarray and the operator writes into it (return ignored),
-//!   e.g. `lambda out, a, b: np.add(a, b, out=out)`.
+//! # Safety & retention contract
 //!
-//! `np` (and `numpy`) are pre-injected into each operator's globals, so a source
-//! expression can use NumPy directly. Each operator gets its own globals dict
-//! (no shared mutable module state between operators).
-//!
-//! Only Python *operators* are supported — there is no Python-as-host API
-//! wrapper. Graphs are built and driven from Rust; Python is embedded.
-//!
-//! # Safety
-//!
-//! This module uses PyO3's safe API; there is no hand-written interpreter FFI.
-//! Operator state is a [`Py<PyAny>`] callable, which is `Send + Sync`, so
-//! `PyOpState` is `Send + Sync` without `unsafe`. The scheduler runs a given
-//! node's `compute` at most once at a time; different nodes' callables are
-//! distinct objects, and free-threaded CPython makes concurrent access to the
-//! interpreter memory-safe.
+//! This module uses PyO3's safe API; the *entire* `unsafe` surface is the one
+//! [`PyArray1::borrow_from_array`] call for the zero-copy output. Operator state
+//! is a [`Py<PyAny>`] callable, which is `Send + Sync`, so `PyOpState` is
+//! `Send + Sync` without `unsafe`. The scheduler runs a given node's `compute` at
+//! most once at a time, distinct nodes hold distinct callables, and free-threaded
+//! CPython makes concurrent interpreter access memory-safe.
 //!
 //! Memory safety of the zero-copy output rests on the output buffer being
-//! address-stable for the graph's life (allocated once, written in place, never
-//! replaced) and single-writer (this node). The one `unsafe` call,
-//! [`PyArray1::borrow_from_array`], wraps that buffer with a `None` base, so the
-//! returned array keeps *nothing* alive — the graph cell owns the buffer and
-//! frees it when the `Graph` is dropped.
+//! address-stable for the graph's life and single-writer (this node). The
+//! `borrow_from_array` call uses a `None` base, so the returned array keeps
+//! *nothing* alive — the graph cell owns the buffer and frees it on `Graph` drop.
+//! Operator code must honour the retention contract:
 //!
-//! Retention contract (operator code must honour it):
-//! * **Inputs** are copied into NumPy-owned arrays, so retaining an input (or any
-//!   slice of it) across calls is always memory-safe — it reads a live snapshot.
+//! * **Inputs** are NumPy-owned copies, so retaining an input (or any slice of
+//!   it) across calls is always memory-safe — it reads a live snapshot.
 //! * The write-mode **`out`** array (and any view derived from it) aliases the
 //!   graph-owned buffer directly. Retaining it *within* the graph's lifetime is
-//!   memory-safe (it aliases stable memory) but a logic error — it would
-//!   scribble on a later tick's output. Retaining it *past* the graph's lifetime
-//!   is **undefined behavior**: the buffer is freed on `Graph` drop and a stashed
-//!   `out` array (left in the operator's globals, `sys.modules`, a thread, …)
-//!   then dangles. A write-mode operator must not let `out` escape the call.
+//!   memory-safe but a logic error (it would scribble on a later tick's output).
+//!   Retaining it *past* the graph's lifetime is **undefined behavior**: the
+//!   buffer is freed on `Graph` drop, so a stashed `out` array (left in the
+//!   operator's globals, `sys.modules`, a thread, …) then dangles. **A write-mode
+//!   operator must not let `out` escape the call.**
+//!
+//! # Limitations
+//!
+//! * 1-D `float64` only (the cell's flat buffer); no shape/dtype negotiation and
+//!   no `Series` inputs yet.
+//! * Return-mode operators must return a 1-D `float64` ndarray of length
+//!   `out_len` (wrong length / dtype is an error).
+//! * The embedded interpreter must be able to import the operators' dependencies
+//!   (see *Setup*); a missing NumPy surfaces as `ModuleNotFoundError`.
+//! * `source` must be a single expression evaluating to a callable.
 
 use std::ffi::CString;
 

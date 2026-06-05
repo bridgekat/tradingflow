@@ -8,11 +8,12 @@
 //! # Design (validated end-to-end before landing here)
 //!
 //! * Operators implement [`Operator`] — the TradingFlow operator contract
-//!   (`compute -> bool`, a threaded [`Instant`](crate::Instant), a single typed
-//!   output) but expressed over `flowgraph`'s [`Ports`](flowgraph::typed::Ports)
-//!   so the input / notify trees are the engine's own types. `State` and
-//!   `Output` are `Send + Sync` (project decision: no operator instance is
-//!   `!Sync`).
+//!   (`compute -> bool`, a single typed output) expressed over `flowgraph`'s
+//!   [`Ports`](flowgraph::typed::Ports) so the input / notify trees are the
+//!   engine's own types. Operators are *pure* (no threaded timestamp); the few
+//!   that stamp event time hold the [`Clock`] in their own state (e.g.
+//!   [`Record`]). `State` and `Output` are `Send + Sync` (project decision: no
+//!   operator instance is `!Sync`).
 //! * [`Adapt`] bridges any [`Operator`] onto [`flowgraph::typed::Operator`],
 //!   mapping the `bool` return directly onto the single output's notify flag.
 //!   Combined with the engine's input-notification gating, this reproduces the
@@ -21,12 +22,23 @@
 //! * Time is threaded out-of-band through a shared [`Clock`] the driver advances
 //!   before each `stabilize` (only operators that stamp event time read it).
 //!
+//! # Python operators (feature `pyflow`)
+//!
+//! `PyOperator` runs a Python callable as a graph node, taking N `f64` array
+//! inputs to one `f64` array output, with real NumPy and true parallelism on a
+//! free-threaded interpreter. Inputs are copied in (NumPy-owned snapshots) and
+//! the output is exposed zero-copy. Register via `Scenario::add_py_operator`
+//! (return mode) or `Scenario::add_py_operator_writing` (write mode). The
+//! `python` submodule docs cover the contracts, the copy-in/zero-copy data
+//! model, the retention/safety contract, and the free-threaded build/run setup.
+//!
 //! # Status
 //!
-//! First operator batch + differential tests against the legacy engine's known
-//! outputs, plus a parallel-execution gate (`Pool::new(N>0)`). The async
-//! source/event-loop driver, the Python bridge, and the remaining operators are
-//! follow-on increments.
+//! All legacy operators ported with per-operator differential tests vs the old
+//! engine; the async source/event-loop driver and the Python-operator bridge are
+//! landed. Remaining before cutover: concurrency hardening (TSan/loom on the
+//! notify/counter protocol) and an end-to-end parity harness, then removal of the
+//! legacy `operator`/`operators`/`scenario`/`bridge` modules.
 
 mod arith;
 mod metrics;

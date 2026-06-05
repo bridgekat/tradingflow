@@ -178,10 +178,12 @@ impl Scenario {
         self.clock.clone()
     }
 
-    /// Register a Python operator (feature `pyflow`). `source` is a Python
-    /// expression evaluating to a callable that takes `inputs.len()`
-    /// `list[float]` arguments and returns a `list[float]` of length `out_len`.
-    /// Each runs in its own sub-interpreter, so they execute truly in parallel.
+    /// Register a Python operator in **return mode** (feature `pyflow`).
+    /// `source` is a Python expression evaluating to a callable that takes
+    /// `inputs.len()` `float64` ndarrays and returns a 1-D `float64` ndarray of
+    /// length `out_len`, e.g. `"lambda a, b: a + b"`. Operators run on the shared
+    /// (free-threaded) interpreter and execute in parallel on the pool. See the
+    /// `flow::python` module docs for the data model, retention contract, and setup.
     #[cfg(feature = "pyflow")]
     pub fn add_py_operator(
         &mut self,
@@ -191,6 +193,23 @@ impl Scenario {
     ) -> Handle<Array<f64>> {
         self.builder
             .push(Adapt::new(super::python::PyOperator::new(source, out_len)), inputs)
+    }
+
+    /// Register a Python operator in **write mode** (feature `pyflow`, zero-copy
+    /// output). `source` evaluates to a callable `f(out, *inputs)` taking a
+    /// writable `float64` ndarray `out` (aliasing the output buffer) followed by
+    /// the input ndarrays; it writes its `out_len` results into `out` in place
+    /// and its return value is ignored, e.g. `"lambda out, a, b: np.add(a, b, out=out)"`.
+    /// The `out` view must not escape the call (see the `flow::python` module docs).
+    #[cfg(feature = "pyflow")]
+    pub fn add_py_operator_writing(
+        &mut self,
+        source: &str,
+        inputs: &[Handle<Array<f64>>],
+        out_len: usize,
+    ) -> Handle<Array<f64>> {
+        self.builder
+            .push(Adapt::new(super::python::PyOperator::writing(source, out_len)), inputs)
     }
 
     /// Register a [`Source`]. Its output cell is a `Const(initial)`; the async
