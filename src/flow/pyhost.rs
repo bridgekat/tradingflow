@@ -11,66 +11,70 @@
 //! compute(state, inputs, output, timestamp, produced) -> bool   # @staticmethod
 //! ```
 //!
-//! `inputs` is a tuple of **views** ([`NativeArrayView`] for now), `output` is a
-//! writable view, `timestamp` is TAI nanoseconds (from the driver [`Clock`]),
-//! `produced` is a `tuple[bool, ...]` parallel to `inputs`, and `state` is a
-//! Python object carried across ticks. The operator writes into `output` via
-//! `output.write(ndarray)` and returns whether to notify downstream.
+//! `inputs` is a tuple of **views** — [`NativeArrayView`] for `Array<f64>` cells
+//! and [`NativeSeriesView`] for `Series<f64>` cells (history), `None` for unit
+//! (clock) inputs. `output` is a writable array view, `timestamp` is TAI
+//! nanoseconds (from the driver [`Clock`]), `produced` is a `tuple[bool, ...]`
+//! parallel to `inputs`, and `state` is a Python object carried across ticks.
 //!
-//! The `source` is a Python *program* (statements) that, executed in the
-//! operator's own globals (with `np`/`numpy` pre-injected), binds the operator
-//! instance to the name `__op__`.
+//! The `source` is a Python *program* (statements) executed in the operator's
+//! own globals (with `np`/`numpy` pre-injected) that binds the operator instance
+//! to the name `__op__`.
+//!
+//! # Heterogeneous inputs
+//!
+//! flowgraph's typed ports are homogeneous slices or fixed tuples, so an
+//! operator's input shape is its concrete [`Ports`] type, e.g.
+//! `(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)` for a predictor or
+//! `[Port<Array<f64>>]` for an all-array operator. The [`PyArgs`] trait walks
+//! that type to build the view tuple + produced bools. (An erased enum input
+//! would have to clone growing `Series` each tick — `PyArgs` reads the borrowed
+//! cells directly instead.)
 //!
 //! # Data model
 //!
-//! Copy-based (like the legacy bridge): each input view's `value()` copies the
-//! cell's `Array<f64>` (any shape) out to a fresh NumPy array, and `write()`
-//! copies a NumPy array back into the output cell. Copies make retention safe
-//! and the cost is negligible against the NumPy/SciPy math these operators run.
-//!
-//! # Scope
-//!
-//! Phase 1a: homogeneous `Array<f64>` inputs (`[Port<Array<f64>>]`). `SeriesView`
-//! (history) and heterogeneous input tuples land in a follow-up so predictors /
-//! portfolios that read recorded `Series` can be ported.
+//! Copy-based (like the legacy bridge): each view copies the cell data out to a
+//! fresh NumPy array on read, and `output.write()` copies a NumPy array back.
+//! Copies make retention safe and the cost is negligible against the NumPy/SciPy
+//! math these operators run.
 //!
 //! # Safety
 //!
-//! [`NativeArrayView`] holds a raw pointer to a graph cell's `Array<f64>`, valid
-//! only for the duration of one `compute` (the cell is borrowed by the engine
-//! then). Views are created fresh each call and must not be retained past it
-//! (operator code does not). The pointer for an *output* view carries write
-//! provenance (`&mut`); input views are read-only (`value()` only). `unsafe
-//! Send + Sync` on the view and state is sound because a node's `compute` runs
-//! on one thread at a time and views never cross threads.
+//! The view pyclasses hold a raw pointer to a graph cell, valid only for the
+//! duration of one `compute`/`init` (the cell is borrowed by the engine then).
+//! Views are created fresh each call and must not be retained past it. The
+//! output array view's pointer carries write provenance (`&mut`); input views
+//! are read-only. `unsafe Send + Sync` is sound: a node's `compute` runs on one
+//! thread at a time and views never cross threads.
 
 use std::ffi::CString;
+use std::marker::PhantomData;
 
+use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::{PyDict, PySlice, PyTuple};
 
 use numpy::ndarray::{ArrayD, IxDyn};
-use numpy::{PyArrayDyn, PyReadonlyArrayDyn};
+use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 
-use flowgraph::typed::{Port, SliceNotify, SliceRefs};
+use flowgraph::typed::{Port, Ports, SliceNotify, SliceRefs};
 
 use super::op::{Clock, Operator};
-use crate::Array;
+use crate::{Array, Series};
 
 // ===========================================================================
-// NativeArrayView — a Python-visible view over a cell's `Array<f64>`
+// NativeArrayView — Python-visible view over a cell's `Array<f64>`
 // ===========================================================================
 
 /// View over a graph cell's `Array<f64>`. `value()` copies out; `write()` copies
-/// in (output views only). Valid only during the `compute`/`init` call that
-/// created it.
+/// in (output views only). Valid only during the call that created it.
 #[pyclass]
 pub struct NativeArrayView {
     ptr: *mut Array<f64>,
     writable: bool,
 }
 
-// SAFETY: see module docs — single-threaded per compute, never retained/shared.
+// SAFETY: single-threaded per compute, never retained/shared (module docs).
 unsafe impl Send for NativeArrayView {}
 unsafe impl Sync for NativeArrayView {}
 
@@ -108,17 +112,15 @@ impl NativeArrayView {
     /// Overwrite the output cell from a NumPy array of matching element count.
     fn write(&self, value: PyReadonlyArrayDyn<'_, f64>) -> PyResult<()> {
         if !self.writable {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "cannot write to a read-only (input) view",
-            ));
+            return Err(PyValueError::new_err("cannot write to a read-only (input) view"));
         }
         let arr = unsafe { &mut *self.ptr };
-        let src = value.as_slice().map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("write: non-contiguous array: {e}"))
-        })?;
+        let src = value
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(format!("write: non-contiguous array: {e}")))?;
         let dst = arr.as_mut_slice();
         if src.len() != dst.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(PyValueError::new_err(format!(
                 "write: expected {} elements, got {}",
                 dst.len(),
                 src.len()
@@ -136,36 +138,220 @@ impl NativeArrayView {
 }
 
 impl NativeArrayView {
-    /// Build a view; `writable` must be `false` unless `ptr` carries write
-    /// provenance (an output `&mut`).
-    fn bind_view<'py>(
-        py: Python<'py>,
-        ptr: *mut Array<f64>,
-        writable: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn bind<'py>(py: Python<'py>, ptr: *mut Array<f64>, writable: bool) -> PyResult<Bound<'py, PyAny>> {
         Ok(Bound::new(py, NativeArrayView { ptr, writable })?.into_any())
     }
 }
 
 // ===========================================================================
-// PyClassOperator — hosts a Python operator object
+// NativeSeriesView — Python-visible view over a cell's `Series<f64>` (history)
 // ===========================================================================
 
-/// A class-based Python operator. `source` is a Python program that binds the
-/// operator instance to `__op__`; the operator implements `init`/`compute` per
-/// the legacy contract (see module docs).
-pub struct PyClassOperator {
+/// Read-only view over a graph cell's `Series<f64>`: positional history access
+/// matching the legacy `SeriesView`. Valid only during the call that created it.
+#[pyclass]
+pub struct NativeSeriesView {
+    ptr: *const Series<f64>,
+}
+
+// SAFETY: single-threaded per compute, never retained/shared (module docs).
+unsafe impl Send for NativeSeriesView {}
+unsafe impl Sync for NativeSeriesView {}
+
+#[pymethods]
+impl NativeSeriesView {
+    fn __len__(&self) -> usize {
+        unsafe { &*self.ptr }.len()
+    }
+
+    /// Element shape (without the time axis).
+    #[getter]
+    fn shape(&self) -> Vec<usize> {
+        unsafe { &*self.ptr }.shape().to_vec()
+    }
+
+    /// Values in `[start, end)` as a `(end-start, *element_shape)` NumPy array.
+    #[pyo3(signature = (start=0, end=None))]
+    fn values<'py>(
+        &self,
+        py: Python<'py>,
+        start: usize,
+        end: Option<usize>,
+    ) -> Bound<'py, PyArrayDyn<f64>> {
+        let s = unsafe { &*self.ptr };
+        let n = s.len();
+        let start = start.min(n);
+        let end = end.unwrap_or(n).min(n).max(start);
+        let stride = s.stride();
+        let flat = &s.values()[start * stride..end * stride];
+        let mut full = vec![end - start];
+        full.extend_from_slice(s.shape());
+        let nd = ArrayD::from_shape_vec(IxDyn(&full), flat.to_vec()).expect("series shape mismatch");
+        PyArrayDyn::from_owned_array(py, nd)
+    }
+
+    /// Most recent element as an `element_shape` NumPy array.
+    fn last<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArrayDyn<f64>>> {
+        let s = unsafe { &*self.ptr };
+        let last = s.last().ok_or_else(|| PyIndexError::new_err("last() on empty series"))?;
+        let nd = ArrayD::from_shape_vec(IxDyn(s.shape()), last.to_vec()).expect("series shape mismatch");
+        Ok(PyArrayDyn::from_owned_array(py, nd))
+    }
+
+    /// Element at positional index `i` (supports negative indexing).
+    fn at<'py>(&self, py: Python<'py>, i: isize) -> PyResult<Bound<'py, PyArrayDyn<f64>>> {
+        let s = unsafe { &*self.ptr };
+        let n = s.len() as isize;
+        let idx = if i < 0 { n + i } else { i };
+        if idx < 0 || idx >= n {
+            return Err(PyIndexError::new_err(format!("index {i} out of bounds (len {n})")));
+        }
+        let elem = s.at(idx as usize);
+        let nd = ArrayD::from_shape_vec(IxDyn(s.shape()), elem.to_vec()).expect("series shape mismatch");
+        Ok(PyArrayDyn::from_owned_array(py, nd))
+    }
+
+    /// Timestamps in `[start, end)` as an int64 (TAI ns) NumPy array.
+    #[pyo3(signature = (start=0, end=None))]
+    fn slice<'py>(&self, py: Python<'py>, start: usize, end: Option<usize>) -> Bound<'py, PyArray1<i64>> {
+        let s = unsafe { &*self.ptr };
+        let n = s.len();
+        let start = start.min(n);
+        let end = end.unwrap_or(n).min(n).max(start);
+        let ts: Vec<i64> = s.timestamps()[start..end].iter().map(|t| t.as_nanos()).collect();
+        PyArray1::from_slice(py, &ts)
+    }
+
+    /// Positional indexing: `int` -> single element, contiguous `slice` -> range.
+    fn __getitem__<'py>(&self, py: Python<'py>, key: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        if let Ok(i) = key.extract::<isize>() {
+            return Ok(self.at(py, i)?.into_any());
+        }
+        let sl = key.cast::<PySlice>().map_err(|_| {
+            PyValueError::new_err("series index must be an int or a contiguous slice")
+        })?;
+        let n = unsafe { &*self.ptr }.len();
+        let ind = sl.indices(n as isize)?;
+        if ind.step != 1 {
+            return Err(PyValueError::new_err("only contiguous (step 1) slices supported"));
+        }
+        Ok(self.values(py, ind.start as usize, Some(ind.stop as usize)).into_any())
+    }
+}
+
+impl NativeSeriesView {
+    fn bind<'py>(py: Python<'py>, ptr: *const Series<f64>) -> PyResult<Bound<'py, PyAny>> {
+        Ok(Bound::new(py, NativeSeriesView { ptr })?.into_any())
+    }
+}
+
+// ===========================================================================
+// PyArgs — build the Python view tuple + produced bools from typed input refs
+// ===========================================================================
+
+/// Walks an operator's [`Ports`] input type, appending one Python view per leaf
+/// ([`NativeArrayView`] / [`NativeSeriesView`] / `None`) and one bool per leaf.
+pub trait PyArgs: Ports {
+    fn append_views<'py>(
+        py: Python<'py>,
+        refs: Self::Refs<'_>,
+        out: &mut Vec<Bound<'py, PyAny>>,
+    ) -> PyResult<()>;
+
+    fn append_produced(notify: Self::Notify<'_>, out: &mut Vec<bool>);
+}
+
+impl PyArgs for Port<Array<f64>> {
+    fn append_views<'py>(py: Python<'py>, refs: &Array<f64>, out: &mut Vec<Bound<'py, PyAny>>) -> PyResult<()> {
+        out.push(NativeArrayView::bind(py, refs as *const Array<f64> as *mut Array<f64>, false)?);
+        Ok(())
+    }
+    fn append_produced(notify: bool, out: &mut Vec<bool>) {
+        out.push(notify);
+    }
+}
+
+impl PyArgs for Port<Series<f64>> {
+    fn append_views<'py>(py: Python<'py>, refs: &Series<f64>, out: &mut Vec<Bound<'py, PyAny>>) -> PyResult<()> {
+        out.push(NativeSeriesView::bind(py, refs as *const Series<f64>)?);
+        Ok(())
+    }
+    fn append_produced(notify: bool, out: &mut Vec<bool>) {
+        out.push(notify);
+    }
+}
+
+impl PyArgs for Port<()> {
+    fn append_views<'py>(py: Python<'py>, _refs: &(), out: &mut Vec<Bound<'py, PyAny>>) -> PyResult<()> {
+        out.push(py.None().into_bound(py));
+        Ok(())
+    }
+    fn append_produced(notify: bool, out: &mut Vec<bool>) {
+        out.push(notify);
+    }
+}
+
+impl<T: PyArgs + 'static> PyArgs for [T] {
+    fn append_views<'py>(py: Python<'py>, refs: SliceRefs<'_, T>, out: &mut Vec<Bound<'py, PyAny>>) -> PyResult<()> {
+        for i in 0..refs.len() {
+            T::append_views(py, refs.get(i), out)?;
+        }
+        Ok(())
+    }
+    fn append_produced(notify: SliceNotify<'_, T>, out: &mut Vec<bool>) {
+        for i in 0..notify.len() {
+            T::append_produced(notify.get(i), out);
+        }
+    }
+}
+
+macro_rules! tuple_pyargs {
+    ($($idx:tt: $T:ident),+) => {
+        impl<$($T: PyArgs,)+> PyArgs for ($($T,)+) {
+            fn append_views<'py>(
+                py: Python<'py>,
+                refs: Self::Refs<'_>,
+                out: &mut Vec<Bound<'py, PyAny>>,
+            ) -> PyResult<()> {
+                $( $T::append_views(py, refs.$idx, out)?; )+
+                Ok(())
+            }
+            fn append_produced(notify: Self::Notify<'_>, out: &mut Vec<bool>) {
+                $( $T::append_produced(notify.$idx, out); )+
+            }
+        }
+    };
+}
+
+tuple_pyargs!(0: A, 1: B);
+tuple_pyargs!(0: A, 1: B, 2: C);
+tuple_pyargs!(0: A, 1: B, 2: C, 3: D);
+tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E);
+tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
+tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G);
+tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
+
+// ===========================================================================
+// PyClassOperator — hosts a Python operator object over inputs `I`
+// ===========================================================================
+
+/// A class-based Python operator over input ports `I` (e.g. `[Port<Array<f64>>]`
+/// or `(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)`). `source` is a
+/// Python program binding the operator instance to `__op__`.
+pub struct PyClassOperator<I: PyArgs + ?Sized = [Port<Array<f64>>]> {
     source: String,
     out_shape: Vec<usize>,
     clock: Clock,
+    _marker: PhantomData<fn() -> Box<I>>,
 }
 
-impl PyClassOperator {
+impl<I: PyArgs + ?Sized> PyClassOperator<I> {
     pub fn new(source: impl Into<String>, out_shape: Vec<usize>, clock: Clock) -> Self {
         Self {
             source: source.into(),
             out_shape,
             clock,
+            _marker: PhantomData,
         }
     }
 }
@@ -177,35 +363,12 @@ pub struct PyClassState {
     clock: Clock,
 }
 
-/// Build a `tuple` of read-only [`NativeArrayView`]s over the inputs.
-fn input_views<'py>(
-    py: Python<'py>,
-    inputs: &SliceRefs<'_, Port<Array<f64>>>,
-) -> PyResult<Bound<'py, PyTuple>> {
-    let n = inputs.len();
-    let mut views: Vec<Bound<'py, PyAny>> = Vec::with_capacity(n);
-    for i in 0..n {
-        let r: &Array<f64> = inputs.get(i);
-        views.push(NativeArrayView::bind_view(py, r as *const Array<f64> as *mut Array<f64>, false)?);
-    }
-    PyTuple::new(py, views)
-}
-
-/// Build a `tuple[bool, ...]` parallel to the inputs from the notify tree.
-fn produced_tuple<'py>(
-    py: Python<'py>,
-    produced: &SliceNotify<'_, Port<Array<f64>>>,
-) -> PyResult<Bound<'py, PyTuple>> {
-    let bits: Vec<bool> = (0..produced.len()).map(|i| produced.get(i)).collect();
-    PyTuple::new(py, bits)
-}
-
-impl Operator for PyClassOperator {
-    type Inputs = [Port<Array<f64>>];
+impl<I: PyArgs + ?Sized + 'static> Operator for PyClassOperator<I> {
+    type Inputs = I;
     type Output = Array<f64>;
     type State = PyClassState;
 
-    fn init(&self, inputs: SliceRefs<'_, Port<Array<f64>>>) -> (PyClassState, Array<f64>) {
+    fn init(&self, inputs: I::Refs<'_>) -> (PyClassState, Array<f64>) {
         let code = CString::new(self.source.as_str()).expect("python source has interior NUL");
         let ts = self.clock.get().as_nanos();
         let (operator, py_state) = Python::attach(|py| {
@@ -215,20 +378,17 @@ impl Operator for PyClassOperator {
                 globals.set_item("np", &np)?;
                 globals.set_item("numpy", &np)?;
                 py.run(code.as_c_str(), Some(&globals), None)?;
-                let operator = globals
-                    .get_item("__op__")?
-                    .ok_or_else(|| {
-                        pyo3::exceptions::PyValueError::new_err(
-                            "python operator source must bind `__op__`",
-                        )
-                    })?;
-                let views = input_views(py, &inputs)?;
-                let state = operator.call_method1("init", (views, ts))?;
+                let operator = globals.get_item("__op__")?.ok_or_else(|| {
+                    PyValueError::new_err("python operator source must bind `__op__`")
+                })?;
+                let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
+                I::append_views(py, inputs, &mut views)?;
+                let state = operator.call_method1("init", (PyTuple::new(py, views)?, ts))?;
                 Ok((operator.unbind(), state.unbind()))
             };
             run().unwrap_or_else(|e| {
                 e.print(py);
-                panic!("python operator init failed");
+                panic!("python operator init failed (see traceback above)");
             })
         });
         (
@@ -243,24 +403,32 @@ impl Operator for PyClassOperator {
 
     fn compute(
         state: &mut PyClassState,
-        inputs: SliceRefs<'_, Port<Array<f64>>>,
+        inputs: I::Refs<'_>,
         output: &mut Array<f64>,
-        produced: SliceNotify<'_, Port<Array<f64>>>,
+        produced: I::Notify<'_>,
     ) -> bool {
         let ts = state.clock.get().as_nanos();
         let out_ptr = output as *mut Array<f64>;
-        // Distinguish a legitimate `False` (no notify) from a Python error.
         let result: Result<bool, ()> = Python::attach(|py| {
             let run = || -> PyResult<bool> {
-                let views = input_views(py, &inputs)?;
-                let out_view = NativeArrayView::bind_view(py, out_ptr, true)?;
-                let prod = produced_tuple(py, &produced)?;
+                let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
+                I::append_views(py, inputs, &mut views)?;
+                let mut bits: Vec<bool> = Vec::new();
+                I::append_produced(produced, &mut bits);
+                let out_view = NativeArrayView::bind(py, out_ptr, true)?;
                 let operator = state.operator.bind(py);
-                let result = operator.call_method1(
-                    "compute",
-                    (state.py_state.bind(py), views, out_view, ts, prod),
-                )?;
-                result.extract::<bool>()
+                operator
+                    .call_method1(
+                        "compute",
+                        (
+                            state.py_state.bind(py),
+                            PyTuple::new(py, views)?,
+                            out_view,
+                            ts,
+                            PyTuple::new(py, bits)?,
+                        ),
+                    )?
+                    .extract::<bool>()
             };
             run().map_err(|e| e.print(py))
         });
@@ -276,14 +444,15 @@ impl Operator for PyClassOperator {
 mod tests {
     use super::PyClassOperator;
     use flowgraph::core::Pool;
-    use flowgraph::typed::{Graph, GraphBuilder};
+    use flowgraph::typed::{Graph, GraphBuilder, Port};
 
-    use crate::Array;
-    use crate::flow::{Adapt, Clock, Const};
+    use crate::Instant;
+    use crate::flow::{Adapt, Clock, Const, Record};
+    use crate::{Array, Series};
 
     /// Turnover ported ~verbatim from python/.../metrics/turnover.py: a stateful
-    /// operator (caches prev weights, warmup returns False) over one Array input.
-    /// Raw string at column 0 so Python indentation is preserved literally.
+    /// operator over one Array input. Raw string at column 0 preserves Python
+    /// indentation (Rust `\`-continuation would strip it).
     const TURNOVER: &str = r#"
 import numpy as np
 from dataclasses import dataclass
@@ -314,25 +483,75 @@ __op__ = Turnover()
         let mut b = GraphBuilder::new();
         let src = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![0.5_f64, 0.5]))), ());
         let out = b.push(
-            Adapt::new(PyClassOperator::new(TURNOVER, vec![], clock.clone())),
+            Adapt::new(PyClassOperator::<[Port<Array<f64>>]>::new(TURNOVER, vec![], clock.clone())),
             &[src][..],
         );
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
-        // Tick 1: warmup — caches [0.5, 0.5], returns False, output stays 0.
         *g.cell_mut(src) = Array::from_vec(&[2], vec![0.5, 0.5]);
         g.stabilize(&mut pool);
-        assert_eq!(g.cell(out).as_slice(), &[0.0]);
+        assert_eq!(g.cell(out).as_slice(), &[0.0]); // warmup
 
-        // Tick 2: turnover = |0.3-0.5| + |0.7-0.5| = 0.4.
         *g.cell_mut(src) = Array::from_vec(&[2], vec![0.3, 0.7]);
         g.stabilize(&mut pool);
         assert!((g.cell(out).as_slice()[0] - 0.4).abs() < 1e-12);
 
-        // Tick 3: turnover = |1.0-0.3| + |0.0-0.7| = 1.4.
         *g.cell_mut(src) = Array::from_vec(&[2], vec![1.0, 0.0]);
         g.stabilize(&mut pool);
         assert!((g.cell(out).as_slice()[0] - 1.4).abs() < 1e-12);
+    }
+
+    /// Heterogeneous inputs: an (Array, Series) operator that reads Series
+    /// history. Proves NativeSeriesView (values/len/getitem) + tuple PyArgs.
+    /// Computes: output = mean over history of (series[-1] dotted with weights).
+    const HIST_DOT: &str = r#"
+import numpy as np
+class HistDot:
+    def init(self, inputs, timestamp):
+        return {}
+    @staticmethod
+    def compute(state, inputs, output, timestamp, produced):
+        weights = inputs[0].value()          # (N,)
+        hist = inputs[1].values()            # (T, N)
+        # mean over time of <hist[t], weights>
+        val = float(np.mean(hist @ weights)) if len(inputs[1]) > 0 else 0.0
+        output.write(np.array(val, dtype=np.float64))
+        return True
+__op__ = HistDot()
+"#;
+
+    #[test]
+    fn py_class_operator_heterogeneous_series() {
+        let clock = Clock::new();
+        let mut b = GraphBuilder::new();
+        // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
+        let weights = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![1.0_f64, 1.0]))), ());
+        let feed = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![0.0_f64, 0.0]))), ());
+        // Record needs the clock; build via Record::new(clock).
+        let series = b.push(Adapt::new(Record::new(clock.clone())), feed);
+        let out = b.push(
+            Adapt::new(PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>)>::new(
+                HIST_DOT,
+                vec![],
+                clock.clone(),
+            )),
+            (weights, series),
+        );
+        let mut g = Graph::from_builder(b);
+        let mut pool = Pool::new(0);
+
+        // Tick 1 @ t=100: feed [1,2]; series=[[1,2]]; dot with [1,1]=3; mean=3.
+        clock.set(Instant::from_nanos(100));
+        *g.cell_mut(weights) = Array::from_vec(&[2], vec![1.0, 1.0]);
+        *g.cell_mut(feed) = Array::from_vec(&[2], vec![1.0, 2.0]);
+        g.stabilize(&mut pool);
+        assert!((g.cell(out).as_slice()[0] - 3.0).abs() < 1e-12);
+
+        // Tick 2 @ t=200: feed [3,4]; series=[[1,2],[3,4]]; dots=3,7; mean=5.
+        clock.set(Instant::from_nanos(200));
+        *g.cell_mut(feed) = Array::from_vec(&[2], vec![3.0, 4.0]);
+        g.stabilize(&mut pool);
+        assert!((g.cell(out).as_slice()[0] - 5.0).abs() < 1e-12);
     }
 }

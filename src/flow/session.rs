@@ -226,11 +226,13 @@ impl Scenario {
         out_shape: &[usize],
     ) -> Handle<Array<f64>> {
         self.builder.push(
-            Adapt::new(super::pyhost::PyClassOperator::new(
-                source,
-                out_shape.to_vec(),
-                self.clock.clone(),
-            )),
+            Adapt::new(
+                super::pyhost::PyClassOperator::<[flowgraph::typed::Port<Array<f64>>]>::new(
+                    source,
+                    out_shape.to_vec(),
+                    self.clock.clone(),
+                ),
+            ),
             inputs,
         )
     }
