@@ -20,6 +20,7 @@ site/
 
 # Virtual environments
 .venv/
+.venv-ft/
 
 # Test and coverage outputs
 .pytest_cache/
