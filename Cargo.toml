@@ -42,6 +42,10 @@ criterion = "0.5"
 rand = "0.8"
 tempfile = "3"
 
+[[example]]
+name = "flowops_demo"
+required-features = ["pyflow"]
+
 [[bench]]
 name = "bench_add"
 harness = false
