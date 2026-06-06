@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BinaryHeap};
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -133,6 +133,15 @@ pub struct Scenario {
     builder: GraphBuilder,
     clock: Clock,
     sources: Vec<SourceDescriptor>,
+    /// Sum of every source's [`Source::estimated_event_count`]; `None` once any
+    /// source can't estimate (then the whole total is unknown). Used only for
+    /// the [`Session::run`] progress callback.
+    estimated_total: Option<usize>,
+    /// Shared "input rows consumed" counter, handed to every source via
+    /// [`Source::install_progress_counter`] and read back by the progress
+    /// callback (see [`Session::progress_counter`]). Row-granular, unlike the
+    /// emit-granular `on_flush` count.
+    rows: Arc<AtomicU64>,
 }
 
 impl Scenario {
@@ -141,6 +150,8 @@ impl Scenario {
             builder: GraphBuilder::new(),
             clock: Clock::new(),
             sources: Vec::new(),
+            estimated_total: Some(0),
+            rows: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -268,15 +279,23 @@ impl Scenario {
 
     /// Register a [`Source`]. Its output cell is a `Const(initial)`; the async
     /// feed is wired up at [`build`](Self::build) time.
-    pub fn add_source<S: Source>(&mut self, source: S, initial: S::Output) -> Handle<S::Output>
+    pub fn add_source<S: Source>(&mut self, mut source: S, initial: S::Output) -> Handle<S::Output>
     where
         S::Output: Clone + Send + Sync + 'static,
     {
         let handle = self.builder.push(Adapt::new(Const(initial)), ());
-        self.sources.push(SourceDescriptor {
-            cell_index: handle.index(),
-            erased: ErasedSource::from_source(source),
-        });
+        // Hand the shared row counter to the source (no-op for sources that
+        // emit one event per row; panel sources use it to report row progress).
+        source.install_progress_counter(self.rows.clone());
+        let erased = ErasedSource::from_source(source);
+        // Accumulate the progress estimate: sum the per-source counts; a single
+        // un-estimable source makes the whole total unknown (None). Live sources
+        // should report `Some(0)` rather than `None` to keep the total usable.
+        self.estimated_total = match (self.estimated_total, erased.estimated_event_count()) {
+            (Some(acc), Some(n)) => Some(acc.saturating_add(n)),
+            _ => None,
+        };
+        self.sources.push(SourceDescriptor { cell_index: handle.index(), erased });
         handle
     }
 
@@ -292,6 +311,8 @@ impl Scenario {
             builder,
             clock,
             sources,
+            estimated_total,
+            rows,
         } = self;
         let graph = Graph::from_builder(builder);
 
@@ -320,6 +341,8 @@ impl Scenario {
             pool: Pool::new(n),
             clock,
             slots,
+            estimated_total,
+            rows,
         }
     }
 }
@@ -341,6 +364,8 @@ pub struct Session {
     pool: Pool,
     clock: Clock,
     slots: Vec<SourceSlot>,
+    estimated_total: Option<usize>,
+    rows: Arc<AtomicU64>,
 }
 
 // SAFETY: the graph is Send+Sync; the pool and slots are Send; the clock is an
@@ -348,6 +373,21 @@ pub struct Session {
 unsafe impl Send for Session {}
 
 impl Session {
+    /// Sum of every source's estimated event count, or `None` if any source
+    /// couldn't estimate. Pair with [`run`](Self::run)'s `on_flush` count to
+    /// drive a progress bar; treat as advisory (the run's true total may differ).
+    pub fn estimated_event_count(&self) -> Option<usize> {
+        self.estimated_total
+    }
+
+    /// The shared "input rows consumed" counter (matches the unit of
+    /// [`estimated_event_count`](Self::estimated_event_count)). Sources bump it
+    /// as they scan; read it from the [`run`](Self::run) `on_flush` callback for
+    /// a row-granular progress position.
+    pub fn progress_counter(&self) -> Arc<AtomicU64> {
+        self.rows.clone()
+    }
+
     /// Immutable access to a node value.
     pub fn value<T: Send + Sync + 'static>(&self, handle: Handle<T>) -> &T {
         self.graph.cell(handle)

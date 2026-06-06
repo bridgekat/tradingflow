@@ -82,7 +82,10 @@ async fn main() {
     }
 
     let mut session = sc.build_with_threads(args.threads);
-    session.run(|_, _| {}).await;
+    let total = session.estimated_event_count();
+    let counter = session.progress_counter();
+    session.run(common::progress(total, args.begin(), counter)).await;
+    eprintln!();
 
     // Per-feature IC stats + long-format CSV.
     let mut cols: Vec<(String, Vec<i64>, Vec<f64>)> = Vec::new();

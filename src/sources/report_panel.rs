@@ -38,7 +38,12 @@ use arrow::datatypes::DataType;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-use super::parquet_panel::{instant_from_days, report_year_and_doy, resolve_symbols};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use super::parquet_panel::{
+    instant_from_days, parquet_num_rows, report_year_and_doy, resolve_symbols,
+};
 use crate::{Array, Duration, Instant, Source};
 
 /// Historical-only panel source for financial-report long tables. See module docs.
@@ -55,6 +60,8 @@ pub struct ReportPanelSource {
     symbol_column: String,
     start: Option<Instant>,
     end: Option<Instant>,
+    /// Shared row-progress counter (set by the engine); bumped per loaded row.
+    progress: Option<Arc<AtomicU64>>,
 }
 
 impl ReportPanelSource {
@@ -74,6 +81,7 @@ impl ReportPanelSource {
             symbol_column: "symbol".into(),
             start: None,
             end: None,
+            progress: None,
         }
     }
 
@@ -136,6 +144,17 @@ struct ReportRow {
 impl Source for ReportPanelSource {
     type Event = Array<f64>;
     type Output = Array<f64>;
+
+    fn estimated_event_count(&self) -> Option<usize> {
+        // Progress is in long-table rows. The report scan loads the WHOLE table
+        // (it must reorder by effective date), so the estimate is the full row
+        // count (O(1) from the footer) and the counter is bumped per loaded row.
+        Some(parquet_num_rows(&self.path).unwrap_or(0))
+    }
+
+    fn install_progress_counter(&mut self, counter: Arc<AtomicU64>) {
+        self.progress = Some(counter);
+    }
 
     fn init(
         &self,
@@ -242,6 +261,9 @@ fn read_reports(
                 .map(|va| if va.is_null(row) { f64::NAN } else { va.value(row) })
                 .collect();
             rows.push(ReportRow { key_ts, report_days, ui, values });
+        }
+        if let Some(c) = cfg.progress.as_ref() {
+            c.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
         }
     }
 

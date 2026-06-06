@@ -16,6 +16,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
+#[path = "common/mod.rs"]
+mod common;
+
 use flowgraph::typed::Handle;
 
 use tradingflow::flow::{
@@ -23,7 +26,7 @@ use tradingflow::flow::{
     Subtract,
 };
 use tradingflow::sources::ParquetPanelSource;
-use tradingflow::{Array, Series};
+use tradingflow::{Array, Instant, Series};
 
 const WINDOW: usize = 252;
 const MULTIPLE: f64 = 2.0;
@@ -116,7 +119,10 @@ async fn main() {
 
     // Run the historical replay to completion.
     let mut session = sc.build();
-    session.run(|_, _| {}).await;
+    let total = session.estimated_event_count();
+    let counter = session.progress_counter();
+    session.run(common::progress(total, Instant::MIN, counter)).await;
+    eprintln!();
 
     // Align the recorded scalar series by timestamp and write a wide CSV.
     let cols: [(&str, &Series<f64>); 5] = [

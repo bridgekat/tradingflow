@@ -26,6 +26,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use flowgraph::typed::Handle;
 
@@ -66,6 +68,105 @@ pub fn parse_date_days(s: &str) -> i64 {
     let m: i64 = it.next().unwrap().parse().expect("month");
     let d: i64 = it.next().unwrap().parse().expect("day");
     days_from_civil(y, m, d)
+}
+
+/// Civil date `(year, month, day)` from days-since-1970 — the inverse of
+/// [`days_from_civil`] (Howard Hinnant's algorithm).
+pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// `YYYY-MM-DD` for an event [`Instant`]. The event timestamps are UTC midnight,
+/// so the ~37 s TAI leap offset never crosses a day boundary — a plain
+/// TAI-nanos→days floor is exact for display.
+fn date_str(ts: Instant) -> String {
+    let (y, m, d) = civil_from_days(ts.as_nanos().div_euclid(86_400 * 1_000_000_000));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+// ===========================================================================
+// Progress bar (tqdm-like)
+// ===========================================================================
+
+/// A `tqdm`-style progress callback (backed by [`indicatif`]) for
+/// [`Session::run`](tradingflow::flow::Session::run)'s `on_flush`.
+///
+/// Progress is measured in **long-table rows scanned**: the position is read
+/// from the shared [`progress_counter`](tradingflow::flow::Session::progress_counter)
+/// (which the panel sources bump as they read rows), *not* from the emit count
+/// passed to `on_flush` (one emit = a whole cross-section = many rows). `total`
+/// is [`estimated_event_count`](tradingflow::flow::Session::estimated_event_count)
+/// in the same row unit; `Some(n)` → a bounded bar (percent / rate / ETA), else a
+/// spinner. `{per_sec}` is therefore rows/s. `begin` sets `{prefix}` (warm-up
+/// before it, running after); `{msg}` is the current event date. The bar uses a
+/// terminal-width `{wide_bar}` with Unicode sub-cell fill, and finalises itself
+/// when the callback drops at the end of `run`:
+/// ```ignore
+/// let total = session.estimated_event_count();
+/// let counter = session.progress_counter();
+/// session.run(common::progress(total, args.begin(), counter)).await;
+/// eprintln!(); // move past the finished bar line before printing results
+/// ```
+pub fn progress(total: Option<usize>, begin: Instant, counter: Arc<AtomicU64>) -> impl FnMut(Instant, usize) {
+    use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+
+    // Finish (leave) the bar when the callback is dropped — i.e. when `run`
+    // returns — so the final state persists without the caller managing it.
+    struct FinishOnDrop(ProgressBar);
+    impl Drop for FinishOnDrop {
+        fn drop(&mut self) {
+            self.0.finish();
+        }
+    }
+
+    let pb = match total {
+        Some(t) if t > 0 => {
+            let pb = ProgressBar::new(t as u64);
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "{prefix:>7} {elapsed_precise} [{wide_bar}] {human_pos}/{human_len} rows {percent:>3}% {per_sec} eta {eta} {msg}",
+                )
+                .unwrap()
+                .progress_chars("█▉▊▋▌▍▎▏ "),
+            );
+            pb
+        }
+        _ => {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::with_template("{prefix:>7} {elapsed_precise} {spinner} {human_pos} rows {per_sec} {msg}")
+                    .unwrap(),
+            );
+            pb
+        }
+    };
+    // Cap redraws at ~12 fps regardless of how often the callback fires.
+    pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(12));
+
+    let begin_ns = begin.as_nanos();
+    let guard = FinishOnDrop(pb);
+    move |ts: Instant, _emits: usize| {
+        let pb = &guard.0;
+        pb.set_prefix(if ts.as_nanos() < begin_ns { "warmup" } else { "running" });
+        let rows = counter.load(Ordering::Relaxed);
+        // Grow the length if the estimate undershot (keeps the percentage sane).
+        if let Some(len) = pb.length() {
+            if rows > len {
+                pb.set_length(rows);
+            }
+        }
+        pb.set_position(rows);
+        pb.set_message(date_str(ts));
+    }
 }
 
 // ===========================================================================

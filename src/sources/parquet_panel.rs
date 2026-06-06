@@ -47,6 +47,8 @@
 
 use std::collections::HashMap;
 use std::fs::File;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::mpsc;
 
@@ -71,6 +73,8 @@ pub struct ParquetPanelSource {
     symbol_column: String,
     start: Option<Instant>,
     end: Option<Instant>,
+    /// Shared row-progress counter (set by the engine); bumped per scanned row.
+    progress: Option<Arc<AtomicU64>>,
 }
 
 impl ParquetPanelSource {
@@ -89,6 +93,7 @@ impl ParquetPanelSource {
             symbol_column: "symbol".into(),
             start: None,
             end: None,
+            progress: None,
         }
     }
 
@@ -138,6 +143,25 @@ pub(crate) fn report_year_and_doy(days: i32) -> (f64, f64) {
 impl Source for ParquetPanelSource {
     type Event = Array<f64>;
     type Output = Array<f64>;
+
+    fn estimated_event_count(&self) -> Option<usize> {
+        // Progress is measured in **long-table rows scanned**. The scan starts at
+        // the file head and breaks once past `end`, so it reads exactly the rows
+        // with `date <= end` — which is also what it bumps the counter by. With
+        // no end it reads the whole file (taken cheaply from parquet metadata).
+        // On any read error fall back to `Some(0)` so the aggregate stays usable.
+        Some(
+            match self.end {
+                Some(end) => count_rows_through_end(&self.path, &self.date_column, end),
+                None => parquet_num_rows(&self.path),
+            }
+            .unwrap_or(0),
+        )
+    }
+
+    fn install_progress_counter(&mut self, counter: Arc<AtomicU64>) {
+        self.progress = Some(counter);
+    }
 
     fn init(
         &self,
@@ -233,14 +257,22 @@ fn read_panel(
             .map(|a| a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap())
             .collect();
 
+        let mut seen: u64 = 0; // long-table rows scanned in this batch (progress unit)
         for row in 0..batch.num_rows() {
             let d = dates.value(row);
             let ts = instant_from_days(d);
+            // (end-check before start-check is equivalent since `start <= end`,
+            // and lets us count every scanned row in `[.., end]` — including the
+            // pre-`start` rows the scan reads then skips — toward progress.)
+            if end.is_some_and(|e| ts > e) {
+                if let Some(c) = cfg.progress.as_ref() {
+                    c.fetch_add(seen, Ordering::Relaxed);
+                }
+                break 'outer;
+            }
+            seen += 1;
             if start.is_some_and(|s| ts < s) {
                 continue; // before the window: skip (no carry-in)
-            }
-            if end.is_some_and(|e| ts > e) {
-                break 'outer;
             }
             if current != Some(d) {
                 if let Some(cd) = current {
@@ -262,12 +294,57 @@ fn read_panel(
             }
             written.push(ui);
         }
+        if let Some(c) = cfg.progress.as_ref() {
+            c.fetch_add(seen, Ordering::Relaxed);
+        }
     }
 
     if let Some(cd) = current {
         send(instant_from_days(cd), &buf);
     }
     Ok(())
+}
+
+/// Total row count from the parquet footer metadata — O(1), no row decode.
+/// The number of rows a full scan (no `end` bound) reads.
+pub(crate) fn parquet_num_rows(path: &str) -> Result<usize, String> {
+    let file = File::open(path).map_err(|e| format!("open: {e}"))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| e.to_string())?;
+    Ok(builder.metadata().file_metadata().num_rows().max(0) as usize)
+}
+
+/// Count rows with `date <= end` by scanning **only** the date column (the table
+/// is `(date, symbol)`-sorted, so the scan can stop at the first row past `end`;
+/// the column is tiny once zstd-compressed). This is exactly how many long-table
+/// rows [`read_panel`] reads with an `end` bound — the progress-estimate unit.
+pub(crate) fn count_rows_through_end(
+    path: &str,
+    date_column: &str,
+    end: Instant,
+) -> Result<usize, String> {
+    let file = File::open(path).map_err(|e| format!("open: {e}"))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| e.to_string())?;
+    let leaf = builder.schema().index_of(date_column).map_err(|e| e.to_string())?;
+    let mask = ProjectionMask::leaves(builder.parquet_schema(), vec![leaf]);
+    let reader = builder.with_projection(mask).build().map_err(|e| e.to_string())?;
+
+    let mut count = 0usize;
+    'outer: for batch in reader {
+        let batch = batch.map_err(|e| e.to_string())?;
+        let dates = batch
+            .column_by_name(date_column)
+            .ok_or_else(|| format!("missing date column {date_column:?}"))?
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .ok_or_else(|| format!("date column {date_column:?} is not date32"))?;
+        for row in 0..batch.num_rows() {
+            if instant_from_days(dates.value(row)) > end {
+                break 'outer;
+            }
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 /// Map each batch row to its universe index (or `None` if the symbol is not in

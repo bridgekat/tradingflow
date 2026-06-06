@@ -92,7 +92,10 @@ async fn main() {
     let mut session = sc.build_with_threads(args.threads);
     // Trim warmup output before `begin` so only the live index window is shown.
     let begin = args.begin();
-    session.run(|_, _| {}).await;
+    let total = session.estimated_event_count();
+    let counter = session.progress_counter();
+    session.run(common::progress(total, begin, counter)).await;
+    eprintln!();
 
     let (mc_ts, mc_v) = common::read_scalar_series(&session, h_mc);
     let (nav_ts, nav_v) = common::read_scalar_series(&session, h_nav);

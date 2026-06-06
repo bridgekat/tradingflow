@@ -1,4 +1,6 @@
 use std::any::TypeId;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
@@ -58,6 +60,16 @@ pub trait Source: 'static {
     fn estimated_event_count(&self) -> Option<usize> {
         None
     }
+
+    /// Install a shared "input rows consumed" counter that the source bumps as
+    /// it reads its underlying rows, for fine-grained (row-level rather than
+    /// emit-level) progress reporting. The unit should match
+    /// [`estimated_event_count`](Self::estimated_event_count). The default is a
+    /// no-op (a source that emits one event per row needs nothing extra; the
+    /// `on_flush` emit count already tracks it). Sources that **coalesce** many
+    /// rows into one event (e.g. a cross-sectional panel emitting one wide row
+    /// per date) override this to report true row progress.
+    fn install_progress_counter(&mut self, _counter: Arc<AtomicU64>) {}
 }
 
 /// Type-erased initialization closure for a source.

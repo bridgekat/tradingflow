@@ -22,12 +22,15 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
+#[path = "common/mod.rs"]
+mod common;
+
 use flowgraph::typed::Handle;
 
 use tradingflow::data::Duration;
 use tradingflow::flow::{Annualize, Divide, Filter, Map, Multiply, Negate, RollingMean, Scenario, Select};
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
-use tradingflow::{Array, Series};
+use tradingflow::{Array, Instant, Series};
 
 const COLS: [&str; 10] = [
     "market_cap", "assets", "equity", "parent_equity", "op_income", "net_profit", "cash_flow",
@@ -158,7 +161,10 @@ async fn main() {
     // Run.
     // ------------------------------------------------------------------
     let mut session = sc.build();
-    session.run(|_, _| {}).await;
+    let total = session.estimated_event_count();
+    let counter = session.progress_counter();
+    session.run(common::progress(total, Instant::MIN, counter)).await;
+    eprintln!();
 
     let mut rows: BTreeMap<i64, [f64; 10]> = BTreeMap::new();
     for (c, h) in records.iter().enumerate() {

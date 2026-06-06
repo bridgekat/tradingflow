@@ -43,6 +43,8 @@ parquet = { version = "58.3.0", features = ["arrow", "zstd"] }
 criterion = "0.5"
 rand = "0.8"
 tempfile = "3"
+# tqdm-style progress bars for the examples (see `examples/common::progress`).
+indicatif = "0.17"
 
 [[example]]
 name = "flowops_demo"
