@@ -38,11 +38,9 @@ use arrow::datatypes::DataType;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use super::parquet_panel::{
-    instant_from_days, parquet_num_rows, report_year_and_doy, resolve_symbols,
+    PanelState, RowUpdate, count_rows_in_range, instant_from_days, panel_write, report_year_and_doy,
+    resolve_symbols,
 };
 use crate::{Array, Duration, Instant, Source};
 
@@ -60,8 +58,6 @@ pub struct ReportPanelSource {
     symbol_column: String,
     start: Option<Instant>,
     end: Option<Instant>,
-    /// Shared row-progress counter (set by the engine); bumped per loaded row.
-    progress: Option<Arc<AtomicU64>>,
 }
 
 impl ReportPanelSource {
@@ -81,7 +77,6 @@ impl ReportPanelSource {
             symbol_column: "symbol".into(),
             start: None,
             end: None,
-            progress: None,
         }
     }
 
@@ -142,29 +137,31 @@ struct ReportRow {
 }
 
 impl Source for ReportPanelSource {
-    type Event = Array<f64>;
+    type Event = Vec<RowUpdate>;
     type Output = Array<f64>;
+    type State = PanelState;
 
     fn estimated_event_count(&self) -> Option<usize> {
-        // Progress is in long-table rows. The report scan loads the WHOLE table
-        // (it must reorder by effective date), so the estimate is the full row
-        // count (O(1) from the footer) and the counter is bumped per loaded row.
-        Some(parquet_num_rows(&self.path).unwrap_or(0))
-    }
-
-    fn install_progress_counter(&mut self, counter: Arc<AtomicU64>) {
-        self.progress = Some(counter);
+        // Progress is in emitted long-table rows. The effective-date emits (after
+        // the retrospective-drop) are bounded by the rows in `[start, end]` on the
+        // report-date timeline — a close proxy (reports are a small minority of
+        // total events). On any read error fall back to `Some(0)`.
+        Some(
+            count_rows_in_range(&self.path, &self.report_date_column, self.start, self.end).unwrap_or(0),
+        )
     }
 
     fn init(
         &self,
         _timestamp: Instant,
     ) -> (
-        mpsc::Receiver<(Instant, Array<f64>)>,
-        mpsc::Receiver<(Instant, Array<f64>)>,
+        mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
+        mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
         Array<f64>,
+        PanelState,
     ) {
-        let (hist_tx, hist_rx) = mpsc::channel(64);
+        // One item per tick (a batch of that date's reports); small buffer.
+        let (hist_tx, hist_rx) = mpsc::channel(16);
         let (_, live_rx) = mpsc::channel(1);
         let cfg = self.clone();
         let out_shape = self.out_shape();
@@ -175,20 +172,18 @@ impl Source for ReportPanelSource {
             }
         });
 
-        (hist_rx, live_rx, Array::zeros(&out_shape))
+        (hist_rx, live_rx, Array::zeros(&out_shape), PanelState::default())
     }
 
-    fn write(payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> bool {
-        output.assign(payload.as_slice());
-        true
+    fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64>, ts: Instant) -> usize {
+        panel_write(state, batch, output, ts)
     }
 }
 
 fn read_reports(
     cfg: &ReportPanelSource,
-    hist_tx: &mpsc::Sender<(Instant, Array<f64>)>,
+    hist_tx: &mpsc::Sender<(Instant, Vec<RowUpdate>)>,
 ) -> Result<(), String> {
-    let n = cfg.symbols.len();
     let value_offset = if cfg.with_report_date { 2 } else { 0 };
     let r = value_offset + cfg.value_columns.len();
     let sym_index: HashMap<&str, usize> =
@@ -262,9 +257,6 @@ fn read_reports(
                 .collect();
             rows.push(ReportRow { key_ts, report_days, ui, values });
         }
-        if let Some(c) = cfg.progress.as_ref() {
-            c.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-        }
     }
 
     // 2. Effective-date mode: drop retrospective updates per symbol (walking in
@@ -294,52 +286,47 @@ fn read_reports(
         });
     }
 
-    // 3. Emit one cross-section per distinct event timestamp, in `e` order
-    //    (StackSync — only that timestamp's reports; absent symbols NaN). Rows
-    //    before `start` are skipped; sparse reset clears only the rows written.
+    // 3. Emit one batch per distinct effective date (`key_ts`), accumulating that
+    //    date's kept reports into a `Vec<RowUpdate>`. The downstream `panel_write`
+    //    reassembles each tick's cross-section (StackSync — only that tick's
+    //    reports; absent symbols NaN) and clears the previous tick when the
+    //    timestamp advances. Rows before `start` are skipped.
     rows.sort_by_key(|row| row.key_ts);
     let (start, end) = (cfg.start, cfg.end);
-    let mut buf = vec![f64::NAN; n * r];
-    let mut current: Option<Instant> = None;
-    let mut written: Vec<usize> = Vec::new();
-    let send = |ts: Instant, buf: &[f64]| -> bool {
-        hist_tx.blocking_send((ts, Array::from_vec(&[n, r], buf.to_vec()))).is_ok()
-    };
-
+    let mut cur_ts: Option<Instant> = None;
+    let mut tick: Vec<RowUpdate> = Vec::new();
     for row in &rows {
         let ts = row.key_ts;
-        if start.is_some_and(|s| ts < s) {
-            continue;
-        }
         if end.is_some_and(|e| ts > e) {
             break;
         }
-        if current != Some(ts) {
-            if let Some(cd) = current {
-                if !send(cd, &buf) {
+        if start.is_some_and(|s| ts < s) {
+            continue;
+        }
+        if cur_ts != Some(ts) {
+            if let Some(t) = cur_ts {
+                if hist_tx.blocking_send((t, std::mem::take(&mut tick))).is_err() {
                     return Ok(());
                 }
-                for &idx in &written {
-                    buf[idx * r..idx * r + r].fill(f64::NAN);
-                }
-                written.clear();
             }
-            current = Some(ts);
+            cur_ts = Some(ts);
         }
-        let base = row.ui * r;
+        let mut payload = vec![f64::NAN; r];
         if cfg.with_report_date {
             let (year, doy) = report_year_and_doy(row.report_days);
-            buf[base] = year;
-            buf[base + 1] = doy;
+            payload[0] = year;
+            payload[1] = doy;
         }
         for (vi, v) in row.values.iter().enumerate() {
-            buf[base + value_offset + vi] = *v;
+            payload[value_offset + vi] = *v;
         }
-        written.push(row.ui);
+        tick.push(RowUpdate { row: row.ui, vals: payload.into_boxed_slice() });
     }
-
-    if let Some(cd) = current {
-        send(cd, &buf);
+    // Flush the final (also last in-window) tick.
+    if let Some(t) = cur_ts {
+        if !tick.is_empty() {
+            let _ = hist_tx.blocking_send((t, tick));
+        }
     }
     Ok(())
 }

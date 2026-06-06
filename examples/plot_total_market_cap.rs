@@ -93,8 +93,7 @@ async fn main() {
     // Trim warmup output before `begin` so only the live index window is shown.
     let begin = args.begin();
     let total = session.estimated_event_count();
-    let counter = session.progress_counter();
-    session.run(common::progress(total, begin, counter)).await;
+    session.run(common::progress(total, begin)).await;
     eprintln!();
 
     let (mc_ts, mc_v) = common::read_scalar_series(&session, h_mc);

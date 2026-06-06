@@ -119,7 +119,7 @@ pub fn make_py_source(
     let out_dtype_owned = out_dtype.to_string();
     let output_shape_owned: Vec<usize> = output_shape.to_vec();
 
-    let init_fn: Box<dyn Fn(Instant) -> (*mut u8, *mut u8, *mut u8)> =
+    let init_fn: Box<dyn Fn(Instant) -> (*mut u8, *mut u8, *mut u8, *mut u8)> =
         Box::new(move |timestamp: Instant| {
             let output_ptr = alloc_output_fn(&output_shape_owned);
 
@@ -173,7 +173,11 @@ pub fn make_py_source(
 
             let hist_ptr = Box::into_raw(Box::new(hist_state)) as *mut u8;
             let live_ptr = Box::into_raw(Box::new(live_state)) as *mut u8;
-            (hist_ptr, live_ptr, output_ptr)
+            // The bridge keeps all per-source state in `PySourceState` (the
+            // engine's "rx" slot); the new `Source::State` slot is unused here,
+            // so a `()` placeholder.
+            let write_state_ptr = Box::into_raw(Box::new(())) as *mut u8;
+            (hist_ptr, live_ptr, output_ptr, write_state_ptr)
         });
 
     // SAFETY: init_fn returns valid PySourceState pointers and a valid
@@ -188,6 +192,7 @@ pub fn make_py_source(
             py_write_fn,
             drop_fn::<PySourceState>,
             output_drop_fn,
+            drop_fn::<()>,
         )
     })
 }
@@ -235,20 +240,27 @@ unsafe fn py_poll_fn(
 ///
 /// # Safety
 ///
-/// `state_ptr` must point to a valid `PySourceState`.
-unsafe fn py_write_fn(state_ptr: *mut u8, _output_ptr: *mut u8, _ts: Instant) -> bool {
-    let state = unsafe { &mut *(state_ptr as *mut PySourceState) };
+/// `rx_ptr` must point to a valid `PySourceState`. `_write_state` is the engine's
+/// `Source::State` slot, unused by the bridge (state lives in `PySourceState`).
+unsafe fn py_write_fn(
+    _write_state: *mut u8,
+    rx_ptr: *mut u8,
+    _output_ptr: *mut u8,
+    _ts: Instant,
+) -> usize {
+    let state = unsafe { &mut *(rx_ptr as *mut PySourceState) };
 
     if state.error_slot.lock().unwrap().is_some() {
-        return false;
+        return 0;
     }
 
     if let Some((_ts, py_value)) = state.rx.take_pending() {
-        // Unit outputs carry no data - just consume the event and signal
-        // downstream propagation without calling .write().
+        // Python sources emit one event per item; on success report 1 (the run's
+        // event count). Unit outputs carry no data - just consume the event and
+        // signal downstream propagation without calling .write().
         let is_none = Python::attach(|py| state.py_output.is_none(py));
         if is_none {
-            return true;
+            return 1;
         }
         let result = Python::attach(|py| -> PyResult<()> {
             state
@@ -257,14 +269,14 @@ unsafe fn py_write_fn(state_ptr: *mut u8, _output_ptr: *mut u8, _ts: Instant) ->
                 .map(|_| ())
         });
         match result {
-            Ok(()) => true,
+            Ok(()) => 1,
             Err(e) => {
                 set_error(&state.error_slot, e);
-                false
+                0
             }
         }
     } else {
-        false
+        0
     }
 }
 

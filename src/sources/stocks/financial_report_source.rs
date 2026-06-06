@@ -246,6 +246,7 @@ fn read_csv(
 impl Source for FinancialReportSource {
     type Event = Array<f64>;
     type Output = Array<f64>;
+    type State = ();
 
     fn estimated_event_count(&self) -> Option<usize> {
         use super::super::csv_source::{estimate_csv_rows, scale_rows_to_range};
@@ -280,6 +281,7 @@ impl Source for FinancialReportSource {
         mpsc::Receiver<(Instant, Array<f64>)>,
         mpsc::Receiver<(Instant, Array<f64>)>,
         Array<f64>,
+        (),
     ) {
         let num_values = self.value_columns.len();
         let output_len = if self.with_report_date {
@@ -346,12 +348,12 @@ impl Source for FinancialReportSource {
             }
         });
 
-        (hist_rx, live_rx, Array::zeros(&[output_len]))
+        (hist_rx, live_rx, Array::zeros(&[output_len]), ())
     }
 
-    fn write(payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> bool {
+    fn write(_state: &mut (), payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> usize {
         output.assign(payload.as_slice());
-        true
+        1
     }
 }
 

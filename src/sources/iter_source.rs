@@ -106,6 +106,7 @@ impl<T: Clone + Send + 'static> IterSource<T> {
 impl<T: Clone + Send + 'static> Source for IterSource<T> {
     type Event = T;
     type Output = T;
+    type State = ();
 
     fn estimated_event_count(&self) -> Option<usize> {
         self.estimated_event_count
@@ -118,6 +119,7 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
         mpsc::Receiver<(Instant, T)>,
         mpsc::Receiver<(Instant, T)>,
         T,
+        (),
     ) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
@@ -131,12 +133,12 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
             }
         });
 
-        (hist_rx, live_rx, self.default.clone())
+        (hist_rx, live_rx, self.default.clone(), ())
     }
 
-    fn write(payload: T, output: &mut T, _timestamp: Instant) -> bool {
+    fn write(_state: &mut (), payload: T, output: &mut T, _timestamp: Instant) -> usize {
         *output = payload;
-        true
+        1
     }
 }
 

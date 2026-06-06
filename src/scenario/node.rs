@@ -57,8 +57,17 @@ impl Node {
         let write_fn = erased.write_fn();
         let rx_drop_fn = erased.rx_drop_fn();
         let output_drop_fn = erased.output_drop_fn();
-        let (hist_rx_ptr, live_rx_ptr, output_ptr) = erased.init(timestamp);
-        let state = SourceState::new(hist_rx_ptr, live_rx_ptr, poll_fn, write_fn, rx_drop_fn);
+        let state_drop_fn = erased.state_drop_fn();
+        let (hist_rx_ptr, live_rx_ptr, output_ptr, state_ptr) = erased.init(timestamp);
+        let state = SourceState::new(
+            hist_rx_ptr,
+            live_rx_ptr,
+            state_ptr,
+            poll_fn,
+            write_fn,
+            rx_drop_fn,
+            state_drop_fn,
+        );
         Self {
             type_id: output_type_id,
             value_ptr: output_ptr,
@@ -160,25 +169,32 @@ pub enum ChannelKind {
 pub(super) struct SourceState {
     hist_rx_ptr: *mut u8,
     live_rx_ptr: *mut u8,
+    write_state_ptr: *mut u8,
     poll_fn: PollFn,
     write_fn: WriteFn,
     rx_drop_fn: unsafe fn(*mut u8),
+    state_drop_fn: unsafe fn(*mut u8),
 }
 
 impl SourceState {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         hist_rx_ptr: *mut u8,
         live_rx_ptr: *mut u8,
+        write_state_ptr: *mut u8,
         poll_fn: PollFn,
         write_fn: WriteFn,
         rx_drop_fn: unsafe fn(*mut u8),
+        state_drop_fn: unsafe fn(*mut u8),
     ) -> Self {
         Self {
             hist_rx_ptr,
             live_rx_ptr,
+            write_state_ptr,
             poll_fn,
             write_fn,
             rx_drop_fn,
+            state_drop_fn,
         }
     }
 
@@ -188,6 +204,11 @@ impl SourceState {
             ChannelKind::Hist => self.hist_rx_ptr,
             ChannelKind::Live => self.live_rx_ptr,
         }
+    }
+
+    /// Returns the raw per-source write-state pointer (passed to `write_fn`).
+    pub fn write_state_ptr(&self) -> *mut u8 {
+        self.write_state_ptr
     }
 
     /// Returns the type-erased poll function pointer.
@@ -205,6 +226,7 @@ impl Drop for SourceState {
     fn drop(&mut self) {
         unsafe { (self.rx_drop_fn)(self.hist_rx_ptr) };
         unsafe { (self.rx_drop_fn)(self.live_rx_ptr) };
+        unsafe { (self.state_drop_fn)(self.write_state_ptr) };
     }
 }
 

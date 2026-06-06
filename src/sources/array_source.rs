@@ -30,6 +30,7 @@ impl<T: Scalar> ArraySource<T> {
 impl<T: Scalar> Source for ArraySource<T> {
     type Event = Array<T>;
     type Output = Array<T>;
+    type State = ();
 
     fn estimated_event_count(&self) -> Option<usize> {
         Some(self.series.len())
@@ -42,6 +43,7 @@ impl<T: Scalar> Source for ArraySource<T> {
         mpsc::Receiver<(Instant, Array<T>)>,
         mpsc::Receiver<(Instant, Array<T>)>,
         Array<T>,
+        (),
     ) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
         let (_, live_rx) = mpsc::channel(1);
@@ -61,11 +63,11 @@ impl<T: Scalar> Source for ArraySource<T> {
             }
         });
 
-        (hist_rx, live_rx, self.default.clone())
+        (hist_rx, live_rx, self.default.clone(), ())
     }
 
-    fn write(payload: Array<T>, output: &mut Array<T>, _timestamp: Instant) -> bool {
+    fn write(_state: &mut (), payload: Array<T>, output: &mut Array<T>, _timestamp: Instant) -> usize {
         output.assign(payload.as_slice());
-        true
+        1
     }
 }

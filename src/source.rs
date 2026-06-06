@@ -1,6 +1,4 @@
 use std::any::TypeId;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
@@ -34,8 +32,15 @@ pub trait Source: 'static {
     type Event: Send + 'static;
     /// Output type.
     type Output: Send + 'static;
+    /// Per-source mutable state threaded through every [`write`](Self::write)
+    /// call (created by [`init`](Self::init)). Use `()` for stateless sources;
+    /// sources that need to remember something across events — e.g. a panel that
+    /// clears the previous tick's entries when the timestamp advances — keep it
+    /// here. Lives on the driver thread, so no `Sync` bound.
+    type State: Send + 'static;
 
-    /// Build channel receivers and initial output from a borrow of the spec.
+    /// Build channel receivers, the initial output, and the initial write
+    /// [`State`](Self::State) from a borrow of the spec.
     #[allow(clippy::type_complexity)]
     fn init(
         &self,
@@ -44,12 +49,23 @@ pub trait Source: 'static {
         mpsc::Receiver<(Instant, Self::Event)>,
         mpsc::Receiver<(Instant, Self::Event)>,
         Self::Output,
+        Self::State,
     );
 
-    /// Update the output with a received event.
+    /// Apply a received channel item to the output, threading `state`, and return
+    /// **how many logical events it represents** (for the run's event count).
     ///
-    /// Returns `true` if downstream propagation should occur.
-    fn write(event: Self::Event, output: &mut Self::Output, timestamp: Instant) -> bool;
+    /// A source may batch many events into one channel item (e.g. a panel ships a
+    /// whole tick's rows as one `Vec`); `write` then applies them **per event**
+    /// (the per-event state logic still runs for each) and returns the batch size.
+    /// A one-event-per-item source returns `1`. The engine marks the output cell's
+    /// cone regardless of the return.
+    fn write(
+        state: &mut Self::State,
+        event: Self::Event,
+        output: &mut Self::Output,
+        timestamp: Instant,
+    ) -> usize;
 
     /// Estimated total number of events this source will emit over its
     /// lifetime.  `None` for live / unbounded sources.
@@ -60,16 +76,6 @@ pub trait Source: 'static {
     fn estimated_event_count(&self) -> Option<usize> {
         None
     }
-
-    /// Install a shared "input rows consumed" counter that the source bumps as
-    /// it reads its underlying rows, for fine-grained (row-level rather than
-    /// emit-level) progress reporting. The unit should match
-    /// [`estimated_event_count`](Self::estimated_event_count). The default is a
-    /// no-op (a source that emits one event per row needs nothing extra; the
-    /// `on_flush` emit count already tracks it). Sources that **coalesce** many
-    /// rows into one event (e.g. a cross-sectional panel emitting one wide row
-    /// per date) override this to report true row progress.
-    fn install_progress_counter(&mut self, _counter: Arc<AtomicU64>) {}
 }
 
 /// Type-erased initialization closure for a source.
@@ -91,7 +97,8 @@ pub trait Source: 'static {
 /// * `live_rx_ptr: *mut u8` - from [`Box::into_raw`], points to
 ///   [`PeekableReceiver<(Instant, E)>`].
 /// * `output_ptr: *mut u8` - from [`Box::into_raw`], points to `S::Output`.
-pub type InitFn = Box<dyn Fn(Instant) -> (*mut u8, *mut u8, *mut u8)>;
+/// * `state_ptr: *mut u8` - from [`Box::into_raw`], points to `S::State`.
+pub type InitFn = Box<dyn Fn(Instant) -> (*mut u8, *mut u8, *mut u8, *mut u8)>;
 
 /// Type-erased poll function pointer for a source channel.
 ///
@@ -111,14 +118,16 @@ pub type PollFn = unsafe fn(*mut u8, &mut Context<'_>) -> Poll<Option<Instant>>;
 ///
 /// # Parameters
 ///
+/// * `state_ptr: *mut u8` - points to `S::State`.
 /// * `rx_ptr: *mut u8` - points to [`PeekableReceiver<(Instant, E)>`].
 /// * `output_ptr: *mut u8` - points to `S::Output`.
 /// * `timestamp: Instant` - coalesced batch timestamp (overrides event timestamp).
 ///
 /// # Returns
 ///
-/// * `true` if downstream propagation should occur.
-pub type WriteFn = unsafe fn(*mut u8, *mut u8, Instant) -> bool;
+/// * the number of logical events the consumed channel item represented
+///   (a batched source returns its batch size); `0` if nothing was buffered.
+pub type WriteFn = unsafe fn(*mut u8, *mut u8, *mut u8, Instant) -> usize;
 
 /// Type-erased representation of a source.
 ///
@@ -140,6 +149,7 @@ pub struct ErasedSource {
     write_fn: WriteFn,
     rx_drop_fn: unsafe fn(*mut u8),
     output_drop_fn: unsafe fn(*mut u8),
+    state_drop_fn: unsafe fn(*mut u8),
 }
 
 impl ErasedSource {
@@ -157,16 +167,18 @@ impl ErasedSource {
             output_type_id: TypeId::of::<S::Output>(),
             estimated_event_count,
             init_fn: Box::new(move |timestamp: Instant| {
-                let (hist, live, output) = source.init(timestamp);
+                let (hist, live, output, state) = source.init(timestamp);
                 let hist_rx_ptr = Box::into_raw(Box::new(PeekableReceiver::new(hist))) as *mut u8;
                 let live_rx_ptr = Box::into_raw(Box::new(PeekableReceiver::new(live))) as *mut u8;
                 let output_ptr = Box::into_raw(Box::new(output)) as *mut u8;
-                (hist_rx_ptr, live_rx_ptr, output_ptr)
+                let state_ptr = Box::into_raw(Box::new(state)) as *mut u8;
+                (hist_rx_ptr, live_rx_ptr, output_ptr, state_ptr)
             }),
             poll_fn: erased_poll_fn::<S>,
             write_fn: erased_write_fn::<S>,
             rx_drop_fn: erased_drop_fn::<PeekableReceiver<(Instant, S::Event)>>,
             output_drop_fn: erased_drop_fn::<S::Output>,
+            state_drop_fn: erased_drop_fn::<S::State>,
         }
     }
 
@@ -196,6 +208,7 @@ impl ErasedSource {
         write_fn: WriteFn,
         rx_drop_fn: unsafe fn(*mut u8),
         output_drop_fn: unsafe fn(*mut u8),
+        state_drop_fn: unsafe fn(*mut u8),
     ) -> Self {
         Self {
             event_type_id,
@@ -206,6 +219,7 @@ impl ErasedSource {
             write_fn,
             rx_drop_fn,
             output_drop_fn,
+            state_drop_fn,
         }
     }
 
@@ -244,12 +258,17 @@ impl ErasedSource {
         self.output_drop_fn
     }
 
-    /// Invoke the init closure, producing `(hist_rx_ptr, live_rx_ptr, output_ptr)`.
+    /// The type-erased drop function for the source's write state.
+    pub fn state_drop_fn(&self) -> unsafe fn(*mut u8) {
+        self.state_drop_fn
+    }
+
+    /// Invoke the init closure, producing `(hist_rx_ptr, live_rx_ptr, output_ptr, state_ptr)`.
     ///
     /// Takes `&self` rather than `self` - each call allocates a fresh set of
-    /// channel receivers and a fresh output, so an [`ErasedSource`] can
+    /// channel receivers, output, and write state, so an [`ErasedSource`] can
     /// drive multiple sessions over its lifetime.
-    pub fn init(&self, timestamp: Instant) -> (*mut u8, *mut u8, *mut u8) {
+    pub fn init(&self, timestamp: Instant) -> (*mut u8, *mut u8, *mut u8, *mut u8) {
         (self.init_fn)(timestamp)
     }
 }
@@ -265,16 +284,18 @@ unsafe fn erased_poll_fn<S: Source>(
 
 /// Type-erased write function, monomorphised per source type.
 unsafe fn erased_write_fn<S: Source>(
+    state_ptr: *mut u8,
     rx_ptr: *mut u8,
     output_ptr: *mut u8,
     timestamp: Instant,
-) -> bool {
+) -> usize {
+    let state = unsafe { &mut *(state_ptr as *mut S::State) };
     let rx = unsafe { &mut *(rx_ptr as *mut PeekableReceiver<(Instant, S::Event)>) };
     let output = unsafe { &mut *(output_ptr as *mut S::Output) };
     if let Some(item) = rx.take_pending() {
-        S::write(item.1, output, timestamp)
+        S::write(state, item.1, output, timestamp)
     } else {
-        false
+        0
     }
 }
 
@@ -297,6 +318,7 @@ mod tests {
     impl Source for FixedSource {
         type Event = i64;
         type Output = i64;
+        type State = ();
 
         fn init(
             &self,
@@ -305,15 +327,16 @@ mod tests {
             tokio::sync::mpsc::Receiver<(Instant, i64)>,
             tokio::sync::mpsc::Receiver<(Instant, i64)>,
             i64,
+            (),
         ) {
             let (_, hist_rx) = tokio::sync::mpsc::channel(1);
             let (_, live_rx) = tokio::sync::mpsc::channel(1);
-            (hist_rx, live_rx, self.value)
+            (hist_rx, live_rx, self.value, ())
         }
 
-        fn write(event: i64, output: &mut i64, _timestamp: Instant) -> bool {
+        fn write(_state: &mut (), event: i64, output: &mut i64, _timestamp: Instant) -> usize {
             *output = event;
-            true
+            1
         }
     }
 
@@ -325,9 +348,10 @@ mod tests {
         let erased = ErasedSource::from_source(FixedSource { value: 42 });
         let output_drop = erased.output_drop_fn();
         let rx_drop = erased.rx_drop_fn();
+        let state_drop = erased.state_drop_fn();
 
         for _ in 0..3 {
-            let (hist_ptr, live_ptr, output_ptr) = erased.init(Instant::MIN);
+            let (hist_ptr, live_ptr, output_ptr, state_ptr) = erased.init(Instant::MIN);
             assert!(!hist_ptr.is_null());
             assert!(!live_ptr.is_null());
             assert_eq!(unsafe { *(output_ptr as *const i64) }, 42);
@@ -335,6 +359,7 @@ mod tests {
                 rx_drop(hist_ptr);
                 rx_drop(live_ptr);
                 output_drop(output_ptr);
+                state_drop(state_ptr);
             }
         }
     }

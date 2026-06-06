@@ -78,14 +78,14 @@ async fn main() {
     // ------------------------------------------------------------------
     let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<Array<f64>> {
         let s = ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
-        let init = Array::zeros(&s.out_shape());
+        let init = common::nan_array(&s.out_shape());
         let panel = sc.add_source(s, init);
         pick(sc, panel, idx)
     };
     let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<Array<f64>> {
         let s = ReportPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone())
             .with_report_date(with_report_date);
-        let init = Array::zeros(&s.out_shape());
+        let init = common::nan_array(&s.out_shape());
         let panel = sc.add_source(s, init);
         pick(sc, panel, idx)
     };
@@ -162,8 +162,7 @@ async fn main() {
     // ------------------------------------------------------------------
     let mut session = sc.build();
     let total = session.estimated_event_count();
-    let counter = session.progress_counter();
-    session.run(common::progress(total, Instant::MIN, counter)).await;
+    session.run(common::progress(total, Instant::MIN)).await;
     eprintln!();
 
     let mut rows: BTreeMap<i64, [f64; 10]> = BTreeMap::new();

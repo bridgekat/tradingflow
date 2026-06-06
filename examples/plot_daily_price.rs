@@ -78,7 +78,7 @@ async fn main() {
         symbols.clone(),
     );
     let price_panel = {
-        let init = Array::zeros(&price_src.out_shape());
+        let init = common::nan_array(&price_src.out_shape());
         sc.add_source(price_src, init)
     };
     let div_src = ParquetPanelSource::new(
@@ -87,7 +87,7 @@ async fn main() {
         symbols.clone(),
     );
     let div_panel = {
-        let init = Array::zeros(&div_src.out_shape());
+        let init = common::nan_array(&div_src.out_shape());
         sc.add_source(div_src, init)
     };
 
@@ -120,8 +120,7 @@ async fn main() {
     // Run the historical replay to completion.
     let mut session = sc.build();
     let total = session.estimated_event_count();
-    let counter = session.progress_counter();
-    session.run(common::progress(total, Instant::MIN, counter)).await;
+    session.run(common::progress(total, Instant::MIN)).await;
     eprintln!();
 
     // Align the recorded scalar series by timestamp and write a wide CSV.

@@ -26,8 +26,6 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use flowgraph::typed::Handle;
 
@@ -100,23 +98,21 @@ fn date_str(ts: Instant) -> String {
 /// A `tqdm`-style progress callback (backed by [`indicatif`]) for
 /// [`Session::run`](tradingflow::flow::Session::run)'s `on_flush`.
 ///
-/// Progress is measured in **long-table rows scanned**: the position is read
-/// from the shared [`progress_counter`](tradingflow::flow::Session::progress_counter)
-/// (which the panel sources bump as they read rows), *not* from the emit count
-/// passed to `on_flush` (one emit = a whole cross-section = many rows). `total`
-/// is [`estimated_event_count`](tradingflow::flow::Session::estimated_event_count)
-/// in the same row unit; `Some(n)` → a bounded bar (percent / rate / ETA), else a
+/// Progress is measured in **long-table rows**: the panel sources emit one event
+/// per narrow row, so the engine's `on_flush` count *is* the row count (no shared
+/// counter needed). `total` is
+/// [`estimated_event_count`](tradingflow::flow::Session::estimated_event_count) in
+/// the same row unit; `Some(n)` → a bounded bar (percent / rate / ETA), else a
 /// spinner. `{per_sec}` is therefore rows/s. `begin` sets `{prefix}` (warm-up
 /// before it, running after); `{msg}` is the current event date. The bar uses a
 /// terminal-width `{wide_bar}` with Unicode sub-cell fill, and finalises itself
 /// when the callback drops at the end of `run`:
 /// ```ignore
 /// let total = session.estimated_event_count();
-/// let counter = session.progress_counter();
-/// session.run(common::progress(total, args.begin(), counter)).await;
+/// session.run(common::progress(total, args.begin())).await;
 /// eprintln!(); // move past the finished bar line before printing results
 /// ```
-pub fn progress(total: Option<usize>, begin: Instant, counter: Arc<AtomicU64>) -> impl FnMut(Instant, usize) {
+pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(Instant, usize) {
     use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
     // Finish (leave) the bar when the callback is dropped — i.e. when `run`
@@ -154,10 +150,10 @@ pub fn progress(total: Option<usize>, begin: Instant, counter: Arc<AtomicU64>) -
 
     let begin_ns = begin.as_nanos();
     let guard = FinishOnDrop(pb);
-    move |ts: Instant, _emits: usize| {
+    move |ts: Instant, processed: usize| {
         let pb = &guard.0;
         pb.set_prefix(if ts.as_nanos() < begin_ns { "warmup" } else { "running" });
-        let rows = counter.load(Ordering::Relaxed);
+        let rows = processed as u64;
         // Grow the length if the estimate undershot (keeps the percentage sane).
         if let Some(len) = pb.length() {
             if rows > len {
@@ -312,6 +308,14 @@ fn pick(sc: &mut Scenario, panel: Handle<Array<f64>>, i: usize) -> Handle<Array<
     sc.add_operator(Filter(any_finite), sel)
 }
 
+/// An all-NaN `Array<f64>` of `shape` — the correct "no data yet" initial cell
+/// value for a panel source. The per-row sources only `write` rows that have an
+/// event, so an unwritten row must read as NaN (not `0.0`) for the per-stock
+/// [`pick`] `Filter` to drop it before the stock's first observation.
+pub fn nan_array(shape: &[usize]) -> Array<f64> {
+    Array::from_vec(shape, vec![f64::NAN; shape.iter().product()])
+}
+
 /// Load the consolidated long-format parquet panels and stack into the
 /// cross-sectional panel. One [`ParquetPanelSource`] / [`ReportPanelSource`] per
 /// data kind (one sequential scan each) replaces the per-symbol CSV fan-in;
@@ -334,7 +338,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
     let daily_panel = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<Array<f64>> {
         let s = ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
             .with_time_range(start, end);
-        let init = Array::zeros(&s.out_shape());
+        let init = nan_array(&s.out_shape());
         sc.add_source(s, init)
     };
     let report_panel =
@@ -343,7 +347,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
                 .with_report_date(with_report_date)
                 .use_effective_date(Duration::ZERO)
                 .with_time_range(start, end);
-            let init = Array::zeros(&s.out_shape());
+            let init = nan_array(&s.out_shape());
             sc.add_source(s, init)
         };
 

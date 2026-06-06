@@ -366,10 +366,13 @@ impl Session {
                 let node = &self.graph.nodes[node_idx];
                 let source = node.source_state().unwrap();
                 let rx_ptr = source.rx_ptr(kind);
+                let state_ptr = source.write_state_ptr();
                 let write_fn = source.write_fn();
-                unsafe { (write_fn)(rx_ptr, node.value_ptr, min_ts) };
+                // `write_fn` returns how many logical events the consumed item
+                // represented (a batched source ships many rows per item).
+                let n = unsafe { (write_fn)(state_ptr, rx_ptr, node.value_ptr, min_ts) };
                 queue_sources.push(node_idx);
-                events_processed = events_processed.saturating_add(1);
+                events_processed = events_processed.saturating_add(n);
 
                 // Re-queue the consumed channel's future.
                 let source = self.graph.nodes[node_idx].source_state().unwrap();
@@ -473,6 +476,7 @@ mod tests {
     impl Source for PrefilledSource {
         type Event = f64;
         type Output = Array<f64>;
+        type State = ();
 
         fn init(
             &self,
@@ -481,6 +485,7 @@ mod tests {
             mpsc::Receiver<(Instant, f64)>,
             mpsc::Receiver<(Instant, f64)>,
             Array<f64>,
+            (),
         ) {
             let (hist_tx, hist_rx) = mpsc::channel(self.hist_events.len().max(1));
             for evt in &self.hist_events {
@@ -494,12 +499,12 @@ mod tests {
             }
             drop(live_tx);
 
-            (hist_rx, live_rx, Array::scalar(0.0_f64))
+            (hist_rx, live_rx, Array::scalar(0.0_f64), ())
         }
 
-        fn write(event: f64, output: &mut Array<f64>, _ts: Instant) -> bool {
+        fn write(_state: &mut (), event: f64, output: &mut Array<f64>, _ts: Instant) -> usize {
             output[0] = event;
-            true
+            1
         }
     }
 
@@ -701,6 +706,7 @@ mod tests {
         impl Source for ManualChannel {
             type Event = f64;
             type Output = Array<f64>;
+            type State = ();
 
             fn init(
                 &self,
@@ -709,6 +715,7 @@ mod tests {
                 mpsc::Receiver<(Instant, f64)>,
                 mpsc::Receiver<(Instant, f64)>,
                 Array<f64>,
+                (),
             ) {
                 let (hist_rx, live_rx) = self
                     .channels
@@ -716,12 +723,12 @@ mod tests {
                     .unwrap()
                     .take()
                     .expect("ManualChannel.init called more than once");
-                (hist_rx, live_rx, Array::scalar(0.0_f64))
+                (hist_rx, live_rx, Array::scalar(0.0_f64), ())
             }
 
-            fn write(event: f64, output: &mut Array<f64>, _timestamp: Instant) -> bool {
+            fn write(_state: &mut (), event: f64, output: &mut Array<f64>, _timestamp: Instant) -> usize {
                 output[0] = event;
-                true
+                1
             }
         }
 

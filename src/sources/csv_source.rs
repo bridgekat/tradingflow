@@ -345,6 +345,7 @@ fn parse_values(record: &StringRecord, value_indices: &[usize]) -> Result<Vec<f6
 impl Source for CsvSource {
     type Event = Array<f64>;
     type Output = Array<f64>;
+    type State = ();
 
     fn estimated_event_count(&self) -> Option<usize> {
         let total = estimate_csv_rows(&self.path)?;
@@ -367,6 +368,7 @@ impl Source for CsvSource {
         mpsc::Receiver<(Instant, Array<f64>)>,
         mpsc::Receiver<(Instant, Array<f64>)>,
         Array<f64>,
+        (),
     ) {
         let num_columns = self.value_columns.len();
         let (hist_tx, hist_rx) = mpsc::channel(64);
@@ -458,12 +460,12 @@ impl Source for CsvSource {
             }
         });
 
-        (hist_rx, live_rx, Array::zeros(&[num_columns]))
+        (hist_rx, live_rx, Array::zeros(&[num_columns]), ())
     }
 
-    fn write(payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> bool {
+    fn write(_state: &mut (), payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> usize {
         output.assign(payload.as_slice());
-        true
+        1
     }
 }
 

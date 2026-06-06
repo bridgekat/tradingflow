@@ -47,8 +47,6 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::mpsc;
 
@@ -57,6 +55,7 @@ use arrow::compute::cast;
 use arrow::datatypes::{DataType, Int32Type};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::file::statistics::Statistics;
 
 use hifitime::{Duration as HfDuration, Epoch};
 
@@ -73,8 +72,6 @@ pub struct ParquetPanelSource {
     symbol_column: String,
     start: Option<Instant>,
     end: Option<Instant>,
-    /// Shared row-progress counter (set by the engine); bumped per scanned row.
-    progress: Option<Arc<AtomicU64>>,
 }
 
 impl ParquetPanelSource {
@@ -93,7 +90,6 @@ impl ParquetPanelSource {
             symbol_column: "symbol".into(),
             start: None,
             end: None,
-            progress: None,
         }
     }
 
@@ -112,8 +108,11 @@ impl ParquetPanelSource {
         self
     }
 
-    /// Emitted element shape, `[N, value_columns]`. Pass `Array::zeros(&out_shape())`
-    /// as the `initial` value to [`Scenario::add_source`](crate::flow::Scenario::add_source).
+    /// Emitted element shape, `[N, value_columns]`. Pass an **all-NaN** array of
+    /// this shape as the `initial` value to
+    /// [`Scenario::add_source`](crate::flow::Scenario::add_source): the per-tick
+    /// `write` only sets rows that have an event, so an unwritten row must read as
+    /// `NaN` (not `0.0`) for the per-stock `Filter` to drop it.
     pub fn out_shape(&self) -> Vec<usize> {
         vec![self.symbols.len(), self.value_columns.len()]
     }
@@ -140,38 +139,96 @@ pub(crate) fn report_year_and_doy(days: i32) -> (f64, f64) {
     (year as f64, day_of_year + 1.0)
 }
 
+/// One narrow-table row's update to a wide `[N, K]` cross-section cell: symbol
+/// `row`'s `K` values (NaN for null cells). The panel sources **batch a whole
+/// tick's rows** into one channel item (`Vec<RowUpdate>`) — one message per
+/// distinct date rather than per row, amortising the channel / event-loop cost —
+/// and [`panel_write`] applies them per event (still the per-row state logic) to
+/// reassemble the cross-section, returning the batch size so the run's event
+/// count stays equal to the long-table row count.
+pub struct RowUpdate {
+    pub row: usize,
+    pub vals: Box<[f64]>,
+}
+
+/// Per-source write state for the panel sources: the timestamp of the tick
+/// being assembled and the rows it dirtied. When the timestamp **strictly
+/// advances**, [`panel_write`] NaN-clears those rows first — reproducing the
+/// per-tick "only this date's rows" cross-section (pure StackSync, no carry).
+pub struct PanelState {
+    last_ts: Option<Instant>,
+    dirty: Vec<usize>,
+}
+
+impl Default for PanelState {
+    fn default() -> Self {
+        Self { last_ts: None, dirty: Vec::new() }
+    }
+}
+
+/// Shared `Source::write` body for both panel sources: apply one tick's batch.
+/// On a new tick (the batch's `ts` strictly past the last) clear the previous
+/// tick's rows first, then write each row's `K` values **per event**. Every row
+/// in a batch shares the tick's `ts` and the source's `K` (taken from the first
+/// row, so it works for both 2-D `[N, K]` and squeezed `[N]` cells). Returns the
+/// number of rows applied — the per-event count the run reports.
+pub(crate) fn panel_write(
+    state: &mut PanelState,
+    batch: Vec<RowUpdate>,
+    output: &mut Array<f64>,
+    ts: Instant,
+) -> usize {
+    let Some(first) = batch.first() else { return 0 };
+    let k = first.vals.len();
+    let buf = output.as_mut_slice();
+    if state.last_ts.is_some_and(|last| ts > last) {
+        for &r in &state.dirty {
+            buf[r * k..r * k + k].fill(f64::NAN);
+        }
+        state.dirty.clear();
+    }
+    state.last_ts = Some(ts);
+    let n = batch.len();
+    for ev in batch {
+        let base = ev.row * k;
+        buf[base..base + k].copy_from_slice(&ev.vals);
+        state.dirty.push(ev.row);
+    }
+    n
+}
+
 impl Source for ParquetPanelSource {
-    type Event = Array<f64>;
+    type Event = Vec<RowUpdate>;
     type Output = Array<f64>;
+    type State = PanelState;
 
     fn estimated_event_count(&self) -> Option<usize> {
-        // Progress is measured in **long-table rows scanned**. The scan starts at
-        // the file head and breaks once past `end`, so it reads exactly the rows
-        // with `date <= end` — which is also what it bumps the counter by. With
-        // no end it reads the whole file (taken cheaply from parquet metadata).
-        // On any read error fall back to `Some(0)` so the aggregate stays usable.
+        // Progress is measured in **emitted long-table rows** (one event per
+        // universe row in `[start, end]`). No time range → the whole file (O(1)
+        // from the footer); otherwise count rows in the window. On any read
+        // error fall back to `Some(0)` so the aggregate stays usable.
         Some(
-            match self.end {
-                Some(end) => count_rows_through_end(&self.path, &self.date_column, end),
-                None => parquet_num_rows(&self.path),
+            if self.start.is_none() && self.end.is_none() {
+                parquet_num_rows(&self.path)
+            } else {
+                count_rows_in_range(&self.path, &self.date_column, self.start, self.end)
             }
             .unwrap_or(0),
         )
-    }
-
-    fn install_progress_counter(&mut self, counter: Arc<AtomicU64>) {
-        self.progress = Some(counter);
     }
 
     fn init(
         &self,
         _timestamp: Instant,
     ) -> (
-        mpsc::Receiver<(Instant, Array<f64>)>,
-        mpsc::Receiver<(Instant, Array<f64>)>,
+        mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
+        mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
         Array<f64>,
+        PanelState,
     ) {
-        let (hist_tx, hist_rx) = mpsc::channel(64);
+        // Each item is now a whole tick's rows, so a small buffer pipelines plenty
+        // of ticks ahead while bounding the in-flight row memory.
+        let (hist_tx, hist_rx) = mpsc::channel(16);
         let (_, live_rx) = mpsc::channel(1);
         let cfg = self.clone();
         let out_shape = self.out_shape();
@@ -182,22 +239,24 @@ impl Source for ParquetPanelSource {
             }
         });
 
-        (hist_rx, live_rx, Array::zeros(&out_shape))
+        (hist_rx, live_rx, Array::zeros(&out_shape), PanelState::default())
     }
 
-    fn write(payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> bool {
-        output.assign(payload.as_slice());
-        true
+    fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64>, ts: Instant) -> usize {
+        panel_write(state, batch, output, ts)
     }
 }
 
-/// Sequential scan: read row groups in `(date, symbol)` order and emit one
-/// `[N, K]` cross-section per distinct date (NaN where a symbol has no row).
+/// Sequential scan: read row groups in `(date, symbol)` order and emit **one
+/// batch per distinct date** — a `Vec<RowUpdate>` of that date's in-universe,
+/// in-window rows, timestamped by the date. Buffering rows until the date
+/// changes (and flushing the last date after the scan) keeps one channel message
+/// per tick; [`panel_write`] then reassembles each date's `[N, K]` cross-section
+/// and clears the previous date's rows when the timestamp advances.
 fn read_panel(
     cfg: &ParquetPanelSource,
-    hist_tx: &mpsc::Sender<(Instant, Array<f64>)>,
+    hist_tx: &mpsc::Sender<(Instant, Vec<RowUpdate>)>,
 ) -> Result<(), String> {
-    let n = cfg.symbols.len();
     let k = cfg.value_columns.len();
     let sym_index: HashMap<&str, usize> =
         cfg.symbols.iter().enumerate().map(|(i, s)| (s.as_str(), i)).collect();
@@ -215,15 +274,17 @@ fn read_panel(
         .map(|name| schema.index_of(name).map_err(|e| e.to_string()))
         .collect::<Result<_, _>>()?;
     let mask = ProjectionMask::leaves(builder.parquet_schema(), leaf_indices);
-    let reader = builder.with_projection(mask).build().map_err(|e| e.to_string())?;
+    // Seek past row groups whose date range is entirely outside the window.
+    let row_groups = date_row_groups_in_range(&builder, &cfg.date_column, cfg.start, cfg.end);
+    let reader = builder
+        .with_projection(mask)
+        .with_row_groups(row_groups)
+        .build()
+        .map_err(|e| e.to_string())?;
 
     let (start, end) = (cfg.start, cfg.end);
-    let mut buf = vec![f64::NAN; n * k];
-    let mut current: Option<i32> = None;
-    let mut written: Vec<usize> = Vec::new(); // rows set for `current` (sparse reset)
-    let send = |ts: Instant, buf: &[f64]| -> bool {
-        hist_tx.blocking_send((ts, Array::from_vec(&[n, k], buf.to_vec()))).is_ok()
-    };
+    let mut cur_ts: Option<Instant> = None;
+    let mut tick: Vec<RowUpdate> = Vec::new();
 
     'outer: for batch in reader {
         let batch = batch.map_err(|e| e.to_string())?;
@@ -257,50 +318,38 @@ fn read_panel(
             .map(|a| a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap())
             .collect();
 
-        let mut seen: u64 = 0; // long-table rows scanned in this batch (progress unit)
         for row in 0..batch.num_rows() {
-            let d = dates.value(row);
-            let ts = instant_from_days(d);
-            // (end-check before start-check is equivalent since `start <= end`,
-            // and lets us count every scanned row in `[.., end]` — including the
-            // pre-`start` rows the scan reads then skips — toward progress.)
+            let ts = instant_from_days(dates.value(row));
             if end.is_some_and(|e| ts > e) {
-                if let Some(c) = cfg.progress.as_ref() {
-                    c.fetch_add(seen, Ordering::Relaxed);
-                }
-                break 'outer;
+                break 'outer; // sorted by date: nothing left in the window
             }
-            seen += 1;
             if start.is_some_and(|s| ts < s) {
                 continue; // before the window: skip (no carry-in)
             }
-            if current != Some(d) {
-                if let Some(cd) = current {
-                    if !send(instant_from_days(cd), &buf) {
+            let Some(ui) = row_uni[row] else { continue };
+            // Date changed → ship the accumulated tick as one batch.
+            if cur_ts != Some(ts) {
+                if let Some(t) = cur_ts {
+                    if hist_tx.blocking_send((t, std::mem::take(&mut tick))).is_err() {
                         return Ok(());
                     }
-                    // Sparse reset: clear only the rows written for the prev date.
-                    for &idx in &written {
-                        buf[idx * k..idx * k + k].fill(f64::NAN);
-                    }
-                    written.clear();
                 }
-                current = Some(d);
+                cur_ts = Some(ts);
             }
-            let Some(ui) = row_uni[row] else { continue };
-            let base = ui * k;
+            let mut payload = vec![f64::NAN; k];
             for (vi, va) in vals.iter().enumerate() {
-                buf[base + vi] = if va.is_null(row) { f64::NAN } else { va.value(row) };
+                if !va.is_null(row) {
+                    payload[vi] = va.value(row);
+                }
             }
-            written.push(ui);
-        }
-        if let Some(c) = cfg.progress.as_ref() {
-            c.fetch_add(seen, Ordering::Relaxed);
+            tick.push(RowUpdate { row: ui, vals: payload.into_boxed_slice() });
         }
     }
-
-    if let Some(cd) = current {
-        send(instant_from_days(cd), &buf);
+    // Flush the final tick (also the last in-window tick when we broke on `end`).
+    if let Some(t) = cur_ts {
+        if !tick.is_empty() {
+            let _ = hist_tx.blocking_send((t, tick));
+        }
     }
     Ok(())
 }
@@ -313,20 +362,69 @@ pub(crate) fn parquet_num_rows(path: &str) -> Result<usize, String> {
     Ok(builder.metadata().file_metadata().num_rows().max(0) as usize)
 }
 
-/// Count rows with `date <= end` by scanning **only** the date column (the table
-/// is `(date, symbol)`-sorted, so the scan can stop at the first row past `end`;
-/// the column is tiny once zstd-compressed). This is exactly how many long-table
-/// rows [`read_panel`] reads with an `end` bound — the progress-estimate unit.
-pub(crate) fn count_rows_through_end(
+/// Indices of the row groups whose `date` column statistics overlap `[start,
+/// end]`. The long tables are `(date, symbol)`-sorted, so handing these to
+/// [`ParquetRecordBatchReaderBuilder::with_row_groups`] **seeks past** the
+/// out-of-window row groups without decoding them — the row-level `start` / `end`
+/// checks still trim the (≤2) boundary groups. Row groups missing `date`
+/// statistics are conservatively kept (must be scanned); with `start` and `end`
+/// both `None` every group is kept.
+fn date_row_groups_in_range(
+    builder: &ParquetRecordBatchReaderBuilder<File>,
+    date_column: &str,
+    start: Option<Instant>,
+    end: Option<Instant>,
+) -> Vec<usize> {
+    let meta = builder.metadata();
+    let n = meta.num_row_groups();
+    let Some(date_leaf) =
+        builder.parquet_schema().columns().iter().position(|c| c.name() == date_column)
+    else {
+        return (0..n).collect();
+    };
+    (0..n)
+        .filter(|&i| {
+            // `date32` is physical INT32 (days); fall back to keeping the group if
+            // statistics are absent or not the expected type.
+            let Some(Statistics::Int32(v)) = meta.row_group(i).column(date_leaf).statistics()
+            else {
+                return true;
+            };
+            match (v.min_opt(), v.max_opt()) {
+                (Some(&lo), Some(&hi)) => {
+                    // `instant_from_days` is the exact per-row conversion, so this
+                    // overlap test is consistent with the row-level filter.
+                    let (lo_ts, hi_ts) = (instant_from_days(lo), instant_from_days(hi));
+                    !(end.is_some_and(|e| lo_ts > e) || start.is_some_and(|s| hi_ts < s))
+                }
+                _ => true,
+            }
+        })
+        .collect()
+}
+
+/// Count rows with `date` in `[start, end]` by scanning **only** the date column
+/// of the row groups that overlap the window (out-of-window groups are skipped
+/// via row-group statistics; the column is tiny once zstd-compressed, and the
+/// table is `(date, symbol)`-sorted so the scan also stops at the first row past
+/// `end`). This equals how many [`RowUpdate`]s [`read_panel`] emits in the window
+/// — the progress-estimate unit.
+pub(crate) fn count_rows_in_range(
     path: &str,
     date_column: &str,
-    end: Instant,
+    start: Option<Instant>,
+    end: Option<Instant>,
 ) -> Result<usize, String> {
     let file = File::open(path).map_err(|e| format!("open: {e}"))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| e.to_string())?;
     let leaf = builder.schema().index_of(date_column).map_err(|e| e.to_string())?;
     let mask = ProjectionMask::leaves(builder.parquet_schema(), vec![leaf]);
-    let reader = builder.with_projection(mask).build().map_err(|e| e.to_string())?;
+    let row_groups = date_row_groups_in_range(&builder, date_column, start, end);
+    let reader = builder
+        .with_projection(mask)
+        .with_row_groups(row_groups)
+        .build()
+        .map_err(|e| e.to_string())?;
 
     let mut count = 0usize;
     'outer: for batch in reader {
@@ -338,8 +436,12 @@ pub(crate) fn count_rows_through_end(
             .downcast_ref::<Date32Array>()
             .ok_or_else(|| format!("date column {date_column:?} is not date32"))?;
         for row in 0..batch.num_rows() {
-            if instant_from_days(dates.value(row)) > end {
+            let ts = instant_from_days(dates.value(row));
+            if end.is_some_and(|e| ts > e) {
                 break 'outer;
+            }
+            if start.is_some_and(|s| ts < s) {
+                continue;
             }
             count += 1;
         }

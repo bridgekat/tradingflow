@@ -164,8 +164,7 @@ async fn main() {
 
     let mut session = sc.build_with_threads(args.threads);
     let total = session.estimated_event_count();
-    let counter = session.progress_counter();
-    session.run(common::progress(total, args.begin(), counter)).await;
+    session.run(common::progress(total, args.begin())).await;
     eprintln!();
 
     // Extract + report.

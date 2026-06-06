@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BinaryHeap};
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -82,9 +82,12 @@ struct SourceSlot {
     cell_index: usize,
     hist_rx_ptr: *mut u8,
     live_rx_ptr: *mut u8,
+    /// Per-source write state (`Source::State`), threaded into every `write_fn`.
+    state_ptr: *mut u8,
     poll_fn: PollFn,
     write_fn: WriteFn,
     rx_drop_fn: unsafe fn(*mut u8),
+    state_drop_fn: unsafe fn(*mut u8),
 }
 
 // SAFETY: the slot owns the two receiver allocations, which are `Send`.
@@ -115,6 +118,7 @@ impl Drop for SourceSlot {
         unsafe {
             (self.rx_drop_fn)(self.hist_rx_ptr);
             (self.rx_drop_fn)(self.live_rx_ptr);
+            (self.state_drop_fn)(self.state_ptr);
         }
     }
 }
@@ -137,11 +141,6 @@ pub struct Scenario {
     /// source can't estimate (then the whole total is unknown). Used only for
     /// the [`Session::run`] progress callback.
     estimated_total: Option<usize>,
-    /// Shared "input rows consumed" counter, handed to every source via
-    /// [`Source::install_progress_counter`] and read back by the progress
-    /// callback (see [`Session::progress_counter`]). Row-granular, unlike the
-    /// emit-granular `on_flush` count.
-    rows: Arc<AtomicU64>,
 }
 
 impl Scenario {
@@ -151,7 +150,6 @@ impl Scenario {
             clock: Clock::new(),
             sources: Vec::new(),
             estimated_total: Some(0),
-            rows: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -279,18 +277,15 @@ impl Scenario {
 
     /// Register a [`Source`]. Its output cell is a `Const(initial)`; the async
     /// feed is wired up at [`build`](Self::build) time.
-    pub fn add_source<S: Source>(&mut self, mut source: S, initial: S::Output) -> Handle<S::Output>
+    pub fn add_source<S: Source>(&mut self, source: S, initial: S::Output) -> Handle<S::Output>
     where
         S::Output: Clone + Send + Sync + 'static,
     {
         let handle = self.builder.push(Adapt::new(Const(initial)), ());
-        // Hand the shared row counter to the source (no-op for sources that
-        // emit one event per row; panel sources use it to report row progress).
-        source.install_progress_counter(self.rows.clone());
         let erased = ErasedSource::from_source(source);
         // Accumulate the progress estimate: sum the per-source counts; a single
-        // un-estimable source makes the whole total unknown (None). Live sources
-        // should report `Some(0)` rather than `None` to keep the total usable.
+        // un-estimable source makes the whole total unknown (None). Live/one-row-
+        // per-event sources report their row count so `on_flush` tracks rows.
         self.estimated_total = match (self.estimated_total, erased.estimated_event_count()) {
             (Some(acc), Some(n)) => Some(acc.saturating_add(n)),
             _ => None,
@@ -312,7 +307,6 @@ impl Scenario {
             clock,
             sources,
             estimated_total,
-            rows,
         } = self;
         let graph = Graph::from_builder(builder);
 
@@ -322,7 +316,7 @@ impl Scenario {
                 graph.inner().cell_type_id(desc.cell_index) == desc.erased.output_type_id(),
                 "source cell type does not match source output type",
             );
-            let (hist_rx_ptr, live_rx_ptr, output_ptr) = desc.erased.init(Instant::MIN);
+            let (hist_rx_ptr, live_rx_ptr, output_ptr, state_ptr) = desc.erased.init(Instant::MIN);
             // The flowgraph cell already holds the `Const(initial)` value, so
             // the source's freshly-allocated init output is unused here.
             unsafe { (desc.erased.output_drop_fn())(output_ptr) };
@@ -330,9 +324,11 @@ impl Scenario {
                 cell_index: desc.cell_index,
                 hist_rx_ptr,
                 live_rx_ptr,
+                state_ptr,
                 poll_fn: desc.erased.poll_fn(),
                 write_fn: desc.erased.write_fn(),
                 rx_drop_fn: desc.erased.rx_drop_fn(),
+                state_drop_fn: desc.erased.state_drop_fn(),
             });
         }
 
@@ -342,7 +338,6 @@ impl Scenario {
             clock,
             slots,
             estimated_total,
-            rows,
         }
     }
 }
@@ -365,7 +360,6 @@ pub struct Session {
     clock: Clock,
     slots: Vec<SourceSlot>,
     estimated_total: Option<usize>,
-    rows: Arc<AtomicU64>,
 }
 
 // SAFETY: the graph is Send+Sync; the pool and slots are Send; the clock is an
@@ -374,18 +368,11 @@ unsafe impl Send for Session {}
 
 impl Session {
     /// Sum of every source's estimated event count, or `None` if any source
-    /// couldn't estimate. Pair with [`run`](Self::run)'s `on_flush` count to
-    /// drive a progress bar; treat as advisory (the run's true total may differ).
+    /// couldn't estimate. With the panel sources emitting one event per row,
+    /// this is the long-table row count; pair it with [`run`](Self::run)'s
+    /// `on_flush` count (also rows) to drive a progress bar. Advisory.
     pub fn estimated_event_count(&self) -> Option<usize> {
         self.estimated_total
-    }
-
-    /// The shared "input rows consumed" counter (matches the unit of
-    /// [`estimated_event_count`](Self::estimated_event_count)). Sources bump it
-    /// as they scan; read it from the [`run`](Self::run) `on_flush` callback for
-    /// a row-granular progress position.
-    pub fn progress_counter(&self) -> Arc<AtomicU64> {
-        self.rows.clone()
     }
 
     /// Immutable access to a node value.
@@ -502,12 +489,15 @@ impl Session {
                 let slot = &self.slots[source_idx];
                 let rx_ptr = slot.rx_ptr(kind);
                 let write_fn = slot.write_fn;
+                let state_ptr = slot.state_ptr;
                 let cell_index = slot.cell_index;
-                // Mark the cone + write the event value into the cell. The event
-                // was peeked, so `write_fn` finds it pending and returns true.
+                // Mark the cone + write the buffered item into the cell. The item
+                // was peeked, so `write_fn` finds it pending; it returns the number
+                // of logical events it represented (a panel ships a whole tick's
+                // rows as one item, so this is the row count, not 1).
                 let cell_ptr = self.graph.inner_mut().cell_mut_ptr(cell_index) as *mut u8;
-                unsafe { (write_fn)(rx_ptr, cell_ptr, min_ts) };
-                events_processed = events_processed.saturating_add(1);
+                let n = unsafe { (write_fn)(state_ptr, rx_ptr, cell_ptr, min_ts) };
+                events_processed = events_processed.saturating_add(n);
 
                 // Re-queue the consumed channel's future.
                 let slot = &self.slots[source_idx];
@@ -730,6 +720,7 @@ mod tests {
     impl Source for PrefilledSource {
         type Event = f64;
         type Output = Array<f64>;
+        type State = ();
 
         fn init(
             &self,
@@ -738,6 +729,7 @@ mod tests {
             mpsc::Receiver<(Instant, f64)>,
             mpsc::Receiver<(Instant, f64)>,
             Array<f64>,
+            (),
         ) {
             let (hist_tx, hist_rx) = mpsc::channel(self.hist_events.len().max(1));
             for evt in &self.hist_events {
@@ -749,12 +741,12 @@ mod tests {
                 live_tx.try_send(*evt).unwrap();
             }
             drop(live_tx);
-            (hist_rx, live_rx, Array::scalar(0.0))
+            (hist_rx, live_rx, Array::scalar(0.0), ())
         }
 
-        fn write(event: f64, output: &mut Array<f64>, _ts: Instant) -> bool {
+        fn write(_state: &mut (), event: f64, output: &mut Array<f64>, _ts: Instant) -> usize {
             output[0] = event;
-            true
+            1
         }
     }
 
@@ -915,6 +907,7 @@ mod tests {
         impl Source for ManualChannel {
             type Event = f64;
             type Output = Array<f64>;
+            type State = ();
 
             fn init(
                 &self,
@@ -923,14 +916,15 @@ mod tests {
                 mpsc::Receiver<(Instant, f64)>,
                 mpsc::Receiver<(Instant, f64)>,
                 Array<f64>,
+                (),
             ) {
                 let (hist_rx, live_rx) = self.channels.lock().unwrap().take().expect("init once");
-                (hist_rx, live_rx, Array::scalar(0.0))
+                (hist_rx, live_rx, Array::scalar(0.0), ())
             }
 
-            fn write(event: f64, output: &mut Array<f64>, _ts: Instant) -> bool {
+            fn write(_state: &mut (), event: f64, output: &mut Array<f64>, _ts: Instant) -> usize {
                 output[0] = event;
-                true
+                1
             }
         }
 
