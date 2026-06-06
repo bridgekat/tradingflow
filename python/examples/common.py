@@ -326,7 +326,8 @@ def build_stacked(
                 BS_SCHEMA,
                 report_date_column="date",
                 notice_date_column="notice_date",
-                use_effective_date=False,
+                use_effective_date=True,
+                notice_date_fallback=np.timedelta64(0, "D"),
                 start=data_start,
                 end=end,
             )
@@ -338,7 +339,8 @@ def build_stacked(
                 report_date_column="date",
                 notice_date_column="notice_date",
                 with_report_date=True,
-                use_effective_date=False,
+                use_effective_date=True,
+                notice_date_fallback=np.timedelta64(0, "D"),
                 start=data_start,
                 end=end,
             )

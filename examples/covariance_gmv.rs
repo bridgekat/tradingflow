@@ -1,8 +1,9 @@
 //! Port of `python/examples/covariance_gmv.py` to the Rust flow engine.
 //!
 //! Compares covariance estimators inside a Markowitz mean-variance strategy.
-//! A representative subset of estimators (sample, common-covariance shrinkage,
-//! RMT-0, single-index) each feeds (a) a `MinimumVariance` realized-variance
+//! All seven estimators of `covariance_gmv.py` (sample, common-covariance /
+//! constant-correlation / single-index shrinkage, RMT-0, RMT-M, single-index)
+//! each feed (a) a `MinimumVariance` realized-variance
 //! metric — a pure diagnostic of covariance quality — and (b) a cvxpy
 //! **Markowitz** portfolio (long-only and long-short), all sharing one
 //! **LinearRegression** mean predictor so differences are attributable to the
@@ -102,8 +103,11 @@ async fn main() {
 
     let ests = [
         Est { name: "sample", module: "flowops.predictors.variance.sample", target: None, mode: None },
-        Est { name: "shrinkage", module: "flowops.predictors.variance.shrinkage", target: Some(1), mode: None },
-        Est { name: "rmt0", module: "flowops.predictors.variance.rmt", target: None, mode: Some("zero") },
+        Est { name: "shrinkage_comm_cov", module: "flowops.predictors.variance.shrinkage", target: Some(1), mode: None },
+        Est { name: "shrinkage_const_corr", module: "flowops.predictors.variance.shrinkage", target: Some(2), mode: None },
+        Est { name: "shrinkage_single_index", module: "flowops.predictors.variance.shrinkage", target: Some(3), mode: None },
+        Est { name: "rmt_0", module: "flowops.predictors.variance.rmt", target: None, mode: Some("zero") },
+        Est { name: "rmt_m", module: "flowops.predictors.variance.rmt", target: None, mode: Some("mean") },
         Est { name: "single_index", module: "flowops.predictors.variance.single_index", target: None, mode: None },
     ];
 
@@ -118,13 +122,15 @@ async fn main() {
 
     for e in &ests {
         // Covariance predictor.
+        // Match `covariance_gmv.py`: covariance window = rebalance period, and
+        // no per-stock `min_periods` filter on the covariance estimators (the
+        // mean `LinearRegression` above keeps its own `min_periods=100`).
         let mut p = PyParams::new()
             .int("num_stocks", n_i)
             .int("num_features", NUM_FEATURES)
             .int("universe_size", idx)
             .int("target_offset", 1)
-            .int("max_periods", 200)
-            .int("min_periods", 100);
+            .int("max_periods", args.rebalance_days);
         if let Some(t) = e.target {
             p = p.int("target", t);
         }

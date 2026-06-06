@@ -217,8 +217,8 @@ fn pick(sc: &mut Scenario, panel: Handle<Array<f64>>, i: usize) -> Handle<Array<
 /// each stock is then recovered with [`pick`] (`Select` + NaN `Filter`) and the
 /// per-stock transforms run unchanged, before `StackSync` (NaN-fill non-trading
 /// slots) / `Stack` (carry last-known) recombine into `[N]` panels — the
-/// `1 → N → 1` fan-out. The financial reports align on the report `date`
-/// (matching the previous `use_effective_date=false`).
+/// `1 → N → 1` fan-out. The financial reports align on the look-ahead-safe
+/// effective date `max(report, notice)` (`use_effective_date`, zero fallback).
 pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stacked {
     let dir = &args.data_dir;
     let start = Some(args.data_start());

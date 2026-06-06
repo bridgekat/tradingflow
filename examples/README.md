@@ -218,6 +218,23 @@ the GIL interpreter. Pure-Python glue still serializes under the GIL; that, plus
 the largely-serial data load (~6000 per-stock CSVs), is why end-to-end speedup is
 well under `N×`. `bench_solves` isolates the solve-parallelism from the data load.
 
+> **Required: single-threaded native BLAS (`OPENBLAS_NUM_THREADS=1`).** `env.ps1`
+> pins `OPENBLAS`/`OMP`/`MKL`/`NUMEXPR_NUM_THREADS=1`. This is **not optional** for
+> `--threads N > 0`. The flow `Pool` already parallelizes *across* solve-bound
+> operators (one BLAS/LAPACK/cvxpy call per worker), so the inner libraries must
+> run single-threaded. OpenBLAS's standard build (bundled by numpy/scipy as
+> `libscipy_openblas64_*.dll`) is **not thread-safe** — its worker-thread pool is
+> created/resized lazily, and when several `Pool` workers drive BLAS/LAPACK at
+> once (e.g. `covariance_gmv`: 7 covariance estimators incl. RMT `eigh` + 14
+> Markowitz `scipy.linalg.ldl`), the concurrent pool init/resize corrupts
+> OpenBLAS's own critical-section/condvar state and **segfaults**
+> (`0xC0000005`, faulting inside `ntdll` reached from OpenBLAS thread-pool code).
+> Pinning to 1 disables that pool, so the racy path never runs; multi-threaded
+> runs are then bit-identical to single-threaded. (It also avoids `N×N`
+> nested-thread oversubscription.) If you set the env by hand instead of `env.ps1`,
+> set these too — *before* the interpreter loads numpy. Symptom if you forget:
+> `covariance_gmv --threads 8` exits with `0xC0000005` and no output.
+
 ---
 
 ## Troubleshooting

@@ -47,7 +47,34 @@ if ($env:PATH -notlike "*$base*") { $env:PATH = "$base;$env:PATH" }
 #     (otherwise: ModuleNotFoundError for numpy / cvxpy / flowops).
 $env:PYTHONPATH = (Join-Path $repo 'python') + ';' + (Join-Path $venv 'Lib\site-packages')
 
+# (4) RUNTIME — pin every native math-library thread pool to ONE thread.
+#     The flow work-stealing `Pool` already parallelises ACROSS solve-bound
+#     operators (one BLAS / LAPACK / cvxpy call per worker thread), so the inner
+#     libraries must stay single-threaded. This is REQUIRED for correctness, not
+#     just performance:
+#
+#       * OpenBLAS's standard (threaded) build is NOT thread-safe (confirmed in
+#         the OpenBLAS docs — needs USE_LOCKING=1 otherwise). numpy/scipy bundle
+#         it as `libscipy_openblas64_*.dll`. Its worker-thread pool is created
+#         and resized lazily; when several `Pool` workers drive BLAS/LAPACK at
+#         once (e.g. `covariance_gmv`: 7 covariance estimators incl. RMT `eigh`
+#         + 14 Markowitz `scipy.linalg.ldl`), the concurrent pool init/resize
+#         corrupts OpenBLAS's own critical-section/condvar state and SEGFAULTS
+#         (0xC0000005, faulting inside ntdll from OpenBLAS thread-pool code).
+#         Pinning to 1 disables that pool entirely, so the racy path never runs.
+#       * It also avoids N x N nested-thread oversubscription (pool workers x
+#         BLAS threads).
+#
+#     Must be set BEFORE the embedded interpreter loads numpy/scipy (i.e. here,
+#     not mid-run). With this, multi-threaded runs are bit-identical to a
+#     single-threaded run. See examples/README.md ("OpenBLAS / --threads").
+$env:OPENBLAS_NUM_THREADS = '1'
+$env:OMP_NUM_THREADS = '1'
+$env:MKL_NUM_THREADS = '1'
+$env:NUMEXPR_NUM_THREADS = '1'
+
 Write-Host "pyflow env configured:" -ForegroundColor Green
 Write-Host "  PYO3_PYTHON = $env:PYO3_PYTHON"
 Write-Host "  base (DLL)  = $base   (prepended to PATH)"
 Write-Host "  PYTHONPATH  = $env:PYTHONPATH"
+Write-Host "  native BLAS = single-threaded (OPENBLAS/OMP/MKL/NUMEXPR_NUM_THREADS=1; required — see README)"
