@@ -1,14 +1,14 @@
-//! Port of `python/examples/plot_daily_price.py` to the Rust flow engine.
+//! Port of `python/examples/plot_daily_price.py`, reading the consolidated long
+//! **parquet** panels via [`ParquetPanelSource`].
 //!
-//! Loads daily prices + dividends for an A-shares stock from CSV, computes the
-//! forward-adjusted close with a 252-day moving average and Bollinger bands
-//! using only **native** Rust operators (no Python), and writes the recorded
+//! Loads `daily_prices.parquet` / `dividends.parquet`, `Select`s the target
+//! stock's row out of the cross-section and `Filter`s out the "no data" ticks,
+//! then computes the forward-adjusted close with a 252-day moving average and
+//! Bollinger bands using only **native** Rust operators, writing the recorded
 //! series to a tidy CSV for `examples/plot.py` (matplotlib).
 //!
-//! Runs on default features (no `pyflow` / Python needed):
-//!
 //! ```text
-//! cargo run --example plot_daily_price          # default symbol 000009.SZ
+//! cargo run --example plot_daily_price [SYMBOL]   # default 000009.SZ
 //! python examples/plot.py target/plot_daily_price.csv
 //! ```
 
@@ -16,51 +16,81 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
-use tradingflow::data::Duration;
+use flowgraph::typed::Handle;
 
 use tradingflow::flow::{
-    Add, ForwardAdjust, Multiply, RollingMean, RollingVariance, Scenario, Select, Sqrt, Subtract,
+    Add, Filter, ForwardAdjust, Multiply, RollingMean, RollingVariance, Scenario, Select, Sqrt,
+    Subtract,
 };
-use tradingflow::sources::CsvSource;
+use tradingflow::sources::ParquetPanelSource;
 use tradingflow::{Array, Series};
 
 const WINDOW: usize = 252;
 const MULTIPLE: f64 = 2.0;
 
+/// All symbols from `<data_dir>/symbol_list.csv` (the `symbol` column), in order.
+fn load_symbols(data_dir: &str) -> Vec<String> {
+    let path = format!("{data_dir}/symbol_list.csv");
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let mut lines = text.lines();
+    let header = lines.next().expect("symbol_list header");
+    let col = header.split(',').position(|h| h.trim() == "symbol").expect("`symbol` column");
+    lines
+        .filter_map(|l| l.split(',').nth(col).map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// `Select` stock `i`'s row out of a panel and drop the all-NaN "no data" ticks.
+fn pick(sc: &mut Scenario, panel: Handle<Array<f64>>, i: usize) -> Handle<Array<f64>> {
+    let sel = sc.add_operator(Select::<f64>::new(vec![i], 0, true), panel);
+    sc.add_operator(Filter(|a: &Array<f64>| a.as_slice().iter().any(|x| x.is_finite())), sel)
+}
+
 #[tokio::main]
 async fn main() {
     let symbol = std::env::args().nth(1).unwrap_or_else(|| "000009.SZ".to_string());
-    let dir = "python/examples/data/a_shares_history";
-    let prices_csv = format!("{dir}/{symbol}.daily_prices.csv");
-    let dividends_csv = format!("{dir}/{symbol}.dividends.csv");
-    if !std::path::Path::new(&prices_csv).exists() {
-        eprintln!("data not found: {prices_csv}");
-        std::process::exit(1);
+    let data_dir = "python/examples/data";
+    let prices_pq = format!("{data_dir}/daily_prices.parquet");
+    let dividends_pq = format!("{data_dir}/dividends.parquet");
+    for p in [&prices_pq, &dividends_pq] {
+        if !std::path::Path::new(p).exists() {
+            eprintln!("data not found: {p}\n(run the crawler with --export-long parquet; see examples/README.md)");
+            std::process::exit(1);
+        }
     }
+
+    let symbols = load_symbols(data_dir);
+    let idx = symbols
+        .iter()
+        .position(|s| s == &symbol)
+        .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
     let mut sc = Scenario::new();
 
-    // Sources: close+volume from prices, (share, cash) from dividends.
-    let prices = sc.add_source(
-        CsvSource::new(
-            prices_csv,
-            "date".into(),
-            vec!["prices.close".into(), "prices.volume".into()],
-            Duration::ZERO,
-        ),
-        Array::zeros(&[2]),
+    // Panel sources: close+volume from prices, (share, cash) from dividends.
+    let price_src = ParquetPanelSource::new(
+        prices_pq,
+        vec!["prices.close".into(), "prices.volume".into()],
+        symbols.clone(),
     );
-    let dividends = sc.add_source(
-        CsvSource::new(
-            dividends_csv,
-            "date".into(),
-            vec!["dividends.share".into(), "dividends.cash".into()],
-            Duration::ZERO,
-        ),
-        Array::zeros(&[2]),
+    let price_panel = {
+        let init = Array::zeros(&price_src.out_shape());
+        sc.add_source(price_src, init)
+    };
+    let div_src = ParquetPanelSource::new(
+        dividends_pq,
+        vec!["dividends.share".into(), "dividends.cash".into()],
+        symbols.clone(),
     );
+    let div_panel = {
+        let init = Array::zeros(&div_src.out_shape());
+        sc.add_source(div_src, init)
+    };
 
-    // close (scalar) and volume (scalar) extracted from the price row.
+    // Select the target stock; close (scalar) and volume (scalar) from its row.
+    let prices = pick(&mut sc, price_panel, idx);
+    let dividends = pick(&mut sc, div_panel, idx);
     let closes = sc.add_operator(Select::<f64>::new(vec![0], 0, true), prices);
     let volume = sc.add_operator(Select::<f64>::new(vec![1], 0, true), prices);
 

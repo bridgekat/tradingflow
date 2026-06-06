@@ -13,7 +13,7 @@
 //! NumPy (a standard GIL venv is fine — see `examples/flowops_demo.rs`).
 //!
 //! ```text
-//! cargo run --example plot_total_market_cap --features pyflow -- --symbols 120 --index-size 30
+//! cargo run --example plot_total_market_cap --features pyflow -- --index-size 1000
 //! python examples/plot_total_market_cap.py target/plot_total_market_cap.csv
 //! ```
 
@@ -29,7 +29,7 @@ use tradingflow::Array;
 #[tokio::main]
 async fn main() {
     let args = common::Args::from_env();
-    let symbols = common::load_symbols(&args.data_dir, args.max_symbols);
+    let symbols = common::load_symbols(&args.data_dir);
     let n = symbols.len();
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);
 
@@ -89,7 +89,7 @@ async fn main() {
     let h_mc = sc.add_record(index_circ_market_cap);
     let h_nav = sc.add_record(index_value);
 
-    let mut session = sc.build();
+    let mut session = sc.build_with_threads(args.threads);
     // Trim warmup output before `begin` so only the live index window is shown.
     let begin = args.begin();
     session.run(|_, _| {}).await;

@@ -82,12 +82,15 @@ You may read the [full documentation here](https://bridgekat.github.io/tradingfl
 
 # Examples
 
-The [`python/examples/`](python/examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines. To follow along, install the `examples` extras and download data via the helper [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler):
+The [`python/examples/`](python/examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines. To follow along, install the `examples` extras and download data with the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler), vendored as a git submodule at [`extern/a-shares-crawler`](extern/a-shares-crawler):
 
 ```bash
 pip install -e ".[examples]"
+git submodule update --init extern/a-shares-crawler
 python -m a_shares_crawler --help  # For configuration & download instructions
 ```
+
+The crawler writes one CSV per symbol by default; pass `--export-long {csv,parquet}...` (or run `python -m a_shares_crawler.export`) to additionally emit consolidated long-format tables (one file per kind, all symbols, sorted by date). The Rust flow-engine ports of these examples live in [`examples/`](examples/) — see [`examples/README.md`](examples/README.md) for how to build and run them, and [`docs/design/data-storage.md`](docs/design/data-storage.md) for the columnar storage design.
 
 **Visualizations** (good starting points to see the data flow):
 

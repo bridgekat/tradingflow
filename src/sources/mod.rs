@@ -36,9 +36,13 @@ pub mod array_source;
 pub mod clock;
 pub mod csv_source;
 pub mod iter_source;
+pub mod parquet_panel;
+pub mod report_panel;
 pub mod stocks;
 
 pub use array_source::ArraySource;
 pub use clock::clock;
 pub use csv_source::CsvSource;
 pub use iter_source::IterSource;
+pub use parquet_panel::ParquetPanelSource;
+pub use report_panel::ReportPanelSource;

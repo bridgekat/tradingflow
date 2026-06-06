@@ -18,9 +18,8 @@
 //!   UTC-midnight parse exactly (`utc_to_tai(days * 86_400e9)`).
 //! * The Python lambdas (`calculate_index_weights`, cross-sectional demean,
 //!   price-limit rounding) become native Rust closures fed to `Map`/`Apply`.
-//! * For tractability as a runnable example, the universe is bounded by
-//!   `--symbols N` (the original loads the full 5800-stock universe). Selection
-//!   of the top-`index_size` constituents still happens in-graph.
+//! * All symbols in `symbol_list.csv` are loaded (matching the original);
+//!   selection of the top-`index_size` constituents happens in-graph.
 
 #![allow(dead_code)] // not every example uses every helper
 
@@ -32,11 +31,11 @@ use flowgraph::typed::Handle;
 
 use tradingflow::data::Duration;
 use tradingflow::flow::{
-    Divide, ForwardAdjust, Lag, Log, Map, Multiply, Percentile, Resample, RollingMean,
-    RollingVariance, Scenario, Select, Session, Sqrt, Stack, StackSync, Subtract, Winsorize,
+    Annualize, Divide, Filter, ForwardAdjust, Lag, Log, Map, Multiply, Percentile, Resample,
+    RollingMean, RollingVariance, Scenario, Select, Session, Sqrt, Stack, StackSync, Subtract,
+    Winsorize,
 };
-use tradingflow::sources::stocks::FinancialReportSource;
-use tradingflow::sources::CsvSource;
+use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
 use tradingflow::{Array, Instant, Series, utc_to_tai};
 
 // ===========================================================================
@@ -76,13 +75,16 @@ pub fn parse_date_days(s: &str) -> i64 {
 /// Shared CLI configuration for the cross-sectional examples.
 pub struct Args {
     pub data_dir: String,
-    pub max_symbols: usize,
     pub index_size: usize,
     pub rebalance_days: i64,
     pub window: usize,
     pub begin_days: i64,
     pub end_days: i64,
     pub data_start_days: i64,
+    /// Worker threads for the flow `Pool` (`--threads`, default 0 = serial).
+    /// `> 0` lets independent solve-bound operators (e.g. one cvxpy portfolio
+    /// per risk-aversion) overlap via GIL release.
+    pub threads: usize,
 }
 
 impl Args {
@@ -91,13 +93,13 @@ impl Args {
     /// seconds on the bundled data).
     pub fn from_env() -> Self {
         let mut data_dir = "python/examples/data".to_string();
-        let mut max_symbols = 120usize;
         let mut index_size = 30usize;
         let mut rebalance_days = 30i64;
         let mut window = 20usize;
         let mut begin = "2022-01-01".to_string();
         let mut end = "2024-12-31".to_string();
         let mut sample_begin: Option<String> = None;
+        let mut threads = 0usize;
 
         let args: Vec<String> = std::env::args().skip(1).collect();
         let mut i = 0;
@@ -105,13 +107,13 @@ impl Args {
             let v = args[i + 1].clone();
             match args[i].as_str() {
                 "--data-dir" => data_dir = v,
-                "--symbols" => max_symbols = v.parse().expect("--symbols"),
                 "--index-size" => index_size = v.parse().expect("--index-size"),
                 "--rebalance-days" => rebalance_days = v.parse().expect("--rebalance-days"),
                 "--window" => window = v.parse().expect("--window"),
                 "--begin" => begin = v,
                 "--end" => end = v,
                 "--sample-begin" => sample_begin = Some(v),
+                "--threads" => threads = v.parse().expect("--threads"),
                 _ => {}
             }
             i += 2;
@@ -128,13 +130,13 @@ impl Args {
 
         Args {
             data_dir,
-            max_symbols,
             index_size,
             rebalance_days,
             window,
             begin_days,
             end_days,
             data_start_days,
+            threads,
         }
     }
 
@@ -161,9 +163,9 @@ impl Args {
     }
 }
 
-/// Load up to `max` stock symbols from `<data_dir>/symbol_list.csv` (the
-/// `symbol` column).
-pub fn load_symbols(data_dir: &str, max: usize) -> Vec<String> {
+/// Load all stock symbols from `<data_dir>/symbol_list.csv` (the `symbol`
+/// column), in file order.
+pub fn load_symbols(data_dir: &str) -> Vec<String> {
     let path = format!("{data_dir}/symbol_list.csv");
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     let mut lines = text.lines();
@@ -175,7 +177,6 @@ pub fn load_symbols(data_dir: &str, max: usize) -> Vec<String> {
     lines
         .filter_map(|l| l.split(',').nth(col).map(|s| s.trim().to_string()))
         .filter(|s| !s.is_empty())
-        .take(max)
         .collect()
 }
 
@@ -195,16 +196,71 @@ pub struct Stacked {
     pub net_profit: Handle<Array<f64>>,     // annualized net profit (Stack)
 }
 
-/// Load per-stock CSV + financial-report sources and stack into the
-/// cross-sectional panel. Lockstep daily values (close/volume/adjusted_close)
-/// use `StackSync` (NaN-fill non-trading slots); irregular values use `Stack`
-/// (carry last-known).
+/// Predicate for the per-stock `Filter`: the row has ≥1 finite entry, i.e. the
+/// stock actually has data this tick (vs. an all-NaN "no data" cross-section the
+/// panel emits on a date where other stocks ticked but this one didn't).
+fn any_finite(a: &Array<f64>) -> bool {
+    a.as_slice().iter().any(|x| x.is_finite())
+}
+
+/// `Select` stock `i`'s row out of a `[N, K]` panel and drop the all-NaN
+/// "no data" ticks, recovering that stock's real event stream (so the existing
+/// per-stock operators, incl. message-passing `ForwardAdjust`, are unchanged).
+fn pick(sc: &mut Scenario, panel: Handle<Array<f64>>, i: usize) -> Handle<Array<f64>> {
+    let sel = sc.add_operator(Select::<f64>::new(vec![i], 0, true), panel);
+    sc.add_operator(Filter(any_finite), sel)
+}
+
+/// Load the consolidated long-format parquet panels and stack into the
+/// cross-sectional panel. One [`ParquetPanelSource`] / [`ReportPanelSource`] per
+/// data kind (one sequential scan each) replaces the per-symbol CSV fan-in;
+/// each stock is then recovered with [`pick`] (`Select` + NaN `Filter`) and the
+/// per-stock transforms run unchanged, before `StackSync` (NaN-fill non-trading
+/// slots) / `Stack` (carry last-known) recombine into `[N]` panels — the
+/// `1 → N → 1` fan-out. The financial reports align on the report `date`
+/// (matching the previous `use_effective_date=false`).
 pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stacked {
-    let history = format!("{}/a_shares_history", args.data_dir);
+    let dir = &args.data_dir;
     let start = Some(args.data_start());
     let end = Some(args.end());
-
     let n = symbols.len();
+    let universe: Vec<String> = symbols.to_vec();
+
+    // Panel sources emit pure StackSync cross-sections (only each date's rows;
+    // the carry-forward / NaN-fill is the downstream `Stack` / `StackSync`'s job).
+    // Reports align on the **effective date** `max(report, notice)` — the
+    // look-ahead-safe point-in-time a backtest may use them (`use_effective_date`).
+    let daily_panel = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<Array<f64>> {
+        let s = ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
+            .with_time_range(start, end);
+        let init = Array::zeros(&s.out_shape());
+        sc.add_source(s, init)
+    };
+    let report_panel =
+        |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<Array<f64>> {
+            let s = ReportPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
+                .with_report_date(with_report_date)
+                .use_effective_date(Duration::ZERO)
+                .with_time_range(start, end);
+            let init = Array::zeros(&s.out_shape());
+            sc.add_source(s, init)
+        };
+
+    let prices_panel = daily_panel(sc, "daily_prices", vec!["prices.close".into(), "prices.volume".into()]);
+    let div_panel = daily_panel(sc, "dividends", vec!["dividends.share".into(), "dividends.cash".into()]);
+    let equity_panel = daily_panel(sc, "equity_structures", vec!["shares.total".into(), "shares.circulating".into()]);
+    let balance_panel = report_panel(
+        sc,
+        "balance_sheets",
+        vec![
+            "balance_sheet.equity.capital".into(),
+            "balance_sheet.equity.reserves".into(),
+            "balance_sheet.equity.parent_interests".into(),
+        ],
+        false,
+    );
+    let income_panel = report_panel(sc, "income_statements", vec!["income_statement.profit".into()], true);
+
     let mut close_v = Vec::with_capacity(n);
     let mut volume_v = Vec::with_capacity(n);
     let mut adj_close_v = Vec::with_capacity(n);
@@ -214,69 +270,12 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
     let mut peq_v = Vec::with_capacity(n);
     let mut np_v = Vec::with_capacity(n);
 
-    for s in symbols {
-        let h = format!("{history}/{s}");
-
-        let prices = sc.add_source(
-            CsvSource::new(
-                format!("{h}.daily_prices.csv"),
-                "date".into(),
-                vec!["prices.close".into(), "prices.volume".into()],
-                Duration::ZERO,
-            )
-            .with_time_range(start, end),
-            Array::zeros(&[2]),
-        );
-        let dividends = sc.add_source(
-            CsvSource::new(
-                format!("{h}.dividends.csv"),
-                "date".into(),
-                vec!["dividends.share".into(), "dividends.cash".into()],
-                Duration::ZERO,
-            )
-            .with_time_range(start, end),
-            Array::zeros(&[2]),
-        );
-        let equity = sc.add_source(
-            CsvSource::new(
-                format!("{h}.equity_structures.csv"),
-                "date".into(),
-                vec!["shares.total".into(), "shares.circulating".into()],
-                Duration::ZERO,
-            )
-            .with_time_range(start, end),
-            Array::zeros(&[2]),
-        );
-        let balance = sc.add_source(
-            FinancialReportSource::new(
-                format!("{h}.balance_sheets.csv"),
-                "date".into(),
-                "notice_date".into(),
-                vec![
-                    "balance_sheet.equity.capital".into(),
-                    "balance_sheet.equity.reserves".into(),
-                    "balance_sheet.equity.parent_interests".into(),
-                ],
-                false,
-                false,
-                Duration::ZERO,
-            )
-            .with_time_range(start, end),
-            Array::zeros(&[3]),
-        );
-        let income = sc.add_source(
-            FinancialReportSource::new(
-                format!("{h}.income_statements.csv"),
-                "date".into(),
-                "notice_date".into(),
-                vec!["income_statement.profit".into()],
-                true,
-                false,
-                Duration::ZERO,
-            )
-            .with_time_range(start, end),
-            Array::zeros(&[3]), // [year, day_of_year, profit]
-        );
+    for i in 0..n {
+        let prices = pick(sc, prices_panel, i); // [close, volume]
+        let dividends = pick(sc, div_panel, i); // [share, cash]
+        let equity = pick(sc, equity_panel, i); // [total, circulating]
+        let balance = pick(sc, balance_panel, i); // [capital, reserves, parent_interests]
+        let income = pick(sc, income_panel, i); // [year, day_of_year, profit]
 
         let close = sc.add_operator(Select::<f64>::new(vec![0], 0, true), prices);
         let volume = sc.add_operator(Select::<f64>::new(vec![1], 0, true), prices);
@@ -287,7 +286,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
         let adjusted_close = sc.add_operator(Multiply::<f64>::new(), (close, adjusts));
         let total_shares = sc.add_operator(Select::<f64>::new(vec![0], 0, true), equity);
         let circ_shares = sc.add_operator(Select::<f64>::new(vec![1], 0, true), equity);
-        let income_ann = sc.add_operator(tradingflow::flow::Annualize::new(), income); // [profit]
+        let income_ann = sc.add_operator(Annualize::new(), income); // [profit]
         let net_profit = sc.add_operator(Select::<f64>::new(vec![0], 0, true), income_ann);
         // parent_equity = -(capital + reserves + parent_interests).
         let parent_equity = sc.add_operator(

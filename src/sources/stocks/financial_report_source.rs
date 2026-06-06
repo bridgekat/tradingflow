@@ -321,43 +321,14 @@ impl Source for FinancialReportSource {
                 }
             };
 
-            // When start is set, find the last row before the window
-            // and emit it at start as the initial value.
-            let mut last_before_start: Option<&Row> = None;
-            let mut entered_window = start.is_none();
-
+            // Rows outside `[start, end]` are dropped; nothing before `start` is
+            // carried into the window (the window opens at its first in-range row).
             for row in &rows {
-                if let Some(s) = start {
-                    if row.event_ts < s {
-                        last_before_start = Some(row);
-                        continue;
-                    }
+                if start.is_some_and(|s| row.event_ts < s) {
+                    continue; // before the window
                 }
-
-                if !entered_window {
-                    entered_window = true;
-                    if let Some(init_row) = last_before_start.take() {
-                        let s = start.unwrap();
-                        let data = if with_report_date {
-                            let mut v = Vec::with_capacity(2 + init_row.values.len());
-                            v.push(init_row.report_year);
-                            v.push(init_row.report_day_of_year);
-                            v.extend_from_slice(&init_row.values);
-                            v
-                        } else {
-                            init_row.values.clone()
-                        };
-                        let arr = Array::from_vec(&[output_len], data);
-                        if hist_tx.send((s, arr)).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-
-                if let Some(e) = end {
-                    if row.event_ts > e {
-                        break;
-                    }
+                if end.is_some_and(|e| row.event_ts > e) {
+                    break; // past the window
                 }
                 let data = if with_report_date {
                     let mut v = Vec::with_capacity(2 + row.values.len());
@@ -371,25 +342,6 @@ impl Source for FinancialReportSource {
                 let arr = Array::from_vec(&[output_len], data);
                 if hist_tx.send((row.event_ts, arr)).await.is_err() {
                     break;
-                }
-            }
-
-            // If all rows were before the start, emit the last one.
-            if !entered_window {
-                if let Some(init_row) = last_before_start {
-                    if let Some(s) = start {
-                        let data = if with_report_date {
-                            let mut v = Vec::with_capacity(2 + init_row.values.len());
-                            v.push(init_row.report_year);
-                            v.push(init_row.report_day_of_year);
-                            v.extend_from_slice(&init_row.values);
-                            v
-                        } else {
-                            init_row.values.clone()
-                        };
-                        let arr = Array::from_vec(&[output_len], data);
-                        let _ = hist_tx.send((s, arr)).await;
-                    }
                 }
             }
         });

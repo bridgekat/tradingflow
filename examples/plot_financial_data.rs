@@ -1,24 +1,20 @@
-//! Port of `python/examples/plot_financial_data.py` to the Rust flow engine.
+//! Port of `python/examples/plot_financial_data.py`, reading the consolidated
+//! long **parquet** panels via [`ParquetPanelSource`] / [`ReportPanelSource`].
 //!
-//! Loads daily prices, equity-structure events, and quarterly financial
-//! reports (balance sheet / income statement / cash-flow statement) for one
-//! A-shares stock, computes market cap, annualized income/cash-flow, TTM net
-//! profit, and the E/P, B/P, ROE valuation ratios using only **native** Rust
-//! operators (no Python), and writes the recorded series to a tidy CSV for
+//! Loads daily prices, equity-structure events, and quarterly financial reports
+//! for one A-shares stock by `Select`ing that stock's row out of each
+//! cross-sectional panel (and `Filter`ing out the "no data" ticks), then computes
+//! market cap, annualized income/cash-flow, TTM net profit, and the E/P, B/P, ROE
+//! ratios with native operators, writing the recorded series to a tidy CSV for
 //! `examples/plot_financial_data.py` (matplotlib).
 //!
-//! Mixed-cadence design: prices tick daily, financial reports tick on their
-//! (point-in-time) report dates. Binary ops (`Multiply`/`Divide`) carry the
-//! last-known value of the slower input, so the ratios update on every tick of
-//! either input — exactly as the Python original. The wide CSV therefore has
-//! `NaN` in a column wherever that series did not tick; the plot script masks
-//! `NaN` per column so each (daily or quarterly) curve renders on its own
-//! cadence.
-//!
-//! Runs on default features (no `pyflow` / Python needed):
+//! The report panels are aligned on the report `date` (point-in-time), matching
+//! the previous `FinancialReportSource(use_effective_date=false)`. Binary ops
+//! carry the last-known value of the slower input, so ratios update on every tick
+//! of either input; the wide CSV has `NaN` where a column did not tick.
 //!
 //! ```text
-//! cargo run --example plot_financial_data           # default symbol 000001.SZ
+//! cargo run --example plot_financial_data [SYMBOL]   # default 000001.SZ
 //! python examples/plot_financial_data.py target/plot_financial_data.csv
 //! ```
 
@@ -26,115 +22,98 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
+use flowgraph::typed::Handle;
+
 use tradingflow::data::Duration;
-use tradingflow::flow::{Annualize, Divide, Map, Multiply, Negate, RollingMean, Scenario, Select};
-use tradingflow::sources::CsvSource;
-use tradingflow::sources::stocks::FinancialReportSource;
+use tradingflow::flow::{Annualize, Divide, Filter, Map, Multiply, Negate, RollingMean, Scenario, Select};
+use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
 use tradingflow::{Array, Series};
 
-/// Columns written to the wide CSV, in order.
 const COLS: [&str; 10] = [
-    "market_cap",
-    "assets",
-    "equity",
-    "parent_equity",
-    "op_income",
-    "net_profit",
-    "cash_flow",
-    "ep_ratio",
-    "bp_ratio",
-    "roe",
+    "market_cap", "assets", "equity", "parent_equity", "op_income", "net_profit", "cash_flow",
+    "ep_ratio", "bp_ratio", "roe",
 ];
+
+fn load_symbols(data_dir: &str) -> Vec<String> {
+    let path = format!("{data_dir}/symbol_list.csv");
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let mut lines = text.lines();
+    let header = lines.next().expect("symbol_list header");
+    let col = header.split(',').position(|h| h.trim() == "symbol").expect("`symbol` column");
+    lines
+        .filter_map(|l| l.split(',').nth(col).map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// `Select` stock `i`'s row out of a panel and drop the all-NaN "no data" ticks.
+fn pick(sc: &mut Scenario, panel: Handle<Array<f64>>, i: usize) -> Handle<Array<f64>> {
+    let sel = sc.add_operator(Select::<f64>::new(vec![i], 0, true), panel);
+    sc.add_operator(Filter(|a: &Array<f64>| a.as_slice().iter().any(|x| x.is_finite())), sel)
+}
 
 #[tokio::main]
 async fn main() {
     let symbol = std::env::args().nth(1).unwrap_or_else(|| "000001.SZ".to_string());
-    let dir = "python/examples/data/a_shares_history";
-    let prices_csv = format!("{dir}/{symbol}.daily_prices.csv");
-    let equity_csv = format!("{dir}/{symbol}.equity_structures.csv");
-    let balance_csv = format!("{dir}/{symbol}.balance_sheets.csv");
-    let income_csv = format!("{dir}/{symbol}.income_statements.csv");
-    let cf_csv = format!("{dir}/{symbol}.cash_flow_statements.csv");
-    if !std::path::Path::new(&prices_csv).exists() {
-        eprintln!("data not found: {prices_csv}");
+    let data_dir = "python/examples/data";
+    let prices_pq = format!("{data_dir}/daily_prices.parquet");
+    if !std::path::Path::new(&prices_pq).exists() {
+        eprintln!("data not found: {prices_pq}\n(run the crawler with --export-long parquet; see examples/README.md)");
         std::process::exit(1);
     }
+
+    let symbols = load_symbols(data_dir);
+    let idx = symbols
+        .iter()
+        .position(|s| s == &symbol)
+        .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
     let mut sc = Scenario::new();
 
     // ------------------------------------------------------------------
-    // Sources
+    // Panel sources → select the target stock.
     // ------------------------------------------------------------------
+    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<Array<f64>> {
+        let s = ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
+        let init = Array::zeros(&s.out_shape());
+        let panel = sc.add_source(s, init);
+        pick(sc, panel, idx)
+    };
+    let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<Array<f64>> {
+        let s = ReportPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone())
+            .with_report_date(with_report_date);
+        let init = Array::zeros(&s.out_shape());
+        let panel = sc.add_source(s, init);
+        pick(sc, panel, idx)
+    };
 
-    // Daily close price (scalar).
-    let prices = sc.add_source(
-        CsvSource::new(prices_csv, "date".into(), vec!["prices.close".into()], Duration::ZERO),
-        Array::zeros(&[1]),
-    );
-    // Total shares from equity-structure events (scalar, irregular).
-    let equity = sc.add_source(
-        CsvSource::new(equity_csv, "date".into(), vec!["shares.total".into()], Duration::ZERO),
-        Array::zeros(&[1]),
-    );
-
-    // Balance sheet (point-in-time, no annualization): assets, equity, and the
-    // three parent-equity components. Equity is stored negated (assets =
-    // liabilities + equity convention), so we negate it back.
-    let balance = sc.add_source(
-        FinancialReportSource::new(
-            balance_csv,
-            "date".into(),
-            "notice_date".into(),
-            vec![
-                "balance_sheet.assets".into(),
-                "balance_sheet.equity".into(),
-                "balance_sheet.equity.capital".into(),
-                "balance_sheet.equity.reserves".into(),
-                "balance_sheet.equity.parent_interests".into(),
-            ],
-            false, // with_report_date: no [year, day_of_year] prefix needed
-            false, // use_effective_date: align on report date (point-in-time)
-            Duration::ZERO,
-        ),
-        Array::zeros(&[5]),
-    );
-
-    // Income statement (YTD cumulative → annualize): operating income, net
-    // profit. with_report_date=true prepends [year, day_of_year] for Annualize.
-    let income = sc.add_source(
-        FinancialReportSource::new(
-            income_csv,
-            "date".into(),
-            "notice_date".into(),
-            vec![
-                "income_statement.profit.operating.income".into(),
-                "income_statement.profit".into(),
-            ],
-            true,
-            false,
-            Duration::ZERO,
-        ),
-        Array::zeros(&[4]), // [year, day_of_year, op_income, net_profit]
-    );
-
-    // Cash-flow statement (YTD cumulative → annualize): net change in cash.
-    let cf = sc.add_source(
-        FinancialReportSource::new(
-            cf_csv,
-            "date".into(),
-            "notice_date".into(),
-            vec!["cash_flow_statement.change".into()],
-            true,
-            false,
-            Duration::ZERO,
-        ),
-        Array::zeros(&[3]), // [year, day_of_year, change]
-    );
+    let prices = daily(&mut sc, "daily_prices", vec!["prices.close".into()]); // [close]
+    let equity = daily(&mut sc, "equity_structures", vec!["shares.total".into()]); // [total]
+    // Balance sheet (point-in-time): assets, equity, and the parent-equity parts.
+    let balance = report(
+        &mut sc,
+        "balance_sheets",
+        vec![
+            "balance_sheet.assets".into(),
+            "balance_sheet.equity".into(),
+            "balance_sheet.equity.capital".into(),
+            "balance_sheet.equity.reserves".into(),
+            "balance_sheet.equity.parent_interests".into(),
+        ],
+        false,
+    ); // [5]
+    // Income / cash flow (YTD → annualize): with_report_date prepends [year, day_of_year].
+    let income = report(
+        &mut sc,
+        "income_statements",
+        vec!["income_statement.profit.operating.income".into(), "income_statement.profit".into()],
+        true,
+    ); // [year, day_of_year, op_income, net_profit]
+    let cf = report(&mut sc, "cash_flow_statements", vec!["cash_flow_statement.change".into()], true); // [year, day_of_year, change]
 
     // ------------------------------------------------------------------
-    // Operators
+    // Operators (identical to the CSV version).
     // ------------------------------------------------------------------
-
     let close = sc.add_operator(Select::<f64>::new(vec![0], 0, true), prices);
     let total_shares = sc.add_operator(Select::<f64>::new(vec![0], 0, true), equity);
     let market_cap = sc.add_operator(Multiply::<f64>::new(), (close, total_shares));
@@ -142,33 +121,26 @@ async fn main() {
     let assets = sc.add_operator(Select::<f64>::new(vec![0], 0, true), balance);
     let neg_equity = sc.add_operator(Select::<f64>::new(vec![1], 0, true), balance);
     let equity_val = sc.add_operator(Negate::<f64>::new(), neg_equity);
-
-    // parent_equity = -(capital + reserves + parent_interests).
     let neg_peq = sc.add_operator(Select::<f64>::new(vec![2, 3, 4], 0, false), balance);
     let parent_equity = sc.add_operator(
         Map::new(|a: &Array<f64>| Array::scalar(-a.as_slice().iter().sum::<f64>())),
         neg_peq,
     );
 
-    // Annualize income & cash flow (strips the [year, day_of_year] prefix).
     let income_ann = sc.add_operator(Annualize::new(), income); // [op_income, net_profit]
     let op_income = sc.add_operator(Select::<f64>::new(vec![0], 0, true), income_ann);
     let net_profit = sc.add_operator(Select::<f64>::new(vec![1], 0, true), income_ann);
     let cf_ann = sc.add_operator(Annualize::new(), cf); // [change]
     let cash_flow = sc.add_operator(Select::<f64>::new(vec![0], 0, true), cf_ann);
 
-    // TTM net profit: rolling mean of annualized quarterly values over 365
-    // days on the report-date axis (equals the last-4-quarter mean).
     let net_profit_series = sc.add_record(net_profit);
     let net_profit_ttm =
         sc.add_operator(RollingMean::<f64>::time_delta(Duration::from_days(365)), net_profit_series);
 
-    // Valuation ratios.
     let ep = sc.add_operator(Divide::<f64>::new(), (net_profit_ttm, market_cap));
     let bp = sc.add_operator(Divide::<f64>::new(), (parent_equity, market_cap));
     let roe = sc.add_operator(Divide::<f64>::new(), (net_profit_ttm, parent_equity));
 
-    // Record everything for output.
     let records = [
         sc.add_record(market_cap),
         sc.add_record(assets),
@@ -183,14 +155,11 @@ async fn main() {
     ];
 
     // ------------------------------------------------------------------
-    // Run
+    // Run.
     // ------------------------------------------------------------------
-
     let mut session = sc.build();
     session.run(|_, _| {}).await;
 
-    // Align the recorded series by timestamp into a wide CSV (NaN where a
-    // column did not tick at that timestamp; the plot script masks per column).
     let mut rows: BTreeMap<i64, [f64; 10]> = BTreeMap::new();
     for (c, h) in records.iter().enumerate() {
         let series: &Series<f64> = session.value(*h);

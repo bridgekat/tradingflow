@@ -13,7 +13,7 @@
 //! `python/benchmarks/cvxpy_solve_parallelism.py`).
 //!
 //! ```text
-//! cargo run --example mean_variance_strategy --features pyflow -- --symbols 120 --index-size 30
+//! cargo run --example mean_variance_strategy --features pyflow -- --index-size 1000
 //! python examples/plot_strategy.py target/mean_variance_strategy.csv
 //! ```
 
@@ -28,7 +28,7 @@ use tradingflow::{Array, Series};
 
 const INITIAL_CASH: f64 = 1_000_000.0;
 const NUM_FEATURES: i64 = 7;
-const DELTAS: [f64; 3] = [1.0, 5.0, 25.0];
+const DELTAS: [f64; 8] = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0];
 /// Mode.MIN_MEAN_VARIANCE in `flowops.portfolios.mean_variance._modes`.
 const MODE_MIN_MEAN_VARIANCE: i64 = 3;
 
@@ -66,7 +66,7 @@ fn nav_stats(v: &[f64]) -> (f64, f64, f64) {
 #[tokio::main]
 async fn main() {
     let args = common::Args::from_env();
-    let symbols = common::load_symbols(&args.data_dir, args.max_symbols);
+    let symbols = common::load_symbols(&args.data_dir);
     let n = symbols.len();
     let n_i = n as i64;
     let idx = args.index_size as i64;
@@ -162,7 +162,7 @@ async fn main() {
         variant_handles.push((delta, sc.add_record(value)));
     }
 
-    let mut session = sc.build();
+    let mut session = sc.build_with_threads(args.threads);
     session.run(|_, _| {}).await;
 
     // Extract + report.

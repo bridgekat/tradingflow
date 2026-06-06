@@ -12,7 +12,7 @@
 //! `--features pyflow` and a venv with NumPy (a standard GIL venv is fine).
 //!
 //! ```text
-//! cargo run --example factor_ic --features pyflow -- --symbols 120 --index-size 30
+//! cargo run --example factor_ic --features pyflow -- --index-size 1000
 //! python examples/plot_factor_ic.py target/factor_ic.csv
 //! ```
 
@@ -28,7 +28,7 @@ use tradingflow::Array;
 #[tokio::main]
 async fn main() {
     let args = common::Args::from_env();
-    let symbols = common::load_symbols(&args.data_dir, args.max_symbols);
+    let symbols = common::load_symbols(&args.data_dir);
     let n = symbols.len();
     let n_i = n as i64;
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);
@@ -81,7 +81,7 @@ async fn main() {
         ic_handles.push(sc.add_record(metric));
     }
 
-    let mut session = sc.build();
+    let mut session = sc.build_with_threads(args.threads);
     session.run(|_, _| {}).await;
 
     // Per-feature IC stats + long-format CSV.

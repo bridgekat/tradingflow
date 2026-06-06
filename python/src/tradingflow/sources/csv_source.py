@@ -8,7 +8,7 @@ import numpy as np
 
 from .. import Schema
 from ..source import NativeSource
-from ..data import coerce_timestamp
+from ..data import coerce_timestamp, utc_to_tai
 
 
 class CSVSource(NativeSource):
@@ -77,10 +77,20 @@ class CSVSource(NativeSource):
             "is_utc": is_utc,
             "tz_offset_ns": tz_offset_ns,
         }
+        # Window bounds must be on the same timescale as the source's date
+        # parsing.  With `is_utc=True` a date string is read as UTC midnight
+        # (TAI + leap offset), so the bounds need the same UTC->TAI conversion;
+        # passing a naive `coerce_timestamp` here leaves them ~37 s early, which
+        # spuriously emits the carry-forward row at `start` and drops the row
+        # landing exactly at `end`.
+        def _bound_ns(ts: np.datetime64) -> int:
+            base = int(utc_to_tai(ts)) if is_utc else int(coerce_timestamp(ts))
+            return base - tz_offset_ns
+
         if start is not None:
-            params["start_ns"] = int(coerce_timestamp(start))
+            params["start_ns"] = _bound_ns(start)
         if end is not None:
-            params["end_ns"] = int(coerce_timestamp(end))
+            params["end_ns"] = _bound_ns(end)
 
         super().__init__(
             native_id="csv",

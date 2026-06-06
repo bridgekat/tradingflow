@@ -13,7 +13,7 @@
 //! `--features pyflow` and a venv with NumPy (a standard GIL venv is fine).
 //!
 //! ```text
-//! cargo run --example mean_strategy --features pyflow -- --symbols 120 --index-size 30
+//! cargo run --example mean_strategy --features pyflow -- --index-size 1000
 //! python examples/plot_strategy.py target/mean_strategy.csv
 //! ```
 
@@ -43,7 +43,7 @@ fn total_value(sc: &mut Scenario, h: Handle<Array<f64>>) -> Handle<Array<f64>> {
 #[tokio::main]
 async fn main() {
     let args = common::Args::from_env();
-    let symbols = common::load_symbols(&args.data_dir, args.max_symbols);
+    let symbols = common::load_symbols(&args.data_dir);
     let n = symbols.len();
     let n_i = n as i64;
     let idx = args.index_size as i64;
@@ -169,7 +169,7 @@ async fn main() {
     let h_drawdown = sc.add_record(drawdown);
     let h_beta_alpha = sc.add_record(beta_alpha);
 
-    let mut session = sc.build();
+    let mut session = sc.build_with_threads(args.threads);
     session.run(|_, _| {}).await;
 
     // ---- Extract + report ----------------------------------------------

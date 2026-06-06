@@ -8,7 +8,7 @@ import numpy as np
 
 from ... import Schema
 from ...source import NativeSource
-from ...data import coerce_timestamp
+from ...data import coerce_timestamp, utc_to_tai
 
 
 class FinancialReportSource(NativeSource):
@@ -109,10 +109,17 @@ class FinancialReportSource(NativeSource):
             "is_utc": is_utc,
             "tz_offset_ns": tz_offset_ns,
         }
+        # Window bounds must match the source's date parsing timescale (see
+        # CSVSource): with `is_utc=True`, convert via UTC->TAI so the bounds
+        # don't sit ~37 s before the parsed report/notice instants.
+        def _bound_ns(ts: np.datetime64) -> int:
+            base = int(utc_to_tai(ts)) if is_utc else int(coerce_timestamp(ts))
+            return base - tz_offset_ns
+
         if start is not None:
-            params["start_ns"] = int(coerce_timestamp(start))
+            params["start_ns"] = _bound_ns(start)
         if end is not None:
-            params["end_ns"] = int(coerce_timestamp(end))
+            params["end_ns"] = _bound_ns(end)
 
         super().__init__(
             native_id="financial_report",

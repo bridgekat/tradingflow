@@ -414,11 +414,8 @@ impl Source for CsvSource {
                     }
                 };
 
-            // When `start` is set, track the last row before the window
-            // so it can be emitted as the initial value at `start`.
-            let mut last_before_start: Option<Vec<f64>> = None;
-            let mut entered_window = start.is_none();
-
+            // Rows outside `[start, end]` are dropped; nothing before `start` is
+            // carried into the window (the window opens at its first in-range row).
             let mut record = StringRecord::new();
             let mut prev_ts = Instant::MIN;
             loop {
@@ -437,11 +434,15 @@ impl Source for CsvSource {
                         return;
                     }
                 };
-                assert!(
-                    ts >= prev_ts,
-                    "CsvSource: timestamps not sorted in {path}",
-                );
+                assert!(ts >= prev_ts, "CsvSource: timestamps not sorted in {path}");
                 prev_ts = ts;
+
+                if start.is_some_and(|s| ts < s) {
+                    continue; // before the window
+                }
+                if end.is_some_and(|e| ts > e) {
+                    break; // past the window
+                }
 
                 let values = match parse_values(&record, &value_indices) {
                     Ok(v) => v,
@@ -450,47 +451,9 @@ impl Source for CsvSource {
                         return;
                     }
                 };
-
-                // Before the start of the window: remember the last row.
-                if let Some(s) = start {
-                    if ts < s {
-                        last_before_start = Some(values);
-                        continue;
-                    }
-                }
-
-                // First row at or after start: emit the carried-over
-                // initial value (if any) at the start timestamp.
-                if !entered_window {
-                    entered_window = true;
-                    if let Some(init_vals) = last_before_start.take() {
-                        let s = start.unwrap();
-                        let arr = Array::from_vec(&[num_columns], init_vals);
-                        if hist_tx.send((s, arr)).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-
-                if let Some(e) = end {
-                    if ts > e {
-                        break;
-                    }
-                }
-
                 let arr = Array::from_vec(&[num_columns], values);
                 if hist_tx.send((ts, arr)).await.is_err() {
                     break;
-                }
-            }
-
-            // If the file had only pre-start rows, emit the last one.
-            if !entered_window {
-                if let Some(init_vals) = last_before_start.take() {
-                    if let Some(s) = start {
-                        let arr = Array::from_vec(&[num_columns], init_vals);
-                        let _ = hist_tx.send((s, arr)).await;
-                    }
                 }
             }
         });

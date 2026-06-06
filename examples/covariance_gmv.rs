@@ -12,7 +12,7 @@
 //! **GIL** venv with cvxpy.
 //!
 //! ```text
-//! cargo run --example covariance_gmv --features pyflow -- --symbols 120 --index-size 30
+//! cargo run --example covariance_gmv --features pyflow -- --index-size 1000
 //! python examples/plot_strategy.py target/covariance_gmv.csv
 //! ```
 
@@ -50,7 +50,7 @@ fn nav_final(v: &[f64]) -> f64 {
 #[tokio::main]
 async fn main() {
     let args = common::Args::from_env();
-    let symbols = common::load_symbols(&args.data_dir, args.max_symbols);
+    let symbols = common::load_symbols(&args.data_dir);
     let n = symbols.len();
     let n_i = n as i64;
     let idx = args.index_size as i64;
@@ -184,7 +184,7 @@ async fn main() {
         recs.push(Rec { name: e.name, long: nav[0], ls: nav[1], mv: sc.add_record(mv) });
     }
 
-    let mut session = sc.build();
+    let mut session = sc.build_with_threads(args.threads);
     session.run(|_, _| {}).await;
 
     let begin = args.begin().as_nanos();
