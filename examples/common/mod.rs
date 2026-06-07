@@ -129,7 +129,7 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(Instant, usi
             let pb = ProgressBar::new(t as u64);
             pb.set_style(
                 ProgressStyle::with_template(
-                    "{prefix:>7} {elapsed_precise} [{wide_bar}] {human_pos}/{human_len} rows {percent:>3}% {per_sec} eta {eta} {msg}",
+                    "{prefix} {percent}% |{wide_bar}| {human_pos}/{human_len} [{elapsed_precise}<{eta}, {per_sec}]",
                 )
                 .unwrap()
                 .progress_chars("█▉▊▋▌▍▎▏ "),
@@ -139,8 +139,10 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(Instant, usi
         _ => {
             let pb = ProgressBar::new_spinner();
             pb.set_style(
-                ProgressStyle::with_template("{prefix:>7} {elapsed_precise} {spinner} {human_pos} rows {per_sec} {msg}")
-                    .unwrap(),
+                ProgressStyle::with_template(
+                    "{prefix} {spinner} {human_pos} [{elapsed_precise}, {per_sec}]",
+                )
+                .unwrap(),
             );
             pb
         }
@@ -152,13 +154,17 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(Instant, usi
     let guard = FinishOnDrop(pb);
     move |ts: Instant, processed: usize| {
         let pb = &guard.0;
-        pb.set_prefix(if ts.as_nanos() < begin_ns { "warmup" } else { "running" });
+        pb.set_prefix(if ts.as_nanos() < begin_ns {
+            "warmup"
+        } else {
+            "running"
+        });
         let rows = processed as u64;
         // Grow the length if the estimate undershot (keeps the percentage sane).
-        if let Some(len) = pb.length() {
-            if rows > len {
-                pb.set_length(rows);
-            }
+        if let Some(len) = pb.length()
+            && rows > len
+        {
+            pb.set_length(rows);
         }
         pb.set_position(rows);
         pb.set_message(date_str(ts));
@@ -341,19 +347,34 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
         let init = nan_array(&s.out_shape());
         sc.add_source(s, init)
     };
-    let report_panel =
-        |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<Array<f64>> {
-            let s = ReportPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
-                .with_report_date(with_report_date)
-                .use_effective_date(Duration::ZERO)
-                .with_time_range(start, end);
-            let init = nan_array(&s.out_shape());
-            sc.add_source(s, init)
-        };
+    let report_panel = |sc: &mut Scenario,
+                        kind: &str,
+                        cols: Vec<String>,
+                        with_report_date: bool|
+     -> Handle<Array<f64>> {
+        let s = ReportPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
+            .with_report_date(with_report_date)
+            .use_effective_date(Duration::ZERO)
+            .with_time_range(start, end);
+        let init = nan_array(&s.out_shape());
+        sc.add_source(s, init)
+    };
 
-    let prices_panel = daily_panel(sc, "daily_prices", vec!["prices.close".into(), "prices.volume".into()]);
-    let div_panel = daily_panel(sc, "dividends", vec!["dividends.share".into(), "dividends.cash".into()]);
-    let equity_panel = daily_panel(sc, "equity_structures", vec!["shares.total".into(), "shares.circulating".into()]);
+    let prices_panel = daily_panel(
+        sc,
+        "daily_prices",
+        vec!["prices.close".into(), "prices.volume".into()],
+    );
+    let div_panel = daily_panel(
+        sc,
+        "dividends",
+        vec!["dividends.share".into(), "dividends.cash".into()],
+    );
+    let equity_panel = daily_panel(
+        sc,
+        "equity_structures",
+        vec!["shares.total".into(), "shares.circulating".into()],
+    );
     let balance_panel = report_panel(
         sc,
         "balance_sheets",
@@ -364,7 +385,12 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
         ],
         false,
     );
-    let income_panel = report_panel(sc, "income_statements", vec!["income_statement.profit".into()], true);
+    let income_panel = report_panel(
+        sc,
+        "income_statements",
+        vec!["income_statement.profit".into()],
+        true,
+    );
 
     let mut close_v = Vec::with_capacity(n);
     let mut volume_v = Vec::with_capacity(n);
@@ -498,7 +524,11 @@ pub fn build_features(sc: &mut Scenario, st: &Stacked, args: &Args) -> Features 
     );
     let series = sc.add_record(sampled);
 
-    Features { names, handles, series }
+    Features {
+        names,
+        handles,
+        series,
+    }
 }
 
 // ===========================================================================
@@ -510,7 +540,9 @@ pub fn build_features(sc: &mut Scenario, st: &Stacked, args: &Args) -> Features 
 pub fn calculate_index_weights(mc: &[f64], k: usize) -> Vec<f64> {
     let n = mc.len();
     let mut w = vec![0.0f64; n];
-    let mut valid: Vec<usize> = (0..n).filter(|&i| mc[i].is_finite() && mc[i] > 0.0).collect();
+    let mut valid: Vec<usize> = (0..n)
+        .filter(|&i| mc[i].is_finite() && mc[i] > 0.0)
+        .collect();
     if valid.is_empty() {
         return w;
     }
@@ -579,7 +611,9 @@ fn demean(r: &Array<f64>) -> Array<f64> {
     let mean = if cnt > 0 { sum / cnt as f64 } else { 0.0 };
     Array::from_vec(
         r.shape(),
-        s.iter().map(|&x| if x.is_finite() { x - mean } else { x }).collect(),
+        s.iter()
+            .map(|&x| if x.is_finite() { x - mean } else { x })
+            .collect(),
     )
 }
 
@@ -598,7 +632,10 @@ pub fn build_price_limits(
         Map::new(move |c: &Array<f64>| {
             Array::from_vec(
                 c.shape(),
-                c.as_slice().iter().map(|&x| ((x * (1.0 + up)) * 100.0).round() / 100.0).collect(),
+                c.as_slice()
+                    .iter()
+                    .map(|&x| ((x * (1.0 + up)) * 100.0).round() / 100.0)
+                    .collect(),
             )
         }),
         prev_close,
@@ -607,7 +644,10 @@ pub fn build_price_limits(
         Map::new(move |c: &Array<f64>| {
             Array::from_vec(
                 c.shape(),
-                c.as_slice().iter().map(|&x| ((x * (1.0 - dn)) * 100.0).round() / 100.0).collect(),
+                c.as_slice()
+                    .iter()
+                    .map(|&x| ((x * (1.0 - dn)) * 100.0).round() / 100.0)
+                    .collect(),
             )
         }),
         prev_close,
