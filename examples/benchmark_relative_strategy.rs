@@ -137,6 +137,7 @@ async fn main() {
                 "flowops.portfolios.mean_variance.benchmark_relative",
                 PyParams::new()
                     .int("num_stocks", n_i)
+                    .int("max_universe_size", idx)
                     .float("bound", gamma_daily)
                     .bool("long_only", true)
                     .bool("full_position", true),

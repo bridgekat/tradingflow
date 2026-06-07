@@ -364,6 +364,90 @@ def test_cvxpy_operators():
     print("test_cvxpy_operators OK")
 
 
+def test_base_threads_previous_positions():
+    """The base must size to `max_universe_size`, enforce it, and hand each solve
+    the previous positions permuted into the new active indexing — independent of
+    any solver (no cvxpy needed)."""
+    from flowops.portfolios._base import MeanVariancePortfolio
+
+    captured: dict = {}
+
+    def pos_fn(state, active_indices, sub_universe, sub_prev, sub_mu, sub_sigma):
+        captured["active"] = np.asarray(active_indices).copy()
+        captured["sub_prev"] = np.asarray(sub_prev).copy()
+        captured["max"] = state.max_universe_size
+        w = np.arange(1, len(sub_mu) + 1, dtype=np.float64)
+        return w / w.sum()  # deterministic, sums to 1 over the active subset
+
+    n = 8
+    op = MeanVariancePortfolio(positions_fn=pos_fn, num_stocks=n, max_universe_size=5, logarithmic=False)
+    mu = np.linspace(0.01, 0.08, n)
+    sigma = np.eye(n) * 0.04
+    state = op.init((FakeArrayView(np.ones(n)), FakeArrayView(mu), FakeArrayView(sigma)), 0)
+    assert state.max_universe_size == 5
+    assert np.allclose(state.previous_positions, 0.0)
+
+    # Rebalance 1: active = {0, 1, 2}; first rebalance has no prior positions.
+    u1 = np.zeros(n); u1[[0, 1, 2]] = 1.0
+    out1 = FakeArrayView(np.zeros(n), writable=True)
+    assert _drive(op, state, [FakeArrayView(u1), FakeArrayView(mu), FakeArrayView(sigma)], out1, 0, [True, True, True])
+    assert np.allclose(captured["sub_prev"], 0.0) and captured["max"] == 5
+    assert list(captured["active"]) == [0, 1, 2]  # global indices of the active stocks
+    w1 = out1.written.copy()
+    assert np.allclose(state.previous_positions, w1)  # stored for the next rebalance
+
+    # Rebalance 2: active = {1, 2, 3} (drop 0, add 3).  The prior weights of 1, 2
+    # must carry; the newcomer 3 seeds at 0; the dropped 0 is discarded.
+    u2 = np.zeros(n); u2[[1, 2, 3]] = 1.0
+    out2 = FakeArrayView(np.zeros(n), writable=True)
+    assert _drive(op, state, [FakeArrayView(u2), FakeArrayView(mu), FakeArrayView(sigma)], out2, 1, [True, True, True])
+    assert list(captured["active"]) == [1, 2, 3]
+    assert np.allclose(captured["sub_prev"], [w1[1], w1[2], 0.0]), captured["sub_prev"]
+
+    # `max_universe_size` enforcement: 6 active > 5 must raise.
+    u3 = np.zeros(n); u3[:6] = 1.0
+    out3 = FakeArrayView(np.zeros(n), writable=True)
+    try:
+        _drive(op, state, [FakeArrayView(u3), FakeArrayView(mu), FakeArrayView(sigma)], out3, 2, [True, True, True])
+        raise AssertionError("expected ValueError for an oversized active universe")
+    except ValueError:
+        pass
+
+    print("test_base_threads_previous_positions OK")
+
+
+def test_warm_start_multi_rebalance():
+    """The cvxpy leaves re-solve a fixed-size warm-started problem across
+    rebalances with a changing active set (some names dropped, some added)."""
+    if not _HAS_CVXPY:
+        print("test_warm_start_multi_rebalance SKIPPED (cvxpy unavailable)")
+        return
+
+    from flowops.portfolios.mean_variance.markowitz import build as build_markowitz
+
+    rng = np.random.default_rng(11)
+    n = 10
+    op = build_markowitz(
+        num_stocks=n, max_universe_size=6, mode=Mode.MIN_MEAN_VARIANCE, bound=5.0, logarithmic=False
+    )
+    mu = rng.standard_normal(n) * 0.01
+    sigma = _spd_cov(rng, n)
+    state = op.init((FakeArrayView(np.ones(n)), FakeArrayView(mu), FakeArrayView(sigma)), 0)
+
+    for ts, idxs in enumerate([[0, 1, 2, 3, 4, 5], [3, 4, 5, 6, 7, 8], [4, 5, 6, 7, 8, 9]]):
+        u = np.zeros(n); u[idxs] = 1.0
+        out = FakeArrayView(np.zeros(n), writable=True)
+        assert _drive(op, state, [FakeArrayView(u), FakeArrayView(mu), FakeArrayView(sigma)], out, ts, [True, True, True])
+        w = out.written
+        assert np.all(np.isfinite(w)) and np.all(w >= -1e-6)
+        assert np.isclose(w[idxs].sum(), 1.0, atol=1e-2)
+        off = np.ones(n, dtype=bool); off[idxs] = False
+        assert np.all(w[off] == 0.0)  # inactive names stay flat
+        assert np.allclose(state.previous_positions, w)
+
+    print("test_warm_start_multi_rebalance OK")
+
+
 def _main():
     test_proportional()
     test_rank_equal()
@@ -377,6 +461,8 @@ def _main():
     test_admm_mnr_solver_library()
     test_augmented_saddle_admm_library()
     test_cvxpy_operators()
+    test_base_threads_previous_positions()
+    test_warm_start_multi_rebalance()
     print("\nALL PORTFOLIO TESTS PASSED")
 
 

@@ -49,7 +49,10 @@ class MarkowitzADMM(MeanVariancePortfolio):
                 f"got {mode.name}.  Use Markowitz for the other modes."
             )
         super().__init__(
-            positions_fn=lambda state, mu, sigma, x_bm: _solve(
+            # NumPy/SciPy ADMM (no cvxpy): `solve_admm` has no warm-start hook, so
+            # `active_idx` / `sub_universe` / `x_prev` are unused; the unified base
+            # signature is adopted for interface compatibility.
+            positions_fn=lambda state, active_idx, sub_universe, x_prev, mu, sigma: _solve(
                 mu,
                 sigma,
                 delta=float(bound),

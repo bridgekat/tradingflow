@@ -17,7 +17,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-
 # ---------------------------------------------------------------------------
 # Mean portfolio
 # ---------------------------------------------------------------------------
@@ -93,8 +92,31 @@ class MeanPortfolio:
 
 
 # ---------------------------------------------------------------------------
-# Variance portfolio
+# Warm-startable solving portfolios
 # ---------------------------------------------------------------------------
+#
+# The `Variance` / `MeanVariance` bases drive iterative solvers, so they share a
+# warm-start contract that the closed-form `Mean` leaves above do not need:
+#
+#   * `init_fn(max_universe_size)` (optional) builds a *fixed-size* solver once at
+#     `init` time and returns an opaque handle stored in `state.solver`.  The
+#     solving leaves size their CVXPY `Parameter`s / `Variable` to
+#     `max_universe_size` so each rebalance re-solves the same (DPP) problem with
+#     new parameter values rather than rebuilding it.  Every solve therefore
+#     receives active arrays of length `<= max_universe_size`.
+#   * the base carries the previous rebalance's full-universe weights in
+#     `state.previous_positions` and hands each solve `sub_previous_positions =
+#     previous_positions[mask]` — the prior weights permuted into the *new* active
+#     indexing (names that left the universe are dropped; new names seed at 0) —
+#     so the leaf can seed the solver's initial point.
+#
+# Unified solve signature for both bases:
+#   ``positions_fn(state, active_indices, sub_universe, sub_previous_positions,
+#                  sub_mu, sub_sigma)``
+# `active_indices` are the global indices of the active stocks (mask order), for a
+# persistent slot allocator that keeps continuing names in fixed solver slots so
+# the warm start stays aligned.  `sub_mu is None` for the variance-only base.  All
+# active arrays are length `n = mask.sum() (<= max_universe_size)`.
 
 
 @dataclass(slots=True)
@@ -102,8 +124,11 @@ class VariancePortfolioState:
     """Mutable state for `VariancePortfolio` subclasses."""
 
     num_stocks: int
+    max_universe_size: int
     logarithmic: bool
-    positions_fn: Callable[["VariancePortfolioState", np.ndarray], np.ndarray]
+    positions_fn: Callable[..., np.ndarray]
+    solver: object
+    previous_positions: np.ndarray
 
 
 class VariancePortfolio:
@@ -111,27 +136,40 @@ class VariancePortfolio:
 
     Inputs: (universe ``(num_stocks,)``, predicted_covariances ``(num_stocks, num_stocks)``).
     Output: position weights, shape ``(num_stocks,)``.
+
+    `positions_fn` is ``(state, sub_universe, sub_previous_positions, None, sub_sigma)``
+    over the active subset (`sub_mu` is `None`); `sub_universe` is renormalised to
+    sum to 1 and `sub_previous_positions` is the prior solution in the new indexing.
     """
 
     def __init__(
         self,
         *,
-        positions_fn: Callable[[VariancePortfolioState, np.ndarray], np.ndarray],
+        positions_fn: Callable[..., np.ndarray],
+        init_fn: Callable[[int], object] | None = None,
         num_stocks: int | None = None,
+        max_universe_size: int | None = None,
         logarithmic: bool = True,
     ) -> None:
         self._num_stocks = num_stocks
+        self._max_universe_size = max_universe_size
         self._logarithmic = logarithmic
         self._positions_fn = positions_fn
+        self._init_fn = init_fn
 
     def init(self, inputs, timestamp: int) -> VariancePortfolioState:
         num_stocks = self._num_stocks
         if num_stocks is None:
             num_stocks = int(inputs[0].shape[0])
+        max_universe_size = self._max_universe_size if self._max_universe_size is not None else num_stocks
+        solver = self._init_fn(max_universe_size) if self._init_fn is not None else None
         return VariancePortfolioState(
             num_stocks=num_stocks,
+            max_universe_size=max_universe_size,
             logarithmic=self._logarithmic,
             positions_fn=self._positions_fn,
+            solver=solver,
+            previous_positions=np.zeros(num_stocks, dtype=np.float64),
         )
 
     @staticmethod
@@ -166,15 +204,19 @@ class VariancePortfolio:
 
         positions = np.zeros_like(universe, dtype=np.float64)
         if mask.any():
-            positions[mask] = state.positions_fn(state, sub_sigma)
+            k = int(mask.sum())
+            if k > state.max_universe_size:
+                raise ValueError(f"active universe size {k} exceeds max_universe_size " f"{state.max_universe_size}")
+            sub_universe = universe[mask]
+            active_indices = np.nonzero(mask)[0]
+            sub_previous_positions = state.previous_positions[mask]
+            positions[mask] = state.positions_fn(
+                state, active_indices, sub_universe, sub_previous_positions, None, sub_sigma
+            )
 
+        state.previous_positions = positions
         output.write(positions)
         return True
-
-
-# ---------------------------------------------------------------------------
-# Mean-variance portfolio
-# ---------------------------------------------------------------------------
 
 
 @dataclass(slots=True)
@@ -182,10 +224,11 @@ class MeanVariancePortfolioState:
     """Mutable state for `MeanVariancePortfolio` subclasses."""
 
     num_stocks: int
+    max_universe_size: int
     logarithmic: bool
-    positions_fn: Callable[
-        ["MeanVariancePortfolioState", np.ndarray, np.ndarray, np.ndarray], np.ndarray
-    ]
+    positions_fn: Callable[..., np.ndarray]
+    solver: object
+    previous_positions: np.ndarray
 
 
 class MeanVariancePortfolio:
@@ -195,32 +238,41 @@ class MeanVariancePortfolio:
     predicted_covariances ``(num_stocks, num_stocks)``).
     Output: position weights, shape ``(num_stocks,)``.
 
-    `positions_fn` is ``(state, mu, Sigma, x_bm) -> weights`` over the active subset,
-    with both moments in linear-return units and ``x_bm`` the benchmark subset
-    (renormalised to sum to 1).
+    `positions_fn` is ``(state, sub_universe, sub_previous_positions, sub_mu,
+    sub_sigma) -> weights`` over the active subset, with both moments in
+    linear-return units, `sub_universe` the benchmark subset (renormalised to sum
+    to 1), and `sub_previous_positions` the prior solution permuted into the new
+    indexing (for warm-starting the solver).
     """
 
     def __init__(
         self,
         *,
-        positions_fn: Callable[
-            [MeanVariancePortfolioState, np.ndarray, np.ndarray, np.ndarray], np.ndarray
-        ],
+        positions_fn: Callable[..., np.ndarray],
+        init_fn: Callable[[int], object] | None = None,
         num_stocks: int | None = None,
+        max_universe_size: int | None = None,
         logarithmic: bool = True,
     ) -> None:
         self._num_stocks = num_stocks
+        self._max_universe_size = max_universe_size
         self._logarithmic = logarithmic
         self._positions_fn = positions_fn
+        self._init_fn = init_fn
 
     def init(self, inputs, timestamp: int) -> MeanVariancePortfolioState:
         num_stocks = self._num_stocks
         if num_stocks is None:
             num_stocks = int(inputs[1].shape[0])
+        max_universe_size = self._max_universe_size if self._max_universe_size is not None else num_stocks
+        solver = self._init_fn(max_universe_size) if self._init_fn is not None else None
         return MeanVariancePortfolioState(
             num_stocks=num_stocks,
+            max_universe_size=max_universe_size,
             logarithmic=self._logarithmic,
             positions_fn=self._positions_fn,
+            solver=solver,
+            previous_positions=np.zeros(num_stocks, dtype=np.float64),
         )
 
     @staticmethod
@@ -257,21 +309,16 @@ class MeanVariancePortfolio:
 
         positions = np.zeros_like(universe, dtype=np.float64)
         if mask.any():
-            # Benchmark subset, renormalised to sum to 1 over the active
-            # subset.  When some universe>0 stocks are masked out (NaN in
-            # mu or sigma diagonal), their cap weight is redistributed
-            # proportionally over the kept names so that x_bm still
-            # represents a valid full-position benchmark for the same
-            # subset that x will be optimised over.  Falls back to equal
-            # weights if the kept benchmark mass is non-positive.
+            k = int(mask.sum())
+            if k > state.max_universe_size:
+                raise ValueError(f"active universe size {k} exceeds max_universe_size " f"{state.max_universe_size}")
             sub_universe = universe[mask]
-            s = float(sub_universe.sum())
-            sub_universe = (
-                sub_universe / s
-                if s > 0
-                else np.full(sub_universe.shape, 1.0 / sub_universe.size)
+            active_indices = np.nonzero(mask)[0]
+            sub_previous_positions = state.previous_positions[mask]
+            positions[mask] = state.positions_fn(
+                state, active_indices, sub_universe, sub_previous_positions, sub_mu, sub_sigma
             )
-            positions[mask] = state.positions_fn(state, sub_mu, sub_sigma, sub_universe)
 
+        state.previous_positions = positions
         output.write(positions)
         return True

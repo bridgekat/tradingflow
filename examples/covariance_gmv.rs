@@ -166,6 +166,7 @@ async fn main() {
                     "flowops.portfolios.mean_variance.markowitz",
                     PyParams::new()
                         .int("num_stocks", n_i)
+                        .int("max_universe_size", idx)
                         .int("mode", MODE_MIN_MEAN_VARIANCE)
                         .float("bound", RISK_AVERSION)
                         .bool("long_only", long_only),

@@ -1,19 +1,22 @@
 """Global minimum-variance portfolio optimization (flowops host port).
 
-NOTE (blocker): this operator depends on cvxpy, which is NOT importable on the
-free-threaded interpreter (`.venv-ft`).  The body is ported verbatim so it will
-run unchanged once cvxpy is available; the cvxpy import is deferred to call time
-so the module can still be imported (and the rank/mean leaves tested) on ft.
+Warm-started via a factor-model risk (see `flowops.portfolios._factor`): the
+covariance is approximated as `Sigma ~= B B^T + diag(d^2)` (top-`factor_rank` SVD
+low-rank + diagonal), so the objective `x^T Sigma x = sum_squares(F @ x) +
+sum_squares(d (.) x)` (with `F = B^T`) is DPP.  The problem is built once, sized to
+`max_universe_size`, and re-solved each rebalance with the parameters set and the
+previous positions seeded.
+
+NOTE (blocker): depends on cvxpy, NOT importable on `.venv-ft`; the cvxpy import is
+deferred to `init`/solve time.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
-import scipy as sp
 
 from flowops.portfolios._base import VariancePortfolio
+from flowops.portfolios._factor import assign_slots, factor_params_at
 
 
 class MinimumVariance(VariancePortfolio):
@@ -21,7 +24,8 @@ class MinimumVariance(VariancePortfolio):
 
     Inputs: ``(universe, covariance)`` with shapes ``(num_stocks,)`` /
     ``(num_stocks, num_stocks)``.
-    Output: position weights, ``(num_stocks,)``.
+    Output: position weights, shape ``(num_stocks,)``.  ``factor_rank`` (default 20)
+    is the rank of the SVD low-rank covariance approximation.
     """
 
     def __init__(
@@ -30,55 +34,72 @@ class MinimumVariance(VariancePortfolio):
         long_only: bool = True,
         verbose: bool = False,
         num_stocks: int | None = None,
+        max_universe_size: int | None = None,
+        factor_rank: int = 20,
         logarithmic: bool = True,
     ) -> None:
+        factor_rank = int(factor_rank)
         super().__init__(
-            positions_fn=lambda state, sigma: _solve(sigma, long_only, verbose),
+            init_fn=lambda m: _build(m, factor_rank, long_only),
+            # Variance base passes `sub_mu=None`; GMV ignores it.
+            positions_fn=lambda state, active_idx, sub_universe, x_prev, sub_mu, sigma: _solve(
+                state.solver, active_idx, sigma, long_only, verbose
+            ),
             num_stocks=num_stocks,
+            max_universe_size=max_universe_size,
             logarithmic=logarithmic,
         )
 
 
-def _solve(sigma: np.ndarray, long_only: bool, verbose: bool) -> np.ndarray:
-    """Solve the GMV optimization problem."""
+def _build(max_universe_size: int, factor_rank: int, long_only: bool) -> dict:
+    """Build the fixed-size, DPP, factor-model GMV problem once (per `init`)."""
     import cvxpy as cp
 
-    N = sigma.shape[0]
+    m, r = int(max_universe_size), int(factor_rank)
+    x = cp.Variable(m)
+    F = cp.Parameter((r, m))               # B.T (factor loadings), padded
+    d = cp.Parameter(m)                    # idiosyncratic std-dev, padded
+    active = cp.Parameter(m, nonneg=True)
 
-    if verbose:
-        print(f"  minimum_variance: sigma has shape {sigma.shape} and range [{sigma.min():.4e}, {sigma.max():.4e}]")
-
-    # LDL decomposition: sigma = L @ D @ L.T, where D diagonal and L[perm, :] lower-triangular.
-    L, D, perm = sp.linalg.ldl(sigma)
-    L = L * np.sqrt(np.maximum(np.diag(D), 0.0)).reshape(1, N)
-
-    if verbose:
-        error = np.max(np.abs(sigma - L @ L.T))
-        print(f"  minimum_variance: L has shape {L.shape} and range [{L.min():.4f}, {L.max():.4f}]")
-        print(f"  minimum_variance: LDL max error {error:.4} (non-zero may indicate non-positive-semidefinite sigma)")
-
-    # Construct the problem.  Minimising ||L' x||_2 is equivalent to
-    # minimising x' Sigma x (monotonic transform, same argmin).
-    x = cp.Variable(N)
-    objective = cp.Minimize(cp.norm(L.T @ x))
-    constraints: list[Any] = [cp.sum(x) == 1]
+    constraints = [cp.multiply(1.0 - active, x) == 0, cp.sum(x) == 1]
     if long_only:
         constraints.append(x >= 0)
+    risk_var = cp.sum_squares(F @ x) + cp.sum_squares(cp.multiply(d, x))  # x^T Sigma x
+    prob = cp.Problem(cp.Minimize(risk_var), constraints)
+    return {"prob": prob, "x": x, "F": F, "d": d, "active": active, "m": m, "r": r, "slot_of": {}}
 
-    # Solve the problem.
-    prob = cp.Problem(objective, constraints)
+
+def _solve(
+    handle: dict,
+    active_idx: np.ndarray,
+    sigma: np.ndarray,
+    long_only: bool,
+    verbose: bool,
+) -> np.ndarray:
+    """Map the active stocks to stable slots, set the factor-model parameters, and
+    re-solve.  No `x.value` seeding (cvxpy uses its cached previous solution, kept
+    aligned by the stable slots)."""
+    import cvxpy as cp
+
+    m, n = handle["m"], sigma.shape[0]
+    slots = assign_slots(handle["slot_of"], active_idx, m)
+    F_val, d_val, active = factor_params_at(sigma, slots, m, handle["r"])
+
+    handle["F"].value = F_val
+    handle["d"].value = d_val
+    handle["active"].value = active
+
     try:
-        prob.solve(solver=cp.SCS)
+        handle["prob"].solve(solver=cp.SCS, warm_start=True)
     except cp.SolverError as e:
         print(f"  minimum_variance: solver failed ({e}), using equal weights")
-        return np.full(N, 1.0 / N)
+        return np.full(n, 1.0 / n)
 
-    if x.value is None:
-        print(f"  minimum_variance: no solution (status={prob.status})")
-        return np.full(N, 1.0 / N)
+    if handle["x"].value is None:
+        print(f"  minimum_variance: no solution (status={handle['prob'].status})")
+        return np.full(n, 1.0 / n)
 
-    weights = np.array(x.value, dtype=np.float64)
-
+    weights = np.asarray(handle["x"].value[slots], dtype=np.float64)  # active order
     if long_only:
         weights = np.maximum(weights, 0.0)
         s = weights.sum()
@@ -86,11 +107,12 @@ def _solve(sigma: np.ndarray, long_only: bool, verbose: bool) -> np.ndarray:
             weights /= s
 
     if verbose:
-        n_nonzero = (np.abs(weights) > 1e-6).sum()
-        s = weights.sum()
         exp_vol = float(np.sqrt(max(weights @ sigma @ weights, 0.0)))
-        print(f"  minimum_variance: problem status: {prob.status}")
-        print(f"  minimum_variance: {n_nonzero}/{N} stocks, {s:.4f} invested, vol={exp_vol:.4e}")
+        n_nonzero = int((np.abs(weights) > 1e-6).sum())
+        print(
+            f"  minimum_variance: status={handle['prob'].status}, {n_nonzero}/{n} stocks, "
+            f"{weights.sum():.4f} invested, vol={exp_vol:.4e}"
+        )
 
     return weights
 
