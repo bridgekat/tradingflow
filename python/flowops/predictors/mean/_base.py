@@ -6,6 +6,31 @@ from dataclasses import dataclass
 import numpy as np
 
 
+def pool_and_subsample(
+    x: np.ndarray, y: np.ndarray, max_samples: int | None = None, seed: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Flatten the ``(T, N, F)`` / ``(T, N)`` training window to pooled rows, drop
+    rows with any non-finite feature or target, and -- when ``max_samples`` is set
+    and exceeded -- keep a uniform random subset of that size.
+
+    The draw is i.i.d. over the valid pooled rows, so the pooled regression stays
+    unbiased and distribution-preserving; it only caps the dominant
+    ``O(m * F^2)`` factorization cost (the read/standardize term is the cheaper,
+    bandwidth-bound ``O(m * F)`` and is left uncapped). ``seed`` makes the
+    subsample reproducible -- a fresh ``Generator`` per call, independent of global
+    state, so it's deterministic and thread-safe under the work-stealing pool.
+    """
+    t, n, f = x.shape
+    x = x.reshape(t * n, f)
+    y = y.reshape(t * n)
+    valid = np.isfinite(x).all(axis=1) & np.isfinite(y)
+    x, y = x[valid], y[valid]
+    if max_samples is not None and len(y) > int(max_samples):
+        idx = np.random.default_rng(seed).choice(len(y), size=int(max_samples), replace=False)
+        x, y = x[idx], y[idx]
+    return x, y
+
+
 @dataclass(slots=True)
 class MeanPredictorState[T]:
     num_stocks: int

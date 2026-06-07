@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ._base import MeanPredictor, MeanPredictorState
+from ._base import MeanPredictor, MeanPredictorState, pool_and_subsample
 
 
 @dataclass(slots=True)
@@ -27,23 +27,25 @@ class LinearRegression(MeanPredictor[LinearRegressionParams]):
     but more numerically stable.
     """
 
-    def __init__(self, *, verbose: bool = False, **kwargs) -> None:
+    def __init__(
+        self, *, verbose: bool = False, max_samples: int | None = None, subsample_seed: int = 0, **kwargs
+    ) -> None:
         self._verbose = verbose
         super().__init__(
-            fit_fn=lambda x, y: _fit_fn(x, y, verbose=verbose),
+            fit_fn=lambda x, y: _fit_fn(
+                x, y, verbose=verbose, max_samples=max_samples, seed=subsample_seed
+            ),
             predict_fn=_predict_fn,
             **kwargs,
         )
 
 
-def _fit_fn(x: np.ndarray, y: np.ndarray, *, verbose: bool) -> LinearRegressionParams:
+def _fit_fn(
+    x: np.ndarray, y: np.ndarray, *, verbose: bool, max_samples: int | None = None, seed: int = 0
+) -> LinearRegressionParams:
     """Fit OLS on a pooled, standardized design matrix via QR."""
-    M, N, F = x.shape
-    x = x.reshape(M * N, F)
-    y = y.reshape(M * N)
-
-    valid = np.isfinite(x).all(axis=1) & np.isfinite(y)
-    x, y = x[valid], y[valid]
+    F = x.shape[2]
+    x, y = pool_and_subsample(x, y, max_samples, seed)
     m = len(y)
 
     if m == 0:

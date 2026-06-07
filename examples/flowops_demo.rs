@@ -53,6 +53,7 @@ fn main() {
                     .int("num_features", F as i64)
                     .int("universe_size", N as i64)
                     .int("target_offset", 1)
+                    .int("max_samples", 100000)
                     .float("alpha", 1.0),
                 vec![N],
                 clock.clone(),

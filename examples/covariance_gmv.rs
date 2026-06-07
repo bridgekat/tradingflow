@@ -82,7 +82,8 @@ async fn main() {
                 .int("num_features", NUM_FEATURES)
                 .int("universe_size", idx)
                 .int("target_offset", 1)
-                .int("min_periods", 100),
+                .int("min_periods", 100)
+                .int("max_samples", 100000),
             vec![n],
             clk.clone(),
         ),

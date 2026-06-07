@@ -97,6 +97,7 @@ async fn main() {
                 .int("universe_size", idx)
                 .int("target_offset", 1)
                 .int("min_periods", 100)
+                .int("max_samples", 100000)
                 .float("alpha", 1.0),
             vec![n],
             clk.clone(),

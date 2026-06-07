@@ -8,9 +8,13 @@ Run with:
     PYTHONPATH=python .venv-ft/Scripts/python.exe python/flowops/tests/test_predictors.py
 """
 
+import importlib.util
+
 import numpy as np
 
 from flowops._testkit import FakeArrayView, FakeSeriesView
+
+_HAS_CVXPY = importlib.util.find_spec("cvxpy") is not None
 
 from flowops.predictors.mean import sample as mean_sample
 from flowops.predictors.mean import single_feature as mean_single_feature
@@ -141,9 +145,9 @@ def test_mean_ridge():
 
 
 def test_mean_lasso():
-    # cvxpy is unavailable on the ft interpreter (BLOCKER).  The op must
-    # still construct and init; the fit must raise ImportError on the first
-    # rebalance.  Verify both, without requiring cvxpy.
+    # Lasso fits via cvxpy. On the standard `.venv` (cvxpy present) the fit must
+    # run and produce finite output; on a no-cvxpy interpreter the deferred import
+    # must raise on the first rebalance. Either way the op constructs and inits.
     op = mean_lasso.build(
         num_stocks=N, num_features=F, universe_size=N, target_offset=1, alpha=0.1
     )
@@ -151,13 +155,20 @@ def test_mean_lasso():
     inputs = (universe, features_series, target_series)
     output = FakeArrayView(np.zeros(N), writable=True)
     state = op.init(inputs, timestamp=0)
-    raised = False
-    try:
-        op.compute(state, inputs, output, timestamp=1, produced=(True, True, True))
-    except ImportError:
-        raised = True
-    assert raised, "lasso fit must raise ImportError without cvxpy (BLOCKER)"
-    print("  mean.lasso OK (constructs/inits; fit blocked by missing cvxpy)")
+
+    if not _HAS_CVXPY:
+        raised = False
+        try:
+            op.compute(state, inputs, output, timestamp=1, produced=(True, True, True))
+        except ImportError:
+            raised = True
+        assert raised, "lasso fit must raise ImportError without cvxpy"
+        print("  mean.lasso OK (constructs/inits; fit blocked by missing cvxpy)")
+        return
+
+    assert op.compute(state, inputs, output, timestamp=1, produced=(True, True, True))
+    assert np.all(np.isfinite(output.written)), "lasso must produce finite predictions"
+    print("  mean.lasso OK (cvxpy fit, finite output)")
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +287,42 @@ def test_refit_every_caching():
     print("  refit_every caching OK")
 
 
+def test_mean_subsample():
+    """`max_samples` caps the pooled training rows: it drops NaN rows, bounds the
+    count deterministically, and is a no-op above the available count."""
+    from flowops.predictors.mean._base import pool_and_subsample
+
+    rng = np.random.default_rng(3)
+    t2, n2, f2 = 50, 20, 3
+    x = rng.normal(size=(t2, n2, f2))
+    y = rng.normal(size=(t2, n2))
+
+    # No cap: all (finite) pooled rows.
+    xa, ya = pool_and_subsample(x, y, None, 0)
+    assert xa.shape == (t2 * n2, f2) and ya.shape == (t2 * n2,)
+
+    # Cap below the count: exactly max_samples rows, deterministic for a fixed seed.
+    xb, yb = pool_and_subsample(x, y, 100, 7)
+    xb2, yb2 = pool_and_subsample(x, y, 100, 7)
+    assert xb.shape == (100, f2) and yb.shape == (100,)
+    assert np.array_equal(xb, xb2) and np.array_equal(yb, yb2)
+
+    # NaN rows dropped before sampling.
+    x[0, 0, 0] = np.nan
+    xc, yc = pool_and_subsample(x, y, None, 0)
+    assert len(yc) == t2 * n2 - 1 and np.all(np.isfinite(xc))
+
+    # End-to-end: a cap above the sample count is a no-op vs the uncapped fit.
+    op_full = mean_lr.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1)
+    op_cap = mean_lr.build(
+        num_stocks=N, num_features=F, universe_size=N, target_offset=1, max_samples=10**9
+    )
+    out_full = _drive(op_full, mean_output=True)
+    out_cap = _drive(op_cap, mean_output=True)
+    assert np.allclose(out_full[-1], out_cap[-1]), "max_samples above the count must be a no-op"
+    print("  mean subsample OK (cap bounds + deterministic + large-cap == full)")
+
+
 def main():
     tests = [
         test_mean_sample,
@@ -283,6 +330,7 @@ def main():
         test_mean_linear_regression,
         test_mean_ridge,
         test_mean_lasso,
+        test_mean_subsample,
         test_var_sample,
         test_var_single_index,
         test_var_shrinkage,
