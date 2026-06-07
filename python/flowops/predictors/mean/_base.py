@@ -19,16 +19,18 @@ def pool_and_subsample(
     bandwidth-bound ``O(m * F)`` and is left uncapped). ``seed`` makes the
     subsample reproducible -- a fresh ``Generator`` per call, independent of global
     state, so it's deterministic and thread-safe under the work-stealing pool.
+
+    The subsample is taken on the row **indices**, so only the kept rows are ever
+    copied (a single gather) -- not the whole valid block followed by a second
+    subsampling copy.
     """
     t, n, f = x.shape
     x = x.reshape(t * n, f)
     y = y.reshape(t * n)
-    valid = np.isfinite(x).all(axis=1) & np.isfinite(y)
-    x, y = x[valid], y[valid]
-    if max_samples is not None and len(y) > int(max_samples):
-        idx = np.random.default_rng(seed).choice(len(y), size=int(max_samples), replace=False)
-        x, y = x[idx], y[idx]
-    return x, y
+    keep = np.flatnonzero(np.isfinite(x).all(axis=1) & np.isfinite(y))
+    if max_samples is not None and keep.size > int(max_samples):
+        keep = keep[np.random.default_rng(seed).choice(keep.size, int(max_samples), replace=False)]
+    return x[keep], y[keep]
 
 
 @dataclass(slots=True)
