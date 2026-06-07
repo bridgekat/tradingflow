@@ -323,6 +323,49 @@ def test_mean_subsample():
     print("  mean subsample OK (cap bounds + deterministic + large-cap == full)")
 
 
+def test_incremental_equivalence():
+    """Incremental RLS OLS/Ridge reproduce the original full-window fit (expanding
+    and rolling), to solver tolerance, with no subsampling.
+
+    Drives the original and the incremental operator over the *same* series as it
+    grows one tick at a time -- the original re-reads the whole window each
+    rebalance, the incremental folds in only the new tick -- and asserts the
+    per-rebalance predictions match.
+    """
+    from flowops.predictors.mean import linear_regression as o_lr
+    from flowops.predictors.mean import ridge as o_ridge
+    from flowops.predictors.mean import incremental_linear_regression as i_lr
+    from flowops.predictors.mean import incremental_ridge as i_ridge
+
+    rng = np.random.default_rng(2)
+    true_beta = rng.normal(size=F)
+    feats = [rng.normal(size=(N, F)) for _ in range(T)]
+    targs = [feats[t] @ true_beta + 0.1 * rng.normal(size=N) for t in range(T)]
+    universe = FakeArrayView(np.ones(N), writable=False)
+    cfg = dict(num_stocks=N, num_features=F, universe_size=N, target_offset=1, min_periods=3)
+
+    cases = [
+        ("OLS expanding", o_lr.build(**cfg), i_lr.build(**cfg)),
+        ("Ridge expanding", o_ridge.build(alpha=0.7, **cfg), i_ridge.build(alpha=0.7, **cfg)),
+        ("Ridge rolling(10)", o_ridge.build(alpha=0.7, max_periods=10, **cfg), i_ridge.build(alpha=0.7, window=10, **cfg)),
+    ]
+    for name, op_o, op_i in cases:
+        full = (universe, FakeSeriesView(feats, elem_shape=(N, F)), FakeSeriesView(targs, elem_shape=(N,)))
+        so = op_o.init(full, 0)
+        si = op_i.init(full, 0)
+        for t in range(2, T + 1):
+            fv = FakeSeriesView(feats[:t], elem_shape=(N, F))
+            tv = FakeSeriesView(targs[:t], elem_shape=(N,))
+            oo = FakeArrayView(np.zeros(N), writable=True)
+            oi = FakeArrayView(np.zeros(N), writable=True)
+            op_o.compute(so, (universe, fv, tv), oo, t, (True, True, True))
+            op_i.compute(si, (universe, fv, tv), oi, t, (True, True, True))
+            assert np.allclose(oo.written, oi.written, atol=1e-6, equal_nan=True), (
+                f"{name}: mismatch at t={t}, max|d|={np.nanmax(np.abs(oo.written - oi.written)):.3e}"
+            )
+    print("  incremental equivalence OK (OLS/Ridge, expanding + rolling)")
+
+
 def main():
     tests = [
         test_mean_sample,
@@ -331,6 +374,7 @@ def main():
         test_mean_ridge,
         test_mean_lasso,
         test_mean_subsample,
+        test_incremental_equivalence,
         test_var_sample,
         test_var_single_index,
         test_var_shrinkage,

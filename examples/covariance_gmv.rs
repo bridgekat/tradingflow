@@ -76,14 +76,13 @@ async fn main() {
 
     let predicted_returns = sc.add_operator(
         PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
-            "flowops.predictors.mean.linear_regression",
+            "flowops.predictors.mean.incremental_linear_regression",
             PyParams::new()
                 .int("num_stocks", n_i)
                 .int("num_features", NUM_FEATURES)
                 .int("universe_size", idx)
                 .int("target_offset", 1)
-                .int("min_periods", 100)
-                .int("max_samples", 100000),
+                .int("min_periods", 100),
             vec![n],
             clk.clone(),
         ),
