@@ -19,7 +19,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, Port};
+use flowgraph::typed::{Handle, Port, Ports};
 
 use tradingflow::flow::{Log, Map, Multiply, PyClassOperator, PyParams, Scenario};
 use tradingflow::sources::clock;
@@ -117,7 +117,7 @@ async fn main() {
     );
 
     let index = sc.add_operator(
-        PyClassOperator::<[Port<Array<f64>>]>::from_module(
+        PyClassOperator::<Ports<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
             PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
             vec![2],
@@ -147,7 +147,7 @@ async fn main() {
             (universe, predicted_returns, predicted_cov),
         );
         let fric = sc.add_operator(
-            PyClassOperator::<[Port<Array<f64>>]>::from_module(
+            PyClassOperator::<Ports<Array<f64>>>::from_module(
                 "flowops.traders.benchmark",
                 PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
                 vec![2],

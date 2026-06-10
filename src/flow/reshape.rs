@@ -1,19 +1,22 @@
 //! Reshape / combine operators — port of `Stack`/`StackSync`/`Concat`/
 //! `ConcatSync`. Axis-based and generic, with the shared interleaved-copy
-//! helpers. The `*Sync` variants read the per-input notify tree.
+//! helpers. The `*Sync` variants read the per-input notify plane.
 
 use num_traits::Float;
 
-use flowgraph::typed::{Port, SliceNotify, SliceRefs};
+use flowgraph::typed::{Operator, Port, Ports};
 
-use super::op::Operator;
 use crate::{Array, Scalar};
 
-/// Shared runtime state for all four operators (outer × chunk layout).
-pub struct ReshapeState {
+/// Shared runtime state for all four operators: the axis config, the
+/// outer × chunk layout (sized on the `init` build call), and the output
+/// buffer.
+pub struct ReshapeState<T: Scalar> {
+    axis: usize,
     outer_count: usize,
     chunk_size: usize,
     n_inputs: usize,
+    out: Array<T>,
 }
 
 #[inline(always)]
@@ -40,7 +43,7 @@ fn interleaved_copy<'a, T: Scalar>(
 #[inline(always)]
 fn interleaved_copy_selective<T: Scalar>(
     output: &mut Array<T>,
-    inputs: &SliceRefs<'_, Port<Array<T>>>,
+    inputs: &[&Array<T>],
     positions: impl IntoIterator<Item = usize>,
     n_inputs: usize,
     outer_count: usize,
@@ -49,7 +52,7 @@ fn interleaved_copy_selective<T: Scalar>(
     let out = output.as_mut_slice();
     let stride = n_inputs * chunk_size;
     for pos in positions {
-        let src = inputs.get(pos).as_slice();
+        let src = inputs[pos].as_slice();
         for outer in 0..outer_count {
             let src_offset = outer * chunk_size;
             let dst_offset = outer * stride + pos * chunk_size;
@@ -80,41 +83,56 @@ impl<T: Scalar> Stack<T> {
 }
 
 impl<T: Scalar> Operator for Stack<T> {
-    type State = ReshapeState;
-    type Inputs = [Port<Array<T>>];
-    type Output = Array<T>;
+    type Inputs = Ports<Array<T>>;
+    type Outputs = Port<Array<T>>;
+    type State = ReshapeState<T>;
 
-    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>) -> (ReshapeState, Array<T>) {
-        assert!(!inputs.is_empty(), "Stack requires at least one input");
-        let first = inputs.get(0).shape();
-        assert!(self.axis <= first.len(), "axis out of bounds");
-        let state = ReshapeState {
-            outer_count: first[..self.axis].iter().product(),
-            chunk_size: first[self.axis..].iter().product(),
-            n_inputs: inputs.len(),
-        };
-        let mut shape = Vec::with_capacity(first.len() + 1);
-        shape.extend_from_slice(&first[..self.axis]);
-        shape.push(inputs.len());
-        shape.extend_from_slice(&first[self.axis..]);
-        (state, Array::zeros(&shape))
+    fn init(self) -> ReshapeState<T> {
+        ReshapeState {
+            axis: self.axis,
+            outer_count: 0,
+            chunk_size: 0,
+            n_inputs: 0,
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut ReshapeState,
-        inputs: SliceRefs<'_, Port<Array<T>>>,
-        output: &mut Array<T>,
-        _produced: SliceNotify<'_, Port<Array<T>>>,
-    ) -> bool {
+    fn compute<'a, 'b: 'a>(
+        (_, values): (&'a [bool], &'a [&'a Array<T>]),
+        state: &'b mut ReshapeState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            assert!(!values.is_empty(), "Stack requires at least one input");
+            let first = values[0].shape();
+            assert!(state.axis <= first.len(), "axis out of bounds");
+            state.outer_count = first[..state.axis].iter().product();
+            state.chunk_size = first[state.axis..].iter().product();
+            state.n_inputs = values.len();
+            let mut shape = Vec::with_capacity(first.len() + 1);
+            shape.extend_from_slice(&first[..state.axis]);
+            shape.push(values.len());
+            shape.extend_from_slice(&first[state.axis..]);
+            state.out = Array::zeros(&shape);
+            return (false, &state.out);
+        }
         interleaved_copy(
-            output,
-            inputs.iter(),
+            &mut state.out,
+            values.iter().copied(),
             state.n_inputs,
             state.outer_count,
             state.chunk_size,
         );
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (&'a [bool], &'a [&'a Array<T>]),
+        state: &'b ReshapeState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -140,46 +158,61 @@ impl<T: Scalar + Float> StackSync<T> {
 }
 
 impl<T: Scalar + Float> Operator for StackSync<T> {
-    type State = ReshapeState;
-    type Inputs = [Port<Array<T>>];
-    type Output = Array<T>;
+    type Inputs = Ports<Array<T>>;
+    type Outputs = Port<Array<T>>;
+    type State = ReshapeState<T>;
 
-    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>) -> (ReshapeState, Array<T>) {
-        assert!(!inputs.is_empty(), "StackSync requires at least one input");
-        let first = inputs.get(0).shape();
-        assert!(self.axis <= first.len(), "axis out of bounds");
-        let state = ReshapeState {
-            outer_count: first[..self.axis].iter().product(),
-            chunk_size: first[self.axis..].iter().product(),
-            n_inputs: inputs.len(),
-        };
-        let mut shape = Vec::with_capacity(first.len() + 1);
-        shape.extend_from_slice(&first[..self.axis]);
-        shape.push(inputs.len());
-        shape.extend_from_slice(&first[self.axis..]);
-        let total: usize = shape.iter().product();
-        (state, Array::from_vec(&shape, vec![T::nan(); total]))
+    fn init(self) -> ReshapeState<T> {
+        ReshapeState {
+            axis: self.axis,
+            outer_count: 0,
+            chunk_size: 0,
+            n_inputs: 0,
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut ReshapeState,
-        inputs: SliceRefs<'_, Port<Array<T>>>,
-        output: &mut Array<T>,
-        produced: SliceNotify<'_, Port<Array<T>>>,
-    ) -> bool {
-        for v in output.as_mut_slice().iter_mut() {
+    fn compute<'a, 'b: 'a>(
+        (flags, values): (&'a [bool], &'a [&'a Array<T>]),
+        state: &'b mut ReshapeState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            assert!(!values.is_empty(), "StackSync requires at least one input");
+            let first = values[0].shape();
+            assert!(state.axis <= first.len(), "axis out of bounds");
+            state.outer_count = first[..state.axis].iter().product();
+            state.chunk_size = first[state.axis..].iter().product();
+            state.n_inputs = values.len();
+            let mut shape = Vec::with_capacity(first.len() + 1);
+            shape.extend_from_slice(&first[..state.axis]);
+            shape.push(values.len());
+            shape.extend_from_slice(&first[state.axis..]);
+            let total: usize = shape.iter().product();
+            state.out = Array::from_vec(&shape, vec![T::nan(); total]);
+            return (false, &state.out);
+        }
+        for v in state.out.as_mut_slice().iter_mut() {
             *v = T::nan();
         }
         interleaved_copy_selective(
-            output,
-            &inputs,
-            (0..produced.len()).filter(|&i| produced.get(i)),
+            &mut state.out,
+            values,
+            (0..flags.len()).filter(|&i| flags[i]),
             state.n_inputs,
             state.outer_count,
             state.chunk_size,
         );
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (&'a [bool], &'a [&'a Array<T>]),
+        state: &'b ReshapeState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -204,39 +237,54 @@ impl<T: Scalar> Concat<T> {
 }
 
 impl<T: Scalar> Operator for Concat<T> {
-    type State = ReshapeState;
-    type Inputs = [Port<Array<T>>];
-    type Output = Array<T>;
+    type Inputs = Ports<Array<T>>;
+    type Outputs = Port<Array<T>>;
+    type State = ReshapeState<T>;
 
-    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>) -> (ReshapeState, Array<T>) {
-        assert!(!inputs.is_empty(), "Concat requires at least one input");
-        let first = inputs.get(0).shape();
-        assert!(self.axis < first.len(), "axis out of bounds");
-        let state = ReshapeState {
-            outer_count: first[..self.axis].iter().product(),
-            chunk_size: first[self.axis..].iter().product(),
-            n_inputs: inputs.len(),
-        };
-        let mut shape = first.to_vec();
-        shape[self.axis] *= inputs.len();
-        (state, Array::zeros(&shape))
+    fn init(self) -> ReshapeState<T> {
+        ReshapeState {
+            axis: self.axis,
+            outer_count: 0,
+            chunk_size: 0,
+            n_inputs: 0,
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut ReshapeState,
-        inputs: SliceRefs<'_, Port<Array<T>>>,
-        output: &mut Array<T>,
-        _produced: SliceNotify<'_, Port<Array<T>>>,
-    ) -> bool {
+    fn compute<'a, 'b: 'a>(
+        (_, values): (&'a [bool], &'a [&'a Array<T>]),
+        state: &'b mut ReshapeState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            assert!(!values.is_empty(), "Concat requires at least one input");
+            let first = values[0].shape();
+            assert!(state.axis < first.len(), "axis out of bounds");
+            state.outer_count = first[..state.axis].iter().product();
+            state.chunk_size = first[state.axis..].iter().product();
+            state.n_inputs = values.len();
+            let mut shape = first.to_vec();
+            shape[state.axis] *= values.len();
+            state.out = Array::zeros(&shape);
+            return (false, &state.out);
+        }
         interleaved_copy(
-            output,
-            inputs.iter(),
+            &mut state.out,
+            values.iter().copied(),
             state.n_inputs,
             state.outer_count,
             state.chunk_size,
         );
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (&'a [bool], &'a [&'a Array<T>]),
+        state: &'b ReshapeState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -262,43 +310,58 @@ impl<T: Scalar + Float> ConcatSync<T> {
 }
 
 impl<T: Scalar + Float> Operator for ConcatSync<T> {
-    type State = ReshapeState;
-    type Inputs = [Port<Array<T>>];
-    type Output = Array<T>;
+    type Inputs = Ports<Array<T>>;
+    type Outputs = Port<Array<T>>;
+    type State = ReshapeState<T>;
 
-    fn init(&self, inputs: SliceRefs<'_, Port<Array<T>>>) -> (ReshapeState, Array<T>) {
-        assert!(!inputs.is_empty(), "ConcatSync requires at least one input");
-        let first = inputs.get(0).shape();
-        assert!(self.axis < first.len(), "axis out of bounds");
-        let state = ReshapeState {
-            outer_count: first[..self.axis].iter().product(),
-            chunk_size: first[self.axis..].iter().product(),
-            n_inputs: inputs.len(),
-        };
-        let mut shape = first.to_vec();
-        shape[self.axis] *= inputs.len();
-        let total: usize = shape.iter().product();
-        (state, Array::from_vec(&shape, vec![T::nan(); total]))
+    fn init(self) -> ReshapeState<T> {
+        ReshapeState {
+            axis: self.axis,
+            outer_count: 0,
+            chunk_size: 0,
+            n_inputs: 0,
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut ReshapeState,
-        inputs: SliceRefs<'_, Port<Array<T>>>,
-        output: &mut Array<T>,
-        produced: SliceNotify<'_, Port<Array<T>>>,
-    ) -> bool {
-        for v in output.as_mut_slice().iter_mut() {
+    fn compute<'a, 'b: 'a>(
+        (flags, values): (&'a [bool], &'a [&'a Array<T>]),
+        state: &'b mut ReshapeState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            assert!(!values.is_empty(), "ConcatSync requires at least one input");
+            let first = values[0].shape();
+            assert!(state.axis < first.len(), "axis out of bounds");
+            state.outer_count = first[..state.axis].iter().product();
+            state.chunk_size = first[state.axis..].iter().product();
+            state.n_inputs = values.len();
+            let mut shape = first.to_vec();
+            shape[state.axis] *= values.len();
+            let total: usize = shape.iter().product();
+            state.out = Array::from_vec(&shape, vec![T::nan(); total]);
+            return (false, &state.out);
+        }
+        for v in state.out.as_mut_slice().iter_mut() {
             *v = T::nan();
         }
         interleaved_copy_selective(
-            output,
-            &inputs,
-            (0..produced.len()).filter(|&i| produced.get(i)),
+            &mut state.out,
+            values,
+            (0..flags.len()).filter(|&i| flags[i]),
             state.n_inputs,
             state.outer_count,
             state.chunk_size,
         );
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (&'a [bool], &'a [&'a Array<T>]),
+        state: &'b ReshapeState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }

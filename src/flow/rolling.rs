@@ -1,8 +1,10 @@
-//! Rolling (windowed) operators — port of [`crate::operators::rolling`]. The
-//! [`Accumulator`] / [`Window`] / [`Rolling`] framework and the four
-//! accumulators + [`Ema`] are transcribed verbatim except for the trait surface
-//! (`Input`→`Port`, `produced`→notify) and the `Accumulator: Send + Sync` bound
-//! (the accumulator lives in the operator State, which is a `Send + Sync` cell).
+//! Rolling (windowed) operators — port of [`crate::operators::rolling`],
+//! implemented directly on [`flowgraph::typed::Operator`]. The [`Accumulator`]
+//! / [`Window`] / [`Rolling`] framework and the four accumulators + [`Ema`] are
+//! transcribed verbatim except for the trait surface (the output buffer lives
+//! in the operator state and is sized on the `init` build call) and the
+//! `Accumulator: Send + Sync` bound (the accumulator lives in the operator
+//! State, which is a `Send + Sync` cell).
 //!
 //! Note: rolling reads event time from `series.timestamps()`, NOT the threaded
 //! `Instant`, so the time-delta window needs no clock wiring.
@@ -11,9 +13,8 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use flowgraph::typed::Port;
+use flowgraph::typed::{Operator, Port};
 
-use super::op::Operator;
 use crate::{Array, Duration, Scalar, Series};
 
 // ===========================================================================
@@ -81,45 +82,49 @@ impl<A: Accumulator> Rolling<A> {
     }
 }
 
-/// Runtime state for [`Rolling`].
+/// Runtime state for [`Rolling`]: the window config, accumulator bookkeeping,
+/// plus the output buffer.
 pub struct RollingState<A: Accumulator> {
     window: Window,
     start: usize,
     count: usize,
     accumulator: A,
+    out: Array<A::Scalar>,
 }
 
 impl<A: Accumulator> Operator for Rolling<A> {
-    type State = RollingState<A>;
     type Inputs = Port<Series<A::Scalar>>;
-    type Output = Array<A::Scalar>;
+    type Outputs = Port<Array<A::Scalar>>;
+    type State = RollingState<A>;
 
-    fn init(
-        &self,
-        inputs: &Series<A::Scalar>,
-    ) -> (RollingState<A>, Array<A::Scalar>) {
-        let input_shape = inputs.shape();
-        let output_shape = A::output_shape(input_shape);
-        let output_stride: usize = output_shape.iter().product();
-        let state = RollingState {
+    fn init(self) -> RollingState<A> {
+        RollingState {
             window: self.window,
             start: 0,
             count: 0,
-            accumulator: A::new(input_shape),
-        };
-        (
-            state,
-            Array::from_vec(&output_shape, vec![A::Scalar::nan(); output_stride]),
-        )
+            // Placeholder; replaced with a properly-shaped accumulator on the
+            // build call, where the input shape is known.
+            accumulator: A::new(&[0]),
+            out: Array::zeros(&[0]),
+        }
     }
 
-    fn compute(
-        state: &mut RollingState<A>,
-        inputs: &Series<A::Scalar>,
-        output: &mut Array<A::Scalar>,
-        _produced: bool,
-    ) -> bool {
-        let series = inputs;
+    fn compute<'a, 'b: 'a>(
+        (_, series): (bool, &'a Series<A::Scalar>),
+        state: &'b mut RollingState<A>,
+        init: bool,
+    ) -> (bool, &'a Array<A::Scalar>) {
+        if init {
+            let input_shape = series.shape();
+            let output_shape = A::output_shape(input_shape);
+            let output_stride: usize = output_shape.iter().product();
+            state.start = 0;
+            state.count = 0;
+            state.accumulator = A::new(input_shape);
+            state.out = Array::from_vec(&output_shape, vec![A::Scalar::nan(); output_stride]);
+            return (false, &state.out);
+        }
+
         let len = series.len();
 
         state.accumulator.add(series.at(len - 1));
@@ -133,7 +138,7 @@ impl<A: Accumulator> Operator for Rolling<A> {
                     state.count -= 1;
                 }
                 if state.count < w {
-                    return false;
+                    return (false, &state.out);
                 }
             }
             Window::TimeDelta(w) => {
@@ -145,13 +150,20 @@ impl<A: Accumulator> Operator for Rolling<A> {
                     state.count -= 1;
                 }
                 if state.count == 0 {
-                    return false;
+                    return (false, &state.out);
                 }
             }
         }
 
-        state.accumulator.write(state.count, output.as_mut_slice());
-        true
+        state.accumulator.write(state.count, state.out.as_mut_slice());
+        (true, &state.out)
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Series<A::Scalar>),
+        state: &'b RollingState<A>,
+    ) -> (bool, &'a Array<A::Scalar>) {
+        (false, &state.out)
     }
 }
 
@@ -461,7 +473,8 @@ impl<T: Scalar + Float> Ema<T> {
     }
 }
 
-/// Runtime state for [`Ema`].
+/// Runtime state for [`Ema`]: the decay config, weighted-sum bookkeeping,
+/// plus the output buffer.
 pub struct EmaState<T: Scalar + Float> {
     alpha: T,
     one_minus_alpha: T,
@@ -470,41 +483,50 @@ pub struct EmaState<T: Scalar + Float> {
     weighted_sum: Vec<T>,
     nonfinite_count: Vec<u32>,
     fill_decay: T,
+    out: Array<T>,
 }
 
 impl<T: Scalar + Float> Operator for Ema<T> {
-    type State = EmaState<T>;
     type Inputs = Port<Series<T>>;
-    type Output = Array<T>;
+    type Outputs = Port<Array<T>>;
+    type State = EmaState<T>;
 
-    fn init(&self, inputs: &Series<T>) -> (EmaState<T>, Array<T>) {
-        let stride = inputs.stride();
+    fn init(self) -> EmaState<T> {
+        // `one_minus_alpha` / `decay_factor` depend only on config; the
+        // input-shaped buffers are sized on the build call.
         let one_minus_alpha = T::one() - self.alpha;
         let mut decay_factor = T::one();
         for _ in 0..self.window {
             decay_factor = decay_factor * one_minus_alpha;
         }
-        let state = EmaState {
+        EmaState {
             alpha: self.alpha,
             one_minus_alpha,
             decay_factor,
             window: self.window,
-            weighted_sum: vec![T::zero(); stride],
-            nonfinite_count: vec![0; stride],
+            weighted_sum: Vec::new(),
+            nonfinite_count: Vec::new(),
             fill_decay: T::one(),
-        };
-        let shape = inputs.shape();
-        let stride = shape.iter().product::<usize>();
-        (state, Array::from_vec(shape, vec![T::nan(); stride]))
+            out: Array::zeros(&[0]),
+        }
     }
 
-    fn compute(
-        state: &mut EmaState<T>,
-        inputs: &Series<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let series = inputs;
+    fn compute<'a, 'b: 'a>(
+        (_, series): (bool, &'a Series<T>),
+        state: &'b mut EmaState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            let stride = series.stride();
+            state.weighted_sum = vec![T::zero(); stride];
+            state.nonfinite_count = vec![0; stride];
+            state.fill_decay = T::one();
+            let shape = series.shape();
+            let stride = shape.iter().product::<usize>();
+            state.out = Array::from_vec(shape, vec![T::nan(); stride]);
+            return (false, &state.out);
+        }
+
         let len = series.len();
         let row = series.at(len - 1);
         let stride = row.len();
@@ -539,9 +561,9 @@ impl<T: Scalar + Float> Operator for Ema<T> {
         }
 
         if len < state.window {
-            false
+            (false, &state.out)
         } else {
-            let out = output.as_mut_slice();
+            let out = state.out.as_mut_slice();
             for i in 0..stride {
                 out[i] = if state.nonfinite_count[i] == 0 && weight_sum > T::zero() {
                     state.weighted_sum[i] / weight_sum
@@ -549,7 +571,14 @@ impl<T: Scalar + Float> Operator for Ema<T> {
                     T::nan()
                 };
             }
-            true
+            (true, &state.out)
         }
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Series<T>),
+        state: &'b EmaState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }

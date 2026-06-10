@@ -23,13 +23,14 @@
 //!
 //! # Heterogeneous inputs
 //!
-//! flowgraph's typed ports are homogeneous slices or fixed tuples, so an
-//! operator's input shape is its concrete [`Ports`] type, e.g.
+//! flowgraph's typed interfaces are trees of `Port<T>` leaves, runtime-length
+//! `Ports<T>` groups, and tuples, so an operator's input shape is its concrete
+//! [`Interface`] type, e.g.
 //! `(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)` for a predictor or
-//! `[Port<Array<f64>>]` for an all-array operator. The [`PyArgs`] trait walks
-//! that type to build the view tuple + produced bools. (An erased enum input
-//! would have to clone growing `Series` each tick — `PyArgs` reads the borrowed
-//! cells directly instead.)
+//! `Ports<Array<f64>>` for an all-array operator. The [`PyArgs`] trait walks
+//! that type's refs to build the view tuple + produced bools in one pass. (An
+//! erased enum input would have to clone growing `Series` each tick — `PyArgs`
+//! reads the borrowed cells directly instead.)
 //!
 //! # Data model
 //!
@@ -57,9 +58,9 @@ use pyo3::types::{PyDict, PySlice, PyTuple};
 use numpy::ndarray::{ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 
-use flowgraph::typed::{Port, Ports, SliceNotify, SliceRefs};
+use flowgraph::typed::{Interface, InterfaceHandles, Operator, Port, Ports};
 
-use super::op::{Clock, Operator};
+use super::op::Clock;
 use crate::{Array, Series};
 
 // ===========================================================================
@@ -249,59 +250,99 @@ impl NativeSeriesView {
 // PyArgs — build the Python view tuple + produced bools from typed input refs
 // ===========================================================================
 
-/// Walks an operator's [`Ports`] input type, appending one Python view per leaf
-/// ([`NativeArrayView`] / [`NativeSeriesView`] / `None`) and one bool per leaf.
-pub trait PyArgs: Ports {
+/// Walks an operator's input [`Interface`] refs tree, appending one Python view
+/// per leaf ([`NativeArrayView`] / [`NativeSeriesView`] / `None`) and one
+/// produced (notify) bool per leaf, in tree order.
+pub trait PyArgs: Interface + InterfaceHandles {
+    /// Append one Python view per leaf to `views` and one notify bit per leaf
+    /// to `produced` (views order = legacy input order).
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Refs<'_>,
-        out: &mut Vec<Bound<'py, PyAny>>,
+        views: &mut Vec<Bound<'py, PyAny>>,
+        produced: &mut Vec<bool>,
     ) -> PyResult<()>;
-
-    fn append_produced(notify: Self::Notify<'_>, out: &mut Vec<bool>);
 }
 
 impl PyArgs for Port<Array<f64>> {
-    fn append_views<'py>(py: Python<'py>, refs: &Array<f64>, out: &mut Vec<Bound<'py, PyAny>>) -> PyResult<()> {
-        out.push(NativeArrayView::bind(py, refs as *const Array<f64> as *mut Array<f64>, false)?);
+    fn append_views<'py>(
+        py: Python<'py>,
+        refs: Self::Refs<'_>,
+        views: &mut Vec<Bound<'py, PyAny>>,
+        produced: &mut Vec<bool>,
+    ) -> PyResult<()> {
+        let (notify, value) = refs;
+        views.push(NativeArrayView::bind(
+            py,
+            value as *const Array<f64> as *mut Array<f64>,
+            false,
+        )?);
+        produced.push(notify);
         Ok(())
-    }
-    fn append_produced(notify: bool, out: &mut Vec<bool>) {
-        out.push(notify);
     }
 }
 
 impl PyArgs for Port<Series<f64>> {
-    fn append_views<'py>(py: Python<'py>, refs: &Series<f64>, out: &mut Vec<Bound<'py, PyAny>>) -> PyResult<()> {
-        out.push(NativeSeriesView::bind(py, refs as *const Series<f64>)?);
+    fn append_views<'py>(
+        py: Python<'py>,
+        refs: Self::Refs<'_>,
+        views: &mut Vec<Bound<'py, PyAny>>,
+        produced: &mut Vec<bool>,
+    ) -> PyResult<()> {
+        let (notify, value) = refs;
+        views.push(NativeSeriesView::bind(py, value as *const Series<f64>)?);
+        produced.push(notify);
         Ok(())
-    }
-    fn append_produced(notify: bool, out: &mut Vec<bool>) {
-        out.push(notify);
     }
 }
 
 impl PyArgs for Port<()> {
-    fn append_views<'py>(py: Python<'py>, _refs: &(), out: &mut Vec<Bound<'py, PyAny>>) -> PyResult<()> {
-        out.push(py.None().into_bound(py));
+    fn append_views<'py>(
+        py: Python<'py>,
+        refs: Self::Refs<'_>,
+        views: &mut Vec<Bound<'py, PyAny>>,
+        produced: &mut Vec<bool>,
+    ) -> PyResult<()> {
+        let (notify, _) = refs;
+        views.push(py.None().into_bound(py));
+        produced.push(notify);
         Ok(())
-    }
-    fn append_produced(notify: bool, out: &mut Vec<bool>) {
-        out.push(notify);
     }
 }
 
-impl<T: PyArgs + 'static> PyArgs for [T] {
-    fn append_views<'py>(py: Python<'py>, refs: SliceRefs<'_, T>, out: &mut Vec<Bound<'py, PyAny>>) -> PyResult<()> {
-        for i in 0..refs.len() {
-            T::append_views(py, refs.get(i), out)?;
+/// A runtime-length group appends one view + bit per element. (Concrete per
+/// leaf type — a generic `Ports<T> where Port<T>: PyArgs` impl cannot pass a
+/// `(bool, &T)` tuple where the unnormalized `<Port<T> as Interface>::Refs`
+/// projection is expected.)
+impl PyArgs for Ports<Array<f64>> {
+    fn append_views<'py>(
+        py: Python<'py>,
+        refs: Self::Refs<'_>,
+        views: &mut Vec<Bound<'py, PyAny>>,
+        produced: &mut Vec<bool>,
+    ) -> PyResult<()> {
+        let (flags, values) = refs;
+        debug_assert!(flags.len() == values.len(), "Ports refs planes disagree on length");
+        for (i, &value) in values.iter().enumerate() {
+            <Port<Array<f64>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
         }
         Ok(())
     }
-    fn append_produced(notify: SliceNotify<'_, T>, out: &mut Vec<bool>) {
-        for i in 0..notify.len() {
-            T::append_produced(notify.get(i), out);
+}
+
+impl PyArgs for Ports<Series<f64>> {
+    fn append_views<'py>(
+        py: Python<'py>,
+        refs: Self::Refs<'_>,
+        views: &mut Vec<Bound<'py, PyAny>>,
+        produced: &mut Vec<bool>,
+    ) -> PyResult<()> {
+        let (flags, values) = refs;
+        debug_assert!(flags.len() == values.len(), "Ports refs planes disagree on length");
+        for (i, &value) in values.iter().enumerate() {
+            <Port<Series<f64>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
         }
+        Ok(())
     }
 }
 
@@ -311,18 +352,17 @@ macro_rules! tuple_pyargs {
             fn append_views<'py>(
                 py: Python<'py>,
                 refs: Self::Refs<'_>,
-                out: &mut Vec<Bound<'py, PyAny>>,
+                views: &mut Vec<Bound<'py, PyAny>>,
+                produced: &mut Vec<bool>,
             ) -> PyResult<()> {
-                $( $T::append_views(py, refs.$idx, out)?; )+
+                $( $T::append_views(py, refs.$idx, views, produced)?; )+
                 Ok(())
-            }
-            fn append_produced(notify: Self::Notify<'_>, out: &mut Vec<bool>) {
-                $( $T::append_produced(notify.$idx, out); )+
             }
         }
     };
 }
 
+tuple_pyargs!(0: A);
 tuple_pyargs!(0: A, 1: B);
 tuple_pyargs!(0: A, 1: B, 2: C);
 tuple_pyargs!(0: A, 1: B, 2: C, 3: D);
@@ -330,6 +370,10 @@ tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E);
 tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
 tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G);
 tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
+tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I);
+tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J);
+tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K);
+tuple_pyargs!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);
 
 // ===========================================================================
 // PyClassOperator — hosts a Python operator object over inputs `I`
@@ -441,19 +485,19 @@ fn resolve_operator<'py>(
     }
 }
 
-/// A class-based Python operator over input ports `I` (e.g. `[Port<Array<f64>>]`
+/// A class-based Python operator over input ports `I` (e.g. `Ports<Array<f64>>`
 /// or `(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)`). Load its
 /// definition from a `.py` file, an importable module, or an inline source; each
 /// defines `build(**kwargs)` (called with [`PyParams`]) or binds `__op__`.
-pub struct PyClassOperator<I: PyArgs + ?Sized = [Port<Array<f64>>]> {
+pub struct PyClassOperator<I: PyArgs = Ports<Array<f64>>> {
     loader: Loader,
     params: PyParams,
     out_shape: Vec<usize>,
     clock: Clock,
-    _marker: PhantomData<fn() -> Box<I>>,
+    _marker: PhantomData<fn() -> I>,
 }
 
-impl<I: PyArgs + ?Sized> PyClassOperator<I> {
+impl<I: PyArgs> PyClassOperator<I> {
     /// Load from a `.py` file on disk (read now).
     pub fn from_file(
         path: impl AsRef<std::path::Path>,
@@ -501,75 +545,115 @@ impl<I: PyArgs + ?Sized> PyClassOperator<I> {
     }
 }
 
-/// State: the operator instance, its Python state object, and the driver clock.
+/// State: the deferred config (consumed on the `init` build call), the Python
+/// operator instance + its Python state object (created on that call), the
+/// driver clock, and the output buffer.
 pub struct PyClassState {
-    operator: Py<PyAny>,
-    py_state: Py<PyAny>,
+    loader: Option<Loader>,
+    params: Option<PyParams>,
+    out_shape: Vec<usize>,
+    operator: Option<Py<PyAny>>,
+    py_state: Option<Py<PyAny>>,
     clock: Clock,
+    out: Array<f64>,
 }
 
-impl<I: PyArgs + ?Sized + 'static> Operator for PyClassOperator<I> {
+impl<I: PyArgs + 'static> Operator for PyClassOperator<I> {
     type Inputs = I;
-    type Output = Array<f64>;
+    type Outputs = Port<Array<f64>>;
     type State = PyClassState;
 
-    fn init(&self, inputs: I::Refs<'_>) -> (PyClassState, Array<f64>) {
-        let ts = self.clock.get().as_nanos();
-        let (operator, py_state) = Python::attach(|py| {
-            let run = || -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-                let operator = resolve_operator(py, &self.loader, &self.params)?;
-                let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
-                I::append_views(py, inputs, &mut views)?;
-                let state = operator.call_method1("init", (PyTuple::new(py, views)?, ts))?;
-                Ok((operator.unbind(), state.unbind()))
-            };
-            run().unwrap_or_else(|e| {
-                e.print(py);
-                panic!("python operator init failed (see traceback above)");
-            })
-        });
-        (
-            PyClassState {
-                operator,
-                py_state,
-                clock: self.clock.clone(),
-            },
-            Array::zeros(&self.out_shape),
-        )
+    fn init(self) -> PyClassState {
+        PyClassState {
+            loader: Some(self.loader),
+            params: Some(self.params),
+            out_shape: self.out_shape,
+            operator: None,
+            py_state: None,
+            clock: self.clock,
+            out: Array::zeros(&[0]),
+        }
     }
 
-    fn compute(
-        state: &mut PyClassState,
-        inputs: I::Refs<'_>,
-        output: &mut Array<f64>,
-        produced: I::Notify<'_>,
-    ) -> bool {
+    fn compute<'a, 'b: 'a>(
+        inputs: <I as Interface>::Refs<'a>,
+        state: &'b mut PyClassState,
+        init: bool,
+    ) -> (bool, &'a Array<f64>) {
         let ts = state.clock.get().as_nanos();
-        let out_ptr = output as *mut Array<f64>;
+
+        if init {
+            // Build call: instantiate the Python operator and call its `init`
+            // with the build-time input views (no produced bits — the legacy
+            // Python `init(inputs, ts)` contract); allocate the output buffer.
+            // No Python `compute` runs here.
+            let loader = state.loader.take().expect("build call ran twice");
+            let params = state.params.take().expect("build call ran twice");
+            let (operator, py_state) = Python::attach(|py| {
+                let run = || -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+                    let operator = resolve_operator(py, &loader, &params)?;
+                    let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
+                    let mut produced: Vec<bool> = Vec::new(); // discarded on init
+                    I::append_views(py, inputs.clone(), &mut views, &mut produced)?;
+                    let st = operator.call_method1("init", (PyTuple::new(py, views)?, ts))?;
+                    Ok((operator.unbind(), st.unbind()))
+                };
+                run().unwrap_or_else(|e| {
+                    e.print(py);
+                    panic!("python operator init failed (see traceback above)");
+                })
+            });
+            state.operator = Some(operator);
+            state.py_state = Some(py_state);
+            state.out = Array::zeros(&state.out_shape);
+            return (false, &state.out);
+        }
+
+        let PyClassState {
+            operator,
+            py_state,
+            out,
+            ..
+        } = state;
+        let operator = operator
+            .as_ref()
+            .expect("python operator is instantiated on the build call");
+        let py_state = py_state
+            .as_ref()
+            .expect("python operator is instantiated on the build call");
+        let out_ptr: *mut Array<f64> = &mut *out;
+
         let result: Result<bool, ()> = Python::attach(|py| {
             let run = || -> PyResult<bool> {
                 let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
-                I::append_views(py, inputs, &mut views)?;
                 let mut bits: Vec<bool> = Vec::new();
-                I::append_produced(produced, &mut bits);
+                I::append_views(py, inputs.clone(), &mut views, &mut bits)?;
                 let out_view = NativeArrayView::bind(py, out_ptr, true)?;
-                let operator = state.operator.bind(py);
-                operator
-                    .call_method1(
-                        "compute",
-                        (
-                            state.py_state.bind(py),
-                            PyTuple::new(py, views)?,
-                            out_view,
-                            ts,
-                            PyTuple::new(py, bits)?,
-                        ),
-                    )?
-                    .extract::<bool>()
+                let op = operator.bind(py);
+                op.call_method1(
+                    "compute",
+                    (
+                        py_state.bind(py),
+                        PyTuple::new(py, views)?,
+                        out_view,
+                        ts,
+                        PyTuple::new(py, bits)?,
+                    ),
+                )?
+                .extract::<bool>()
             };
             run().map_err(|e| e.print(py))
         });
-        result.unwrap_or_else(|()| panic!("python operator compute failed (see traceback above)"))
+        let notify = result
+            .unwrap_or_else(|()| panic!("python operator compute failed (see traceback above)"));
+        (notify, &*out)
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: <I as Interface>::Refs<'a>,
+        state: &'b PyClassState,
+    ) -> (bool, &'a Array<f64>) {
+        (false, &state.out)
     }
 }
 
@@ -581,10 +665,10 @@ impl<I: PyArgs + ?Sized + 'static> Operator for PyClassOperator<I> {
 mod tests {
     use super::{PyClassOperator, PyParams};
     use flowgraph::core::Pool;
-    use flowgraph::typed::{Graph, GraphBuilder, Port};
+    use flowgraph::typed::{Graph, GraphBuilder, Port, Ports};
 
     use crate::Instant;
-    use crate::flow::{Adapt, Clock, Const, Record};
+    use crate::flow::{Clock, Record};
     use crate::{Array, Series};
 
     /// Turnover ported ~verbatim from python/.../metrics/turnover.py: a stateful
@@ -618,30 +702,30 @@ __op__ = Turnover()
     fn py_class_operator_turnover() {
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
-        let src = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![0.5_f64, 0.5]))), ());
+        let src = b.push_source(Array::from_vec(&[2], vec![0.5_f64, 0.5]));
         let out = b.push(
-            Adapt::new(PyClassOperator::<[Port<Array<f64>>]>::from_source(
+            PyClassOperator::<Ports<Array<f64>>>::from_source(
                 TURNOVER,
                 PyParams::new(),
                 vec![],
                 clock.clone(),
-            )),
-            &[src][..],
+            ),
+            &[*src][..],
         );
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
-        *g.cell_mut(src) = Array::from_vec(&[2], vec![0.5, 0.5]);
+        *g.state_mut(src) = Array::from_vec(&[2], vec![0.5, 0.5]);
         g.stabilize(&mut pool);
-        assert_eq!(g.cell(out).as_slice(), &[0.0]); // warmup
+        assert_eq!(g.slot(out).as_slice(), &[0.0]); // warmup
 
-        *g.cell_mut(src) = Array::from_vec(&[2], vec![0.3, 0.7]);
+        *g.state_mut(src) = Array::from_vec(&[2], vec![0.3, 0.7]);
         g.stabilize(&mut pool);
-        assert!((g.cell(out).as_slice()[0] - 0.4).abs() < 1e-12);
+        assert!((g.slot(out).as_slice()[0] - 0.4).abs() < 1e-12);
 
-        *g.cell_mut(src) = Array::from_vec(&[2], vec![1.0, 0.0]);
+        *g.state_mut(src) = Array::from_vec(&[2], vec![1.0, 0.0]);
         g.stabilize(&mut pool);
-        assert!((g.cell(out).as_slice()[0] - 1.4).abs() < 1e-12);
+        assert!((g.slot(out).as_slice()[0] - 1.4).abs() < 1e-12);
     }
 
     /// Heterogeneous inputs: an (Array, Series) operator that reads Series
@@ -668,34 +752,34 @@ __op__ = HistDot()
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
-        let weights = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![1.0_f64, 1.0]))), ());
-        let feed = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![0.0_f64, 0.0]))), ());
+        let weights = b.push_source(Array::from_vec(&[2], vec![1.0_f64, 1.0]));
+        let feed = b.push_source(Array::from_vec(&[2], vec![0.0_f64, 0.0]));
         // Record needs the clock; build via Record::new(clock).
-        let series = b.push(Adapt::new(Record::new(clock.clone())), feed);
+        let series = b.push(Record::new(clock.clone()), *feed);
         let out = b.push(
-            Adapt::new(PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>)>::from_source(
+            PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>)>::from_source(
                 HIST_DOT,
                 PyParams::new(),
                 vec![],
                 clock.clone(),
-            )),
-            (weights, series),
+            ),
+            (*weights, series),
         );
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
         // Tick 1 @ t=100: feed [1,2]; series=[[1,2]]; dot with [1,1]=3; mean=3.
         clock.set(Instant::from_nanos(100));
-        *g.cell_mut(weights) = Array::from_vec(&[2], vec![1.0, 1.0]);
-        *g.cell_mut(feed) = Array::from_vec(&[2], vec![1.0, 2.0]);
+        *g.state_mut(weights) = Array::from_vec(&[2], vec![1.0, 1.0]);
+        *g.state_mut(feed) = Array::from_vec(&[2], vec![1.0, 2.0]);
         g.stabilize(&mut pool);
-        assert!((g.cell(out).as_slice()[0] - 3.0).abs() < 1e-12);
+        assert!((g.slot(out).as_slice()[0] - 3.0).abs() < 1e-12);
 
         // Tick 2 @ t=200: feed [3,4]; series=[[1,2],[3,4]]; dots=3,7; mean=5.
         clock.set(Instant::from_nanos(200));
-        *g.cell_mut(feed) = Array::from_vec(&[2], vec![3.0, 4.0]);
+        *g.state_mut(feed) = Array::from_vec(&[2], vec![3.0, 4.0]);
         g.stabilize(&mut pool);
-        assert!((g.cell(out).as_slice()[0] - 5.0).abs() < 1e-12);
+        assert!((g.slot(out).as_slice()[0] - 5.0).abs() < 1e-12);
     }
 
     /// Loading an operator from a plain `.py` file via a `build(**kwargs)`
@@ -728,22 +812,22 @@ def build(scale=1.0):
 
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
-        let src = b.push(Adapt::new(Const(Array::from_vec(&[4], vec![1.0_f64, 2.0, 3.0, 4.0]))), ());
+        let src = b.push_source(Array::from_vec(&[4], vec![1.0_f64, 2.0, 3.0, 4.0]));
         let out = b.push(
-            Adapt::new(PyClassOperator::<[Port<Array<f64>>]>::from_file(
+            PyClassOperator::<Ports<Array<f64>>>::from_file(
                 &path,
                 PyParams::new().float("scale", 3.0),
                 vec![],
                 clock.clone(),
-            )),
-            &[src][..],
+            ),
+            &[*src][..],
         );
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
-        *g.cell_mut(src) = Array::from_vec(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+        *g.state_mut(src) = Array::from_vec(&[4], vec![1.0, 2.0, 3.0, 4.0]);
         g.stabilize(&mut pool);
-        assert!((g.cell(out).as_slice()[0] - 30.0).abs() < 1e-12); // sum(1..4)=10 * 3
+        assert!((g.slot(out).as_slice()[0] - 30.0).abs() < 1e-12); // sum(1..4)=10 * 3
     }
 
     // -- Integration with the real `flowops` package (needs python/ on -----------
@@ -755,24 +839,24 @@ def build(scale=1.0):
     fn flowops_turnover_via_module() {
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
-        let src = b.push(Adapt::new(Const(Array::from_vec(&[2], vec![0.5_f64, 0.5]))), ());
+        let src = b.push_source(Array::from_vec(&[2], vec![0.5_f64, 0.5]));
         let out = b.push(
-            Adapt::new(PyClassOperator::<[Port<Array<f64>>]>::from_module(
+            PyClassOperator::<Ports<Array<f64>>>::from_module(
                 "flowops.metrics.turnover",
                 PyParams::new().int("num_stocks", 2),
                 vec![],
                 clock.clone(),
-            )),
-            &[src][..],
+            ),
+            &[*src][..],
         );
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
-        *g.cell_mut(src) = Array::from_vec(&[2], vec![0.5, 0.5]);
+        *g.state_mut(src) = Array::from_vec(&[2], vec![0.5, 0.5]);
         g.stabilize(&mut pool); // warmup
-        *g.cell_mut(src) = Array::from_vec(&[2], vec![0.3, 0.7]);
+        *g.state_mut(src) = Array::from_vec(&[2], vec![0.3, 0.7]);
         g.stabilize(&mut pool);
-        assert!((g.cell(out).as_slice()[0] - 0.4).abs() < 1e-12);
+        assert!((g.slot(out).as_slice()[0] - 0.4).abs() < 1e-12);
     }
 
     /// A real predictor (LinearRegression) end-to-end: Array universe + two
@@ -785,25 +869,23 @@ def build(scale=1.0):
         const F: usize = 2;
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
-        let universe = b.push(Adapt::new(Const(Array::from_vec(&[N], vec![1.0; N]))), ());
-        let feat_feed = b.push(Adapt::new(Const(Array::zeros(&[N, F]))), ());
-        let tgt_feed = b.push(Adapt::new(Const(Array::zeros(&[N]))), ());
-        let feat_series = b.push(Adapt::new(Record::new(clock.clone())), feat_feed);
-        let tgt_series = b.push(Adapt::new(Record::new(clock.clone())), tgt_feed);
+        let universe = b.push_source(Array::from_vec(&[N], vec![1.0; N]));
+        let feat_feed = b.push_source(Array::<f64>::zeros(&[N, F]));
+        let tgt_feed = b.push_source(Array::<f64>::zeros(&[N]));
+        let feat_series = b.push(Record::new(clock.clone()), *feat_feed);
+        let tgt_series = b.push(Record::new(clock.clone()), *tgt_feed);
         let pred = b.push(
-            Adapt::new(
-                PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
-                    "flowops.predictors.mean.linear_regression",
-                    PyParams::new()
-                        .int("num_stocks", N as i64)
-                        .int("num_features", F as i64)
-                        .int("universe_size", N as i64)
-                        .int("target_offset", 1),
-                    vec![N],
-                    clock.clone(),
-                ),
+            PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+                "flowops.predictors.mean.linear_regression",
+                PyParams::new()
+                    .int("num_stocks", N as i64)
+                    .int("num_features", F as i64)
+                    .int("universe_size", N as i64)
+                    .int("target_offset", 1),
+                vec![N],
+                clock.clone(),
             ),
-            (universe, feat_series, tgt_series),
+            (*universe, feat_series, tgt_series),
         );
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
@@ -814,13 +896,13 @@ def build(scale=1.0):
             let x: Vec<f64> = (0..N * F).map(|k| (t as f64) + 0.1 * k as f64).collect();
             let y: Vec<f64> = (0..N).map(|i| 0.5 * (t as f64) + i as f64).collect();
             clock.set(Instant::from_nanos(t * 100));
-            *g.cell_mut(feat_feed) = Array::from_vec(&[N, F], x);
-            *g.cell_mut(tgt_feed) = Array::from_vec(&[N], y);
-            *g.cell_mut(universe) = Array::from_vec(&[N], vec![1.0; N]);
+            *g.state_mut(feat_feed) = Array::from_vec(&[N, F], x);
+            *g.state_mut(tgt_feed) = Array::from_vec(&[N], y);
+            *g.state_mut(universe) = Array::from_vec(&[N], vec![1.0; N]);
             g.stabilize(&mut pool);
         }
 
-        let mu = g.cell(pred).as_slice();
+        let mu = g.slot(pred).as_slice();
         assert_eq!(mu.len(), N);
         assert!(mu.iter().all(|v| v.is_finite()), "prediction has non-finite entries: {mu:?}");
     }

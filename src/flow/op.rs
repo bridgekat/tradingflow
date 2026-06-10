@@ -1,17 +1,34 @@
-//! The new [`Operator`] trait, the [`Adapt`] bridge onto `flowgraph`, and the
-//! shared [`Clock`].
+//! Operator-contract helpers shared by the `flow` operators: the [`Clock`] and
+//! the [`StripNotify`] refs helper.
 //!
-//! Operators are **pure** (no `timestamp` parameter), so `Adapt<O>` is a trivial
-//! bool→notify wrapper with no per-operator state injection — operators are
-//! directly `Adapt`-able. Event time is needed by exactly one operator
-//! ([`Record`](super::Record)); it receives the [`Clock`] in its own state via
-//! [`Scenario::add_record`](super::Scenario::add_record), so the clock is never
-//! a universal dependency.
+//! Since the `flowgraph` segment redesign, TradingFlow operators implement
+//! [`flowgraph::typed::Operator`] (notify-gated; the common case) or
+//! [`flowgraph::typed::Segment`] (custom gating, e.g. [`Clocked`](super::Clocked))
+//! **directly** — there is no TradingFlow-side operator trait or `Adapt` bridge
+//! any more, so operators compose with `flowgraph`'s combinators and the
+//! `segment!` fusion macro as-is.
+//!
+//! Conventions shared by every operator in this module tree:
+//!
+//! * **Output storage lives in `State`.** `compute` writes the state-owned
+//!   buffer and returns `(notify, &out)` references into it. State cells are
+//!   boxed by the engine, so those references stay valid across generations
+//!   (`passthrough` never reallocates).
+//! * **The `init == true` call replicates the legacy `init(&self, inputs)`.**
+//!   It only sizes/seeds the state and output from the build-time input values
+//!   and returns `(false, &out)` — no per-tick side effect (no counter bump, no
+//!   series append) may run on the build call.
+//! * **`passthrough` returns `(false, &out)`** — the previous value,
+//!   un-notified.
+//!
+//! Operators are **pure** with respect to time. Event time is needed by the few
+//! operators that stamp it (e.g. [`Record`](super::Record)); they receive the
+//! [`Clock`] in their own state, so the clock is never a universal dependency.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use flowgraph::typed::{Operator as FgOperator, Port, Ports};
+use flowgraph::typed::{Interface, Port, Ports};
 
 use crate::Instant;
 
@@ -50,69 +67,68 @@ impl Default for Clock {
 }
 
 // ===========================================================================
-// Operator — the (pure) TradingFlow operator contract, on flowgraph `Ports`.
+// StripNotify — values-only view of an `Interface` refs tree.
 // ===========================================================================
 
-/// A synchronous computation node: reads typed inputs and writes a single typed
-/// output, returning whether downstream should treat the output as newly
-/// produced. Pure with respect to time — operators that need event time take it
-/// as data (e.g. via the [`Clock`] in their state).
-pub trait Operator: 'static {
-    /// Input tree, e.g. `Port<Array<f64>>`, `(Port<A>, Port<B>)`, or `[Port<T>]`.
-    type Inputs: Ports + ?Sized;
-    /// Single output value type. Required `Send + Sync` (matches
-    /// [`flowgraph::typed::Operator`]); every operator output/state is `Sync`.
-    type Output: Send + Sync + 'static;
-    /// Mutable per-run state.
-    type State: Send + Sync + 'static;
+/// Maps an [`Interface`] refs tree (`(bool, &T)` leaves) onto its values-only
+/// tree (`&T` leaves), dropping the notify flags. Lets closure operators
+/// ([`Map`](super::Map) / [`Apply`](super::Apply)) keep their legacy closure
+/// signatures, e.g. `Fn((&Array<f64>, &Array<f64>)) -> T` for a two-port input.
+pub trait StripNotify: Interface {
+    /// The values-only refs tree.
+    type Values<'a>: Clone;
 
-    fn init(&self, inputs: <Self::Inputs as Ports>::Refs<'_>) -> (Self::State, Self::Output);
-
-    /// Returns `true` iff this output should be treated as newly produced
-    /// (downstream sees it as notified). `produced` is the per-input notify
-    /// tree (the engine's name for the legacy `produced` bits).
-    fn compute(
-        state: &mut Self::State,
-        inputs: <Self::Inputs as Ports>::Refs<'_>,
-        output: &mut Self::Output,
-        produced: <Self::Inputs as Ports>::Notify<'_>,
-    ) -> bool;
+    /// Drop the notify flags from a refs tree.
+    fn values<'a>(refs: Self::Refs<'a>) -> Self::Values<'a>;
 }
 
-// ===========================================================================
-// Adapt — the bridge: `O: Operator`  ==>  `Adapt<O>: flowgraph::typed::Operator`.
-// ===========================================================================
+impl<T: 'static> StripNotify for Port<T> {
+    type Values<'a> = &'a T;
 
-/// Wraps an [`Operator`] so it can be pushed into a `flowgraph` graph: maps the
-/// `bool` return onto the output notify flag. No clock, no extra state.
-pub struct Adapt<O> {
-    pub inner: O,
-}
-
-impl<O> Adapt<O> {
-    pub fn new(inner: O) -> Self {
-        Self { inner }
+    #[inline(always)]
+    fn values<'a>(refs: <Self as Interface>::Refs<'a>) -> Self::Values<'a> {
+        refs.1
     }
 }
 
-impl<O: Operator> FgOperator for Adapt<O> {
-    type Inputs = O::Inputs;
-    type Outputs = Port<O::Output>;
-    type State = O::State;
+impl StripNotify for () {
+    type Values<'a> = ();
 
-    fn init(&self, inputs: <O::Inputs as Ports>::Refs<'_>) -> (O::Output, O::State) {
-        let (state, output) = self.inner.init(inputs);
-        (output, state)
-    }
+    #[inline(always)]
+    fn values<'a>(_: <Self as Interface>::Refs<'a>) -> Self::Values<'a> {}
+}
 
-    fn compute(
-        inputs: <O::Inputs as Ports>::Refs<'_>,
-        inputs_notify: <O::Inputs as Ports>::Notify<'_>,
-        output: &mut O::Output,
-        output_notify: &mut bool,
-        state: &mut O::State,
-    ) {
-        // The TradingFlow propagation bool *is* the output notify flag.
-        *output_notify = O::compute(state, inputs, output, inputs_notify);
+impl<T: 'static> StripNotify for Ports<T> {
+    type Values<'a> = &'a [&'a T];
+
+    #[inline(always)]
+    fn values<'a>(refs: <Self as Interface>::Refs<'a>) -> Self::Values<'a> {
+        refs.1
     }
 }
+
+macro_rules! impl_strip_notify_for_tuple {
+    ($($idx:tt: $T:ident),+) => {
+        impl<$($T: StripNotify,)+> StripNotify for ($($T,)+) {
+            type Values<'a> = ($($T::Values<'a>,)+);
+
+            #[inline(always)]
+            fn values<'a>(refs: Self::Refs<'a>) -> Self::Values<'a> {
+                ( $( <$T as StripNotify>::values(refs.$idx), )+ )
+            }
+        }
+    };
+}
+
+impl_strip_notify_for_tuple!(0: A);
+impl_strip_notify_for_tuple!(0: A, 1: B);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C, 3: D);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K);
+impl_strip_notify_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);

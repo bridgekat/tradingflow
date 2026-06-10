@@ -1,17 +1,20 @@
 //! External async driver for the `flow` engine.
 //!
-//! [`Scenario`] builds a `flowgraph` graph whose source nodes are `Const`
-//! cells, and registers a [`Source`](crate::source::Source) per source cell.
-//! [`Session`] owns the built graph + a worker [`Pool`] + the shared [`Clock`]
-//! + the per-source channel state, and drives them via [`Session::run`].
+//! [`Scenario`] builds a `flowgraph` graph whose source cells are
+//! `push_source` nodes, and registers a [`Source`](crate::source::Source) per
+//! source cell. [`Session`] owns the built graph + a worker [`Pool`] + the
+//! shared [`Clock`] + the per-source channel state, and drives them via
+//! [`Session::run`].
 //!
 //! The event loop is lifted from the legacy `scenario::queue` loop (timestamp
 //! merge-heap + same-timestamp coalescing + historical-ordering constraint +
-//! live-event clamping). The only change is the per-batch apply step: instead
-//! of the legacy `Graph::flush`, the driver writes each fired source's event
-//! into its cell via `cell_mut_ptr_by_index` (which marks the dirty cone),
-//! advances the [`Clock`] to the batch timestamp, and runs one `stabilize`.
+//! live-event clamping). The per-batch apply step writes each fired source's
+//! event into its node state via the typed `Graph::state_mut(SourceHandle<T>)`
+//! (which marks the dirty cone) through a per-source monomorphized write
+//! function, advances the [`Clock`] to the batch timestamp, and runs one
+//! `stabilize`.
 
+use std::any::Any;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::future::poll_fn;
@@ -23,15 +26,115 @@ use std::task::{Context, Poll};
 use futures::stream::{FuturesUnordered, StreamExt};
 
 use flowgraph::core::Pool;
-use flowgraph::typed::{Graph, GraphBuilder, Handle, PortsHandles};
+use flowgraph::typed::{Graph, GraphBuilder, Handle, InterfaceHandles, Segment, SourceHandle};
 
-use super::op::{Adapt, Clock, Operator};
-use super::ops::{Const, Record};
-use crate::source::{ErasedSource, PollFn, Source, WriteFn};
-use crate::{Array, Instant, Scalar, Series};
+use super::op::Clock;
+use super::ops::Record;
+use crate::source::{PollFn, Source};
+use crate::{Array, Instant, PeekableReceiver, Scalar, Series};
 
 /// Shared shutdown flag for cooperative cancellation of the event loop.
 pub type ShutdownFlag = Arc<AtomicBool>;
+
+// ---------------------------------------------------------------------------
+// Flow-side source erasure — typed graph writes through `state_mut`
+// ---------------------------------------------------------------------------
+
+/// Type-erased graph-write function pointer for a source, monomorphized per
+/// source type by [`erased_flow_source`].
+///
+/// # Parameters
+///
+/// * `state_ptr: *mut u8` — points to `S::State`.
+/// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(Instant, S::Event)>`].
+/// * `graph: &mut Graph` — the typed graph (the write marks the dirty cone).
+/// * `handle: &dyn Any` — the source's `SourceHandle<S::Output>`.
+/// * `timestamp: Instant` — coalesced batch timestamp.
+///
+/// # Returns
+///
+/// The number of logical events the consumed channel item represented (a
+/// batched source returns its batch size); `0` if nothing was buffered.
+type FlowWriteFn =
+    unsafe fn(*mut u8, *mut u8, &mut Graph, &(dyn Any + Send + Sync), Instant) -> usize;
+
+/// Type-erased representation of a flow source: fresh channel receivers + write
+/// state from `init_fn`, plus the monomorphized poll/write/drop functions.
+struct ErasedFlowSource {
+    estimated_event_count: Option<usize>,
+    /// Returns `(hist_rx_ptr, live_rx_ptr, state_ptr)`, each from
+    /// [`Box::into_raw`]. The source's `init` output value is dropped — the
+    /// graph's `push_source` node owns the live value.
+    #[allow(clippy::type_complexity)]
+    init_fn: Box<dyn FnOnce(Instant) -> (*mut u8, *mut u8, *mut u8)>,
+    poll_fn: PollFn,
+    write_fn: FlowWriteFn,
+    rx_drop_fn: unsafe fn(*mut u8),
+    state_drop_fn: unsafe fn(*mut u8),
+}
+
+fn erased_flow_source<S: Source>(source: S) -> ErasedFlowSource
+where
+    S::Output: Send + Sync + 'static,
+{
+    ErasedFlowSource {
+        estimated_event_count: source.estimated_event_count(),
+        init_fn: Box::new(move |timestamp: Instant| {
+            let (hist, live, output, state) = source.init(timestamp);
+            // The flowgraph node already holds the `push_source(initial)`
+            // value, so the source's freshly-allocated init output is unused.
+            drop(output);
+            (
+                Box::into_raw(Box::new(PeekableReceiver::new(hist))) as *mut u8,
+                Box::into_raw(Box::new(PeekableReceiver::new(live))) as *mut u8,
+                Box::into_raw(Box::new(state)) as *mut u8,
+            )
+        }),
+        poll_fn: flow_poll_fn::<S>,
+        write_fn: flow_write_fn::<S>,
+        rx_drop_fn: flow_drop_fn::<PeekableReceiver<(Instant, S::Event)>>,
+        state_drop_fn: flow_drop_fn::<S::State>,
+    }
+}
+
+/// Type-erased poll function, monomorphised per event type.
+unsafe fn flow_poll_fn<S: Source>(
+    rx_ptr: *mut u8,
+    ctx: &mut Context<'_>,
+) -> Poll<Option<Instant>> {
+    let rx = unsafe { &mut *(rx_ptr as *mut PeekableReceiver<(Instant, S::Event)>) };
+    rx.poll_pending(ctx).map(|opt| opt.map(|item| item.0))
+}
+
+/// Type-erased graph-write function, monomorphised per source type. Downcasts
+/// the stored `SourceHandle<S::Output>` and writes the buffered event into the
+/// source node's state via the typed `state_mut` (marking the dirty cone).
+unsafe fn flow_write_fn<S: Source>(
+    state_ptr: *mut u8,
+    rx_ptr: *mut u8,
+    graph: &mut Graph,
+    handle: &(dyn Any + Send + Sync),
+    timestamp: Instant,
+) -> usize
+where
+    S::Output: Send + Sync + 'static,
+{
+    let state = unsafe { &mut *(state_ptr as *mut S::State) };
+    let rx = unsafe { &mut *(rx_ptr as *mut PeekableReceiver<(Instant, S::Event)>) };
+    let Some(item) = rx.take_pending() else {
+        return 0;
+    };
+    let handle = *handle
+        .downcast_ref::<SourceHandle<S::Output>>()
+        .expect("source slot handle type mismatch");
+    let output = graph.state_mut(handle);
+    S::write(state, item.1, output, timestamp)
+}
+
+/// Type-erased box drop function, monomorphised per value type.
+unsafe fn flow_drop_fn<T>(ptr: *mut u8) {
+    unsafe { drop(Box::from_raw(ptr as *mut T)) };
+}
 
 // ---------------------------------------------------------------------------
 // Channels / merge entries / receive future (mirrors scenario::queue)
@@ -74,18 +177,19 @@ impl std::future::Future for ErasedRecvFuture {
 }
 
 // ---------------------------------------------------------------------------
-// SourceSlot — per-source channel state pointing at a flowgraph cell
+// SourceSlot — per-source channel state pointing at a flowgraph source node
 // ---------------------------------------------------------------------------
 
 struct SourceSlot {
-    /// Flowgraph cell index of this source's `Const` output node.
-    cell_index: usize,
+    /// The `SourceHandle<S::Output>` of this source's `push_source` node,
+    /// type-erased; `write_fn` downcasts it back.
+    handle: Box<dyn Any + Send + Sync>,
     hist_rx_ptr: *mut u8,
     live_rx_ptr: *mut u8,
     /// Per-source write state (`Source::State`), threaded into every `write_fn`.
     state_ptr: *mut u8,
     poll_fn: PollFn,
-    write_fn: WriteFn,
+    write_fn: FlowWriteFn,
     rx_drop_fn: unsafe fn(*mut u8),
     state_drop_fn: unsafe fn(*mut u8),
 }
@@ -128,8 +232,9 @@ impl Drop for SourceSlot {
 // ---------------------------------------------------------------------------
 
 struct SourceDescriptor {
-    cell_index: usize,
-    erased: ErasedSource,
+    /// The source's `SourceHandle<S::Output>`, type-erased.
+    handle: Box<dyn Any + Send + Sync>,
+    erased: ErasedFlowSource,
 }
 
 /// Builds a `flow` graph plus its source registrations.
@@ -154,31 +259,33 @@ impl Scenario {
     }
 
     /// Register a constant node (an externally-set source cell with no async
-    /// feed). Mutate it via [`Session::cell_mut`] + [`Session::flush`].
-    pub fn add_const<T: Clone + Send + Sync + 'static>(&mut self, value: T) -> Handle<T> {
-        self.builder.push(Adapt::new(Const(value)), ())
+    /// feed). Mutate it via [`Session::cell_mut`] + [`Session::flush`]; wire it
+    /// downstream via the deref'd plain handle (`*h`).
+    pub fn add_const<T: Send + Sync + 'static>(&mut self, value: T) -> SourceHandle<T> {
+        self.builder.push_source(value)
     }
 
-    /// Register an [`Operator`]. `inputs` are the upstream handles.
+    /// Register a [`Segment`] (most operators implement
+    /// [`flowgraph::typed::Operator`], which is one). `inputs` are the upstream
+    /// handles, shaped like the segment's input tree.
     pub fn add_operator<O>(
         &mut self,
         operator: O,
-        inputs: <O::Inputs as PortsHandles>::InputHandles<'_>,
-    ) -> Handle<O::Output>
+        inputs: <O::Inputs as InterfaceHandles>::Handles<'_>,
+    ) -> <O::Outputs as InterfaceHandles>::HandlesOwned
     where
-        O: Operator,
-        O::Inputs: PortsHandles,
-        O::Output: Send + Sync + 'static,
+        O: Segment,
+        O::Inputs: InterfaceHandles,
+        O::Outputs: InterfaceHandles,
     {
-        self.builder.push(Adapt::new(operator), inputs)
+        self.builder.push(operator, inputs)
     }
 
     /// Register a [`Record`] for a data stream, wiring the driver's [`Clock`]
     /// so each recorded row is stamped with the current event time. `Record`
     /// needs the clock, so it cannot go through [`add_operator`](Self::add_operator).
     pub fn add_record<T: Scalar>(&mut self, data: Handle<Array<T>>) -> Handle<Series<T>> {
-        self.builder
-            .push(Adapt::new(Record::new(self.clock.clone())), data)
+        self.builder.push(Record::new(self.clock.clone()), data)
     }
 
     /// The driver's [`Clock`]. For building custom time-reading operators (held
@@ -201,7 +308,7 @@ impl Scenario {
         out_len: usize,
     ) -> Handle<Array<f64>> {
         self.builder
-            .push(Adapt::new(super::python::PyOperator::new(source, out_len)), inputs)
+            .push(super::python::PyOperator::new(source, out_len), inputs)
     }
 
     /// Register a Python operator in **write mode** (feature `pyflow`, zero-copy
@@ -218,7 +325,7 @@ impl Scenario {
         out_len: usize,
     ) -> Handle<Array<f64>> {
         self.builder
-            .push(Adapt::new(super::python::PyOperator::writing(source, out_len)), inputs)
+            .push(super::python::PyOperator::writing(source, out_len), inputs)
     }
 
     /// Register a class-based Python operator (feature `pyflow`). `source` is a
@@ -236,13 +343,11 @@ impl Scenario {
         out_shape: &[usize],
     ) -> Handle<Array<f64>> {
         self.builder.push(
-            Adapt::new(
-                super::pyhost::PyClassOperator::<[flowgraph::typed::Port<Array<f64>>]>::from_source(
-                    source,
-                    params,
-                    out_shape.to_vec(),
-                    self.clock.clone(),
-                ),
+            super::pyhost::PyClassOperator::<flowgraph::typed::Ports<Array<f64>>>::from_source(
+                source,
+                params,
+                out_shape.to_vec(),
+                self.clock.clone(),
             ),
             inputs,
         )
@@ -263,35 +368,36 @@ impl Scenario {
         out_shape: &[usize],
     ) -> Handle<Array<f64>> {
         self.builder.push(
-            Adapt::new(
-                super::pyhost::PyClassOperator::<[flowgraph::typed::Port<Array<f64>>]>::from_file(
-                    path,
-                    params,
-                    out_shape.to_vec(),
-                    self.clock.clone(),
-                ),
+            super::pyhost::PyClassOperator::<flowgraph::typed::Ports<Array<f64>>>::from_file(
+                path,
+                params,
+                out_shape.to_vec(),
+                self.clock.clone(),
             ),
             inputs,
         )
     }
 
-    /// Register a [`Source`]. Its output cell is a `Const(initial)`; the async
-    /// feed is wired up at [`build`](Self::build) time.
+    /// Register a [`Source`]. Its output cell is a `push_source(initial)` node;
+    /// the async feed is wired up at [`build`](Self::build) time.
     pub fn add_source<S: Source>(&mut self, source: S, initial: S::Output) -> Handle<S::Output>
     where
-        S::Output: Clone + Send + Sync + 'static,
+        S::Output: Send + Sync + 'static,
     {
-        let handle = self.builder.push(Adapt::new(Const(initial)), ());
-        let erased = ErasedSource::from_source(source);
+        let handle = self.builder.push_source(initial);
+        let erased = erased_flow_source(source);
         // Accumulate the progress estimate: sum the per-source counts; a single
         // un-estimable source makes the whole total unknown (None). Live/one-row-
         // per-event sources report their row count so `on_flush` tracks rows.
-        self.estimated_total = match (self.estimated_total, erased.estimated_event_count()) {
+        self.estimated_total = match (self.estimated_total, erased.estimated_event_count) {
             (Some(acc), Some(n)) => Some(acc.saturating_add(n)),
             _ => None,
         };
-        self.sources.push(SourceDescriptor { cell_index: handle.index(), erased });
-        handle
+        self.sources.push(SourceDescriptor {
+            handle: Box::new(handle),
+            erased,
+        });
+        *handle
     }
 
     /// Finalize the graph and initialise every source (creating its channels),
@@ -311,24 +417,18 @@ impl Scenario {
         let graph = Graph::from_builder(builder);
 
         let mut slots = Vec::with_capacity(sources.len());
-        for desc in &sources {
-            assert!(
-                graph.inner().cell_type_id(desc.cell_index) == desc.erased.output_type_id(),
-                "source cell type does not match source output type",
-            );
-            let (hist_rx_ptr, live_rx_ptr, output_ptr, state_ptr) = desc.erased.init(Instant::MIN);
-            // The flowgraph cell already holds the `Const(initial)` value, so
-            // the source's freshly-allocated init output is unused here.
-            unsafe { (desc.erased.output_drop_fn())(output_ptr) };
+        for desc in sources {
+            let SourceDescriptor { handle, erased } = desc;
+            let (hist_rx_ptr, live_rx_ptr, state_ptr) = (erased.init_fn)(Instant::MIN);
             slots.push(SourceSlot {
-                cell_index: desc.cell_index,
+                handle,
                 hist_rx_ptr,
                 live_rx_ptr,
                 state_ptr,
-                poll_fn: desc.erased.poll_fn(),
-                write_fn: desc.erased.write_fn(),
-                rx_drop_fn: desc.erased.rx_drop_fn(),
-                state_drop_fn: desc.erased.state_drop_fn(),
+                poll_fn: erased.poll_fn,
+                write_fn: erased.write_fn,
+                rx_drop_fn: erased.rx_drop_fn,
+                state_drop_fn: erased.state_drop_fn,
             });
         }
 
@@ -377,12 +477,14 @@ impl Session {
 
     /// Immutable access to a node value.
     pub fn value<T: Send + Sync + 'static>(&self, handle: Handle<T>) -> &T {
-        self.graph.cell(handle)
+        self.graph.slot(handle)
     }
 
-    /// Mutable access to a node value (marks its dirty cone).
-    pub fn cell_mut<T: Send + Sync + 'static>(&mut self, handle: Handle<T>) -> &mut T {
-        self.graph.cell_mut(handle)
+    /// Mutable access to a source cell's value (marks its dirty cone). Only
+    /// source cells ([`Scenario::add_const`] / [`Scenario::add_source`]) can be
+    /// poked; operator outputs are state-owned and engine-written.
+    pub fn cell_mut<T: Send + Sync + 'static>(&mut self, handle: SourceHandle<T>) -> &mut T {
+        self.graph.state_mut(handle)
     }
 
     /// Manually advance the clock and stabilize (the synchronous-step API).
@@ -486,17 +588,21 @@ impl Session {
                     kind,
                 }) = heap.pop().unwrap();
 
+                // Write the buffered item into the source node's state via the
+                // typed `state_mut` (marking the dirty cone). The item was
+                // peeked, so `write_fn` finds it pending; it returns the number
+                // of logical events it represented (a panel ships a whole
+                // tick's rows as one item, so this is the row count, not 1).
                 let slot = &self.slots[source_idx];
-                let rx_ptr = slot.rx_ptr(kind);
-                let write_fn = slot.write_fn;
-                let state_ptr = slot.state_ptr;
-                let cell_index = slot.cell_index;
-                // Mark the cone + write the buffered item into the cell. The item
-                // was peeked, so `write_fn` finds it pending; it returns the number
-                // of logical events it represented (a panel ships a whole tick's
-                // rows as one item, so this is the row count, not 1).
-                let cell_ptr = self.graph.inner_mut().cell_mut_ptr(cell_index) as *mut u8;
-                let n = unsafe { (write_fn)(state_ptr, rx_ptr, cell_ptr, min_ts) };
+                let n = unsafe {
+                    (slot.write_fn)(
+                        slot.state_ptr,
+                        slot.rx_ptr(kind),
+                        &mut self.graph,
+                        slot.handle.as_ref(),
+                        min_ts,
+                    )
+                };
                 events_processed = events_processed.saturating_add(n);
 
                 // Re-queue the consumed channel's future.
@@ -703,12 +809,10 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex};
 
-    use flowgraph::typed::Port;
+    use flowgraph::typed::{Operator as FgOperator, Port};
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
     use tokio::sync::mpsc;
-
-    use crate::flow::Operator as FlowOperator;
 
     /// A source backed by pre-filled bounded hist + live channels.
     #[derive(Clone)]
@@ -759,24 +863,26 @@ mod tests {
         clock: Clock,
     }
 
-    impl FlowOperator for GlobalLogger {
+    impl FgOperator for GlobalLogger {
         type Inputs = Port<Array<f64>>;
-        type Output = ();
+        type Outputs = ();
         type State = (usize, Arc<Mutex<Vec<(i64, usize)>>>, Clock);
 
-        fn init(&self, _inputs: &Array<f64>) -> (Self::State, ()) {
-            ((self.source_id, self.log.clone(), self.clock.clone()), ())
+        fn init(self) -> Self::State {
+            (self.source_id, self.log, self.clock)
         }
 
-        fn compute(
-            state: &mut Self::State,
-            _inputs: &Array<f64>,
-            _output: &mut (),
-            _produced: bool,
-        ) -> bool {
-            state.1.lock().unwrap().push((state.2.get().as_nanos(), state.0));
-            false
+        fn compute<'a, 'b: 'a>(
+            _: (bool, &'a Array<f64>),
+            state: &'b mut Self::State,
+            init: bool,
+        ) {
+            if !init {
+                state.1.lock().unwrap().push((state.2.get().as_nanos(), state.0));
+            }
         }
+
+        fn passthrough<'a, 'b: 'a>(_: (bool, &'a Array<f64>), _: &'b Self::State) {}
     }
 
     type EventVec = Vec<(Instant, f64)>;

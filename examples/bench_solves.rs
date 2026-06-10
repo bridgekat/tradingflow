@@ -58,7 +58,7 @@ async fn main() {
     let ticks_v: Vec<Instant> = (1..=ticks as i64).map(|t| Instant::from_nanos(t * 86_400_000_000_000)).collect();
     let clock_h = sc.add_source(clock(ticks_v), ());
     let ones = sc.add_const(Array::from_vec(&[n], vec![1.0; n]));
-    let universe = sc.add_operator(Resample::<Array<f64>, ()>::new(), (clock_h, ones));
+    let universe = sc.add_operator(Resample::<Array<f64>, ()>::new(), (clock_h, *ones));
 
     let mu_h = sc.add_const(Array::from_vec(&[n], mu));
     let sigma_h = sc.add_const(Array::from_vec(&[n, n], sigma));
@@ -78,7 +78,7 @@ async fn main() {
                 vec![n],
                 clk.clone(),
             ),
-            (universe, mu_h, sigma_h),
+            (universe, *mu_h, *sigma_h),
         );
         recs.push(sc.add_record(mk));
     }

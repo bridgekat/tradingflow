@@ -1,72 +1,66 @@
-//! First batch of operators ported onto the new [`Operator`](super::Operator)
-//! trait. Generic over [`Scalar`] where natural; `f64`-specialized for the
-//! arithmetic / gating / slice / rolling ops to keep bounds tight (the generic
-//! versions land with the bulk port).
+//! Core gating / recording operators, implemented directly on
+//! [`flowgraph::typed::Operator`] / [`Segment`]. (The legacy `Const` cell is
+//! gone — source cells are `GraphBuilder::push_source` nodes now, registered
+//! via [`Scenario::add_const`](super::Scenario::add_const).)
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Port, Ports};
+use flowgraph::typed::{Interface, Operator, Port, Segment};
 
-use super::op::{Clock, Operator};
+use super::op::Clock;
 use crate::{Array, Scalar, Series};
-
-// ---------------------------------------------------------------------------
-// Const — externally-set constant / source cell.
-// ---------------------------------------------------------------------------
-
-/// 0-input source cell: never runs during `stabilize`; the driver mutates it
-/// via `cell_mut` to inject events.
-pub struct Const<T>(pub T);
-
-impl<T: Clone + Send + Sync + 'static> Operator for Const<T> {
-    type Inputs = ();
-    type Output = T;
-    type State = ();
-
-    fn init(&self, _inputs: ()) -> ((), T) {
-        ((), self.0.clone())
-    }
-
-    fn compute(_s: &mut (), _i: (), _o: &mut T, _p: ()) -> bool {
-        true
-    }
-}
-
-// (Elementwise arithmetic — Add/Subtract/Multiply/Divide/Min/Max/unary/Pow —
-// lives in `super::arith`, ported from `operators::num::arithmetic`.)
 
 // ---------------------------------------------------------------------------
 // Filter — whole-array gate by predicate (the cutoff operator).
 // ---------------------------------------------------------------------------
 
-/// Passes the input through when the predicate holds, else drops it (returns
-/// `false` → output un-notified → downstream gated off).
+/// Passes the input through when the predicate holds, else drops it (emits
+/// `notify = false` → downstream gated off, previous value retained).
 pub struct Filter<F>(pub F);
+
+/// Runtime state for [`Filter`]: the predicate plus the retained output.
+pub struct FilterState<F> {
+    predicate: F,
+    out: Array<f64>,
+}
 
 impl<F> Operator for Filter<F>
 where
-    F: Fn(&Array<f64>) -> bool + Clone + Send + Sync + 'static,
+    F: Fn(&Array<f64>) -> bool + Send + Sync + 'static,
 {
     type Inputs = Port<Array<f64>>;
-    type Output = Array<f64>;
-    type State = F;
+    type Outputs = Port<Array<f64>>;
+    type State = FilterState<F>;
 
-    fn init(&self, inputs: &Array<f64>) -> (F, Array<f64>) {
-        (self.0.clone(), inputs.clone())
+    fn init(self) -> FilterState<F> {
+        FilterState {
+            predicate: self.0,
+            out: Array::zeros(&[0]),
+        }
     }
 
-    fn compute(
-        state: &mut F,
-        inputs: &Array<f64>,
-        output: &mut Array<f64>,
-        _p: bool,
-    ) -> bool {
-        if state(inputs) {
-            output.as_mut_slice().clone_from_slice(inputs.as_slice());
-            true
-        } else {
-            false
+    fn compute<'a, 'b: 'a>(
+        (_, x): (bool, &'a Array<f64>),
+        state: &'b mut FilterState<F>,
+        init: bool,
+    ) -> (bool, &'a Array<f64>) {
+        if init {
+            state.out = x.clone();
+            return (false, &state.out);
         }
+        if (state.predicate)(x) {
+            state.out.as_mut_slice().clone_from_slice(x.as_slice());
+            (true, &state.out)
+        } else {
+            (false, &state.out)
+        }
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<f64>),
+        state: &'b FilterState<F>,
+    ) -> (bool, &'a Array<f64>) {
+        (false, &state.out)
     }
 }
 
@@ -92,23 +86,42 @@ impl<T: Scalar> Record<T> {
     }
 }
 
+/// Runtime state for [`Record`]: the clock plus the recorded series.
+pub struct RecordState<T: Scalar> {
+    clock: Clock,
+    out: Series<T>,
+}
+
 impl<T: Scalar> Operator for Record<T> {
     type Inputs = Port<Array<T>>;
-    type Output = Series<T>;
-    type State = Clock;
+    type Outputs = Port<Series<T>>;
+    type State = RecordState<T>;
 
-    fn init(&self, inputs: &Array<T>) -> (Clock, Series<T>) {
-        (self.clock.clone(), Series::new(inputs.shape()))
+    fn init(self) -> RecordState<T> {
+        RecordState {
+            clock: self.clock,
+            out: Series::new(&[]),
+        }
     }
 
-    fn compute(
-        state: &mut Clock,
-        inputs: &Array<T>,
-        output: &mut Series<T>,
-        _produced: bool,
-    ) -> bool {
-        output.push(state.get(), inputs.as_slice());
-        true
+    fn compute<'a, 'b: 'a>(
+        (_, x): (bool, &'a Array<T>),
+        state: &'b mut RecordState<T>,
+        init: bool,
+    ) -> (bool, &'a Series<T>) {
+        if init {
+            state.out = Series::new(x.shape());
+            return (false, &state.out);
+        }
+        state.out.push(state.clock.get(), x.as_slice());
+        (true, &state.out)
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b RecordState<T>,
+    ) -> (bool, &'a Series<T>) {
+        (false, &state.out)
     }
 }
 
@@ -128,35 +141,53 @@ impl<T: Scalar> Last<T> {
     }
 }
 
+/// Runtime state for [`Last`]: the fill value plus the output buffer.
+pub struct LastState<T: Scalar> {
+    fill: T,
+    out: Array<T>,
+}
+
 impl<T: Scalar> Operator for Last<T> {
     type Inputs = Port<Series<T>>;
-    type Output = Array<T>;
-    type State = T;
+    type Outputs = Port<Array<T>>;
+    type State = LastState<T>;
 
-    fn init(&self, inputs: &Series<T>) -> (T, Array<T>) {
-        let shape = inputs.shape();
-        let out = match inputs.last() {
-            Some(last) => Array::from_vec(shape, last.to_vec()),
-            None => Array::full(shape, self.fill.clone()),
-        };
-        (self.fill.clone(), out)
+    fn init(self) -> LastState<T> {
+        LastState {
+            fill: self.fill.clone(),
+            out: Array::zeros(&[0]),
+        }
     }
 
-    fn compute(
-        state: &mut T,
-        inputs: &Series<T>,
-        output: &mut Array<T>,
-        _p: bool,
-    ) -> bool {
-        match inputs.last() {
-            Some(last) => output.as_mut_slice().clone_from_slice(last),
+    fn compute<'a, 'b: 'a>(
+        (_, series): (bool, &'a Series<T>),
+        state: &'b mut LastState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            let shape = series.shape();
+            state.out = match series.last() {
+                Some(last) => Array::from_vec(shape, last.to_vec()),
+                None => Array::full(shape, state.fill.clone()),
+            };
+            return (false, &state.out);
+        }
+        match series.last() {
+            Some(last) => state.out.as_mut_slice().clone_from_slice(last),
             None => {
-                for v in output.as_mut_slice().iter_mut() {
-                    *v = state.clone();
+                for v in state.out.as_mut_slice().iter_mut() {
+                    *v = state.fill.clone();
                 }
             }
         }
-        true
+        (true, &state.out)
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Series<T>),
+        state: &'b LastState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -168,33 +199,52 @@ impl<T: Scalar> Operator for Last<T> {
 /// prove gating advances state only when an input actually notifies.
 pub struct Count;
 
+/// Runtime state for [`Count`]: the counter plus the output buffer.
+pub struct CountState {
+    count: i64,
+    out: Array<f64>,
+}
+
 impl Operator for Count {
     type Inputs = Port<Array<f64>>;
-    type Output = Array<f64>;
-    type State = i64;
+    type Outputs = Port<Array<f64>>;
+    type State = CountState;
 
-    fn init(&self, _i: &Array<f64>) -> (i64, Array<f64>) {
-        (0, Array::scalar(0.0))
+    fn init(self) -> CountState {
+        CountState {
+            count: 0,
+            out: Array::scalar(0.0),
+        }
     }
 
-    fn compute(
-        state: &mut i64,
-        _i: &Array<f64>,
-        out: &mut Array<f64>,
-        _p: bool,
-    ) -> bool {
-        *state += 1;
-        out.as_mut_slice()[0] = *state as f64;
-        true
+    fn compute<'a, 'b: 'a>(
+        _: (bool, &'a Array<f64>),
+        state: &'b mut CountState,
+        init: bool,
+    ) -> (bool, &'a Array<f64>) {
+        if init {
+            return (false, &state.out);
+        }
+        state.count += 1;
+        state.out.as_mut_slice()[0] = state.count as f64;
+        (true, &state.out)
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<f64>),
+        state: &'b CountState,
+    ) -> (bool, &'a Array<f64>) {
+        (false, &state.out)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Clocked — clock-gated wrapper (exercises the ?Sized trailing-input path).
+// Clocked — clock-gated wrapper.
 // ---------------------------------------------------------------------------
 
-/// Prepends a leading `Port<C>` clock input; runs the inner operator only when
-/// the clock notifies. `O::Inputs` may itself be `?Sized` (a slice).
+/// Prepends a leading `Port<C>` clock input; runs the inner operator's compute
+/// path only when the clock notifies, else the inner passthrough. Implements
+/// [`Segment`] directly because its gate ignores the data inputs' notify bits.
 pub struct Clocked<O, C = ()> {
     inner: O,
     _c: PhantomData<fn() -> C>,
@@ -219,31 +269,24 @@ impl<O: Clone, C> Clone for Clocked<O, C> {
     }
 }
 
-impl<O: Operator, C: Send + Sync + 'static> Operator for Clocked<O, C> {
+impl<O: Operator, C: 'static> Segment for Clocked<O, C> {
     type Inputs = (Port<C>, O::Inputs);
-    type Output = O::Output;
+    type Outputs = O::Outputs;
     type State = O::State;
 
-    fn init(
-        &self,
-        inputs: (&C, <O::Inputs as Ports>::Refs<'_>),
-    ) -> (O::State, O::Output) {
-        self.inner.init(inputs.1)
+    fn init(self) -> O::State {
+        O::init(self.inner)
     }
 
-    fn compute(
-        state: &mut O::State,
-        inputs: (&C, <O::Inputs as Ports>::Refs<'_>),
-        output: &mut O::Output,
-        produced: (bool, <O::Inputs as Ports>::Notify<'_>),
-    ) -> bool {
-        let (clock_fired, inner_produced) = produced;
-        if !clock_fired {
-            return false;
+    fn compute<'a, 'b: 'a>(
+        ((clock_fired, _), rest): ((bool, &'a C), <O::Inputs as Interface>::Refs<'a>),
+        state: &'b mut O::State,
+        init: bool,
+    ) -> <O::Outputs as Interface>::Refs<'a> {
+        if init || clock_fired {
+            O::compute(rest, state, init)
+        } else {
+            O::passthrough(rest, &*state)
         }
-        O::compute(state, inputs.1, output, inner_produced)
     }
 }
-
-// (Stack/StackSync/Concat/ConcatSync — axis-based slice-input reshape ops —
-// live in `super::reshape`. Rolling operators live in `super::rolling`.)

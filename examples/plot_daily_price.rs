@@ -106,7 +106,7 @@ async fn main() {
     let var = sc.add_operator(RollingVariance::<f64>::count(WINDOW), adj_series);
     let std = sc.add_operator(Sqrt::<f64>::new(), var);
     let multiple = sc.add_const(Array::scalar(MULTIPLE));
-    let band = sc.add_operator(Multiply::<f64>::new(), (std, multiple));
+    let band = sc.add_operator(Multiply::<f64>::new(), (std, *multiple));
     let upper = sc.add_operator(Add::<f64>::new(), (ma, band));
     let lower = sc.add_operator(Subtract::<f64>::new(), (ma, band));
 

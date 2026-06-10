@@ -1,12 +1,15 @@
-//! Function / selection / lag operators — port of `Map`/`MapInplace`,
-//! `Apply`/`ApplyInplace`, `Select`, `Lag`. Closure operators carry the
-//! trait's `Sync` bound on their function.
+//! Function / selection / lag operators — `Map`/`MapInplace`,
+//! `Apply`/`ApplyInplace`, `Select`, `Lag`, implemented directly on
+//! [`flowgraph::typed::Operator`]. The closure operators receive the
+//! values-only refs tree (notify flags stripped via [`StripNotify`]), which
+//! keeps the legacy closure signatures, e.g. `Fn((&Array<f64>, &Array<f64>))`
+//! for a two-port input.
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Port, Ports};
+use flowgraph::typed::{Interface, Operator, Port};
 
-use super::op::Operator;
+use super::op::StripNotify;
 use crate::{Array, Scalar, Series};
 
 // ---------------------------------------------------------------------------
@@ -19,7 +22,7 @@ pub struct Map<S, T, F>
 where
     S: Clone + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
-    F: Fn(&S) -> T + Clone + Send + Sync + 'static,
+    F: Fn(&S) -> T + Send + Sync + 'static,
 {
     f: F,
     _phantom: PhantomData<(S, T)>,
@@ -29,7 +32,7 @@ impl<S, T, F> Map<S, T, F>
 where
     S: Clone + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
-    F: Fn(&S) -> T + Clone + Send + Sync + 'static,
+    F: Fn(&S) -> T + Send + Sync + 'static,
 {
     pub fn new(f: F) -> Self {
         Self {
@@ -39,25 +42,46 @@ where
     }
 }
 
+/// Runtime state for [`Map`]: the function plus the output cell, `None` only
+/// until the build call runs the closure once.
+pub struct MapState<T, F> {
+    f: F,
+    out: Option<T>,
+}
+
 impl<S, T, F> Operator for Map<S, T, F>
 where
     S: Clone + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
-    F: Fn(&S) -> T + Clone + Send + Sync + 'static,
+    F: Fn(&S) -> T + Send + Sync + 'static,
 {
-    type State = Self;
     type Inputs = Port<S>;
-    type Output = T;
+    type Outputs = Port<T>;
+    type State = MapState<T, F>;
 
-    fn init(&self, inputs: &S) -> (Self, T) {
-        let output = (self.f)(inputs);
-        (self.clone(), output)
+    fn init(self) -> MapState<T, F> {
+        MapState {
+            f: self.f,
+            out: None,
+        }
     }
 
     #[inline(always)]
-    fn compute(state: &mut Self, inputs: &S, output: &mut T, _produced: bool) -> bool {
-        *output = (state.f)(inputs);
-        true
+    fn compute<'a, 'b: 'a>(
+        (_, x): (bool, &'a S),
+        state: &'b mut MapState<T, F>,
+        init: bool,
+    ) -> (bool, &'a T) {
+        // The build call (`init`) runs the closure once on the build-time input
+        // to seed the output — replicating the legacy `init` — but does not
+        // notify.
+        state.out = Some((state.f)(x));
+        (!init, state.out.as_ref().unwrap())
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(_: (bool, &'a S), state: &'b MapState<T, F>) -> (bool, &'a T) {
+        (false, state.out.as_ref().unwrap())
     }
 }
 
@@ -67,7 +91,7 @@ pub struct MapInplace<S, T, F>
 where
     S: Clone + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
-    F: Fn(&S, &mut T) -> bool + Clone + Send + Sync + 'static,
+    F: Fn(&S, &mut T) -> bool + Send + Sync + 'static,
 {
     f: F,
     initial: T,
@@ -78,7 +102,7 @@ impl<S, T, F> MapInplace<S, T, F>
 where
     S: Clone + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
-    F: Fn(&S, &mut T) -> bool + Clone + Send + Sync + 'static,
+    F: Fn(&S, &mut T) -> bool + Send + Sync + 'static,
 {
     pub fn new(f: F, initial: T) -> Self {
         Self {
@@ -89,25 +113,53 @@ where
     }
 }
 
+/// Runtime state for [`MapInplace`]: the function, the initial value, and the
+/// output buffer.
+pub struct MapInplaceState<T, F> {
+    f: F,
+    initial: T,
+    out: T,
+}
+
 impl<S, T, F> Operator for MapInplace<S, T, F>
 where
     S: Clone + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
-    F: Fn(&S, &mut T) -> bool + Clone + Send + Sync + 'static,
+    F: Fn(&S, &mut T) -> bool + Send + Sync + 'static,
 {
-    type State = Self;
     type Inputs = Port<S>;
-    type Output = T;
+    type Outputs = Port<T>;
+    type State = MapInplaceState<T, F>;
 
-    fn init(&self, inputs: &S) -> (Self, T) {
-        let mut output = self.initial.clone();
-        (self.f)(inputs, &mut output);
-        (self.clone(), output)
+    fn init(self) -> MapInplaceState<T, F> {
+        MapInplaceState {
+            f: self.f,
+            out: self.initial.clone(),
+            initial: self.initial,
+        }
     }
 
     #[inline(always)]
-    fn compute(state: &mut Self, inputs: &S, output: &mut T, _produced: bool) -> bool {
-        (state.f)(inputs, output)
+    fn compute<'a, 'b: 'a>(
+        (_, x): (bool, &'a S),
+        state: &'b mut MapInplaceState<T, F>,
+        init: bool,
+    ) -> (bool, &'a T) {
+        if init {
+            state.out = state.initial.clone();
+            (state.f)(x, &mut state.out);
+            return (false, &state.out);
+        }
+        let notify = (state.f)(x, &mut state.out);
+        (notify, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a S),
+        state: &'b MapInplaceState<T, F>,
+    ) -> (bool, &'a T) {
+        (false, &state.out)
     }
 }
 
@@ -115,12 +167,14 @@ where
 // Apply / ApplyInplace (tuple inputs)
 // ---------------------------------------------------------------------------
 
-/// Allocating multi-input map: `Fn(Inputs::Refs) -> T`.
+/// Allocating multi-input map: `Fn(values) -> T`, where `values` is the
+/// values-only refs tree of the input interface `I` (e.g. `(&A, &B)` for
+/// `(Port<A>, Port<B>)` — see [`StripNotify`]).
 pub struct Apply<I, T, F>
 where
-    I: Ports + 'static,
+    I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as Ports>::Refs<'a>) -> T + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Values<'a>) -> T + Send + Sync + 'static,
 {
     f: F,
     _phantom: PhantomData<fn() -> (I, T)>,
@@ -128,9 +182,9 @@ where
 
 impl<I, T, F> Clone for Apply<I, T, F>
 where
-    I: Ports + 'static,
+    I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as Ports>::Refs<'a>) -> T + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Values<'a>) -> T + Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -142,9 +196,9 @@ where
 
 impl<I, T, F> Apply<I, T, F>
 where
-    I: Ports + 'static,
+    I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as Ports>::Refs<'a>) -> T + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Values<'a>) -> T + Send + Sync + 'static,
 {
     pub fn new(f: F) -> Self {
         Self {
@@ -154,39 +208,60 @@ where
     }
 }
 
+/// Runtime state for [`Apply`]: the function plus the output cell, `None` only
+/// until the build call runs the closure once.
+pub struct ApplyState<T, F> {
+    f: F,
+    out: Option<T>,
+}
+
 impl<I, T, F> Operator for Apply<I, T, F>
 where
-    I: Ports + 'static,
+    I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as Ports>::Refs<'a>) -> T + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Values<'a>) -> T + Send + Sync + 'static,
 {
-    type State = Self;
     type Inputs = I;
-    type Output = T;
+    type Outputs = Port<T>;
+    type State = ApplyState<T, F>;
 
-    fn init(&self, inputs: <I as Ports>::Refs<'_>) -> (Self, T) {
-        let output = (self.f)(inputs);
-        (self.clone(), output)
+    fn init(self) -> ApplyState<T, F> {
+        ApplyState {
+            f: self.f,
+            out: None,
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut Self,
-        inputs: <I as Ports>::Refs<'_>,
-        output: &mut T,
-        _produced: <I as Ports>::Notify<'_>,
-    ) -> bool {
-        *output = (state.f)(inputs);
-        true
+    fn compute<'a, 'b: 'a>(
+        inputs: <I as Interface>::Refs<'a>,
+        state: &'b mut ApplyState<T, F>,
+        init: bool,
+    ) -> (bool, &'a T) {
+        // The build call (`init`) runs the closure once on the build-time
+        // inputs to seed the output — replicating the legacy `init` — but does
+        // not notify.
+        state.out = Some((state.f)(<I as StripNotify>::values(inputs)));
+        (!init, state.out.as_ref().unwrap())
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: <I as Interface>::Refs<'a>,
+        state: &'b ApplyState<T, F>,
+    ) -> (bool, &'a T) {
+        (false, state.out.as_ref().unwrap())
     }
 }
 
-/// In-place multi-input map: `Fn(Inputs::Refs, &mut T) -> bool`.
+/// In-place multi-input map: `Fn(values, &mut T) -> bool`, where `values` is
+/// the values-only refs tree of the input interface `I` (see [`StripNotify`]);
+/// the bool controls propagation.
 pub struct ApplyInplace<I, T, F>
 where
-    I: Ports + 'static,
+    I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as Ports>::Refs<'a>, &mut T) -> bool + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Values<'a>, &mut T) -> bool + Send + Sync + 'static,
 {
     f: F,
     initial: T,
@@ -195,9 +270,9 @@ where
 
 impl<I, T, F> Clone for ApplyInplace<I, T, F>
 where
-    I: Ports + 'static,
+    I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as Ports>::Refs<'a>, &mut T) -> bool + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Values<'a>, &mut T) -> bool + Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -210,9 +285,9 @@ where
 
 impl<I, T, F> ApplyInplace<I, T, F>
 where
-    I: Ports + 'static,
+    I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as Ports>::Refs<'a>, &mut T) -> bool + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Values<'a>, &mut T) -> bool + Send + Sync + 'static,
 {
     pub fn new(f: F, initial: T) -> Self {
         Self {
@@ -223,30 +298,53 @@ where
     }
 }
 
+/// Runtime state for [`ApplyInplace`]: the function, the initial value, and the
+/// output buffer.
+pub struct ApplyInplaceState<T, F> {
+    f: F,
+    initial: T,
+    out: T,
+}
+
 impl<I, T, F> Operator for ApplyInplace<I, T, F>
 where
-    I: Ports + 'static,
+    I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as Ports>::Refs<'a>, &mut T) -> bool + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Values<'a>, &mut T) -> bool + Send + Sync + 'static,
 {
-    type State = Self;
     type Inputs = I;
-    type Output = T;
+    type Outputs = Port<T>;
+    type State = ApplyInplaceState<T, F>;
 
-    fn init(&self, inputs: <I as Ports>::Refs<'_>) -> (Self, T) {
-        let mut output = self.initial.clone();
-        (self.f)(inputs, &mut output);
-        (self.clone(), output)
+    fn init(self) -> ApplyInplaceState<T, F> {
+        ApplyInplaceState {
+            f: self.f,
+            out: self.initial.clone(),
+            initial: self.initial,
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut Self,
-        inputs: <I as Ports>::Refs<'_>,
-        output: &mut T,
-        _produced: <I as Ports>::Notify<'_>,
-    ) -> bool {
-        (state.f)(inputs, output)
+    fn compute<'a, 'b: 'a>(
+        inputs: <I as Interface>::Refs<'a>,
+        state: &'b mut ApplyInplaceState<T, F>,
+        init: bool,
+    ) -> (bool, &'a T) {
+        if init {
+            state.out = state.initial.clone();
+            (state.f)(<I as StripNotify>::values(inputs), &mut state.out);
+            return (false, &state.out);
+        }
+        let notify = (state.f)(<I as StripNotify>::values(inputs), &mut state.out);
+        (notify, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: <I as Interface>::Refs<'a>,
+        state: &'b ApplyInplaceState<T, F>,
+    ) -> (bool, &'a T) {
+        (false, &state.out)
     }
 }
 
@@ -287,44 +385,67 @@ impl<T: Scalar> Select<T> {
     }
 }
 
-/// Runtime state for [`Select`].
-pub struct SelectState {
+/// Runtime state for [`Select`]: the configuration (the flat index map can only
+/// be computed on the build call, once the input shape is known), the index
+/// map, and the output buffer.
+pub struct SelectState<T: Scalar> {
+    indices: Vec<usize>,
+    axis: usize,
+    squeeze: bool,
     index_map: Vec<usize>,
+    out: Array<T>,
 }
 
 impl<T: Scalar> Operator for Select<T> {
-    type State = SelectState;
     type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+    type Outputs = Port<Array<T>>;
+    type State = SelectState<T>;
 
-    fn init(&self, inputs: &Array<T>) -> (SelectState, Array<T>) {
-        let input_shape = inputs.shape();
-        let index_map = compute_select_map(input_shape, &self.indices, self.axis);
-        let mut output_shape = input_shape.to_vec();
-        if output_shape.is_empty() {
-            output_shape = vec![self.indices.len()];
-        } else {
-            output_shape[self.axis] = self.indices.len();
+    fn init(self) -> SelectState<T> {
+        SelectState {
+            indices: self.indices,
+            axis: self.axis,
+            squeeze: self.squeeze,
+            index_map: Vec::new(),
+            out: Array::zeros(&[0]),
         }
-        if self.squeeze && self.indices.len() == 1 && output_shape.len() > self.axis {
-            output_shape.remove(self.axis);
-        }
-        (SelectState { index_map }, Array::zeros(&output_shape))
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut SelectState,
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let src = inputs.as_slice();
-        let dst = output.as_mut_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, x): (bool, &'a Array<T>),
+        state: &'b mut SelectState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            let input_shape = x.shape();
+            state.index_map = compute_select_map(input_shape, &state.indices, state.axis);
+            let mut output_shape = input_shape.to_vec();
+            if output_shape.is_empty() {
+                output_shape = vec![state.indices.len()];
+            } else {
+                output_shape[state.axis] = state.indices.len();
+            }
+            if state.squeeze && state.indices.len() == 1 && output_shape.len() > state.axis {
+                output_shape.remove(state.axis);
+            }
+            state.out = Array::zeros(&output_shape);
+            return (false, &state.out);
+        }
+        let src = x.as_slice();
+        let dst = state.out.as_mut_slice();
         for (dst_i, &src_i) in state.index_map.iter().enumerate() {
             dst[dst_i] = src[src_i].clone();
         }
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b SelectState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -363,42 +484,52 @@ impl<T: Scalar> Lag<T> {
     }
 }
 
-/// Runtime state for [`Lag`].
+/// Runtime state for [`Lag`]: the configuration plus the output buffer (sized
+/// and seeded with the fill value on the build call).
 pub struct LagState<T: Scalar> {
     offset: usize,
     fill: T,
+    out: Array<T>,
 }
 
 impl<T: Scalar> Operator for Lag<T> {
-    type State = LagState<T>;
     type Inputs = Port<Series<T>>;
-    type Output = Array<T>;
+    type Outputs = Port<Array<T>>;
+    type State = LagState<T>;
 
-    fn init(&self, inputs: &Series<T>) -> (LagState<T>, Array<T>) {
-        let shape = inputs.shape();
-        let stride: usize = shape.iter().product();
-        let fill = Array::from_vec(shape, vec![self.fill.clone(); stride]);
-        let state = LagState {
+    fn init(self) -> LagState<T> {
+        LagState {
             offset: self.offset,
-            fill: self.fill.clone(),
-        };
-        (state, fill)
+            fill: self.fill,
+            out: Array::zeros(&[0]),
+        }
     }
 
-    fn compute(
-        state: &mut LagState<T>,
-        inputs: &Series<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let series = inputs;
+    fn compute<'a, 'b: 'a>(
+        (_, series): (bool, &'a Series<T>),
+        state: &'b mut LagState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            let shape = series.shape();
+            let stride: usize = shape.iter().product();
+            state.out = Array::from_vec(shape, vec![state.fill.clone(); stride]);
+            return (false, &state.out);
+        }
         let len = series.len();
-        let dst = output.as_mut_slice();
+        let dst = state.out.as_mut_slice();
         if len > state.offset {
             dst.clone_from_slice(series.at(len - 1 - state.offset));
         } else {
             dst.fill(state.fill.clone());
         }
-        true
+        (true, &state.out)
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Series<T>),
+        state: &'b LagState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }

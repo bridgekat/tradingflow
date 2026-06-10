@@ -1,15 +1,15 @@
-//! Element-wise / cross-tick / cross-sectional numeric operators — port of the
-//! non-arithmetic members of [`crate::operators::num`]. Bodies are transcribed
-//! verbatim; only `Input`→`Port` and the `produced` type differ.
+//! Element-wise / cross-tick / cross-sectional numeric operators, implemented
+//! directly on [`flowgraph::typed::Operator`]. The loop bodies are unchanged
+//! from the legacy port; the output buffer lives in the operator state and is
+//! sized/seeded on the `init` build call.
 
 use std::cmp::Ordering;
 use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use flowgraph::typed::Port;
+use flowgraph::typed::{Operator, Port};
 
-use super::op::Operator;
 use crate::{Array, Scalar};
 
 // ---------------------------------------------------------------------------
@@ -29,29 +29,51 @@ impl<T: Scalar + Float> Clamp<T> {
     }
 }
 
-impl<T: Scalar + Float> Operator for Clamp<T> {
-    type State = (T, T);
-    type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+/// Runtime state for [`Clamp`]: the bounds plus the output buffer.
+pub struct ClampState<T: Scalar> {
+    lo: T,
+    hi: T,
+    out: Array<T>,
+}
 
-    fn init(&self, inputs: &Array<T>) -> ((T, T), Array<T>) {
-        ((self.lo, self.hi), Array::zeros(inputs.shape()))
+impl<T: Scalar + Float> Operator for Clamp<T> {
+    type Inputs = Port<Array<T>>;
+    type Outputs = Port<Array<T>>;
+    type State = ClampState<T>;
+
+    fn init(self) -> ClampState<T> {
+        ClampState {
+            lo: self.lo,
+            hi: self.hi,
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut (T, T),
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let (lo, hi) = *state;
-        let a = inputs.as_slice();
-        let out = output.as_mut_slice();
-        for i in 0..out.len() {
-            out[i] = lo.max(hi.min(a[i]));
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        state: &'b mut ClampState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            state.out = Array::zeros(a.shape());
+            return (false, &state.out);
         }
-        true
+        let (lo, hi) = (state.lo, state.hi);
+        let src = a.as_slice();
+        let dst = state.out.as_mut_slice();
+        for i in 0..dst.len() {
+            dst[i] = lo.max(hi.min(src[i]));
+        }
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b ClampState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -71,29 +93,49 @@ impl<T: Scalar + Float> Fillna<T> {
     }
 }
 
-impl<T: Scalar + Float> Operator for Fillna<T> {
-    type State = T;
-    type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+/// Runtime state for [`Fillna`]: the fill value plus the output buffer.
+pub struct FillnaState<T: Scalar> {
+    val: T,
+    out: Array<T>,
+}
 
-    fn init(&self, inputs: &Array<T>) -> (T, Array<T>) {
-        (self.val, Array::zeros(inputs.shape()))
+impl<T: Scalar + Float> Operator for Fillna<T> {
+    type Inputs = Port<Array<T>>;
+    type Outputs = Port<Array<T>>;
+    type State = FillnaState<T>;
+
+    fn init(self) -> FillnaState<T> {
+        FillnaState {
+            val: self.val,
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut T,
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let val = *state;
-        let a = inputs.as_slice();
-        let out = output.as_mut_slice();
-        for i in 0..out.len() {
-            out[i] = if a[i].is_nan() { val } else { a[i] };
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        state: &'b mut FillnaState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            state.out = Array::zeros(a.shape());
+            return (false, &state.out);
         }
-        true
+        let val = state.val;
+        let src = a.as_slice();
+        let dst = state.out.as_mut_slice();
+        for i in 0..dst.len() {
+            dst[i] = if src[i].is_nan() { val } else { src[i] };
+        }
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b FillnaState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -122,30 +164,43 @@ impl<T: Scalar + Float> Default for ForwardFill<T> {
 }
 
 impl<T: Scalar + Float> Operator for ForwardFill<T> {
-    type State = ();
     type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+    type Outputs = Port<Array<T>>;
+    // The output buffer doubles as the fill memory: cells keep their last
+    // non-NaN value across ticks because the state persists.
+    type State = Array<T>;
 
-    fn init(&self, inputs: &Array<T>) -> ((), Array<T>) {
-        let shape = inputs.shape();
-        let stride: usize = shape.iter().product();
-        ((), Array::from_vec(shape, vec![T::nan(); stride]))
+    fn init(self) -> Array<T> {
+        Array::zeros(&[0])
     }
 
-    fn compute(
-        _state: &mut (),
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let src = inputs.as_slice();
-        let dst = output.as_mut_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        out: &'b mut Array<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            let shape = a.shape();
+            let stride: usize = shape.iter().product();
+            *out = Array::from_vec(shape, vec![T::nan(); stride]);
+            return (false, &*out);
+        }
+        let src = a.as_slice();
+        let dst = out.as_mut_slice();
         for i in 0..dst.len() {
             if !src[i].is_nan() {
                 dst[i] = src[i];
             }
         }
-        true
+        (true, &*out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        out: &'b Array<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, out)
     }
 }
 
@@ -169,41 +224,52 @@ impl<T: Scalar + Float> Default for Diff<T> {
     }
 }
 
-/// State: the previous input array (NaN-initialised).
+/// Runtime state for [`Diff`]: the previous input array (NaN-initialised)
+/// plus the output buffer.
 pub struct DiffState<T: Scalar + Float> {
     prev: Vec<T>,
+    out: Array<T>,
 }
 
 impl<T: Scalar + Float> Operator for Diff<T> {
-    type State = DiffState<T>;
     type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+    type Outputs = Port<Array<T>>;
+    type State = DiffState<T>;
 
-    fn init(&self, inputs: &Array<T>) -> (DiffState<T>, Array<T>) {
-        let shape = inputs.shape();
-        let stride: usize = shape.iter().product();
-        let out = Array::from_vec(shape, vec![T::nan(); stride]);
-        (
-            DiffState {
-                prev: vec![T::nan(); stride],
-            },
-            out,
-        )
+    fn init(self) -> DiffState<T> {
+        DiffState {
+            prev: Vec::new(),
+            out: Array::zeros(&[0]),
+        }
     }
 
-    fn compute(
-        state: &mut DiffState<T>,
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let src = inputs.as_slice();
-        let dst = output.as_mut_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        state: &'b mut DiffState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            let shape = a.shape();
+            let stride: usize = shape.iter().product();
+            state.prev = vec![T::nan(); stride];
+            state.out = Array::from_vec(shape, vec![T::nan(); stride]);
+            return (false, &state.out);
+        }
+        let src = a.as_slice();
+        let dst = state.out.as_mut_slice();
         for i in 0..dst.len() {
             dst[i] = src[i] - state.prev[i];
         }
         state.prev.copy_from_slice(src);
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b DiffState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -227,42 +293,53 @@ impl<T: Scalar + Float> Default for PctChange<T> {
     }
 }
 
-/// State: the previous input array (NaN-initialised).
+/// Runtime state for [`PctChange`]: the previous input array (NaN-initialised)
+/// plus the output buffer.
 pub struct PctChangeState<T: Scalar + Float> {
     prev: Vec<T>,
+    out: Array<T>,
 }
 
 impl<T: Scalar + Float> Operator for PctChange<T> {
-    type State = PctChangeState<T>;
     type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+    type Outputs = Port<Array<T>>;
+    type State = PctChangeState<T>;
 
-    fn init(&self, inputs: &Array<T>) -> (PctChangeState<T>, Array<T>) {
-        let shape = inputs.shape();
-        let stride: usize = shape.iter().product();
-        let out = Array::from_vec(shape, vec![T::nan(); stride]);
-        (
-            PctChangeState {
-                prev: vec![T::nan(); stride],
-            },
-            out,
-        )
+    fn init(self) -> PctChangeState<T> {
+        PctChangeState {
+            prev: Vec::new(),
+            out: Array::zeros(&[0]),
+        }
     }
 
-    fn compute(
-        state: &mut PctChangeState<T>,
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let src = inputs.as_slice();
-        let dst = output.as_mut_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        state: &'b mut PctChangeState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            let shape = a.shape();
+            let stride: usize = shape.iter().product();
+            state.prev = vec![T::nan(); stride];
+            state.out = Array::from_vec(shape, vec![T::nan(); stride]);
+            return (false, &state.out);
+        }
+        let src = a.as_slice();
+        let dst = state.out.as_mut_slice();
         let one = T::one();
         for i in 0..dst.len() {
             dst[i] = src[i] / state.prev[i] - one;
         }
         state.prev.copy_from_slice(src);
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b PctChangeState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -290,36 +367,50 @@ impl<T: Scalar + Float> Default for Gaussianize<T> {
     }
 }
 
-impl<T: Scalar + Float> Operator for Gaussianize<T> {
-    type State = Vec<usize>;
-    type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+/// Runtime state for [`Gaussianize`]: the index sort scratch buffer plus the
+/// output buffer.
+pub struct GaussianizeState<T: Scalar + Float> {
+    scratch: Vec<usize>,
+    out: Array<T>,
+}
 
-    fn init(&self, inputs: &Array<T>) -> (Vec<usize>, Array<T>) {
-        let n = inputs.as_slice().len();
-        (vec![0; n], Array::zeros(inputs.shape()))
+impl<T: Scalar + Float> Operator for Gaussianize<T> {
+    type Inputs = Port<Array<T>>;
+    type Outputs = Port<Array<T>>;
+    type State = GaussianizeState<T>;
+
+    fn init(self) -> GaussianizeState<T> {
+        GaussianizeState {
+            scratch: Vec::new(),
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut Vec<usize>,
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let src = inputs.as_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        state: &'b mut GaussianizeState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            state.scratch = vec![0; a.as_slice().len()];
+            state.out = Array::zeros(a.shape());
+            return (false, &state.out);
+        }
+        let src = a.as_slice();
         let n = src.len();
 
         let mut n_valid = 0usize;
         for i in 0..n {
             if !src[i].is_nan() {
-                state[n_valid] = i;
+                state.scratch[n_valid] = i;
                 n_valid += 1;
             }
         }
-        state[..n_valid].sort_by(|&a, &b| src[a].partial_cmp(&src[b]).unwrap_or(Ordering::Equal));
+        state.scratch[..n_valid]
+            .sort_by(|&a, &b| src[a].partial_cmp(&src[b]).unwrap_or(Ordering::Equal));
 
-        let dst = output.as_mut_slice();
+        let dst = state.out.as_mut_slice();
         let nan = T::nan();
         for slot in dst.iter_mut() {
             *slot = nan;
@@ -329,10 +420,18 @@ impl<T: Scalar + Float> Operator for Gaussianize<T> {
             for rank in 0..n_valid {
                 let p = (rank as f64 + 0.5) / denom;
                 let z = norm_inv(p);
-                dst[state[rank]] = T::from(z).unwrap_or(nan);
+                dst[state.scratch[rank]] = T::from(z).unwrap_or(nan);
             }
         }
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b GaussianizeState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -411,36 +510,50 @@ impl<T: Scalar + Float> Default for Percentile<T> {
     }
 }
 
-impl<T: Scalar + Float> Operator for Percentile<T> {
-    type State = Vec<usize>;
-    type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+/// Runtime state for [`Percentile`]: the index sort scratch buffer plus the
+/// output buffer.
+pub struct PercentileState<T: Scalar + Float> {
+    scratch: Vec<usize>,
+    out: Array<T>,
+}
 
-    fn init(&self, inputs: &Array<T>) -> (Vec<usize>, Array<T>) {
-        let n = inputs.as_slice().len();
-        (vec![0; n], Array::zeros(inputs.shape()))
+impl<T: Scalar + Float> Operator for Percentile<T> {
+    type Inputs = Port<Array<T>>;
+    type Outputs = Port<Array<T>>;
+    type State = PercentileState<T>;
+
+    fn init(self) -> PercentileState<T> {
+        PercentileState {
+            scratch: Vec::new(),
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut Vec<usize>,
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let src = inputs.as_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        state: &'b mut PercentileState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            state.scratch = vec![0; a.as_slice().len()];
+            state.out = Array::zeros(a.shape());
+            return (false, &state.out);
+        }
+        let src = a.as_slice();
         let n = src.len();
 
         let mut n_valid = 0usize;
         for i in 0..n {
             if !src[i].is_nan() {
-                state[n_valid] = i;
+                state.scratch[n_valid] = i;
                 n_valid += 1;
             }
         }
-        state[..n_valid].sort_by(|&a, &b| src[a].partial_cmp(&src[b]).unwrap_or(Ordering::Equal));
+        state.scratch[..n_valid]
+            .sort_by(|&a, &b| src[a].partial_cmp(&src[b]).unwrap_or(Ordering::Equal));
 
-        let dst = output.as_mut_slice();
+        let dst = state.out.as_mut_slice();
         let nan = T::nan();
         for slot in dst.iter_mut() {
             *slot = nan;
@@ -450,10 +563,18 @@ impl<T: Scalar + Float> Operator for Percentile<T> {
             let half = T::from(0.5).unwrap_or(nan);
             for rank in 0..n_valid {
                 let p = (T::from(rank as f64).unwrap_or(nan) + half) / denom;
-                dst[state[rank]] = p;
+                dst[state.scratch[rank]] = p;
             }
         }
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b PercentileState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -482,23 +603,26 @@ impl<T: Scalar + Float> Default for Standardize<T> {
 }
 
 impl<T: Scalar + Float> Operator for Standardize<T> {
-    type State = ();
     type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+    type Outputs = Port<Array<T>>;
+    type State = Array<T>;
 
-    fn init(&self, inputs: &Array<T>) -> ((), Array<T>) {
-        ((), Array::zeros(inputs.shape()))
+    fn init(self) -> Array<T> {
+        Array::zeros(&[0])
     }
 
     #[inline(always)]
-    fn compute(
-        _state: &mut (),
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let src = inputs.as_slice();
-        let dst = output.as_mut_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        out: &'b mut Array<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            *out = Array::zeros(a.shape());
+            return (false, &*out);
+        }
+        let src = a.as_slice();
+        let dst = out.as_mut_slice();
         let n = src.len();
         let nan = T::nan();
 
@@ -516,7 +640,7 @@ impl<T: Scalar + Float> Operator for Standardize<T> {
             for slot in dst.iter_mut() {
                 *slot = nan;
             }
-            return true;
+            return (true, &*out);
         }
 
         let mean = sum / T::from(n_valid).unwrap();
@@ -536,14 +660,22 @@ impl<T: Scalar + Float> Operator for Standardize<T> {
             for slot in dst.iter_mut() {
                 *slot = nan;
             }
-            return true;
+            return (true, &*out);
         }
 
         for i in 0..n {
             let v = src[i];
             dst[i] = if v.is_nan() { nan } else { (v - mean) / std };
         }
-        true
+        (true, &*out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        out: &'b Array<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, out)
     }
 }
 
@@ -570,36 +702,39 @@ impl<T: Scalar + Float> Winsorize<T> {
     }
 }
 
-/// State: the quantile and a scratch sort buffer.
+/// Runtime state for [`Winsorize`]: the quantile, a scratch sort buffer and
+/// the output buffer.
 pub struct WinsorizeState<T: Scalar + Float> {
     p: T,
     sort_buf: Vec<T>,
+    out: Array<T>,
 }
 
 impl<T: Scalar + Float> Operator for Winsorize<T> {
-    type State = WinsorizeState<T>;
     type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+    type Outputs = Port<Array<T>>;
+    type State = WinsorizeState<T>;
 
-    fn init(&self, inputs: &Array<T>) -> (WinsorizeState<T>, Array<T>) {
-        let n = inputs.as_slice().len();
-        (
-            WinsorizeState {
-                p: self.p,
-                sort_buf: vec![T::zero(); n],
-            },
-            Array::zeros(inputs.shape()),
-        )
+    fn init(self) -> WinsorizeState<T> {
+        WinsorizeState {
+            p: self.p,
+            sort_buf: Vec::new(),
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut WinsorizeState<T>,
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let src = inputs.as_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        state: &'b mut WinsorizeState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            state.sort_buf = vec![T::zero(); a.as_slice().len()];
+            state.out = Array::zeros(a.shape());
+            return (false, &state.out);
+        }
+        let src = a.as_slice();
         let n = src.len();
 
         let mut n_valid = 0usize;
@@ -611,14 +746,14 @@ impl<T: Scalar + Float> Operator for Winsorize<T> {
         }
         state.sort_buf[..n_valid].sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
-        let dst = output.as_mut_slice();
+        let dst = state.out.as_mut_slice();
         let nan = T::nan();
 
         if n_valid == 0 {
             for slot in dst.iter_mut() {
                 *slot = nan;
             }
-            return true;
+            return (true, &state.out);
         }
 
         let p_f = state.p.to_f64().unwrap_or(0.0);
@@ -638,6 +773,14 @@ impl<T: Scalar + Float> Operator for Winsorize<T> {
                 dst[i] = v;
             }
         }
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b WinsorizeState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }

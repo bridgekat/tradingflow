@@ -1,12 +1,13 @@
-//! Structural operators — port of `Id`, `Where`, `Cast`.
+//! Structural operators — port of `Id`, `Where`, `Cast`, plus the
+//! [`Resample`] clock-gated identity, implemented directly on
+//! [`flowgraph::typed::Operator`] / [`Segment`].
 
 use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
-use flowgraph::typed::{Port, Ports};
+use flowgraph::typed::{Interface, Operator, Port, Segment};
 
-use super::op::Operator;
 use super::ops::Clocked;
 use crate::{Array, Scalar};
 
@@ -30,19 +31,36 @@ impl<T: Clone + Send + Sync + 'static> Default for Id<T> {
     }
 }
 
+// State is `Option<T>` because `init(self)` runs before any input value is
+// seen and `T` carries no `Default` bound: the build (`init == true`) call
+// fills the `Some` from the build-time input value, so every later call may
+// unwrap it.
 impl<T: Clone + Send + Sync + 'static> Operator for Id<T> {
-    type State = ();
     type Inputs = Port<T>;
-    type Output = T;
+    type Outputs = Port<T>;
+    type State = Option<T>;
 
-    fn init(&self, inputs: &T) -> ((), T) {
-        ((), inputs.clone())
+    fn init(self) -> Option<T> {
+        None
     }
 
     #[inline(always)]
-    fn compute(_state: &mut (), inputs: &T, output: &mut T, _produced: bool) -> bool {
-        output.clone_from(inputs);
-        true
+    fn compute<'a, 'b: 'a>(
+        (_, x): (bool, &'a T),
+        state: &'b mut Option<T>,
+        init: bool,
+    ) -> (bool, &'a T) {
+        if init {
+            *state = Some(x.clone());
+            return (false, state.as_ref().unwrap());
+        }
+        state.as_mut().unwrap().clone_from(x);
+        (true, state.as_ref().unwrap())
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(_: (bool, &'a T), state: &'b Option<T>) -> (bool, &'a T) {
+        (false, state.as_ref().unwrap())
     }
 }
 
@@ -65,32 +83,54 @@ impl<T: Scalar, F: Fn(T) -> bool + Clone> Where<T, F> {
     }
 }
 
-impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static> Operator for Where<T, F> {
-    type State = Self;
-    type Inputs = Port<Array<T>>;
-    type Output = Array<T>;
+/// Runtime state for [`Where`]: the predicate and fill plus the output buffer.
+pub struct WhereState<T: Scalar, F> {
+    condition: F,
+    fill: T,
+    out: Array<T>,
+}
 
-    fn init(&self, inputs: &Array<T>) -> (Self, Array<T>) {
-        (self.clone(), inputs.clone())
+impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static> Operator for Where<T, F> {
+    type Inputs = Port<Array<T>>;
+    type Outputs = Port<Array<T>>;
+    type State = WhereState<T, F>;
+
+    fn init(self) -> WhereState<T, F> {
+        WhereState {
+            condition: self.condition,
+            fill: self.fill,
+            out: Array::zeros(&[0]),
+        }
     }
 
     #[inline(always)]
-    fn compute(
-        state: &mut Self,
-        inputs: &Array<T>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let a = inputs.as_slice();
-        let out = output.as_mut_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<T>),
+        state: &'b mut WhereState<T, F>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            state.out = a.clone();
+            return (false, &state.out);
+        }
+        let src = a.as_slice();
+        let out = state.out.as_mut_slice();
         for i in 0..out.len() {
-            out[i] = if (state.condition)(a[i].clone()) {
-                a[i].clone()
+            out[i] = if (state.condition)(src[i].clone()) {
+                src[i].clone()
             } else {
                 state.fill.clone()
             };
         }
-        true
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b WhereState<T, F>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
     }
 }
 
@@ -119,35 +159,48 @@ where
     S: Scalar + Copy + AsPrimitive<T>,
     T: Scalar + Copy + 'static,
 {
-    type State = ();
     type Inputs = Port<Array<S>>;
-    type Output = Array<T>;
+    type Outputs = Port<Array<T>>;
+    type State = Array<T>;
 
-    fn init(&self, inputs: &Array<S>) -> ((), Array<T>) {
-        let src = inputs.as_slice();
-        let data: Vec<T> = src.iter().map(|&v| v.as_()).collect();
-        ((), Array::from_vec(inputs.shape(), data))
+    fn init(self) -> Array<T> {
+        Array::zeros(&[0])
     }
 
     #[inline(always)]
-    fn compute(
-        _state: &mut (),
-        inputs: &Array<S>,
-        output: &mut Array<T>,
-        _produced: bool,
-    ) -> bool {
-        let src = inputs.as_slice();
-        let dst = output.as_mut_slice();
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, &'a Array<S>),
+        out: &'b mut Array<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            // The legacy build call cast the build-time values (not zeros).
+            let data: Vec<T> = a.as_slice().iter().map(|&v| v.as_()).collect();
+            *out = Array::from_vec(a.shape(), data);
+            return (false, &*out);
+        }
+        let src = a.as_slice();
+        let dst = out.as_mut_slice();
         for i in 0..dst.len() {
             dst[i] = src[i].as_();
         }
-        true
+        (true, &*out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<S>),
+        out: &'b Array<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, out)
     }
 }
 
 /// Re-emit a data input's latest value on every clock tick:
 /// `Clocked<Id<O>, C>`. The clock (`C`) and data (`O`) node types are
-/// independent — only the clock's notify bit is consulted.
+/// independent — only the clock's notify bit is consulted. Like
+/// [`Clocked`], this implements [`Segment`] directly (its gate ignores the
+/// data input's notify bit) and simply delegates to the wrapped segment.
 pub struct Resample<O, C>(Clocked<Id<O>, C>)
 where
     O: Clone + Send + Sync + 'static,
@@ -183,28 +236,24 @@ where
     }
 }
 
-impl<O, C> Operator for Resample<O, C>
+impl<O, C> Segment for Resample<O, C>
 where
     O: Clone + Send + Sync + 'static,
     C: Send + Sync + 'static,
 {
-    type State = <Clocked<Id<O>, C> as Operator>::State;
-    type Inputs = <Clocked<Id<O>, C> as Operator>::Inputs;
-    type Output = <Clocked<Id<O>, C> as Operator>::Output;
+    type Inputs = <Clocked<Id<O>, C> as Segment>::Inputs; // = (Port<C>, Port<O>)
+    type Outputs = <Clocked<Id<O>, C> as Segment>::Outputs; // = Port<O>
+    type State = <Clocked<Id<O>, C> as Segment>::State;
 
-    fn init(
-        &self,
-        inputs: <Self::Inputs as Ports>::Refs<'_>,
-    ) -> (Self::State, Self::Output) {
-        self.0.init(inputs)
+    fn init(self) -> Self::State {
+        <Clocked<Id<O>, C> as Segment>::init(self.0)
     }
 
-    fn compute(
-        state: &mut Self::State,
-        inputs: <Self::Inputs as Ports>::Refs<'_>,
-        output: &mut Self::Output,
-        produced: <Self::Inputs as Ports>::Notify<'_>,
-    ) -> bool {
-        <Clocked<Id<O>, C> as Operator>::compute(state, inputs, output, produced)
+    fn compute<'a, 'b: 'a>(
+        inputs: <Self::Inputs as Interface>::Refs<'a>,
+        state: &'b mut Self::State,
+        init: bool,
+    ) -> <Self::Outputs as Interface>::Refs<'a> {
+        <Clocked<Id<O>, C> as Segment>::compute(inputs, state, init)
     }
 }

@@ -20,7 +20,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::Port;
+use flowgraph::typed::{Port, Ports};
 
 use tradingflow::flow::{Apply, Map, Multiply, PyClassOperator, PyParams, Resample, Scenario};
 use tradingflow::sources::clock;
@@ -70,7 +70,7 @@ async fn main() {
     // Frictionless cap-weighted index NAV via the flowops Benchmark trader.
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
     let index = sc.add_operator(
-        PyClassOperator::<[Port<Array<f64>>]>::from_module(
+        PyClassOperator::<Ports<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
             PyParams::new()
                 .int("num_stocks", n as i64)

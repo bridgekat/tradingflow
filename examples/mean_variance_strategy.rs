@@ -20,7 +20,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, Port};
+use flowgraph::typed::{Handle, Port, Ports};
 
 use tradingflow::flow::{Log, Map, Multiply, PyClassOperator, PyParams, Scenario};
 use tradingflow::sources::clock;
@@ -33,12 +33,19 @@ const DELTAS: [f64; 8] = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0];
 const MODE_MIN_MEAN_VARIANCE: i64 = 3;
 
 fn total_value(sc: &mut Scenario, h: Handle<Array<f64>>) -> Handle<Array<f64>> {
-    sc.add_operator(Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())), h)
+    sc.add_operator(
+        Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())),
+        h,
+    )
 }
 
 /// (cagr, annualized Sharpe, max drawdown) from a daily NAV series.
 fn nav_stats(v: &[f64]) -> (f64, f64, f64) {
-    let s: Vec<f64> = v.iter().copied().filter(|x| x.is_finite() && *x > 0.0).collect();
+    let s: Vec<f64> = v
+        .iter()
+        .copied()
+        .filter(|x| x.is_finite() && *x > 0.0)
+        .collect();
     if s.len() < 10 {
         return (f64::NAN, f64::NAN, f64::NAN);
     }
@@ -48,7 +55,11 @@ fn nav_stats(v: &[f64]) -> (f64, f64, f64) {
     let mean = rets.iter().sum::<f64>() / rets.len() as f64;
     let var = rets.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / rets.len() as f64;
     let sd = var.sqrt();
-    let sharpe = if sd > 0.0 { mean * 252.0 / (sd * 252.0_f64.sqrt()) } else { f64::NAN };
+    let sharpe = if sd > 0.0 {
+        mean * 252.0 / (sd * 252.0_f64.sqrt())
+    } else {
+        f64::NAN
+    };
     let mut peak = f64::MIN;
     let mut mdd = 0.0;
     for &x in &s {
@@ -70,7 +81,10 @@ async fn main() {
     let n = symbols.len();
     let n_i = n as i64;
     let idx = args.index_size as i64;
-    eprintln!("loaded {n} symbols; index_size={}; deltas={DELTAS:?}", args.index_size);
+    eprintln!(
+        "loaded {n} symbols; index_size={}; deltas={DELTAS:?}",
+        args.index_size
+    );
 
     let mut sc = Scenario::new();
     let clk = sc.clock();
@@ -84,8 +98,12 @@ async fn main() {
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
 
     let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
-    let universe =
-        common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
+    let universe = common::build_cap_weighted_universe(
+        &mut sc,
+        circ_market_cap,
+        rebalance_clock,
+        args.index_size,
+    );
 
     // Mean predictor (demeaned target) and covariance predictor (raw target).
     let predicted_returns = sc.add_operator(
@@ -122,9 +140,12 @@ async fn main() {
 
     // Index baseline.
     let index = sc.add_operator(
-        PyClassOperator::<[Port<Array<f64>>]>::from_module(
+        PyClassOperator::<Ports<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
-            PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
+            PyParams::new()
+                .int("num_stocks", n_i)
+                .float("initial_cash", 1.0)
+                .bool("use_adjusts", true),
             vec![2],
             clk.clone(),
         ),
@@ -151,9 +172,12 @@ async fn main() {
             (universe, predicted_returns, predicted_cov),
         );
         let fric = sc.add_operator(
-            PyClassOperator::<[Port<Array<f64>>]>::from_module(
+            PyClassOperator::<Ports<Array<f64>>>::from_module(
                 "flowops.traders.benchmark",
-                PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
+                PyParams::new()
+                    .int("num_stocks", n_i)
+                    .float("initial_cash", 1.0)
+                    .bool("use_adjusts", true),
                 vec![2],
                 clk.clone(),
             ),
@@ -171,13 +195,23 @@ async fn main() {
     // Extract + report.
     let begin = args.begin().as_nanos();
     let trim_scale = |ts: Vec<i64>, v: Vec<f64>| -> (Vec<i64>, Vec<f64>) {
-        ts.into_iter().zip(v).filter(|(t, _)| *t >= begin).map(|(t, x)| (t, x * INITIAL_CASH)).unzip()
+        ts.into_iter()
+            .zip(v)
+            .filter(|(t, _)| *t >= begin)
+            .map(|(t, x)| (t, x * INITIAL_CASH))
+            .unzip()
     };
 
     let (it, iv) = common::read_scalar_series(&session, h_index);
     let (it, iv) = trim_scale(it, iv);
     let (ic, is, im) = nav_stats(&iv);
-    println!("index:       final={:.0} CNY  cagr={:.2}% sharpe={:.3} mdd={:.2}%", iv.last().copied().unwrap_or(f64::NAN), ic * 100.0, is, im * 100.0);
+    println!(
+        "index:       final={:.0} CNY  cagr={:.2}% sharpe={:.3} mdd={:.2}%",
+        iv.last().copied().unwrap_or(f64::NAN),
+        ic * 100.0,
+        is,
+        im * 100.0
+    );
 
     let mut cols: Vec<(String, Vec<i64>, Vec<f64>)> = vec![("index".into(), it, iv)];
     for (delta, h) in &variant_handles {

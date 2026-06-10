@@ -20,7 +20,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, Port};
+use flowgraph::typed::{Handle, Port, Ports};
 
 use tradingflow::flow::{Diff, Log, Map, Multiply, PyClassOperator, PyParams, Scenario};
 use tradingflow::sources::clock;
@@ -90,7 +90,7 @@ async fn main() {
     );
 
     let index = sc.add_operator(
-        PyClassOperator::<[Port<Array<f64>>]>::from_module(
+        PyClassOperator::<Ports<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
             PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
             vec![2],
@@ -159,8 +159,8 @@ async fn main() {
         );
 
         // Long-only and long-short Markowitz portfolios.
-        let mut nav = [Handle::<Series<f64>>::new(0); 2];
-        for (k, long_only) in [true, false].into_iter().enumerate() {
+        let mut nav: Vec<Handle<Series<f64>>> = Vec::with_capacity(2);
+        for long_only in [true, false] {
             let soft = sc.add_operator(
                 PyClassOperator::<(Port<Array<f64>>, Port<Array<f64>>, Port<Array<f64>>)>::from_module(
                     "flowops.portfolios.mean_variance.markowitz",
@@ -176,7 +176,7 @@ async fn main() {
                 (universe, predicted_returns, cov),
             );
             let fric = sc.add_operator(
-                PyClassOperator::<[Port<Array<f64>>]>::from_module(
+                PyClassOperator::<Ports<Array<f64>>>::from_module(
                     "flowops.traders.benchmark",
                     PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
                     vec![2],
@@ -185,7 +185,7 @@ async fn main() {
                 &[soft, st.close, st.adjusts, upper, lower][..],
             );
             let value = total_value(&mut sc, fric);
-            nav[k] = sc.add_record(value);
+            nav.push(sc.add_record(value));
         }
 
         recs.push(Rec { name: e.name, long: nav[0], ls: nav[1], mv: sc.add_record(mv) });

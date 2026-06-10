@@ -7,18 +7,22 @@
 //!
 //! # Design (validated end-to-end before landing here)
 //!
-//! * Operators implement [`Operator`] — the TradingFlow operator contract
-//!   (`compute -> bool`, a single typed output) expressed over `flowgraph`'s
-//!   [`Ports`](flowgraph::typed::Ports) so the input / notify trees are the
-//!   engine's own types. Operators are *pure* (no threaded timestamp); the few
-//!   that stamp event time hold the [`Clock`] in their own state (e.g.
-//!   [`Record`]). `State` and `Output` are `Send + Sync` (project decision: no
-//!   operator instance is `!Sync`).
-//! * [`Adapt`] bridges any [`Operator`] onto [`flowgraph::typed::Operator`],
-//!   mapping the `bool` return directly onto the single output's notify flag.
-//!   Combined with the engine's input-notification gating, this reproduces the
-//!   legacy `did_produce` cone-prune exactly: a node fires iff ≥1 input
-//!   notified, which equals the old "iff ≥1 input produced".
+//! * Operators implement [`flowgraph::typed::Operator`] (notify-gated compute /
+//!   passthrough) or [`flowgraph::typed::Segment`] (custom gating, e.g.
+//!   [`Clocked`]) **directly** — no TradingFlow-side operator trait or bridge.
+//!   Output buffers live in each operator's `State`; `compute` returns
+//!   `(notify, &out)` references into it, and the `init == true` build call
+//!   sizes/seeds buffers from the build-time input values without running
+//!   per-tick side effects (see [`op`] for the conventions). Because operators
+//!   are plain segments, they compose with `flowgraph`'s combinators
+//!   (`then`/`fork`/`par`) and the `flowgraph::segment!` fusion macro as-is.
+//! * The engine's input-notification gating reproduces the legacy
+//!   `did_produce` cone-prune exactly: an [`Operator`]'s compute path fires iff
+//!   ≥1 input notified (else its `passthrough` re-emits the previous output,
+//!   un-notified), which equals the old "iff ≥1 input produced".
+//! * Source cells are `push_source` nodes poked through the typed
+//!   `Graph::state_mut(SourceHandle<T>)` (which marks the dirty cone); the
+//!   async [`Source`](crate::source::Source) feed is driven by [`Session`].
 //! * Time is threaded out-of-band through a shared [`Clock`] the driver advances
 //!   before each `stabilize` (only operators that stamp event time read it).
 //!
@@ -34,14 +38,6 @@
 //! mode) for lambdas, or `add_py_operator_file` / `PyClassOperator` for
 //! class-based operators loaded from `.py` files (see `flowops`). The `python`
 //! and `pyhost` submodule docs cover the contracts, data model, and setup.
-//!
-//! # Status
-//!
-//! All legacy operators ported with per-operator differential tests vs the old
-//! engine; the async source/event-loop driver and the Python-operator bridge are
-//! landed. Remaining before cutover: concurrency hardening (TSan/loom on the
-//! notify/counter protocol) and an end-to-end parity harness, then removal of the
-//! legacy `operator`/`operators`/`scenario`/`bridge` modules.
 
 mod arith;
 mod metrics;
@@ -60,13 +56,22 @@ mod structural;
 mod transform;
 
 #[cfg(feature = "pyflow")]
-pub use pyhost::{NativeArrayView, NativeSeriesView, PyClassOperator, PyParams};
+pub use pyhost::{NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyParams};
 #[cfg(feature = "pyflow")]
 pub use python::PyOperator;
 
-pub use op::{Adapt, Clock, Operator};
+// The `flowgraph` vocabulary the flow layer is written in, re-exported for
+// downstream graph-building code. (`flowgraph::typed::Id` is NOT re-exported —
+// `flow::Id` is the structural identity operator below; reach the combinator
+// via its full path.)
+pub use flowgraph::typed::{
+    Handle, Interface, InterfaceHandles, Operator, Port, Ports, RefVec, Segment, SegmentExt,
+    SourceHandle,
+};
+
+pub use op::{Clock, StripNotify};
 pub use session::{Scenario, Session, ShutdownFlag};
-pub use ops::{Clocked, Const, Count, Filter, Last, Record};
+pub use ops::{Clocked, Count, Filter, Last, Record};
 pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
 };
