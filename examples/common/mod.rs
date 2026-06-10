@@ -129,9 +129,15 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(Instant, usi
             let pb = ProgressBar::new(t as u64);
             pb.set_style(
                 ProgressStyle::with_template(
-                    "{prefix} {percent}% |{wide_bar}| {human_pos}/{human_len} [{elapsed_precise}<{eta}, {per_sec}]",
+                    "{prefix} |{wide_bar}| {pos}/{len} [{elapsed}<{eta}, {per_sec}]",
                 )
                 .unwrap()
+                .with_key(
+                    "per_sec",
+                    |s: &indicatif::ProgressState, w: &mut dyn std::fmt::Write| {
+                        write!(w, "{:.0} events/s", s.per_sec()).unwrap()
+                    },
+                )
                 .progress_chars("█▉▊▋▌▍▎▏ "),
             );
             pb
@@ -139,26 +145,25 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(Instant, usi
         _ => {
             let pb = ProgressBar::new_spinner();
             pb.set_style(
-                ProgressStyle::with_template(
-                    "{prefix} {spinner} {human_pos} [{elapsed_precise}, {per_sec}]",
-                )
-                .unwrap(),
+                ProgressStyle::with_template("{prefix} {spinner} {pos} [{elapsed}, {per_sec}]")
+                    .unwrap()
+                    .with_key(
+                        "per_sec",
+                        |s: &indicatif::ProgressState, w: &mut dyn std::fmt::Write| {
+                            write!(w, "{:.0} events/s", s.per_sec()).unwrap()
+                        },
+                    ),
             );
             pb
         }
     };
-    // Cap redraws at ~12 fps regardless of how often the callback fires.
-    pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(12));
+    // Cap redraws at ~20 fps regardless of how often the callback fires.
+    pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(20));
 
-    let begin_ns = begin.as_nanos();
+    let _begin_ns = begin.as_nanos();
     let guard = FinishOnDrop(pb);
     move |ts: Instant, processed: usize| {
         let pb = &guard.0;
-        pb.set_prefix(if ts.as_nanos() < begin_ns {
-            "warmup"
-        } else {
-            "running"
-        });
         let rows = processed as u64;
         // Grow the length if the estimate undershot (keeps the percentage sane).
         if let Some(len) = pb.length()
@@ -167,7 +172,7 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(Instant, usi
             pb.set_length(rows);
         }
         pb.set_position(rows);
-        pb.set_message(date_str(ts));
+        pb.set_prefix(date_str(ts));
     }
 }
 

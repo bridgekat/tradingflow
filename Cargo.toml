@@ -6,6 +6,10 @@ edition = "2024"
 [lib]
 crate-type = ["lib", "cdylib"]
 
+[profile.profiling]
+inherits = "release"
+debug = true
+
 [features]
 default = []
 # Legacy bridge: Python-as-host extension module (`src/bridge`).
