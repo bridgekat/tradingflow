@@ -728,3 +728,120 @@ fn parallel_stress_stateful_counts() {
         assert_eq!(g.slot(c).as_slice(), &[passes], "a parallel Count raced");
     }
 }
+
+// ===========================================================================
+// Split + segment fusion
+// ===========================================================================
+
+/// `Split` fans a `[3, 2]` panel into per-row ports holding the row values;
+/// rows notify exactly when the panel does (a downstream `Count` advances only
+/// on panel pokes, not on unrelated generations).
+#[test]
+fn split_rows_notify_with_panel() {
+    let clock = Clock::new();
+    let mut b = GraphBuilder::new();
+    let panel = b.push_source(Array::from_vec(&[3, 2], vec![0.0_f64; 6]));
+    let other = b.push_source(Array::scalar(0.0_f64));
+    let rows = b.push(Split::<f64>::new(3), *panel);
+    assert_eq!(rows.len(), 3);
+    let counts: Vec<_> = rows.iter().map(|&r| b.push(Count, r)).collect();
+    let _sink = b.push(Count, *other); // unrelated cone
+    let mut g = Graph::from_builder(b);
+    let mut pool = Pool::new(0);
+
+    // Build values: rows hold the initial panel rows; counters untouched.
+    assert_eq!(g.slot(rows[0]).as_slice(), &[0.0, 0.0]);
+    for &c in &counts {
+        assert_eq!(g.slot(c).as_slice(), &[0.0]);
+    }
+
+    clock.set(ts(1));
+    *g.state_mut(panel) = Array::from_vec(&[3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    g.stabilize(&mut pool);
+    assert_eq!(g.slot(rows[0]).as_slice(), &[1.0, 2.0]);
+    assert_eq!(g.slot(rows[1]).as_slice(), &[3.0, 4.0]);
+    assert_eq!(g.slot(rows[2]).as_slice(), &[5.0, 6.0]);
+    for &c in &counts {
+        assert_eq!(g.slot(c).as_slice(), &[1.0]);
+    }
+
+    // Poking an unrelated source must not advance the per-row counters.
+    clock.set(ts(2));
+    *g.state_mut(other) = Array::scalar(1.0);
+    g.stabilize(&mut pool);
+    for &c in &counts {
+        assert_eq!(g.slot(c).as_slice(), &[1.0]);
+    }
+}
+
+/// The declared axis size is validated against the build-time input shape.
+#[test]
+#[should_panic(expected = "Split: input shape")]
+fn split_axis_size_mismatch_panics() {
+    let mut b = GraphBuilder::new();
+    let panel = b.push_source(Array::from_vec(&[3, 2], vec![0.0_f64; 6]));
+    let _ = b.push(Split::<f64>::new(2), *panel);
+}
+
+/// A fused `segment!` chain (Filter -> Selects -> ForwardAdjust -> Multiply)
+/// is tick-for-tick bit-identical to the same operators as separate nodes,
+/// including the NaN cutoff and the price/dividend message-passing.
+#[test]
+fn fused_segment_matches_unfused_nodes() {
+    fn any_finite(a: &Array<f64>) -> bool {
+        a.as_slice().iter().any(|x| x.is_finite())
+    }
+    fn bits(a: &Array<f64>) -> Vec<u64> {
+        a.as_slice().iter().map(|x| x.to_bits()).collect()
+    }
+
+    let fused = flowgraph::segment!(|prices_row: Port<Array<f64>>, div_row: Port<Array<f64>>|
+        -> (Port<Array<f64>>, Port<Array<f64>>) {
+        let prices = prices_row => Filter(any_finite);
+        let dividends = div_row => Filter(any_finite);
+        let close = prices => Select::<f64>::new(vec![0], 0, true);
+        let adjusts = (close, dividends) => ForwardAdjust::new().with_output_prices(false);
+        let adjusted = (close, adjusts) => Multiply::<f64>::new();
+        (adjusted, adjusts)
+    });
+
+    let nan = f64::NAN;
+    let clock = Clock::new();
+    let mut b = GraphBuilder::new();
+    let prices = b.push_source(Array::from_vec(&[2], vec![nan; 2]));
+    let div = b.push_source(Array::from_vec(&[2], vec![nan; 2]));
+
+    // Reference: the same chain as separate nodes.
+    let p_f = b.push(Filter(any_finite), *prices);
+    let d_f = b.push(Filter(any_finite), *div);
+    let close = b.push(Select::<f64>::new(vec![0], 0, true), p_f);
+    let adj = b.push(ForwardAdjust::new().with_output_prices(false), (close, d_f));
+    let adjusted = b.push(Multiply::<f64>::new(), (close, adj));
+
+    let (f_adjusted, f_adj) = b.push(fused, (*prices, *div));
+    let mut g = Graph::from_builder(b);
+    let mut pool = Pool::new(0);
+
+    // (prices_row, dividend_row) per tick; None = source not poked.
+    type Tick = (Option<[f64; 2]>, Option<[f64; 2]>);
+    let ticks: &[Tick] = &[
+        (Some([10.0, 100.0]), None),
+        (Some([12.0, 110.0]), Some([0.0, 2.0])), // cash dividend
+        (None, None),                            // idle generation
+        (Some([11.0, 90.0]), None),
+        (Some([nan, nan]), Some([0.5, 0.0])), // share dividend on a no-data tick
+        (Some([13.0, 95.0]), None),
+    ];
+    for (i, (p, d)) in ticks.iter().enumerate() {
+        clock.set(ts(i as i64 + 1));
+        if let Some(p) = p {
+            *g.state_mut(prices) = Array::from_vec(&[2], p.to_vec());
+        }
+        if let Some(d) = d {
+            *g.state_mut(div) = Array::from_vec(&[2], d.to_vec());
+        }
+        g.stabilize(&mut pool);
+        assert_eq!(bits(g.slot(adjusted)), bits(g.slot(f_adjusted)), "tick {i}: adjusted");
+        assert_eq!(bits(g.slot(adj)), bits(g.slot(f_adj)), "tick {i}: adjusts");
+    }
+}

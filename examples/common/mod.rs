@@ -27,13 +27,13 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
-use flowgraph::typed::Handle;
+use flowgraph::typed::{Handle, Port};
 
 use tradingflow::data::Duration;
 use tradingflow::flow::{
     Annualize, Divide, Filter, ForwardAdjust, Lag, Log, Map, Multiply, Percentile, Resample,
-    RollingMean, RollingVariance, Scenario, Select, Session, Sqrt, Stack, StackSync, Subtract,
-    Winsorize,
+    RollingMean, RollingVariance, Scenario, Select, Session, Split, Sqrt, Stack, StackSync,
+    Subtract, Winsorize,
 };
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
 use tradingflow::{Array, Instant, Series, utc_to_tai};
@@ -311,14 +311,6 @@ fn any_finite(a: &Array<f64>) -> bool {
     a.as_slice().iter().any(|x| x.is_finite())
 }
 
-/// `Select` stock `i`'s row out of a `[N, K]` panel and drop the all-NaN
-/// "no data" ticks, recovering that stock's real event stream (so the existing
-/// per-stock operators, incl. message-passing `ForwardAdjust`, are unchanged).
-fn pick(sc: &mut Scenario, panel: Handle<Array<f64>>, i: usize) -> Handle<Array<f64>> {
-    let sel = sc.add_operator(Select::<f64>::new(vec![i], 0, true), panel);
-    sc.add_operator(Filter(any_finite), sel)
-}
-
 /// An all-NaN `Array<f64>` of `shape` — the correct "no data yet" initial cell
 /// value for a panel source. The per-row sources only `write` rows that have an
 /// event, so an unwritten row must read as NaN (not `0.0`) for the per-stock
@@ -329,12 +321,16 @@ pub fn nan_array(shape: &[usize]) -> Array<f64> {
 
 /// Load the consolidated long-format parquet panels and stack into the
 /// cross-sectional panel. One [`ParquetPanelSource`] / [`ReportPanelSource`] per
-/// data kind (one sequential scan each) replaces the per-symbol CSV fan-in;
-/// each stock is then recovered with [`pick`] (`Select` + NaN `Filter`) and the
-/// per-stock transforms run unchanged, before `StackSync` (NaN-fill non-trading
-/// slots) / `Stack` (carry last-known) recombine into `[N]` panels — the
-/// `1 → N → 1` fan-out. The financial reports align on the look-ahead-safe
-/// effective date `max(report, notice)` (`use_effective_date`, zero fallback).
+/// data kind (one sequential scan each) replaces the per-symbol CSV fan-in.
+/// Each panel fans out through a single [`Split`] node (`1 → N` rows), every
+/// stock's whole transform chain (NaN `Filter` + column `Select`s +
+/// `ForwardAdjust` + `Annualize` + ...) is **fused into one segment** via the
+/// `flowgraph::segment!` arrow notation — one scheduling unit per stock instead
+/// of ~19 nodes, with identical per-operator notify/cutoff semantics (each
+/// sub-operator keeps its own gate inside the fused node) — and `StackSync`
+/// (NaN-fill non-trading slots) / `Stack` (carry last-known) recombine into
+/// `[N]` panels. The financial reports align on the look-ahead-safe effective
+/// date `max(report, notice)` (`use_effective_date`, zero fallback).
 pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stacked {
     let dir = &args.data_dir;
     let start = Some(args.data_start());
@@ -397,6 +393,13 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
         true,
     );
 
+    // One `Split` per panel: the `1 → N` row fan-out as a single node each.
+    let prices_rows = sc.add_operator(Split::<f64>::new(n), prices_panel);
+    let div_rows = sc.add_operator(Split::<f64>::new(n), div_panel);
+    let equity_rows = sc.add_operator(Split::<f64>::new(n), equity_panel);
+    let balance_rows = sc.add_operator(Split::<f64>::new(n), balance_panel);
+    let income_rows = sc.add_operator(Split::<f64>::new(n), income_panel);
+
     let mut close_v = Vec::with_capacity(n);
     let mut volume_v = Vec::with_capacity(n);
     let mut adj_close_v = Vec::with_capacity(n);
@@ -407,28 +410,68 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
     let mut np_v = Vec::with_capacity(n);
 
     for i in 0..n {
-        let prices = pick(sc, prices_panel, i); // [close, volume]
-        let dividends = pick(sc, div_panel, i); // [share, cash]
-        let equity = pick(sc, equity_panel, i); // [total, circulating]
-        let balance = pick(sc, balance_panel, i); // [capital, reserves, parent_interests]
-        let income = pick(sc, income_panel, i); // [year, day_of_year, profit]
-
-        let close = sc.add_operator(Select::<f64>::new(vec![0], 0, true), prices);
-        let volume = sc.add_operator(Select::<f64>::new(vec![1], 0, true), prices);
-        let adjusts = sc.add_operator(
-            ForwardAdjust::new().with_output_prices(false),
-            (close, dividends),
-        );
-        let adjusted_close = sc.add_operator(Multiply::<f64>::new(), (close, adjusts));
-        let total_shares = sc.add_operator(Select::<f64>::new(vec![0], 0, true), equity);
-        let circ_shares = sc.add_operator(Select::<f64>::new(vec![1], 0, true), equity);
-        let income_ann = sc.add_operator(Annualize::new(), income); // [profit]
-        let net_profit = sc.add_operator(Select::<f64>::new(vec![0], 0, true), income_ann);
-        // parent_equity = -(capital + reserves + parent_interests).
-        let parent_equity = sc.add_operator(
-            Map::new(|a: &Array<f64>| Array::scalar(-a.as_slice().iter().sum::<f64>())),
-            balance,
-        );
+        // The whole per-stock transform chain, fused into ONE graph node via
+        // the `segment!` arrow notation. Inputs are the stock's rows of the
+        // five panels; the leading `Filter(any_finite)` per panel drops the
+        // all-NaN "no data" ticks, recovering that stock's real event stream
+        // exactly as the old per-stock `pick` chains did (each sub-operator
+        // keeps its own notify gate inside the fused node, so the cutoff and
+        // `ForwardAdjust`'s price/dividend message-passing are unchanged).
+        // The segment is identical for every stock (the stock index lives
+        // only in the input wiring), so it monomorphizes once.
+        let seg = flowgraph::segment!(|prices_row: Port<Array<f64>>,
+                                       div_row: Port<Array<f64>>,
+                                       equity_row: Port<Array<f64>>,
+                                       balance_row: Port<Array<f64>>,
+                                       income_row: Port<Array<f64>>|
+            -> (
+            Port<Array<f64>>,
+            Port<Array<f64>>,
+            Port<Array<f64>>,
+            Port<Array<f64>>,
+            Port<Array<f64>>,
+            Port<Array<f64>>,
+            Port<Array<f64>>,
+            Port<Array<f64>>
+        ) {
+            let prices = prices_row => Filter(any_finite); // [close, volume]
+            let dividends = div_row => Filter(any_finite); // [share, cash]
+            let equity = equity_row => Filter(any_finite); // [total, circulating]
+            let balance = balance_row => Filter(any_finite); // [capital, reserves, parent_interests]
+            let income = income_row => Filter(any_finite); // [year, day_of_year, profit]
+            let close = prices => Select::<f64>::new(vec![0], 0, true);
+            let volume = prices => Select::<f64>::new(vec![1], 0, true);
+            let adjusts = (close, dividends) => ForwardAdjust::new().with_output_prices(false);
+            let adjusted_close = (close, adjusts) => Multiply::<f64>::new();
+            let total_shares = equity => Select::<f64>::new(vec![0], 0, true);
+            let circ_shares = equity => Select::<f64>::new(vec![1], 0, true);
+            let income_ann = income => Annualize::new(); // [profit]
+            // parent_equity = -(capital + reserves + parent_interests).
+            let net_profit = income_ann => Select::<f64>::new(vec![0], 0, true);
+            let parent_equity = balance
+                => Map::new(|a: &Array<f64>| Array::scalar(-a.as_slice().iter().sum::<f64>()));
+            (
+                close,
+                volume,
+                adjusted_close,
+                adjusts,
+                total_shares,
+                circ_shares,
+                parent_equity,
+                net_profit,
+            )
+        });
+        let (close, volume, adjusted_close, adjusts, total_shares, circ_shares, parent_equity, net_profit) =
+            sc.add_operator(
+                seg,
+                (
+                    prices_rows[i],
+                    div_rows[i],
+                    equity_rows[i],
+                    balance_rows[i],
+                    income_rows[i],
+                ),
+            );
 
         close_v.push(close);
         volume_v.push(volume);

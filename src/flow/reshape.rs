@@ -1,10 +1,11 @@
-//! Reshape / combine operators — port of `Stack`/`StackSync`/`Concat`/
-//! `ConcatSync`. Axis-based and generic, with the shared interleaved-copy
-//! helpers. The `*Sync` variants read the per-input notify plane.
+//! Reshape / combine operators — `Stack`/`StackSync`/`Concat`/`ConcatSync`
+//! (N → 1 combine) and [`Split`] (1 → N fan-out). Axis-based and generic, with
+//! the shared interleaved-copy helpers. The `*Sync` variants read the
+//! per-input notify plane.
 
 use num_traits::Float;
 
-use flowgraph::typed::{Operator, Port, Ports};
+use flowgraph::typed::{Interface, Operator, Port, Ports, RefVec, Segment};
 
 use crate::{Array, Scalar};
 
@@ -363,5 +364,94 @@ impl<T: Scalar + Float> Operator for ConcatSync<T> {
         state: &'b ReshapeState<T>,
     ) -> (bool, &'a Array<T>) {
         (false, &state.out)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Split — axis-0 fan-out into a `Ports` group (the inverse of `Stack`).
+// ---------------------------------------------------------------------------
+
+/// Split an `[N, ...]` array along axis 0 into `N` per-row output ports — the
+/// `1 → N` inverse of [`Stack`], replacing `N` separate row-`Select` nodes
+/// with one scheduling unit. The port count is declared explicitly at
+/// construction (`axis_size`), making the static graph structure independent
+/// of the build-time input value; the build call asserts the input's axis-0
+/// size matches.
+///
+/// Each output row is an **owned** state buffer copied from the input on every
+/// notified tick (the same copy a per-row `Select` performed), emitted by
+/// reference. All rows notify exactly when the input notifies.
+///
+/// Implements [`Segment`] directly (not the gated `Operator`): a `Ports`
+/// output's value plane cannot be re-lent through `&State`, so every
+/// invocation re-derives the plane via [`RefVec::fill`] and gates manually,
+/// expressing the gate's verdict in the notify flags.
+pub struct Split<T: Scalar> {
+    axis_size: usize,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: Scalar> Split<T> {
+    /// `axis_size` is the declared input axis-0 size = the output port count.
+    pub fn new(axis_size: usize) -> Self {
+        assert!(axis_size > 0, "Split requires at least one output port");
+        Self {
+            axis_size,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+/// Runtime state for [`Split`]: the per-row output buffers, the notify plane,
+/// and the value-plane backing store.
+pub struct SplitState<T: Scalar> {
+    rows: Box<[Array<T>]>,
+    flags: Box<[bool]>,
+    refs: RefVec<Array<T>>,
+}
+
+impl<T: Scalar> Segment for Split<T> {
+    type Inputs = Port<Array<T>>;
+    type Outputs = Ports<Array<T>>;
+    type State = SplitState<T>;
+
+    fn init(self) -> SplitState<T> {
+        SplitState {
+            rows: (0..self.axis_size).map(|_| Array::zeros(&[0])).collect(),
+            flags: vec![false; self.axis_size].into(),
+            refs: RefVec::default(),
+        }
+    }
+
+    fn compute<'a, 'b: 'a>(
+        (notified, x): (bool, &'a Array<T>),
+        state: &'b mut SplitState<T>,
+        init: bool,
+    ) -> <Self::Outputs as Interface>::Refs<'a> {
+        let SplitState { rows, flags, refs } = state;
+        if init {
+            let shape = x.shape();
+            assert!(
+                shape.first() == Some(&rows.len()),
+                "Split: input shape {:?} does not have declared axis-0 size {}",
+                shape,
+                rows.len(),
+            );
+            let row_shape = &shape[1..];
+            let chunk: usize = row_shape.iter().product();
+            let src = x.as_slice();
+            for (i, row) in rows.iter_mut().enumerate() {
+                *row = Array::from_vec(row_shape, src[i * chunk..(i + 1) * chunk].to_vec());
+            }
+        } else if notified {
+            let src = x.as_slice();
+            for (i, row) in rows.iter_mut().enumerate() {
+                let chunk = row.stride();
+                row.as_mut_slice()
+                    .clone_from_slice(&src[i * chunk..(i + 1) * chunk]);
+            }
+        }
+        flags.fill(notified && !init);
+        (flags, refs.fill(rows.iter()))
     }
 }

@@ -14,7 +14,7 @@
 //! function, advances the [`Clock`] to the batch timestamp, and runs one
 //! `stabilize`.
 
-use std::any::Any;
+use std::any::TypeId;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::future::poll_fn;
@@ -48,15 +48,14 @@ pub type ShutdownFlag = Arc<AtomicBool>;
 /// * `state_ptr: *mut u8` — points to `S::State`.
 /// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(Instant, S::Event)>`].
 /// * `graph: &mut Graph` — the typed graph (the write marks the dirty cone).
-/// * `handle: &dyn Any` — the source's `SourceHandle<S::Output>`.
+/// * `index: usize` — the source node's slot index (`SourceHandle::index`).
 /// * `timestamp: Instant` — coalesced batch timestamp.
 ///
 /// # Returns
 ///
 /// The number of logical events the consumed channel item represented (a
 /// batched source returns its batch size); `0` if nothing was buffered.
-type FlowWriteFn =
-    unsafe fn(*mut u8, *mut u8, &mut Graph, &(dyn Any + Send + Sync), Instant) -> usize;
+type FlowWriteFn = unsafe fn(*mut u8, *mut u8, &mut Graph, usize, Instant) -> usize;
 
 /// Type-erased representation of a flow source: fresh channel receivers + write
 /// state from `init_fn`, plus the monomorphized poll/write/drop functions.
@@ -106,14 +105,21 @@ unsafe fn flow_poll_fn<S: Source>(
     rx.poll_pending(ctx).map(|opt| opt.map(|item| item.0))
 }
 
-/// Type-erased graph-write function, monomorphised per source type. Downcasts
-/// the stored `SourceHandle<S::Output>` and writes the buffered event into the
-/// source node's state via the typed `state_mut` (marking the dirty cone).
+/// Type-erased graph-write function, monomorphised per source type. Writes the
+/// buffered event into the source node's state cell via the slot-indexed
+/// untyped layer (`Graph::inner_mut().state_mut(index)`, which marks the dirty
+/// cone), re-typing the [`ErasedCell`](flowgraph::core::ErasedCell) payload.
+///
+/// The payload cast relies on the typed layer's state bundling: a node's state
+/// cell holds `(Box<[usize]>, State)` (input shape + user state; see
+/// `flowgraph/src/typed/graph.rs`), and a `push_source::<T>` node's `State` is
+/// `T` itself. The `TypeId` assert re-checks this contract on every write
+/// (same check the typed `Graph::state_mut` performs).
 unsafe fn flow_write_fn<S: Source>(
     state_ptr: *mut u8,
     rx_ptr: *mut u8,
     graph: &mut Graph,
-    handle: &(dyn Any + Send + Sync),
+    index: usize,
     timestamp: Instant,
 ) -> usize
 where
@@ -124,10 +130,12 @@ where
     let Some(item) = rx.take_pending() else {
         return 0;
     };
-    let handle = *handle
-        .downcast_ref::<SourceHandle<S::Output>>()
-        .expect("source slot handle type mismatch");
-    let output = graph.state_mut(handle);
+    let cell = graph.inner_mut().state_mut(index);
+    assert!(
+        cell.type_id() == TypeId::of::<(Box<[usize]>, S::Output)>(),
+        "source slot state type mismatch"
+    );
+    let (_, output) = unsafe { &mut *cell.get().cast::<(Box<[usize]>, S::Output)>() };
     S::write(state, item.1, output, timestamp)
 }
 
@@ -181,9 +189,9 @@ impl std::future::Future for ErasedRecvFuture {
 // ---------------------------------------------------------------------------
 
 struct SourceSlot {
-    /// The `SourceHandle<S::Output>` of this source's `push_source` node,
-    /// type-erased; `write_fn` downcasts it back.
-    handle: Box<dyn Any + Send + Sync>,
+    /// Slot index of this source's `push_source` node (`SourceHandle::index`);
+    /// `write_fn` re-types the slot's state cell payload.
+    index: usize,
     hist_rx_ptr: *mut u8,
     live_rx_ptr: *mut u8,
     /// Per-source write state (`Source::State`), threaded into every `write_fn`.
@@ -232,8 +240,8 @@ impl Drop for SourceSlot {
 // ---------------------------------------------------------------------------
 
 struct SourceDescriptor {
-    /// The source's `SourceHandle<S::Output>`, type-erased.
-    handle: Box<dyn Any + Send + Sync>,
+    /// Slot index of the source's `push_source` node.
+    index: usize,
     erased: ErasedFlowSource,
 }
 
@@ -394,7 +402,7 @@ impl Scenario {
             _ => None,
         };
         self.sources.push(SourceDescriptor {
-            handle: Box::new(handle),
+            index: handle.index(),
             erased,
         });
         *handle
@@ -418,10 +426,10 @@ impl Scenario {
 
         let mut slots = Vec::with_capacity(sources.len());
         for desc in sources {
-            let SourceDescriptor { handle, erased } = desc;
+            let SourceDescriptor { index, erased } = desc;
             let (hist_rx_ptr, live_rx_ptr, state_ptr) = (erased.init_fn)(Instant::MIN);
             slots.push(SourceSlot {
-                handle,
+                index,
                 hist_rx_ptr,
                 live_rx_ptr,
                 state_ptr,
@@ -599,7 +607,7 @@ impl Session {
                         slot.state_ptr,
                         slot.rx_ptr(kind),
                         &mut self.graph,
-                        slot.handle.as_ref(),
+                        slot.index,
                         min_ts,
                     )
                 };

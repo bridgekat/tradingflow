@@ -76,7 +76,7 @@ pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
 };
 pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Volatility};
-pub use reshape::{Concat, ConcatSync, Stack, StackSync};
+pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync};
 pub use stocks::{Annualize, ForwardAdjust};
 pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select};
 pub use arith::{
