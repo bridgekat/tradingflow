@@ -429,7 +429,18 @@ impl<T: Scalar> Operator for Select<T> {
             if state.squeeze && state.indices.len() == 1 && output_shape.len() > state.axis {
                 output_shape.remove(state.axis);
             }
-            state.out = Array::zeros(&output_shape);
+            // Seed the initial output with the actual selection of the
+            // build-time input — NOT zeros. A zeros build value is a fabricated
+            // finite observation: it leaks through carry-style consumers
+            // (`Stack`) into e.g. cross-sectional ranks for stocks with no data
+            // before the window starts, whereas the faithful selection of a
+            // NaN-initialised panel correctly reads "no data yet". (Also keeps
+            // `Select` and `Split` agreeing on build values.)
+            let src = x.as_slice();
+            state.out = Array::from_vec(
+                &output_shape,
+                state.index_map.iter().map(|&s| src[s].clone()).collect(),
+            );
             return (false, &state.out);
         }
         let src = x.as_slice();
