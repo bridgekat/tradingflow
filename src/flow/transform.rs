@@ -7,9 +7,9 @@
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Interface, Operator, RefPort};
+use flowgraph::typed::{Interface, Operator, RefPort, ViewPort};
 
-use super::op::StripNotify;
+use super::op::{ArrayInput, ArrayValue, StripNotify};
 use crate::{Array, Scalar, Series};
 
 // ---------------------------------------------------------------------------
@@ -352,16 +352,32 @@ where
 // Select (index selection along an axis)
 // ---------------------------------------------------------------------------
 
-/// Select elements along an axis (precomputed flat index map).
-#[derive(Clone)]
-pub struct Select<T: Scalar> {
+/// Select elements along an axis (precomputed flat index map). Generic over
+/// the input edge kind ([`ArrayInput`]): an owned `RefPort<Array<T>>` (the
+/// default) or a zero-copy `ViewPort<ArrayValue<T>>` /
+/// `RefViewPort<ArrayValue<T>>` view, e.g. a gated [`Split`](super::Split)
+/// row. The owned output is the **materialization point** of a view chain: it
+/// retains the last computed selection, preserving the carry semantics
+/// downstream `Stack`-style readers rely on.
+pub struct Select<T: Scalar, In: ArrayInput<T> = RefPort<Array<T>>> {
     indices: Vec<usize>,
     axis: usize,
     squeeze: bool,
-    _phantom: PhantomData<T>,
+    _phantom: PhantomData<fn() -> (T, In)>,
 }
 
-impl<T: Scalar> Select<T> {
+impl<T: Scalar, In: ArrayInput<T>> Clone for Select<T, In> {
+    fn clone(&self) -> Self {
+        Self {
+            indices: self.indices.clone(),
+            axis: self.axis,
+            squeeze: self.squeeze,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar, In: ArrayInput<T>> Select<T, In> {
     pub fn new(indices: Vec<usize>, axis: usize, squeeze: bool) -> Self {
         assert!(
             !squeeze || indices.len() == 1,
@@ -396,8 +412,8 @@ pub struct SelectState<T: Scalar> {
     out: Array<T>,
 }
 
-impl<T: Scalar> Operator for Select<T> {
-    type Inputs = RefPort<Array<T>>;
+impl<T: Scalar, In: ArrayInput<T>> Operator for Select<T, In> {
+    type Inputs = In;
     type Outputs = RefPort<Array<T>>;
     type State = SelectState<T>;
 
@@ -413,10 +429,11 @@ impl<T: Scalar> Operator for Select<T> {
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, x): (bool, &'a Array<T>),
+        values: <In as Interface>::Values<'a>,
         state: &'b mut SelectState<T>,
         init: bool,
     ) -> (bool, &'a Array<T>) {
+        let x = In::data(&values);
         if init {
             let input_shape = x.shape();
             state.index_map = compute_select_map(input_shape, &state.indices, state.axis);
@@ -453,12 +470,18 @@ impl<T: Scalar> Operator for Select<T> {
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
+        _: <In as Interface>::Values<'a>,
         state: &'b SelectState<T>,
     ) -> (bool, &'a Array<T>) {
         (false, &state.out)
     }
 }
+
+/// [`Select`] over a zero-copy [`ArraySlice`](crate::ArraySlice) view edge
+/// produced by a [`Gate`](super::Gate) or forwarded view. Spelling the input
+/// kind in the type is required — associated types are not injective, so the
+/// edge kind cannot be inferred from the wiring alone.
+pub type SelectView<T> = Select<T, ViewPort<ArrayValue<T>>>;
 
 fn compute_select_map(input_shape: &[usize], indices: &[usize], axis: usize) -> Vec<usize> {
     if input_shape.is_empty() {

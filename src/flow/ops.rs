@@ -5,7 +5,7 @@
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Interface, Operator, RefPort, RefViewPort, Segment};
+use flowgraph::typed::{Interface, Operator, RefPort, RefViewPort, Segment, ViewPort};
 
 use super::op::{ArrayValue, Clock};
 use crate::{Array, ArraySlice, Scalar, Series};
@@ -65,58 +65,39 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// FilterView — the same gate over a borrowed `ArraySlice` view input.
+// Gate — zero-copy view gate (no storage, no copies).
 // ---------------------------------------------------------------------------
 
-/// [`Filter`] for a zero-copy [`ArraySlice`] input (e.g. a [`Split`](super::Split)
-/// row): passes the view's data through into an owned output when the predicate
-/// holds, else drops it. The pass-side copy is what materializes the view — the
-/// retained-last-value cutoff semantics require owned storage.
-pub struct FilterView<F>(pub F);
+/// Stateless view gate: forwards the input [`ArraySlice`] view by value,
+/// notifying iff the input notified AND the predicate holds.
+///
+/// Unlike [`Filter`], the un-notified output is the **forwarded current
+/// view**, NOT a retained last-pass value — there is no storage at all.
+/// Downstream consumers must therefore be notify-disciplined (never read an
+/// un-notified value), which every gated [`Operator`] is by construction;
+/// carry-style readers ([`Stack`](super::Stack)) belong behind a
+/// materializing operator (e.g. [`Select`](super::Select)), whose owned
+/// output preserves the retained-last-value cutoff semantics.
+pub struct Gate<F>(pub F);
 
-/// Runtime state for [`FilterView`]: the predicate plus the retained output.
-pub struct FilterViewState<F> {
-    predicate: F,
-    out: Array<f64>,
-}
-
-impl<F> Operator for FilterView<F>
+impl<F> Segment for Gate<F>
 where
-    F: for<'x> Fn(ArraySlice<'x, f64>) -> bool + Send + Sync + 'static,
+    F: for<'x> Fn(ArraySlice<'x, f64>) -> bool + Send + 'static,
 {
     type Inputs = RefViewPort<ArrayValue<f64>>;
-    type Outputs = RefPort<Array<f64>>;
-    type State = FilterViewState<F>;
+    type Outputs = ViewPort<ArrayValue<f64>>;
+    type State = F;
 
-    fn init(self) -> FilterViewState<F> {
-        FilterViewState {
-            predicate: self.0,
-            out: Array::zeros(&[0]),
-        }
+    fn init(self) -> F {
+        self.0
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, view): (bool, &'a ArraySlice<'a, f64>),
-        state: &'b mut FilterViewState<F>,
+        (notified, view): (bool, &'a ArraySlice<'a, f64>),
+        predicate: &'b mut F,
         init: bool,
-    ) -> (bool, &'a Array<f64>) {
-        if init {
-            state.out = view.to_array();
-            return (false, &state.out);
-        }
-        if (state.predicate)(*view) {
-            state.out.as_mut_slice().clone_from_slice(view.as_slice());
-            (true, &state.out)
-        } else {
-            (false, &state.out)
-        }
-    }
-
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a ArraySlice<'a, f64>),
-        state: &'b FilterViewState<F>,
-    ) -> (bool, &'a Array<f64>) {
-        (false, &state.out)
+    ) -> (bool, ArraySlice<'a, f64>) {
+        (!init && notified && predicate(*view), *view)
     }
 }
 

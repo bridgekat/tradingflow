@@ -70,16 +70,16 @@ pub use flowgraph::typed::{
     SourceHandle, ValueView, ViewPort, ViewSource,
 };
 
-pub use op::{ArrayValue, Clock, StripNotify};
+pub use op::{ArrayInput, ArrayValue, Clock, StripNotify};
 pub use session::{Scenario, Session, ShutdownFlag};
-pub use ops::{Clocked, Count, Filter, FilterView, Last, Record};
+pub use ops::{Clocked, Count, Filter, Gate, Last, Record};
 pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
 };
 pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Volatility};
 pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync};
-pub use stocks::{Annualize, ForwardAdjust};
-pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select};
+pub use stocks::{Annualize, AnnualizeView, ForwardAdjust, ForwardAdjustViewDiv};
+pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select, SelectView};
 pub use arith::{
     Abs, Add, Ceil, Divide, Exp, Exp2, Floor, Log, Log2, Log10, Max, Min, Multiply, Negate, Pow,
     Recip, Round, Sign, Sqrt, Subtract,

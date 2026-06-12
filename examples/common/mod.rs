@@ -27,13 +27,13 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
-use flowgraph::typed::{Handle, RefPort, RefViewPort};
+use flowgraph::typed::{Handle, RefPort, RefViewPort, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::flow::{
-    Annualize, ArrayValue, Divide, FilterView, ForwardAdjust, Lag, Log, Map, Multiply, Percentile,
-    Resample, RollingMean, RollingVariance, Scenario, Select, Session, Split, Sqrt, Stack,
-    StackSync, Subtract, Winsorize,
+    AnnualizeView, Apply, ArrayValue, Divide, ForwardAdjustViewDiv, Gate, Lag, Log, Map, Multiply,
+    Percentile, Resample, RollingMean, RollingVariance, Scenario, Select, SelectView, Session,
+    Split, Sqrt, Stack, StackSync, Subtract, Winsorize,
 };
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
 use tradingflow::{Array, ArraySlice, Instant, Series, utc_to_tai};
@@ -413,13 +413,15 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
         // The whole per-stock transform chain, fused into ONE graph node via
         // the `segment!` arrow notation. Inputs are the stock's **zero-copy
         // row views** of the five panels (from `Split`); the leading
-        // `FilterView(any_finite)` per panel materializes the row and drops
-        // the all-NaN "no data" ticks, recovering that stock's real event
-        // stream exactly as the old per-stock `pick` chains did (each
+        // `Gate(any_finite)` per panel forwards the view (no copy, no storage)
+        // and drops the all-NaN "no data" ticks, recovering that stock's real
+        // event stream exactly as the old per-stock `pick` chains did. Views
+        // materialize only at the computing/selecting operators, whose owned
+        // outputs retain last values for the carry-style `Stack` joins; every
         // sub-operator keeps its own notify gate inside the fused node, so the
         // cutoff and `ForwardAdjust`'s price/dividend message-passing are
-        // unchanged). The segment is identical for every stock (the stock
-        // index lives only in the input wiring), so it monomorphizes once.
+        // unchanged. The segment is identical for every stock (the stock index
+        // lives only in the input wiring), so it monomorphizes once.
         let seg = flowgraph::segment!(|prices_row: RefViewPort<ArrayValue<f64>>,
                                        div_row: RefViewPort<ArrayValue<f64>>,
                                        equity_row: RefViewPort<ArrayValue<f64>>,
@@ -435,22 +437,25 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
             RefPort<Array<f64>>,
             RefPort<Array<f64>>
         ) {
-            let prices = prices_row => FilterView(any_finite); // [close, volume]
-            let dividends = div_row => FilterView(any_finite); // [share, cash]
-            let equity = equity_row => FilterView(any_finite); // [total, circulating]
-            let balance = balance_row => FilterView(any_finite); // [capital, reserves, parent_interests]
-            let income = income_row => FilterView(any_finite); // [year, day_of_year, profit]
-            let close = prices => Select::<f64>::new(vec![0], 0, true);
-            let volume = prices => Select::<f64>::new(vec![1], 0, true);
-            let adjusts = (close, dividends) => ForwardAdjust::new().with_output_prices(false);
+            let prices = prices_row => Gate(any_finite); // [close, volume]
+            let dividends = div_row => Gate(any_finite); // [share, cash]
+            let equity = equity_row => Gate(any_finite); // [total, circulating]
+            let balance = balance_row => Gate(any_finite); // [capital, reserves, parent_interests]
+            let income = income_row => Gate(any_finite); // [year, day_of_year, profit]
+            let close = prices => SelectView::<f64>::new(vec![0], 0, true);
+            let volume = prices => SelectView::<f64>::new(vec![1], 0, true);
+            let adjusts = (close, dividends)
+                => ForwardAdjustViewDiv::default().with_output_prices(false);
             let adjusted_close = (close, adjusts) => Multiply::<f64>::new();
-            let total_shares = equity => Select::<f64>::new(vec![0], 0, true);
-            let circ_shares = equity => Select::<f64>::new(vec![1], 0, true);
-            let income_ann = income => Annualize::new(); // [profit]
+            let total_shares = equity => SelectView::<f64>::new(vec![0], 0, true);
+            let circ_shares = equity => SelectView::<f64>::new(vec![1], 0, true);
+            let income_ann = income => AnnualizeView::default(); // [profit]
             // parent_equity = -(capital + reserves + parent_interests).
             let net_profit = income_ann => Select::<f64>::new(vec![0], 0, true);
             let parent_equity = balance
-                => Map::new(|a: &Array<f64>| Array::scalar(-a.as_slice().iter().sum::<f64>()));
+                => Apply::<ViewPort<ArrayValue<f64>>, Array<f64>, _>::new(
+                    |a: ArraySlice<f64>| Array::scalar(-a.as_slice().iter().sum::<f64>()),
+                );
             (
                 close,
                 volume,

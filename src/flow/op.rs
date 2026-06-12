@@ -31,9 +31,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use flowgraph::typed::{Interface, RefViewPort, RefViewPorts, ValueView, ViewPort};
+use flowgraph::typed::{Interface, RefPort, RefViewPort, RefViewPorts, ValueView, ViewPort};
 
-use crate::{ArraySlice, Instant, Scalar};
+use crate::{Array, ArraySlice, Instant, Scalar};
 
 // ===========================================================================
 // Clock — driver-advanced event time, held only by operators that need it.
@@ -83,6 +83,62 @@ pub struct ArrayValue<T>(PhantomData<T>);
 // it is covariant in `'a` — the only `ValueView` obligation.
 unsafe impl<T: Scalar> ValueView for ArrayValue<T> {
     type View<'a> = ArraySlice<'a, T>;
+}
+
+// ===========================================================================
+// ArrayInput — array-payload leaves, abstracted over the edge kind.
+// ===========================================================================
+
+/// An interface leaf carrying array data, abstracted over **how** it rides the
+/// wire: an owned [`Array`](crate::Array) by reference (`RefPort<Array<T>>`)
+/// or a borrowed [`ArraySlice`] view (`ViewPort<ArrayValue<T>>` /
+/// `RefViewPort<ArrayValue<T>>`). Array-shaped operators ([`Select`]
+/// (super::Select), [`ForwardAdjust`](super::ForwardAdjust), [`Annualize`]
+/// (super::Annualize)) are generic over this trait — one implementation serves
+/// owned and zero-copy edges alike, with the owned kind as the default type
+/// parameter so existing call sites are unchanged.
+pub trait ArrayInput<T: Scalar>: Interface {
+    /// The leaf's notify flag.
+    fn notified(values: &Self::Values<'_>) -> bool;
+
+    /// The array payload as a borrowed view.
+    fn data<'a>(values: &Self::Values<'a>) -> ArraySlice<'a, T>;
+}
+
+impl<T: Scalar> ArrayInput<T> for RefPort<Array<T>> {
+    #[inline(always)]
+    fn notified(values: &Self::Values<'_>) -> bool {
+        values.0
+    }
+
+    #[inline(always)]
+    fn data<'a>(values: &Self::Values<'a>) -> ArraySlice<'a, T> {
+        ArraySlice::from(values.1)
+    }
+}
+
+impl<T: Scalar> ArrayInput<T> for RefViewPort<ArrayValue<T>> {
+    #[inline(always)]
+    fn notified(values: &Self::Values<'_>) -> bool {
+        values.0
+    }
+
+    #[inline(always)]
+    fn data<'a>(values: &Self::Values<'a>) -> ArraySlice<'a, T> {
+        *values.1
+    }
+}
+
+impl<T: Scalar> ArrayInput<T> for ViewPort<ArrayValue<T>> {
+    #[inline(always)]
+    fn notified(values: &Self::Values<'_>) -> bool {
+        values.0
+    }
+
+    #[inline(always)]
+    fn data<'a>(values: &Self::Values<'a>) -> ArraySlice<'a, T> {
+        values.1
+    }
 }
 
 // ===========================================================================

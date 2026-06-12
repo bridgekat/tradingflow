@@ -745,10 +745,14 @@ fn split_rows_notify_with_panel() {
     let other = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let rows = b.push(Split::<f64>::new(3), *panel);
     assert_eq!(rows.len(), 3);
+    fn pass(_: ArraySlice<'_, f64>) -> bool {
+        true
+    }
     let counts: Vec<_> = rows
         .iter()
         .map(|&r| {
-            let mat = b.push(FilterView(|_: ArraySlice<f64>| true), r);
+            let gated = b.push(Gate(pass), r);
+            let mat = b.push(SelectView::<f64>::flat(vec![0, 1]), gated);
             b.push(Count, mat)
         })
         .collect();
@@ -789,6 +793,85 @@ fn split_axis_size_mismatch_panics() {
     let mut b = GraphBuilder::new();
     let panel = b.push_source(RefSource::new(Array::from_vec(&[3, 2], vec![0.0_f64; 6])));
     let _ = b.push(Split::<f64>::new(2), *panel);
+}
+
+/// The zero-copy view chain (`Split` rows -> stateless `Gate` -> view-input
+/// `Select` / `ForwardAdjust`) is tick-for-tick bit-identical to the owned
+/// chain (`Filter` -> owned `Select` / `ForwardAdjust`) over the same source
+/// pokes, including the NaN cutoff and the price/dividend message-passing.
+/// This is THE regression test for `Gate` dropping last-value retention: all
+/// consumers downstream of a `Gate` are notify-gated, so the difference must
+/// be unobservable.
+#[test]
+fn view_chain_matches_owned_chain() {
+    fn any_finite_owned(a: &Array<f64>) -> bool {
+        a.as_slice().iter().any(|x| x.is_finite())
+    }
+    fn any_finite_view(a: ArraySlice<'_, f64>) -> bool {
+        a.as_slice().iter().any(|x| x.is_finite())
+    }
+    fn bits(a: &Array<f64>) -> Vec<u64> {
+        a.as_slice().iter().map(|x| x.to_bits()).collect()
+    }
+
+    let nan = f64::NAN;
+    let clock = Clock::new();
+    let mut b = GraphBuilder::new();
+    // A [2, 2] two-stock panel per data kind, split into per-stock rows.
+    let prices_panel = b.push_source(RefSource::new(Array::from_vec(&[2, 2], vec![nan; 4])));
+    let div_panel = b.push_source(RefSource::new(Array::from_vec(&[2, 2], vec![nan; 4])));
+    let prices_rows = b.push(Split::<f64>::new(2), *prices_panel);
+    let div_rows = b.push(Split::<f64>::new(2), *div_panel);
+
+    // Owned reference chain for stock 0 (materializes at the row Selects).
+    type RowSelect = Select<f64, flowgraph::typed::RefViewPort<ArrayValue<f64>>>;
+    let p_f = {
+        let m = b.push(RowSelect::flat(vec![0, 1]), prices_rows[0]);
+        b.push(Filter(any_finite_owned), m)
+    };
+    let d_f = {
+        let m = b.push(RowSelect::flat(vec![0, 1]), div_rows[0]);
+        b.push(Filter(any_finite_owned), m)
+    };
+    let close = b.push(Select::<f64>::new(vec![0], 0, true), p_f);
+    let adj = b.push(ForwardAdjust::new().with_output_prices(false), (close, d_f));
+    let adjusted = b.push(Multiply::<f64>::new(), (close, adj));
+
+    // Zero-copy view chain for stock 0 (materializes at Select).
+    let p_g = b.push(Gate(any_finite_view), prices_rows[0]);
+    let d_g = b.push(Gate(any_finite_view), div_rows[0]);
+    let v_close = b.push(SelectView::<f64>::new(vec![0], 0, true), p_g);
+    let v_adj = b.push(
+        ForwardAdjustViewDiv::default().with_output_prices(false),
+        (v_close, d_g),
+    );
+    let v_adjusted = b.push(Multiply::<f64>::new(), (v_close, v_adj));
+
+    let mut g = Graph::from_builder(b);
+    let mut pool = Pool::new(0);
+
+    // (prices rows, dividend rows) per tick for both stocks; None = not poked.
+    type Tick = (Option<[f64; 4]>, Option<[f64; 4]>);
+    let ticks: &[Tick] = &[
+        (Some([10.0, 100.0, 7.0, 70.0]), None),
+        (Some([12.0, 110.0, nan, nan]), Some([0.0, 2.0, nan, nan])), // cash div, stock1 idle
+        (None, None),                                                // idle generation
+        (Some([11.0, 90.0, 8.0, 80.0]), None),
+        (Some([nan, nan, 9.0, 90.0]), Some([0.5, 0.0, nan, nan])), // share div on no-data tick
+        (Some([13.0, 95.0, nan, nan]), None),
+    ];
+    for (i, (p, d)) in ticks.iter().enumerate() {
+        clock.set(ts(i as i64 + 1));
+        if let Some(p) = p {
+            *g.state_mut(prices_panel) = Array::from_vec(&[2, 2], p.to_vec());
+        }
+        if let Some(d) = d {
+            *g.state_mut(div_panel) = Array::from_vec(&[2, 2], d.to_vec());
+        }
+        g.stabilize(&mut pool);
+        assert_eq!(bits(g.ref_view(adjusted)), bits(g.ref_view(v_adjusted)), "tick {i}: adjusted");
+        assert_eq!(bits(g.ref_view(adj)), bits(g.ref_view(v_adj)), "tick {i}: adjusts");
+    }
 }
 
 /// A fused `segment!` chain (Filter -> Selects -> ForwardAdjust -> Multiply)
