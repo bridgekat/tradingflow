@@ -11,7 +11,7 @@
 
 use std::time::Instant as Wall;
 
-use flowgraph::typed::Port;
+use flowgraph::typed::RefPort;
 
 use tradingflow::flow::{PyClassOperator, PyParams, Resample, Scenario};
 use tradingflow::sources::clock;
@@ -68,7 +68,7 @@ async fn main() {
     for i in 0..k {
         let delta = 1.0 + i as f64;
         let mk = sc.add_operator(
-            PyClassOperator::<(Port<Array<f64>>, Port<Array<f64>>, Port<Array<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
                 &module,
                 PyParams::new()
                     .int("num_stocks", n as i64)

@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use flowgraph::typed::{Operator, Port};
+use flowgraph::typed::{Operator, RefPort};
 
 use crate::{Array, Duration, Scalar, Series};
 
@@ -93,8 +93,8 @@ pub struct RollingState<A: Accumulator> {
 }
 
 impl<A: Accumulator> Operator for Rolling<A> {
-    type Inputs = Port<Series<A::Scalar>>;
-    type Outputs = Port<Array<A::Scalar>>;
+    type Inputs = RefPort<Series<A::Scalar>>;
+    type Outputs = RefPort<Array<A::Scalar>>;
     type State = RollingState<A>;
 
     fn init(self) -> RollingState<A> {
@@ -487,8 +487,8 @@ pub struct EmaState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for Ema<T> {
-    type Inputs = Port<Series<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Series<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = EmaState<T>;
 
     fn init(self) -> EmaState<T> {

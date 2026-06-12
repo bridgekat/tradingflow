@@ -7,7 +7,7 @@
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Interface, Operator, Port};
+use flowgraph::typed::{Interface, Operator, RefPort};
 
 use super::op::StripNotify;
 use crate::{Array, Scalar, Series};
@@ -55,8 +55,8 @@ where
     T: Clone + Send + Sync + 'static,
     F: Fn(&S) -> T + Send + Sync + 'static,
 {
-    type Inputs = Port<S>;
-    type Outputs = Port<T>;
+    type Inputs = RefPort<S>;
+    type Outputs = RefPort<T>;
     type State = MapState<T, F>;
 
     fn init(self) -> MapState<T, F> {
@@ -127,8 +127,8 @@ where
     T: Clone + Send + Sync + 'static,
     F: Fn(&S, &mut T) -> bool + Send + Sync + 'static,
 {
-    type Inputs = Port<S>;
-    type Outputs = Port<T>;
+    type Inputs = RefPort<S>;
+    type Outputs = RefPort<T>;
     type State = MapInplaceState<T, F>;
 
     fn init(self) -> MapInplaceState<T, F> {
@@ -169,12 +169,12 @@ where
 
 /// Allocating multi-input map: `Fn(values) -> T`, where `values` is the
 /// values-only refs tree of the input interface `I` (e.g. `(&A, &B)` for
-/// `(Port<A>, Port<B>)` — see [`StripNotify`]).
+/// `(RefPort<A>, RefPort<B>)` — see [`StripNotify`]).
 pub struct Apply<I, T, F>
 where
     I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Values<'a>) -> T + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>) -> T + Send + Sync + 'static,
 {
     f: F,
     _phantom: PhantomData<fn() -> (I, T)>,
@@ -184,7 +184,7 @@ impl<I, T, F> Clone for Apply<I, T, F>
 where
     I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Values<'a>) -> T + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>) -> T + Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -198,7 +198,7 @@ impl<I, T, F> Apply<I, T, F>
 where
     I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Values<'a>) -> T + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>) -> T + Send + Sync + 'static,
 {
     pub fn new(f: F) -> Self {
         Self {
@@ -219,10 +219,10 @@ impl<I, T, F> Operator for Apply<I, T, F>
 where
     I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Values<'a>) -> T + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>) -> T + Send + Sync + 'static,
 {
     type Inputs = I;
-    type Outputs = Port<T>;
+    type Outputs = RefPort<T>;
     type State = ApplyState<T, F>;
 
     fn init(self) -> ApplyState<T, F> {
@@ -234,20 +234,20 @@ where
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        inputs: <I as Interface>::Refs<'a>,
+        inputs: <I as Interface>::Values<'a>,
         state: &'b mut ApplyState<T, F>,
         init: bool,
     ) -> (bool, &'a T) {
         // The build call (`init`) runs the closure once on the build-time
         // inputs to seed the output — replicating the legacy `init` — but does
         // not notify.
-        state.out = Some((state.f)(<I as StripNotify>::values(inputs)));
+        state.out = Some((state.f)(<I as StripNotify>::plain(inputs)));
         (!init, state.out.as_ref().unwrap())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: <I as Interface>::Refs<'a>,
+        _: <I as Interface>::Values<'a>,
         state: &'b ApplyState<T, F>,
     ) -> (bool, &'a T) {
         (false, state.out.as_ref().unwrap())
@@ -261,7 +261,7 @@ pub struct ApplyInplace<I, T, F>
 where
     I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Values<'a>, &mut T) -> bool + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut T) -> bool + Send + Sync + 'static,
 {
     f: F,
     initial: T,
@@ -272,7 +272,7 @@ impl<I, T, F> Clone for ApplyInplace<I, T, F>
 where
     I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Values<'a>, &mut T) -> bool + Clone + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut T) -> bool + Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -287,7 +287,7 @@ impl<I, T, F> ApplyInplace<I, T, F>
 where
     I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Values<'a>, &mut T) -> bool + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut T) -> bool + Send + Sync + 'static,
 {
     pub fn new(f: F, initial: T) -> Self {
         Self {
@@ -310,10 +310,10 @@ impl<I, T, F> Operator for ApplyInplace<I, T, F>
 where
     I: StripNotify + 'static,
     T: Clone + Send + Sync + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Values<'a>, &mut T) -> bool + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut T) -> bool + Send + Sync + 'static,
 {
     type Inputs = I;
-    type Outputs = Port<T>;
+    type Outputs = RefPort<T>;
     type State = ApplyInplaceState<T, F>;
 
     fn init(self) -> ApplyInplaceState<T, F> {
@@ -326,22 +326,22 @@ where
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        inputs: <I as Interface>::Refs<'a>,
+        inputs: <I as Interface>::Values<'a>,
         state: &'b mut ApplyInplaceState<T, F>,
         init: bool,
     ) -> (bool, &'a T) {
         if init {
             state.out = state.initial.clone();
-            (state.f)(<I as StripNotify>::values(inputs), &mut state.out);
+            (state.f)(<I as StripNotify>::plain(inputs), &mut state.out);
             return (false, &state.out);
         }
-        let notify = (state.f)(<I as StripNotify>::values(inputs), &mut state.out);
+        let notify = (state.f)(<I as StripNotify>::plain(inputs), &mut state.out);
         (notify, &state.out)
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: <I as Interface>::Refs<'a>,
+        _: <I as Interface>::Values<'a>,
         state: &'b ApplyInplaceState<T, F>,
     ) -> (bool, &'a T) {
         (false, &state.out)
@@ -397,8 +397,8 @@ pub struct SelectState<T: Scalar> {
 }
 
 impl<T: Scalar> Operator for Select<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = SelectState<T>;
 
     fn init(self) -> SelectState<T> {
@@ -504,8 +504,8 @@ pub struct LagState<T: Scalar> {
 }
 
 impl<T: Scalar> Operator for Lag<T> {
-    type Inputs = Port<Series<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Series<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = LagState<T>;
 
     fn init(self) -> LagState<T> {

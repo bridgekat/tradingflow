@@ -8,7 +8,7 @@ use std::ops;
 
 use num_traits::{Float, Signed};
 
-use flowgraph::typed::{Operator, Port};
+use flowgraph::typed::{Operator, RefPort};
 
 use crate::{Array, Scalar};
 
@@ -31,8 +31,8 @@ macro_rules! define_unary_op {
         }
 
         impl<T: Scalar + $($bounds)*> Operator for $Name<T> {
-            type Inputs = Port<Array<T>>;
-            type Outputs = Port<Array<T>>;
+            type Inputs = RefPort<Array<T>>;
+            type Outputs = RefPort<Array<T>>;
             type State = Array<T>;
 
             fn init(self) -> Array<T> {
@@ -115,8 +115,8 @@ macro_rules! define_binary_op {
         }
 
         impl<T: Scalar + $($bounds)*> Operator for $Name<T> {
-            type Inputs = (Port<Array<T>>, Port<Array<T>>);
-            type Outputs = Port<Array<T>>;
+            type Inputs = (RefPort<Array<T>>, RefPort<Array<T>>);
+            type Outputs = RefPort<Array<T>>;
             type State = Array<T>;
 
             fn init(self) -> Array<T> {
@@ -191,8 +191,8 @@ pub struct PowState<T: Scalar> {
 }
 
 impl<T: Scalar + Float> Operator for Pow<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = PowState<T>;
 
     fn init(self) -> PowState<T> {

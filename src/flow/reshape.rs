@@ -5,9 +5,10 @@
 
 use num_traits::Float;
 
-use flowgraph::typed::{Interface, Operator, Port, Ports, RefVec, Segment};
+use flowgraph::typed::{Arena, Interface, Operator, RefPort, RefPorts, RefViewPorts, Segment};
 
-use crate::{Array, Scalar};
+use super::op::ArrayValue;
+use crate::{Array, ArraySlice, Scalar};
 
 /// Shared runtime state for all four operators: the axis config, the
 /// outer × chunk layout (sized on the `init` build call), and the output
@@ -84,8 +85,8 @@ impl<T: Scalar> Stack<T> {
 }
 
 impl<T: Scalar> Operator for Stack<T> {
-    type Inputs = Ports<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPorts<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = ReshapeState<T>;
 
     fn init(self) -> ReshapeState<T> {
@@ -159,8 +160,8 @@ impl<T: Scalar + Float> StackSync<T> {
 }
 
 impl<T: Scalar + Float> Operator for StackSync<T> {
-    type Inputs = Ports<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPorts<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = ReshapeState<T>;
 
     fn init(self) -> ReshapeState<T> {
@@ -238,8 +239,8 @@ impl<T: Scalar> Concat<T> {
 }
 
 impl<T: Scalar> Operator for Concat<T> {
-    type Inputs = Ports<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPorts<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = ReshapeState<T>;
 
     fn init(self) -> ReshapeState<T> {
@@ -311,8 +312,8 @@ impl<T: Scalar + Float> ConcatSync<T> {
 }
 
 impl<T: Scalar + Float> Operator for ConcatSync<T> {
-    type Inputs = Ports<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPorts<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = ReshapeState<T>;
 
     fn init(self) -> ReshapeState<T> {
@@ -368,7 +369,7 @@ impl<T: Scalar + Float> Operator for ConcatSync<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Split — axis-0 fan-out into a `Ports` group (the inverse of `Stack`).
+// Split — zero-copy axis-0 fan-out into view ports (the inverse of `Stack`).
 // ---------------------------------------------------------------------------
 
 /// Split an `[N, ...]` array along axis 0 into `N` per-row output ports — the
@@ -378,14 +379,14 @@ impl<T: Scalar + Float> Operator for ConcatSync<T> {
 /// of the build-time input value; the build call asserts the input's axis-0
 /// size matches.
 ///
-/// Each output row is an **owned** state buffer copied from the input on every
-/// notified tick (the same copy a per-row `Select` performed), emitted by
-/// reference. All rows notify exactly when the input notifies.
+/// **Zero-copy**: each output is a borrowed [`ArraySlice`] view of the input's
+/// row, re-derived from the fresh input on every invocation and lent through
+/// the per-generation [`Arena`] — no row data is copied. All rows notify
+/// exactly when the input notifies.
 ///
-/// Implements [`Segment`] directly (not the gated `Operator`): a `Ports`
-/// output's value plane cannot be re-lent through `&State`, so every
-/// invocation re-derives the plane via [`RefVec::fill`] and gates manually,
-/// expressing the gate's verdict in the notify flags.
+/// Implements [`Segment`] directly (not the gated `Operator`): views cannot be
+/// re-lent through `&State`, so every invocation rebuilds the planes and gates
+/// manually, expressing the gate's verdict in the notify flags.
 pub struct Split<T: Scalar> {
     axis_size: usize,
     _phantom: std::marker::PhantomData<T>,
@@ -402,56 +403,46 @@ impl<T: Scalar> Split<T> {
     }
 }
 
-/// Runtime state for [`Split`]: the per-row output buffers, the notify plane,
-/// and the value-plane backing store.
-pub struct SplitState<T: Scalar> {
-    rows: Box<[Array<T>]>,
-    flags: Box<[bool]>,
-    refs: RefVec<Array<T>>,
+/// Runtime state for [`Split`]: the declared port count and the per-generation
+/// arena backing the notify/value planes.
+pub struct SplitState {
+    axis_size: usize,
+    arena: Arena,
 }
 
 impl<T: Scalar> Segment for Split<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Ports<Array<T>>;
-    type State = SplitState<T>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefViewPorts<ArrayValue<T>>;
+    type State = SplitState;
 
-    fn init(self) -> SplitState<T> {
+    fn init(self) -> SplitState {
         SplitState {
-            rows: (0..self.axis_size).map(|_| Array::zeros(&[0])).collect(),
-            flags: vec![false; self.axis_size].into(),
-            refs: RefVec::default(),
+            axis_size: self.axis_size,
+            arena: Arena::new(),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (notified, x): (bool, &'a Array<T>),
-        state: &'b mut SplitState<T>,
+        state: &'b mut SplitState,
         init: bool,
-    ) -> <Self::Outputs as Interface>::Refs<'a> {
-        let SplitState { rows, flags, refs } = state;
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        let n = state.axis_size;
+        let shape = x.shape();
         if init {
-            let shape = x.shape();
             assert!(
-                shape.first() == Some(&rows.len()),
-                "Split: input shape {:?} does not have declared axis-0 size {}",
-                shape,
-                rows.len(),
+                shape.first() == Some(&n),
+                "Split: input shape {shape:?} does not have declared axis-0 size {n}",
             );
-            let row_shape = &shape[1..];
-            let chunk: usize = row_shape.iter().product();
-            let src = x.as_slice();
-            for (i, row) in rows.iter_mut().enumerate() {
-                *row = Array::from_vec(row_shape, src[i * chunk..(i + 1) * chunk].to_vec());
-            }
-        } else if notified {
-            let src = x.as_slice();
-            for (i, row) in rows.iter_mut().enumerate() {
-                let chunk = row.stride();
-                row.as_mut_slice()
-                    .clone_from_slice(&src[i * chunk..(i + 1) * chunk]);
-            }
         }
-        flags.fill(notified && !init);
-        (flags, refs.fill(rows.iter()))
+        let row_shape = &shape[1..];
+        let chunk: usize = row_shape.iter().product();
+        let src = x.as_slice();
+        let alloc = state.arena.reset();
+        let flags = alloc.slice(std::iter::repeat_n(notified && !init, n));
+        let views = alloc.slice((0..n).map(|i| {
+            &*alloc.alloc(ArraySlice::new(&src[i * chunk..(i + 1) * chunk], row_shape))
+        }));
+        (flags, views)
     }
 }

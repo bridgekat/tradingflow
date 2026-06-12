@@ -27,16 +27,16 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
-use flowgraph::typed::{Handle, Port};
+use flowgraph::typed::{Handle, RefPort, RefViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::flow::{
-    Annualize, Divide, Filter, ForwardAdjust, Lag, Log, Map, Multiply, Percentile, Resample,
-    RollingMean, RollingVariance, Scenario, Select, Session, Split, Sqrt, Stack, StackSync,
-    Subtract, Winsorize,
+    Annualize, ArrayValue, Divide, FilterView, ForwardAdjust, Lag, Log, Map, Multiply, Percentile,
+    Resample, RollingMean, RollingVariance, Scenario, Select, Session, Split, Sqrt, Stack,
+    StackSync, Subtract, Winsorize,
 };
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
-use tradingflow::{Array, Instant, Series, utc_to_tai};
+use tradingflow::{Array, ArraySlice, Instant, Series, utc_to_tai};
 
 // ===========================================================================
 // Calendar / Instant helpers
@@ -294,20 +294,20 @@ pub fn load_symbols(data_dir: &str) -> Vec<String> {
 
 /// Cross-sectional `(num_stocks,)` panels produced by [`build_stacked`].
 pub struct Stacked {
-    pub close: Handle<Array<f64>>,          // unadjusted close (StackSync)
-    pub volume: Handle<Array<f64>>,         // (StackSync)
-    pub adjusted_close: Handle<Array<f64>>, // close * forward-adjust factor (StackSync)
-    pub adjusts: Handle<Array<f64>>,        // forward-adjust factor (Stack)
-    pub total_shares: Handle<Array<f64>>,   // (Stack)
-    pub circ_shares: Handle<Array<f64>>,    // (Stack)
-    pub parent_equity: Handle<Array<f64>>,  // (Stack)
-    pub net_profit: Handle<Array<f64>>,     // annualized net profit (Stack)
+    pub close: Handle<RefPort<Array<f64>>>,          // unadjusted close (StackSync)
+    pub volume: Handle<RefPort<Array<f64>>>,         // (StackSync)
+    pub adjusted_close: Handle<RefPort<Array<f64>>>, // close * forward-adjust factor (StackSync)
+    pub adjusts: Handle<RefPort<Array<f64>>>,        // forward-adjust factor (Stack)
+    pub total_shares: Handle<RefPort<Array<f64>>>,   // (Stack)
+    pub circ_shares: Handle<RefPort<Array<f64>>>,    // (Stack)
+    pub parent_equity: Handle<RefPort<Array<f64>>>,  // (Stack)
+    pub net_profit: Handle<RefPort<Array<f64>>>,     // annualized net profit (Stack)
 }
 
-/// Predicate for the per-stock `Filter`: the row has ≥1 finite entry, i.e. the
-/// stock actually has data this tick (vs. an all-NaN "no data" cross-section the
-/// panel emits on a date where other stocks ticked but this one didn't).
-fn any_finite(a: &Array<f64>) -> bool {
+/// Predicate for the per-stock `FilterView`: the row has ≥1 finite entry, i.e.
+/// the stock actually has data this tick (vs. an all-NaN "no data" cross-section
+/// the panel emits on a date where other stocks ticked but this one didn't).
+fn any_finite(a: ArraySlice<'_, f64>) -> bool {
     a.as_slice().iter().any(|x| x.is_finite())
 }
 
@@ -342,7 +342,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
     // the carry-forward / NaN-fill is the downstream `Stack` / `StackSync`'s job).
     // Reports align on the **effective date** `max(report, notice)` — the
     // look-ahead-safe point-in-time a backtest may use them (`use_effective_date`).
-    let daily_panel = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<Array<f64>> {
+    let daily_panel = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<RefPort<Array<f64>>> {
         let s = ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
             .with_time_range(start, end);
         let init = nan_array(&s.out_shape());
@@ -352,7 +352,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
                         kind: &str,
                         cols: Vec<String>,
                         with_report_date: bool|
-     -> Handle<Array<f64>> {
+     -> Handle<RefPort<Array<f64>>> {
         let s = ReportPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
             .with_report_date(with_report_date)
             .use_effective_date(Duration::ZERO)
@@ -411,34 +411,35 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
 
     for i in 0..n {
         // The whole per-stock transform chain, fused into ONE graph node via
-        // the `segment!` arrow notation. Inputs are the stock's rows of the
-        // five panels; the leading `Filter(any_finite)` per panel drops the
-        // all-NaN "no data" ticks, recovering that stock's real event stream
-        // exactly as the old per-stock `pick` chains did (each sub-operator
-        // keeps its own notify gate inside the fused node, so the cutoff and
-        // `ForwardAdjust`'s price/dividend message-passing are unchanged).
-        // The segment is identical for every stock (the stock index lives
-        // only in the input wiring), so it monomorphizes once.
-        let seg = flowgraph::segment!(|prices_row: Port<Array<f64>>,
-                                       div_row: Port<Array<f64>>,
-                                       equity_row: Port<Array<f64>>,
-                                       balance_row: Port<Array<f64>>,
-                                       income_row: Port<Array<f64>>|
+        // the `segment!` arrow notation. Inputs are the stock's **zero-copy
+        // row views** of the five panels (from `Split`); the leading
+        // `FilterView(any_finite)` per panel materializes the row and drops
+        // the all-NaN "no data" ticks, recovering that stock's real event
+        // stream exactly as the old per-stock `pick` chains did (each
+        // sub-operator keeps its own notify gate inside the fused node, so the
+        // cutoff and `ForwardAdjust`'s price/dividend message-passing are
+        // unchanged). The segment is identical for every stock (the stock
+        // index lives only in the input wiring), so it monomorphizes once.
+        let seg = flowgraph::segment!(|prices_row: RefViewPort<ArrayValue<f64>>,
+                                       div_row: RefViewPort<ArrayValue<f64>>,
+                                       equity_row: RefViewPort<ArrayValue<f64>>,
+                                       balance_row: RefViewPort<ArrayValue<f64>>,
+                                       income_row: RefViewPort<ArrayValue<f64>>|
             -> (
-            Port<Array<f64>>,
-            Port<Array<f64>>,
-            Port<Array<f64>>,
-            Port<Array<f64>>,
-            Port<Array<f64>>,
-            Port<Array<f64>>,
-            Port<Array<f64>>,
-            Port<Array<f64>>
+            RefPort<Array<f64>>,
+            RefPort<Array<f64>>,
+            RefPort<Array<f64>>,
+            RefPort<Array<f64>>,
+            RefPort<Array<f64>>,
+            RefPort<Array<f64>>,
+            RefPort<Array<f64>>,
+            RefPort<Array<f64>>
         ) {
-            let prices = prices_row => Filter(any_finite); // [close, volume]
-            let dividends = div_row => Filter(any_finite); // [share, cash]
-            let equity = equity_row => Filter(any_finite); // [total, circulating]
-            let balance = balance_row => Filter(any_finite); // [capital, reserves, parent_interests]
-            let income = income_row => Filter(any_finite); // [year, day_of_year, profit]
+            let prices = prices_row => FilterView(any_finite); // [close, volume]
+            let dividends = div_row => FilterView(any_finite); // [share, cash]
+            let equity = equity_row => FilterView(any_finite); // [total, circulating]
+            let balance = balance_row => FilterView(any_finite); // [capital, reserves, parent_interests]
+            let income = income_row => FilterView(any_finite); // [year, day_of_year, profit]
             let close = prices => Select::<f64>::new(vec![0], 0, true);
             let volume = prices => Select::<f64>::new(vec![1], 0, true);
             let adjusts = (close, dividends) => ForwardAdjust::new().with_output_prices(false);
@@ -503,9 +504,9 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
 pub struct Features {
     /// Per-feature live handles (each `(num_stocks,)`), in column order.
     pub names: Vec<String>,
-    pub handles: Vec<Handle<Array<f64>>>,
+    pub handles: Vec<Handle<RefPort<Array<f64>>>>,
     /// Trading-day-aligned `Record` of the `(num_stocks, n_features)` panel.
-    pub series: Handle<Series<f64>>,
+    pub series: Handle<RefPort<Series<f64>>>,
 }
 
 /// Build the canonical factor panel (3 percentile-ranked fundamentals plus
@@ -612,13 +613,13 @@ pub fn calculate_index_weights(mc: &[f64], k: usize) -> Vec<f64> {
 
 /// Cap-weighted top-`index_size` universe, recomputed on each rebalance tick.
 /// `market_cap` is the per-stock circulating market cap; `rebalance_clock` is
-/// the `Handle<()>` of a [`clock`](tradingflow::sources::clock) source.
+/// the `Handle<RefPort<()>>` of a [`clock`](tradingflow::sources::clock) source.
 pub fn build_cap_weighted_universe(
     sc: &mut Scenario,
-    market_cap: Handle<Array<f64>>,
-    rebalance_clock: Handle<()>,
+    market_cap: Handle<RefPort<Array<f64>>>,
+    rebalance_clock: Handle<RefPort<()>>,
     index_size: usize,
-) -> Handle<Array<f64>> {
+) -> Handle<RefPort<Array<f64>>> {
     use tradingflow::flow::Clocked;
     let k = index_size;
     sc.add_operator(
@@ -634,8 +635,8 @@ pub fn build_cap_weighted_universe(
 /// consumes `demeaned_series` (cross-sectionally demeaned).
 pub fn build_log_return_target(
     sc: &mut Scenario,
-    log_adj: Handle<Array<f64>>,
-) -> (Handle<Array<f64>>, Handle<Series<f64>>, Handle<Series<f64>>) {
+    log_adj: Handle<RefPort<Array<f64>>>,
+) -> (Handle<RefPort<Array<f64>>>, Handle<RefPort<Series<f64>>>, Handle<RefPort<Series<f64>>>) {
     use tradingflow::flow::Diff;
     let log_returns = sc.add_operator(Diff::<f64>::new(), log_adj);
     let target = sc.add_operator(Winsorize::<f64>::new(0.01), log_returns);
@@ -669,9 +670,9 @@ fn demean(r: &Array<f64>) -> Array<f64> {
 /// 0.01 yuan. Returns `(upper, lower)`; first tick is NaN (no prior close).
 pub fn build_price_limits(
     sc: &mut Scenario,
-    close: Handle<Array<f64>>,
+    close: Handle<RefPort<Array<f64>>>,
     limit_pct: f64,
-) -> (Handle<Array<f64>>, Handle<Array<f64>>) {
+) -> (Handle<RefPort<Array<f64>>>, Handle<RefPort<Array<f64>>>) {
     let close_series = sc.add_record(close);
     let prev_close = sc.add_operator(Lag::<f64>::new(1, f64::NAN), close_series);
     let up = limit_pct;
@@ -708,7 +709,7 @@ pub fn build_price_limits(
 // ===========================================================================
 
 /// Read a recorded **scalar** series into `(timestamps_ns, values)`.
-pub fn read_scalar_series(session: &Session, h: Handle<Series<f64>>) -> (Vec<i64>, Vec<f64>) {
+pub fn read_scalar_series(session: &Session, h: Handle<RefPort<Series<f64>>>) -> (Vec<i64>, Vec<f64>) {
     let s: &Series<f64> = session.value(h);
     let ts = s.timestamps().iter().map(|t| t.as_nanos()).collect();
     let vals = s.values().to_vec();

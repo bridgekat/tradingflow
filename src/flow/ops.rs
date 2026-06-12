@@ -5,10 +5,10 @@
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Interface, Operator, Port, Segment};
+use flowgraph::typed::{Interface, Operator, RefPort, RefViewPort, Segment};
 
-use super::op::Clock;
-use crate::{Array, Scalar, Series};
+use super::op::{ArrayValue, Clock};
+use crate::{Array, ArraySlice, Scalar, Series};
 
 // ---------------------------------------------------------------------------
 // Filter — whole-array gate by predicate (the cutoff operator).
@@ -28,8 +28,8 @@ impl<F> Operator for Filter<F>
 where
     F: Fn(&Array<f64>) -> bool + Send + Sync + 'static,
 {
-    type Inputs = Port<Array<f64>>;
-    type Outputs = Port<Array<f64>>;
+    type Inputs = RefPort<Array<f64>>;
+    type Outputs = RefPort<Array<f64>>;
     type State = FilterState<F>;
 
     fn init(self) -> FilterState<F> {
@@ -65,6 +65,62 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// FilterView — the same gate over a borrowed `ArraySlice` view input.
+// ---------------------------------------------------------------------------
+
+/// [`Filter`] for a zero-copy [`ArraySlice`] input (e.g. a [`Split`](super::Split)
+/// row): passes the view's data through into an owned output when the predicate
+/// holds, else drops it. The pass-side copy is what materializes the view — the
+/// retained-last-value cutoff semantics require owned storage.
+pub struct FilterView<F>(pub F);
+
+/// Runtime state for [`FilterView`]: the predicate plus the retained output.
+pub struct FilterViewState<F> {
+    predicate: F,
+    out: Array<f64>,
+}
+
+impl<F> Operator for FilterView<F>
+where
+    F: for<'x> Fn(ArraySlice<'x, f64>) -> bool + Send + Sync + 'static,
+{
+    type Inputs = RefViewPort<ArrayValue<f64>>;
+    type Outputs = RefPort<Array<f64>>;
+    type State = FilterViewState<F>;
+
+    fn init(self) -> FilterViewState<F> {
+        FilterViewState {
+            predicate: self.0,
+            out: Array::zeros(&[0]),
+        }
+    }
+
+    fn compute<'a, 'b: 'a>(
+        (_, view): (bool, &'a ArraySlice<'a, f64>),
+        state: &'b mut FilterViewState<F>,
+        init: bool,
+    ) -> (bool, &'a Array<f64>) {
+        if init {
+            state.out = view.to_array();
+            return (false, &state.out);
+        }
+        if (state.predicate)(*view) {
+            state.out.as_mut_slice().clone_from_slice(view.as_slice());
+            (true, &state.out)
+        } else {
+            (false, &state.out)
+        }
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a ArraySlice<'a, f64>),
+        state: &'b FilterViewState<F>,
+    ) -> (bool, &'a Array<f64>) {
+        (false, &state.out)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Record — append an Array stream into a Series, stamping with event time.
 // ---------------------------------------------------------------------------
 
@@ -93,8 +149,8 @@ pub struct RecordState<T: Scalar> {
 }
 
 impl<T: Scalar> Operator for Record<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Series<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Series<T>>;
     type State = RecordState<T>;
 
     fn init(self) -> RecordState<T> {
@@ -148,8 +204,8 @@ pub struct LastState<T: Scalar> {
 }
 
 impl<T: Scalar> Operator for Last<T> {
-    type Inputs = Port<Series<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Series<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = LastState<T>;
 
     fn init(self) -> LastState<T> {
@@ -206,8 +262,8 @@ pub struct CountState {
 }
 
 impl Operator for Count {
-    type Inputs = Port<Array<f64>>;
-    type Outputs = Port<Array<f64>>;
+    type Inputs = RefPort<Array<f64>>;
+    type Outputs = RefPort<Array<f64>>;
     type State = CountState;
 
     fn init(self) -> CountState {
@@ -242,7 +298,7 @@ impl Operator for Count {
 // Clocked — clock-gated wrapper.
 // ---------------------------------------------------------------------------
 
-/// Prepends a leading `Port<C>` clock input; runs the inner operator's compute
+/// Prepends a leading `RefPort<C>` clock input; runs the inner operator's compute
 /// path only when the clock notifies, else the inner passthrough. Implements
 /// [`Segment`] directly because its gate ignores the data inputs' notify bits.
 pub struct Clocked<O, C = ()> {
@@ -269,8 +325,8 @@ impl<O: Clone, C> Clone for Clocked<O, C> {
     }
 }
 
-impl<O: Operator, C: 'static> Segment for Clocked<O, C> {
-    type Inputs = (Port<C>, O::Inputs);
+impl<O: Operator, C: Sync + 'static> Segment for Clocked<O, C> {
+    type Inputs = (RefPort<C>, O::Inputs);
     type Outputs = O::Outputs;
     type State = O::State;
 
@@ -279,10 +335,10 @@ impl<O: Operator, C: 'static> Segment for Clocked<O, C> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((clock_fired, _), rest): ((bool, &'a C), <O::Inputs as Interface>::Refs<'a>),
+        ((clock_fired, _), rest): ((bool, &'a C), <O::Inputs as Interface>::Values<'a>),
         state: &'b mut O::State,
         init: bool,
-    ) -> <O::Outputs as Interface>::Refs<'a> {
+    ) -> <O::Outputs as Interface>::Values<'a> {
         if init || clock_fired {
             O::compute(rest, state, init)
         } else {

@@ -1,19 +1,21 @@
-//! Operator-contract helpers shared by the `flow` operators: the [`Clock`] and
-//! the [`StripNotify`] refs helper.
+//! Operator-contract helpers shared by the `flow` operators: the [`Clock`],
+//! the [`StripNotify`] payload helper, and the [`ArrayValue`] view kind.
 //!
-//! Since the `flowgraph` segment redesign, TradingFlow operators implement
-//! [`flowgraph::typed::Operator`] (notify-gated; the common case) or
-//! [`flowgraph::typed::Segment`] (custom gating, e.g. [`Clocked`](super::Clocked))
-//! **directly** — there is no TradingFlow-side operator trait or `Adapt` bridge
-//! any more, so operators compose with `flowgraph`'s combinators and the
-//! `segment!` fusion macro as-is.
+//! TradingFlow operators implement [`flowgraph::typed::Operator`]
+//! (notify-gated; the common case) or [`flowgraph::typed::Segment`] (custom
+//! gating, e.g. [`Clocked`](super::Clocked)) **directly** — there is no
+//! TradingFlow-side operator trait or bridge, so operators compose with
+//! `flowgraph`'s combinators and the `segment!` fusion macro as-is.
 //!
 //! Conventions shared by every operator in this module tree:
 //!
-//! * **Output storage lives in `State`.** `compute` writes the state-owned
-//!   buffer and returns `(notify, &out)` references into it. State cells are
-//!   boxed by the engine, so those references stay valid across generations
-//!   (`passthrough` never reallocates).
+//! * **Output storage lives in `State`** (owned buffers); `compute` writes the
+//!   state-owned buffer and returns `(notify, &out)` references into it — or,
+//!   for view-emitting operators ([`Split`](super::Split)), lends
+//!   [`ArraySlice`] views of its inputs through a per-generation
+//!   [`Arena`](flowgraph::typed::Arena). State cells are boxed by the engine,
+//!   so returned references stay valid across generations (`passthrough`
+//!   never reallocates).
 //! * **The `init == true` call replicates the legacy `init(&self, inputs)`.**
 //!   It only sizes/seeds the state and output from the build-time input values
 //!   and returns `(false, &out)` — no per-tick side effect (no counter bump, no
@@ -25,12 +27,13 @@
 //! operators that stamp it (e.g. [`Record`](super::Record)); they receive the
 //! [`Clock`] in their own state, so the clock is never a universal dependency.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use flowgraph::typed::{Interface, Port, Ports};
+use flowgraph::typed::{Interface, RefViewPort, RefViewPorts, ValueView, ViewPort};
 
-use crate::Instant;
+use crate::{ArraySlice, Instant, Scalar};
 
 // ===========================================================================
 // Clock — driver-advanced event time, held only by operators that need it.
@@ -67,54 +70,88 @@ impl Default for Clock {
 }
 
 // ===========================================================================
-// StripNotify — values-only view of an `Interface` refs tree.
+// ArrayValue — the `ArraySlice` view kind for flowgraph ports.
 // ===========================================================================
 
-/// Maps an [`Interface`] refs tree (`(bool, &T)` leaves) onto its values-only
-/// tree (`&T` leaves), dropping the notify flags. Lets closure operators
+/// [`ValueView`] kind passing a borrowed [`ArraySlice`] across interfaces:
+/// `ViewPort<ArrayValue<T>>` / `RefViewPort<ArrayValue<T>>` leaves carry
+/// `ArraySlice<'a, T>` with the engine's per-generation lifetime — fully
+/// borrow-checked zero-copy edges (see [`Split`](super::Split)).
+pub struct ArrayValue<T>(PhantomData<T>);
+
+// SAFETY: `ArraySlice<'a, T>` holds only `&'a` references (data + shape), so
+// it is covariant in `'a` — the only `ValueView` obligation.
+unsafe impl<T: Scalar> ValueView for ArrayValue<T> {
+    type View<'a> = ArraySlice<'a, T>;
+}
+
+// ===========================================================================
+// StripNotify — payload-only view of an `Interface` values tree.
+// ===========================================================================
+
+/// Maps an [`Interface`] payload tree (`(bool, value)` leaves) onto its
+/// values-only tree, dropping the notify flags. Lets closure operators
 /// ([`Map`](super::Map) / [`Apply`](super::Apply)) keep their legacy closure
 /// signatures, e.g. `Fn((&Array<f64>, &Array<f64>)) -> T` for a two-port input.
 pub trait StripNotify: Interface {
-    /// The values-only refs tree.
-    type Values<'a>: Clone;
+    /// The values-only payload tree.
+    type Plain<'a>: Copy;
 
-    /// Drop the notify flags from a refs tree.
-    fn values<'a>(refs: Self::Refs<'a>) -> Self::Values<'a>;
+    /// Drop the notify flags from a payload tree.
+    fn plain<'a>(values: Self::Values<'a>) -> Self::Plain<'a>;
 }
 
-impl<T: 'static> StripNotify for Port<T> {
-    type Values<'a> = &'a T;
+impl<V: ValueView> StripNotify for ViewPort<V>
+where
+    for<'a> V::View<'a>: Copy + Send + Sync,
+{
+    type Plain<'a> = V::View<'a>;
 
     #[inline(always)]
-    fn values<'a>(refs: <Self as Interface>::Refs<'a>) -> Self::Values<'a> {
-        refs.1
+    fn plain<'a>(values: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {
+        values.1
+    }
+}
+
+impl<V: ValueView> StripNotify for RefViewPort<V>
+where
+    for<'a> V::View<'a>: Sync,
+{
+    type Plain<'a> = &'a V::View<'a>;
+
+    #[inline(always)]
+    fn plain<'a>(values: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {
+        values.1
+    }
+}
+
+impl<V: ValueView> StripNotify for RefViewPorts<V>
+where
+    for<'a> V::View<'a>: Sync,
+{
+    type Plain<'a> = &'a [&'a V::View<'a>];
+
+    #[inline(always)]
+    fn plain<'a>(values: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {
+        values.1
     }
 }
 
 impl StripNotify for () {
-    type Values<'a> = ();
+    type Plain<'a> = ();
 
     #[inline(always)]
-    fn values<'a>(_: <Self as Interface>::Refs<'a>) -> Self::Values<'a> {}
-}
-
-impl<T: 'static> StripNotify for Ports<T> {
-    type Values<'a> = &'a [&'a T];
-
-    #[inline(always)]
-    fn values<'a>(refs: <Self as Interface>::Refs<'a>) -> Self::Values<'a> {
-        refs.1
-    }
+    fn plain<'a>(_: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {}
 }
 
 macro_rules! impl_strip_notify_for_tuple {
     ($($idx:tt: $T:ident),+) => {
         impl<$($T: StripNotify,)+> StripNotify for ($($T,)+) {
-            type Values<'a> = ($($T::Values<'a>,)+);
+            type Plain<'a> = ($($T::Plain<'a>,)+);
 
             #[inline(always)]
-            fn values<'a>(refs: Self::Refs<'a>) -> Self::Values<'a> {
-                ( $( <$T as StripNotify>::values(refs.$idx), )+ )
+            fn plain<'a>(values: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {
+                ( $( <$T as StripNotify>::plain(values.$idx), )+ )
             }
         }
     };

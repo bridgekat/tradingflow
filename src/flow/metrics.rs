@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use flowgraph::typed::{Operator, Port};
+use flowgraph::typed::{Operator, RefPort};
 
 use crate::{Array, Scalar};
 
@@ -45,8 +45,8 @@ pub struct CompoundReturnState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for CompoundReturn<T> {
-    type Inputs = (Port<Array<T>>, Port<()>);
-    type Outputs = Port<Array<T>>;
+    type Inputs = (RefPort<Array<T>>, RefPort<()>);
+    type Outputs = RefPort<Array<T>>;
     type State = CompoundReturnState<T>;
 
     fn init(self) -> CompoundReturnState<T> {
@@ -138,8 +138,8 @@ pub struct AverageReturnState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for AverageReturn<T> {
-    type Inputs = (Port<Array<T>>, Port<()>);
-    type Outputs = Port<Array<T>>;
+    type Inputs = (RefPort<Array<T>>, RefPort<()>);
+    type Outputs = RefPort<Array<T>>;
     type State = AverageReturnState<T>;
 
     fn init(self) -> AverageReturnState<T> {
@@ -220,8 +220,8 @@ pub struct VolatilityState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for Volatility<T> {
-    type Inputs = (Port<Array<T>>, Port<()>);
-    type Outputs = Port<Array<T>>;
+    type Inputs = (RefPort<Array<T>>, RefPort<()>);
+    type Outputs = RefPort<Array<T>>;
     type State = VolatilityState<T>;
 
     fn init(self) -> VolatilityState<T> {
@@ -307,8 +307,8 @@ pub struct SharpeRatioState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for SharpeRatio<T> {
-    type Inputs = (Port<Array<T>>, Port<()>);
-    type Outputs = Port<Array<T>>;
+    type Inputs = (RefPort<Array<T>>, RefPort<()>);
+    type Outputs = RefPort<Array<T>>;
     type State = SharpeRatioState<T>;
 
     fn init(self) -> SharpeRatioState<T> {
@@ -397,8 +397,8 @@ pub struct DrawdownState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for Drawdown<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = DrawdownState<T>;
 
     fn init(self) -> DrawdownState<T> {

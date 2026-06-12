@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::fs;
 
 use flowgraph::core::Pool;
-use flowgraph::typed::{Graph, GraphBuilder, Port, Ports};
+use flowgraph::typed::{Graph, GraphBuilder, RefPort, RefPorts, RefSource};
 
 use tradingflow::flow::{Clock, PyClassOperator, PyParams, Record};
 use tradingflow::{Array, Instant, Series};
@@ -35,9 +35,9 @@ fn main() {
     let mut b = GraphBuilder::new();
 
     // Sources (driven manually below): universe + raw feature/return feeds.
-    let universe = b.push_source(Array::from_vec(&[N], vec![1.0; N]));
-    let feat_feed = b.push_source(Array::zeros(&[N, F]));
-    let tgt_feed = b.push_source(Array::zeros(&[N]));
+    let universe = b.push_source(RefSource::new(Array::from_vec(&[N], vec![1.0; N])));
+    let feat_feed = b.push_source(RefSource::new(Array::zeros(&[N, F])));
+    let tgt_feed = b.push_source(RefSource::new(Array::zeros(&[N])));
 
     // Record the feeds into Series so the predictor can read history.
     let feat_series = b.push(Record::new(clock.clone()), *feat_feed);
@@ -45,7 +45,7 @@ fn main() {
 
     // Python operator: a ridge cross-sectional mean predictor (flowops).
     let pred = b.push(
-        PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
                 .int("num_stocks", N as i64)
@@ -61,7 +61,7 @@ fn main() {
 
     // Python operator: turnover of the prediction vector (flowops metric).
     let turnover = b.push(
-        PyClassOperator::<Ports<Array<f64>>>::from_module(
+        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
             "flowops.metrics.turnover",
             PyParams::new().int("num_stocks", N as i64),
             vec![],
@@ -93,7 +93,7 @@ fn main() {
     }
 
     // Read the recorded turnover series and write a tidy CSV.
-    let series: &Series<f64> = g.slot(turnover_series);
+    let series: &Series<f64> = g.ref_view(turnover_series);
     let mut csv = String::from("timestamp_ns,turnover\n");
     for (ts, v) in series.timestamps().iter().zip(series.values().iter()) {
         writeln!(csv, "{},{}", ts.as_nanos(), v).unwrap();

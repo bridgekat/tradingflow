@@ -65,13 +65,14 @@ pub use python::PyOperator;
 // `flow::Id` is the structural identity operator below; reach the combinator
 // via its full path.)
 pub use flowgraph::typed::{
-    Handle, Interface, InterfaceHandles, Operator, Port, Ports, RefVec, Segment, SegmentExt,
-    SourceHandle,
+    Arena, Handle, Interface, InterfaceHandles, Operator, Port, RefPort, RefPorts, RefSource,
+    RefViewPort, RefViewPorts, Scalar as ScalarValue, Segment, SegmentExt, Source as ValueSource,
+    SourceHandle, ValueView, ViewPort, ViewSource,
 };
 
-pub use op::{Clock, StripNotify};
+pub use op::{ArrayValue, Clock, StripNotify};
 pub use session::{Scenario, Session, ShutdownFlag};
-pub use ops::{Clocked, Count, Filter, Last, Record};
+pub use ops::{Clocked, Count, Filter, FilterView, Last, Record};
 pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
 };

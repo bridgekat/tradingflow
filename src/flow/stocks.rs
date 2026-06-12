@@ -3,7 +3,7 @@
 //! adjustment, message-passing on price vs dividend inputs). Implemented
 //! directly on [`flowgraph::typed::Operator`].
 
-use flowgraph::typed::{Operator, Port};
+use flowgraph::typed::{Operator, RefPort};
 
 use crate::Array;
 
@@ -39,8 +39,8 @@ pub struct AnnualizeState {
 }
 
 impl Operator for Annualize {
-    type Inputs = Port<Array<f64>>;
-    type Outputs = Port<Array<f64>>;
+    type Inputs = RefPort<Array<f64>>;
+    type Outputs = RefPort<Array<f64>>;
     type State = AnnualizeState;
 
     fn init(self) -> AnnualizeState {
@@ -157,8 +157,8 @@ pub struct ForwardAdjustState {
 }
 
 impl Operator for ForwardAdjust {
-    type Inputs = (Port<Array<f64>>, Port<Array<f64>>);
-    type Outputs = Port<Array<f64>>;
+    type Inputs = (RefPort<Array<f64>>, RefPort<Array<f64>>);
+    type Outputs = RefPort<Array<f64>>;
     type State = ForwardAdjustState;
 
     fn init(self) -> ForwardAdjustState {

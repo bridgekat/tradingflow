@@ -1,4 +1,4 @@
-//! Port of `python/examples/mean_strategy.py` to the Rust flow engine.
+//! RefPort of `python/examples/mean_strategy.py` to the Rust flow engine.
 //!
 //! A cross-sectional linear-regression strategy on a bounded A-shares
 //! universe: a pooled **Ridge** mean predictor on the canonical 7-factor panel
@@ -20,7 +20,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, Port, Ports};
+use flowgraph::typed::{Handle, RefPort, RefPorts};
 
 use tradingflow::flow::{
     CompoundReturn, Diff, Drawdown, Log, Map, Multiply, PyClassOperator, PyParams, Scenario,
@@ -33,7 +33,7 @@ const INITIAL_CASH: f64 = 1_000_000.0;
 const NUM_FEATURES: i64 = 7;
 
 /// Map a trader's `(holdings_value, cash)` output to its scalar total value.
-fn total_value(sc: &mut Scenario, h: Handle<Array<f64>>) -> Handle<Array<f64>> {
+fn total_value(sc: &mut Scenario, h: Handle<RefPort<Array<f64>>>) -> Handle<RefPort<Array<f64>>> {
     sc.add_operator(
         Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())),
         h,
@@ -71,7 +71,7 @@ async fn main() {
     );
 
     let predicted_returns = sc.add_operator(
-        PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -87,7 +87,7 @@ async fn main() {
     );
 
     let soft_positions = sc.add_operator(
-        PyClassOperator::<(Port<Array<f64>>, Port<Array<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
             "flowops.portfolios.mean.rank_linear",
             PyParams::new().int("num_stocks", n_i).float("top_fraction", 1.0),
             vec![n],
@@ -98,7 +98,7 @@ async fn main() {
 
     // ---- Traders --------------------------------------------------------
     let index = sc.add_operator(
-        PyClassOperator::<Ports<Array<f64>>>::from_module(
+        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
             PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
             vec![2],
@@ -107,7 +107,7 @@ async fn main() {
         &[universe, st.close, st.adjusts, upper, lower][..],
     );
     let strategy_frictionless = sc.add_operator(
-        PyClassOperator::<Ports<Array<f64>>>::from_module(
+        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
             PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
             vec![2],
@@ -116,7 +116,7 @@ async fn main() {
         &[soft_positions, st.close, st.adjusts, upper, lower][..],
     );
     let strategy_actual = sc.add_operator(
-        PyClassOperator::<Ports<Array<f64>>>::from_module(
+        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
             "flowops.traders.random_trader",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -151,7 +151,7 @@ async fn main() {
     let index_logret_vec = sc.add_operator(Stack::<f64>::new(0), &[index_logret][..]); // scalar -> (1,)
     let index_logret_series = sc.add_record(index_logret_vec);
     let beta_alpha = sc.add_operator(
-        PyClassOperator::<(Port<()>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<()>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.metrics.mean.regression_coefficients",
             PyParams::new().int("num_features", 1).int("max_periods", 252).int("min_periods", 20),
             vec![2],

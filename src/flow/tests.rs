@@ -4,10 +4,10 @@
 //! gating / clock / concurrent-write paths under real worker threads.
 
 use flowgraph::core::Pool;
-use flowgraph::typed::{Graph, GraphBuilder, Port};
+use flowgraph::typed::{Graph, GraphBuilder, RefPort, RefSource};
 
 use super::*;
-use crate::{Array, Instant, Series};
+use crate::{Array, ArraySlice, Instant, Series};
 
 fn ts(n: i64) -> Instant {
     Instant::from_nanos(n)
@@ -22,8 +22,8 @@ fn ts(n: i64) -> Instant {
 fn simple_add() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let ha = b.push_source(Array::scalar(0.0_f64));
-    let hb = b.push_source(Array::scalar(0.0_f64));
+    let ha = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
+    let hb = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let hc = b.push(Add::<f64>::new(), (*ha, *hb));
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
@@ -33,7 +33,7 @@ fn simple_add() {
     *g.state_mut(hb) = Array::scalar(3.0);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.slot(hc).as_slice(), &[13.0]);
+    assert_eq!(g.ref_view(hc).as_slice(), &[13.0]);
 }
 
 /// `scenario_chain`: (2 + 3) * 2 == 10. Exercises a 3-deep cone where the leaf
@@ -42,8 +42,8 @@ fn simple_add() {
 fn chain_add_then_mul() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push_source(Array::scalar(0.0_f64));
-    let bb = b.push_source(Array::scalar(0.0_f64));
+    let a = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
+    let bb = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let ab = b.push(Add::<f64>::new(), (*a, *bb));
     let out = b.push(Multiply::<f64>::new(), (ab, *a));
     let mut g = Graph::from_builder(b);
@@ -54,7 +54,7 @@ fn chain_add_then_mul() {
     *g.state_mut(bb) = Array::scalar(3.0);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.slot(out).as_slice(), &[10.0]);
+    assert_eq!(g.ref_view(out).as_slice(), &[10.0]);
 }
 
 /// `scenario_record`: record (10+3), (20+7) → series [13, 27] @ [1, 2].
@@ -62,8 +62,8 @@ fn chain_add_then_mul() {
 fn record_series() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let ha = b.push_source(Array::scalar(0.0_f64));
-    let hb = b.push_source(Array::scalar(0.0_f64));
+    let ha = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
+    let hb = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let sum = b.push(Add::<f64>::new(), (*ha, *hb));
     let rec = b.push(Record::new(clock.clone()), sum);
     let mut g = Graph::from_builder(b);
@@ -79,7 +79,7 @@ fn record_series() {
     *g.state_mut(hb) = Array::scalar(7.0);
     g.stabilize(&mut pool);
 
-    let s: &Series<f64> = g.slot(rec);
+    let s: &Series<f64> = g.ref_view(rec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.timestamps(), &[ts(1), ts(2)]);
     assert_eq!(s.values(), &[13.0, 27.0]);
@@ -91,7 +91,7 @@ fn record_series() {
 fn filter_gates_record() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let flt = b.push(Filter(|a: &Array<f64>| a[0] > 3.0), *src);
     let rec = b.push(Record::new(clock.clone()), flt);
     let mut g = Graph::from_builder(b);
@@ -103,7 +103,7 @@ fn filter_gates_record() {
         g.stabilize(&mut pool);
     }
 
-    let s: &Series<f64> = g.slot(rec);
+    let s: &Series<f64> = g.ref_view(rec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.values(), &[5.0, 10.0]);
     assert_eq!(s.timestamps(), &[ts(2), ts(4)]);
@@ -114,7 +114,7 @@ fn filter_gates_record() {
 fn last_of_record() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let rec = b.push(Record::new(clock.clone()), *src);
     let lst = b.push(Last::new(0.0_f64), rec);
     let mut g = Graph::from_builder(b);
@@ -126,7 +126,7 @@ fn last_of_record() {
         g.stabilize(&mut pool);
     }
 
-    assert_eq!(g.slot(lst).as_slice(), &[20.0]);
+    assert_eq!(g.ref_view(lst).as_slice(), &[20.0]);
 }
 
 /// `scenario_run_periodic_single_input`: data [10,20,30]@[1,2,3], clock @2 only
@@ -135,8 +135,8 @@ fn last_of_record() {
 fn clocked_periodic() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let data = b.push_source(Array::scalar(0.0_f64));
-    let tick = b.push_source(());
+    let data = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
+    let tick = b.push_source(RefSource::new(()));
     let gated = b.push(
         Clocked::<_, ()>::new(Filter(|_: &Array<f64>| true)),
         (*tick, *data),
@@ -155,7 +155,7 @@ fn clocked_periodic() {
         g.stabilize(&mut pool);
     }
 
-    let s: &Series<f64> = g.slot(rec);
+    let s: &Series<f64> = g.ref_view(rec);
     assert_eq!(s.len(), 1);
     assert_eq!(s.values(), &[20.0]);
     assert_eq!(s.timestamps(), &[ts(2)]);
@@ -167,8 +167,8 @@ fn clocked_periodic() {
 fn coalesced_two_source_add() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push_source(Array::scalar(0.0_f64));
-    let bb = b.push_source(Array::scalar(0.0_f64));
+    let a = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
+    let bb = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let sum = b.push(Add::<f64>::new(), (*a, *bb));
     let rec = b.push(Record::new(clock.clone()), sum);
     let mut g = Graph::from_builder(b);
@@ -181,18 +181,18 @@ fn coalesced_two_source_add() {
         g.stabilize(&mut pool);
     }
 
-    assert_eq!(g.slot(rec).values(), &[110.0, 220.0]);
+    assert_eq!(g.ref_view(rec).values(), &[110.0, 220.0]);
 }
 
-/// `Ports` input + per-element notify: gen1 all fire → [1,2,3]; gen2 only s1 →
+/// `RefPorts` input + per-element notify: gen1 all fire → [1,2,3]; gen2 only s1 →
 /// Stack keeps stale [1,20,3]; StackSync NaN-fills [NaN,20,NaN].
 #[test]
 fn slice_stack_and_sync() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let s0 = b.push_source(Array::scalar(0.0_f64));
-    let s1 = b.push_source(Array::scalar(0.0_f64));
-    let s2 = b.push_source(Array::scalar(0.0_f64));
+    let s0 = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
+    let s1 = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
+    let s2 = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let stacked = b.push(Stack::<f64>::new(0), &[*s0, *s1, *s2][..]);
     let synced = b.push(StackSync::<f64>::new(0), &[*s0, *s1, *s2][..]);
     let mut g = Graph::from_builder(b);
@@ -203,14 +203,14 @@ fn slice_stack_and_sync() {
     *g.state_mut(s1) = Array::scalar(2.0);
     *g.state_mut(s2) = Array::scalar(3.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.slot(stacked).as_slice(), &[1.0, 2.0, 3.0]);
-    assert_eq!(g.slot(synced).as_slice(), &[1.0, 2.0, 3.0]);
+    assert_eq!(g.ref_view(stacked).as_slice(), &[1.0, 2.0, 3.0]);
+    assert_eq!(g.ref_view(synced).as_slice(), &[1.0, 2.0, 3.0]);
 
     clock.set(ts(2));
     *g.state_mut(s1) = Array::scalar(20.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.slot(stacked).as_slice(), &[1.0, 20.0, 3.0]);
-    let v = g.slot(synced).as_slice();
+    assert_eq!(g.ref_view(stacked).as_slice(), &[1.0, 20.0, 3.0]);
+    let v = g.ref_view(synced).as_slice();
     assert!(v[0].is_nan());
     assert_eq!(v[1], 20.0);
     assert!(v[2].is_nan());
@@ -223,7 +223,7 @@ fn slice_stack_and_sync() {
 fn rolling_mean_count_warmup_and_value() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let rec = b.push(Record::new(clock.clone()), *src);
     let rm = b.push(RollingMean::<f64>::count(3), rec);
     let mut g = Graph::from_builder(b);
@@ -234,12 +234,12 @@ fn rolling_mean_count_warmup_and_value() {
         *g.state_mut(src) = Array::scalar(v);
         g.stabilize(&mut pool);
     }
-    assert_eq!(g.slot(rm).as_slice(), &[2.0]); // mean(1,2,3)
+    assert_eq!(g.ref_view(rm).as_slice(), &[2.0]); // mean(1,2,3)
 
     clock.set(ts(4));
     *g.state_mut(src) = Array::scalar(6.0);
     g.stabilize(&mut pool);
-    assert!((g.slot(rm).as_slice()[0] - 11.0 / 3.0).abs() < 1e-12); // mean(2,3,6)
+    assert!((g.ref_view(rm).as_slice()[0] - 11.0 / 3.0).abs() < 1e-12); // mean(2,3,6)
 }
 
 // -- Batch 2: arithmetic / rolling / structural parity ----------------------
@@ -249,10 +249,10 @@ fn rolling_mean_count_warmup_and_value() {
 fn arith_unary_and_binary() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push_source(Array::from_vec(&[3], vec![1.0_f64, -2.0, 3.0]));
+    let a = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, -2.0, 3.0])));
     let neg = b.push(Negate::<f64>::new(), *a);
-    let x = b.push_source(Array::scalar(20.0_f64));
-    let y = b.push_source(Array::scalar(4.0_f64));
+    let x = b.push_source(RefSource::new(Array::scalar(20.0_f64)));
+    let y = b.push_source(RefSource::new(Array::scalar(4.0_f64)));
     let sub = b.push(Subtract::<f64>::new(), (*x, *y));
     let div = b.push(Divide::<f64>::new(), (*x, *y));
     let mut g = Graph::from_builder(b);
@@ -264,9 +264,9 @@ fn arith_unary_and_binary() {
     *g.state_mut(y) = Array::scalar(4.0);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.slot(neg).as_slice(), &[-1.0, 2.0, -3.0]);
-    assert_eq!(g.slot(sub).as_slice(), &[16.0]);
-    assert_eq!(g.slot(div).as_slice(), &[5.0]);
+    assert_eq!(g.ref_view(neg).as_slice(), &[-1.0, 2.0, -3.0]);
+    assert_eq!(g.ref_view(sub).as_slice(), &[16.0]);
+    assert_eq!(g.ref_view(div).as_slice(), &[5.0]);
 }
 
 /// `Min`/`Max`/`Pow` (values from `arithmetic` tests).
@@ -274,8 +274,8 @@ fn arith_unary_and_binary() {
 fn arith_min_max_pow() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push_source(Array::from_vec(&[3], vec![1.0_f64, 5.0, 3.0]));
-    let bb = b.push_source(Array::from_vec(&[3], vec![2.0_f64, 4.0, 6.0]));
+    let a = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, 5.0, 3.0])));
+    let bb = b.push_source(RefSource::new(Array::from_vec(&[3], vec![2.0_f64, 4.0, 6.0])));
     let mn = b.push(Min::<f64>::new(), (*a, *bb));
     let mx = b.push(Max::<f64>::new(), (*a, *bb));
     let p = b.push(Pow::new(2.0_f64), *a);
@@ -287,9 +287,9 @@ fn arith_min_max_pow() {
     *g.state_mut(bb) = Array::from_vec(&[3], vec![2.0, 4.0, 6.0]);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.slot(mn).as_slice(), &[1.0, 4.0, 3.0]);
-    assert_eq!(g.slot(mx).as_slice(), &[2.0, 5.0, 6.0]);
-    assert_eq!(g.slot(p).as_slice(), &[1.0, 25.0, 9.0]);
+    assert_eq!(g.ref_view(mn).as_slice(), &[1.0, 4.0, 3.0]);
+    assert_eq!(g.ref_view(mx).as_slice(), &[2.0, 5.0, 6.0]);
+    assert_eq!(g.ref_view(p).as_slice(), &[1.0, 25.0, 9.0]);
 }
 
 /// `RollingSum`/`RollingVariance` window-3 (values from rolling tests).
@@ -297,7 +297,7 @@ fn arith_min_max_pow() {
 fn rolling_sum_and_variance() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let rec = b.push(Record::new(clock.clone()), *src);
     let rsum = b.push(RollingSum::<f64>::count(3), rec);
     let rvar = b.push(RollingVariance::<f64>::count(3), rec);
@@ -309,13 +309,13 @@ fn rolling_sum_and_variance() {
         *g.state_mut(src) = Array::scalar(v);
         g.stabilize(&mut pool);
     }
-    assert_eq!(g.slot(rsum).as_slice(), &[6.0]);
-    assert!((g.slot(rvar).as_slice()[0] - 2.0 / 3.0).abs() < 1e-10);
+    assert_eq!(g.ref_view(rsum).as_slice(), &[6.0]);
+    assert!((g.ref_view(rvar).as_slice()[0] - 2.0 / 3.0).abs() < 1e-10);
 
     clock.set(ts(4));
     *g.state_mut(src) = Array::scalar(4.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.slot(rsum).as_slice(), &[9.0]); // 2+3+4
+    assert_eq!(g.ref_view(rsum).as_slice(), &[9.0]); // 2+3+4
 }
 
 /// `RollingCovariance` on a `[2]` vector with `y = 2x` (values from cov tests).
@@ -323,7 +323,7 @@ fn rolling_sum_and_variance() {
 fn rolling_covariance_2d() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::<f64>::zeros(&[2]));
+    let src = b.push_source(RefSource::new(Array::<f64>::zeros(&[2])));
     let rec = b.push(Record::new(clock.clone()), *src);
     let cov = b.push(RollingCovariance::<f64>::count(3), rec);
     let mut g = Graph::from_builder(b);
@@ -334,7 +334,7 @@ fn rolling_covariance_2d() {
         *g.state_mut(src) = Array::from_vec(&[2], vec![x, 2.0 * x]);
         g.stabilize(&mut pool);
     }
-    let c = g.slot(cov).as_slice(); // [2,2]
+    let c = g.ref_view(cov).as_slice(); // [2,2]
     assert!((c[0] - 2.0 / 3.0).abs() < 1e-10); // Var(x)
     assert!((c[1] - 4.0 / 3.0).abs() < 1e-10); // Cov(x,y)
     assert!((c[3] - 8.0 / 3.0).abs() < 1e-10); // Var(y)
@@ -345,7 +345,7 @@ fn rolling_covariance_2d() {
 fn ema_two_values() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let rec = b.push(Record::new(clock.clone()), *src);
     let e = b.push(Ema::<f64>::new(0.5, 2), rec);
     let mut g = Graph::from_builder(b);
@@ -357,7 +357,7 @@ fn ema_two_values() {
         g.stabilize(&mut pool);
     }
     let expected = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25);
-    assert!((g.slot(e).as_slice()[0] - expected).abs() < 1e-10);
+    assert!((g.ref_view(e).as_slice()[0] - expected).abs() < 1e-10);
 }
 
 /// `Where` / `Cast` / `Id` (values from their legacy tests).
@@ -365,10 +365,10 @@ fn ema_two_values() {
 fn structural_where_cast_id() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push_source(Array::from_vec(&[3], vec![1.0_f64, 5.0, 2.0]));
+    let a = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, 5.0, 2.0])));
     let w = b.push(Where::new(|v: f64| v > 3.0, 0.0_f64), *a);
     let i = b.push(Id::<Array<f64>>::new(), *a);
-    let ci = b.push_source(Array::from_vec(&[3], vec![1_i32, 2, 3]));
+    let ci = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1_i32, 2, 3])));
     let c = b.push(Cast::<i32, f64>::new(), *ci);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
@@ -378,9 +378,9 @@ fn structural_where_cast_id() {
     *g.state_mut(ci) = Array::from_vec(&[3], vec![1_i32, 2, 3]);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.slot(w).as_slice(), &[0.0, 5.0, 0.0]);
-    assert_eq!(g.slot(i).as_slice(), &[1.0, 5.0, 2.0]);
-    assert_eq!(g.slot(c).as_slice(), &[1.0, 2.0, 3.0]);
+    assert_eq!(g.ref_view(w).as_slice(), &[0.0, 5.0, 0.0]);
+    assert_eq!(g.ref_view(i).as_slice(), &[1.0, 5.0, 2.0]);
+    assert_eq!(g.ref_view(c).as_slice(), &[1.0, 2.0, 3.0]);
 }
 
 // -- Batch 3: num tail (element-wise / cross-tick / cross-sectional) --------
@@ -390,9 +390,9 @@ fn structural_where_cast_id() {
 fn num_clamp_fillna_ffill() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push_source(Array::from_vec(&[3], vec![1.0_f64, 3.0, 7.0]));
+    let a = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, 3.0, 7.0])));
     let clamp = b.push(Clamp::new(2.0_f64, 5.0), *a);
-    let na = b.push_source(Array::from_vec(&[3], vec![1.0_f64, f64::NAN, 3.0]));
+    let na = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, f64::NAN, 3.0])));
     let fill = b.push(Fillna::new(0.0_f64), *na);
     let ff = b.push(ForwardFill::<f64>::new(), *na);
     let mut g = Graph::from_builder(b);
@@ -403,9 +403,9 @@ fn num_clamp_fillna_ffill() {
     *g.state_mut(na) = Array::from_vec(&[3], vec![1.0, f64::NAN, 3.0]);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.slot(clamp).as_slice(), &[2.0, 3.0, 5.0]);
-    assert_eq!(g.slot(fill).as_slice(), &[1.0, 0.0, 3.0]);
-    let v = g.slot(ff).as_slice();
+    assert_eq!(g.ref_view(clamp).as_slice(), &[2.0, 3.0, 5.0]);
+    assert_eq!(g.ref_view(fill).as_slice(), &[1.0, 0.0, 3.0]);
+    let v = g.ref_view(ff).as_slice();
     assert_eq!(v[0], 1.0);
     assert!(v[1].is_nan());
     assert_eq!(v[2], 3.0);
@@ -416,7 +416,7 @@ fn num_clamp_fillna_ffill() {
 fn num_diff_and_pct_change() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let d = b.push(Diff::<f64>::new(), *src);
     let pc = b.push(PctChange::<f64>::new(), *src);
     let mut g = Graph::from_builder(b);
@@ -425,14 +425,14 @@ fn num_diff_and_pct_change() {
     clock.set(ts(1));
     *g.state_mut(src) = Array::scalar(100.0);
     g.stabilize(&mut pool);
-    assert!(g.slot(d).as_slice()[0].is_nan());
-    assert!(g.slot(pc).as_slice()[0].is_nan());
+    assert!(g.ref_view(d).as_slice()[0].is_nan());
+    assert!(g.ref_view(pc).as_slice()[0].is_nan());
 
     clock.set(ts(2));
     *g.state_mut(src) = Array::scalar(110.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.slot(d).as_slice()[0], 10.0);
-    assert!((g.slot(pc).as_slice()[0] - 0.1).abs() < 1e-12);
+    assert_eq!(g.ref_view(d).as_slice()[0], 10.0);
+    assert!((g.ref_view(pc).as_slice()[0] - 0.1).abs() < 1e-12);
 }
 
 /// Cross-sectional `Gaussianize` / `Percentile` / `Standardize` / `Winsorize`
@@ -441,12 +441,12 @@ fn num_diff_and_pct_change() {
 fn num_cross_sectional() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let five = b.push_source(Array::from_vec(&[5], vec![30.0_f64, 10.0, 50.0, 20.0, 40.0]));
+    let five = b.push_source(RefSource::new(Array::from_vec(&[5], vec![30.0_f64, 10.0, 50.0, 20.0, 40.0])));
     let gau = b.push(Gaussianize::<f64>::new(), *five);
     let pct = b.push(Percentile::<f64>::new(), *five);
-    let std_in = b.push_source(Array::from_vec(&[5], vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]));
+    let std_in = b.push_source(RefSource::new(Array::from_vec(&[5], vec![10.0_f64, 20.0, 30.0, 40.0, 50.0])));
     let zsc = b.push(Standardize::<f64>::new(), *std_in);
-    let win_in = b.push_source(Array::from_vec(&[10], (0..10).map(|i| i as f64).collect()));
+    let win_in = b.push_source(RefSource::new(Array::from_vec(&[10], (0..10).map(|i| i as f64).collect())));
     let win = b.push(Winsorize::<f64>::new(0.1), *win_in);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
@@ -458,18 +458,18 @@ fn num_cross_sectional() {
     g.stabilize(&mut pool);
 
     // Gaussianize: middle (30) → Φ⁻¹(0.5) = 0; symmetric ranks sum to 0.
-    let gv = g.slot(gau).as_slice();
+    let gv = g.ref_view(gau).as_slice();
     assert!((gv[0] - 0.0).abs() < 1e-9);
     assert!(gv.iter().sum::<f64>().abs() < 1e-9);
     // Percentile: (0.5,1.5,2.5,3.5,4.5)/5 by rank.
-    let pv = g.slot(pct).as_slice();
+    let pv = g.ref_view(pct).as_slice();
     assert!((pv[1] - 0.1).abs() < 1e-12 && (pv[0] - 0.5).abs() < 1e-12 && (pv[2] - 0.9).abs() < 1e-12);
     // Standardize: zero mean, unit pop-variance.
-    let zv = g.slot(zsc).as_slice();
+    let zv = g.ref_view(zsc).as_slice();
     assert!((zv.iter().sum::<f64>() / 5.0).abs() < 1e-12);
     assert!((zv.iter().map(|&x| x * x).sum::<f64>() / 5.0 - 1.0).abs() < 1e-12);
     // Winsorize p=0.1 over [0..9] → clip to [1, 8].
-    assert_eq!(g.slot(win).as_slice(), &[1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 8.0]);
+    assert_eq!(g.ref_view(win).as_slice(), &[1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 8.0]);
 }
 
 // -- Batch 4: transform / reshape (Map, Apply, Select, Lag, Concat) ---------
@@ -479,7 +479,7 @@ fn num_cross_sectional() {
 fn map_doubles() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let m = b.push(
         Map::new(|a: &Array<f64>| {
             let mut o = a.clone();
@@ -494,7 +494,7 @@ fn map_doubles() {
     clock.set(ts(1));
     *g.state_mut(src) = Array::scalar(5.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.slot(m).as_slice(), &[10.0]);
+    assert_eq!(g.ref_view(m).as_slice(), &[10.0]);
 }
 
 /// `Apply` (two-input add) and `Select` (flat index pick).
@@ -502,10 +502,10 @@ fn map_doubles() {
 fn apply_add_and_select() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push_source(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]));
-    let bb = b.push_source(Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0]));
+    let a = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0])));
+    let bb = b.push_source(RefSource::new(Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0])));
     let ap = b.push(
-        Apply::<(Port<Array<f64>>, Port<Array<f64>>), _, _>::new(
+        Apply::<(RefPort<Array<f64>>, RefPort<Array<f64>>), _, _>::new(
             |(a, b): (&Array<f64>, &Array<f64>)| {
                 let mut out = a.clone();
                 for (o, &v) in out.as_mut_slice().iter_mut().zip(b.as_slice()) {
@@ -516,7 +516,7 @@ fn apply_add_and_select() {
         ),
         (*a, *bb),
     );
-    let five = b.push_source(Array::from_vec(&[5], vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]));
+    let five = b.push_source(RefSource::new(Array::from_vec(&[5], vec![10.0_f64, 20.0, 30.0, 40.0, 50.0])));
     let sel = b.push(Select::<f64>::flat(vec![1, 3]), *five);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
@@ -526,8 +526,8 @@ fn apply_add_and_select() {
     *g.state_mut(bb) = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
     *g.state_mut(five) = Array::from_vec(&[5], vec![10.0, 20.0, 30.0, 40.0, 50.0]);
     g.stabilize(&mut pool);
-    assert_eq!(g.slot(ap).as_slice(), &[11.0, 22.0, 33.0]);
-    assert_eq!(g.slot(sel).as_slice(), &[20.0, 40.0]);
+    assert_eq!(g.ref_view(ap).as_slice(), &[11.0, 22.0, 33.0]);
+    assert_eq!(g.ref_view(sel).as_slice(), &[20.0, 40.0]);
 }
 
 /// `Lag` (offset 2 over a recorded series).
@@ -535,7 +535,7 @@ fn apply_add_and_select() {
 fn lag_offset_two() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let rec = b.push(Record::new(clock.clone()), *src);
     let lag = b.push(Lag::new(2, f64::NAN), rec);
     let mut g = Graph::from_builder(b);
@@ -546,7 +546,7 @@ fn lag_offset_two() {
         *g.state_mut(src) = Array::scalar(v);
         g.stabilize(&mut pool);
     }
-    assert_eq!(g.slot(lag).as_slice(), &[10.0]); // value from 2 steps ago
+    assert_eq!(g.ref_view(lag).as_slice(), &[10.0]); // value from 2 steps ago
 }
 
 /// `Concat` axis-0 of two `[2]` arrays → `[4]`.
@@ -554,8 +554,8 @@ fn lag_offset_two() {
 fn concat_axis0() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let a = b.push_source(Array::from_vec(&[2], vec![1.0_f64, 2.0]));
-    let bb = b.push_source(Array::from_vec(&[2], vec![3.0_f64, 4.0]));
+    let a = b.push_source(RefSource::new(Array::from_vec(&[2], vec![1.0_f64, 2.0])));
+    let bb = b.push_source(RefSource::new(Array::from_vec(&[2], vec![3.0_f64, 4.0])));
     let cc = b.push(Concat::<f64>::new(0), &[*a, *bb][..]);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
@@ -564,7 +564,7 @@ fn concat_axis0() {
     *g.state_mut(a) = Array::from_vec(&[2], vec![1.0, 2.0]);
     *g.state_mut(bb) = Array::from_vec(&[2], vec![3.0, 4.0]);
     g.stabilize(&mut pool);
-    assert_eq!(g.slot(cc).as_slice(), &[1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(g.ref_view(cc).as_slice(), &[1.0, 2.0, 3.0, 4.0]);
 }
 
 // -- Batch 5/6: metrics (clock-gated) + stocks -----------------------------
@@ -575,8 +575,8 @@ fn concat_axis0() {
 fn metrics_clock_gated() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let data = b.push_source(Array::scalar(0.0_f64));
-    let tick = b.push_source(());
+    let data = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
+    let tick = b.push_source(RefSource::new(()));
     let cr = b.push(CompoundReturn::<f64>::new(), (*data, *tick));
     let ar = b.push(AverageReturn::<f64>::new(), (*data, *tick));
     let vol = b.push(Volatility::<f64>::new(), (*data, *tick));
@@ -589,16 +589,16 @@ fn metrics_clock_gated() {
         let _ = g.state_mut(tick);
         g.stabilize(&mut pool);
     }
-    assert!((g.slot(cr).as_slice()[0] - 0.10).abs() < 1e-10);
-    assert!((g.slot(ar).as_slice()[0] - 0.10).abs() < 1e-10);
-    assert_eq!(g.slot(vol).as_slice()[0], 0.0); // single return → zero std
+    assert!((g.ref_view(cr).as_slice()[0] - 0.10).abs() < 1e-10);
+    assert!((g.ref_view(ar).as_slice()[0] - 0.10).abs() < 1e-10);
+    assert_eq!(g.ref_view(vol).as_slice()[0], 0.0); // single return → zero std
 
     clock.set(ts(3));
     *g.state_mut(data) = Array::scalar(99.0);
     let _ = g.state_mut(tick);
     g.stabilize(&mut pool);
-    assert!(g.slot(ar).as_slice()[0].abs() < 1e-10); // 0.10, -0.10 → 0
-    assert!((g.slot(vol).as_slice()[0] - 0.10).abs() < 1e-10); // std 0.10
+    assert!(g.ref_view(ar).as_slice()[0].abs() < 1e-10); // 0.10, -0.10 → 0
+    assert!((g.ref_view(vol).as_slice()[0] - 0.10).abs() < 1e-10); // std 0.10
 }
 
 /// `Drawdown` (single input, no clock) from the running maximum.
@@ -606,7 +606,7 @@ fn metrics_clock_gated() {
 fn metrics_drawdown() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let data = b.push_source(Array::scalar(0.0_f64));
+    let data = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let dd = b.push(Drawdown::<f64>::new(), *data);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
@@ -615,7 +615,7 @@ fn metrics_drawdown() {
         clock.set(ts(t));
         *g.state_mut(data) = Array::scalar(v);
         g.stabilize(&mut pool);
-        assert!((g.slot(dd).as_slice()[0] - e).abs() < 1e-10);
+        assert!((g.ref_view(dd).as_slice()[0] - e).abs() < 1e-10);
     }
 }
 
@@ -624,7 +624,7 @@ fn metrics_drawdown() {
 fn stocks_annualize() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::from_vec(&[4], vec![2024.0_f64, 91.0, 100.0, 20.0]));
+    let src = b.push_source(RefSource::new(Array::from_vec(&[4], vec![2024.0_f64, 91.0, 100.0, 20.0])));
     let ann = b.push(Annualize::new(), *src);
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
@@ -632,7 +632,7 @@ fn stocks_annualize() {
     clock.set(ts(1));
     *g.state_mut(src) = Array::from_vec(&[4], vec![2024.0, 91.0, 100.0, 20.0]);
     g.stabilize(&mut pool);
-    let o = g.slot(ann).as_slice();
+    let o = g.ref_view(ann).as_slice();
     assert!((o[0] - 100.0 * 365.0 / 91.0).abs() < 1e-10);
     assert!((o[1] - 20.0 * 365.0 / 91.0).abs() < 1e-10);
 }
@@ -643,8 +643,8 @@ fn stocks_annualize() {
 fn stocks_forward_adjust() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let price = b.push_source(Array::scalar(10.0_f64));
-    let divd = b.push_source(Array::from_vec(&[2], vec![0.0_f64, 0.0]));
+    let price = b.push_source(RefSource::new(Array::scalar(10.0_f64)));
+    let divd = b.push_source(RefSource::new(Array::from_vec(&[2], vec![0.0_f64, 0.0])));
     let fa = b.push(ForwardAdjust::new(), (*price, *divd));
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
@@ -653,14 +653,14 @@ fn stocks_forward_adjust() {
     clock.set(ts(1));
     *g.state_mut(price) = Array::scalar(10.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.slot(fa).as_slice(), &[10.0]);
+    assert_eq!(g.ref_view(fa).as_slice(), &[10.0]);
 
     // gen2: price 9.5 + cash dividend 0.5 → adjusted back to 10.0.
     clock.set(ts(2));
     *g.state_mut(price) = Array::scalar(9.5);
     *g.state_mut(divd) = Array::from_vec(&[2], vec![0.0, 0.5]);
     g.stabilize(&mut pool);
-    assert!((g.slot(fa).as_slice()[0] - 10.0).abs() < 1e-12);
+    assert!((g.ref_view(fa).as_slice()[0] - 10.0).abs() < 1e-12);
 }
 
 // ===========================================================================
@@ -674,7 +674,7 @@ fn parallel_fanout_matches_sequential() {
     const K: usize = 16;
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let recs: Vec<_> = (0..K)
         .map(|_| {
             let f = b.push(Filter(|a: &Array<f64>| a[0] > 3.0), *src);
@@ -692,7 +692,7 @@ fn parallel_fanout_matches_sequential() {
         g.stabilize(&mut pool);
     }
     for &rec in &recs {
-        assert_eq!(g.slot(rec).values(), &expected[..], "a parallel branch diverged");
+        assert_eq!(g.ref_view(rec).values(), &expected[..], "a parallel branch diverged");
     }
 }
 
@@ -704,7 +704,7 @@ fn parallel_stress_stateful_counts() {
     const GENS: usize = 500;
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let src = b.push_source(Array::scalar(0.0_f64));
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let cnts: Vec<_> = (0..K)
         .map(|_| {
             let f = b.push(Filter(|a: &Array<f64>| a[0] > 0.0), *src);
@@ -725,7 +725,7 @@ fn parallel_stress_stateful_counts() {
         g.stabilize(&mut pool);
     }
     for &c in &cnts {
-        assert_eq!(g.slot(c).as_slice(), &[passes], "a parallel Count raced");
+        assert_eq!(g.ref_view(c).as_slice(), &[passes], "a parallel Count raced");
     }
 }
 
@@ -733,36 +733,44 @@ fn parallel_stress_stateful_counts() {
 // Split + segment fusion
 // ===========================================================================
 
-/// `Split` fans a `[3, 2]` panel into per-row ports holding the row values;
-/// rows notify exactly when the panel does (a downstream `Count` advances only
-/// on panel pokes, not on unrelated generations).
+/// `Split` fans a `[3, 2]` panel into per-row **zero-copy view** ports holding
+/// the row values; rows notify exactly when the panel does (a downstream
+/// `FilterView → Count` chain advances only on panel pokes, not on unrelated
+/// generations).
 #[test]
 fn split_rows_notify_with_panel() {
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let panel = b.push_source(Array::from_vec(&[3, 2], vec![0.0_f64; 6]));
-    let other = b.push_source(Array::scalar(0.0_f64));
+    let panel = b.push_source(RefSource::new(Array::from_vec(&[3, 2], vec![0.0_f64; 6])));
+    let other = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
     let rows = b.push(Split::<f64>::new(3), *panel);
     assert_eq!(rows.len(), 3);
-    let counts: Vec<_> = rows.iter().map(|&r| b.push(Count, r)).collect();
+    let counts: Vec<_> = rows
+        .iter()
+        .map(|&r| {
+            let mat = b.push(FilterView(|_: ArraySlice<f64>| true), r);
+            b.push(Count, mat)
+        })
+        .collect();
     let _sink = b.push(Count, *other); // unrelated cone
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
-    // Build values: rows hold the initial panel rows; counters untouched.
-    assert_eq!(g.slot(rows[0]).as_slice(), &[0.0, 0.0]);
+    // Build values: row views hold the initial panel rows; counters untouched.
+    assert_eq!(g.ref_view(rows[0]).as_slice(), &[0.0, 0.0]);
+    assert_eq!(g.ref_view(rows[0]).shape(), &[2]);
     for &c in &counts {
-        assert_eq!(g.slot(c).as_slice(), &[0.0]);
+        assert_eq!(g.ref_view(c).as_slice(), &[0.0]);
     }
 
     clock.set(ts(1));
     *g.state_mut(panel) = Array::from_vec(&[3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     g.stabilize(&mut pool);
-    assert_eq!(g.slot(rows[0]).as_slice(), &[1.0, 2.0]);
-    assert_eq!(g.slot(rows[1]).as_slice(), &[3.0, 4.0]);
-    assert_eq!(g.slot(rows[2]).as_slice(), &[5.0, 6.0]);
+    assert_eq!(g.ref_view(rows[0]).as_slice(), &[1.0, 2.0]);
+    assert_eq!(g.ref_view(rows[1]).as_slice(), &[3.0, 4.0]);
+    assert_eq!(g.ref_view(rows[2]).as_slice(), &[5.0, 6.0]);
     for &c in &counts {
-        assert_eq!(g.slot(c).as_slice(), &[1.0]);
+        assert_eq!(g.ref_view(c).as_slice(), &[1.0]);
     }
 
     // Poking an unrelated source must not advance the per-row counters.
@@ -770,7 +778,7 @@ fn split_rows_notify_with_panel() {
     *g.state_mut(other) = Array::scalar(1.0);
     g.stabilize(&mut pool);
     for &c in &counts {
-        assert_eq!(g.slot(c).as_slice(), &[1.0]);
+        assert_eq!(g.ref_view(c).as_slice(), &[1.0]);
     }
 }
 
@@ -779,7 +787,7 @@ fn split_rows_notify_with_panel() {
 #[should_panic(expected = "Split: input shape")]
 fn split_axis_size_mismatch_panics() {
     let mut b = GraphBuilder::new();
-    let panel = b.push_source(Array::from_vec(&[3, 2], vec![0.0_f64; 6]));
+    let panel = b.push_source(RefSource::new(Array::from_vec(&[3, 2], vec![0.0_f64; 6])));
     let _ = b.push(Split::<f64>::new(2), *panel);
 }
 
@@ -795,8 +803,8 @@ fn fused_segment_matches_unfused_nodes() {
         a.as_slice().iter().map(|x| x.to_bits()).collect()
     }
 
-    let fused = flowgraph::segment!(|prices_row: Port<Array<f64>>, div_row: Port<Array<f64>>|
-        -> (Port<Array<f64>>, Port<Array<f64>>) {
+    let fused = flowgraph::segment!(|prices_row: RefPort<Array<f64>>, div_row: RefPort<Array<f64>>|
+        -> (RefPort<Array<f64>>, RefPort<Array<f64>>) {
         let prices = prices_row => Filter(any_finite);
         let dividends = div_row => Filter(any_finite);
         let close = prices => Select::<f64>::new(vec![0], 0, true);
@@ -808,8 +816,8 @@ fn fused_segment_matches_unfused_nodes() {
     let nan = f64::NAN;
     let clock = Clock::new();
     let mut b = GraphBuilder::new();
-    let prices = b.push_source(Array::from_vec(&[2], vec![nan; 2]));
-    let div = b.push_source(Array::from_vec(&[2], vec![nan; 2]));
+    let prices = b.push_source(RefSource::new(Array::from_vec(&[2], vec![nan; 2])));
+    let div = b.push_source(RefSource::new(Array::from_vec(&[2], vec![nan; 2])));
 
     // Reference: the same chain as separate nodes.
     let p_f = b.push(Filter(any_finite), *prices);
@@ -841,7 +849,7 @@ fn fused_segment_matches_unfused_nodes() {
             *g.state_mut(div) = Array::from_vec(&[2], d.to_vec());
         }
         g.stabilize(&mut pool);
-        assert_eq!(bits(g.slot(adjusted)), bits(g.slot(f_adjusted)), "tick {i}: adjusted");
-        assert_eq!(bits(g.slot(adj)), bits(g.slot(f_adj)), "tick {i}: adjusts");
+        assert_eq!(bits(g.ref_view(adjusted)), bits(g.ref_view(f_adjusted)), "tick {i}: adjusted");
+        assert_eq!(bits(g.ref_view(adj)), bits(g.ref_view(f_adj)), "tick {i}: adjusts");
     }
 }

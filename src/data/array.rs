@@ -125,6 +125,93 @@ impl<T: Scalar> ops::IndexMut<usize> for Array<T> {
 }
 
 // ===========================================================================
+// Borrowed slice view
+// ===========================================================================
+
+/// A borrowed, contiguous, row-major view of (a chunk of) an [`Array`]: the
+/// zero-copy edge currency of the flow layer. `Copy` (two references), fully
+/// lifetime-checked — a view cannot outlive the array it borrows from.
+///
+/// Flow operators pass `ArraySlice`s across interfaces via
+/// `ViewPort`/`RefViewPort` leaves (see `flow::ArrayValue`); the engine's
+/// per-generation contract keeps wire-borne views valid between recomputes.
+#[derive(Debug)]
+pub struct ArraySlice<'a, T: Scalar> {
+    data: &'a [T],
+    shape: &'a [usize],
+}
+
+// Manual (not derived) so they never require `T: Copy` — the view itself is
+// two references regardless of `T`.
+impl<T: Scalar> Clone for ArraySlice<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: Scalar> Copy for ArraySlice<'_, T> {}
+
+impl<'a, T: Scalar> ArraySlice<'a, T> {
+    /// View `data` as an array of `shape`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() != shape.iter().product()`.
+    pub fn new(data: &'a [T], shape: &'a [usize]) -> Self {
+        assert_eq!(
+            data.len(),
+            shape.iter().product::<usize>(),
+            "ArraySlice: shape {:?} expects {} elements, got {}",
+            shape,
+            shape.iter().product::<usize>(),
+            data.len(),
+        );
+        Self { data, shape }
+    }
+
+    /// The view shape.
+    #[inline(always)]
+    pub fn shape(&self) -> &'a [usize] {
+        self.shape
+    }
+
+    /// Number of scalars.
+    #[inline(always)]
+    pub fn stride(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Flat immutable slice of all elements.
+    #[inline(always)]
+    pub fn as_slice(&self) -> &'a [T] {
+        self.data
+    }
+
+    /// Copy into an owned [`Array`].
+    pub fn to_array(&self) -> Array<T> {
+        Array::from_vec(self.shape, self.data.to_vec())
+    }
+}
+
+impl<'a, T: Scalar> From<&'a Array<T>> for ArraySlice<'a, T> {
+    fn from(a: &'a Array<T>) -> Self {
+        Self {
+            data: a.as_slice(),
+            shape: a.shape(),
+        }
+    }
+}
+
+impl<T: Scalar> ops::Index<usize> for ArraySlice<'_, T> {
+    type Output = T;
+
+    #[inline(always)]
+    fn index(&self, i: usize) -> &T {
+        &self.data[i]
+    }
+}
+
+// ===========================================================================
 // Ndarray views
 // ===========================================================================
 

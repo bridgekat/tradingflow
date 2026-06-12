@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use flowgraph::typed::{Operator, Port};
+use flowgraph::typed::{Operator, RefPort};
 
 use crate::{Array, Scalar};
 
@@ -37,8 +37,8 @@ pub struct ClampState<T: Scalar> {
 }
 
 impl<T: Scalar + Float> Operator for Clamp<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = ClampState<T>;
 
     fn init(self) -> ClampState<T> {
@@ -100,8 +100,8 @@ pub struct FillnaState<T: Scalar> {
 }
 
 impl<T: Scalar + Float> Operator for Fillna<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = FillnaState<T>;
 
     fn init(self) -> FillnaState<T> {
@@ -164,8 +164,8 @@ impl<T: Scalar + Float> Default for ForwardFill<T> {
 }
 
 impl<T: Scalar + Float> Operator for ForwardFill<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     // The output buffer doubles as the fill memory: cells keep their last
     // non-NaN value across ticks because the state persists.
     type State = Array<T>;
@@ -232,8 +232,8 @@ pub struct DiffState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for Diff<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = DiffState<T>;
 
     fn init(self) -> DiffState<T> {
@@ -301,8 +301,8 @@ pub struct PctChangeState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for PctChange<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = PctChangeState<T>;
 
     fn init(self) -> PctChangeState<T> {
@@ -375,8 +375,8 @@ pub struct GaussianizeState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for Gaussianize<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = GaussianizeState<T>;
 
     fn init(self) -> GaussianizeState<T> {
@@ -518,8 +518,8 @@ pub struct PercentileState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for Percentile<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = PercentileState<T>;
 
     fn init(self) -> PercentileState<T> {
@@ -603,8 +603,8 @@ impl<T: Scalar + Float> Default for Standardize<T> {
 }
 
 impl<T: Scalar + Float> Operator for Standardize<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = Array<T>;
 
     fn init(self) -> Array<T> {
@@ -711,8 +711,8 @@ pub struct WinsorizeState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Operator for Winsorize<T> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = WinsorizeState<T>;
 
     fn init(self) -> WinsorizeState<T> {

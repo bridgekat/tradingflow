@@ -1,4 +1,4 @@
-//! Port of `python/examples/plot_daily_price.py`, reading the consolidated long
+//! RefPort of `python/examples/plot_daily_price.py`, reading the consolidated long
 //! **parquet** panels via [`ParquetPanelSource`].
 //!
 //! Loads `daily_prices.parquet` / `dividends.parquet`, `Select`s the target
@@ -19,7 +19,7 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::Handle;
+use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::flow::{
     Add, Filter, ForwardAdjust, Multiply, RollingMean, RollingVariance, Scenario, Select, Sqrt,
@@ -45,7 +45,7 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
 }
 
 /// `Select` stock `i`'s row out of a panel and drop the all-NaN "no data" ticks.
-fn pick(sc: &mut Scenario, panel: Handle<Array<f64>>, i: usize) -> Handle<Array<f64>> {
+fn pick(sc: &mut Scenario, panel: Handle<RefPort<Array<f64>>>, i: usize) -> Handle<RefPort<Array<f64>>> {
     let sel = sc.add_operator(Select::<f64>::new(vec![i], 0, true), panel);
     sc.add_operator(Filter(|a: &Array<f64>| a.as_slice().iter().any(|x| x.is_finite())), sel)
 }

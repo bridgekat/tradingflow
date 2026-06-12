@@ -1,4 +1,4 @@
-//! Port of `python/examples/benchmark_relative_strategy.py` to the flow engine.
+//! RefPort of `python/examples/benchmark_relative_strategy.py` to the flow engine.
 //!
 //! Enhanced-index (benchmark-relative) strategies over a sweep of *annualised*
 //! tracking-error budgets γ. Each γ drives a cvxpy **BenchmarkRelative**
@@ -19,7 +19,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, Port, Ports};
+use flowgraph::typed::{Handle, RefPort, RefPorts};
 
 use tradingflow::flow::{Log, Map, Multiply, PyClassOperator, PyParams, Scenario};
 use tradingflow::sources::clock;
@@ -30,7 +30,7 @@ const NUM_FEATURES: i64 = 7;
 const TRACKING_ERRORS_ANN: [f64; 3] = [0.02, 0.05, 0.10];
 const TRADING_DAYS: f64 = 252.0;
 
-fn total_value(sc: &mut Scenario, h: Handle<Array<f64>>) -> Handle<Array<f64>> {
+fn total_value(sc: &mut Scenario, h: Handle<RefPort<Array<f64>>>) -> Handle<RefPort<Array<f64>>> {
     sc.add_operator(Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())), h)
 }
 
@@ -85,7 +85,7 @@ async fn main() {
         common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
 
     let predicted_returns = sc.add_operator(
-        PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -100,7 +100,7 @@ async fn main() {
         (universe, features.series, demeaned_series),
     );
     let predicted_cov = sc.add_operator(
-        PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.predictors.variance.shrinkage",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -117,7 +117,7 @@ async fn main() {
     );
 
     let index = sc.add_operator(
-        PyClassOperator::<Ports<Array<f64>>>::from_module(
+        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
             PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
             vec![2],
@@ -129,11 +129,11 @@ async fn main() {
     let h_index = sc.add_record(index_value);
 
     // One BenchmarkRelative portfolio per (daily) tracking-error budget.
-    let mut variant_handles: Vec<(f64, Handle<Series<f64>>)> = Vec::new();
+    let mut variant_handles: Vec<(f64, Handle<RefPort<Series<f64>>>)> = Vec::new();
     for &gamma_ann in &TRACKING_ERRORS_ANN {
         let gamma_daily = gamma_ann / TRADING_DAYS.sqrt();
         let soft = sc.add_operator(
-            PyClassOperator::<(Port<Array<f64>>, Port<Array<f64>>, Port<Array<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
                 "flowops.portfolios.mean_variance.benchmark_relative",
                 PyParams::new()
                     .int("num_stocks", n_i)
@@ -147,7 +147,7 @@ async fn main() {
             (universe, predicted_returns, predicted_cov),
         );
         let fric = sc.add_operator(
-            PyClassOperator::<Ports<Array<f64>>>::from_module(
+            PyClassOperator::<RefPorts<Array<f64>>>::from_module(
                 "flowops.traders.benchmark",
                 PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
                 vec![2],

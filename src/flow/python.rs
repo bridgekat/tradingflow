@@ -97,7 +97,7 @@
 //! let dbl = sc.add_py_operator_writing("lambda out, a: np.multiply(a, 2.0, out=out)", &[a], n);
 //! ```
 //! Low level, via [`GraphBuilder`](flowgraph::typed::GraphBuilder) — the inputs
-//! are a `Ports<Array<f64>>` group, wired with a slice of handles:
+//! are a `RefPorts<Array<f64>>` group, wired with a slice of handles:
 //! ```ignore
 //! let out = b.push(PyOperator::new("lambda a, b: a + b", n), &[*a, *bb][..]);
 //! ```
@@ -167,7 +167,7 @@ use pyo3::types::{PyDict, PyTuple};
 use numpy::ndarray::aview_mut1;
 use numpy::{PyArray1, PyReadonlyArray1};
 
-use flowgraph::typed::{Operator, Port, Ports};
+use flowgraph::typed::{Operator, RefPort, RefPorts};
 
 use crate::Array;
 
@@ -223,8 +223,8 @@ pub struct PyOpState {
 }
 
 impl Operator for PyOperator {
-    type Inputs = Ports<Array<f64>>;
-    type Outputs = Port<Array<f64>>;
+    type Inputs = RefPorts<Array<f64>>;
+    type Outputs = RefPort<Array<f64>>;
     type State = PyOpState;
 
     fn init(self) -> PyOpState {
@@ -356,7 +356,7 @@ impl Operator for PyOperator {
 mod tests {
     use super::PyOperator;
     use flowgraph::core::Pool;
-    use flowgraph::typed::{Graph, GraphBuilder};
+    use flowgraph::typed::{Graph, GraphBuilder, RefSource};
 
     use crate::Array;
     use crate::flow::Map;
@@ -365,8 +365,8 @@ mod tests {
     #[test]
     fn numpy_return_mode() {
         let mut b = GraphBuilder::new();
-        let a = b.push_source(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]));
-        let bb = b.push_source(Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0]));
+        let a = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0])));
+        let bb = b.push_source(RefSource::new(Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0])));
         let out = b.push(PyOperator::new("lambda a, b: a + b", 3), &[*a, *bb][..]);
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
@@ -374,7 +374,7 @@ mod tests {
         *g.state_mut(a) = Array::from_vec(&[3], vec![1.0, 2.0, 3.0]);
         *g.state_mut(bb) = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
         g.stabilize(&mut pool);
-        assert_eq!(g.slot(out).as_slice(), &[11.0, 22.0, 33.0]);
+        assert_eq!(g.ref_view(out).as_slice(), &[11.0, 22.0, 33.0]);
     }
 
     /// Write mode: `np.multiply(..., out=out)` writes straight into the Rust
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn numpy_write_mode_zero_copy() {
         let mut b = GraphBuilder::new();
-        let a = b.push_source(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0]));
+        let a = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0])));
         let out = b.push(
             PyOperator::writing("lambda out, a: np.multiply(a, 2.0, out=out)", 3),
             &[*a][..],
@@ -392,14 +392,14 @@ mod tests {
 
         *g.state_mut(a) = Array::from_vec(&[3], vec![1.0, 2.0, 3.0]);
         g.stabilize(&mut pool);
-        assert_eq!(g.slot(out).as_slice(), &[2.0, 4.0, 6.0]);
+        assert_eq!(g.ref_view(out).as_slice(), &[2.0, 4.0, 6.0]);
     }
 
     /// Inputs arrive as real `float64` ndarrays.
     #[test]
     fn numpy_input_is_ndarray() {
         let mut b = GraphBuilder::new();
-        let a = b.push_source(Array::from_vec(&[2], vec![1.0_f64, 2.0]));
+        let a = b.push_source(RefSource::new(Array::from_vec(&[2], vec![1.0_f64, 2.0])));
         let out = b.push(
             PyOperator::writing(
                 "lambda out, a: out.__setitem__(0, float(\
@@ -413,7 +413,7 @@ mod tests {
 
         *g.state_mut(a) = Array::from_vec(&[2], vec![1.0, 2.0]);
         g.stabilize(&mut pool);
-        assert_eq!(g.slot(out).as_slice(), &[1.0]);
+        assert_eq!(g.ref_view(out).as_slice(), &[1.0]);
     }
 
     /// Safety regression: an operator that stashes an input across generations,
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn retained_input_is_snapshot_not_uaf() {
         let mut b = GraphBuilder::new();
-        let src = b.push_source(Array::from_vec(&[1], vec![5.0_f64]));
+        let src = b.push_source(RefSource::new(Array::from_vec(&[1], vec![5.0_f64])));
         let mapped = b.push(Map::new(|a: &Array<f64>| a.clone()), *src);
         let out = b.push(
             PyOperator::writing(
@@ -437,12 +437,12 @@ mod tests {
 
         *g.state_mut(src) = Array::from_vec(&[1], vec![5.0]);
         g.stabilize(&mut pool);
-        assert_eq!(g.slot(out).as_slice(), &[5.0]);
+        assert_eq!(g.ref_view(out).as_slice(), &[5.0]);
 
         // Map reallocates (old Box freed); the stashed snapshot still reads 5.0.
         *g.state_mut(src) = Array::from_vec(&[1], vec![99.0]);
         g.stabilize(&mut pool);
-        assert_eq!(g.slot(out).as_slice(), &[5.0]);
+        assert_eq!(g.ref_view(out).as_slice(), &[5.0]);
     }
 
     /// Operators whose work releases the GIL run in parallel on the pool — on a
@@ -459,7 +459,7 @@ mod tests {
                       for _ in range(6)) * 0 + xs[0])";
 
         let mut b = GraphBuilder::new();
-        let src = b.push_source(Array::from_vec(&[1], vec![0.0_f64]));
+        let src = b.push_source(RefSource::new(Array::from_vec(&[1], vec![0.0_f64])));
         let outs: Vec<_> = (0..K)
             .map(|_| b.push(PyOperator::writing(heavy, 1), &[*src][..]))
             .collect();
@@ -489,7 +489,7 @@ mod tests {
         );
 
         for &o in &outs {
-            assert_eq!(g.slot(o).as_slice(), &[3.0]);
+            assert_eq!(g.ref_view(o).as_slice(), &[3.0]);
         }
         assert!(
             speedup > 1.5,

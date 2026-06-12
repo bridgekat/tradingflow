@@ -23,11 +23,11 @@
 //!
 //! # Heterogeneous inputs
 //!
-//! flowgraph's typed interfaces are trees of `Port<T>` leaves, runtime-length
-//! `Ports<T>` groups, and tuples, so an operator's input shape is its concrete
+//! flowgraph's typed interfaces are trees of `RefPort<T>` leaves, runtime-length
+//! `RefPorts<T>` groups, and tuples, so an operator's input shape is its concrete
 //! [`Interface`] type, e.g.
-//! `(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)` for a predictor or
-//! `Ports<Array<f64>>` for an all-array operator. The [`PyArgs`] trait walks
+//! `(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)` for a predictor or
+//! `RefPorts<Array<f64>>` for an all-array operator. The [`PyArgs`] trait walks
 //! that type's refs to build the view tuple + produced bools in one pass. (An
 //! erased enum input would have to clone growing `Series` each tick — `PyArgs`
 //! reads the borrowed cells directly instead.)
@@ -58,7 +58,7 @@ use pyo3::types::{PyDict, PySlice, PyTuple};
 use numpy::ndarray::{ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 
-use flowgraph::typed::{Interface, InterfaceHandles, Operator, Port, Ports};
+use flowgraph::typed::{Interface, InterfaceHandles, Operator, RefPort, RefPorts};
 
 use super::op::Clock;
 use crate::{Array, Series};
@@ -258,16 +258,16 @@ pub trait PyArgs: Interface + InterfaceHandles {
     /// to `produced` (views order = legacy input order).
     fn append_views<'py>(
         py: Python<'py>,
-        refs: Self::Refs<'_>,
+        refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()>;
 }
 
-impl PyArgs for Port<Array<f64>> {
+impl PyArgs for RefPort<Array<f64>> {
     fn append_views<'py>(
         py: Python<'py>,
-        refs: Self::Refs<'_>,
+        refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
@@ -282,10 +282,10 @@ impl PyArgs for Port<Array<f64>> {
     }
 }
 
-impl PyArgs for Port<Series<f64>> {
+impl PyArgs for RefPort<Series<f64>> {
     fn append_views<'py>(
         py: Python<'py>,
-        refs: Self::Refs<'_>,
+        refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
@@ -296,10 +296,10 @@ impl PyArgs for Port<Series<f64>> {
     }
 }
 
-impl PyArgs for Port<()> {
+impl PyArgs for RefPort<()> {
     fn append_views<'py>(
         py: Python<'py>,
-        refs: Self::Refs<'_>,
+        refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
@@ -311,36 +311,36 @@ impl PyArgs for Port<()> {
 }
 
 /// A runtime-length group appends one view + bit per element. (Concrete per
-/// leaf type — a generic `Ports<T> where Port<T>: PyArgs` impl cannot pass a
-/// `(bool, &T)` tuple where the unnormalized `<Port<T> as Interface>::Refs`
+/// leaf type — a generic `RefPorts<T> where RefPort<T>: PyArgs` impl cannot pass a
+/// `(bool, &T)` tuple where the unnormalized `<RefPort<T> as Interface>::Refs`
 /// projection is expected.)
-impl PyArgs for Ports<Array<f64>> {
+impl PyArgs for RefPorts<Array<f64>> {
     fn append_views<'py>(
         py: Python<'py>,
-        refs: Self::Refs<'_>,
+        refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
         let (flags, values) = refs;
-        debug_assert!(flags.len() == values.len(), "Ports refs planes disagree on length");
+        debug_assert!(flags.len() == values.len(), "RefPorts refs planes disagree on length");
         for (i, &value) in values.iter().enumerate() {
-            <Port<Array<f64>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
+            <RefPort<Array<f64>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
         }
         Ok(())
     }
 }
 
-impl PyArgs for Ports<Series<f64>> {
+impl PyArgs for RefPorts<Series<f64>> {
     fn append_views<'py>(
         py: Python<'py>,
-        refs: Self::Refs<'_>,
+        refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
         let (flags, values) = refs;
-        debug_assert!(flags.len() == values.len(), "Ports refs planes disagree on length");
+        debug_assert!(flags.len() == values.len(), "RefPorts refs planes disagree on length");
         for (i, &value) in values.iter().enumerate() {
-            <Port<Series<f64>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
+            <RefPort<Series<f64>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
         }
         Ok(())
     }
@@ -351,7 +351,7 @@ macro_rules! tuple_pyargs {
         impl<$($T: PyArgs,)+> PyArgs for ($($T,)+) {
             fn append_views<'py>(
                 py: Python<'py>,
-                refs: Self::Refs<'_>,
+                refs: Self::Values<'_>,
                 views: &mut Vec<Bound<'py, PyAny>>,
                 produced: &mut Vec<bool>,
             ) -> PyResult<()> {
@@ -485,11 +485,11 @@ fn resolve_operator<'py>(
     }
 }
 
-/// A class-based Python operator over input ports `I` (e.g. `Ports<Array<f64>>`
-/// or `(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)`). Load its
+/// A class-based Python operator over input ports `I` (e.g. `RefPorts<Array<f64>>`
+/// or `(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)`). Load its
 /// definition from a `.py` file, an importable module, or an inline source; each
 /// defines `build(**kwargs)` (called with [`PyParams`]) or binds `__op__`.
-pub struct PyClassOperator<I: PyArgs = Ports<Array<f64>>> {
+pub struct PyClassOperator<I: PyArgs = RefPorts<Array<f64>>> {
     loader: Loader,
     params: PyParams,
     out_shape: Vec<usize>,
@@ -560,7 +560,7 @@ pub struct PyClassState {
 
 impl<I: PyArgs + 'static> Operator for PyClassOperator<I> {
     type Inputs = I;
-    type Outputs = Port<Array<f64>>;
+    type Outputs = RefPort<Array<f64>>;
     type State = PyClassState;
 
     fn init(self) -> PyClassState {
@@ -576,7 +576,7 @@ impl<I: PyArgs + 'static> Operator for PyClassOperator<I> {
     }
 
     fn compute<'a, 'b: 'a>(
-        inputs: <I as Interface>::Refs<'a>,
+        inputs: <I as Interface>::Values<'a>,
         state: &'b mut PyClassState,
         init: bool,
     ) -> (bool, &'a Array<f64>) {
@@ -650,7 +650,7 @@ impl<I: PyArgs + 'static> Operator for PyClassOperator<I> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: <I as Interface>::Refs<'a>,
+        _: <I as Interface>::Values<'a>,
         state: &'b PyClassState,
     ) -> (bool, &'a Array<f64>) {
         (false, &state.out)
@@ -665,7 +665,7 @@ impl<I: PyArgs + 'static> Operator for PyClassOperator<I> {
 mod tests {
     use super::{PyClassOperator, PyParams};
     use flowgraph::core::Pool;
-    use flowgraph::typed::{Graph, GraphBuilder, Port, Ports};
+    use flowgraph::typed::{Graph, GraphBuilder, RefPort, RefPorts, RefSource};
 
     use crate::Instant;
     use crate::flow::{Clock, Record};
@@ -702,9 +702,9 @@ __op__ = Turnover()
     fn py_class_operator_turnover() {
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
-        let src = b.push_source(Array::from_vec(&[2], vec![0.5_f64, 0.5]));
+        let src = b.push_source(RefSource::new(Array::from_vec(&[2], vec![0.5_f64, 0.5])));
         let out = b.push(
-            PyClassOperator::<Ports<Array<f64>>>::from_source(
+            PyClassOperator::<RefPorts<Array<f64>>>::from_source(
                 TURNOVER,
                 PyParams::new(),
                 vec![],
@@ -717,15 +717,15 @@ __op__ = Turnover()
 
         *g.state_mut(src) = Array::from_vec(&[2], vec![0.5, 0.5]);
         g.stabilize(&mut pool);
-        assert_eq!(g.slot(out).as_slice(), &[0.0]); // warmup
+        assert_eq!(g.ref_view(out).as_slice(), &[0.0]); // warmup
 
         *g.state_mut(src) = Array::from_vec(&[2], vec![0.3, 0.7]);
         g.stabilize(&mut pool);
-        assert!((g.slot(out).as_slice()[0] - 0.4).abs() < 1e-12);
+        assert!((g.ref_view(out).as_slice()[0] - 0.4).abs() < 1e-12);
 
         *g.state_mut(src) = Array::from_vec(&[2], vec![1.0, 0.0]);
         g.stabilize(&mut pool);
-        assert!((g.slot(out).as_slice()[0] - 1.4).abs() < 1e-12);
+        assert!((g.ref_view(out).as_slice()[0] - 1.4).abs() < 1e-12);
     }
 
     /// Heterogeneous inputs: an (Array, Series) operator that reads Series
@@ -752,12 +752,12 @@ __op__ = HistDot()
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
-        let weights = b.push_source(Array::from_vec(&[2], vec![1.0_f64, 1.0]));
-        let feed = b.push_source(Array::from_vec(&[2], vec![0.0_f64, 0.0]));
+        let weights = b.push_source(RefSource::new(Array::from_vec(&[2], vec![1.0_f64, 1.0])));
+        let feed = b.push_source(RefSource::new(Array::from_vec(&[2], vec![0.0_f64, 0.0])));
         // Record needs the clock; build via Record::new(clock).
         let series = b.push(Record::new(clock.clone()), *feed);
         let out = b.push(
-            PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>)>::from_source(
+            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>)>::from_source(
                 HIST_DOT,
                 PyParams::new(),
                 vec![],
@@ -773,13 +773,13 @@ __op__ = HistDot()
         *g.state_mut(weights) = Array::from_vec(&[2], vec![1.0, 1.0]);
         *g.state_mut(feed) = Array::from_vec(&[2], vec![1.0, 2.0]);
         g.stabilize(&mut pool);
-        assert!((g.slot(out).as_slice()[0] - 3.0).abs() < 1e-12);
+        assert!((g.ref_view(out).as_slice()[0] - 3.0).abs() < 1e-12);
 
         // Tick 2 @ t=200: feed [3,4]; series=[[1,2],[3,4]]; dots=3,7; mean=5.
         clock.set(Instant::from_nanos(200));
         *g.state_mut(feed) = Array::from_vec(&[2], vec![3.0, 4.0]);
         g.stabilize(&mut pool);
-        assert!((g.slot(out).as_slice()[0] - 5.0).abs() < 1e-12);
+        assert!((g.ref_view(out).as_slice()[0] - 5.0).abs() < 1e-12);
     }
 
     /// Loading an operator from a plain `.py` file via a `build(**kwargs)`
@@ -812,9 +812,9 @@ def build(scale=1.0):
 
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
-        let src = b.push_source(Array::from_vec(&[4], vec![1.0_f64, 2.0, 3.0, 4.0]));
+        let src = b.push_source(RefSource::new(Array::from_vec(&[4], vec![1.0_f64, 2.0, 3.0, 4.0])));
         let out = b.push(
-            PyClassOperator::<Ports<Array<f64>>>::from_file(
+            PyClassOperator::<RefPorts<Array<f64>>>::from_file(
                 &path,
                 PyParams::new().float("scale", 3.0),
                 vec![],
@@ -827,7 +827,7 @@ def build(scale=1.0):
 
         *g.state_mut(src) = Array::from_vec(&[4], vec![1.0, 2.0, 3.0, 4.0]);
         g.stabilize(&mut pool);
-        assert!((g.slot(out).as_slice()[0] - 30.0).abs() < 1e-12); // sum(1..4)=10 * 3
+        assert!((g.ref_view(out).as_slice()[0] - 30.0).abs() < 1e-12); // sum(1..4)=10 * 3
     }
 
     // -- Integration with the real `flowops` package (needs python/ on -----------
@@ -839,9 +839,9 @@ def build(scale=1.0):
     fn flowops_turnover_via_module() {
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
-        let src = b.push_source(Array::from_vec(&[2], vec![0.5_f64, 0.5]));
+        let src = b.push_source(RefSource::new(Array::from_vec(&[2], vec![0.5_f64, 0.5])));
         let out = b.push(
-            PyClassOperator::<Ports<Array<f64>>>::from_module(
+            PyClassOperator::<RefPorts<Array<f64>>>::from_module(
                 "flowops.metrics.turnover",
                 PyParams::new().int("num_stocks", 2),
                 vec![],
@@ -856,7 +856,7 @@ def build(scale=1.0):
         g.stabilize(&mut pool); // warmup
         *g.state_mut(src) = Array::from_vec(&[2], vec![0.3, 0.7]);
         g.stabilize(&mut pool);
-        assert!((g.slot(out).as_slice()[0] - 0.4).abs() < 1e-12);
+        assert!((g.ref_view(out).as_slice()[0] - 0.4).abs() < 1e-12);
     }
 
     /// A real predictor (LinearRegression) end-to-end: Array universe + two
@@ -869,13 +869,13 @@ def build(scale=1.0):
         const F: usize = 2;
         let clock = Clock::new();
         let mut b = GraphBuilder::new();
-        let universe = b.push_source(Array::from_vec(&[N], vec![1.0; N]));
-        let feat_feed = b.push_source(Array::<f64>::zeros(&[N, F]));
-        let tgt_feed = b.push_source(Array::<f64>::zeros(&[N]));
+        let universe = b.push_source(RefSource::new(Array::from_vec(&[N], vec![1.0; N])));
+        let feat_feed = b.push_source(RefSource::new(Array::<f64>::zeros(&[N, F])));
+        let tgt_feed = b.push_source(RefSource::new(Array::<f64>::zeros(&[N])));
         let feat_series = b.push(Record::new(clock.clone()), *feat_feed);
         let tgt_series = b.push(Record::new(clock.clone()), *tgt_feed);
         let pred = b.push(
-            PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
                 "flowops.predictors.mean.linear_regression",
                 PyParams::new()
                     .int("num_stocks", N as i64)
@@ -902,7 +902,7 @@ def build(scale=1.0):
             g.stabilize(&mut pool);
         }
 
-        let mu = g.slot(pred).as_slice();
+        let mu = g.ref_view(pred).as_slice();
         assert_eq!(mu.len(), N);
         assert!(mu.iter().all(|v| v.is_finite()), "prediction has non-finite entries: {mu:?}");
     }

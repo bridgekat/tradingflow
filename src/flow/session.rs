@@ -18,6 +18,7 @@ use std::any::TypeId;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::future::poll_fn;
+use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,7 +27,9 @@ use std::task::{Context, Poll};
 use futures::stream::{FuturesUnordered, StreamExt};
 
 use flowgraph::core::Pool;
-use flowgraph::typed::{Graph, GraphBuilder, Handle, InterfaceHandles, Segment, SourceHandle};
+use flowgraph::typed::{
+    Graph, GraphBuilder, Handle, InterfaceHandles, RefPort, RefSource, Segment, SourceHandle,
+};
 
 use super::op::Clock;
 use super::ops::Record;
@@ -80,7 +83,7 @@ where
         estimated_event_count: source.estimated_event_count(),
         init_fn: Box::new(move |timestamp: Instant| {
             let (hist, live, output, state) = source.init(timestamp);
-            // The flowgraph node already holds the `push_source(initial)`
+            // The flowgraph node already holds the `push_source(RefSource::new(initial))`
             // value, so the source's freshly-allocated init output is unused.
             drop(output);
             (
@@ -105,16 +108,18 @@ unsafe fn flow_poll_fn<S: Source>(
     rx.poll_pending(ctx).map(|opt| opt.map(|item| item.0))
 }
 
+/// The typed layer's per-node state bundling for a `RefSource<T>` node: input
+/// shape + engine-stored output payload tree (`(bool, &T)` at `'static`) + the
+/// user state (`T` itself for a source). Mirrors `NodeState` in
+/// `flowgraph/src/typed/graph.rs`; the `TypeId` assert in [`flow_write_fn`]
+/// re-checks the layout on every write (same check the typed
+/// `Graph::state_mut` performs), so a future layout change fails loud.
+type SourceNodeState<T> = (Box<[usize]>, MaybeUninit<(bool, &'static T)>, T);
+
 /// Type-erased graph-write function, monomorphised per source type. Writes the
 /// buffered event into the source node's state cell via the slot-indexed
 /// untyped layer (`Graph::inner_mut().state_mut(index)`, which marks the dirty
 /// cone), re-typing the [`ErasedCell`](flowgraph::core::ErasedCell) payload.
-///
-/// The payload cast relies on the typed layer's state bundling: a node's state
-/// cell holds `(Box<[usize]>, State)` (input shape + user state; see
-/// `flowgraph/src/typed/graph.rs`), and a `push_source::<T>` node's `State` is
-/// `T` itself. The `TypeId` assert re-checks this contract on every write
-/// (same check the typed `Graph::state_mut` performs).
 unsafe fn flow_write_fn<S: Source>(
     state_ptr: *mut u8,
     rx_ptr: *mut u8,
@@ -132,10 +137,10 @@ where
     };
     let cell = graph.inner_mut().state_mut(index);
     assert!(
-        cell.type_id() == TypeId::of::<(Box<[usize]>, S::Output)>(),
+        cell.type_id() == TypeId::of::<SourceNodeState<S::Output>>(),
         "source slot state type mismatch"
     );
-    let (_, output) = unsafe { &mut *cell.get().cast::<(Box<[usize]>, S::Output)>() };
+    let (_, _, output) = unsafe { &mut *cell.get().cast::<SourceNodeState<S::Output>>() };
     S::write(state, item.1, output, timestamp)
 }
 
@@ -269,8 +274,8 @@ impl Scenario {
     /// Register a constant node (an externally-set source cell with no async
     /// feed). Mutate it via [`Session::cell_mut`] + [`Session::flush`]; wire it
     /// downstream via the deref'd plain handle (`*h`).
-    pub fn add_const<T: Send + Sync + 'static>(&mut self, value: T) -> SourceHandle<T> {
-        self.builder.push_source(value)
+    pub fn add_const<T: Send + Sync + 'static>(&mut self, value: T) -> SourceHandle<RefSource<T>> {
+        self.builder.push_source(RefSource::new(value))
     }
 
     /// Register a [`Segment`] (most operators implement
@@ -292,7 +297,7 @@ impl Scenario {
     /// Register a [`Record`] for a data stream, wiring the driver's [`Clock`]
     /// so each recorded row is stamped with the current event time. `Record`
     /// needs the clock, so it cannot go through [`add_operator`](Self::add_operator).
-    pub fn add_record<T: Scalar>(&mut self, data: Handle<Array<T>>) -> Handle<Series<T>> {
+    pub fn add_record<T: Scalar>(&mut self, data: Handle<RefPort<Array<T>>>) -> Handle<RefPort<Series<T>>> {
         self.builder.push(Record::new(self.clock.clone()), data)
     }
 
@@ -312,9 +317,9 @@ impl Scenario {
     pub fn add_py_operator(
         &mut self,
         source: &str,
-        inputs: &[Handle<Array<f64>>],
+        inputs: &[Handle<RefPort<Array<f64>>>],
         out_len: usize,
-    ) -> Handle<Array<f64>> {
+    ) -> Handle<RefPort<Array<f64>>> {
         self.builder
             .push(super::python::PyOperator::new(source, out_len), inputs)
     }
@@ -329,9 +334,9 @@ impl Scenario {
     pub fn add_py_operator_writing(
         &mut self,
         source: &str,
-        inputs: &[Handle<Array<f64>>],
+        inputs: &[Handle<RefPort<Array<f64>>>],
         out_len: usize,
-    ) -> Handle<Array<f64>> {
+    ) -> Handle<RefPort<Array<f64>>> {
         self.builder
             .push(super::python::PyOperator::writing(source, out_len), inputs)
     }
@@ -347,11 +352,11 @@ impl Scenario {
         &mut self,
         source: &str,
         params: super::pyhost::PyParams,
-        inputs: &[Handle<Array<f64>>],
+        inputs: &[Handle<RefPort<Array<f64>>>],
         out_shape: &[usize],
-    ) -> Handle<Array<f64>> {
+    ) -> Handle<RefPort<Array<f64>>> {
         self.builder.push(
-            super::pyhost::PyClassOperator::<flowgraph::typed::Ports<Array<f64>>>::from_source(
+            super::pyhost::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64>>>::from_source(
                 source,
                 params,
                 out_shape.to_vec(),
@@ -372,11 +377,11 @@ impl Scenario {
         &mut self,
         path: impl AsRef<std::path::Path>,
         params: super::pyhost::PyParams,
-        inputs: &[Handle<Array<f64>>],
+        inputs: &[Handle<RefPort<Array<f64>>>],
         out_shape: &[usize],
-    ) -> Handle<Array<f64>> {
+    ) -> Handle<RefPort<Array<f64>>> {
         self.builder.push(
-            super::pyhost::PyClassOperator::<flowgraph::typed::Ports<Array<f64>>>::from_file(
+            super::pyhost::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64>>>::from_file(
                 path,
                 params,
                 out_shape.to_vec(),
@@ -386,13 +391,17 @@ impl Scenario {
         )
     }
 
-    /// Register a [`Source`]. Its output cell is a `push_source(initial)` node;
-    /// the async feed is wired up at [`build`](Self::build) time.
-    pub fn add_source<S: Source>(&mut self, source: S, initial: S::Output) -> Handle<S::Output>
+    /// Register a [`Source`]. Its output cell is a `RefSource` node; the async
+    /// feed is wired up at [`build`](Self::build) time.
+    pub fn add_source<S: Source>(
+        &mut self,
+        source: S,
+        initial: S::Output,
+    ) -> Handle<RefPort<S::Output>>
     where
         S::Output: Send + Sync + 'static,
     {
-        let handle = self.builder.push_source(initial);
+        let handle = self.builder.push_source(RefSource::new(initial));
         let erased = erased_flow_source(source);
         // Accumulate the progress estimate: sum the per-source counts; a single
         // un-estimable source makes the whole total unknown (None). Live/one-row-
@@ -483,15 +492,18 @@ impl Session {
         self.estimated_total
     }
 
-    /// Immutable access to a node value.
-    pub fn value<T: Send + Sync + 'static>(&self, handle: Handle<T>) -> &T {
-        self.graph.slot(handle)
+    /// Immutable access to a by-reference node value.
+    pub fn value<T: Send + Sync + 'static>(&self, handle: Handle<RefPort<T>>) -> &T {
+        self.graph.ref_view(handle)
     }
 
     /// Mutable access to a source cell's value (marks its dirty cone). Only
     /// source cells ([`Scenario::add_const`] / [`Scenario::add_source`]) can be
     /// poked; operator outputs are state-owned and engine-written.
-    pub fn cell_mut<T: Send + Sync + 'static>(&mut self, handle: SourceHandle<T>) -> &mut T {
+    pub fn cell_mut<T: Send + Sync + 'static>(
+        &mut self,
+        handle: SourceHandle<RefSource<T>>,
+    ) -> &mut T {
         self.graph.state_mut(handle)
     }
 
@@ -817,7 +829,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex};
 
-    use flowgraph::typed::{Operator as FgOperator, Port};
+    use flowgraph::typed::{Operator as FgOperator, RefPort};
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
     use tokio::sync::mpsc;
@@ -872,7 +884,7 @@ mod tests {
     }
 
     impl FgOperator for GlobalLogger {
-        type Inputs = Port<Array<f64>>;
+        type Inputs = RefPort<Array<f64>>;
         type Outputs = ();
         type State = (usize, Arc<Mutex<Vec<(i64, usize)>>>, Clock);
 

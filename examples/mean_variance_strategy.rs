@@ -1,4 +1,4 @@
-//! Port of `python/examples/mean_variance_strategy.py` to the Rust flow engine.
+//! RefPort of `python/examples/mean_variance_strategy.py` to the Rust flow engine.
 //!
 //! Markowitz mean-variance strategies over a sweep of risk-aversion deltas,
 //! sharing one **Ridge** mean predictor and one **Shrinkage** covariance
@@ -20,7 +20,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, Port, Ports};
+use flowgraph::typed::{Handle, RefPort, RefPorts};
 
 use tradingflow::flow::{Log, Map, Multiply, PyClassOperator, PyParams, Scenario};
 use tradingflow::sources::clock;
@@ -32,7 +32,7 @@ const DELTAS: [f64; 8] = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0];
 /// Mode.MIN_MEAN_VARIANCE in `flowops.portfolios.mean_variance._modes`.
 const MODE_MIN_MEAN_VARIANCE: i64 = 3;
 
-fn total_value(sc: &mut Scenario, h: Handle<Array<f64>>) -> Handle<Array<f64>> {
+fn total_value(sc: &mut Scenario, h: Handle<RefPort<Array<f64>>>) -> Handle<RefPort<Array<f64>>> {
     sc.add_operator(
         Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())),
         h,
@@ -107,7 +107,7 @@ async fn main() {
 
     // Mean predictor (demeaned target) and covariance predictor (raw target).
     let predicted_returns = sc.add_operator(
-        PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -122,7 +122,7 @@ async fn main() {
         (universe, features.series, demeaned_series),
     );
     let predicted_cov = sc.add_operator(
-        PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.predictors.variance.shrinkage",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -140,7 +140,7 @@ async fn main() {
 
     // Index baseline.
     let index = sc.add_operator(
-        PyClassOperator::<Ports<Array<f64>>>::from_module(
+        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -155,10 +155,10 @@ async fn main() {
     let h_index = sc.add_record(index_value);
 
     // One Markowitz portfolio per delta.
-    let mut variant_handles: Vec<(f64, Handle<Series<f64>>)> = Vec::new();
+    let mut variant_handles: Vec<(f64, Handle<RefPort<Series<f64>>>)> = Vec::new();
     for &delta in &DELTAS {
         let soft = sc.add_operator(
-            PyClassOperator::<(Port<Array<f64>>, Port<Array<f64>>, Port<Array<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
                 "flowops.portfolios.mean_variance.markowitz",
                 PyParams::new()
                     .int("num_stocks", n_i)
@@ -172,7 +172,7 @@ async fn main() {
             (universe, predicted_returns, predicted_cov),
         );
         let fric = sc.add_operator(
-            PyClassOperator::<Ports<Array<f64>>>::from_module(
+            PyClassOperator::<RefPorts<Array<f64>>>::from_module(
                 "flowops.traders.benchmark",
                 PyParams::new()
                     .int("num_stocks", n_i)

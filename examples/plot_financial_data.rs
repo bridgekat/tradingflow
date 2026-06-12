@@ -1,4 +1,4 @@
-//! Port of `python/examples/plot_financial_data.py`, reading the consolidated
+//! RefPort of `python/examples/plot_financial_data.py`, reading the consolidated
 //! long **parquet** panels via [`ParquetPanelSource`] / [`ReportPanelSource`].
 //!
 //! Loads daily prices, equity-structure events, and quarterly financial reports
@@ -25,7 +25,7 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::Handle;
+use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::data::Duration;
 use tradingflow::flow::{Annualize, Divide, Filter, Map, Multiply, Negate, RollingMean, Scenario, Select};
@@ -50,7 +50,7 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
 }
 
 /// `Select` stock `i`'s row out of a panel and drop the all-NaN "no data" ticks.
-fn pick(sc: &mut Scenario, panel: Handle<Array<f64>>, i: usize) -> Handle<Array<f64>> {
+fn pick(sc: &mut Scenario, panel: Handle<RefPort<Array<f64>>>, i: usize) -> Handle<RefPort<Array<f64>>> {
     let sel = sc.add_operator(Select::<f64>::new(vec![i], 0, true), panel);
     sc.add_operator(Filter(|a: &Array<f64>| a.as_slice().iter().any(|x| x.is_finite())), sel)
 }
@@ -76,13 +76,13 @@ async fn main() {
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
-    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<Array<f64>> {
+    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<RefPort<Array<f64>>> {
         let s = ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
         let init = common::nan_array(&s.out_shape());
         let panel = sc.add_source(s, init);
         pick(sc, panel, idx)
     };
-    let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<Array<f64>> {
+    let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<RefPort<Array<f64>>> {
         let s = ReportPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone())
             .with_report_date(with_report_date);
         let init = common::nan_array(&s.out_shape());

@@ -1,4 +1,4 @@
-//! Port of `python/examples/factor_ic.py` to the Rust flow engine.
+//! RefPort of `python/examples/factor_ic.py` to the Rust flow engine.
 //!
 //! Evaluates the information coefficient (IC) of each factor in the canonical
 //! 7-factor panel (`common::build_features`) on a bounded A-shares universe.
@@ -19,7 +19,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::Port;
+use flowgraph::typed::RefPort;
 
 use tradingflow::flow::{Apply, Lag, Log, Multiply, PyClassOperator, PyParams, Resample, Scenario};
 use tradingflow::sources::clock;
@@ -58,7 +58,7 @@ async fn main() {
         );
         // NaN-mask out-of-universe stocks so they don't dilute the rank corr.
         let masked = sc.add_operator(
-            Apply::<(Port<Array<f64>>, Port<Array<f64>>), Array<f64>, _>::new(
+            Apply::<(RefPort<Array<f64>>, RefPort<Array<f64>>), Array<f64>, _>::new(
                 |(f, u): (&Array<f64>, &Array<f64>)| {
                     let (fs, us) = (f.as_slice(), u.as_slice());
                     Array::from_vec(
@@ -70,7 +70,7 @@ async fn main() {
             (aligned, universe),
         );
         let metric = sc.add_operator(
-            PyClassOperator::<(Port<Array<f64>>, Port<Array<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
                 "flowops.metrics.mean.information_coefficient",
                 PyParams::new().int("num_stocks", n_i),
                 vec![],

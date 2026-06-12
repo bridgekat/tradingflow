@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
-use flowgraph::typed::{Interface, Operator, Port, Segment};
+use flowgraph::typed::{Interface, Operator, RefPort, Segment};
 
 use super::ops::Clocked;
 use crate::{Array, Scalar};
@@ -36,8 +36,8 @@ impl<T: Clone + Send + Sync + 'static> Default for Id<T> {
 // fills the `Some` from the build-time input value, so every later call may
 // unwrap it.
 impl<T: Clone + Send + Sync + 'static> Operator for Id<T> {
-    type Inputs = Port<T>;
-    type Outputs = Port<T>;
+    type Inputs = RefPort<T>;
+    type Outputs = RefPort<T>;
     type State = Option<T>;
 
     fn init(self) -> Option<T> {
@@ -91,8 +91,8 @@ pub struct WhereState<T: Scalar, F> {
 }
 
 impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static> Operator for Where<T, F> {
-    type Inputs = Port<Array<T>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
     type State = WhereState<T, F>;
 
     fn init(self) -> WhereState<T, F> {
@@ -159,8 +159,8 @@ where
     S: Scalar + Copy + AsPrimitive<T>,
     T: Scalar + Copy + 'static,
 {
-    type Inputs = Port<Array<S>>;
-    type Outputs = Port<Array<T>>;
+    type Inputs = RefPort<Array<S>>;
+    type Outputs = RefPort<Array<T>>;
     type State = Array<T>;
 
     fn init(self) -> Array<T> {
@@ -241,8 +241,8 @@ where
     O: Clone + Send + Sync + 'static,
     C: Send + Sync + 'static,
 {
-    type Inputs = <Clocked<Id<O>, C> as Segment>::Inputs; // = (Port<C>, Port<O>)
-    type Outputs = <Clocked<Id<O>, C> as Segment>::Outputs; // = Port<O>
+    type Inputs = <Clocked<Id<O>, C> as Segment>::Inputs; // = (RefPort<C>, RefPort<O>)
+    type Outputs = <Clocked<Id<O>, C> as Segment>::Outputs; // = RefPort<O>
     type State = <Clocked<Id<O>, C> as Segment>::State;
 
     fn init(self) -> Self::State {
@@ -250,10 +250,10 @@ where
     }
 
     fn compute<'a, 'b: 'a>(
-        inputs: <Self::Inputs as Interface>::Refs<'a>,
+        inputs: <Self::Inputs as Interface>::Values<'a>,
         state: &'b mut Self::State,
         init: bool,
-    ) -> <Self::Outputs as Interface>::Refs<'a> {
+    ) -> <Self::Outputs as Interface>::Values<'a> {
         <Clocked<Id<O>, C> as Segment>::compute(inputs, state, init)
     }
 }

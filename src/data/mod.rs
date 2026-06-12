@@ -27,7 +27,7 @@ pub mod inputs;
 pub mod series;
 pub mod time;
 
-pub use array::Array;
+pub use array::{Array, ArraySlice};
 pub use inputs::{
     BitRead, FlatRead, FlatWrite, Input, InputTypes, SliceProduced, SliceRefs,
 };

@@ -74,8 +74,8 @@ pub mod sources;
 pub mod utils;
 
 pub use data::{
-    Array, BitRead, Duration, FlatRead, FlatWrite, Input, InputTypes, Instant, PeekableReceiver,
-    Scalar, Series, SliceProduced, SliceRefs, tai_to_utc, utc_to_tai,
+    Array, ArraySlice, BitRead, Duration, FlatRead, FlatWrite, Input, InputTypes, Instant,
+    PeekableReceiver, Scalar, Series, SliceProduced, SliceRefs, tai_to_utc, utc_to_tai,
 };
 pub use operator::{ErasedOperator, Operator};
 pub use operators::Clocked;

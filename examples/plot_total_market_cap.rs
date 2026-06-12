@@ -1,4 +1,4 @@
-//! Port of `python/examples/plot_total_market_cap.py` to the Rust flow engine.
+//! RefPort of `python/examples/plot_total_market_cap.py` to the Rust flow engine.
 //!
 //! Tracks a cap-weighted A-shares index: at every rebalance the top
 //! `--index-size` stocks by circulating market cap form the universe (weights
@@ -20,7 +20,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Port, Ports};
+use flowgraph::typed::{RefPort, RefPorts};
 
 use tradingflow::flow::{Apply, Map, Multiply, PyClassOperator, PyParams, Resample, Scenario};
 use tradingflow::sources::clock;
@@ -52,7 +52,7 @@ async fn main() {
 
     // Summed circulating market cap of the current constituents.
     let index_circ_market_cap = sc.add_operator(
-        Apply::<(Port<Array<f64>>, Port<Array<f64>>), Array<f64>, _>::new(
+        Apply::<(RefPort<Array<f64>>, RefPort<Array<f64>>), Array<f64>, _>::new(
             |(u, c): (&Array<f64>, &Array<f64>)| {
                 let (us, cs) = (u.as_slice(), c.as_slice());
                 let mut s = 0.0;
@@ -70,7 +70,7 @@ async fn main() {
     // Frictionless cap-weighted index NAV via the flowops Benchmark trader.
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
     let index = sc.add_operator(
-        PyClassOperator::<Ports<Array<f64>>>::from_module(
+        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
             PyParams::new()
                 .int("num_stocks", n as i64)

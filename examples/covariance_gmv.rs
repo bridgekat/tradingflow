@@ -1,4 +1,4 @@
-//! Port of `python/examples/covariance_gmv.py` to the Rust flow engine.
+//! RefPort of `python/examples/covariance_gmv.py` to the Rust flow engine.
 //!
 //! Compares covariance estimators inside a Markowitz mean-variance strategy.
 //! All seven estimators of `covariance_gmv.py` (sample, common-covariance /
@@ -20,7 +20,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, Port, Ports};
+use flowgraph::typed::{Handle, RefPort, RefPorts};
 
 use tradingflow::flow::{Diff, Log, Map, Multiply, PyClassOperator, PyParams, Scenario};
 use tradingflow::sources::clock;
@@ -40,7 +40,7 @@ struct Est {
     mode: Option<&'static str>,
 }
 
-fn total_value(sc: &mut Scenario, h: Handle<Array<f64>>) -> Handle<Array<f64>> {
+fn total_value(sc: &mut Scenario, h: Handle<RefPort<Array<f64>>>) -> Handle<RefPort<Array<f64>>> {
     sc.add_operator(Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())), h)
 }
 
@@ -75,7 +75,7 @@ async fn main() {
         common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
 
     let predicted_returns = sc.add_operator(
-        PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.predictors.mean.incremental_linear_regression",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -90,7 +90,7 @@ async fn main() {
     );
 
     let index = sc.add_operator(
-        PyClassOperator::<Ports<Array<f64>>>::from_module(
+        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
             "flowops.traders.benchmark",
             PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
             vec![2],
@@ -114,9 +114,9 @@ async fn main() {
     // Per-estimator records: (name, long NAV, long-short NAV, GMV realized variance).
     struct Rec {
         name: &'static str,
-        long: Handle<Series<f64>>,
-        ls: Handle<Series<f64>>,
-        mv: Handle<Series<f64>>,
+        long: Handle<RefPort<Series<f64>>>,
+        ls: Handle<RefPort<Series<f64>>>,
+        mv: Handle<RefPort<Series<f64>>>,
     }
     let mut recs: Vec<Rec> = Vec::new();
 
@@ -138,7 +138,7 @@ async fn main() {
             p = p.str("mode", m);
         }
         let cov = sc.add_operator(
-            PyClassOperator::<(Port<Array<f64>>, Port<Series<f64>>, Port<Series<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
                 e.module,
                 p,
                 vec![n, n],
@@ -149,7 +149,7 @@ async fn main() {
 
         // GMV realized-variance metric (diagnostic; fed cov + raw returns).
         let mv = sc.add_operator(
-            PyClassOperator::<(Port<Array<f64>>, Port<Array<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
                 "flowops.metrics.variance.minimum_variance",
                 PyParams::new().int("num_stocks", n_i),
                 vec![],
@@ -159,10 +159,10 @@ async fn main() {
         );
 
         // Long-only and long-short Markowitz portfolios.
-        let mut nav: Vec<Handle<Series<f64>>> = Vec::with_capacity(2);
+        let mut nav: Vec<Handle<RefPort<Series<f64>>>> = Vec::with_capacity(2);
         for long_only in [true, false] {
             let soft = sc.add_operator(
-                PyClassOperator::<(Port<Array<f64>>, Port<Array<f64>>, Port<Array<f64>>)>::from_module(
+                PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
                     "flowops.portfolios.mean_variance.markowitz",
                     PyParams::new()
                         .int("num_stocks", n_i)
@@ -176,7 +176,7 @@ async fn main() {
                 (universe, predicted_returns, cov),
             );
             let fric = sc.add_operator(
-                PyClassOperator::<Ports<Array<f64>>>::from_module(
+                PyClassOperator::<RefPorts<Array<f64>>>::from_module(
                     "flowops.traders.benchmark",
                     PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
                     vec![2],
