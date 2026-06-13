@@ -12,6 +12,9 @@ dist/
 site/
 /target/
 
+# Example market data (a-shares-crawler output; regenerate, do not commit)
+/data/
+
 # Native extension artifacts
 *.pyd
 *.so

@@ -53,7 +53,7 @@ fn pick(sc: &mut Scenario, panel: Handle<RefPort<Array<f64>>>, i: usize) -> Hand
 #[tokio::main]
 async fn main() {
     let symbol = std::env::args().nth(1).unwrap_or_else(|| "000009.SZ".to_string());
-    let data_dir = "python/examples/data";
+    let data_dir = "data";
     let prices_pq = format!("{data_dir}/daily_prices.parquet");
     let dividends_pq = format!("{data_dir}/dividends.parquet");
     for p in [&prices_pq, &dividends_pq] {

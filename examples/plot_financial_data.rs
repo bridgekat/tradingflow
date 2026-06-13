@@ -59,7 +59,7 @@ fn pick(sc: &mut Scenario, panel: Handle<RefPort<Array<f64>>>, i: usize) -> Hand
 #[tokio::main]
 async fn main() {
     let symbol = std::env::args().nth(1).unwrap_or_else(|| "000001.SZ".to_string());
-    let data_dir = "python/examples/data";
+    let data_dir = "data";
     let prices_pq = format!("{data_dir}/daily_prices.parquet");
     if !std::path::Path::new(&prices_pq).exists() {
         eprintln!("data not found: {prices_pq}\n(run the crawler with --export-long parquet; see examples/README.md)");

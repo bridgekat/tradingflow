@@ -200,7 +200,7 @@ impl Args {
     /// defaults (a bounded universe and short windows so a run completes in
     /// seconds on the bundled data).
     pub fn from_env() -> Self {
-        let mut data_dir = "python/examples/data".to_string();
+        let mut data_dir = "data".to_string();
         let mut index_size = 30usize;
         let mut rebalance_days = 30i64;
         let mut window = 20usize;

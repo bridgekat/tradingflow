@@ -121,8 +121,9 @@ $env:PYTHONPATH = "$((Get-Location).Path)\python"
 
 ## Getting the data
 
-The examples read bundled A-shares market data from `python/examples/data/`
-(`a_shares_history/` holds one CSV per symbol per kind, plus `symbol_list.csv`).
+The examples read bundled A-shares market data from `data/` (the consolidated
+long-format `<kind>.parquet` tables, plus `symbol_list.csv`; `a_shares_history/`
+holds the legacy one-CSV-per-symbol layout, no longer read).
 The crawler that produces it is vendored as a git submodule at
 **`extern/a-shares-crawler`**. If the submodule is empty (fresh clone):
 
@@ -135,7 +136,7 @@ To (re)fetch data you need an EastMoney session config — see
 
 ```pwsh
 .\.venv\Scripts\python -m pip install -e extern/a-shares-crawler
-.\.venv\Scripts\python -m a_shares_crawler --config config.json --data-dir python\examples\data
+.\.venv\Scripts\python -m a_shares_crawler --config config.json --data-dir data
 ```
 
 The crawler can also emit **consolidated long-format tables** (one file per kind,
@@ -144,13 +145,13 @@ all symbols, sorted by date) for a single sequential read, via
 One or more formats may be given at once:
 
 ```pwsh
-.\.venv\Scripts\python -m a_shares_crawler.export --data-dir python\examples\data --export-long csv parquet
+.\.venv\Scripts\python -m a_shares_crawler.export --data-dir data --export-long csv parquet
 ```
 
-This writes `python\examples\data\<kind>.{csv,parquet}`. The TradingFlow read path that
-consumes these long tables (a cross-sectional `PanelSource`) is described in
-[`docs/design/data-storage.md`](../docs/design/data-storage.md); until it lands,
-the examples read the per-symbol CSVs.
+This writes `data\<kind>.{csv,parquet}`. The examples read these long tables via
+the cross-sectional `ParquetPanelSource` / `ReportPanelSource`; the columnar
+storage design is described in
+[`docs/design/data-storage.md`](../docs/design/data-storage.md).
 
 ---
 
