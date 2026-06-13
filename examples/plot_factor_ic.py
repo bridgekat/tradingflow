@@ -2,8 +2,7 @@
 """Render the `factor_ic` Rust example's long-format CSV with matplotlib.
 
 Reads `series,timestamp_ns,value` rows (one per factor per rebalance) and plots
-the cumulative IC of each factor over time — mirroring
-`python/examples/factor_ic.py`'s cumulative-IC figure.
+the cumulative IC of each factor over time.
 
 Usage:
     python examples/plot_factor_ic.py target/factor_ic.csv [--save out.png]

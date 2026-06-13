@@ -11,14 +11,14 @@ requires-python = ">=3.12"
 dependencies = ["numpy>=2.4", "pandas>=3.0", "scipy", "cvxpy", "scs"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "zensical", "mkdocstrings-python"]
+dev = ["pytest>=7.0"]
 examples = [
     # Vendored as a git submodule at extern/a-shares-crawler (see .gitmodules);
     # installed from the local working tree rather than a pinned GitHub commit.
+    # Generates the A-shares market data the `examples/` strategies read.
     "a-shares-crawler @ file:extern/a-shares-crawler",
+    # The example plot scripts (examples/plot*.py) render the engine's CSV output.
     "matplotlib",
-    "streamlit[charts]",
-    "tqdm",
 ]
 
 # `flowops` is the Python operator package (predictors / portfolios / traders /

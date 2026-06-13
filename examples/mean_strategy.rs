@@ -1,4 +1,4 @@
-//! RefPort of `python/examples/mean_strategy.py` to the Rust flow engine.
+//! Mean-only strategy: periodic linear regression + rank-linear portfolio.
 //!
 //! A cross-sectional linear-regression strategy on a bounded A-shares
 //! universe: a pooled **Ridge** mean predictor on the canonical 7-factor panel

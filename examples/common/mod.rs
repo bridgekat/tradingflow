@@ -1,5 +1,4 @@
-//! Shared scaffolding for the A-shares cross-sectional examples — the Rust
-//! port of `python/examples/common.py`.
+//! Shared scaffolding for the A-shares cross-sectional examples.
 //!
 //! Pulled in by each strategy/plot example via `#[path = "common/mod.rs"] mod
 //! common;`. It is **pure native** (no Python / `pyflow`): it builds the data

@@ -1,5 +1,5 @@
-//! RefPort of `python/examples/plot_daily_price.py`, reading the consolidated long
-//! **parquet** panels via [`ParquetPanelSource`].
+//! Daily-price plot, reading the consolidated long **parquet** panels via
+//! [`ParquetPanelSource`].
 //!
 //! Loads `daily_prices.parquet` / `dividends.parquet`, `Select`s the target
 //! stock's row out of the cross-section and `Filter`s out the "no data" ticks,

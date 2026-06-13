@@ -1,4 +1,4 @@
-//! RefPort of `python/examples/factor_ic.py` to the Rust flow engine.
+//! Factor IC evaluation on the A-shares cross-sectional panel.
 //!
 //! Evaluates the information coefficient (IC) of each factor in the canonical
 //! 7-factor panel (`common::build_features`) on a bounded A-shares universe.

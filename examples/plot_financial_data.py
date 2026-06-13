@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Render the `plot_financial_data` Rust example's CSV with matplotlib.
 
-Three stacked panels mirroring `python/examples/plot_financial_data.py`:
-balance sheet & market cap, annualized income & cash flow, valuation ratios.
+Three stacked panels: balance sheet & market cap, annualized income & cash
+flow, valuation ratios.
 Each column is masked for NaN/inf independently so the daily (market cap,
 ratios) and quarterly (balance/income/cash-flow) series each render on their
 own cadence.

@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Render the `plot_total_market_cap` Rust example's CSV with matplotlib.
 
-Two stacked panels mirroring `python/examples/plot_total_market_cap.py`:
-the index circulating market cap (trillions) and the cap-weighted total-return
+Two stacked panels: the index circulating market cap (trillions) and the
+cap-weighted total-return
 NAV. Columns are NaN-masked independently (the two series tick on slightly
 different cadences).
 

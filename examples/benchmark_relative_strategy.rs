@@ -1,4 +1,4 @@
-//! RefPort of `python/examples/benchmark_relative_strategy.py` to the flow engine.
+//! Benchmark-relative mean-variance strategy on the A-shares panel.
 //!
 //! Enhanced-index (benchmark-relative) strategies over a sweep of *annualised*
 //! tracking-error budgets γ. Each γ drives a cvxpy **BenchmarkRelative**

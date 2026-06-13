@@ -21,11 +21,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      # Build the Python package (maturin compiles Rust + installs Python)
-      - run: python -m pip install -e ".[dev]"
-
-      # Run Rust tests
+      # Rust crate: the flow engine + operator library.
       - run: cargo test --lib
 
-      # Run Python tests
-      - run: python -m pytest python/tests/ -x -q
+      # flowops Python operator package (pure Python) + its tests.
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest

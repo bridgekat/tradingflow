@@ -1,5 +1,5 @@
-//! RefPort of `python/examples/plot_financial_data.py`, reading the consolidated
-//! long **parquet** panels via [`ParquetPanelSource`] / [`ReportPanelSource`].
+//! Financial-data plot, reading the consolidated long **parquet** panels via
+//! [`ParquetPanelSource`] / [`ReportPanelSource`].
 //!
 //! Loads daily prices, equity-structure events, and quarterly financial reports
 //! for one A-shares stock by `Select`ing that stock's row out of each

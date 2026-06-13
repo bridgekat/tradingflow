@@ -1,8 +1,8 @@
 # Running the flow-engine examples
 
-The `.rs` files in this directory are the **Rust ports** of the A-shares examples
-(originals in `python/examples/`), built on the new parallel `flow` engine
-(`src/flow`, on top of `flowgraph`). They are ordinary Cargo examples:
+The `.rs` files in this directory are end-to-end A-shares research strategies
+built on the parallel `flow` engine (`src/operators` + `src/scenario.rs`, on top
+of `flowgraph`). They are ordinary Cargo examples:
 
 ```pwsh
 cargo run --example <name> [--features pyflow] -- [args]

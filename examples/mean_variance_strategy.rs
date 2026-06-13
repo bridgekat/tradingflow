@@ -1,4 +1,4 @@
-//! RefPort of `python/examples/mean_variance_strategy.py` to the Rust flow engine.
+//! Mean-variance strategy: shrinkage covariance + Markowitz, risk-aversion sweep.
 //!
 //! Markowitz mean-variance strategies over a sweep of risk-aversion deltas,
 //! sharing one **Ridge** mean predictor and one **Shrinkage** covariance
@@ -9,8 +9,7 @@
 //! This is the first example that solves a **cvxpy** optimizer *inside the
 //! engine*: the Markowitz portfolio releases the GIL during its SCS solve, so
 //! the work-stealing pool overlaps the per-delta solves. Needs `--features
-//! pyflow` and a **GIL** venv with cvxpy installed (see the cvxpy notes in
-//! `python/benchmarks/cvxpy_solve_parallelism.py`).
+//! pyflow` and a **GIL** venv with cvxpy installed.
 //!
 //! ```text
 //! cargo run --example mean_variance_strategy --features pyflow -- --index-size 1000

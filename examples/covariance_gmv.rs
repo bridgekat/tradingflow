@@ -1,4 +1,4 @@
-//! RefPort of `python/examples/covariance_gmv.py` to the Rust flow engine.
+//! Variance-estimator comparison via GMV portfolio realized variance.
 //!
 //! Compares covariance estimators inside a Markowitz mean-variance strategy.
 //! All seven estimators of `covariance_gmv.py` (sample, common-covariance /

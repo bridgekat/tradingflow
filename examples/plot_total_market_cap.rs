@@ -1,4 +1,4 @@
-//! RefPort of `python/examples/plot_total_market_cap.py` to the Rust flow engine.
+//! Cap-weighted A-shares index: total circulating market cap + NAV plot.
 //!
 //! Tracks a cap-weighted A-shares index: at every rebalance the top
 //! `--index-size` stocks by circulating market cap form the universe (weights
