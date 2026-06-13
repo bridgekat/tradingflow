@@ -28,7 +28,8 @@ mod common;
 use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::data::Duration;
-use tradingflow::flow::{Annualize, Divide, Filter, Map, Multiply, Negate, RollingMean, Scenario, Select};
+use tradingflow::operators::{Annualize, Divide, Filter, Map, Multiply, Negate, RollingMean, Select};
+use tradingflow::Scenario;
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
 use tradingflow::{Array, Instant, Series};
 

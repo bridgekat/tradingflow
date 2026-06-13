@@ -1,18 +1,17 @@
-//! External async driver for the `flow` engine.
+//! The engine: graph builder + async event-loop driver.
 //!
 //! [`Scenario`] builds a `flowgraph` graph whose source cells are
 //! `push_source` nodes, and registers a [`Source`](crate::source::Source) per
 //! source cell. [`Session`] owns the built graph + a worker [`Pool`] + the
-//! shared [`Clock`] + the per-source channel state, and drives them via
-//! [`Session::run`].
+//! shared [`Clock`](crate::operators::Clock) + the per-source channel state, and
+//! drives them via [`Session::run`].
 //!
-//! The event loop is lifted from the legacy `scenario::queue` loop (timestamp
-//! merge-heap + same-timestamp coalescing + historical-ordering constraint +
-//! live-event clamping). The per-batch apply step writes each fired source's
-//! event into its node state via the typed `Graph::state_mut(SourceHandle<T>)`
-//! (which marks the dirty cone) through a per-source monomorphized write
-//! function, advances the [`Clock`] to the batch timestamp, and runs one
-//! `stabilize`.
+//! The event loop is a timestamp merge-heap with same-timestamp coalescing, a
+//! historical-ordering constraint, and live-event clamping. The per-batch apply
+//! step writes each fired source's event into its node state via the typed
+//! `Graph::state_mut(SourceHandle<T>)` (which marks the dirty cone) through a
+//! per-source monomorphized write function, advances the [`Clock`](crate::operators::Clock)
+//! to the batch timestamp, and runs one `stabilize`.
 
 use std::any::TypeId;
 use std::cmp::Reverse;
@@ -31,8 +30,7 @@ use flowgraph::typed::{
     Graph, GraphBuilder, Handle, InterfaceHandles, RefPort, RefSource, Segment, SourceHandle,
 };
 
-use super::op::Clock;
-use super::ops::Record;
+use crate::operators::{Clock, Record};
 use crate::source::{PollFn, Source};
 use crate::{Array, Instant, PeekableReceiver, Scalar, Series};
 
@@ -321,7 +319,7 @@ impl Scenario {
         out_len: usize,
     ) -> Handle<RefPort<Array<f64>>> {
         self.builder
-            .push(super::python::PyOperator::new(source, out_len), inputs)
+            .push(crate::operators::PyOperator::new(source, out_len), inputs)
     }
 
     /// Register a Python operator in **write mode** (feature `pyflow`, zero-copy
@@ -338,7 +336,7 @@ impl Scenario {
         out_len: usize,
     ) -> Handle<RefPort<Array<f64>>> {
         self.builder
-            .push(super::python::PyOperator::writing(source, out_len), inputs)
+            .push(crate::operators::PyOperator::writing(source, out_len), inputs)
     }
 
     /// Register a class-based Python operator (feature `pyflow`). `source` is a
@@ -346,17 +344,17 @@ impl Scenario {
     /// legacy contract `init(inputs, timestamp) -> state` and
     /// `compute(state, inputs, output, timestamp, produced) -> bool`. The driver
     /// [`Clock`] is wired through so the operator sees event time. `out_shape` is
-    /// the output element shape (`[]` for a scalar). See [`super::pyhost`].
+    /// the output element shape (`[]` for a scalar). See [`PyClassOperator`](crate::operators::PyClassOperator).
     #[cfg(feature = "pyflow")]
     pub fn add_py_class_operator(
         &mut self,
         source: &str,
-        params: super::pyhost::PyParams,
+        params: crate::operators::PyParams,
         inputs: &[Handle<RefPort<Array<f64>>>],
         out_shape: &[usize],
     ) -> Handle<RefPort<Array<f64>>> {
         self.builder.push(
-            super::pyhost::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64>>>::from_source(
+            crate::operators::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64>>>::from_source(
                 source,
                 params,
                 out_shape.to_vec(),
@@ -368,7 +366,7 @@ impl Scenario {
 
     /// Register a class-based Python operator loaded from a plain `.py` file
     /// (feature `pyflow`). The file defines `build(**kwargs)` (called with
-    /// `params`) or binds `__op__`; see [`super::pyhost`]. Convenience for
+    /// `params`) or binds `__op__`; see [`PyClassOperator`](crate::operators::PyClassOperator). Convenience for
     /// all-`Array<f64>` inputs; heterogeneous (Array + Series) operators register
     /// via [`add_operator`](Self::add_operator) with
     /// `PyClassOperator::<I>::from_file(..)`.
@@ -376,12 +374,12 @@ impl Scenario {
     pub fn add_py_operator_file(
         &mut self,
         path: impl AsRef<std::path::Path>,
-        params: super::pyhost::PyParams,
+        params: crate::operators::PyParams,
         inputs: &[Handle<RefPort<Array<f64>>>],
         out_shape: &[usize],
     ) -> Handle<RefPort<Array<f64>>> {
         self.builder.push(
-            super::pyhost::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64>>>::from_file(
+            crate::operators::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64>>>::from_file(
                 path,
                 params,
                 out_shape.to_vec(),
@@ -724,7 +722,7 @@ async fn drain_live(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::{Add, Filter};
+    use crate::operators::{Add, Filter};
     use crate::sources::ArraySource;
     use crate::{Array, Series};
 

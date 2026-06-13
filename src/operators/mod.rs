@@ -1,5 +1,6 @@
-//! `flow` — TradingFlow's synchronous, parallel computation engine, built on
-//! `flowgraph`.
+//! `operators` — the operator library for the TradingFlow engine, built on
+//! `flowgraph`. The engine/driver itself ([`Scenario`](crate::Scenario) /
+//! [`Session`](crate::Session)) lives in [`scenario`](crate::scenario).
 //!
 //! # Design
 //!
@@ -13,8 +14,8 @@
 //!   are plain segments, they compose with `flowgraph`'s combinators
 //!   (`then`/`fork`/`par`) and the `flowgraph::segment!` fusion macro as-is.
 //! * The engine's input-notification gating prunes the recompute cone: an
-//!   [`Operator`]'s compute path fires iff ≥1 input notified (else its
-//!   `passthrough` re-emits the previous output, un-notified).
+//!   [`Operator`](flowgraph::typed::Operator)'s compute path fires iff ≥1 input
+//!   notified (else its `passthrough` re-emits the previous output, un-notified).
 //! * **The contract that makes this sound: *no-notify ⟹ output unchanged*.**
 //!   An operator that does not notify must leave its output value unchanged, so
 //!   every consumer may treat a non-notifying input as its last notified value.
@@ -23,9 +24,6 @@
 //!   ([`Gate`] → [`SliceView`] → [`StackView`]) work without materializing every
 //!   edge. See the [`op`] module conventions for the full statement; it is a
 //!   producer-side duty obeyed by every operator here.
-//! * Source cells are `push_source` nodes poked through the typed
-//!   `Graph::state_mut(SourceHandle<T>)` (which marks the dirty cone); the
-//!   async [`Source`](crate::source::Source) feed is driven by [`Session`].
 //! * Time is threaded out-of-band through a shared [`Clock`] the driver advances
 //!   before each `stabilize` (only operators that stamp event time read it).
 //!
@@ -37,23 +35,23 @@
 //! on the pool via GIL release; build against free-threaded CPython for
 //! pure-Python parallelism too, no code change). Inputs are copied in
 //! (NumPy-owned snapshots), output exposed zero-copy. Register via
-//! `Scenario::add_py_operator` (return mode) / `add_py_operator_writing` (write
-//! mode) for lambdas, or `add_py_operator_file` / `PyClassOperator` for
-//! class-based operators loaded from `.py` files (see `flowops`). The `python`
-//! and `pyhost` submodule docs cover the contracts, data model, and setup.
+//! [`Scenario::add_py_operator`](crate::Scenario::add_py_operator) (return mode)
+//! / `add_py_operator_writing` (write mode) for lambdas, or
+//! `add_py_operator_file` / `PyClassOperator` for class-based operators loaded
+//! from `.py` files (see `flowops`). The [`python`] and [`pyhost`] submodule
+//! docs cover the contracts, data model, and setup.
 
 mod arith;
+mod gating;
 mod metrics;
 mod num;
 mod op;
-mod ops;
 #[cfg(feature = "pyflow")]
 mod pyhost;
 #[cfg(feature = "pyflow")]
 mod python;
 mod reshape;
 mod rolling;
-mod session;
 mod stocks;
 mod structural;
 mod transform;
@@ -63,19 +61,8 @@ pub use pyhost::{NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyP
 #[cfg(feature = "pyflow")]
 pub use python::PyOperator;
 
-// The `flowgraph` vocabulary the flow layer is written in, re-exported for
-// downstream graph-building code. (`flowgraph::typed::Id` is NOT re-exported —
-// `flow::Id` is the structural identity operator below; reach the combinator
-// via its full path.)
-pub use flowgraph::typed::{
-    Arena, Handle, Interface, InterfaceHandles, Operator, Port, RefPort, RefPorts, RefSource,
-    RefViewPort, RefViewPorts, Scalar as ScalarValue, Segment, SegmentExt, Source as ValueSource,
-    SourceHandle, ValueView, ViewPort, ViewSource,
-};
-
 pub use op::{ArrayInput, ArrayValue, Clock, StripNotify};
-pub use session::{Scenario, Session, ShutdownFlag};
-pub use ops::{Clocked, Count, Filter, Gate, Last, Record};
+pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
 pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
 };

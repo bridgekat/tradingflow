@@ -23,7 +23,7 @@ use std::fs;
 use flowgraph::core::Pool;
 use flowgraph::typed::{Graph, GraphBuilder, RefPort, RefPorts, RefSource};
 
-use tradingflow::flow::{Clock, PyClassOperator, PyParams, Record};
+use tradingflow::operators::{Clock, PyClassOperator, PyParams, Record};
 use tradingflow::{Array, Instant, Series};
 
 fn main() {

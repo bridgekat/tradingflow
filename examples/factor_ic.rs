@@ -21,7 +21,8 @@ mod common;
 
 use flowgraph::typed::RefPort;
 
-use tradingflow::flow::{Apply, Lag, Log, Multiply, PyClassOperator, PyParams, Resample, Scenario};
+use tradingflow::operators::{Apply, Lag, Log, Multiply, PyClassOperator, PyParams, Resample};
+use tradingflow::Scenario;
 use tradingflow::sources::clock;
 use tradingflow::Array;
 

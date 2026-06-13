@@ -30,11 +30,12 @@ use std::fs;
 use flowgraph::typed::{Handle, RefPort, RefViewPort, ViewPort};
 
 use tradingflow::data::Duration;
-use tradingflow::flow::{
+use tradingflow::operators::{
     AnnualizeView, Apply, ArrayValue, Divide, ForwardAdjustViewDiv, Gate, Lag, Log, Map, Multiply,
-    Percentile, Resample, RollingMean, RollingVariance, Scenario, Select, SelectView, Session,
-    SliceView, Split, Sqrt, Stack, StackSync, StackSyncView, StackView, Subtract, Winsorize,
+    Percentile, Resample, RollingMean, RollingVariance, Select, SelectView, SliceView, Split, Sqrt,
+    Stack, StackSync, StackSyncView, StackView, Subtract, Winsorize,
 };
+use tradingflow::{Scenario, Session};
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
 use tradingflow::{Array, ArraySlice, Instant, Series, utc_to_tai};
 
@@ -96,12 +97,12 @@ fn date_str(ts: Instant) -> String {
 // ===========================================================================
 
 /// A `tqdm`-style progress callback (backed by [`indicatif`]) for
-/// [`Session::run`](tradingflow::flow::Session::run)'s `on_flush`.
+/// [`Session::run`](tradingflow::Session::run)'s `on_flush`.
 ///
 /// Progress is measured in **long-table rows**: the panel sources emit one event
 /// per narrow row, so the engine's `on_flush` count *is* the row count (no shared
 /// counter needed). `total` is
-/// [`estimated_event_count`](tradingflow::flow::Session::estimated_event_count) in
+/// [`estimated_event_count`](tradingflow::Session::estimated_event_count) in
 /// the same row unit; `Some(n)` → a bounded bar (percent / rate / ETA), else a
 /// spinner. `{per_sec}` is therefore rows/s. `begin` sets `{prefix}` (warm-up
 /// before it, running after); `{msg}` is the current event date. The bar uses a
@@ -634,7 +635,7 @@ pub fn build_cap_weighted_universe(
     rebalance_clock: Handle<RefPort<()>>,
     index_size: usize,
 ) -> Handle<RefPort<Array<f64>>> {
-    use tradingflow::flow::Clocked;
+    use tradingflow::operators::Clocked;
     let k = index_size;
     sc.add_operator(
         Clocked::new(Map::new(move |m: &Array<f64>| {
@@ -651,7 +652,7 @@ pub fn build_log_return_target(
     sc: &mut Scenario,
     log_adj: Handle<RefPort<Array<f64>>>,
 ) -> (Handle<RefPort<Array<f64>>>, Handle<RefPort<Series<f64>>>, Handle<RefPort<Series<f64>>>) {
-    use tradingflow::flow::Diff;
+    use tradingflow::operators::Diff;
     let log_returns = sc.add_operator(Diff::<f64>::new(), log_adj);
     let target = sc.add_operator(Winsorize::<f64>::new(0.01), log_returns);
     let target_series = sc.add_record(target);

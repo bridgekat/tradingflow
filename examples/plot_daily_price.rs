@@ -21,10 +21,10 @@ mod common;
 
 use flowgraph::typed::{Handle, RefPort};
 
-use tradingflow::flow::{
-    Add, Filter, ForwardAdjust, Multiply, RollingMean, RollingVariance, Scenario, Select, Sqrt,
-    Subtract,
+use tradingflow::operators::{
+    Add, Filter, ForwardAdjust, Multiply, RollingMean, RollingVariance, Select, Sqrt, Subtract,
 };
+use tradingflow::Scenario;
 use tradingflow::sources::ParquetPanelSource;
 use tradingflow::{Array, Instant, Series};
 

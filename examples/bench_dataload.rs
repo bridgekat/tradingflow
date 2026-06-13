@@ -21,7 +21,7 @@ mod common;
 
 use std::time::Instant as StdInstant;
 
-use tradingflow::flow::Scenario;
+use tradingflow::Scenario;
 
 fn arg_usize(name: &str, default: usize) -> usize {
     let args: Vec<String> = std::env::args().collect();

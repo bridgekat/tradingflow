@@ -20,7 +20,7 @@
 //! are `NaN`); there is no carry-forward and no window-start seeding. This is the
 //! event-driven behaviour of the old per-symbol sources: a source ticks only on
 //! its own dates, and any "carry the last value" / "NaN-fill" is the job of the
-//! downstream [`Stack`](crate::flow::Stack) / [`StackSync`](crate::flow::StackSync)
+//! downstream [`Stack`](crate::operators::Stack) / [`StackSync`](crate::operators::StackSync)
 //! operators — not the source. With `with_time_range`, rows before `start` are
 //! simply skipped (no last-value-before-`start` is carried in).
 //!
@@ -30,9 +30,9 @@
 //! dense. For **irregular** kinds (dividends, financial reports) the panel emits
 //! at the *union* of all symbols' event dates — which need not include every
 //! trading day. A per-stock `Select` therefore still fires on that union cadence
-//! with `NaN` where the stock had no row; a [`Filter`](crate::flow::Filter) that
+//! with `NaN` where the stock had no row; a [`Filter`](crate::operators::Filter) that
 //! drops the all-`NaN` ("no data") rows recovers that stock's true event stream,
-//! so message-passing operators (e.g. [`ForwardAdjust`](crate::flow::ForwardAdjust))
+//! so message-passing operators (e.g. [`ForwardAdjust`](crate::operators::ForwardAdjust))
 //! see each real event exactly once — reproducing the per-symbol stream.
 //!
 //! # Timestamps
@@ -110,7 +110,7 @@ impl ParquetPanelSource {
 
     /// Emitted element shape, `[N, value_columns]`. Pass an **all-NaN** array of
     /// this shape as the `initial` value to
-    /// [`Scenario::add_source`](crate::flow::Scenario::add_source): the per-tick
+    /// [`Scenario::add_source`](crate::Scenario::add_source): the per-tick
     /// `write` only sets rows that have an event, so an unwritten row must read as
     /// `NaN` (not `0.0`) for the per-stock `Filter` to drop it.
     pub fn out_shape(&self) -> Vec<usize> {
@@ -132,7 +132,7 @@ pub(crate) fn instant_from_days(days: i32) -> Instant {
 
 /// `(year, day_of_year)` (1-based) for a report date, via the **same** hifitime
 /// path as [`FinancialReportSource`](super::stocks::FinancialReportSource)
-/// (`Epoch::year_days_of_year() + 1`), so [`Annualize`](crate::flow::Annualize)
+/// (`Epoch::year_days_of_year() + 1`), so [`Annualize`](crate::operators::Annualize)
 /// matches it bit-for-bit. Used by [`ReportPanelSource`](super::ReportPanelSource).
 pub(crate) fn report_year_and_doy(days: i32) -> (f64, f64) {
     let (year, day_of_year) = epoch_from_days(days).year_days_of_year();

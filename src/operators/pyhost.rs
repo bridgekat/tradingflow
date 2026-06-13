@@ -668,7 +668,7 @@ mod tests {
     use flowgraph::typed::{Graph, GraphBuilder, RefPort, RefPorts, RefSource};
 
     use crate::Instant;
-    use crate::flow::{Clock, Record};
+    use crate::operators::{Clock, Record};
     use crate::{Array, Series};
 
     /// Turnover ported ~verbatim from python/.../metrics/turnover.py: a stateful

@@ -3,7 +3,7 @@
 //! Like [`ParquetPanelSource`](super::ParquetPanelSource) it pivots a long table
 //! into one wide `[N, R]` cross-section per event date (StackSync semantics — each
 //! cross-section reflects only that date's reports, `NaN` elsewhere; the
-//! carry-forward is the downstream [`Stack`](crate::flow::Stack)'s job). It
+//! carry-forward is the downstream [`Stack`](crate::operators::Stack)'s job). It
 //! additionally understands the report layout — two date columns (`date` =
 //! period-end, `notice_date` = publication, nullable) — and the
 //! [`FinancialReportSource`](super::stocks::FinancialReportSource) point-in-time
@@ -24,7 +24,7 @@
 //!
 //! [`with_report_date`](ReportPanelSource::with_report_date) prepends
 //! `[year, day_of_year]` of the **report** date (for
-//! [`Annualize`](crate::flow::Annualize)), exactly as `FinancialReportSource`. A
+//! [`Annualize`](crate::operators::Annualize)), exactly as `FinancialReportSource`. A
 //! per-stock pipeline is recovered downstream by `Select` + a NaN `Filter`.
 
 use std::collections::HashMap;

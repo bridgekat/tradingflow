@@ -1,7 +1,7 @@
 //! Core data types and trait machinery.
 //!
 //! This module groups the project's primitive data containers that flow
-//! through the [`flow`](crate::flow) engine.
+//! through the [`operators`](crate::operators) engine.
 //!
 //! # Sub-modules
 //!

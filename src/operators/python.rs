@@ -89,7 +89,7 @@
 //!
 //! # Building graphs
 //!
-//! High level, via [`Scenario`](crate::flow::Scenario):
+//! High level, via [`Scenario`](crate::Scenario):
 //! ```ignore
 //! let a = sc.add_source(/* ... */, Array::zeros(&[n]));
 //! let b = sc.add_source(/* ... */, Array::zeros(&[n]));
@@ -359,7 +359,7 @@ mod tests {
     use flowgraph::typed::{Graph, GraphBuilder, RefSource};
 
     use crate::Array;
-    use crate::flow::Map;
+    use crate::operators::Map;
 
     /// Return mode: element-wise NumPy add over two inputs.
     #[test]

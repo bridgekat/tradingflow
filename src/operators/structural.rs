@@ -8,7 +8,7 @@ use num_traits::AsPrimitive;
 
 use flowgraph::typed::{Interface, Operator, RefPort, Segment};
 
-use super::ops::Clocked;
+use super::gating::Clocked;
 use crate::{Array, Scalar};
 
 /// Identity passthrough: clones input to output unchanged.

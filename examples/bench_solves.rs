@@ -13,7 +13,8 @@ use std::time::Instant as Wall;
 
 use flowgraph::typed::RefPort;
 
-use tradingflow::flow::{PyClassOperator, PyParams, Resample, Scenario};
+use tradingflow::operators::{PyClassOperator, PyParams, Resample};
+use tradingflow::Scenario;
 use tradingflow::sources::clock;
 use tradingflow::{Array, Instant};
 

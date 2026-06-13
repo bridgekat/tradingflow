@@ -22,10 +22,11 @@ mod common;
 
 use flowgraph::typed::{Handle, RefPort, RefPorts};
 
-use tradingflow::flow::{
-    CompoundReturn, Diff, Drawdown, Log, Map, Multiply, PyClassOperator, PyParams, Scenario,
-    SharpeRatio, Stack,
+use tradingflow::operators::{
+    CompoundReturn, Diff, Drawdown, Log, Map, Multiply, PyClassOperator, PyParams, SharpeRatio,
+    Stack,
 };
+use tradingflow::Scenario;
 use tradingflow::sources::clock;
 use tradingflow::{Array, Series};
 

@@ -18,7 +18,7 @@ use crate::Instant;
 /// # Reusability
 ///
 /// `init` takes `&self`, so a single spec can drive multiple
-/// [`Session`](crate::flow::Session)s — the driver keeps the spec by value and
+/// [`Session`](crate::Session)s — the driver keeps the spec by value and
 /// calls `init` against the shared reference on every session start.
 /// Implementations should treat the spec as immutable configuration; per-session
 /// state lives in [`Output`](Self::Output) / [`State`](Self::State) (built fresh
@@ -68,7 +68,7 @@ pub trait Source: 'static {
     /// lifetime. `None` for live / unbounded sources.
     ///
     /// Used only for progress reporting via
-    /// [`Session::run`](crate::flow::Session::run)'s `on_flush` callback —
+    /// [`Session::run`](crate::Session::run)'s `on_flush` callback —
     /// treated as advisory. The default returns `None`.
     fn estimated_event_count(&self) -> Option<usize> {
         None
@@ -76,7 +76,7 @@ pub trait Source: 'static {
 }
 
 /// Type-erased poll function pointer for a source channel, monomorphised per
-/// event type by the [`flow`](crate::flow) driver.
+/// event type by the [`scenario`](crate::scenario) driver.
 ///
 /// # Parameters
 ///
