@@ -795,13 +795,13 @@ fn split_axis_size_mismatch_panics() {
     let _ = b.push(Split::<f64>::new(2), *panel);
 }
 
-/// The zero-copy view chain (`Split` rows -> stateless `Gate` -> view-input
-/// `Select` / `ForwardAdjust`) is tick-for-tick bit-identical to the owned
-/// chain (`Filter` -> owned `Select` / `ForwardAdjust`) over the same source
-/// pokes, including the NaN cutoff and the price/dividend message-passing.
-/// This is THE regression test for `Gate` dropping last-value retention: all
-/// consumers downstream of a `Gate` are notify-gated, so the difference must
-/// be unobservable.
+/// The view chain (`Split` rows -> retaining `Gate` -> view-input `Select` /
+/// `ForwardAdjust`) is tick-for-tick bit-identical to the owned chain
+/// (`Filter` -> owned `Select` / `ForwardAdjust`) over the same source pokes,
+/// including the NaN cutoff and the price/dividend message-passing. `Gate` and
+/// `Filter` are the same operator over different edge kinds — both honour the
+/// no-notify⟹unchanged contract by retaining the last passed row — so their
+/// downstream cones must agree bit-for-bit.
 #[test]
 fn view_chain_matches_owned_chain() {
     fn any_finite_owned(a: &Array<f64>) -> bool {
@@ -872,6 +872,72 @@ fn view_chain_matches_owned_chain() {
         assert_eq!(bits(g.ref_view(adjusted)), bits(g.ref_view(v_adjusted)), "tick {i}: adjusted");
         assert_eq!(bits(g.ref_view(adj)), bits(g.ref_view(v_adj)), "tick {i}: adjusts");
     }
+}
+
+/// A carry `StackView` over zero-copy `SliceView` rows is tick-for-tick
+/// bit-identical to an owned `Stack` over `Select` rows, even as stocks go
+/// silent for several generations. This is the regression test for the
+/// view-edge carry join: `StackView` reads **every** input each generation
+/// (incl. un-notified ones), and the contract guarantees an un-notified
+/// `SliceView` reads the retaining `Gate`'s frozen last value — exactly what
+/// the owned `Select`'s retained buffer holds. Both gate off the same `Gate`.
+#[test]
+fn view_join_carry_matches_owned_join() {
+    fn any_finite_view(a: ArraySlice<'_, f64>) -> bool {
+        a.as_slice().iter().any(|x| x.is_finite())
+    }
+    fn bits(a: &Array<f64>) -> Vec<u64> {
+        a.as_slice().iter().map(|x| x.to_bits()).collect()
+    }
+
+    let nan = f64::NAN;
+    let n = 3usize;
+    let clock = Clock::new();
+    let mut b = GraphBuilder::new();
+    let panel = b.push_source(RefSource::new(Array::from_vec(&[n, 2], vec![nan; n * 2])));
+    let rows = b.push(Split::<f64>::new(n), *panel);
+
+    // Each stock's retaining `Gate` fans out to BOTH an owned `Select` (→ owned
+    // carry `Stack`) and a zero-copy `SliceView` (→ view carry `StackView`).
+    let mut owned_v = Vec::with_capacity(n);
+    let mut view_v = Vec::with_capacity(n);
+    for &r in rows.iter() {
+        let g = b.push(Gate(any_finite_view), r);
+        owned_v.push(b.push(SelectView::<f64>::new(vec![0], 0, true), g));
+        view_v.push(b.push(SliceView::new(vec![0], 0, true), g));
+    }
+    let owned_join = b.push(Stack::<f64>::new(0), &owned_v[..]);
+    let view_join = b.push(StackView::<f64>::new(0), &view_v[..]);
+
+    let mut g = Graph::from_builder(b);
+    let mut pool = Pool::new(0);
+
+    // Full `[3, 2]` panels per tick (column 0 is the value); `None` = idle gen
+    // (panel not poked). An all-NaN row is a stock with no data that tick.
+    type Tick = Option<[f64; 6]>;
+    let ticks: &[Tick] = &[
+        Some([1.0, 0.0, 2.0, 0.0, 3.0, 0.0]),
+        Some([nan, nan, 5.0, 0.0, 6.0, 0.0]), // stock 0 silent → carries 1
+        None,                                  // idle generation → all carry
+        Some([7.0, 0.0, nan, nan, 8.0, 0.0]), // stock 1 silent → carries 5
+        Some([nan, nan, nan, nan, nan, nan]),  // all silent → all carry
+        Some([9.0, 0.0, nan, nan, nan, nan]),  // only stock 0 ticks
+    ];
+    for (i, t) in ticks.iter().enumerate() {
+        clock.set(ts(i as i64 + 1));
+        if let Some(p) = t {
+            *g.state_mut(panel) = Array::from_vec(&[n, 2], p.to_vec());
+        }
+        g.stabilize(&mut pool);
+        assert_eq!(
+            bits(g.ref_view(view_join)),
+            bits(g.ref_view(owned_join)),
+            "tick {i}: view carry join must match owned carry join",
+        );
+    }
+    // Sanity: the final carried cross-section is what we expect (s0=9 fresh,
+    // s1=5 last-seen at tick 1, s2=8 last-seen at tick 3).
+    assert_eq!(g.ref_view(view_join).as_slice(), &[9.0, 5.0, 8.0]);
 }
 
 /// A fused `segment!` chain (Filter -> Selects -> ForwardAdjust -> Multiply)

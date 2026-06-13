@@ -33,7 +33,7 @@ use tradingflow::data::Duration;
 use tradingflow::flow::{
     AnnualizeView, Apply, ArrayValue, Divide, ForwardAdjustViewDiv, Gate, Lag, Log, Map, Multiply,
     Percentile, Resample, RollingMean, RollingVariance, Scenario, Select, SelectView, Session,
-    Split, Sqrt, Stack, StackSync, Subtract, Winsorize,
+    SliceView, Split, Sqrt, Stack, StackSync, StackSyncView, StackView, Subtract, Winsorize,
 };
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
 use tradingflow::{Array, ArraySlice, Instant, Series, utc_to_tai};
@@ -413,15 +413,18 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
         // The whole per-stock transform chain, fused into ONE graph node via
         // the `segment!` arrow notation. Inputs are the stock's **zero-copy
         // row views** of the five panels (from `Split`); the leading
-        // `Gate(any_finite)` per panel forwards the view (no copy, no storage)
-        // and drops the all-NaN "no data" ticks, recovering that stock's real
-        // event stream exactly as the old per-stock `pick` chains did. Views
-        // materialize only at the computing/selecting operators, whose owned
-        // outputs retain last values for the carry-style `Stack` joins; every
-        // sub-operator keeps its own notify gate inside the fused node, so the
-        // cutoff and `ForwardAdjust`'s price/dividend message-passing are
-        // unchanged. The segment is identical for every stock (the stock index
-        // lives only in the input wiring), so it monomorphizes once.
+        // `Gate(any_finite)` per panel drops the all-NaN "no data" ticks,
+        // recovering that stock's real event stream exactly as the old
+        // per-stock `pick` chains did. `Gate` retains the last passed row in
+        // its own state and re-presents a view of it whenever it gates out, so
+        // it honours the no-notify⟹unchanged contract (its un-notified output
+        // is the last passed value, never the gated-out row). Views materialize
+        // at the computing/selecting operators, whose owned outputs retain last
+        // values for the carry-style `Stack` joins; every sub-operator keeps
+        // its own notify gate inside the fused node, so the cutoff and
+        // `ForwardAdjust`'s price/dividend message-passing are unchanged. The
+        // segment is identical for every stock (the stock index lives only in
+        // the input wiring), so it monomorphizes once.
         let seg = flowgraph::segment!(|prices_row: RefViewPort<ArrayValue<f64>>,
                                        div_row: RefViewPort<ArrayValue<f64>>,
                                        equity_row: RefViewPort<ArrayValue<f64>>,
@@ -429,11 +432,11 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
                                        income_row: RefViewPort<ArrayValue<f64>>|
             -> (
             RefPort<Array<f64>>,
+            RefViewPort<ArrayValue<f64>>,
             RefPort<Array<f64>>,
             RefPort<Array<f64>>,
-            RefPort<Array<f64>>,
-            RefPort<Array<f64>>,
-            RefPort<Array<f64>>,
+            RefViewPort<ArrayValue<f64>>,
+            RefViewPort<ArrayValue<f64>>,
             RefPort<Array<f64>>,
             RefPort<Array<f64>>
         ) {
@@ -442,13 +445,19 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
             let equity = equity_row => Gate(any_finite); // [total, circulating]
             let balance = balance_row => Gate(any_finite); // [capital, reserves, parent_interests]
             let income = income_row => Gate(any_finite); // [year, day_of_year, profit]
+            // Terminal column picks (whose only consumer is their cross-section
+            // join) stay zero-copy views (`SliceView`) into the retaining
+            // `Gate`'s stable storage, materialized straight into the panel by
+            // the carry/NaN-fill `*View` joins. `close` is NOT terminal — it
+            // feeds `ForwardAdjust` and `Multiply` (owned inputs) inside the
+            // segment — so it materializes here via the owned `SelectView`.
             let close = prices => SelectView::<f64>::new(vec![0], 0, true);
-            let volume = prices => SelectView::<f64>::new(vec![1], 0, true);
+            let volume = prices => SliceView::new(vec![1], 0, true);
             let adjusts = (close, dividends)
                 => ForwardAdjustViewDiv::default().with_output_prices(false);
             let adjusted_close = (close, adjusts) => Multiply::<f64>::new();
-            let total_shares = equity => SelectView::<f64>::new(vec![0], 0, true);
-            let circ_shares = equity => SelectView::<f64>::new(vec![1], 0, true);
+            let total_shares = equity => SliceView::new(vec![0], 0, true);
+            let circ_shares = equity => SliceView::new(vec![1], 0, true);
             let income_ann = income => AnnualizeView::default(); // [profit]
             // parent_equity = -(capital + reserves + parent_interests).
             let net_profit = income_ann => Select::<f64>::new(vec![0], 0, true);
@@ -491,11 +500,11 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stac
 
     Stacked {
         close: sc.add_operator(StackSync::<f64>::new(0), &close_v[..]),
-        volume: sc.add_operator(StackSync::<f64>::new(0), &volume_v[..]),
+        volume: sc.add_operator(StackSyncView::<f64>::new(0), &volume_v[..]),
         adjusted_close: sc.add_operator(StackSync::<f64>::new(0), &adj_close_v[..]),
         adjusts: sc.add_operator(Stack::<f64>::new(0), &adjusts_v[..]),
-        total_shares: sc.add_operator(Stack::<f64>::new(0), &total_v[..]),
-        circ_shares: sc.add_operator(Stack::<f64>::new(0), &circ_v[..]),
+        total_shares: sc.add_operator(StackView::<f64>::new(0), &total_v[..]),
+        circ_shares: sc.add_operator(StackView::<f64>::new(0), &circ_v[..]),
         parent_equity: sc.add_operator(Stack::<f64>::new(0), &peq_v[..]),
         net_profit: sc.add_operator(Stack::<f64>::new(0), &np_v[..]),
     }

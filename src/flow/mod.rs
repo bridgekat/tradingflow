@@ -20,6 +20,14 @@
 //!   `did_produce` cone-prune exactly: an [`Operator`]'s compute path fires iff
 //!   ≥1 input notified (else its `passthrough` re-emits the previous output,
 //!   un-notified), which equals the old "iff ≥1 input produced".
+//! * **The contract that makes this sound: *no-notify ⟹ output unchanged*.**
+//!   An operator that does not notify must leave its output value unchanged, so
+//!   every consumer may treat a non-notifying input as its last notified value.
+//!   That is what lets carry readers ([`Stack`](Stack) / [`StackView`](StackView))
+//!   read un-notified inputs, and what lets zero-copy view chains
+//!   ([`Gate`](Gate) → [`SliceView`](SliceView) → [`StackView`](StackView)) work
+//!   without materializing every edge. See the [`op`] module docs for the full
+//!   statement; it is a producer-side duty obeyed by every operator here.
 //! * Source cells are `push_source` nodes poked through the typed
 //!   `Graph::state_mut(SourceHandle<T>)` (which marks the dirty cone); the
 //!   async [`Source`](crate::source::Source) feed is driven by [`Session`].
@@ -77,9 +85,9 @@ pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
 };
 pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Volatility};
-pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync};
+pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync, StackSyncView, StackView};
 pub use stocks::{Annualize, AnnualizeView, ForwardAdjust, ForwardAdjustViewDiv};
-pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select, SelectView};
+pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select, SelectView, SliceView};
 pub use arith::{
     Abs, Add, Ceil, Divide, Exp, Exp2, Floor, Log, Log2, Log10, Max, Min, Multiply, Negate, Pow,
     Recip, Round, Sign, Sqrt, Subtract,

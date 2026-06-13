@@ -7,10 +7,10 @@
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Interface, Operator, RefPort, ViewPort};
+use flowgraph::typed::{Arena, Interface, Operator, RefPort, RefViewPort, Segment, ViewPort};
 
 use super::op::{ArrayInput, ArrayValue, StripNotify};
-use crate::{Array, Scalar, Series};
+use crate::{Array, ArraySlice, Scalar, Series};
 
 // ---------------------------------------------------------------------------
 // Map / MapInplace (single input)
@@ -499,6 +499,112 @@ fn compute_select_map(input_shape: &[usize], indices: &[usize], axis: usize) -> 
         }
     }
     map
+}
+
+// ---------------------------------------------------------------------------
+// SliceView (zero-copy contiguous selection → borrowed view)
+// ---------------------------------------------------------------------------
+
+/// Zero-copy selection: lends a borrowed [`ArraySlice`] **view** of a
+/// contiguous run of the input's flat buffer (no copy, no owned storage),
+/// homed in a per-generation [`Arena`]. The selection must map to a contiguous
+/// range of the input — a single index along an axis (optionally squeezed), or
+/// any selection whose flat index map is contiguous — which is asserted on the
+/// build call.
+///
+/// This is the view-chain counterpart of [`Select`]: where `Select`
+/// materializes the selection into owned state (the retention point for a
+/// carry-style [`Stack`](super::Stack)), `SliceView` keeps the data as a view
+/// into its input's storage. It is correct precisely because every operator
+/// honours the no-notify⟹unchanged contract: the lent view reads the input's
+/// stable storage (a retaining [`Gate`](super::Gate) or an owned compute
+/// output), which only changes when the input notifies, so a carry-style
+/// [`StackView`](super::StackView) reader sees the last notified value for an
+/// un-notified stock — exactly what the owned `Select` → `Stack` chain held.
+pub struct SliceView {
+    indices: Vec<usize>,
+    axis: usize,
+    squeeze: bool,
+}
+
+impl SliceView {
+    pub fn new(indices: Vec<usize>, axis: usize, squeeze: bool) -> Self {
+        assert!(
+            !squeeze || indices.len() == 1,
+            "squeeze requires exactly one index, got {}",
+            indices.len(),
+        );
+        Self {
+            indices,
+            axis,
+            squeeze,
+        }
+    }
+}
+
+/// Runtime state for [`SliceView`]: the configuration (needed on the build
+/// call, where the input shape resolves the contiguous range), the resolved
+/// `[start, start+len)` flat range, the output shape the view carries, and the
+/// per-generation arena that homes the lent [`ArraySlice`].
+pub struct SliceViewState {
+    indices: Vec<usize>,
+    axis: usize,
+    squeeze: bool,
+    start: usize,
+    len: usize,
+    shape: Box<[usize]>,
+    arena: Arena,
+}
+
+impl Segment for SliceView {
+    type Inputs = ViewPort<ArrayValue<f64>>;
+    type Outputs = RefViewPort<ArrayValue<f64>>;
+    type State = SliceViewState;
+
+    fn init(self) -> SliceViewState {
+        SliceViewState {
+            indices: self.indices,
+            axis: self.axis,
+            squeeze: self.squeeze,
+            start: 0,
+            len: 0,
+            shape: Box::new([]),
+            arena: Arena::new(),
+        }
+    }
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        (notified, view): (bool, ArraySlice<'a, f64>),
+        state: &'b mut SliceViewState,
+        init: bool,
+    ) -> (bool, &'a ArraySlice<'a, f64>) {
+        if init {
+            let input_shape = view.shape();
+            let index_map = compute_select_map(input_shape, &state.indices, state.axis);
+            assert!(
+                index_map.windows(2).all(|w| w[1] == w[0] + 1),
+                "SliceView requires a contiguous selection; got flat index map {index_map:?}",
+            );
+            state.start = index_map.first().copied().unwrap_or(0);
+            state.len = index_map.len();
+            let mut output_shape = input_shape.to_vec();
+            if output_shape.is_empty() {
+                output_shape = vec![state.indices.len()];
+            } else {
+                output_shape[state.axis] = state.indices.len();
+            }
+            if state.squeeze && state.indices.len() == 1 && output_shape.len() > state.axis {
+                output_shape.remove(state.axis);
+            }
+            state.shape = output_shape.into_boxed_slice();
+        }
+        let (start, len) = (state.start, state.len);
+        let alloc = state.arena.reset();
+        let data = &view.as_slice()[start..start + len];
+        let homed = alloc.alloc(ArraySlice::new(data, &state.shape));
+        (notified && !init, homed)
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -9,13 +9,28 @@
 //!
 //! Conventions shared by every operator in this module tree:
 //!
+//! * **THE CONTRACT — *no-notify ⟹ output unchanged* (the load-bearing
+//!   invariant of the whole engine).** Whenever an operator chooses **not** to
+//!   notify, its output value MUST NOT change. Concretely: a `compute` that
+//!   returns `(false, …)` must leave its output byte-identical to the value it
+//!   last emitted under `(true, …)`, and `passthrough` re-emits that value
+//!   verbatim. This is precisely what lets **any** consumer treat a
+//!   non-notifying input as its last notified value — the carry that
+//!   [`Stack`](super::Stack) / [`StackView`](super::StackView) depend on, and
+//!   what makes a pure forwarding operator automatically correct. The duty
+//!   falls on the **producer**, never the consumer: an operator that drops
+//!   notifications while its input value changes (e.g. [`Gate`](super::Gate)'s
+//!   row cutoff) MUST retain the last passed value in owned state and
+//!   re-present it — it may never forward the dropped value under
+//!   `notify = false`. A carry reader trusts this *universally*, so a single
+//!   violating producer silently corrupts it; honour it in every operator.
 //! * **Output storage lives in `State`** (owned buffers); `compute` writes the
 //!   state-owned buffer and returns `(notify, &out)` references into it — or,
-//!   for view-emitting operators ([`Split`](super::Split)), lends
-//!   [`ArraySlice`] views of its inputs through a per-generation
-//!   [`Arena`](flowgraph::typed::Arena). State cells are boxed by the engine,
-//!   so returned references stay valid across generations (`passthrough`
-//!   never reallocates).
+//!   for view-emitting operators ([`Split`](super::Split),
+//!   [`SliceView`](super::SliceView)), lends [`ArraySlice`] views of its inputs
+//!   through a per-generation [`Arena`](flowgraph::typed::Arena). State cells
+//!   are boxed by the engine, so returned references stay valid across
+//!   generations (`passthrough` never reallocates).
 //! * **The `init == true` call replicates the legacy `init(&self, inputs)`.**
 //!   It only sizes/seeds the state and output from the build-time input values
 //!   and returns `(false, &out)` — no per-tick side effect (no counter bump, no

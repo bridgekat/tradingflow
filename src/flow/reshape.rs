@@ -64,6 +64,53 @@ fn interleaved_copy_selective<T: Scalar>(
     }
 }
 
+// View-input variants of the interleaved copy: identical layout, but the
+// sources are borrowed [`ArraySlice`] views (the zero-copy join inputs) rather
+// than owned `Array`s.
+
+#[inline(always)]
+fn interleaved_copy_views<T: Scalar>(
+    output: &mut Array<T>,
+    inputs: &[&ArraySlice<'_, T>],
+    n_inputs: usize,
+    outer_count: usize,
+    chunk_size: usize,
+) {
+    let out = output.as_mut_slice();
+    let stride = n_inputs * chunk_size;
+    for (input_idx, arr) in inputs.iter().enumerate() {
+        let src = arr.as_slice();
+        for outer in 0..outer_count {
+            let src_offset = outer * chunk_size;
+            let dst_offset = outer * stride + input_idx * chunk_size;
+            out[dst_offset..dst_offset + chunk_size]
+                .clone_from_slice(&src[src_offset..src_offset + chunk_size]);
+        }
+    }
+}
+
+#[inline(always)]
+fn interleaved_copy_views_selective<T: Scalar>(
+    output: &mut Array<T>,
+    inputs: &[&ArraySlice<'_, T>],
+    positions: impl IntoIterator<Item = usize>,
+    n_inputs: usize,
+    outer_count: usize,
+    chunk_size: usize,
+) {
+    let out = output.as_mut_slice();
+    let stride = n_inputs * chunk_size;
+    for pos in positions {
+        let src = inputs[pos].as_slice();
+        for outer in 0..outer_count {
+            let src_offset = outer * chunk_size;
+            let dst_offset = outer * stride + pos * chunk_size;
+            out[dst_offset..dst_offset + chunk_size]
+                .clone_from_slice(&src[src_offset..src_offset + chunk_size]);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stack — new axis, time-series semantics (copy all).
 // ---------------------------------------------------------------------------
@@ -212,6 +259,169 @@ impl<T: Scalar + Float> Operator for StackSync<T> {
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (&'a [bool], &'a [&'a Array<T>]),
+        state: &'b ReshapeState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StackView — new axis, time-series semantics, zero-copy view inputs (copy all).
+// ---------------------------------------------------------------------------
+
+/// [`Stack`] over borrowed [`ArraySlice`] view inputs
+/// (`RefViewPorts<ArrayValue<T>>`): stacks `N` per-stock row views along a new
+/// axis into the owned `[N, ...]` cross-section. Like `Stack`, it reads **every**
+/// input each generation (the carry join), relying on the no-notify⟹unchanged
+/// contract — an un-notified view reads its producer's stable storage, i.e. that
+/// stock's last notified value. The materialization into the cross-section is
+/// the irreducible panel→cross-section data movement; the per-stock selections
+/// upstream stay copy-free ([`SliceView`](super::SliceView)).
+#[derive(Clone)]
+pub struct StackView<T: Scalar> {
+    axis: usize,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: Scalar> StackView<T> {
+    pub fn new(axis: usize) -> Self {
+        Self {
+            axis,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar> Operator for StackView<T> {
+    type Inputs = RefViewPorts<ArrayValue<T>>;
+    type Outputs = RefPort<Array<T>>;
+    type State = ReshapeState<T>;
+
+    fn init(self) -> ReshapeState<T> {
+        ReshapeState {
+            axis: self.axis,
+            outer_count: 0,
+            chunk_size: 0,
+            n_inputs: 0,
+            out: Array::zeros(&[0]),
+        }
+    }
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        (_, views): (&'a [bool], &'a [&'a ArraySlice<'a, T>]),
+        state: &'b mut ReshapeState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            assert!(!views.is_empty(), "StackView requires at least one input");
+            let first = views[0].shape();
+            assert!(state.axis <= first.len(), "axis out of bounds");
+            state.outer_count = first[..state.axis].iter().product();
+            state.chunk_size = first[state.axis..].iter().product();
+            state.n_inputs = views.len();
+            let mut shape = Vec::with_capacity(first.len() + 1);
+            shape.extend_from_slice(&first[..state.axis]);
+            shape.push(views.len());
+            shape.extend_from_slice(&first[state.axis..]);
+            state.out = Array::zeros(&shape);
+            return (false, &state.out);
+        }
+        interleaved_copy_views(
+            &mut state.out,
+            views,
+            state.n_inputs,
+            state.outer_count,
+            state.chunk_size,
+        );
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (&'a [bool], &'a [&'a ArraySlice<'a, T>]),
+        state: &'b ReshapeState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StackSyncView — new axis, message-passing, zero-copy view inputs.
+// ---------------------------------------------------------------------------
+
+/// [`StackSync`] over borrowed [`ArraySlice`] view inputs
+/// (`RefViewPorts<ArrayValue<T>>`): NaN-fills inputs that did not notify this
+/// generation and copies only the notified rows — so it never reads an
+/// un-notified view, the view-edge counterpart of `StackSync`.
+#[derive(Clone)]
+pub struct StackSyncView<T: Scalar + Float> {
+    axis: usize,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: Scalar + Float> StackSyncView<T> {
+    pub fn new(axis: usize) -> Self {
+        Self {
+            axis,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar + Float> Operator for StackSyncView<T> {
+    type Inputs = RefViewPorts<ArrayValue<T>>;
+    type Outputs = RefPort<Array<T>>;
+    type State = ReshapeState<T>;
+
+    fn init(self) -> ReshapeState<T> {
+        ReshapeState {
+            axis: self.axis,
+            outer_count: 0,
+            chunk_size: 0,
+            n_inputs: 0,
+            out: Array::zeros(&[0]),
+        }
+    }
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        (flags, views): (&'a [bool], &'a [&'a ArraySlice<'a, T>]),
+        state: &'b mut ReshapeState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            assert!(!views.is_empty(), "StackSyncView requires at least one input");
+            let first = views[0].shape();
+            assert!(state.axis <= first.len(), "axis out of bounds");
+            state.outer_count = first[..state.axis].iter().product();
+            state.chunk_size = first[state.axis..].iter().product();
+            state.n_inputs = views.len();
+            let mut shape = Vec::with_capacity(first.len() + 1);
+            shape.extend_from_slice(&first[..state.axis]);
+            shape.push(views.len());
+            shape.extend_from_slice(&first[state.axis..]);
+            let total: usize = shape.iter().product();
+            state.out = Array::from_vec(&shape, vec![T::nan(); total]);
+            return (false, &state.out);
+        }
+        for v in state.out.as_mut_slice().iter_mut() {
+            *v = T::nan();
+        }
+        interleaved_copy_views_selective(
+            &mut state.out,
+            views,
+            (0..flags.len()).filter(|&i| flags[i]),
+            state.n_inputs,
+            state.outer_count,
+            state.chunk_size,
+        );
+        (true, &state.out)
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (&'a [bool], &'a [&'a ArraySlice<'a, T>]),
         state: &'b ReshapeState<T>,
     ) -> (bool, &'a Array<T>) {
         (false, &state.out)

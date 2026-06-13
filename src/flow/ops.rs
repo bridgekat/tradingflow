@@ -65,39 +65,77 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Gate — zero-copy view gate (no storage, no copies).
+// Gate — view gate that honours the no-notify⟹unchanged contract.
 // ---------------------------------------------------------------------------
 
-/// Stateless view gate: forwards the input [`ArraySlice`] view by value,
-/// notifying iff the input notified AND the predicate holds.
+/// View gate: emits the input [`ArraySlice`] as a `ViewPort`, notifying iff the
+/// input notified AND the predicate holds — the row-cutoff that drops the
+/// all-NaN "no data" cross-sections a dense panel emits for an idle stock.
 ///
-/// Unlike [`Filter`], the un-notified output is the **forwarded current
-/// view**, NOT a retained last-pass value — there is no storage at all.
-/// Downstream consumers must therefore be notify-disciplined (never read an
-/// un-notified value), which every gated [`Operator`] is by construction;
-/// carry-style readers ([`Stack`](super::Stack)) belong behind a
-/// materializing operator (e.g. [`Select`](super::Select)), whose owned
-/// output preserves the retained-last-value cutoff semantics.
+/// The TradingFlow contract is that **an operator that does not notify must not
+/// change its output value** (so any consumer may treat a non-notifying input
+/// as its last notified value — the carry that [`Stack`](super::Stack) relies
+/// on). A naive forwarder would break it: gating out a *notified* all-NaN row
+/// while forwarding that row changes the value under `notify = false`. So
+/// `Gate` retains the last passed row in owned state and re-presents a view of
+/// it whenever it gates out or its input is silent. The retained buffer is
+/// overwritten **in place** (no realloc) only on a pass — i.e. only when `Gate`
+/// notifies — so a view stored by an out-of-cone consumer always reads the
+/// frozen last-passed value. This makes `Gate`'s output a stable backing for
+/// downstream zero-copy view chains.
 pub struct Gate<F>(pub F);
 
-impl<F> Segment for Gate<F>
+/// Runtime state for [`Gate`]: the predicate plus the retained last-passed row,
+/// which the `ViewPort` output borrows.
+pub struct GateState<F> {
+    predicate: F,
+    out: Array<f64>,
+}
+
+impl<F> Operator for Gate<F>
 where
     F: for<'x> Fn(ArraySlice<'x, f64>) -> bool + Send + 'static,
 {
     type Inputs = RefViewPort<ArrayValue<f64>>;
     type Outputs = ViewPort<ArrayValue<f64>>;
-    type State = F;
+    type State = GateState<F>;
 
-    fn init(self) -> F {
-        self.0
+    fn init(self) -> GateState<F> {
+        GateState {
+            predicate: self.0,
+            out: Array::zeros(&[0]),
+        }
     }
 
+    #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (notified, view): (bool, &'a ArraySlice<'a, f64>),
-        predicate: &'b mut F,
+        state: &'b mut GateState<F>,
         init: bool,
     ) -> (bool, ArraySlice<'a, f64>) {
-        (!init && notified && predicate(*view), *view)
+        if init {
+            // Seed the retained buffer with the faithful build-time row (so the
+            // first view matches what `Split` lends), but do not notify.
+            state.out = view.to_array();
+            return (false, ArraySlice::from(&state.out));
+        }
+        if notified && (state.predicate)(*view) {
+            // Pass: refresh the retained row in place (no realloc) and notify.
+            state.out.assign(view.as_slice());
+            (true, ArraySlice::from(&state.out))
+        } else {
+            // Gate out (or upstream silent): re-present the unchanged retained
+            // row under `notify = false` — the contract.
+            (false, ArraySlice::from(&state.out))
+        }
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a ArraySlice<'a, f64>),
+        state: &'b GateState<F>,
+    ) -> (bool, ArraySlice<'a, f64>) {
+        (false, ArraySlice::from(&state.out))
     }
 }
 
