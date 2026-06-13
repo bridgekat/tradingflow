@@ -9,11 +9,11 @@
 //! computed natively, clock-gated on the rebalance schedule.
 //!
 //! The predictor / portfolio / trader / beta-alpha operators are Python
-//! (`flowops`) operators on the shared interpreter, so this needs
-//! `--features pyflow` and a venv with NumPy (a standard GIL venv is fine).
+//! (`flowops`) operators on the shared interpreter, so this needs a venv with
+//! NumPy (a standard GIL venv is fine — see env.ps1).
 //!
 //! ```text
-//! cargo run --example mean_strategy --features pyflow -- --index-size 1000
+//! cargo run --example mean_strategy -- --index-size 1000
 //! python examples/plot_strategy.py target/mean_strategy.csv
 //! ```
 

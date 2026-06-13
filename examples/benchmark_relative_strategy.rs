@@ -9,10 +9,10 @@
 //! (γ_daily = γ_ann / √252) to match the 1-day moments.
 //!
 //! Like `mean_variance_strategy`, this solves a **cvxpy** optimizer inside the
-//! engine, so it needs `--features pyflow` and a **GIL** venv with cvxpy.
+//! engine, so it needs a **GIL** venv with cvxpy (see env.ps1).
 //!
 //! ```text
-//! cargo run --example benchmark_relative_strategy --features pyflow -- --index-size 1000
+//! cargo run --example benchmark_relative_strategy -- --index-size 1000
 //! python examples/plot_strategy.py target/benchmark_relative_strategy.csv
 //! ```
 

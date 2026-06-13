@@ -8,11 +8,11 @@
 //!
 //! This is the first example that solves a **cvxpy** optimizer *inside the
 //! engine*: the Markowitz portfolio releases the GIL during its SCS solve, so
-//! the work-stealing pool overlaps the per-delta solves. Needs `--features
-//! pyflow` and a **GIL** venv with cvxpy installed.
+//! the work-stealing pool overlaps the per-delta solves. Needs a **GIL** venv
+//! with cvxpy installed (see env.ps1).
 //!
 //! ```text
-//! cargo run --example mean_variance_strategy --features pyflow -- --index-size 1000
+//! cargo run --example mean_variance_strategy -- --index-size 1000
 //! python examples/plot_strategy.py target/mean_variance_strategy.csv
 //! ```
 

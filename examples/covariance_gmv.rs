@@ -9,11 +9,11 @@
 //! **LinearRegression** mean predictor so differences are attributable to the
 //! covariance estimator alone.
 //!
-//! Solves cvxpy optimizers in the engine → needs `--features pyflow` and a
-//! **GIL** venv with cvxpy.
+//! Solves cvxpy optimizers in the engine → needs a **GIL** venv with cvxpy
+//! (see env.ps1).
 //!
 //! ```text
-//! cargo run --example covariance_gmv --features pyflow -- --index-size 1000
+//! cargo run --example covariance_gmv -- --index-size 1000
 //! python examples/plot_strategy.py target/covariance_gmv.csv
 //! ```
 

@@ -1,5 +1,4 @@
-//! Python operators with **real NumPy** on a single embedded interpreter
-//! (feature `pyflow`).
+//! Python operators with **real NumPy** on a single embedded interpreter.
 //!
 //! A [`PyOperator`] is a graph node whose compute step is a Python callable. It
 //! takes N `f64` array inputs and produces one `f64` array output; the operator
@@ -52,7 +51,7 @@
 //! set PYO3_PYTHON=<abs>\.venv\Scripts\python.exe
 //! set PATH=<dir containing python3xx.dll>;%PATH%
 //! set PYTHONPATH=<repo>\python;<abs>\.venv\Lib\site-packages
-//! cargo test --features pyflow flow::python
+//! cargo test operators::python
 //! ```
 //!
 //! For free-threaded instead, swap the venv for a `python3.13t` one (`py install
@@ -349,7 +348,7 @@ impl Operator for PyOperator {
 // ===========================================================================
 // Tests — build/run against a free-threaded interpreter:
 //   PYO3_PYTHON=<ft venv python>  PATH+=<dir of python3xxt.dll>
-//   PYTHONPATH=<ft venv site-packages>  cargo test --features pyflow flow::python
+//   PYTHONPATH=<ft venv site-packages>  cargo test operators::python
 // ===========================================================================
 
 #[cfg(test)]

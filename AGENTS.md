@@ -11,7 +11,7 @@ This file is kept short and concise. It provides initial context for all agentic
 
 - Rust sources live in [`src/`](src/) (the crate root): the engine ([`scenario.rs`](src/scenario.rs)), the operator library ([`operators/`](src/operators/)), data types ([`data/`](src/data/)), and data sources ([`sources/`](src/sources/)). Every folder is a module with a `mod.rs` or `lib.rs` entry point.
 - Python operators live in [`python/flowops/`](python/flowops/). Every folder is a module with an `__init__.py` entry point.
-- The Rust crate builds with Cargo (`cargo build` / `cargo test`); `flowops` is pure Python (`pip install -e ".[dev]"`). The engine embeds a CPython interpreter to run `flowops` operators (Cargo feature `pyflow`).
+- The Rust crate builds with Cargo (`cargo build` / `cargo test`); `flowops` is pure Python (`pip install -e ".[dev]"`). The engine unconditionally embeds a CPython interpreter to run `flowops` operators (so `cargo build` needs `PYO3_PYTHON` set).
 
 ## Documentation
 

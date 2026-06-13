@@ -30,8 +30,8 @@
 //! * [`source`] — the [`Source`] trait.
 //! * [`sources`] — built-in data sources: `ArraySource`, `CsvSource`,
 //!   `IterSource`, the columnar panel sources, and the `clock` trigger.
-//! * [`operators`] — the operator library. Behind the `pyflow` feature it also
-//!   runs Python operators on an embedded interpreter.
+//! * [`operators`] — the operator library. It also runs Python operators on an
+//!   embedded interpreter (PyO3 is an unconditional dependency).
 //! * [`scenario`] — the engine: [`Scenario`] (graph builder) and [`Session`]
 //!   (the async event-loop driver).
 //! * [`utils`] — [`Schema`].

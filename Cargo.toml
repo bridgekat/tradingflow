@@ -10,14 +10,6 @@ crate-type = ["lib"]
 inherits = "release"
 debug = true
 
-[features]
-default = []
-# `flow` Python operators: Rust-driven embedding on a single interpreter with
-# real NumPy (`src/flow/python.rs`). Build against a free-threaded interpreter
-# (PYO3_PYTHON -> python3.13t) for true pure-Python parallelism; on a standard
-# GIL build, numpy/scipy/cvxpy still parallelise across operators via GIL release.
-pyflow = ["dep:pyo3", "dep:numpy", "pyo3/auto-initialize"]
-
 [dependencies]
 ndarray = "0.17.2"
 tokio = { version = "1", features = [
@@ -28,8 +20,12 @@ tokio = { version = "1", features = [
     "fs",
 ] }
 hifitime = "4"
-pyo3 = { version = "0.28.2", optional = true }
-numpy = { version = "0.28.0", optional = true }
+# Embedded CPython for the Python operators (`src/operators/python.rs` /
+# `pyhost.rs`). `auto-initialize` boots the interpreter on first use; build with
+# PYO3_PYTHON pointing at the target interpreter (a free-threaded build gives
+# pure-Python parallelism; on a GIL build, numpy/scipy/cvxpy still release the GIL).
+pyo3 = { version = "0.28.2", features = ["auto-initialize"] }
+numpy = "0.28.0"
 num-traits = "0.2.19"
 csv = "1.3"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
@@ -47,44 +43,7 @@ tempfile = "3"
 # tqdm-style progress bars for the examples (see `examples/common::progress`).
 indicatif = "0.17"
 
-[[example]]
-name = "flowops_demo"
-required-features = ["pyflow"]
-
-[[example]]
-name = "plot_daily_price"
-
-[[example]]
-name = "plot_financial_data"
-
-[[example]]
-name = "plot_total_market_cap"
-required-features = ["pyflow"]
-
-[[example]]
-name = "mean_strategy"
-required-features = ["pyflow"]
-
-[[example]]
-name = "mean_variance_strategy"
-required-features = ["pyflow"]
-
-[[example]]
-name = "benchmark_relative_strategy"
-required-features = ["pyflow"]
-
-[[example]]
-name = "covariance_gmv"
-required-features = ["pyflow"]
-
-[[example]]
-name = "factor_ic"
-required-features = ["pyflow"]
-
-[[example]]
-name = "bench_solves"
-required-features = ["pyflow"]
-
-[[example]]
-name = "bench_dataload"
+# Examples are auto-discovered from `examples/*.rs`. They all build against the
+# (now unconditional) embedded interpreter; the operator-heavy ones additionally
+# need NumPy/SciPy/cvxpy + `flowops` importable at runtime — see examples/README.md.
 

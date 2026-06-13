@@ -1,4 +1,4 @@
-//! Class-based Python operator host (feature `pyflow`).
+//! Class-based Python operator host.
 //!
 //! Where [`PyOperator`](super::python::PyOperator) wraps a single lambda
 //! (`f(*inputs) -> ndarray`), [`PyClassOperator`] hosts a full Python operator

@@ -1,8 +1,8 @@
 //! Shared scaffolding for the A-shares cross-sectional examples.
 //!
 //! Pulled in by each strategy/plot example via `#[path = "common/mod.rs"] mod
-//! common;`. It is **pure native** (no Python / `pyflow`): it builds the data
-//! pipeline (per-stock CSV + financial-report sources, the stacked
+//! common;`. It uses no Python operators: it builds the data
+//! pipeline (columnar parquet panel + financial-report sources, the stacked
 //! cross-sectional panel, the canonical 7-factor feature set, the cap-weighted
 //! universe, the log-return target, and price limits) entirely from native
 //! flow operators. Examples add their `flowops` predictor/portfolio/trader
