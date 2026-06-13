@@ -1,10 +1,9 @@
-//! Rolling (windowed) operators — port of [`crate::operators::rolling`],
-//! implemented directly on [`flowgraph::typed::Operator`]. The [`Accumulator`]
-//! / [`Window`] / [`Rolling`] framework and the four accumulators + [`Ema`] are
-//! transcribed verbatim except for the trait surface (the output buffer lives
-//! in the operator state and is sized on the `init` build call) and the
-//! `Accumulator: Send + Sync` bound (the accumulator lives in the operator
-//! State, which is a `Send + Sync` cell).
+//! Rolling (windowed) operators, implemented directly on
+//! [`flowgraph::typed::Operator`]. The [`Accumulator`] / [`Window`] /
+//! [`Rolling`] framework and the four accumulators + [`Ema`] keep the output
+//! buffer in the operator state (sized on the `init` build call); the
+//! `Accumulator: Send + Sync` bound holds because the accumulator lives in the
+//! operator State, which is a `Send + Sync` cell.
 //!
 //! Note: rolling reads event time from `series.timestamps()`, NOT the threaded
 //! `Instant`, so the time-delta window needs no clock wiring.

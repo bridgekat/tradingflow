@@ -1,6 +1,6 @@
-//! Differential tests: each graph reproduces a known-good output of the legacy
-//! [`scenario`](crate::scenario) engine (the asserted values are lifted from
-//! `scenario`'s own test suite), plus a parallel-execution gate that runs the
+//! Engine tests: each graph asserts a known-good output (the constants were
+//! originally lifted from the retired reference engine's test suite and are now
+//! the canonical expected values), plus a parallel-execution gate that runs the
 //! gating / clock / concurrent-write paths under real worker threads.
 
 use flowgraph::core::Pool;

@@ -1,5 +1,4 @@
-//! Clock-driven since-inception financial metrics — port of
-//! [`crate::operators::metrics`], implemented directly on
+//! Clock-driven since-inception financial metrics, implemented directly on
 //! [`flowgraph::typed::Operator`]. The first four take `(data, clock)` inputs
 //! and gate on the clock's notify bit (emitting `notify = false` off-tick);
 //! `Drawdown` is single-input.

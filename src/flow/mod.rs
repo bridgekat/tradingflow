@@ -1,11 +1,7 @@
-//! `flow` — the new synchronous, parallel engine layer, built on `flowgraph`.
+//! `flow` — TradingFlow's synchronous, parallel computation engine, built on
+//! `flowgraph`.
 //!
-//! Migration scaffolding (branch `flowgraph-rebase`). This module coexists with
-//! the legacy async [`scenario`](crate::scenario) engine so operators can be
-//! ported and **differential-tested** batch by batch before cutover, rather
-//! than in one big-bang rewrite.
-//!
-//! # Design (validated end-to-end before landing here)
+//! # Design
 //!
 //! * Operators implement [`flowgraph::typed::Operator`] (notify-gated compute /
 //!   passthrough) or [`flowgraph::typed::Segment`] (custom gating, e.g.
@@ -16,18 +12,17 @@
 //!   per-tick side effects (see [`op`] for the conventions). Because operators
 //!   are plain segments, they compose with `flowgraph`'s combinators
 //!   (`then`/`fork`/`par`) and the `flowgraph::segment!` fusion macro as-is.
-//! * The engine's input-notification gating reproduces the legacy
-//!   `did_produce` cone-prune exactly: an [`Operator`]'s compute path fires iff
-//!   ≥1 input notified (else its `passthrough` re-emits the previous output,
-//!   un-notified), which equals the old "iff ≥1 input produced".
+//! * The engine's input-notification gating prunes the recompute cone: an
+//!   [`Operator`]'s compute path fires iff ≥1 input notified (else its
+//!   `passthrough` re-emits the previous output, un-notified).
 //! * **The contract that makes this sound: *no-notify ⟹ output unchanged*.**
 //!   An operator that does not notify must leave its output value unchanged, so
 //!   every consumer may treat a non-notifying input as its last notified value.
-//!   That is what lets carry readers ([`Stack`](Stack) / [`StackView`](StackView))
-//!   read un-notified inputs, and what lets zero-copy view chains
-//!   ([`Gate`](Gate) → [`SliceView`](SliceView) → [`StackView`](StackView)) work
-//!   without materializing every edge. See the [`op`] module docs for the full
-//!   statement; it is a producer-side duty obeyed by every operator here.
+//!   That is what lets carry readers ([`Stack`] / [`StackView`]) read
+//!   un-notified inputs, and what lets zero-copy view chains
+//!   ([`Gate`] → [`SliceView`] → [`StackView`]) work without materializing every
+//!   edge. See the [`op`] module conventions for the full statement; it is a
+//!   producer-side duty obeyed by every operator here.
 //! * Source cells are `push_source` nodes poked through the typed
 //!   `Graph::state_mut(SourceHandle<T>)` (which marks the dirty cone); the
 //!   async [`Source`](crate::source::Source) feed is driven by [`Session`].

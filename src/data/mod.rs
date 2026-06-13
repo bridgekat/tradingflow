@@ -1,7 +1,7 @@
 //! Core data types and trait machinery.
 //!
-//! This module groups the project's primitive data containers and the
-//! glue traits that describe how they flow through a [`Scenario`](crate::Scenario).
+//! This module groups the project's primitive data containers that flow
+//! through the [`flow`](crate::flow) engine.
 //!
 //! # Sub-modules
 //!
@@ -11,10 +11,6 @@
 //!   uniformly-shaped arrays.
 //! * [`time`] - [`Instant`](time::Instant) and [`Duration`](time::Duration):
 //!   SI-nanosecond timestamps anchored at the PTP epoch (1970-01-01 TAI).
-//! * [`inputs`] - [`InputTypes`](inputs::InputTypes) and friends: recursive
-//!   description of operator inputs, cursor-style readers/writers, and the
-//!   leaf ([`Input<T>`](inputs::Input)) / slice ([`Slice<T>`](inputs::Slice))
-//!   wrappers.
 //!
 //! # This-module items
 //!
@@ -23,14 +19,10 @@
 //!   used by sources.
 
 pub mod array;
-pub mod inputs;
 pub mod series;
 pub mod time;
 
 pub use array::{Array, ArraySlice};
-pub use inputs::{
-    BitRead, FlatRead, FlatWrite, Input, InputTypes, SliceProduced, SliceRefs,
-};
 pub use series::Series;
 pub use time::{Duration, Instant, tai_to_utc, utc_to_tai};
 

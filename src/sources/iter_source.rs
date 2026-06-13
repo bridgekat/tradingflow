@@ -96,7 +96,7 @@ impl<T: Clone + Send + 'static> IterSource<T> {
     ///
     /// Call this when the iterator length is known at construction time
     /// (e.g. clock sources backed by a `Vec`).  Used only by
-    /// [`Scenario::run`](crate::Scenario::run)'s progress callback.
+    /// [`Session::run`](crate::flow::Session::run)'s progress callback.
     pub fn with_estimated_count(mut self, count: usize) -> Self {
         self.estimated_event_count = Some(count);
         self

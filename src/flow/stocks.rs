@@ -1,6 +1,6 @@
-//! Stock-specific operators — port of [`crate::operators::stocks`]:
-//! `Annualize` (YTD → annualized) and `ForwardAdjust` (corporate-action price
-//! adjustment, message-passing on price vs dividend inputs). Implemented
+//! Stock-specific operators: `Annualize` (YTD → annualized) and `ForwardAdjust`
+//! (corporate-action price adjustment, message-passing on price vs dividend
+//! inputs). Implemented
 //! directly on [`flowgraph::typed::Operator`] and generic over the input edge
 //! kind ([`ArrayInput`]): owned `RefPort<Array<f64>>` edges (the default) or
 //! zero-copy [`ArraySlice`](crate::ArraySlice) views.

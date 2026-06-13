@@ -1,6 +1,6 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
-build-backend = "maturin"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "tradingflow"
@@ -21,13 +21,15 @@ examples = [
     "tqdm",
 ]
 
-[tool.maturin]
-features = ["pyo3/extension-module", "python"]
-python-source = "python/src"
-module-name = "tradingflow._native"
+# `flowops` is the Python operator package (predictors / portfolios / traders /
+# metrics) run by the Rust `flow` engine's embedded interpreter. It is the only
+# Python package the project ships now — the Rust core is a plain library crate
+# (the legacy Python-as-host `_native` extension and its maturin build are gone).
+[tool.hatch.build.targets.wheel]
+packages = ["python/flowops"]
 
 [tool.pytest.ini_options]
-testpaths = ["python/tests"]
+testpaths = ["python/flowops/tests"]
 
 [tool.black]
 line-length = 120

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [lib]
-crate-type = ["lib", "cdylib"]
+crate-type = ["lib"]
 
 [profile.profiling]
 inherits = "release"
@@ -12,13 +12,10 @@ debug = true
 
 [features]
 default = []
-# Legacy bridge: Python-as-host extension module (`src/bridge`).
-python = ["dep:pyo3", "dep:numpy", "pyo3/extension-module"]
-# New `flow` Python operators: Rust-driven embedding on a single
-# (free-threaded) interpreter with real NumPy (`src/flow/python.rs`). Build
-# against a free-threaded interpreter (PYO3_PYTHON -> python3.13t) for true
-# parallelism. Mutually exclusive with `python` (extension-module vs
-# auto-initialize).
+# `flow` Python operators: Rust-driven embedding on a single interpreter with
+# real NumPy (`src/flow/python.rs`). Build against a free-threaded interpreter
+# (PYO3_PYTHON -> python3.13t) for true pure-Python parallelism; on a standard
+# GIL build, numpy/scipy/cvxpy still parallelise across operators via GIL release.
 pyflow = ["dep:pyo3", "dep:numpy", "pyo3/auto-initialize"]
 
 [dependencies]
@@ -91,10 +88,3 @@ required-features = ["pyflow"]
 [[example]]
 name = "bench_dataload"
 
-[[bench]]
-name = "bench_add"
-harness = false
-
-[[bench]]
-name = "bench_scenario"
-harness = false
