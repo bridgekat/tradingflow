@@ -23,8 +23,8 @@ mod common;
 use flowgraph::typed::{Handle, RefPort, RefPorts};
 
 use tradingflow::operators::{
-    CompoundReturn, Diff, Drawdown, Log, Map, Multiply, PyClassOperator, PyParams, SharpeRatio,
-    Stack,
+    Benchmark, CompoundReturn, Diff, Drawdown, Log, Map, Multiply, PyClassOperator, PyParams,
+    SharpeRatio, Stack,
 };
 use tradingflow::Scenario;
 use tradingflow::sources::clock;
@@ -99,21 +99,11 @@ async fn main() {
 
     // ---- Traders --------------------------------------------------------
     let index = sc.add_operator(
-        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
-            "flowops.traders.benchmark",
-            PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
-            vec![2],
-            clk.clone(),
-        ),
+        Benchmark::new(n, 1.0, true),
         &[universe, st.close, st.adjusts, upper, lower][..],
     );
     let strategy_frictionless = sc.add_operator(
-        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
-            "flowops.traders.benchmark",
-            PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
-            vec![2],
-            clk.clone(),
-        ),
+        Benchmark::new(n, 1.0, true),
         &[soft_positions, st.close, st.adjusts, upper, lower][..],
     );
     let strategy_actual = sc.add_operator(

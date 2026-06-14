@@ -5,24 +5,23 @@
 //! ∝ circulating cap, renormalised). Two views are written to CSV:
 //!
 //! 1. the summed circulating market cap of the current constituents (daily), and
-//! 2. the index total-return NAV from a frictionless `flowops` `Benchmark`
+//! 2. the index total-return NAV from a frictionless native `Benchmark` trader
 //!    (unit cash, dividend reinvestment via adjust factors).
 //!
-//! The Benchmark trader is a Python (`flowops`) operator on the shared
-//! interpreter, so this example needs `--features python` and a venv with
-//! NumPy (a standard GIL venv is fine — see `examples/flowops_demo.rs`).
+//! Every operator here is native Rust, so this example is a **pure-Rust
+//! backtest** — no Python, no `--features python`, no interpreter setup.
 //!
 //! ```text
-//! cargo run --example plot_total_market_cap --features python -- --index-size 1000
+//! cargo run --example plot_total_market_cap -- --index-size 1000
 //! python examples/plot_total_market_cap.py target/plot_total_market_cap.csv
 //! ```
 
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{RefPort, RefPorts};
+use flowgraph::typed::RefPort;
 
-use tradingflow::operators::{Apply, Map, Multiply, PyClassOperator, PyParams, Resample};
+use tradingflow::operators::{Apply, Benchmark, Map, Multiply, Resample};
 use tradingflow::Scenario;
 use tradingflow::sources::clock;
 use tradingflow::Array;
@@ -35,7 +34,6 @@ async fn main() {
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);
 
     let mut sc = Scenario::new();
-    let clk = sc.clock();
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
@@ -68,18 +66,10 @@ async fn main() {
         (daily_universe, circ_market_cap),
     );
 
-    // Frictionless cap-weighted index NAV via the flowops Benchmark trader.
+    // Frictionless cap-weighted index NAV via the native Benchmark trader.
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
     let index = sc.add_operator(
-        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
-            "flowops.traders.benchmark",
-            PyParams::new()
-                .int("num_stocks", n as i64)
-                .float("initial_cash", 1.0)
-                .bool("use_adjusts", true),
-            vec![2],
-            clk,
-        ),
+        Benchmark::new(n, 1.0, true),
         &[universe, st.close, st.adjusts, upper, lower][..],
     );
     let index_value = sc.add_operator(

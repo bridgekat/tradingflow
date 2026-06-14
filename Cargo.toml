@@ -61,7 +61,6 @@ name = "plot_financial_data"
 
 [[example]]
 name = "plot_total_market_cap"
-required-features = ["python"]
 
 [[example]]
 name = "mean_strategy"

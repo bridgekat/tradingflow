@@ -10,8 +10,10 @@ cargo run --example <name> [--features python] -- [args]
 
 Two kinds:
 
-* **Native examples** (`plot_daily_price`, `plot_financial_data`) are pure Rust —
-  no Python, no extra setup. Just `cargo run --example plot_daily_price`.
+* **Native examples** (`plot_daily_price`, `plot_financial_data`,
+  `plot_total_market_cap`) are pure Rust — no Python, no extra setup. Just
+  `cargo run --example plot_daily_price`. `plot_total_market_cap` is a full
+  cap-weighted index backtest, executor included, on the native operator set.
 * **`python` examples** embed a CPython interpreter and call `flowops` operators
   (predictors / portfolios / traders / metrics) from Rust, with real
   NumPy / SciPy / cvxpy. These need a configured Python environment, which is
@@ -171,6 +173,7 @@ through `ParquetPanelSource` / `ReportPanelSource`, not the per-symbol CSVs.
 |---|---|---|
 | `plot_daily_price` | `cargo run --example plot_daily_price [SYMBOL]` | `python examples\plot.py target\plot_daily_price.csv` |
 | `plot_financial_data` | `cargo run --example plot_financial_data [SYMBOL]` | `python examples\plot_financial_data.py target\plot_financial_data.csv` |
+| `plot_total_market_cap` | `cargo run --example plot_total_market_cap -- --index-size 1000` | `python examples\plot_total_market_cap.py target\plot_total_market_cap.csv` |
 
 `ParquetPanelSource` pivots one long table into a wide `[N_symbols, K]`
 cross-section per date; the per-stock pipeline is recovered by `Select`ing one
@@ -193,7 +196,6 @@ see a report before it was published.
 | Example | Command | Plot |
 |---|---|---|
 | `flowops_demo` | `cargo run --example flowops_demo --features python` | `plot.py target\flowops_demo.csv` |
-| `plot_total_market_cap` | `cargo run --example plot_total_market_cap --features python -- --index-size 1000` | `plot_total_market_cap.py target\plot_total_market_cap.csv` |
 | `mean_strategy` | `cargo run --example mean_strategy --features python -- --index-size 1000` | `plot_strategy.py target\mean_strategy.csv` |
 | `factor_ic` | `cargo run --example factor_ic --features python -- --index-size 1000` | `plot_factor_ic.py target\factor_ic.csv` |
 

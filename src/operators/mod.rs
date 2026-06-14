@@ -54,6 +54,7 @@ mod reshape;
 mod rolling;
 mod stocks;
 mod structural;
+mod traders;
 mod transform;
 
 #[cfg(feature = "python")]
@@ -79,6 +80,7 @@ pub use rolling::{
     RollingMean, RollingSum, RollingVariance, SumAccumulator, VarianceAccumulator, Window,
 };
 pub use structural::{Cast, Id, Resample, Where};
+pub use traders::Benchmark;
 
 #[cfg(test)]
 mod tests;

@@ -20,9 +20,9 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, RefPort, RefPorts};
+use flowgraph::typed::{Handle, RefPort};
 
-use tradingflow::operators::{Diff, Log, Map, Multiply, PyClassOperator, PyParams};
+use tradingflow::operators::{Benchmark, Diff, Log, Map, Multiply, PyClassOperator, PyParams};
 use tradingflow::Scenario;
 use tradingflow::sources::clock;
 use tradingflow::{Array, Series};
@@ -91,12 +91,7 @@ async fn main() {
     );
 
     let index = sc.add_operator(
-        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
-            "flowops.traders.benchmark",
-            PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
-            vec![2],
-            clk.clone(),
-        ),
+        Benchmark::new(n, 1.0, true),
         &[universe, st.close, st.adjusts, upper, lower][..],
     );
     let index_value = total_value(&mut sc, index);
@@ -177,12 +172,7 @@ async fn main() {
                 (universe, predicted_returns, cov),
             );
             let fric = sc.add_operator(
-                PyClassOperator::<RefPorts<Array<f64>>>::from_module(
-                    "flowops.traders.benchmark",
-                    PyParams::new().int("num_stocks", n_i).float("initial_cash", 1.0).bool("use_adjusts", true),
-                    vec![2],
-                    clk.clone(),
-                ),
+                Benchmark::new(n, 1.0, true),
                 &[soft, st.close, st.adjusts, upper, lower][..],
             );
             let value = total_value(&mut sc, fric);

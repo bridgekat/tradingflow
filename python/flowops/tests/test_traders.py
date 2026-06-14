@@ -9,7 +9,6 @@ from __future__ import annotations
 import numpy as np
 
 from flowops._testkit import FakeArrayView
-from flowops.traders import benchmark as benchmark_mod
 from flowops.traders import simple_trader as simple_trader_mod
 from flowops.traders import random_trader as random_trader_mod
 
@@ -90,31 +89,6 @@ def _scenario(N, T, rng, with_nan=True, with_limits=True):
         )
         prev_close = np.where(np.isfinite(close), close, prev_close)
     return ticks
-
-
-def test_benchmark():
-    rng = np.random.default_rng(0)
-    N, T = 8, 30
-    op = benchmark_mod.build(num_stocks=N, initial_cash=1_000_000.0, use_adjusts=True)
-    ticks = _scenario(N, T, rng)
-    outs = _drive(op, ticks)
-
-    # Tick 0 signal is pending; nothing executed yet -> all cash.
-    hv0, cash0 = outs[0]
-    assert abs(hv0) < 1e-9, f"benchmark should hold nothing on tick 0, got hv={hv0}"
-    assert abs(cash0 - 1_000_000.0) < 1e-6, f"benchmark cash on tick 0 should equal initial, got {cash0}"
-
-    # After the first execution the portfolio should be mostly invested.
-    hv_later, cash_later = outs[6]
-    nav_later = hv_later + cash_later
-    assert nav_later > 0, "NAV must stay positive"
-    assert hv_later > 0, "benchmark should be invested after a rebalance"
-
-    # num_stocks inferred from the input view when omitted.
-    op2 = benchmark_mod.build(initial_cash=500_000.0, use_adjusts=False)
-    outs2 = _drive(op2, _scenario(N, T, np.random.default_rng(1)))
-    assert all(np.isfinite(hv) and np.isfinite(c) for hv, c in outs2)
-    print(f"  benchmark: {T} ticks ok; final NAV={outs[-1][0] + outs[-1][1]:.2f}")
 
 
 def test_simple_trader_default():
@@ -216,7 +190,6 @@ def test_bankruptcy_absorbing():
 
 def main():
     print("Running flowops traders tests...")
-    test_benchmark()
     test_simple_trader_default()
     test_simple_trader_custom_trade_fn()
     test_random_trader()
