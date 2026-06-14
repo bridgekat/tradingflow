@@ -14,11 +14,11 @@ Prerequisites: a stable Rust toolchain ([rustup.rs](https://rustup.rs)), and —
 ```bash
 git clone --recurse-submodules https://github.com/bridgekat/tradingflow.git
 cd tradingflow
-cargo build                 # the Rust engine + operator library (links libpython)
-pip install -e ".[dev]"     # the flowops Python operators + their deps
+cargo build                 # the Rust engine + operator library
+pip install -e ".[dev]"     # the flowops Python operators (for the `python` feature)
 ```
 
-The Rust crate unconditionally embeds a CPython interpreter (via PyO3) to run the `flowops` operators, so `cargo build` needs a Python toolchain on the system — point `PYO3_PYTHON` at your interpreter; see [`examples/README.md`](examples/README.md) for environment setup.
+The Rust crate builds with Cargo. `flowops` is a pure-Python package; the engine embeds a CPython interpreter to run it when built with the `python` feature (`cargo build --features python`).
 
 # Usage
 

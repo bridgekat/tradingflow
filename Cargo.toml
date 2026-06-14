@@ -10,6 +10,16 @@ crate-type = ["lib"]
 inherits = "release"
 debug = true
 
+[features]
+default = []
+# Python operators (optional): the engine embeds a CPython interpreter to run
+# `flowops` operators (`src/operators/python.rs` / `pyhost.rs`). The pure-Rust
+# engine + native operators build WITHOUT a Python toolchain; enabling `python`
+# links libpython, so set PYO3_PYTHON (see examples/env.ps1). A free-threaded
+# interpreter gives pure-Python parallelism; on a GIL build, numpy/scipy/cvxpy
+# still release the GIL across operators.
+python = ["dep:pyo3", "dep:numpy", "pyo3/auto-initialize"]
+
 [dependencies]
 ndarray = "0.17.2"
 tokio = { version = "1", features = [
@@ -20,12 +30,8 @@ tokio = { version = "1", features = [
     "fs",
 ] }
 hifitime = "4"
-# Embedded CPython for the Python operators (`src/operators/python.rs` /
-# `pyhost.rs`). `auto-initialize` boots the interpreter on first use; build with
-# PYO3_PYTHON pointing at the target interpreter (a free-threaded build gives
-# pure-Python parallelism; on a GIL build, numpy/scipy/cvxpy still release the GIL).
-pyo3 = { version = "0.28.2", features = ["auto-initialize"] }
-numpy = "0.28.0"
+pyo3 = { version = "0.28.2", optional = true }
+numpy = { version = "0.28.0", optional = true }
 num-traits = "0.2.19"
 csv = "1.3"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
@@ -43,7 +49,44 @@ tempfile = "3"
 # tqdm-style progress bars for the examples (see `examples/common::progress`).
 indicatif = "0.17"
 
-# Examples are auto-discovered from `examples/*.rs`. They all build against the
-# (now unconditional) embedded interpreter; the operator-heavy ones additionally
-# need NumPy/SciPy/cvxpy + `flowops` importable at runtime — see examples/README.md.
+[[example]]
+name = "flowops_demo"
+required-features = ["python"]
+
+[[example]]
+name = "plot_daily_price"
+
+[[example]]
+name = "plot_financial_data"
+
+[[example]]
+name = "plot_total_market_cap"
+required-features = ["python"]
+
+[[example]]
+name = "mean_strategy"
+required-features = ["python"]
+
+[[example]]
+name = "mean_variance_strategy"
+required-features = ["python"]
+
+[[example]]
+name = "benchmark_relative_strategy"
+required-features = ["python"]
+
+[[example]]
+name = "covariance_gmv"
+required-features = ["python"]
+
+[[example]]
+name = "factor_ic"
+required-features = ["python"]
+
+[[example]]
+name = "bench_solves"
+required-features = ["python"]
+
+[[example]]
+name = "bench_dataload"
 

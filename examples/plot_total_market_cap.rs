@@ -9,11 +9,11 @@
 //!    (unit cash, dividend reinvestment via adjust factors).
 //!
 //! The Benchmark trader is a Python (`flowops`) operator on the shared
-//! interpreter, so this example needs a venv with NumPy (a standard GIL venv is
-//! fine — see env.ps1, and `examples/flowops_demo.rs`).
+//! interpreter, so this example needs `--features python` and a venv with
+//! NumPy (a standard GIL venv is fine — see `examples/flowops_demo.rs`).
 //!
 //! ```text
-//! cargo run --example plot_total_market_cap -- --index-size 1000
+//! cargo run --example plot_total_market_cap --features python -- --index-size 1000
 //! python examples/plot_total_market_cap.py target/plot_total_market_cap.csv
 //! ```
 

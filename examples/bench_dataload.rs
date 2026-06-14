@@ -1,7 +1,7 @@
 //! Pure-native microbenchmark for the data-load + event-loop path.
 //!
 //! Builds the full stacked cross-sectional panel + the 7-factor feature set
-//! from `common` (uses no Python operators, so no NumPy/cvxpy needed) and runs the Session
+//! from `common` (NO `python`, so no cvxpy/venv needed) and runs the Session
 //! event loop to completion, timing the build phase (source init + tokio
 //! spawns) separately from the run phase (channel drain + heap merge + native
 //! stabilize). This isolates whether the serial merge of ~29k channels + the

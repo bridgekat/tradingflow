@@ -1,4 +1,4 @@
-//! Class-based Python operator host.
+//! Class-based Python operator host (feature `python`).
 //!
 //! Where [`PyOperator`](super::python::PyOperator) wraps a single lambda
 //! (`f(*inputs) -> ndarray`), [`PyClassOperator`] hosts a full Python operator

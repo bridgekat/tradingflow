@@ -8,11 +8,11 @@
 //! metric. Per-feature IC series are written long-format for cumulative-IC
 //! plotting; mean / std / IR are printed.
 //!
-//! The IC metric is a Python (`flowops`) operator (no cvxpy), so this needs a
-//! venv with NumPy (a standard GIL venv is fine — see env.ps1).
+//! The IC metric is a Python (`flowops`) operator (no cvxpy), so this needs
+//! `--features python` and a venv with NumPy (a standard GIL venv is fine).
 //!
 //! ```text
-//! cargo run --example factor_ic -- --index-size 1000
+//! cargo run --example factor_ic --features python -- --index-size 1000
 //! python examples/plot_factor_ic.py target/factor_ic.csv
 //! ```
 

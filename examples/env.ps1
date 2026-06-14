@@ -1,6 +1,5 @@
-# examples/env.ps1 - configure the embedded-Python environment that the crate
-# now ALWAYS needs (the flow engine unconditionally embeds CPython, so every
-# example in `examples/` links libpython and runs through that interpreter).
+# examples/env.ps1 - configure the embedded-Python environment for the `python`
+# examples (the Rust-driven flow-engine ports in `examples/`).
 #
 # Dot-source it (note the leading "." and space) so the variables persist in
 # your current shell:
@@ -9,7 +8,7 @@
 #
 # Then build/run as usual, e.g.:
 #
-#     cargo run --example mean_variance_strategy -- --index-size 1000
+#     cargo run --example mean_variance_strategy --features python -- --index-size 1000
 #
 # See examples/README.md for the full explanation of what each variable does.
 #
@@ -74,7 +73,7 @@ $env:OMP_NUM_THREADS = '1'
 $env:MKL_NUM_THREADS = '1'
 $env:NUMEXPR_NUM_THREADS = '1'
 
-Write-Host "Python env configured:" -ForegroundColor Green
+Write-Host "python env configured:" -ForegroundColor Green
 Write-Host "  PYO3_PYTHON = $env:PYO3_PYTHON"
 Write-Host "  base (DLL)  = $base   (prepended to PATH)"
 Write-Host "  PYTHONPATH  = $env:PYTHONPATH"

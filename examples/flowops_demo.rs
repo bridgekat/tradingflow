@@ -7,13 +7,13 @@
 //! matplotlib script renders them — so the example binary needs no plotting/GUI
 //! dependency.
 //!
-//! Run (needs a venv with NumPy; a standard GIL venv is fine — see env.ps1):
+//! Run (`python` needs a venv with NumPy; a standard GIL venv is fine):
 //!
 //! ```text
 //! set PYO3_PYTHON=...\.venv\Scripts\python.exe
 //! set PATH=...\pythoncore-3.13-64;%PATH%               # python3.13.dll
 //! set PYTHONPATH=...\python;...\.venv\Lib\site-packages   # flowops + numpy
-//! cargo run --example flowops_demo
+//! cargo run --example flowops_demo --features python
 //! python examples/plot.py target/flowops_demo.csv      # render with matplotlib
 //! ```
 

@@ -5,45 +5,33 @@ built on the parallel `flow` engine (`src/operators` + `src/scenario.rs`, on top
 of `flowgraph`). They are ordinary Cargo examples:
 
 ```pwsh
-cargo run --example <name> -- [args]
+cargo run --example <name> [--features python] -- [args]
 ```
 
-The flow engine now **unconditionally embeds a CPython interpreter** (no build
-feature) — so *every* example links libpython and must be able to load the
-Python DLL at run time. That means **all** of them need `examples\env.ps1`
-dot-sourced first (it puts the Python DLL on `PATH`), even the ones that import
-no Python packages. **This is the source of the "DLL not found" and "flowops
-module not found" errors** — they are environment misconfiguration, not bugs in
-the examples.
+Two kinds:
 
-What differs between examples is now purely their **runtime Python deps** — what
-the embedded interpreter has to `import`. Three tiers:
-
-* **libpython only** (`plot_daily_price`, `plot_financial_data`, `bench_dataload`)
-  — pure Rust compute; they embed CPython (so still need `env.ps1` for the DLL)
-  but `import` no NumPy and call no `flowops` operators.
-* **NumPy** (`flowops_demo`, `plot_total_market_cap`, `mean_strategy`,
-  `factor_ic`) — call `flowops` operators (predictors / portfolios / traders /
-  metrics) that need NumPy / SciPy. Any GIL venv with NumPy works.
-* **cvxpy** (`mean_variance_strategy`, `benchmark_relative_strategy`,
-  `covariance_gmv`, `bench_solves`) — additionally solve a cvxpy optimizer
-  inside the engine, so they need a GIL venv with cvxpy (i.e. `.venv`).
-
-Configuring that Python environment is what most of this document is about.
+* **Native examples** (`plot_daily_price`, `plot_financial_data`) are pure Rust —
+  no Python, no extra setup. Just `cargo run --example plot_daily_price`.
+* **`python` examples** embed a CPython interpreter and call `flowops` operators
+  (predictors / portfolios / traders / metrics) from Rust, with real
+  NumPy / SciPy / cvxpy. These need a configured Python environment, which is
+  what most of this document is about. **This is the source of the "DLL not
+  found" and "flowops module not found" errors** — they are environment
+  misconfiguration, not bugs in the examples.
 
 ---
 
 ## TL;DR (Windows / PowerShell)
 
 A working GIL virtual environment already exists at `.venv` (CPython 3.13 with
-`numpy`, `scipy`, `cvxpy`, `matplotlib`). To run any example:
+`numpy`, `scipy`, `cvxpy`, `matplotlib`). To run a `python` example:
 
 ```pwsh
 # 1. Configure the embedded-Python env for this shell (build + runtime).
 . .\examples\env.ps1
 
-# 2. Build & run. The first build after changing interpreters relinks PyO3.
-cargo run --example mean_variance_strategy -- --index-size 1000
+# 2. Build & run. The first python build after changing interpreters relinks PyO3.
+cargo run --example mean_variance_strategy --features python -- --index-size 1000
 
 # 3. Plot (use the venv's python — it has matplotlib; the bare `python` may not).
 .\.venv\Scripts\python examples\plot_strategy.py target\mean_variance_strategy.csv
@@ -59,8 +47,8 @@ understand why, read on.
 
 The `flow` engine has **no Python-as-host API**. Graphs are built and driven from
 Rust; Python operators run *inside* an embedded CPython via PyO3
-(`pyo3/auto-initialize`), which the crate now links unconditionally. Two distinct
-moments need configuration:
+(`pyo3/auto-initialize`, feature `python`). Two distinct moments need
+configuration:
 
 1. **Build time** — PyO3 links the Rust binary against one specific Python,
    chosen by the **`PYO3_PYTHON`** environment variable (an absolute path to a
@@ -169,19 +157,15 @@ storage design is described in
 
 ## The examples
 
-All commands assume you've dot-sourced `examples\env.ps1` first (every example
-embeds CPython and needs the Python DLL on `PATH`). `--index-size N` bounds the
-cap-weighted universe; smaller is faster. Trim `--begin`/`--end` for quick smoke
-tests.
+All commands assume you've dot-sourced `examples\env.ps1` first (for the
+`python` ones). `--index-size N` bounds the cap-weighted universe; smaller is
+faster. Trim `--begin`/`--end` for quick smoke tests.
 
 All examples now read the consolidated **long parquet** tables
 (`<data-dir>/<kind>.parquet`, produced by the crawler's `--export-long parquet`)
 through `ParquetPanelSource` / `ReportPanelSource`, not the per-symbol CSVs.
 
-### libpython only (no NumPy, no `flowops`)
-
-These are pure-Rust compute. They still embed CPython (so `env.ps1` is needed for
-the DLL on `PATH`), but `import` no NumPy and call no `flowops` operators.
+### Native (no `python`, no Python)
 
 | Example | Command | Plot |
 |---|---|---|
@@ -204,34 +188,30 @@ on the *union* of all stocks' event dates (not every trading day), the per-stock
 **effective date** `max(report, notice)` (`use_effective_date`) so backtests don't
 see a report before it was published.
 
-### NumPy (any GIL venv with NumPy works)
-
-These call `flowops` operators that need NumPy / SciPy at run time.
+### `python`, NumPy only (any GIL venv with NumPy works)
 
 | Example | Command | Plot |
 |---|---|---|
-| `flowops_demo` | `cargo run --example flowops_demo` | `plot.py target\flowops_demo.csv` |
-| `plot_total_market_cap` | `cargo run --example plot_total_market_cap -- --index-size 1000` | `plot_total_market_cap.py target\plot_total_market_cap.csv` |
-| `mean_strategy` | `cargo run --example mean_strategy -- --index-size 1000` | `plot_strategy.py target\mean_strategy.csv` |
-| `factor_ic` | `cargo run --example factor_ic -- --index-size 1000` | `plot_factor_ic.py target\factor_ic.csv` |
+| `flowops_demo` | `cargo run --example flowops_demo --features python` | `plot.py target\flowops_demo.csv` |
+| `plot_total_market_cap` | `cargo run --example plot_total_market_cap --features python -- --index-size 1000` | `plot_total_market_cap.py target\plot_total_market_cap.csv` |
+| `mean_strategy` | `cargo run --example mean_strategy --features python -- --index-size 1000` | `plot_strategy.py target\mean_strategy.csv` |
+| `factor_ic` | `cargo run --example factor_ic --features python -- --index-size 1000` | `plot_factor_ic.py target\factor_ic.csv` |
 
-### cvxpy (needs the GIL venv with cvxpy — i.e. `.venv`)
-
-These additionally solve a cvxpy optimizer inside the engine.
+### `python` + cvxpy (needs the GIL venv with cvxpy — i.e. `.venv`)
 
 | Example | Command | Plot |
 |---|---|---|
-| `mean_variance_strategy` | `cargo run --example mean_variance_strategy -- --index-size 1000` | `plot_strategy.py target\mean_variance_strategy.csv` |
-| `benchmark_relative_strategy` | `cargo run --example benchmark_relative_strategy -- --index-size 1000` | `plot_strategy.py target\benchmark_relative_strategy.csv` |
-| `covariance_gmv` | `cargo run --example covariance_gmv -- --index-size 1000` | `plot_strategy.py target\covariance_gmv.csv` |
-| `bench_solves` | `cargo run --example bench_solves -- --n 300 --k 8 --ticks 40 --threads 8` | — (prints timings) |
+| `mean_variance_strategy` | `cargo run --example mean_variance_strategy --features python -- --index-size 1000` | `plot_strategy.py target\mean_variance_strategy.csv` |
+| `benchmark_relative_strategy` | `cargo run --example benchmark_relative_strategy --features python -- --index-size 1000` | `plot_strategy.py target\benchmark_relative_strategy.csv` |
+| `covariance_gmv` | `cargo run --example covariance_gmv --features python -- --index-size 1000` | `plot_strategy.py target\covariance_gmv.csv` |
+| `bench_solves` | `cargo run --example bench_solves --features python -- --n 300 --k 8 --ticks 40 --threads 8` | — (prints timings) |
 
 > Run the plot scripts with the venv python so matplotlib is found:
 > `.\.venv\Scripts\python examples\plot_strategy.py target\<file>.csv`.
 
 ### Parallelism
 
-Most Python-backed examples take `--threads N` (default `0` = serial). The flow `Pool`
+Most `python` examples take `--threads N` (default `0` = serial). The flow `Pool`
 overlaps operators whose work **releases the GIL** — NumPy/BLAS and the cvxpy
 solve. So independent per-config solves (e.g. the 8 deltas in
 `mean_variance_strategy`, or `bench_solves --k 8`) run truly in parallel even on

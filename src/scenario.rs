@@ -305,12 +305,13 @@ impl Scenario {
         self.clock.clone()
     }
 
-    /// Register a Python operator in **return mode**.
+    /// Register a Python operator in **return mode** (feature `python`).
     /// `source` is a Python expression evaluating to a callable that takes
     /// `inputs.len()` `float64` ndarrays and returns a 1-D `float64` ndarray of
     /// length `out_len`, e.g. `"lambda a, b: a + b"`. Operators run on the shared
     /// (free-threaded) interpreter and execute in parallel on the pool. See the
-    /// `operators::python` module docs for the data model, retention contract, and setup.
+    /// `flow::python` module docs for the data model, retention contract, and setup.
+    #[cfg(feature = "python")]
     pub fn add_py_operator(
         &mut self,
         source: &str,
@@ -321,12 +322,13 @@ impl Scenario {
             .push(crate::operators::PyOperator::new(source, out_len), inputs)
     }
 
-    /// Register a Python operator in **write mode** (zero-copy output). `source`
-    /// evaluates to a callable `f(out, *inputs)` taking a writable `float64`
-    /// ndarray `out` (aliasing the output buffer) followed by the input ndarrays;
-    /// it writes its `out_len` results into `out` in place and its return value is
-    /// ignored, e.g. `"lambda out, a, b: np.add(a, b, out=out)"`.
-    /// The `out` view must not escape the call (see the `operators::python` module docs).
+    /// Register a Python operator in **write mode** (feature `python`, zero-copy
+    /// output). `source` evaluates to a callable `f(out, *inputs)` taking a
+    /// writable `float64` ndarray `out` (aliasing the output buffer) followed by
+    /// the input ndarrays; it writes its `out_len` results into `out` in place
+    /// and its return value is ignored, e.g. `"lambda out, a, b: np.add(a, b, out=out)"`.
+    /// The `out` view must not escape the call (see the `flow::python` module docs).
+    #[cfg(feature = "python")]
     pub fn add_py_operator_writing(
         &mut self,
         source: &str,
@@ -337,12 +339,13 @@ impl Scenario {
             .push(crate::operators::PyOperator::writing(source, out_len), inputs)
     }
 
-    /// Register a class-based Python operator. `source` is a Python program
-    /// binding the operator instance to `__op__`, implementing the contract
-    /// `init(inputs, timestamp) -> state` and
+    /// Register a class-based Python operator (feature `python`). `source` is a
+    /// Python program binding the operator instance to `__op__`, implementing the
+    /// legacy contract `init(inputs, timestamp) -> state` and
     /// `compute(state, inputs, output, timestamp, produced) -> bool`. The driver
     /// [`Clock`] is wired through so the operator sees event time. `out_shape` is
     /// the output element shape (`[]` for a scalar). See [`PyClassOperator`](crate::operators::PyClassOperator).
+    #[cfg(feature = "python")]
     pub fn add_py_class_operator(
         &mut self,
         source: &str,
@@ -361,12 +364,13 @@ impl Scenario {
         )
     }
 
-    /// Register a class-based Python operator loaded from a plain `.py` file.
-    /// The file defines `build(**kwargs)` (called with `params`) or binds
-    /// `__op__`; see [`PyClassOperator`](crate::operators::PyClassOperator).
-    /// Convenience for all-`Array<f64>` inputs; heterogeneous (Array + Series)
-    /// operators register via [`add_operator`](Self::add_operator) with
+    /// Register a class-based Python operator loaded from a plain `.py` file
+    /// (feature `python`). The file defines `build(**kwargs)` (called with
+    /// `params`) or binds `__op__`; see [`PyClassOperator`](crate::operators::PyClassOperator). Convenience for
+    /// all-`Array<f64>` inputs; heterogeneous (Array + Series) operators register
+    /// via [`add_operator`](Self::add_operator) with
     /// `PyClassOperator::<I>::from_file(..)`.
+    #[cfg(feature = "python")]
     pub fn add_py_operator_file(
         &mut self,
         path: impl AsRef<std::path::Path>,

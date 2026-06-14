@@ -27,7 +27,7 @@
 //! * Time is threaded out-of-band through a shared [`Clock`] the driver advances
 //!   before each `stabilize` (only operators that stamp event time read it).
 //!
-//! # Python operators
+//! # Python operators (feature `python`)
 //!
 //! `PyOperator` runs a Python callable as a graph node, taking N `f64` array
 //! inputs to one `f64` array output, with real NumPy. It runs on a single shared
@@ -46,7 +46,9 @@ mod gating;
 mod metrics;
 mod num;
 mod op;
+#[cfg(feature = "python")]
 mod pyhost;
+#[cfg(feature = "python")]
 mod python;
 mod reshape;
 mod rolling;
@@ -54,7 +56,9 @@ mod stocks;
 mod structural;
 mod transform;
 
+#[cfg(feature = "python")]
 pub use pyhost::{NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyParams};
+#[cfg(feature = "python")]
 pub use python::PyOperator;
 
 pub use op::{ArrayInput, ArrayValue, Clock, StripNotify};
