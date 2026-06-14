@@ -80,7 +80,7 @@ pub use rolling::{
     RollingMean, RollingSum, RollingVariance, SumAccumulator, VarianceAccumulator, Window,
 };
 pub use structural::{Cast, Id, Resample, Where};
-pub use traders::Benchmark;
+pub use traders::{Benchmark, RandomTrader, SimpleTrader};
 
 #[cfg(test)]
 mod tests;

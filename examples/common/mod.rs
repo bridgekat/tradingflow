@@ -5,7 +5,7 @@
 //! it builds the data pipeline (columnar parquet panel + financial-report sources, the stacked
 //! cross-sectional panel, the canonical 7-factor feature set, the cap-weighted
 //! universe, the log-return target, and price limits) entirely from native
-//! flow operators. Examples add their `flowops` predictor/portfolio/trader
+//! flow operators. Examples add their `flowops` predictor/portfolio
 //! operators (and any cvxpy ones) on top.
 //!
 //! Differences from the Python original, all intentional:

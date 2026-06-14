@@ -5,7 +5,7 @@ This file is kept short and concise. It provides initial context for all agentic
 ## Overview
 
 - This project, named "TradingFlow", is a lightweight library for quantitative investment research.
-- The engine and operator library are implemented in Rust for performance; the [`flowops`](python/flowops/) package adds operators (predictors, portfolios, traders, metrics) in Python, run by the engine's embedded interpreter.
+- The engine and operator library are implemented in Rust for performance; the [`flowops`](python/flowops/) package adds operators (predictors, portfolios, metrics) in Python, run by the engine's embedded interpreter.
 
 ## File Structure
 

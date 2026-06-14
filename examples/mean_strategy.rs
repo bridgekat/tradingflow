@@ -8,9 +8,10 @@
 //! drawdown, and rolling market beta/alpha via `RegressionCoefficients`) are
 //! computed natively, clock-gated on the rebalance schedule.
 //!
-//! The predictor / portfolio / trader / beta-alpha operators are Python
-//! (`flowops`) operators on the shared interpreter, so this needs
-//! `--features python` and a venv with NumPy (a standard GIL venv is fine).
+//! The predictor, portfolio, and beta-alpha operators are Python (`flowops`)
+//! operators on the shared interpreter (the two traders are native Rust), so
+//! this needs `--features python` and a venv with NumPy (a standard GIL venv
+//! is fine).
 //!
 //! ```text
 //! cargo run --example mean_strategy --features python -- --index-size 1000
@@ -20,11 +21,11 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, RefPort, RefPorts};
+use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::operators::{
     Benchmark, CompoundReturn, Diff, Drawdown, Log, Map, Multiply, PyClassOperator, PyParams,
-    SharpeRatio, Stack,
+    RandomTrader, SharpeRatio, Stack,
 };
 use tradingflow::Scenario;
 use tradingflow::sources::clock;
@@ -107,19 +108,7 @@ async fn main() {
         &[soft_positions, st.close, st.adjusts, upper, lower][..],
     );
     let strategy_actual = sc.add_operator(
-        PyClassOperator::<RefPorts<Array<f64>>>::from_module(
-            "flowops.traders.random_trader",
-            PyParams::new()
-                .int("num_stocks", n_i)
-                .int("portfolio_size", 20)
-                .int("seed", 0)
-                .float("initial_cash", INITIAL_CASH)
-                .float("lot_size", 100.0)
-                .float("fee_base", 5.0)
-                .float("fee_rate", 0.001),
-            vec![2],
-            clk.clone(),
-        ),
+        RandomTrader::new(n, 20, INITIAL_CASH, 100.0, 5.0, 0.001, 0),
         &[soft_positions, st.close, st.adjusts, upper, lower][..],
     );
 
