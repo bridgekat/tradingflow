@@ -51,10 +51,6 @@ tempfile = "3"
 indicatif = "0.17"
 
 [[example]]
-name = "flowops_demo"
-required-features = ["python"]
-
-[[example]]
 name = "plot_daily_price"
 
 [[example]]
@@ -82,11 +78,4 @@ required-features = ["python"]
 [[example]]
 name = "factor_ic"
 required-features = ["python"]
-
-[[example]]
-name = "bench_solves"
-required-features = ["python"]
-
-[[example]]
-name = "bench_dataload"
 

@@ -439,3 +439,123 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
         (false, &state.out)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Turnover (single input, no clock)
+// ---------------------------------------------------------------------------
+
+/// Per-update portfolio turnover: on each new weight vector, emits the L1 norm
+/// of the change since the previous one, `Σᵢ |wₜ,ᵢ − wₜ₋₁,ᵢ|` (non-finite
+/// weights treated as `0`, so a stock entering/leaving contributes its full
+/// weight). The first update is a warmup (caches the weights, does not notify);
+/// every later update emits a finite scalar. `Record` it for a turnover series,
+/// or feed `RollingMean` for an average. For long-only books summing to 1 the
+/// value lies in `[0, 2]`.
+#[derive(Clone)]
+pub struct Turnover<T: Scalar + Float> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Scalar + Float> Turnover<T> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar + Float> Default for Turnover<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Runtime state for [`Turnover`]: the previous (NaN-cleaned) weight vector, a
+/// warmup flag, and the scalar output buffer.
+pub struct TurnoverState<T: Scalar + Float> {
+    prev: Vec<T>,
+    initialized: bool,
+    out: Array<T>,
+}
+
+impl<T: Scalar + Float> Operator for Turnover<T> {
+    type Inputs = RefPort<Array<T>>;
+    type Outputs = RefPort<Array<T>>;
+    type State = TurnoverState<T>;
+
+    fn init(self) -> TurnoverState<T> {
+        TurnoverState {
+            prev: Vec::new(),
+            initialized: false,
+            out: Array::scalar(T::nan()),
+        }
+    }
+
+    fn compute<'a, 'b: 'a>(
+        (_, data): (bool, &'a Array<T>),
+        state: &'b mut TurnoverState<T>,
+        init: bool,
+    ) -> (bool, &'a Array<T>) {
+        if init {
+            return (false, &state.out);
+        }
+        let cur = data.as_slice();
+        let clean = |v: T| if v.is_finite() { v } else { T::zero() };
+
+        if !state.initialized {
+            state.prev = cur.iter().map(|&v| clean(v)).collect();
+            state.initialized = true;
+            return (false, &state.out);
+        }
+
+        let mut turnover = T::zero();
+        for i in 0..cur.len() {
+            let c = clean(cur[i]);
+            turnover = turnover + (c - state.prev[i]).abs();
+            state.prev[i] = c;
+        }
+        state.out[0] = turnover;
+        (true, &state.out)
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, &'a Array<T>),
+        state: &'b TurnoverState<T>,
+    ) -> (bool, &'a Array<T>) {
+        (false, &state.out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flowgraph::core::Pool;
+    use flowgraph::typed::{Graph, GraphBuilder, RefSource};
+
+    /// Turnover: warmup emits nothing; later updates emit the L1 change, with
+    /// non-finite weights treated as zero.
+    #[test]
+    fn turnover_l1_change_with_nan_as_zero() {
+        let mut b = GraphBuilder::new();
+        let w = b.push_source(RefSource::new(Array::from_vec(&[5], vec![0.0_f64; 5])));
+        let out = b.push(Turnover::<f64>::new(), *w);
+        let mut g = Graph::from_builder(b);
+        let mut pool = Pool::new(0);
+
+        // Warmup: caches the weights, does not notify → output stays NaN.
+        *g.state_mut(w) = Array::from_vec(&[5], vec![0.2, 0.2, 0.2, 0.2, 0.2]);
+        g.stabilize(&mut pool);
+        assert!(g.ref_view(out).as_slice()[0].is_nan(), "warmup should not emit");
+
+        // L1 change: |0.4-0.2|+|0.1-0.2|+0+0+|0.1-0.2| = 0.2+0.1+0.1 = 0.4.
+        *g.state_mut(w) = Array::from_vec(&[5], vec![0.4, 0.1, 0.2, 0.2, 0.1]);
+        g.stabilize(&mut pool);
+        assert!((g.ref_view(out).as_slice()[0] - 0.4).abs() < 1e-12);
+
+        // NaN treated as 0: stock 1 leaves (0.1 → 0), contributing its full 0.1;
+        // |0.4-0.4|+|0-0.1|+0+0+|0.2-0.1| = 0.1 + 0.1 = 0.2.
+        *g.state_mut(w) = Array::from_vec(&[5], vec![0.4, f64::NAN, 0.2, 0.2, 0.2]);
+        g.stabilize(&mut pool);
+        assert!((g.ref_view(out).as_slice()[0] - 0.2).abs() < 1e-12);
+    }
+}

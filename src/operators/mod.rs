@@ -67,7 +67,7 @@ pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
 pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
 };
-pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Volatility};
+pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility};
 pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync, StackSyncView, StackView};
 pub use stocks::{Annualize, AnnualizeView, ForwardAdjust, ForwardAdjustViewDiv};
 pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select, SelectView, SliceView};

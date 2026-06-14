@@ -671,9 +671,9 @@ mod tests {
     use crate::operators::{Clock, Record};
     use crate::{Array, Series};
 
-    /// Turnover ported ~verbatim from python/.../metrics/turnover.py: a stateful
-    /// operator over one Array input. Raw string at column 0 preserves Python
-    /// indentation (Rust `\`-continuation would strip it).
+    /// A small stateful operator over one Array input (L1 turnover), used here
+    /// purely as a from_source `PyClassOperator` fixture. Raw string at column 0
+    /// preserves Python indentation (Rust `\`-continuation would strip it).
     const TURNOVER: &str = r#"
 import numpy as np
 from dataclasses import dataclass
@@ -832,32 +832,6 @@ def build(scale=1.0):
 
     // -- Integration with the real `flowops` package (needs python/ on -----------
     //    PYTHONPATH + numpy on the embedded interpreter's path). -----------------
-
-    /// The ported Turnover operator loaded from `flowops.metrics.turnover` runs
-    /// through the real Rust host + engine (not just the pure-Python testkit).
-    #[test]
-    fn flowops_turnover_via_module() {
-        let clock = Clock::new();
-        let mut b = GraphBuilder::new();
-        let src = b.push_source(RefSource::new(Array::from_vec(&[2], vec![0.5_f64, 0.5])));
-        let out = b.push(
-            PyClassOperator::<RefPorts<Array<f64>>>::from_module(
-                "flowops.metrics.turnover",
-                PyParams::new().int("num_stocks", 2),
-                vec![],
-                clock.clone(),
-            ),
-            &[*src][..],
-        );
-        let mut g = Graph::from_builder(b);
-        let mut pool = Pool::new(0);
-
-        *g.state_mut(src) = Array::from_vec(&[2], vec![0.5, 0.5]);
-        g.stabilize(&mut pool); // warmup
-        *g.state_mut(src) = Array::from_vec(&[2], vec![0.3, 0.7]);
-        g.stabilize(&mut pool);
-        assert!((g.ref_view(out).as_slice()[0] - 0.4).abs() < 1e-12);
-    }
 
     /// A real predictor (LinearRegression) end-to-end: Array universe + two
     /// Series-history inputs (features (N,F), target (N)), produced-gated

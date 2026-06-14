@@ -195,7 +195,6 @@ see a report before it was published.
 
 | Example | Command | Plot |
 |---|---|---|
-| `flowops_demo` | `cargo run --example flowops_demo --features python` | `plot.py target\flowops_demo.csv` |
 | `mean_strategy` | `cargo run --example mean_strategy --features python -- --index-size 1000` | `plot_strategy.py target\mean_strategy.csv` |
 | `factor_ic` | `cargo run --example factor_ic --features python -- --index-size 1000` | `plot_factor_ic.py target\factor_ic.csv` |
 
@@ -206,7 +205,6 @@ see a report before it was published.
 | `mean_variance_strategy` | `cargo run --example mean_variance_strategy --features python -- --index-size 1000` | `plot_strategy.py target\mean_variance_strategy.csv` |
 | `benchmark_relative_strategy` | `cargo run --example benchmark_relative_strategy --features python -- --index-size 1000` | `plot_strategy.py target\benchmark_relative_strategy.csv` |
 | `covariance_gmv` | `cargo run --example covariance_gmv --features python -- --index-size 1000` | `plot_strategy.py target\covariance_gmv.csv` |
-| `bench_solves` | `cargo run --example bench_solves --features python -- --n 300 --k 8 --ticks 40 --threads 8` | — (prints timings) |
 
 > Run the plot scripts with the venv python so matplotlib is found:
 > `.\.venv\Scripts\python examples\plot_strategy.py target\<file>.csv`.
@@ -216,10 +214,9 @@ see a report before it was published.
 Most `python` examples take `--threads N` (default `0` = serial). The flow `Pool`
 overlaps operators whose work **releases the GIL** — NumPy/BLAS and the cvxpy
 solve. So independent per-config solves (e.g. the 8 deltas in
-`mean_variance_strategy`, or `bench_solves --k 8`) run truly in parallel even on
-the GIL interpreter. Pure-Python glue still serializes under the GIL; that, plus
-the largely-serial data load (~6000 per-stock CSVs), is why end-to-end speedup is
-well under `N×`. `bench_solves` isolates the solve-parallelism from the data load.
+`mean_variance_strategy`) run truly in parallel even on the GIL interpreter.
+Pure-Python glue still serializes under the GIL; that, plus the largely-serial
+data load, is why end-to-end speedup is well under `N×`.
 
 > **Required: single-threaded native BLAS (`OPENBLAS_NUM_THREADS=1`).** `env.ps1`
 > pins `OPENBLAS`/`OMP`/`MKL`/`NUMEXPR_NUM_THREADS=1`. This is **not optional** for
@@ -297,6 +294,6 @@ The engine runs unchanged on free-threaded CPython (`python3.13t`), where
 pure-Python operators parallelize too. To use it, create a `.venv-ft` from a
 `python3.13t` base and point `PYO3_PYTHON` / the DLL dir / `PYTHONPATH` at it
 instead. **Caveat:** cvxpy has no free-threaded wheels yet, so the cvxpy examples
-(`mean_variance_strategy`, `benchmark_relative_strategy`, `covariance_gmv`,
-`bench_solves`) can't run there — only the NumPy-only ones. This is why the
-default and the bundled `.venv` are the GIL interpreter.
+(`mean_variance_strategy`, `benchmark_relative_strategy`, `covariance_gmv`)
+can't run there — only the NumPy-only ones. This is why the default and the
+bundled `.venv` are the GIL interpreter.

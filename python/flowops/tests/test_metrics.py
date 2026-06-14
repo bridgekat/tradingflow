@@ -7,7 +7,6 @@ Run with:
 import numpy as np
 
 from flowops._testkit import FakeArrayView, FakeSeriesView
-from flowops.metrics.turnover import build as build_turnover
 from flowops.metrics.mean.information_coefficient import build as build_ic
 from flowops.metrics.mean.regression_coefficients import build as build_regcoef
 from flowops.metrics.variance.log_likelihood import build as build_ll
@@ -27,36 +26,6 @@ def _scalar(written):
     scalar regardless of that quirk.
     """
     return float(np.asarray(written).ravel()[0])
-
-
-def test_turnover():
-    n = 5
-    op = build_turnover(num_stocks=n)
-    state = op.init((FakeArrayView(np.zeros(n)),), 0)
-
-    w0 = np.array([0.2, 0.2, 0.2, 0.2, 0.2])
-    w1 = np.array([0.4, 0.1, 0.2, 0.2, 0.1])
-
-    out = FakeArrayView(np.array(0.0), writable=True)
-
-    # First update: warmup, no emit.
-    emitted = _drive(op, state, [FakeArrayView(w0)], out, 0, [True])
-    assert emitted is False, "first update should be warmup"
-
-    # Second update: emit L1 turnover.
-    emitted = _drive(op, state, [FakeArrayView(w1)], out, 1, [True])
-    assert emitted is True
-    expected = float(np.sum(np.abs(w1 - w0)))
-    assert np.isclose(_scalar(out.written), expected), (out.written, expected)
-    assert np.isfinite(_scalar(out.written))
-
-    # NaN handling: a position going to NaN is treated as 0.
-    w2 = np.array([0.4, np.nan, 0.2, 0.2, 0.2])
-    emitted = _drive(op, state, [FakeArrayView(w2)], out, 2, [True])
-    assert emitted is True
-    cur = np.where(np.isfinite(w2), w2, 0.0)
-    assert np.isclose(_scalar(out.written), float(np.sum(np.abs(cur - w1))))
-    print("test_turnover OK")
 
 
 def test_information_coefficient():
@@ -248,7 +217,6 @@ def test_minimum_variance():
 
 
 def main():
-    test_turnover()
     test_information_coefficient()
     test_regression_coefficients()
     test_log_likelihood()

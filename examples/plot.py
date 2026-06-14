@@ -7,7 +7,7 @@ separate Python script means the Rust examples need no plotting dependency and
 run without a GUI / the free-threaded interpreter.
 
 Usage:
-    python examples/plot.py target/flowops_demo.csv [--save out.png]
+    python examples/plot.py target/mean_strategy.csv [--save out.png]
 """
 
 from __future__ import annotations
