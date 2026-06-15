@@ -50,6 +50,8 @@ criterion = "0.5"
 tempfile = "3"
 # tqdm-style progress bars for the examples (see `examples/common::progress`).
 indicatif = "0.17"
+# argparse-style CLI parsing for the examples (see `examples/common::CommonArgs`).
+clap = { version = "4", features = ["derive"] }
 
 [[example]]
 name = "plot_daily_price"

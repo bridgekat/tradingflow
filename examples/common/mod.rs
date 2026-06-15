@@ -59,13 +59,18 @@ pub fn instant_from_days(days: i64) -> Instant {
     Instant::from_nanos(utc_to_tai(days * 86_400 * 1_000_000_000))
 }
 
-/// Parse a `YYYY-MM-DD` string into days since 1970-01-01.
-pub fn parse_date_days(s: &str) -> i64 {
-    let mut it = s.split('-');
-    let y: i64 = it.next().unwrap().parse().expect("year");
-    let m: i64 = it.next().unwrap().parse().expect("month");
-    let d: i64 = it.next().unwrap().parse().expect("day");
-    days_from_civil(y, m, d)
+/// Parse a `YYYY-MM-DD` string into days since 1970-01-01 (a `clap` value parser,
+/// so a malformed date yields a usage error rather than a panic).
+pub fn parse_date_days(s: &str) -> Result<i64, String> {
+    let parts: Vec<&str> = s.split('-').collect();
+    let err = || format!("invalid date `{s}` (expected YYYY-MM-DD)");
+    if parts.len() != 3 {
+        return Err(err());
+    }
+    let y: i64 = parts[0].parse().map_err(|_| err())?;
+    let m: i64 = parts[1].parse().map_err(|_| err())?;
+    let d: i64 = parts[2].parse().map_err(|_| err())?;
+    Ok(days_from_civil(y, m, d))
 }
 
 /// Civil date `(year, month, day)` from days-since-1970 — the inverse of
@@ -180,74 +185,48 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(Instant, usi
 // CLI args
 // ===========================================================================
 
-/// Shared CLI configuration for the cross-sectional examples.
-pub struct Args {
+/// CLI args shared by every cross-sectional A-shares example. Embed it in an
+/// example's own `#[derive(Parser)]` with `#[command(flatten)]`, so each example
+/// declares exactly the extra args it needs (e.g. `--window` for the
+/// feature-based ones, a `SYMBOL` positional for the single-stock plots) and
+/// gets its own `--help`. All of these are **required** except `--sample-begin`
+/// and `--threads` — there are no hidden "magic" defaults for the universe size,
+/// rebalance cadence, or backtest window.
+#[derive(clap::Args)]
+pub struct CommonArgs {
+    /// Data directory: the `examples/data` parquet tables + `symbol_list.csv`.
+    #[arg(long)]
     pub data_dir: String,
-    pub index_size: usize,
-    pub rebalance_days: i64,
-    pub window: usize,
+
+    /// Backtest start date, e.g. 2022-01-01.
+    #[arg(short = 'b', long = "begin", value_name = "DATE", value_parser = parse_date_days)]
     pub begin_days: i64,
+
+    /// Backtest end date, e.g. 2024-12-31.
+    #[arg(short = 'e', long = "end", value_name = "DATE", value_parser = parse_date_days)]
     pub end_days: i64,
-    pub data_start_days: i64,
-    /// Worker threads for the flowgraph `Pool` (`--threads`, default 0 = serial).
-    /// `> 0` lets independent solve-bound operators (e.g. one cvxpy portfolio
-    /// per risk-aversion) overlap via GIL release.
+
+    /// Number of stocks in the cap-weighted universe.
+    #[arg(long)]
+    pub index_size: usize,
+
+    /// Rebalance every N calendar days.
+    #[arg(long)]
+    pub rebalance_days: i64,
+
+    /// Warm-up sampling start; if omitted, defaults to `begin` − 400 days (enough
+    /// to populate the 365-day TTM and the rolling feature windows).
+    #[arg(long = "sample-begin", value_name = "DATE", value_parser = parse_date_days)]
+    pub sample_begin: Option<i64>,
+
+    /// Worker threads for the flowgraph `Pool` (0 = serial). `> 0` lets
+    /// independent solve-bound operators (e.g. one cvxpy portfolio per
+    /// risk-aversion) overlap via GIL release.
+    #[arg(long, default_value_t = 0)]
     pub threads: usize,
 }
 
-impl Args {
-    /// Parse `--key value` flags from the process args, with example-friendly
-    /// defaults (a bounded universe and short windows so a run completes in
-    /// seconds on the bundled data).
-    pub fn from_env() -> Self {
-        let mut data_dir = "examples/data".to_string();
-        let mut index_size = 30usize;
-        let mut rebalance_days = 30i64;
-        let mut window = 20usize;
-        let mut begin = "2022-01-01".to_string();
-        let mut end = "2024-12-31".to_string();
-        let mut sample_begin: Option<String> = None;
-        let mut threads = 0usize;
-
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        let mut i = 0;
-        while i + 1 < args.len() {
-            let v = args[i + 1].clone();
-            match args[i].as_str() {
-                "--data-dir" => data_dir = v,
-                "--index-size" => index_size = v.parse().expect("--index-size"),
-                "--rebalance-days" => rebalance_days = v.parse().expect("--rebalance-days"),
-                "--window" => window = v.parse().expect("--window"),
-                "--begin" => begin = v,
-                "--end" => end = v,
-                "--sample-begin" => sample_begin = Some(v),
-                "--threads" => threads = v.parse().expect("--threads"),
-                _ => {}
-            }
-            i += 2;
-        }
-
-        let begin_days = parse_date_days(&begin);
-        let end_days = parse_date_days(&end);
-        // Default warmup: enough to populate the 365-day TTM and the rolling
-        // feature windows before trading starts.
-        let data_start_days = match sample_begin {
-            Some(s) => parse_date_days(&s).min(begin_days),
-            None => begin_days - 400,
-        };
-
-        Args {
-            data_dir,
-            index_size,
-            rebalance_days,
-            window,
-            begin_days,
-            end_days,
-            data_start_days,
-            threads,
-        }
-    }
-
+impl CommonArgs {
     pub fn begin(&self) -> Instant {
         instant_from_days(self.begin_days)
     }
@@ -255,7 +234,11 @@ impl Args {
         instant_from_days(self.end_days)
     }
     pub fn data_start(&self) -> Instant {
-        instant_from_days(self.data_start_days)
+        let days = match self.sample_begin {
+            Some(s) => s.min(self.begin_days),
+            None => self.begin_days - 400,
+        };
+        instant_from_days(days)
     }
 
     /// Rebalance trigger instants: every `rebalance_days` calendar days from
@@ -331,7 +314,7 @@ pub fn nan_array(shape: &[usize]) -> Array<f64> {
 /// (NaN-fill non-trading slots) / `Stack` (carry last-known) recombine into
 /// `[N]` panels. The financial reports align on the look-ahead-safe effective
 /// date `max(report, notice)` (`use_effective_date`, zero fallback).
-pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &Args) -> Stacked {
+pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -> Stacked {
     let dir = &args.data_dir;
     let start = Some(args.data_start());
     let end = Some(args.end());
@@ -526,8 +509,7 @@ pub struct Features {
 /// Build the canonical factor panel (3 percentile-ranked fundamentals plus
 /// momentum / volatility / turnover-MA / volume-ratio), recorded on the daily
 /// trading pulse.
-pub fn build_features(sc: &mut Scenario, st: &Stacked, args: &Args) -> Features {
-    let window = args.window;
+pub fn build_features(sc: &mut Scenario, st: &Stacked, window: usize) -> Features {
 
     // Fundamentals.
     let market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.total_shares));

@@ -26,17 +26,22 @@ Two kinds:
 
 ## TL;DR (Windows / PowerShell)
 
-A working GIL virtual environment already exists at `.venv` (CPython 3.13 with
+A working GIL virtual environment already exists at `.venv` (CPython 3.14 with
 `numpy`, `scipy`, `cvxpy`, `matplotlib`). To run a `python` example:
 
 ```pwsh
 # 1. Configure the embedded-Python env for this shell (build + runtime).
 . .\examples\env.ps1
 
-# 2. Build & run. The first python build after changing interpreters relinks PyO3.
-cargo run --example mean_variance_strategy --features python -- --index-size 1000
+# 2. The cross-sectional examples now REQUIRE the data-window + universe args
+#    (run any example with `--help` to list them). Keep a representative set in an
+#    array and splat it with `@common`:
+$common = '--data-dir','examples/data','--begin','2023-01-01','--end','2024-12-31','--index-size','1000','--rebalance-days','90'
 
-# 3. Plot (use the venv's python — it has matplotlib; the bare `python` may not).
+# 3. Build & run. The first python build after changing interpreters relinks PyO3.
+cargo run --example mean_variance_strategy --features python -- @common --window 20
+
+# 4. Plot (use the venv's python — it has matplotlib; the bare `python` may not).
 .\.venv\Scripts\python examples\plot_strategy.py target\mean_variance_strategy.csv
 ```
 
@@ -160,8 +165,13 @@ the cross-sectional `ParquetPanelSource` / `ReportPanelSource`.
 ## The examples
 
 All commands assume you've dot-sourced `examples\env.ps1` first (for the
-`python` ones). `--index-size N` bounds the cap-weighted universe; smaller is
-faster. Trim `--begin`/`--end` for quick smoke tests.
+`python` ones) and that `$common` holds the shared required args from the TL;DR
+above (the tables splat it as `@common`). Every cross-sectional example
+**requires** `--data-dir`, `--begin`, `--end`, `--index-size`, and
+`--rebalance-days`; the feature/strategy examples additionally require
+`--window`. Run any example with `--help` for the full list. `--index-size N`
+bounds the cap-weighted universe (smaller is faster); trim `--begin`/`--end` for
+quick smoke tests.
 
 All examples now read the consolidated **long parquet** tables
 (`<data-dir>/<kind>.parquet`, produced by the crawler's `--export-long parquet`)
@@ -171,9 +181,9 @@ through `ParquetPanelSource` / `ReportPanelSource`, not the per-symbol CSVs.
 
 | Example | Command | Plot |
 |---|---|---|
-| `plot_daily_price` | `cargo run --example plot_daily_price [SYMBOL]` | `python examples\plot.py target\plot_daily_price.csv` |
-| `plot_financial_data` | `cargo run --example plot_financial_data [SYMBOL]` | `python examples\plot_financial_data.py target\plot_financial_data.csv` |
-| `plot_total_market_cap` | `cargo run --example plot_total_market_cap -- --index-size 1000` | `python examples\plot_total_market_cap.py target\plot_total_market_cap.csv` |
+| `plot_daily_price` | `cargo run --example plot_daily_price -- 000009.SZ` | `python examples\plot.py target\plot_daily_price.csv` |
+| `plot_financial_data` | `cargo run --example plot_financial_data -- 000001.SZ` | `python examples\plot_financial_data.py target\plot_financial_data.csv` |
+| `plot_total_market_cap` | `cargo run --example plot_total_market_cap -- @common` | `python examples\plot_total_market_cap.py target\plot_total_market_cap.csv` |
 
 `ParquetPanelSource` pivots one long table into a wide `[N_symbols, K]`
 cross-section per date; the per-stock pipeline is recovered by `Select`ing one
@@ -195,16 +205,16 @@ see a report before it was published.
 
 | Example | Command | Plot |
 |---|---|---|
-| `mean_strategy` | `cargo run --example mean_strategy --features python -- --index-size 1000` | `plot_strategy.py target\mean_strategy.csv` |
-| `factor_ic` | `cargo run --example factor_ic --features python -- --index-size 1000` | `plot_factor_ic.py target\factor_ic.csv` |
+| `mean_strategy` | `cargo run --example mean_strategy --features python -- @common --window 20` | `plot_strategy.py target\mean_strategy.csv` |
+| `factor_ic` | `cargo run --example factor_ic --features python -- @common --window 20` | `plot_factor_ic.py target\factor_ic.csv` |
 
 ### `python` + cvxpy (needs the GIL venv with cvxpy — i.e. `.venv`)
 
 | Example | Command | Plot |
 |---|---|---|
-| `mean_variance_strategy` | `cargo run --example mean_variance_strategy --features python -- --index-size 1000` | `plot_strategy.py target\mean_variance_strategy.csv` |
-| `benchmark_relative_strategy` | `cargo run --example benchmark_relative_strategy --features python -- --index-size 1000` | `plot_strategy.py target\benchmark_relative_strategy.csv` |
-| `covariance_gmv` | `cargo run --example covariance_gmv --features python -- --index-size 1000` | `plot_strategy.py target\covariance_gmv.csv` |
+| `mean_variance_strategy` | `cargo run --example mean_variance_strategy --features python -- @common --window 20` | `plot_strategy.py target\mean_variance_strategy.csv` |
+| `benchmark_relative_strategy` | `cargo run --example benchmark_relative_strategy --features python -- @common --window 20` | `plot_strategy.py target\benchmark_relative_strategy.csv` |
+| `covariance_gmv` | `cargo run --example covariance_gmv --features python -- @common --window 20` | `plot_strategy.py target\covariance_gmv.csv` |
 
 > Run the plot scripts with the venv python so matplotlib is found:
 > `.\.venv\Scripts\python examples\plot_strategy.py target\<file>.csv`.

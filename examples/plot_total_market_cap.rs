@@ -26,9 +26,18 @@ use tradingflow::Scenario;
 use tradingflow::sources::clock;
 use tradingflow::Array;
 
+use clap::Parser;
+
+/// Cap-weighted A-shares index: total circulating market cap + NAV plot.
+#[derive(Parser)]
+struct Args {
+    #[command(flatten)]
+    common: common::CommonArgs,
+}
+
 #[tokio::main]
 async fn main() {
-    let args = common::Args::from_env();
+    let Args { common: args } = Args::parse();
     let symbols = common::load_symbols(&args.data_dir);
     let n = symbols.len();
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);

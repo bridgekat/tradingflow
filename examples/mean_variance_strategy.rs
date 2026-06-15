@@ -74,9 +74,21 @@ fn nav_stats(v: &[f64]) -> (f64, f64, f64) {
     (cagr, sharpe, mdd)
 }
 
+use clap::Parser;
+
+/// Mean-variance strategy: shrinkage covariance + Markowitz, risk-aversion sweep.
+#[derive(Parser)]
+struct Args {
+    #[command(flatten)]
+    common: common::CommonArgs,
+    /// Rolling feature window in trading days (momentum / volatility / turnover MAs).
+    #[arg(long)]
+    window: usize,
+}
+
 #[tokio::main]
 async fn main() {
-    let args = common::Args::from_env();
+    let Args { common: args, window } = Args::parse();
     let symbols = common::load_symbols(&args.data_dir);
     let n = symbols.len();
     let n_i = n as i64;
@@ -90,7 +102,7 @@ async fn main() {
     let clk = sc.clock();
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let features = common::build_features(&mut sc, &st, &args);
+    let features = common::build_features(&mut sc, &st, window);
     let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
     let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
     let (_target, target_series, demeaned_series) =

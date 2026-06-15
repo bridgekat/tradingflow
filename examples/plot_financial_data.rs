@@ -56,9 +56,18 @@ fn pick(sc: &mut Scenario, panel: Handle<RefPort<Array<f64>>>, i: usize) -> Hand
     sc.add_operator(Filter(|a: &Array<f64>| a.as_slice().iter().any(|x| x.is_finite())), sel)
 }
 
+use clap::Parser;
+
+/// Financial-data plot: market cap + annualized statement metrics.
+#[derive(Parser)]
+struct Args {
+    /// Stock symbol to plot, e.g. 000001.SZ.
+    symbol: String,
+}
+
 #[tokio::main]
 async fn main() {
-    let symbol = std::env::args().nth(1).unwrap_or_else(|| "000001.SZ".to_string());
+    let symbol = Args::parse().symbol;
     let data_dir = "examples/data";
     let prices_pq = format!("{data_dir}/daily_prices.parquet");
     if !std::path::Path::new(&prices_pq).exists() {

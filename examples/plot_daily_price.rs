@@ -50,9 +50,18 @@ fn pick(sc: &mut Scenario, panel: Handle<RefPort<Array<f64>>>, i: usize) -> Hand
     sc.add_operator(Filter(|a: &Array<f64>| a.as_slice().iter().any(|x| x.is_finite())), sel)
 }
 
+use clap::Parser;
+
+/// Daily-price plot: forward-adjusted close, moving average, Bollinger bands.
+#[derive(Parser)]
+struct Args {
+    /// Stock symbol to plot, e.g. 000009.SZ.
+    symbol: String,
+}
+
 #[tokio::main]
 async fn main() {
-    let symbol = std::env::args().nth(1).unwrap_or_else(|| "000009.SZ".to_string());
+    let symbol = Args::parse().symbol;
     let data_dir = "examples/data";
     let prices_pq = format!("{data_dir}/daily_prices.parquet");
     let dividends_pq = format!("{data_dir}/dividends.parquet");
