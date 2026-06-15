@@ -1,13 +1,14 @@
 //! `tradingflow` — Rust core for TradingFlow.
 //!
 //! Performance-critical data structures and the synchronous, parallel
-//! computation engine (the [`flow`] module, built on `flowgraph`).
+//! computation engine (built on `flowgraph`, exposed through [`scenario`],
+//! [`operators`], and other modules).
 //!
 //! # Core data types
 //!
 //! * [`Array`] — dense N-dimensional array in standard (C-contiguous) layout,
 //!   parameterised by a [`Scalar`] element type. [`ArraySlice`] is its borrowed,
-//!   zero-copy view (the edge currency of the [`flow`] engine).
+//!   zero-copy view (the edge currency of the computation engine).
 //! * [`Series`] — append-only time series with temporal (as-of) lookups; each
 //!   element is a uniformly-shaped `Array`-compatible slice.
 //! * [`Schema`] — bidirectional name ↔ position mapping for labelling array axes.

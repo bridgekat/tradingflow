@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Render a flow-engine demo CSV with matplotlib.
+"""Render an example's output CSV with matplotlib.
 
 Standalone plotting companion to the Rust examples: the Rust binary computes and
 writes a CSV, this script reads it and draws the figure. Keeping plotting in a
@@ -36,7 +36,7 @@ def main() -> None:
         ax.plot(t, data[c], label=c, linewidth=1.2)
     ax.set_xlabel("time")
     ax.set_ylabel(", ".join(value_cols))
-    ax.set_title(f"flow demo — {args.csv}")
+    ax.set_title(f"{args.csv}")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()

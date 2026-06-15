@@ -129,11 +129,11 @@ impl<T: Scalar> ops::IndexMut<usize> for Array<T> {
 // ===========================================================================
 
 /// A borrowed, contiguous, row-major view of (a chunk of) an [`Array`]: the
-/// zero-copy edge currency of the flow layer. `Copy` (two references), fully
-/// lifetime-checked — a view cannot outlive the array it borrows from.
+/// zero-copy edge currency of the operator interface. `Copy` (two references),
+/// fully lifetime-checked — a view cannot outlive the array it borrows from.
 ///
-/// Flow operators pass `ArraySlice`s across interfaces via
-/// `ViewPort`/`RefViewPort` leaves (see `flow::ArrayValue`); the engine's
+/// Operators pass `ArraySlice`s across interfaces via
+/// `ViewPort`/`RefViewPort` leaves (see `operators::ArrayValue`); the engine's
 /// per-generation contract keeps wire-borne views valid between recomputes.
 #[derive(Debug)]
 pub struct ArraySlice<'a, T: Scalar> {

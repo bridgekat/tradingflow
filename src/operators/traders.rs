@@ -1,16 +1,17 @@
-//! Trader (execution) operators — native Rust ports of the `flowops` traders.
+//! Trader (execution) operators, implemented directly on
+//! [`flowgraph::typed::Operator`].
 //!
 //! A trader turns a strategy's target weights into a simulated portfolio NAV: it
 //! reinvests dividends, executes rebalances against close prices, marks the book
 //! to market, and reports `[holdings_value, cash]` (total NAV = their sum). This
 //! is the step that closes the backtest loop, so having it in Rust lets a full
-//! backtest run on the native operator set alone — the Python `flowops` traders
-//! (the realistic-cost `SimpleTrader` and the stochastic `RandomTrader`) remain
-//! as optional strategy building blocks.
+//! backtest run on the native operator set alone. [`Benchmark`], the
+//! realistic-cost [`SimpleTrader`], and the stochastic [`RandomTrader`] are all
+//! native Rust; there are no Python trader implementations.
 //!
 //! [`Benchmark`] is the frictionless ideal executor (no fees, no lot rounding,
 //! instant fills) used both as a strategy's NAV simulator and to build index
-//! baselines. Ported verbatim from `flowops.traders.benchmark`; the only
+//! baselines. Ported from the original NumPy implementation; the only
 //! numeric difference is summation order (the NumPy original uses pairwise
 //! `np.sum`; this uses sequential sums), so NAVs match to rounding, not bit-for-bit.
 
@@ -254,7 +255,7 @@ impl TraderCore {
 /// net trade in *lots* given `(current_value, exec_price, shares, lot_size,
 /// target_positions, out_lots)` (the only operator-specific step). Returns the
 /// notify flag (always `true` off the build call). Writes `[holdings, cash]`
-/// into `s.out`. Mirrors `flowops.traders._base.SimpleTrader.compute`.
+/// into `s.out`. Mirrors the original NumPy `SimpleTrader.compute`.
 fn run_tick<L>(
     s: &mut TraderCore,
     flags: &[bool],

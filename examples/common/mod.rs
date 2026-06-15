@@ -5,7 +5,7 @@
 //! it builds the data pipeline (columnar parquet panel + financial-report sources, the stacked
 //! cross-sectional panel, the canonical 7-factor feature set, the cap-weighted
 //! universe, the log-return target, and price limits) entirely from native
-//! flow operators. Examples add their `flowops` predictor/portfolio
+//! operators. Examples add their `flowops` predictor/portfolio
 //! operators (and any cvxpy ones) on top.
 //!
 //! Differences from the Python original, all intentional:
@@ -189,7 +189,7 @@ pub struct Args {
     pub begin_days: i64,
     pub end_days: i64,
     pub data_start_days: i64,
-    /// Worker threads for the flow `Pool` (`--threads`, default 0 = serial).
+    /// Worker threads for the flowgraph `Pool` (`--threads`, default 0 = serial).
     /// `> 0` lets independent solve-bound operators (e.g. one cvxpy portfolio
     /// per risk-aversion) overlap via GIL release.
     pub threads: usize,
@@ -200,7 +200,7 @@ impl Args {
     /// defaults (a bounded universe and short windows so a run completes in
     /// seconds on the bundled data).
     pub fn from_env() -> Self {
-        let mut data_dir = "data".to_string();
+        let mut data_dir = "examples/data".to_string();
         let mut index_size = 30usize;
         let mut rebalance_days = 30i64;
         let mut window = 20usize;

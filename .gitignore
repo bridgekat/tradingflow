@@ -13,7 +13,7 @@ site/
 /target/
 
 # Example market data (a-shares-crawler output; regenerate, do not commit)
-/data/
+/examples/data/
 
 # Native extension artifacts
 *.pyd

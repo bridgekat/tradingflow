@@ -1,8 +1,8 @@
-# Running the flow-engine examples
+# Running the flowgraph-engine examples
 
 The `.rs` files in this directory are end-to-end A-shares research strategies
-built on the parallel `flow` engine (`src/operators` + `src/scenario.rs`, on top
-of `flowgraph`). They are ordinary Cargo examples:
+built on the parallel `flowgraph` engine (via `src/operators` + `src/scenario.rs`,
+the thin wrapper on top of `flowgraph`). They are ordinary Cargo examples:
 
 ```pwsh
 cargo run --example <name> [--features python] -- [args]
@@ -15,11 +15,12 @@ Two kinds:
   `cargo run --example plot_daily_price`. `plot_total_market_cap` is a full
   cap-weighted index backtest, executor included, on the native operator set.
 * **`python` examples** embed a CPython interpreter and call `flowops` operators
-  (predictors / portfolios / traders / metrics) from Rust, with real
-  NumPy / SciPy / cvxpy. These need a configured Python environment, which is
-  what most of this document is about. **This is the source of the "DLL not
-  found" and "flowops module not found" errors** — they are environment
-  misconfiguration, not bugs in the examples.
+  (predictors / portfolios / optional metrics) from Rust, with real
+  NumPy / SciPy / cvxpy (the traders and core metrics are native Rust). The
+  `python` examples need a configured Python environment, which is what most of
+  this document is about. **This is the source of the "DLL not found" and
+  "flowops module not found" errors** — they are environment misconfiguration,
+  not bugs in the examples.
 
 ---
 
@@ -47,7 +48,7 @@ understand why, read on.
 
 ## How the embedding works (why the env matters)
 
-The `flow` engine has **no Python-as-host API**. Graphs are built and driven from
+The `flowgraph` engine has **no Python-as-host API**. Graphs are built and driven from
 Rust; Python operators run *inside* an embedded CPython via PyO3
 (`pyo3/auto-initialize`, feature `python`). Two distinct moments need
 configuration:
@@ -123,7 +124,7 @@ $env:PYTHONPATH = "$((Get-Location).Path)\python"
 
 ## Getting the data
 
-The examples read bundled A-shares market data from `data/` (the consolidated
+The examples read bundled A-shares market data from `examples/data/` (the consolidated
 long-format `<kind>.parquet` tables, plus `symbol_list.csv`; `a_shares_history/`
 holds the legacy one-CSV-per-symbol layout, no longer read).
 The crawler that produces it is vendored as a git submodule at
@@ -138,7 +139,7 @@ To (re)fetch data you need an EastMoney session config — see
 
 ```pwsh
 .\.venv\Scripts\python -m pip install -e extern/a-shares-crawler
-.\.venv\Scripts\python -m a_shares_crawler --config config.json --data-dir data
+.\.venv\Scripts\python -m a_shares_crawler --config config.json --data-dir examples/data
 ```
 
 The crawler can also emit **consolidated long-format tables** (one file per kind,
@@ -147,10 +148,10 @@ all symbols, sorted by date) for a single sequential read, via
 One or more formats may be given at once:
 
 ```pwsh
-.\.venv\Scripts\python -m a_shares_crawler.export --data-dir data --export-long csv parquet
+.\.venv\Scripts\python -m a_shares_crawler.export --data-dir examples/data --export-long csv parquet
 ```
 
-This writes `data\<kind>.{csv,parquet}`. The examples read these long tables via
+This writes `examples\data\<kind>.{csv,parquet}`. The examples read these long tables via
 the cross-sectional `ParquetPanelSource` / `ReportPanelSource`; the columnar
 storage design is described in
 [`docs/design/data-storage.md`](../docs/design/data-storage.md).
@@ -211,7 +212,7 @@ see a report before it was published.
 
 ### Parallelism
 
-Most `python` examples take `--threads N` (default `0` = serial). The flow `Pool`
+Most `python` examples take `--threads N` (default `0` = serial). The flowgraph `Pool`
 overlaps operators whose work **releases the GIL** — NumPy/BLAS and the cvxpy
 solve. So independent per-config solves (e.g. the 8 deltas in
 `mean_variance_strategy`) run truly in parallel even on the GIL interpreter.
@@ -220,7 +221,7 @@ data load, is why end-to-end speedup is well under `N×`.
 
 > **Required: single-threaded native BLAS (`OPENBLAS_NUM_THREADS=1`).** `env.ps1`
 > pins `OPENBLAS`/`OMP`/`MKL`/`NUMEXPR_NUM_THREADS=1`. This is **not optional** for
-> `--threads N > 0`. The flow `Pool` already parallelizes *across* solve-bound
+> `--threads N > 0`. The flowgraph `Pool` already parallelizes *across* solve-bound
 > operators (one BLAS/LAPACK/cvxpy call per worker), so the inner libraries must
 > run single-threaded. OpenBLAS's standard build (bundled by numpy/scipy as
 > `libscipy_openblas64_*.dll`) is **not thread-safe** — its worker-thread pool is

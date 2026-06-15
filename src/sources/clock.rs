@@ -1,8 +1,7 @@
 //! Clock source - emits `()` events at supplied timestamps.
 //!
-//! The output node holds `()` (zero-sized, purely a trigger signal).
-//! On the Python side this corresponds to [`NodeKind.UNIT`], and clock
-//! handles carry no data.
+//! The output node holds `()` (zero-sized, purely a trigger signal);
+//! clock handles carry no data.
 //!
 //! Calendar-aligned schedules (daily / monthly in a given timezone) are
 //! generated on the Python side via `zoneinfo` and passed to [`clock`] as a

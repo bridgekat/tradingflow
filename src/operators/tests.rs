@@ -14,7 +14,7 @@ fn ts(n: i64) -> Instant {
 }
 
 // ===========================================================================
-// Differential vs legacy engine (Pool::new(0): sequential equivalence)
+// Sequential execution (Pool::new(0): single-threaded stabilization)
 // ===========================================================================
 
 /// `scenario_simple_add`: 10 + 3 == 13.

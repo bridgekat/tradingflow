@@ -1,5 +1,5 @@
 # examples/env.ps1 - configure the embedded-Python environment for the `python`
-# examples (the Rust-driven flow-engine ports in `examples/`).
+# examples (the Rust-driven examples in `examples/`).
 #
 # Dot-source it (note the leading "." and space) so the variables persist in
 # your current shell:
@@ -28,11 +28,11 @@ if (-not (Test-Path $venvPython)) {
 }
 
 # (1) BUILD TIME - which interpreter PyO3 links against. The GIL `.venv` (base
-#     CPython 3.13) is the one cvxpy / numpy / scipy wheels were built for.
+#     CPython 3.14) is the one cvxpy / numpy / scipy wheels were built for.
 #     Changing this value forces PyO3 to reconfigure and relink on next build.
 $env:PYO3_PYTHON = $venvPython
 
-# (2) RUNTIME - the directory holding `python313.dll` must be on PATH, or the
+# (2) RUNTIME - the directory holding `python314.dll` must be on PATH, or the
 #     embedded interpreter fails to load with STATUS_DLL_NOT_FOUND (process exit
 #     0xC0000135 / -1073741515). For these PyManager/pythoncore installs the DLL
 #     sits in the venv's base prefix, i.e. the `home =` line of pyvenv.cfg.
@@ -48,7 +48,7 @@ if ($env:PATH -notlike "*$base*") { $env:PATH = "$base;$env:PATH" }
 $env:PYTHONPATH = (Join-Path $repo 'python') + ';' + (Join-Path $venv 'Lib\site-packages')
 
 # (4) RUNTIME - pin every native math-library thread pool to ONE thread.
-#     The flow work-stealing `Pool` already parallelises ACROSS solve-bound
+#     The flowgraph work-stealing `Pool` already parallelises ACROSS solve-bound
 #     operators (one BLAS / LAPACK / cvxpy call per worker thread), so the inner
 #     libraries must stay single-threaded. This is REQUIRED for correctness, not
 #     just performance:

@@ -22,7 +22,7 @@ examples = [
 ]
 
 # `flowops` is the Python operator package (predictors / portfolios /
-# metrics) run by the Rust `flow` engine's embedded interpreter. It is the only
+# metrics) run by the Rust crate's embedded interpreter. It is the only
 # Python package the project ships now — the Rust core is a plain library crate
 # (the legacy Python-as-host `_native` extension and its maturin build are gone).
 [tool.hatch.build.targets.wheel]

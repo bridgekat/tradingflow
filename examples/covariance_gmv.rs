@@ -1,7 +1,7 @@
 //! Variance-estimator comparison via GMV portfolio realized variance.
 //!
 //! Compares covariance estimators inside a Markowitz mean-variance strategy.
-//! All seven estimators of `covariance_gmv.py` (sample, common-covariance /
+//! All seven estimators (sample, common-covariance /
 //! constant-correlation / single-index shrinkage, RMT-0, RMT-M, single-index)
 //! each feed (a) a `MinimumVariance` realized-variance
 //! metric — a pure diagnostic of covariance quality — and (b) a cvxpy
@@ -118,8 +118,8 @@ async fn main() {
 
     for e in &ests {
         // Covariance predictor.
-        // Match `covariance_gmv.py`: covariance window = rebalance period, and
-        // no per-stock `min_periods` filter on the covariance estimators (the
+        // Covariance window = rebalance period, and there is no per-stock
+        // `min_periods` filter on the covariance estimators (the
         // mean `LinearRegression` above keeps its own `min_periods=100`).
         let mut p = PyParams::new()
             .int("num_stocks", n_i)

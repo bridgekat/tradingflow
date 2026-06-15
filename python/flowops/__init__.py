@@ -1,4 +1,4 @@
-"""Python operators for the flow engine (loaded by the Rust `pyhost`).
+"""Python operators for the flowgraph engine (loaded by the Rust `pyhost`).
 
 Each operator module defines `build(**kwargs) -> op`, where `op` implements the
 host contract:

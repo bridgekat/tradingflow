@@ -248,7 +248,7 @@ struct SourceDescriptor {
     erased: ErasedFlowSource,
 }
 
-/// Builds a `flow` graph plus its source registrations.
+/// Builds a `flowgraph` graph plus its source registrations.
 pub struct Scenario {
     builder: GraphBuilder,
     clock: Clock,
@@ -310,7 +310,7 @@ impl Scenario {
     /// `inputs.len()` `float64` ndarrays and returns a 1-D `float64` ndarray of
     /// length `out_len`, e.g. `"lambda a, b: a + b"`. Operators run on the shared
     /// (free-threaded) interpreter and execute in parallel on the pool. See the
-    /// `flow::python` module docs for the data model, retention contract, and setup.
+    /// `operators::python` module docs for the data model, retention contract, and setup.
     #[cfg(feature = "python")]
     pub fn add_py_operator(
         &mut self,
@@ -327,7 +327,7 @@ impl Scenario {
     /// writable `float64` ndarray `out` (aliasing the output buffer) followed by
     /// the input ndarrays; it writes its `out_len` results into `out` in place
     /// and its return value is ignored, e.g. `"lambda out, a, b: np.add(a, b, out=out)"`.
-    /// The `out` view must not escape the call (see the `flow::python` module docs).
+    /// The `out` view must not escape the call (see the `operators::python` module docs).
     #[cfg(feature = "python")]
     pub fn add_py_operator_writing(
         &mut self,

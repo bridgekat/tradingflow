@@ -3,7 +3,7 @@
 //! Where [`PyOperator`](super::python::PyOperator) wraps a single lambda
 //! (`f(*inputs) -> ndarray`), [`PyClassOperator`] hosts a full Python operator
 //! object mirroring the legacy `tradingflow.operator.Operator` contract, so the
-//! Python-resident operator layer (predictors / portfolios / traders / stateful
+//! Python-resident operator layer (predictors / portfolios / stateful
 //! metrics) ports nearly verbatim:
 //!
 //! ```text

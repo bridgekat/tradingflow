@@ -6,11 +6,10 @@
 //! body is ordinary Python and may use NumPy/SciPy/cvxpy freely. Operators run
 //! on the [`flowgraph`](flowgraph) work-stealing pool.
 //!
-//! This is the *only* form of Python support in the `flow` engine: Python
+//! This is the *only* form of Python support in tradingflow: Python
 //! operators (Python called from Rust). There is **no** Python-as-host API
 //! wrapper — graphs are built and driven from Rust, and the interpreter is
-//! embedded. (The legacy `bridge` module provides the host-API wrapper for the
-//! old engine; it is removed at cutover.)
+//! embedded.
 //!
 //! # Interpreter model (single shared interpreter; easy to switch)
 //!
@@ -52,7 +51,7 @@
 //! set PYO3_PYTHON=<abs>\.venv\Scripts\python.exe
 //! set PATH=<dir containing python3xx.dll>;%PATH%
 //! set PYTHONPATH=<repo>\python;<abs>\.venv\Lib\site-packages
-//! cargo test --features python flow::python
+//! cargo test --features python operators::python
 //! ```
 //!
 //! For free-threaded instead, swap the venv for a `python3.13t` one (`py install
@@ -349,7 +348,7 @@ impl Operator for PyOperator {
 // ===========================================================================
 // Tests — build/run against a free-threaded interpreter:
 //   PYO3_PYTHON=<ft venv python>  PATH+=<dir of python3xxt.dll>
-//   PYTHONPATH=<ft venv site-packages>  cargo test --features python flow::python
+//   PYTHONPATH=<ft venv site-packages>  cargo test --features python operators::python
 // ===========================================================================
 
 #[cfg(test)]

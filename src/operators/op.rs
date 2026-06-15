@@ -1,4 +1,4 @@
-//! Operator-contract helpers shared by the `flow` operators: the [`Clock`],
+//! Operator-contract helpers shared by TradingFlow operators: the [`Clock`],
 //! the [`StripNotify`] payload helper, and the [`ArrayValue`] view kind.
 //!
 //! TradingFlow operators implement [`flowgraph::typed::Operator`]
