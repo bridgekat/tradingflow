@@ -152,9 +152,7 @@ One or more formats may be given at once:
 ```
 
 This writes `examples\data\<kind>.{csv,parquet}`. The examples read these long tables via
-the cross-sectional `ParquetPanelSource` / `ReportPanelSource`; the columnar
-storage design is described in
-[`docs/design/data-storage.md`](../docs/design/data-storage.md).
+the cross-sectional `ParquetPanelSource` / `ReportPanelSource`.
 
 ---
 

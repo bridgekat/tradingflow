@@ -2,16 +2,17 @@ name: Test
 
 on:
   push:
-    branches: [main]
+    branches: [ "main" ]
   pull_request:
-    branches: [main]
+    branches: [ "main" ]
 
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
-        python: ['3.13']
-        platform: [ubuntu-latest, macos-latest, windows-latest]
+        python: [ "3.14" ]
+        platform: [ "ubuntu-latest", "macos-latest", "windows-latest" ]
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -21,9 +22,22 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      # Rust crate: the flow engine + operator library.
-      - run: cargo test --lib
+      # Pure-Rust core: the default build pulls in NO Python toolchain.
+      - run: cargo build --verbose
+      - run: cargo test --verbose
 
-      # flowops Python operator package (pure Python) + its tests.
+      # Python operator package (flowops) + the runtime deps (numpy/scipy/cvxpy)
+      # the embedded interpreter imports under the `python` feature below.
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest
+
+      # Embedded-Python feature: PyO3 links the setup-python interpreter (found on
+      # PATH via `pyo3/auto-initialize`); the tests embed it and import flowops +
+      # numpy from that interpreter's own site-packages (installed just above). The
+      # test binary loads libpython at runtime, so its lib dir must be on the
+      # loader path — `$pythonLocation/lib` on Linux (LD_LIBRARY_PATH) and macOS
+      # (DYLD_LIBRARY_PATH); on Windows `pythonXY.dll` is already found via PATH.
+      - run: cargo test --features python --verbose
+        env:
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
+          DYLD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib

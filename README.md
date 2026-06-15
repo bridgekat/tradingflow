@@ -77,7 +77,7 @@ This is the whole pattern. An actual strategy can contain many more operators â€
 
 # Examples
 
-The [`examples/`](examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines (see [`examples/README.md`](examples/README.md) for build/run instructions, and [`docs/design/data-storage.md`](docs/design/data-storage.md) for the columnar storage design). To follow along, install the `examples` extras and download data with the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler), vendored as a git submodule at [`extern/a-shares-crawler`](extern/a-shares-crawler):
+The [`examples/`](examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines (see [`examples/README.md`](examples/README.md) for build/run instructions). To follow along, install the `examples` extras and download data with the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler), vendored as a git submodule at [`extern/a-shares-crawler`](extern/a-shares-crawler):
 
 ```bash
 pip install -e ".[examples]"
