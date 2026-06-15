@@ -12,7 +12,7 @@ Main design goals:
 Prerequisites: a stable Rust toolchain ([rustup.rs](https://rustup.rs)), and — for Python operators / examples — Python 3.12+.
 
 ```bash
-git clone --recurse-submodules https://github.com/bridgekat/tradingflow.git
+git clone https://github.com/bridgekat/tradingflow.git
 cd tradingflow
 cargo build                 # the Rust engine + operator library
 pip install -e ".[dev]"     # the flowops Python operators (for the `python` feature)
@@ -77,11 +77,10 @@ This is the whole pattern. An actual strategy can contain many more operators �
 
 # Examples
 
-The [`examples/`](examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines (see [`examples/README.md`](examples/README.md) for build/run instructions). To follow along, install the `examples` extras and download data with the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler), vendored as a git submodule at [`extern/a-shares-crawler`](extern/a-shares-crawler):
+The [`examples/`](examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines (see [`examples/README.md`](examples/README.md) for build/run instructions). To follow along, install the `examples` extras (which fetch the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler) from GitHub) and download data:
 
 ```bash
-pip install -e ".[examples]"
-git submodule update --init extern/a-shares-crawler
+pip install -e ".[examples]"       # fetches a-shares-crawler from GitHub + matplotlib
 python -m a_shares_crawler --help  # For configuration & download instructions
 ```
 

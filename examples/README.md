@@ -127,18 +127,19 @@ $env:PYTHONPATH = "$((Get-Location).Path)\python"
 The examples read bundled A-shares market data from `examples/data/` (the consolidated
 long-format `<kind>.parquet` tables, plus `symbol_list.csv`; `a_shares_history/`
 holds the legacy one-CSV-per-symbol layout, no longer read).
-The crawler that produces it is vendored as a git submodule at
-**`extern/a-shares-crawler`**. If the submodule is empty (fresh clone):
+The crawler that produces it
+([a-shares-crawler](https://github.com/bridgekat/a-shares-crawler)) is fetched
+from GitHub and installed by the `examples` extra:
 
 ```pwsh
-git submodule update --init extern/a-shares-crawler
+.\.venv\Scripts\python -m pip install -e ".[examples]"
 ```
 
-To (re)fetch data you need an EastMoney session config — see
-`extern/a-shares-crawler/README.md` for the full procedure. In short:
+To (re)fetch data you need an EastMoney session config — see the
+[a-shares-crawler README](https://github.com/bridgekat/a-shares-crawler) for the
+full procedure. In short (the crawler is already installed by the extra above):
 
 ```pwsh
-.\.venv\Scripts\python -m pip install -e extern/a-shares-crawler
 .\.venv\Scripts\python -m a_shares_crawler --config config.json --data-dir examples/data
 ```
 

@@ -1,6 +1,0 @@
-[submodule "extern/flowgraph"]
-	path = extern/flowgraph
-	url = git@github.com:bridgekat/flowgraph.git
-[submodule "extern/a-shares-crawler"]
-	path = extern/a-shares-crawler
-	url = git@github.com:bridgekat/a-shares-crawler.git
