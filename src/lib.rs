@@ -1,8 +1,4 @@
-//! `tradingflow` — Rust core for TradingFlow.
-//!
-//! Performance-critical data structures and the synchronous, parallel
-//! computation engine (built on `flowgraph`, exposed through [`scenario`],
-//! [`operators`], and other modules).
+#![doc = include_str!("../README.md")]
 //!
 //! # Core data types
 //!
