@@ -28,6 +28,12 @@ examples = [
 [tool.hatch.build.targets.wheel]
 packages = ["python/flowops"]
 
+# The `examples` extra pins a-shares-crawler by a `git+https` URL (a PEP 508
+# direct reference); hatchling rejects direct references during metadata
+# generation unless this is set.
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.pytest.ini_options]
 testpaths = ["python/flowops/tests"]
 
