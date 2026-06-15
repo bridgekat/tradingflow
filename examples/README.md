@@ -268,20 +268,17 @@ cvxpy solve — so independent per-config solves (e.g. the risk-aversion sweep i
 Pure-Python glue still serializes under the GIL; that, plus the largely-serial
 data load, is why end-to-end speedup is well under `N×`.
 
-> **Required when `--threads N > 0`: pin native BLAS to one thread**
-> (`OPENBLAS_NUM_THREADS=1`, and likewise `OMP_/MKL_/NUMEXPR_NUM_THREADS=1`).
-> `env.ps1` sets these; on Unix `export` them before the interpreter loads NumPy.
-> This is **not optional**: the `flowgraph` `Pool` already parallelizes *across*
-> solve-bound operators (one BLAS / LAPACK / cvxpy call per worker), so the inner
-> libraries must stay single-threaded. OpenBLAS's standard threaded build
-> (bundled by NumPy / SciPy) is **not thread-safe** — its worker pool is created
-> and resized lazily, and when several `Pool` workers drive BLAS / LAPACK at once
-> (e.g. `covariance_gmv`: 7 covariance estimators including an RMT `eigh`, plus
-> Markowitz `scipy.linalg.ldl` solves), the concurrent pool init/resize corrupts
-> OpenBLAS's internal sync state and **crashes** (a segfault; `0xC0000005` on
-> Windows). Pinning to 1 disables that pool so the racy path never runs;
-> multi-threaded runs are then bit-identical to single-threaded. (It also avoids
-> `N×N` nested-thread oversubscription.) Symptom if you forget:
+> **Required when `--threads N > 0`: disable OpenBLAS's internal threading**
+> (`OPENBLAS_NUM_THREADS=1`). `env.ps1` sets it; on Unix `export` it before the
+> interpreter loads NumPy. **OpenBLAS is not thread-safe with its internal
+> parallelism enabled** — its worker pool is created/resized lazily, so when
+> several `Pool` workers drive BLAS / LAPACK at once (e.g. `covariance_gmv`'s
+> covariance estimators + Markowitz solves) the concurrent pool init corrupts
+> OpenBLAS's internal state and **crashes** (a segfault; `0xC0000005` on
+> Windows). Setting `OPENBLAS_NUM_THREADS=1` leaves the `flowgraph` `Pool` as the
+> only source of parallelism (one BLAS call per worker), and multi-threaded runs
+> become bit-identical to single-threaded. Only OpenBLAS needs this — other BLAS
+> backends (e.g. MKL) are thread-safe. Symptom if you forget:
 > `covariance_gmv --threads 8` crashes with no output.
 
 ---

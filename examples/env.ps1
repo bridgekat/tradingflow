@@ -47,34 +47,22 @@ if ($env:PATH -notlike "*$base*") { $env:PATH = "$base;$env:PATH" }
 #     (otherwise: ModuleNotFoundError for numpy / cvxpy / flowops).
 $env:PYTHONPATH = (Join-Path $repo 'python') + ';' + (Join-Path $venv 'Lib\site-packages')
 
-# (4) RUNTIME - pin every native math-library thread pool to ONE thread.
-#     The flowgraph work-stealing `Pool` already parallelises ACROSS solve-bound
-#     operators (one BLAS / LAPACK / cvxpy call per worker thread), so the inner
-#     libraries must stay single-threaded. This is REQUIRED for correctness, not
-#     just performance:
-#
-#       * OpenBLAS's standard (threaded) build is NOT thread-safe (confirmed in
-#         the OpenBLAS docs - needs USE_LOCKING=1 otherwise). numpy/scipy bundle
-#         it as `libscipy_openblas64_*.dll`. Its worker-thread pool is created
-#         and resized lazily; when several `Pool` workers drive BLAS/LAPACK at
-#         once (e.g. `covariance_gmv`: 7 covariance estimators incl. RMT `eigh`
-#         + 14 Markowitz `scipy.linalg.ldl`), the concurrent pool init/resize
-#         corrupts OpenBLAS's own critical-section/condvar state and SEGFAULTS
-#         (0xC0000005, faulting inside ntdll from OpenBLAS thread-pool code).
-#         Pinning to 1 disables that pool entirely, so the racy path never runs.
-#       * It also avoids N x N nested-thread oversubscription (pool workers x
-#         BLAS threads).
-#
-#     Must be set BEFORE the embedded interpreter loads numpy/scipy (i.e. here,
-#     not mid-run). With this, multi-threaded runs are bit-identical to a
-#     single-threaded run. See examples/README.md ("OpenBLAS / --threads").
+# (4) RUNTIME - disable OpenBLAS's INTERNAL threading (`OPENBLAS_NUM_THREADS=1`).
+#     OpenBLAS - the BLAS that numpy/scipy bundle (as
+#     `libscipy_openblas64_*.dll`) - is NOT thread-safe with its internal
+#     parallelism on: its worker pool is created/resized lazily, so when several
+#     flowgraph `Pool` workers drive BLAS/LAPACK at once (e.g. `covariance_gmv`'s
+#     covariance estimators + Markowitz solves) the concurrent pool init corrupts
+#     OpenBLAS's internal state and crashes (a segfault; 0xC0000005 on Windows).
+#     Disabling its internal parallelism leaves the flowgraph `Pool` as the only
+#     source of parallelism (one BLAS call per worker); multi-threaded runs are
+#     then bit-identical to single-threaded. Only OpenBLAS needs this - other
+#     backends (MKL, ...) are thread-safe. Set it BEFORE the interpreter loads
+#     numpy. See examples/README.md ("Parallelism").
 $env:OPENBLAS_NUM_THREADS = '1'
-$env:OMP_NUM_THREADS = '1'
-$env:MKL_NUM_THREADS = '1'
-$env:NUMEXPR_NUM_THREADS = '1'
 
 Write-Host "python env configured:" -ForegroundColor Green
 Write-Host "  PYO3_PYTHON = $env:PYO3_PYTHON"
 Write-Host "  base (DLL)  = $base   (prepended to PATH)"
 Write-Host "  PYTHONPATH  = $env:PYTHONPATH"
-Write-Host "  native BLAS = single-threaded (OPENBLAS/OMP/MKL/NUMEXPR_NUM_THREADS=1; required - see README)"
+Write-Host "  OpenBLAS    = single-threaded (OPENBLAS_NUM_THREADS=1; OpenBLAS isn't thread-safe with internal parallelism - see README)"
