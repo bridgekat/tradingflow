@@ -6,12 +6,15 @@ use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
-use flowgraph::typed::{Interface, Operator, RefPort, Segment};
+use flowgraph::typed::{Interface, Operator, RefPort, Segment, ViewPort};
 
 use super::gating::Clocked;
-use crate::{Array, Scalar};
+use super::op::ArrayValue;
+use crate::{Array, ArrayView, Scalar};
 
-/// Identity passthrough: clones input to output unchanged.
+/// Identity passthrough: clones input to output unchanged. Generic over the
+/// payload `T` (an owned value carried by `RefPort<T>` — an `Array<T, N>`, a
+/// `Series<T>`, a scalar, …), so it is rank- and currency-agnostic.
 #[derive(Clone)]
 pub struct Id<T: Clone + Send + Sync + 'static> {
     _phantom: PhantomData<T>,
@@ -65,15 +68,15 @@ impl<T: Clone + Send + Sync + 'static> Operator for Id<T> {
 }
 
 /// Element-wise conditional: keep the value where `condition` holds, else
-/// replace with `fill`. The closure carries the trait's `Sync` bound.
+/// replace with `fill`.
 #[derive(Clone)]
-pub struct Where<T: Scalar, F: Fn(T) -> bool + Clone> {
+pub struct Where<T: Scalar, F: Fn(T) -> bool + Clone, const N: usize> {
     condition: F,
     fill: T,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar, F: Fn(T) -> bool + Clone> Where<T, F> {
+impl<T: Scalar, F: Fn(T) -> bool + Clone, const N: usize> Where<T, F, N> {
     pub fn new(condition: F, fill: T) -> Self {
         Self {
             condition,
@@ -84,36 +87,38 @@ impl<T: Scalar, F: Fn(T) -> bool + Clone> Where<T, F> {
 }
 
 /// Runtime state for [`Where`]: the predicate and fill plus the output buffer.
-pub struct WhereState<T: Scalar, F> {
+pub struct WhereState<T: Scalar, F, const N: usize> {
     condition: F,
     fill: T,
-    out: Array<T>,
+    out: Array<T, N>,
 }
 
-impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static> Operator for Where<T, F> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = WhereState<T, F>;
+impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static, const N: usize> Operator
+    for Where<T, F, N>
+{
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = WhereState<T, F, N>;
 
-    fn init(self) -> WhereState<T, F> {
+    fn init(self) -> Self::State {
         WhereState {
             condition: self.condition,
             fill: self.fill,
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        state: &'b mut WhereState<T, F>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            state.out = a.clone();
-            return (false, &state.out);
+            state.out = Array::zeros(x.extents());
         }
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let out = state.out.as_mut_slice();
         for i in 0..out.len() {
             out[i] = if (state.condition)(src[i].clone()) {
@@ -122,25 +127,26 @@ impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static> Operator for W
                 state.fill.clone()
             };
         }
-        (true, &state.out)
+        (!init, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b WhereState<T, F>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 }
 
-/// Element-wise type conversion `Array<S> → Array<T>` via `AsPrimitive`.
+/// Element-wise type conversion `ArrayView<S, N> → Array<T, N>` via
+/// `AsPrimitive`.
 #[derive(Clone)]
-pub struct Cast<S: Scalar, T: Scalar> {
+pub struct Cast<S: Scalar, T: Scalar, const N: usize> {
     _phantom: PhantomData<(S, T)>,
 }
 
-impl<S: Scalar, T: Scalar> Cast<S, T> {
+impl<S: Scalar, T: Scalar, const N: usize> Cast<S, T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -148,51 +154,49 @@ impl<S: Scalar, T: Scalar> Cast<S, T> {
     }
 }
 
-impl<S: Scalar, T: Scalar> Default for Cast<S, T> {
+impl<S: Scalar, T: Scalar, const N: usize> Default for Cast<S, T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S, T> Operator for Cast<S, T>
+impl<S, T, const N: usize> Operator for Cast<S, T, N>
 where
     S: Scalar + Copy + AsPrimitive<T>,
     T: Scalar + Copy + 'static,
 {
-    type Inputs = RefPort<Array<S>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = Array<T>;
+    type Inputs = ViewPort<ArrayValue<S, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = Array<T, N>;
 
-    fn init(self) -> Array<T> {
-        Array::zeros(&[0])
+    fn init(self) -> Self::State {
+        Array::zeros([0; N])
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<S>),
-        out: &'b mut Array<T>,
+        (_, x): (bool, ArrayView<'a, S, N>),
+        out: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            // The legacy build call cast the build-time values (not zeros).
-            let data: Vec<T> = a.as_slice().iter().map(|&v| v.as_()).collect();
-            *out = Array::from_vec(a.shape(), data);
-            return (false, &*out);
+            *out = Array::zeros(x.extents());
         }
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[S] = &xs;
         let dst = out.as_mut_slice();
         for i in 0..dst.len() {
             dst[i] = src[i].as_();
         }
-        (true, &*out)
+        (!init, out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<S>),
-        out: &'b Array<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, out)
+        _: (bool, ArrayView<'a, S, N>),
+        out: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, out.view())
     }
 }
 

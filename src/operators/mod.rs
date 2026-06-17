@@ -28,11 +28,11 @@
 //! migrated; the rest are temporarily gated.
 
 mod arith;
+mod gating;
 mod num;
 mod op;
+mod structural;
 
-#[cfg(any())]
-mod gating;
 #[cfg(any())]
 mod metrics;
 #[cfg(any())]
@@ -63,9 +63,10 @@ pub use arith::{
 pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
 };
+pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
+pub use structural::{Cast, Id, Resample, Where};
 
 // [array-view-refactor] re-export blocks for gated families, restored per stage:
-// pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
 // pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility};
 // pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync, StackSyncView, StackView};
 // pub use stocks::{Annualize, AnnualizeView, ForwardAdjust, ForwardAdjustViewDiv};

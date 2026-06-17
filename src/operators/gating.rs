@@ -5,10 +5,10 @@
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Interface, Operator, RefPort, RefViewPort, Segment, ViewPort};
+use flowgraph::typed::{Interface, Operator, RefPort, Segment, ViewPort};
 
 use super::op::{ArrayValue, Clock};
-use crate::{Array, ArraySlice, Retention, Scalar, Series};
+use crate::{Array, ArrayView, Retention, Scalar, Series};
 
 // ---------------------------------------------------------------------------
 // Filter — whole-array gate by predicate (the cutoff operator).
@@ -16,51 +16,52 @@ use crate::{Array, ArraySlice, Retention, Scalar, Series};
 
 /// Passes the input through when the predicate holds, else drops it (emits
 /// `notify = false` → downstream gated off, previous value retained).
-pub struct Filter<F>(pub F);
+pub struct Filter<F, const N: usize>(pub F);
 
 /// Runtime state for [`Filter`]: the predicate plus the retained output.
-pub struct FilterState<F> {
+pub struct FilterState<F, const N: usize> {
     predicate: F,
-    out: Array<f64>,
+    out: Array<f64, N>,
 }
 
-impl<F> Operator for Filter<F>
+impl<F, const N: usize> Operator for Filter<F, N>
 where
-    F: Fn(&Array<f64>) -> bool + Send + Sync + 'static,
+    F: for<'x> Fn(ArrayView<'x, f64, N>) -> bool + Send + Sync + 'static,
 {
-    type Inputs = RefPort<Array<f64>>;
-    type Outputs = RefPort<Array<f64>>;
-    type State = FilterState<F>;
+    type Inputs = ViewPort<ArrayValue<f64, N>>;
+    type Outputs = ViewPort<ArrayValue<f64, N>>;
+    type State = FilterState<F, N>;
 
-    fn init(self) -> FilterState<F> {
+    fn init(self) -> Self::State {
         FilterState {
             predicate: self.0,
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, x): (bool, &'a Array<f64>),
-        state: &'b mut FilterState<F>,
+        (_, x): (bool, ArrayView<'a, f64, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<f64>) {
+    ) -> (bool, ArrayView<'a, f64, N>) {
         if init {
-            state.out = x.clone();
-            return (false, &state.out);
+            state.out = x.to_array();
+            return (false, state.out.view());
         }
         if (state.predicate)(x) {
-            state.out.as_mut_slice().clone_from_slice(x.as_slice());
-            (true, &state.out)
+            let xs = x.to_contiguous();
+            state.out.assign(&xs);
+            (true, state.out.view())
         } else {
-            (false, &state.out)
+            (false, state.out.view())
         }
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<f64>),
-        state: &'b FilterState<F>,
-    ) -> (bool, &'a Array<f64>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, f64, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, f64, N>) {
+        (false, state.out.view())
     }
 }
 
@@ -68,9 +69,9 @@ where
 // Gate — view gate that honours the no-notify⟹unchanged contract.
 // ---------------------------------------------------------------------------
 
-/// View gate: emits the input [`ArraySlice`] as a `ViewPort`, notifying iff the
-/// input notified AND the predicate holds — the row-cutoff that drops the
-/// all-NaN "no data" cross-sections a dense panel emits for an idle stock.
+/// View gate: emits the input row as a `ViewPort`, notifying iff the input
+/// notified AND the predicate holds — the row-cutoff that drops the all-NaN "no
+/// data" cross-sections a dense panel emits for an idle stock.
 ///
 /// The TradingFlow contract is that **an operator that does not notify must not
 /// change its output value** (so any consumer may treat a non-notifying input
@@ -83,59 +84,60 @@ where
 /// notifies — so a view stored by an out-of-cone consumer always reads the
 /// frozen last-passed value. This makes `Gate`'s output a stable backing for
 /// downstream zero-copy view chains.
-pub struct Gate<F>(pub F);
+pub struct Gate<F, const N: usize>(pub F);
 
 /// Runtime state for [`Gate`]: the predicate plus the retained last-passed row,
 /// which the `ViewPort` output borrows.
-pub struct GateState<F> {
+pub struct GateState<F, const N: usize> {
     predicate: F,
-    out: Array<f64>,
+    out: Array<f64, N>,
 }
 
-impl<F> Operator for Gate<F>
+impl<F, const N: usize> Operator for Gate<F, N>
 where
-    F: for<'x> Fn(ArraySlice<'x, f64>) -> bool + Send + 'static,
+    F: for<'x> Fn(ArrayView<'x, f64, N>) -> bool + Send + Sync + 'static,
 {
-    type Inputs = RefViewPort<ArrayValue<f64>>;
-    type Outputs = ViewPort<ArrayValue<f64>>;
-    type State = GateState<F>;
+    type Inputs = ViewPort<ArrayValue<f64, N>>;
+    type Outputs = ViewPort<ArrayValue<f64, N>>;
+    type State = GateState<F, N>;
 
-    fn init(self) -> GateState<F> {
+    fn init(self) -> Self::State {
         GateState {
             predicate: self.0,
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (notified, view): (bool, &'a ArraySlice<'a, f64>),
-        state: &'b mut GateState<F>,
+        (notified, view): (bool, ArrayView<'a, f64, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, ArraySlice<'a, f64>) {
+    ) -> (bool, ArrayView<'a, f64, N>) {
         if init {
             // Seed the retained buffer with the faithful build-time row (so the
             // first view matches what `Split` lends), but do not notify.
             state.out = view.to_array();
-            return (false, ArraySlice::from(&state.out));
+            return (false, state.out.view());
         }
-        if notified && (state.predicate)(*view) {
+        if notified && (state.predicate)(view) {
             // Pass: refresh the retained row in place (no realloc) and notify.
-            state.out.assign(view.as_slice());
-            (true, ArraySlice::from(&state.out))
+            let xs = view.to_contiguous();
+            state.out.assign(&xs);
+            (true, state.out.view())
         } else {
             // Gate out (or upstream silent): re-present the unchanged retained
             // row under `notify = false` — the contract.
-            (false, ArraySlice::from(&state.out))
+            (false, state.out.view())
         }
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a ArraySlice<'a, f64>),
-        state: &'b GateState<F>,
-    ) -> (bool, ArraySlice<'a, f64>) {
-        (false, ArraySlice::from(&state.out))
+        _: (bool, ArrayView<'a, f64, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, f64, N>) {
+        (false, state.out.view())
     }
 }
 
@@ -143,24 +145,22 @@ where
 // Record — append an Array stream into a Series, stamping with event time.
 // ---------------------------------------------------------------------------
 
-/// Records an `Array<T>` stream into a `Series<T>`, stamping each row with the
-/// event time read from the [`Clock`] in its state. The one operator that needs
-/// time — constructed via [`Scenario::add_record`](super::Scenario::add_record),
-/// which supplies the driver's clock.
+/// Records an `Array<T, N>` stream into a `Series<T>`, stamping each row with
+/// the event time read from the [`Clock`] in its state. The one operator that
+/// needs time — constructed via
+/// [`Scenario::add_record`](super::Scenario::add_record), which supplies the
+/// driver's clock.
 ///
 /// An optional [`Retention`] bound (via [`with_retention`](Self::with_retention)
 /// / [`Scenario::add_record_retained`](super::Scenario::add_record_retained))
-/// caps the recorded history: the recorded `Series` drops its oldest rows once
-/// they fall outside the bound, keeping memory bounded for records whose
-/// consumers only look back a fixed window. The default is unbounded (full
-/// history), matching the original behaviour.
-pub struct Record<T: Scalar> {
+/// caps the recorded history.
+pub struct Record<T: Scalar, const N: usize> {
     clock: Clock,
     retention: Retention,
     _p: PhantomData<T>,
 }
 
-impl<T: Scalar> Record<T> {
+impl<T: Scalar, const N: usize> Record<T, N> {
     /// An unbounded record (retains full history).
     pub fn new(clock: Clock) -> Self {
         Self::with_retention(clock, Retention::UNBOUNDED)
@@ -184,12 +184,12 @@ pub struct RecordState<T: Scalar> {
     out: Series<T>,
 }
 
-impl<T: Scalar> Operator for Record<T> {
-    type Inputs = RefPort<Array<T>>;
+impl<T: Scalar, const N: usize> Operator for Record<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
     type Outputs = RefPort<Series<T>>;
     type State = RecordState<T>;
 
-    fn init(self) -> RecordState<T> {
+    fn init(self) -> Self::State {
         RecordState {
             clock: self.clock,
             retention: self.retention,
@@ -198,21 +198,22 @@ impl<T: Scalar> Operator for Record<T> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, x): (bool, &'a Array<T>),
-        state: &'b mut RecordState<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
     ) -> (bool, &'a Series<T>) {
         if init {
-            state.out = Series::with_retention(x.shape(), state.retention);
+            state.out = Series::with_retention(&x.extents(), state.retention);
             return (false, &state.out);
         }
-        state.out.push(state.clock.get(), x.as_slice());
+        let xs = x.to_contiguous();
+        state.out.push(state.clock.get(), &xs);
         (true, &state.out)
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b RecordState<T>,
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
     ) -> (bool, &'a Series<T>) {
         (false, &state.out)
     }
@@ -222,48 +223,48 @@ impl<T: Scalar> Operator for Record<T> {
 // Last — most recent element of a Series as an Array.
 // ---------------------------------------------------------------------------
 
-/// Extracts the most recent element of a `Series<T>` as an `Array<T>`,
-/// substituting `fill` when the series is empty.
-pub struct Last<T: Scalar> {
+/// Extracts the most recent element of a `Series<T>` as a rank-`N`
+/// [`ArrayView`], substituting `fill` when the series is empty.
+pub struct Last<T: Scalar, const N: usize> {
     fill: T,
 }
 
-impl<T: Scalar> Last<T> {
+impl<T: Scalar, const N: usize> Last<T, N> {
     pub fn new(fill: T) -> Self {
         Self { fill }
     }
 }
 
 /// Runtime state for [`Last`]: the fill value plus the output buffer.
-pub struct LastState<T: Scalar> {
+pub struct LastState<T: Scalar, const N: usize> {
     fill: T,
-    out: Array<T>,
+    out: Array<T, N>,
 }
 
-impl<T: Scalar> Operator for Last<T> {
+impl<T: Scalar, const N: usize> Operator for Last<T, N> {
     type Inputs = RefPort<Series<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = LastState<T>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = LastState<T, N>;
 
-    fn init(self) -> LastState<T> {
+    fn init(self) -> Self::State {
         LastState {
             fill: self.fill.clone(),
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, &'a Series<T>),
-        state: &'b mut LastState<T>,
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            let shape = series.shape();
+            let ext = series_extents::<T, N>(series);
             state.out = match series.last() {
-                Some(last) => Array::from_vec(shape, last.to_vec()),
-                None => Array::full(shape, state.fill.clone()),
+                Some(last) => Array::from_vec(ext, last.to_vec()),
+                None => Array::full(ext, state.fill.clone()),
             };
-            return (false, &state.out);
+            return (false, state.out.view());
         }
         match series.last() {
             Some(last) => state.out.as_mut_slice().clone_from_slice(last),
@@ -273,37 +274,54 @@ impl<T: Scalar> Operator for Last<T> {
                 }
             }
         }
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, &'a Series<T>),
-        state: &'b LastState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
+}
+
+/// The element extents of a (dynamic-rank) `Series` as a static `[usize; N]`.
+///
+/// # Panics
+///
+/// Panics if the series' element rank is not `N` — the source→operator boundary
+/// where a runtime-shaped series meets a compile-time-rank consumer.
+#[inline]
+fn series_extents<T: Scalar, const N: usize>(series: &Series<T>) -> [usize; N] {
+    <[usize; N]>::try_from(series.shape()).unwrap_or_else(|_| {
+        panic!(
+            "series element rank {} != operator rank {N}",
+            series.shape().len(),
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Count — stateful per-tick counter (anti-corruption demonstrator).
 // ---------------------------------------------------------------------------
 
-/// Increments a counter every time it runs and emits the running count. Used to
-/// prove gating advances state only when an input actually notifies.
-pub struct Count;
+/// Increments a counter every time it runs and emits the running count (a
+/// rank-0 scalar). Used to prove gating advances state only when an input
+/// actually notifies.
+pub struct Count<const N: usize>;
 
-/// Runtime state for [`Count`]: the counter plus the output buffer.
+/// Runtime state for [`Count`]: the counter plus the scalar output buffer.
 pub struct CountState {
     count: i64,
-    out: Array<f64>,
+    out: Array<f64, 0>,
 }
 
-impl Operator for Count {
-    type Inputs = RefPort<Array<f64>>;
-    type Outputs = RefPort<Array<f64>>;
+impl<const N: usize> Operator for Count<N> {
+    type Inputs = ViewPort<ArrayValue<f64, N>>;
+    type Outputs = ViewPort<ArrayValue<f64, 0>>;
     type State = CountState;
 
-    fn init(self) -> CountState {
+    fn init(self) -> Self::State {
         CountState {
             count: 0,
             out: Array::scalar(0.0),
@@ -311,23 +329,23 @@ impl Operator for Count {
     }
 
     fn compute<'a, 'b: 'a>(
-        _: (bool, &'a Array<f64>),
-        state: &'b mut CountState,
+        _: (bool, ArrayView<'a, f64, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<f64>) {
+    ) -> (bool, ArrayView<'a, f64, 0>) {
         if init {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
         state.count += 1;
         state.out.as_mut_slice()[0] = state.count as f64;
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<f64>),
-        state: &'b CountState,
-    ) -> (bool, &'a Array<f64>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, f64, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, f64, 0>) {
+        (false, state.out.view())
     }
 }
 
