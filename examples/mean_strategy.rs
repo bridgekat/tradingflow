@@ -26,11 +26,11 @@ mod common;
 
 use flowgraph::typed::{Handle, RefPort};
 
+use tradingflow::Scenario;
 use tradingflow::operators::{
     Benchmark, CompoundReturn, Diff, Drawdown, Log, Map, Multiply, PyClassOperator, PyParams,
     RandomTrader, SharpeRatio, Stack,
 };
-use tradingflow::Scenario;
 use tradingflow::sources::clock;
 use tradingflow::{Array, Retention, Series};
 
@@ -66,7 +66,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    let Args { common: args, window, feature_set } = Args::parse();
+    let Args {
+        common: args,
+        window,
+        feature_set,
+    } = Args::parse();
     let fset = common::FeatureSet::parse(&feature_set);
     let symbols = common::load_symbols(&args.data_dir);
     let n = symbols.len();
@@ -101,7 +105,11 @@ async fn main() {
     );
 
     let predicted_returns = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+        PyClassOperator::<(
+            RefPort<Array<f64>>,
+            RefPort<Series<f64>>,
+            RefPort<Series<f64>>,
+        )>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -109,7 +117,7 @@ async fn main() {
                 .int("universe_size", idx)
                 .int("target_offset", TARGET_OFFSET)
                 .int("min_periods", 100)
-                .float("alpha", 1.0),
+                .float("alpha", 0.01),
             vec![n],
             clk.clone(),
         ),
@@ -119,7 +127,9 @@ async fn main() {
     let soft_positions = sc.add_operator(
         PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
             "flowops.portfolios.mean.rank_linear",
-            PyParams::new().int("num_stocks", n_i).float("top_fraction", 1.0),
+            PyParams::new()
+                .int("num_stocks", n_i)
+                .float("top_fraction", 1.0),
             vec![n],
             clk.clone(),
         ),
@@ -146,7 +156,10 @@ async fn main() {
     let actual_value = total_value(&mut sc, strategy_actual);
 
     let sharpe = sc.add_operator(SharpeRatio::<f64>::new(), (actual_value, rebalance_clock));
-    let compound = sc.add_operator(CompoundReturn::<f64>::new(), (actual_value, rebalance_clock));
+    let compound = sc.add_operator(
+        CompoundReturn::<f64>::new(),
+        (actual_value, rebalance_clock),
+    );
     let drawdown = sc.add_operator(Drawdown::<f64>::new(), actual_value);
 
     // Rolling market beta / alpha vs the cap-weighted index, on daily log
@@ -161,7 +174,10 @@ async fn main() {
     let beta_alpha = sc.add_operator(
         PyClassOperator::<(RefPort<()>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.metrics.mean.regression_coefficients",
-            PyParams::new().int("num_features", 1).int("max_periods", 252).int("min_periods", 20),
+            PyParams::new()
+                .int("num_features", 1)
+                .int("max_periods", 252)
+                .int("min_periods", 20),
             vec![2],
             clk.clone(),
         ),
@@ -207,7 +223,13 @@ async fn main() {
     }
 
     let ppy = 365.0 / args.rebalance_days as f64;
-    let last = |h| common::read_scalar_series(&session, h).1.into_iter().last().unwrap_or(f64::NAN);
+    let last = |h| {
+        common::read_scalar_series(&session, h)
+            .1
+            .into_iter()
+            .last()
+            .unwrap_or(f64::NAN)
+    };
     let car = (last(h_compound) + 1.0).powf(ppy) - 1.0;
     let sr = last(h_sharpe) * ppy.sqrt();
     let mdd = common::read_scalar_series(&session, h_drawdown)

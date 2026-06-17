@@ -36,7 +36,10 @@
 use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::data::Duration;
-use tradingflow::operators::{Add, Diff, Divide, Lag, Log, Multiply, Negate, Record, Resample, RollingMean, Subtract};
+use tradingflow::operators::{
+    Add, Diff, Divide, Fillna, Lag, Log, Multiply, Negate, Percentile, Record, Resample,
+    RollingMean, Subtract,
+};
 use tradingflow::{Array, Retention, Scenario};
 
 use super::{Stacked, RETAIN_MARGIN};
@@ -52,10 +55,31 @@ const LAG_YEAR: usize = 244;
 /// tuple-input arm cannot parse a comma inside the operator's generics).
 type ResampleDaily = Resample<Array<f64>, Array<f64>>;
 
-/// A set of named raw factor handles (native cadence), in column order.
+/// A named set of **model-ready feature** handles, in column order — each factor
+/// is already cross-sectionally ranked and its missing values imputed (see
+/// [`rank_impute`]), so a consumer reads the value the model actually uses.
 pub struct FactorSet {
     pub names: Vec<String>,
-    pub raw: Vec<H>,
+    pub feature: Vec<H>,
+}
+
+/// Turn a raw factor into its model-ready feature: cross-sectionally percentile-
+/// rank to `[0, 1]`, then impute a missing value (a `NaN` rank) with the neutral
+/// median `0.5`. Imputation is part of the feature's definition — a stock with
+/// partial factor coverage stays predictable instead of being dropped by the
+/// predictor's all-features-finite mask (which, against the sparse early
+/// fundamental data, would otherwise leave the book in cash / a flat NAV for
+/// years). Every factor is rank-transformed, so `0.5` is the common neutral fill.
+/// The rank → fill chain is fused into one node via `segment!`.
+pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
+    sc.add_operator(
+        flowgraph::segment!(|x: RefPort<Array<f64>>| -> RefPort<Array<f64>> {
+            let ranked = x => Percentile::<f64>::new();
+            let filled = ranked => Fillna::<f64>::new(0.5);
+            filled
+        }),
+        h,
+    )
 }
 
 /// Total market cap = unadjusted close × total shares.
@@ -69,11 +93,19 @@ pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> H {
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
-/// annualized (effective-date-aligned) series.
+/// annualized (effective-date-aligned) series. The record → rolling-mean chain is
+/// fused into one node; the record retains a 365-day (+margin) time window.
 fn ttm(sc: &mut Scenario, h: H) -> H {
-    // 365-day rolling mean → retain a 365-day (+margin) time window.
-    let series = sc.add_record_retained(h, Retention::duration(Duration::from_days(380)));
-    sc.add_operator(RollingMean::<f64>::time_delta(Duration::from_days(365)), series)
+    let clk = sc.clock();
+    let ret = Retention::duration(Duration::from_days(380));
+    sc.add_operator(
+        flowgraph::segment!(|x: RefPort<Array<f64>>| -> RefPort<Array<f64>> {
+            let series = x => Record::<f64>::with_retention(clk, ret);
+            let ttm = series => RollingMean::<f64>::time_delta(Duration::from_days(365));
+            ttm
+        }),
+        h,
+    )
 }
 
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
@@ -245,7 +277,10 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let lag_1m = sc.add_operator(Lag::<f64>::new(21, f64::NAN), log_adj_series);
     add("REV_1M", sc.add_operator(Subtract::<f64>::new(), (log_adj, lag_1m)));
 
-    FactorSet { names, raw }
+    drop(add);
+    // Each catalog entry is finalized into its model-ready feature: rank + impute.
+    let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();
+    FactorSet { names, feature }
 }
 
 /// Forward (next-period) return on the rebalance clock: resample log adjusted

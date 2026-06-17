@@ -25,7 +25,7 @@ use tradingflow::operators::{
 };
 use tradingflow::{Array, Retention, Scenario, Series};
 
-use super::factors::FactorSet;
+use super::factors::{rank_impute, FactorSet};
 use super::{Stacked, RETAIN_MARGIN};
 
 type H = Handle<RefPort<Array<f64>>>;
@@ -67,10 +67,16 @@ fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
 fn mul(sc: &mut Scenario, a: H, b: H) -> H {
     sc.add_operator(Multiply::<f64>::new(), (a, b))
 }
-/// Rolling std = sqrt of the count-window variance.
+/// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    let v = sc.add_operator(RollingVariance::<f64>::count(n), s);
-    sc.add_operator(Sqrt::<f64>::new(), v)
+    sc.add_operator(
+        flowgraph::segment!(|x: RefPort<Series<f64>>| -> RefPort<Array<f64>> {
+            let var = x => RollingVariance::<f64>::count(n);
+            let sd = var => Sqrt::<f64>::new();
+            sd
+        }),
+        s,
+    )
 }
 /// Per-stock rolling Pearson correlation of two daily handles over `n` ticks:
 /// `cov(x,y) = mean(xy) − mean(x)·mean(y)`, normalized by `σx·σy`. Records each
@@ -610,5 +616,8 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
         add(name, sc.add_operator(Select::<f64>::new(vec![c], 1, true), chip));
     }
 
-    FactorSet { names, raw }
+    drop(add);
+    // Finalize each entry into its model-ready feature: rank + impute.
+    let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();
+    FactorSet { names, feature }
 }

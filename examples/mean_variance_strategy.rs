@@ -25,8 +25,8 @@ mod common;
 
 use flowgraph::typed::{Handle, RefPort};
 
-use tradingflow::operators::{Benchmark, Log, Map, Multiply, PyClassOperator, PyParams};
 use tradingflow::Scenario;
+use tradingflow::operators::{Benchmark, Log, Map, Multiply, PyClassOperator, PyParams};
 use tradingflow::sources::clock;
 use tradingflow::{Array, Retention, Series};
 
@@ -102,7 +102,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    let Args { common: args, window, feature_set } = Args::parse();
+    let Args {
+        common: args,
+        window,
+        feature_set,
+    } = Args::parse();
     let fset = common::FeatureSet::parse(&feature_set);
     let symbols = common::load_symbols(&args.data_dir);
     let n = symbols.len();
@@ -141,7 +145,11 @@ async fn main() {
 
     // Mean predictor (demeaned target) and covariance predictor (raw target).
     let predicted_returns = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+        PyClassOperator::<(
+            RefPort<Array<f64>>,
+            RefPort<Series<f64>>,
+            RefPort<Series<f64>>,
+        )>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -149,14 +157,18 @@ async fn main() {
                 .int("universe_size", idx)
                 .int("target_offset", TARGET_OFFSET)
                 .int("min_periods", 100)
-                .float("alpha", 1.0),
+                .float("alpha", 0.01),
             vec![n],
             clk.clone(),
         ),
         (universe, features.series, demeaned_series),
     );
     let predicted_cov = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+        PyClassOperator::<(
+            RefPort<Array<f64>>,
+            RefPort<Series<f64>>,
+            RefPort<Series<f64>>,
+        )>::from_module(
             "flowops.predictors.variance.shrinkage",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -184,7 +196,11 @@ async fn main() {
     let mut variant_handles: Vec<(f64, Handle<RefPort<Series<f64>>>)> = Vec::new();
     for &delta in &DELTAS {
         let soft = sc.add_operator(
-            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
+            PyClassOperator::<(
+                RefPort<Array<f64>>,
+                RefPort<Array<f64>>,
+                RefPort<Array<f64>>,
+            )>::from_module(
                 "flowops.portfolios.mean_variance.markowitz",
                 PyParams::new()
                     .int("num_stocks", n_i)

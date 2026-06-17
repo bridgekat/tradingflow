@@ -771,13 +771,17 @@ pub fn build_factor_features(
     set: FeatureSet,
     feature_retention: Retention,
 ) -> Features {
-    // Both catalogs (fundamental + price-volume); select columns by name.
+    // Both catalogs (fundamental + price-volume); select columns by name. Each
+    // catalog entry is already the model-ready feature — cross-sectionally ranked
+    // and its missing values imputed to the neutral median (so a stock with
+    // partial factor coverage stays predictable rather than dropped by the
+    // predictor's all-features-finite mask).
     let fund = factors::build_factor_catalog(sc, st);
     let pv = pv_factors::build_pv_catalog(sc, st);
     let mut all_names = fund.names;
-    let mut all_raw = fund.raw;
+    let mut all_feat = fund.feature;
     all_names.extend(pv.names);
-    all_raw.extend(pv.raw);
+    all_feat.extend(pv.feature);
 
     let selected: Vec<usize> = match set {
         FeatureSet::All => (0..all_names.len()).collect(),
@@ -797,8 +801,7 @@ pub fn build_factor_features(
     let mut handles = Vec::with_capacity(selected.len());
     for &i in &selected {
         names.push(all_names[i].clone());
-        // Cross-sectional percentile rank → [0, 1], NaN preserved.
-        handles.push(sc.add_operator(Percentile::<f64>::new(), all_raw[i]));
+        handles.push(all_feat[i]);
     }
 
     // Stack into (N, F), resample onto the daily close pulse, and record under

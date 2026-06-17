@@ -282,14 +282,16 @@ async fn main() {
     let mut ic_names = Vec::new();
     let mut ranks: Vec<ArrH> = Vec::new();
     let mut backtests: Vec<(String, common::backtest::DecileBacktest)> = Vec::new();
-    for (name, &raw) in catalog.names.iter().zip(catalog.raw.iter()) {
+    for (name, &feat) in catalog.names.iter().zip(catalog.feature.iter()) {
         if let Some(w) = &want {
             if !w.iter().any(|x| x == name) {
                 continue;
             }
         }
-        // Resample the factor onto the rebalance clock, mask to universe, rank.
-        let reb = sc.add_operator(Resample::<Array<f64>, ()>::new(), (rebalance_clock, raw));
+        // Resample the (catalog-ranked+imputed) feature onto the rebalance clock,
+        // mask to universe, and re-rank within it (monotonic for stocks that have
+        // the factor; imputed stocks enter the RankIC at the median rank).
+        let reb = sc.add_operator(Resample::<Array<f64>, ()>::new(), (rebalance_clock, feat));
         let masked = common::universe::mask_to_universe(&mut sc, reb, universe);
         let rank = sc.add_operator(Percentile::<f64>::new(), masked);
         ranks.push(rank);
@@ -306,10 +308,10 @@ async fn main() {
         ic_handles.push(sc.add_record(ic));
         ic_names.push(name.clone());
 
-        // 10-group layered backtest on the raw factor (RankBucket ranks internally).
+        // 10-group layered backtest on the feature (RankBucket ranks internally).
         if args.backtest {
             let bt = common::backtest::build_decile_backtest(
-                &mut sc, universe, raw, st.close, st.adjusts, upper, lower, n, &clk,
+                &mut sc, universe, feat, st.close, st.adjusts, upper, lower, n, &clk,
             );
             backtests.push((name.clone(), bt));
         }
