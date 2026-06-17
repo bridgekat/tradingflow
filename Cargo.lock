@@ -1882,7 +1882,6 @@ dependencies = [
  "futures",
  "hifitime",
  "indicatif",
- "ndarray",
  "num-traits",
  "numpy",
  "parquet",

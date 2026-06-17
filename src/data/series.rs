@@ -33,8 +33,6 @@
 //! [`view`]: Series::view
 //! [`tail`]: Series::tail
 
-use ndarray::{ArrayViewD, ArrayViewMutD, IxDyn};
-
 use super::time::{Duration, Instant};
 use super::Scalar;
 
@@ -388,42 +386,6 @@ impl<T: Scalar> Series<T> {
 }
 
 // ===========================================================================
-// Ndarray views
-// ===========================================================================
-
-impl<T: Scalar> Series<T> {
-    /// Immutable ndarray view of element at logical index `i`.
-    pub fn view_at(&self, i: usize) -> ArrayViewD<'_, T> {
-        ArrayViewD::from_shape(IxDyn(&self.shape), self.at(i)).unwrap()
-    }
-
-    /// Mutable ndarray view of element at logical index `i`.
-    pub fn view_at_mut(&mut self, i: usize) -> ArrayViewMutD<'_, T> {
-        ArrayViewMutD::from_shape(IxDyn(&self.shape), self.at_mut(i)).unwrap()
-    }
-
-    /// Immutable ndarray view of the retained window: shape
-    /// `[retained_len, s0, s1, ...]`.
-    pub fn view(&self) -> ArrayViewD<'_, T> {
-        let plen = self.timestamps.len();
-        let mut full_shape = Vec::with_capacity(self.shape.len() + 1);
-        full_shape.push(plen);
-        full_shape.extend_from_slice(&self.shape);
-        ArrayViewD::from_shape(IxDyn(&full_shape), self.values()).unwrap()
-    }
-
-    /// Mutable ndarray view of the retained window: shape
-    /// `[retained_len, s0, s1, ...]`.
-    pub fn view_mut(&mut self) -> ArrayViewMutD<'_, T> {
-        let plen = self.timestamps.len();
-        let mut full_shape = Vec::with_capacity(self.shape.len() + 1);
-        full_shape.push(plen);
-        full_shape.extend_from_slice(&self.shape);
-        ArrayViewMutD::from_shape(IxDyn(&full_shape), self.values_mut()).unwrap()
-    }
-}
-
-// ===========================================================================
 // Append
 // ===========================================================================
 
@@ -576,21 +538,6 @@ mod tests {
     fn series_push_wrong_size() {
         let mut s = Series::<f64>::new(&[2]);
         s.push(ts(1), &[1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn series_ndarray_view() {
-        let mut s = Series::<f64>::new(&[3]);
-        s.push(ts(1), &[1.0, 2.0, 3.0]);
-        s.push(ts(2), &[4.0, 5.0, 6.0]);
-
-        let row0 = s.view_at(0);
-        assert_eq!(row0.shape(), &[3]);
-        assert_eq!(row0.as_slice().unwrap(), &[1.0, 2.0, 3.0]);
-
-        let v = s.view();
-        assert_eq!(v.shape(), &[2, 3]);
-        assert_eq!(v.as_slice().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]

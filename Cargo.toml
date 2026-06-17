@@ -21,7 +21,6 @@ default = []
 python = ["dep:pyo3", "dep:numpy", "pyo3/auto-initialize"]
 
 [dependencies]
-ndarray = "0.17.2"
 tokio = { version = "1", features = [
     "rt",
     "rt-multi-thread",

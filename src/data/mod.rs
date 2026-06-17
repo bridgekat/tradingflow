@@ -22,7 +22,7 @@ pub mod array;
 pub mod series;
 pub mod time;
 
-pub use array::{Array, ArraySlice};
+pub use array::{Array, ArrayView, Shape};
 pub use series::{Retention, Series};
 pub use time::{Duration, Instant, tai_to_utc, utc_to_tai};
 
