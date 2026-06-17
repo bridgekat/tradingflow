@@ -366,6 +366,70 @@ def test_incremental_equivalence():
     print("  incremental equivalence OK (OLS/Ridge, expanding + rolling)")
 
 
+def test_incremental_all_samples():
+    """The incremental all-sample aggregate (folded one day at a time) reproduces
+    a from-scratch all-stocks fit under a CHANGING universe + NaN churn. The
+    universe only masks which predictions are emitted -- never the fit.
+    """
+    from flowops.predictors.mean import incremental_ridge as i_ridge
+    from flowops.predictors.mean._incremental import _solve_standardized
+
+    nc, alpha, off, minp = 8, 0.7, 1, 3
+    rng = np.random.default_rng(11)
+    true_beta = rng.normal(size=F)
+    feats = [rng.normal(size=(nc, F)) for _ in range(T)]
+    targs = [feats[t] @ true_beta + 0.1 * rng.normal(size=nc) for t in range(T)]
+
+    def universe_at(t):  # a rotating subset -> stocks leave and re-enter the universe
+        u = np.ones(nc)
+        u[t % nc] = 0.0
+        u[(3 * t + 1) % nc] = 0.0
+        return u
+
+    op = i_ridge.build(num_stocks=nc, num_features=F, universe_size=nc,
+                       target_offset=off, alpha=alpha, min_periods=minp)
+    boot = (FakeArrayView(np.ones(nc)), FakeSeriesView(feats, elem_shape=(nc, F)), FakeSeriesView(targs, elem_shape=(nc,)))
+    si = op.init(boot, 0)
+    max_d = 0.0
+    for t in range(2, T + 1):
+        fl = [f.copy() for f in feats[:t]]
+        if t % 4 == 0:  # occasionally NaN the latest features of one stock
+            fl[-1][(t // 4) % nc, :] = np.nan
+        fv = FakeSeriesView(fl, elem_shape=(nc, F))
+        tv = FakeSeriesView(targs[:t], elem_shape=(nc,))
+        uni = universe_at(t)
+        oi = FakeArrayView(np.zeros(nc), writable=True)
+        op.compute(si, (FakeArrayView(uni), fv, tv), oi, t, (True, True, True))
+
+        # Brute-force oracle: fit on ALL valid samples in the window, predict for
+        # the current universe (with the min_periods + finite-feature mask).
+        n_pair = max(0, t - off)
+        n = sy = syy = 0.0
+        sx = np.zeros(F); sxx = np.zeros((F, F)); sxy = np.zeros(F); counts = np.zeros(nc)
+        for i in range(n_pair):
+            x, y = fl[i], targs[i + off]
+            v = np.isfinite(x).all(1) & np.isfinite(y)
+            counts += v
+            xr, yr = x[v], y[v]
+            sxx += xr.T @ xr; sx += xr.sum(0); sxy += xr.T @ yr
+            sy += float(yr.sum()); syy += float(yr @ yr); n += xr.shape[0]
+        mu = np.full(nc, np.nan)
+        if n > 0:
+            p = _solve_standardized(n, sx, sxx, sy, sxy, syy, alpha)
+            mask = (uni > 0) & (counts >= minp) & np.isfinite(fl[-1]).all(1)
+            if mask.any():
+                z = (fl[-1][mask] - p.x_mean) / p.x_std
+                mu[mask] = z @ p.beta + p.intercept
+
+        assert np.array_equal(np.isnan(mu), np.isnan(oi.written)), f"NaN-mask mismatch at t={t}"
+        assert np.allclose(mu, oi.written, atol=1e-6, equal_nan=True), (
+            f"all-samples mismatch at t={t}, max|d|={np.nanmax(np.abs(mu - oi.written)):.3e}"
+        )
+        if np.any(np.isfinite(mu)):
+            max_d = max(max_d, float(np.nanmax(np.abs(mu - oi.written))))
+    print(f"  incremental all-samples OK (max|d|={max_d:.2e})")
+
+
 def main():
     tests = [
         test_mean_sample,
@@ -375,6 +439,7 @@ def main():
         test_mean_lasso,
         test_mean_subsample,
         test_incremental_equivalence,
+        test_incremental_all_samples,
         test_var_sample,
         test_var_single_index,
         test_var_shrinkage,

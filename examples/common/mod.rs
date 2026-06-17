@@ -38,6 +38,11 @@ use tradingflow::{Scenario, Session};
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
 use tradingflow::{Array, ArraySlice, Instant, Series, utc_to_tai};
 
+pub mod backtest;
+pub mod factors;
+pub mod pv_factors;
+pub mod universe;
+
 // ===========================================================================
 // Calendar / Instant helpers
 // ===========================================================================
@@ -276,15 +281,37 @@ pub fn load_symbols(data_dir: &str) -> Vec<String> {
 // ===========================================================================
 
 /// Cross-sectional `(num_stocks,)` panels produced by [`build_stacked`].
+///
+/// The fundamental fields below are point-in-time (effective-date-aligned,
+/// carried forward). Income / cash-flow flows are **annualized** (YTD →
+/// `Annualize`); a trailing-twelve-month figure is a 365-day rolling mean of the
+/// annualized series (see [`factors`]). The parquet stores assets debit-positive
+/// and liabilities / expense items credit-**negative** — the factor formulas
+/// negate them where a positive magnitude is wanted.
 pub struct Stacked {
     pub close: Handle<RefPort<Array<f64>>>,          // unadjusted close (StackSync)
-    pub volume: Handle<RefPort<Array<f64>>>,         // (StackSync)
+    pub volume: Handle<RefPort<Array<f64>>>,         // 成交量 shares (StackSync)
+    pub open: Handle<RefPort<Array<f64>>>,           // 开盘价 unadjusted (StackSync)
+    pub high: Handle<RefPort<Array<f64>>>,           // 最高价 unadjusted (StackSync)
+    pub low: Handle<RefPort<Array<f64>>>,            // 最低价 unadjusted (StackSync)
+    pub amount: Handle<RefPort<Array<f64>>>,         // 成交额 turnover value (StackSync)
     pub adjusted_close: Handle<RefPort<Array<f64>>>, // close * forward-adjust factor (StackSync)
     pub adjusts: Handle<RefPort<Array<f64>>>,        // forward-adjust factor (Stack)
     pub total_shares: Handle<RefPort<Array<f64>>>,   // (Stack)
     pub circ_shares: Handle<RefPort<Array<f64>>>,    // (Stack)
-    pub parent_equity: Handle<RefPort<Array<f64>>>,  // (Stack)
-    pub net_profit: Handle<RefPort<Array<f64>>>,     // annualized net profit (Stack)
+    pub parent_equity: Handle<RefPort<Array<f64>>>,  // 归母净资产, positive (Stack)
+    pub net_profit: Handle<RefPort<Array<f64>>>,     // 净利润, annualized, positive
+    pub operating_profit: Handle<RefPort<Array<f64>>>, // 营业利润, annualized, positive
+    pub revenue: Handle<RefPort<Array<f64>>>,        // 营业收入, annualized, positive
+    pub operating_cost: Handle<RefPort<Array<f64>>>, // 营业成本, annualized, NEGATIVE (a deduction)
+    pub total_assets: Handle<RefPort<Array<f64>>>,   // 总资产, positive
+    pub total_liab: Handle<RefPort<Array<f64>>>,     // 总负债, NEGATIVE (credit side)
+    pub current_assets: Handle<RefPort<Array<f64>>>, // 流动资产, positive
+    pub current_liab: Handle<RefPort<Array<f64>>>,   // 流动负债, NEGATIVE (credit side)
+    pub cash: Handle<RefPort<Array<f64>>>,           // 货币资金, positive
+    pub inventories: Handle<RefPort<Array<f64>>>,    // 存货, positive
+    pub receivables: Handle<RefPort<Array<f64>>>,    // 应收票据及账款, positive
+    pub net_operating_cashflow: Handle<RefPort<Array<f64>>>, // 经营现金流净额, annualized
 }
 
 /// Predicate for the per-stock `FilterView`: the row has ≥1 finite entry, i.e.
@@ -347,7 +374,14 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     let prices_panel = daily_panel(
         sc,
         "daily_prices",
-        vec!["prices.close".into(), "prices.volume".into()],
+        vec![
+            "prices.close".into(),  // 0
+            "prices.volume".into(), // 1 (shares)
+            "prices.open".into(),   // 2
+            "prices.high".into(),   // 3
+            "prices.low".into(),    // 4
+            "prices.amount".into(), // 5 (turnover value, 成交额)
+        ],
     );
     let div_panel = daily_panel(
         sc,
@@ -363,16 +397,41 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         sc,
         "balance_sheets",
         vec![
+            // [0..3]: parent-equity components (summed and negated in-segment).
             "balance_sheet.equity.capital".into(),
             "balance_sheet.equity.reserves".into(),
             "balance_sheet.equity.parent_interests".into(),
+            // [3..8]: point-in-time balance stocks for the fundamental factors
+            // (assets debit-positive, liabilities credit-negative).
+            "balance_sheet.assets".into(),              // 3 total assets
+            "balance_sheet.liab".into(),                // 4 total liabilities (negative)
+            "balance_sheet.assets.current".into(),      // 5 current assets
+            "balance_sheet.liab.current".into(),        // 6 current liabilities (negative)
+            "balance_sheet.assets.current.cash".into(), // 7 cash & equivalents
+            "balance_sheet.assets.current.inventories".into(), // 8 inventories
+            "balance_sheet.assets.current.receivables.notes_and_accounts".into(), // 9 应收票据及账款
         ],
         false,
     );
     let income_panel = report_panel(
         sc,
         "income_statements",
-        vec!["income_statement.profit".into()],
+        vec![
+            "income_statement.profit".into(),                          // 0 net profit
+            "income_statement.profit.operating".into(),                // 1 operating profit
+            "income_statement.profit.operating.income.revenue".into(), // 2 revenue
+            "income_statement.profit.operating.expenses.costs".into(), // 3 operating cost (negative)
+        ],
+        true,
+    );
+    let cashflow_panel = report_panel(
+        sc,
+        "cash_flow_statements",
+        vec![
+            "cash_flow_statement.change.operating".into(), // 0 operating cash flow
+            "cash_flow_statement.change.investing".into(), // 1 investing cash flow
+            "cash_flow_statement.change.financing".into(), // 2 financing cash flow
+        ],
         true,
     );
 
@@ -382,6 +441,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     let equity_rows = sc.add_operator(Split::<f64>::new(n), equity_panel);
     let balance_rows = sc.add_operator(Split::<f64>::new(n), balance_panel);
     let income_rows = sc.add_operator(Split::<f64>::new(n), income_panel);
+    let cashflow_rows = sc.add_operator(Split::<f64>::new(n), cashflow_panel);
 
     let mut close_v = Vec::with_capacity(n);
     let mut volume_v = Vec::with_capacity(n);
@@ -390,12 +450,15 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     let mut total_v = Vec::with_capacity(n);
     let mut circ_v = Vec::with_capacity(n);
     let mut peq_v = Vec::with_capacity(n);
-    let mut np_v = Vec::with_capacity(n);
+    let mut income_v = Vec::with_capacity(n); // annualized [profit, operating, revenue, cost]
+    let mut bal_v = Vec::with_capacity(n); // [assets, liab, current_assets, current_liab, cash]
+    let mut cf_v = Vec::with_capacity(n); // annualized [operating, investing, financing]
+    let mut px_v = Vec::with_capacity(n); // daily [open, high, low, amount]
 
     for i in 0..n {
         // The whole per-stock transform chain, fused into ONE graph node via
         // the `segment!` arrow notation. Inputs are the stock's **zero-copy
-        // row views** of the five panels (from `Split`); the leading
+        // row views** of the six panels (from `Split`); the leading
         // `Gate(any_finite)` per panel drops the all-NaN "no data" ticks,
         // recovering that stock's real event stream exactly as the old
         // per-stock `pick` chains did. `Gate` retains the last passed row in
@@ -408,11 +471,18 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         // `ForwardAdjust`'s price/dividend message-passing are unchanged. The
         // segment is identical for every stock (the stock index lives only in
         // the input wiring), so it monomorphizes once.
+        //
+        // The many fundamental columns are emitted as GROUPED arrays
+        // (`income_ann` [4], `balance_extras` [5], `cf_ann` [3]) rather than one
+        // output each — both to keep the segment within the tuple-arity limit
+        // and to move less. The `Stack` joins below build the `(N, K)` panels;
+        // a squeezing column `Select` recovers each field as `(N,)`.
         let seg = flowgraph::segment!(|prices_row: RefViewPort<ArrayValue<f64>>,
                                        div_row: RefViewPort<ArrayValue<f64>>,
                                        equity_row: RefViewPort<ArrayValue<f64>>,
                                        balance_row: RefViewPort<ArrayValue<f64>>,
-                                       income_row: RefViewPort<ArrayValue<f64>>|
+                                       income_row: RefViewPort<ArrayValue<f64>>,
+                                       cashflow_row: RefViewPort<ArrayValue<f64>>|
             -> (
             RefPort<Array<f64>>,
             RefViewPort<ArrayValue<f64>>,
@@ -421,33 +491,42 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             RefViewPort<ArrayValue<f64>>,
             RefViewPort<ArrayValue<f64>>,
             RefPort<Array<f64>>,
-            RefPort<Array<f64>>
+            RefPort<Array<f64>>,
+            RefViewPort<ArrayValue<f64>>,
+            RefPort<Array<f64>>,
+            RefViewPort<ArrayValue<f64>>
         ) {
-            let prices = prices_row => Gate(any_finite); // [close, volume]
+            let prices = prices_row => Gate(any_finite); // [close, volume, open, high, low, amount]
             let dividends = div_row => Gate(any_finite); // [share, cash]
             let equity = equity_row => Gate(any_finite); // [total, circulating]
-            let balance = balance_row => Gate(any_finite); // [capital, reserves, parent_interests]
-            let income = income_row => Gate(any_finite); // [year, day_of_year, profit]
+            let balance = balance_row => Gate(any_finite); // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
+            let income = income_row => Gate(any_finite); // [year, doy, profit, operating, revenue, cost]
+            let cashflow = cashflow_row => Gate(any_finite); // [year, doy, operating, investing, financing]
             // Terminal column picks (whose only consumer is their cross-section
             // join) stay zero-copy views (`SliceView`) into the retaining
-            // `Gate`'s stable storage, materialized straight into the panel by
-            // the carry/NaN-fill `*View` joins. `close` is NOT terminal — it
-            // feeds `ForwardAdjust` and `Multiply` (owned inputs) inside the
-            // segment — so it materializes here via the owned `SelectView`.
+            // `Gate`'s stable storage. `close` is NOT terminal — it feeds
+            // `ForwardAdjust` and `Multiply` (owned inputs) — so it materializes
+            // here via the owned `SelectView`.
             let close = prices => SelectView::<f64>::new(vec![0], 0, true);
             let volume = prices => SliceView::new(vec![1], 0, true);
+            // [open, high, low, amount] as a contiguous view of cols 2..6.
+            let prices_extras = prices => SliceView::new(vec![2, 3, 4, 5], 0, false);
             let adjusts = (close, dividends)
                 => ForwardAdjustViewDiv::default().with_output_prices(false);
             let adjusted_close = (close, adjusts) => Multiply::<f64>::new();
             let total_shares = equity => SliceView::new(vec![0], 0, true);
             let circ_shares = equity => SliceView::new(vec![1], 0, true);
-            let income_ann = income => AnnualizeView::default(); // [profit]
-            // parent_equity = -(capital + reserves + parent_interests).
-            let net_profit = income_ann => Select::<f64>::new(vec![0], 0, true);
+            // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).
             let parent_equity = balance
                 => Apply::<ViewPort<ArrayValue<f64>>, Array<f64>, _>::new(
-                    |a: ArraySlice<f64>| Array::scalar(-a.as_slice().iter().sum::<f64>()),
+                    |a: ArraySlice<f64>| Array::scalar(-a.as_slice()[..3].iter().sum::<f64>()),
                 );
+            // Annualized income / cash flows (YTD → Annualize) and the balance
+            // stocks [assets, liab, current_assets, current_liab, cash] as a
+            // contiguous view of cols 3..8.
+            let income_ann = income => AnnualizeView::default();
+            let cf_ann = cashflow => AnnualizeView::default();
+            let balance_extras = balance => SliceView::new(vec![3, 4, 5, 6, 7, 8, 9], 0, false);
             (
                 close,
                 volume,
@@ -456,20 +535,35 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
                 total_shares,
                 circ_shares,
                 parent_equity,
-                net_profit,
+                income_ann,
+                balance_extras,
+                cf_ann,
+                prices_extras,
             )
         });
-        let (close, volume, adjusted_close, adjusts, total_shares, circ_shares, parent_equity, net_profit) =
-            sc.add_operator(
-                seg,
-                (
-                    prices_rows[i],
-                    div_rows[i],
-                    equity_rows[i],
-                    balance_rows[i],
-                    income_rows[i],
-                ),
-            );
+        let (
+            close,
+            volume,
+            adjusted_close,
+            adjusts,
+            total_shares,
+            circ_shares,
+            parent_equity,
+            income_ann,
+            balance_extras,
+            cf_ann,
+            prices_extras,
+        ) = sc.add_operator(
+            seg,
+            (
+                prices_rows[i],
+                div_rows[i],
+                equity_rows[i],
+                balance_rows[i],
+                income_rows[i],
+                cashflow_rows[i],
+            ),
+        );
 
         close_v.push(close);
         volume_v.push(volume);
@@ -478,8 +572,18 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         total_v.push(total_shares);
         circ_v.push(circ_shares);
         peq_v.push(parent_equity);
-        np_v.push(net_profit);
+        income_v.push(income_ann);
+        bal_v.push(balance_extras);
+        cf_v.push(cf_ann);
+        px_v.push(prices_extras);
     }
+
+    // Cross-sectional grouped panels; a squeezing column `Select` (axis 1)
+    // recovers each field as `(N,)`.
+    let income_xs = sc.add_operator(Stack::<f64>::new(0), &income_v[..]); // (N, 4)
+    let balance_xs = sc.add_operator(StackView::<f64>::new(0), &bal_v[..]); // (N, 5)
+    let cf_xs = sc.add_operator(Stack::<f64>::new(0), &cf_v[..]); // (N, 3)
+    let px_xs = sc.add_operator(StackSyncView::<f64>::new(0), &px_v[..]); // (N, 4) [open, high, low, amount]
 
     Stacked {
         close: sc.add_operator(StackSync::<f64>::new(0), &close_v[..]),
@@ -489,7 +593,22 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         total_shares: sc.add_operator(StackView::<f64>::new(0), &total_v[..]),
         circ_shares: sc.add_operator(StackView::<f64>::new(0), &circ_v[..]),
         parent_equity: sc.add_operator(Stack::<f64>::new(0), &peq_v[..]),
-        net_profit: sc.add_operator(Stack::<f64>::new(0), &np_v[..]),
+        net_profit: sc.add_operator(Select::<f64>::new(vec![0], 1, true), income_xs),
+        operating_profit: sc.add_operator(Select::<f64>::new(vec![1], 1, true), income_xs),
+        revenue: sc.add_operator(Select::<f64>::new(vec![2], 1, true), income_xs),
+        operating_cost: sc.add_operator(Select::<f64>::new(vec![3], 1, true), income_xs),
+        total_assets: sc.add_operator(Select::<f64>::new(vec![0], 1, true), balance_xs),
+        total_liab: sc.add_operator(Select::<f64>::new(vec![1], 1, true), balance_xs),
+        current_assets: sc.add_operator(Select::<f64>::new(vec![2], 1, true), balance_xs),
+        current_liab: sc.add_operator(Select::<f64>::new(vec![3], 1, true), balance_xs),
+        cash: sc.add_operator(Select::<f64>::new(vec![4], 1, true), balance_xs),
+        inventories: sc.add_operator(Select::<f64>::new(vec![5], 1, true), balance_xs),
+        receivables: sc.add_operator(Select::<f64>::new(vec![6], 1, true), balance_xs),
+        net_operating_cashflow: sc.add_operator(Select::<f64>::new(vec![0], 1, true), cf_xs),
+        open: sc.add_operator(Select::<f64>::new(vec![0], 1, true), px_xs),
+        high: sc.add_operator(Select::<f64>::new(vec![1], 1, true), px_xs),
+        low: sc.add_operator(Select::<f64>::new(vec![2], 1, true), px_xs),
+        amount: sc.add_operator(Select::<f64>::new(vec![3], 1, true), px_xs),
     }
 }
 
@@ -573,6 +692,119 @@ pub fn build_features(sc: &mut Scenario, st: &Stacked, window: usize) -> Feature
         names,
         handles,
         series,
+    }
+}
+
+// ===========================================================================
+// CICC handbook factor feature panel
+// ===========================================================================
+
+/// Which factor panel a strategy regresses on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FeatureSet {
+    /// The canonical 7-factor [`build_features`] panel (back-compat default).
+    Canonical,
+    /// A curated, style-diverse ~24-factor subset of the CICC handbooks
+    /// (value / quality / growth / size / momentum / reversal / low-vol /
+    /// liquidity / illiquidity / price-volume-correlation / chip), chosen from
+    /// the single-factor study. Within-style collinearity is handled by the
+    /// predictor's pool-standardized Ridge (`alpha`).
+    Cicc,
+    /// All 145 CICC factors (fundamental + price-volume). Heavily collinear by
+    /// design — leans entirely on Ridge to regularise.
+    All,
+}
+
+impl FeatureSet {
+    pub fn parse(s: &str) -> FeatureSet {
+        match s {
+            "canonical" => FeatureSet::Canonical,
+            "cicc" => FeatureSet::Cicc,
+            "all" => FeatureSet::All,
+            other => panic!("unknown --feature-set {other:?} (expected canonical|cicc|all)"),
+        }
+    }
+}
+
+/// Curated style-diverse subset of CICC handbook factors used by
+/// [`FeatureSet::Cicc`]. Names must match the catalog entries in
+/// [`factors::build_factor_catalog`] / [`pv_factors::build_pv_catalog`].
+const CICC_SUBSET: &[&str] = &[
+    // Value / quality / growth / size (fundamental)
+    "BP_LR", "SP_TTM", "EP_TTM", "ROE_TTM", "GPM_TTM", "CFOA", "APR_TTM", "TA_YOY", "Ln_MC",
+    // Momentum / reversal (price-volume)
+    "mmt_normal_M", "mmt_intraday_M", "mmt_overnight_M", "mmt_range_M", "mmt_route_M",
+    // Volatility
+    "vol_std_1M", "vol_up_std_1M", "vol_w_downshadow_std_1M",
+    // Liquidity / illiquidity
+    "liq_turn_std_1M", "liq_amihud_avg_1M", "liq_vstd_1M",
+    // Price-volume correlation
+    "corr_price_turn_1M", "corr_ret_turnd_1M",
+    // Chip distribution
+    "distribution_loss_l", "distribution_ret_avg",
+];
+
+/// Build a cross-sectionally percentile-ranked factor panel from the CICC
+/// handbook catalogs, recorded on the daily close pulse — a drop-in [`Features`]
+/// for the mean / mean-variance predictors. Each selected factor is ranked
+/// ([`Percentile`], robust to the heavy tails / disparate scales of raw factors),
+/// stacked into `(N, F)`, resampled onto the daily pulse, and recorded. `set`
+/// must be [`FeatureSet::Cicc`] or [`FeatureSet::All`] (use [`build_features`]
+/// for [`FeatureSet::Canonical`]).
+pub fn build_factor_features(sc: &mut Scenario, st: &Stacked, set: FeatureSet) -> Features {
+    // Both catalogs (fundamental + price-volume); select columns by name.
+    let fund = factors::build_factor_catalog(sc, st);
+    let pv = pv_factors::build_pv_catalog(sc, st);
+    let mut all_names = fund.names;
+    let mut all_raw = fund.raw;
+    all_names.extend(pv.names);
+    all_raw.extend(pv.raw);
+
+    let selected: Vec<usize> = match set {
+        FeatureSet::All => (0..all_names.len()).collect(),
+        FeatureSet::Cicc => CICC_SUBSET
+            .iter()
+            .map(|nm| {
+                all_names
+                    .iter()
+                    .position(|x| x == nm)
+                    .unwrap_or_else(|| panic!("CICC_SUBSET names an unknown factor {nm:?}"))
+            })
+            .collect(),
+        FeatureSet::Canonical => panic!("build_factor_features called with Canonical; use build_features"),
+    };
+
+    let mut names = Vec::with_capacity(selected.len());
+    let mut handles = Vec::with_capacity(selected.len());
+    for &i in &selected {
+        names.push(all_names[i].clone());
+        // Cross-sectional percentile rank → [0, 1], NaN preserved.
+        handles.push(sc.add_operator(Percentile::<f64>::new(), all_raw[i]));
+    }
+
+    // Stack into (N, F), resample onto the daily close pulse, and record.
+    let stacked_features = sc.add_operator(Stack::<f64>::new(1), &handles[..]);
+    let sampled = sc.add_operator(
+        Resample::<Array<f64>, Array<f64>>::new(),
+        (st.adjusted_close, stacked_features),
+    );
+    let series = sc.add_record(sampled);
+
+    Features { names, handles, series }
+}
+
+/// Build the strategy feature panel for `set`, dispatching to [`build_features`]
+/// (canonical) or [`build_factor_features`] (CICC subsets). `window` is only
+/// used by the canonical set.
+pub fn build_strategy_features(
+    sc: &mut Scenario,
+    st: &Stacked,
+    window: usize,
+    set: FeatureSet,
+) -> Features {
+    match set {
+        FeatureSet::Canonical => build_features(sc, st, window),
+        _ => build_factor_features(sc, st, set),
     }
 }
 

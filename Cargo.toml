@@ -82,6 +82,10 @@ required-features = ["python"]
 name = "factor_ic"
 required-features = ["python"]
 
+[[example]]
+name = "factor_handbook"
+required-features = ["python"]
+
 # To develop flowgraph alongside tradingflow, clone it next to this repo and
 # uncomment the override below (the source URL must match the dependency above):
 # [patch."https://github.com/bridgekat/flowgraph.git"]

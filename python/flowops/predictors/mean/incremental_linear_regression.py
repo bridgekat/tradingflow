@@ -1,47 +1,42 @@
 """Incremental (recursive-least-squares) OLS mean predictor.
 
-Maintains the per-stock sufficient statistics across rebalances and solves pooled,
-pool-standardized OLS over the active subset each refit -- equivalent (to solver
-tolerance) to `linear_regression` on the full window, but with per-rebalance cost
-independent of history length. Supports a rolling `window` (down-dates aged-out
-ticks); `window=None` is the expanding window matching the original default.
+Maintains an all-sample sufficient-statistic pool across rebalances and solves
+pooled, pool-standardized OLS over every stock with valid features each refit (the
+universe only selects which predictions are emitted), with per-rebalance cost
+independent of history length and stock count. OLS is Ridge with ``alpha=0``.
+Supports a rolling `window` (down-dates aged-out days); `window=None` is the
+expanding window matching the original default. See
+`flowops.predictors.mean._incremental` for the design.
 """
 
 from __future__ import annotations
 
-from flowops.predictors.mean._incremental import (
-    IncrementalMeanPredictor,
-    rls_add_sample,
-    rls_counts,
-    rls_fit,
-    rls_init_running,
-    rls_predict,
-    rls_remove_sample,
-)
+from flowops.predictors.mean._incremental import IncrementalMeanPredictor, rls_pool_factory
 
-__all__ = ["IncrementalLinearRegression", "build"]
+__all__ = ["build"]
 
 
-class IncrementalLinearRegression(IncrementalMeanPredictor):
-    """Incremental pooled OLS mean predictor (Ridge with ``alpha=0``)."""
-
-    def __init__(self, **kwargs) -> None:
-        super().__init__(
-            init_running_fn=rls_init_running,
-            add_sample_fn=rls_add_sample,
-            remove_sample_fn=rls_remove_sample,
-            counts_fn=rls_counts,
-            fit_fn=lambda running, mask: rls_fit(running, mask, 0.0),
-            predict_fn=rls_predict,
-            **kwargs,
-        )
-
-
-def build(**kwargs) -> IncrementalLinearRegression:
-    """Construct an :class:`IncrementalLinearRegression`.
-
-    Build kwargs: num_stocks, num_features, universe_size, target_offset,
-    refit_every (default 1), window (rolling ticks; default None = expanding),
-    min_periods (default None).
-    """
-    return IncrementalLinearRegression(**kwargs)
+def build(
+    *,
+    num_stocks: int,
+    num_features: int,
+    universe_size: int,
+    target_offset: int,
+    refit_every: int = 1,
+    window: int | None = None,
+    min_periods: int | None = None,
+) -> IncrementalMeanPredictor:
+    """Construct an incremental pooled OLS mean predictor (Ridge with alpha=0)."""
+    return IncrementalMeanPredictor(
+        pool_factory=rls_pool_factory(
+            num_stocks=num_stocks,
+            num_features=num_features,
+            universe_size=universe_size,
+            min_periods=min_periods,
+            window=window,
+            alpha=0.0,
+        ),
+        target_offset=target_offset,
+        refit_every=refit_every,
+        window=window,
+    )
