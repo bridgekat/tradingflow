@@ -831,7 +831,7 @@ fn parallel_stress_stateful_counts() {
 /// [array-view-refactor] Reinterpreted: in the const-rank model a `Split` row is
 /// a `RefViewPort` (the by-reference fan-out leaf), which the carry-join combines
 /// (`Stack`) consume directly but the `ViewPort`-input operators (`Gate` /
-/// `SelectView` / `Count`) cannot. The original downstream `Gate → SelectView →
+/// `Select` / `Count`) cannot. The original downstream `Gate → Select →
 /// Count` per-row chain is therefore not expressible; the notify-tracking intent
 /// (rows recompute with the panel, not on unrelated pokes) is preserved by
 /// counting `Stack` recomputes via a clock-stamped `Record` length instead.
@@ -931,7 +931,7 @@ fn view_chain_matches_owned_chain() {
     let d_g = b.push(Gate::<_, 1>(any_finite), div_view);
     let v_close = b.push(SliceView::<f64, 1, 0>::new(vec![0], 0, true), p_g);
     let v_adj = b.push(
-        ForwardAdjustViewDiv::<0, 1>::default().with_output_prices(false),
+        ForwardAdjust::<0, 1>::default().with_output_prices(false),
         (v_close, d_g),
     );
     let v_adjusted = b.push(multiply::<f64, 0>(), (v_close, v_adj));
@@ -966,17 +966,17 @@ fn view_chain_matches_owned_chain() {
 /// contract: the join reads **every** input each generation (incl. un-notified
 /// ones), and an idle generation (the panel not poked) leaves the stacked
 /// cross-section byte-identical to the last poked value. Two equivalent joins
-/// (`Stack` and its `StackView` alias) over the same rows agree bit-for-bit.
+/// (`Stack` and its `Stack` alias) over the same rows agree bit-for-bit.
 ///
 /// [array-view-refactor] Reinterpreted: in the const-rank model the only
 /// `RefViewPort` array producer is `Split`, and the carry-join combines
 /// (`Stack`) take `RefViewPorts` — but the `ViewPort`-input `Gate`/`Select`/
 /// `SliceView` cannot consume a `Split` row, so the original
-/// `Split → Gate → {Select, SliceView} → {Stack, StackView}` topology (per-stock
+/// `Split → Gate → {Select, SliceView} → {Stack, Stack}` topology (per-stock
 /// gated cutoff feeding the join) is not expressible. The retained core — the
 /// carry join re-reads un-notified inputs and freezes its output across idle
 /// generations — is tested by stacking the `Split` rows directly and asserting
-/// the idle-generation carry. (`StackView` is now a type alias of `Stack`, so
+/// the idle-generation carry. (`Stack` is now a type alias of `Stack`, so
 /// the owned-vs-view comparison is the same operator over the same inputs.)
 #[test]
 fn view_join_carry_matches_owned_join() {
@@ -991,9 +991,9 @@ fn view_join_carry_matches_owned_join() {
     let rows = b.push(Split::<f64, 2, 1>::new(n), panelv);
 
     // Two equivalent carry joins over the same `Split` rows (the only buildable
-    // carry-join input): `Stack` and its `StackView` alias.
+    // carry-join input): `Stack` and its `Stack` alias.
     let owned_join = b.push(Stack::<f64, 1, 2>::new(0), &rows[..]);
-    let view_join = b.push(StackView::<f64, 1, 2>::new(0), &rows[..]);
+    let view_join = b.push(Stack::<f64, 1, 2>::new(0), &rows[..]);
 
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);

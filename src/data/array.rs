@@ -463,7 +463,6 @@ fn for_each_offset<const N: usize>(shape: &Shape<N>, base: usize, mut f: impl Fn
 }
 
 /// Element-wise unary `out[i] = f(x[i])`, contiguous-fast / strided-slow.
-#[allow(dead_code)]
 pub(crate) fn apply_unary<T: Scalar, const N: usize>(
     out: &mut Array<T, N>,
     x: &ArrayView<T, N>,
@@ -486,7 +485,6 @@ pub(crate) fn apply_unary<T: Scalar, const N: usize>(
 
 /// Element-wise binary `out[i] = f(a[i], b[i])`, contiguous-fast / strided-slow.
 /// `a` and `b` must share extents (asserted by the caller via output sizing).
-#[allow(dead_code)]
 pub(crate) fn apply_binary<T: Scalar, const N: usize>(
     out: &mut Array<T, N>,
     a: &ArrayView<T, N>,

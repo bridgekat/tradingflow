@@ -59,11 +59,11 @@ pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
 pub use structural::{Cast, Id, Resample, Where};
 pub use transform::{
     Apply, ApplyInplace, AsView, DerefArrayView, Lag, Map, MapInplace, RefArrayView, Select,
-    SelectView, SliceView,
+    SliceView,
 };
-pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync, StackSyncView, StackView};
+pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync};
 pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility};
-pub use stocks::{Annualize, AnnualizeView, ForwardAdjust, ForwardAdjustViewDiv};
+pub use stocks::{Annualize, ForwardAdjust};
 pub use rolling::{
     Accumulator, CovarianceAccumulator, Ema, MeanAccumulator, Rolling, RollingCovariance,
     RollingMean, RollingSum, RollingVariance, SumAccumulator, VarianceAccumulator, Window,

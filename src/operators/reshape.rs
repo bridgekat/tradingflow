@@ -4,8 +4,8 @@
 //!
 //! In the view currency every multi-input combine takes
 //! `RefViewPorts<ArrayValue<T, IN>>` (a slice of strided views), so the old
-//! owned/`*View` split collapses: `StackView`/`StackSyncView` are now type
-//! aliases of `Stack`/`StackSync`. The combine into the output cross-section is
+//! owned/view operator split has collapsed into a single set of operators. The
+//! combine into the output cross-section is
 //! the irreducible panel→cross-section data movement (each input materialized
 //! via `to_contiguous`); the per-stock selections upstream stay copy-free
 //! ([`SliceView`](super::SliceView)).
@@ -87,7 +87,7 @@ fn stack_extents<const IN: usize, const OUT: usize>(
 }
 
 // ---------------------------------------------------------------------------
-// Stack / StackSync — new axis. (StackView/StackSyncView are aliases.)
+// Stack / StackSync — new axis.
 // ---------------------------------------------------------------------------
 
 /// Stack `N` homogeneous rank-`IN` views along a **new** axis into the owned
@@ -233,11 +233,6 @@ impl<T: Scalar + Float, const IN: usize, const OUT: usize> Operator for StackSyn
     }
 }
 
-/// [`Stack`] over view inputs — now the same operator (the currency is already
-/// views); retained for source compatibility.
-pub type StackView<T, const IN: usize, const OUT: usize> = Stack<T, IN, OUT>;
-/// [`StackSync`] over view inputs — now the same operator.
-pub type StackSyncView<T, const IN: usize, const OUT: usize> = StackSync<T, IN, OUT>;
 
 // ---------------------------------------------------------------------------
 // Concat / ConcatSync — existing axis (rank-preserving).

@@ -463,9 +463,6 @@ fn select_out_extents<const OUT: usize>(
         .unwrap_or_else(|_| panic!("Select: output rank {} != OUT {OUT}", v.len()))
 }
 
-/// [`Select`] retained for source compatibility — the view-input variant is now
-/// the only `Select` (its input is always a `ViewPort`).
-pub type SelectView<T, const IN: usize, const OUT: usize> = Select<T, IN, OUT>;
 
 // ---------------------------------------------------------------------------
 // SliceView (zero-copy strided selection → borrowed view, no arena/no copy)
@@ -482,7 +479,7 @@ pub type SelectView<T, const IN: usize, const OUT: usize> = Select<T, IN, OUT>;
 /// unchanged contract: the lent view reads the input's stable storage (a
 /// retaining [`Gate`](super::Gate) or an owned compute output), which only
 /// changes when the input notifies, so a carry-style
-/// [`StackView`](super::StackView) reader sees the last notified value for an
+/// [`Stack`](super::Stack) reader sees the last notified value for an
 /// un-notified stock. Implements [`Segment`] directly (the by-value view is
 /// derived from the fresh input, not from state).
 pub struct SliceView<T: Scalar, const IN: usize, const OUT: usize> {

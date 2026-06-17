@@ -22,9 +22,6 @@ impl Annualize {
     }
 }
 
-/// [`Annualize`] over a view edge — now the same operator (the currency is
-/// already views); retained for source compatibility. Construct via `default()`.
-pub type AnnualizeView = Annualize;
 
 /// Runtime state for [`Annualize`]: the previous-tick YTD snapshot plus the
 /// output buffer.
@@ -155,9 +152,6 @@ impl<const NP: usize, const ND: usize> Default for ForwardAdjust<NP, ND> {
     }
 }
 
-/// [`ForwardAdjust`] whose dividend input is a view edge — now the same operator
-/// (the currency is already views). Construct via `default()`.
-pub type ForwardAdjustViewDiv<const NP: usize, const ND: usize> = ForwardAdjust<NP, ND>;
 
 /// Runtime state for [`ForwardAdjust`]: the adjustment factor and last price
 /// plus the output buffer.

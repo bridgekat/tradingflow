@@ -17,7 +17,7 @@
 //! a slicing operator ([`SliceView`](super::SliceView)) re-derives a strided view
 //! of its input by value, needing neither in-state shape nor an arena. Edges that
 //! fan a single buffer into / out of `N` views ([`Split`](super::Split) outputs,
-//! [`StackView`](super::StackView) inputs) use the by-reference
+//! [`Stack`](super::Stack) inputs) use the by-reference
 //! `RefViewPorts<ArrayValue<T, N>>` kind, whose `N` views are homed in a
 //! per-generation arena.
 //!
@@ -30,7 +30,7 @@
 //!   last emitted under `(true, …)`, and `passthrough` re-emits that value
 //!   verbatim. This is precisely what lets **any** consumer treat a
 //!   non-notifying input as its last notified value — the carry that
-//!   [`Stack`](super::Stack) / [`StackView`](super::StackView) depend on, and
+//!   [`Stack`](super::Stack) / [`Concat`](super::Concat) depend on, and
 //!   what makes a pure forwarding operator automatically correct. The duty
 //!   falls on the **producer**, never the consumer: an operator that drops
 //!   notifications while its input value changes (e.g. [`Gate`](super::Gate)'s

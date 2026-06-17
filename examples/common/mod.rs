@@ -31,9 +31,9 @@ use flowgraph::typed::{Handle, Operator, RefPort, RefViewPort, Segment, ViewPort
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    AnnualizeView, Apply, ArrayValue, DerefArrayView, ForwardAdjustViewDiv, Gate, Lag, Map,
-    Percentile, RollingMean, RollingVariance, Select, SliceView, Split, Stack, StackSync,
-    StackSyncView, StackView, Winsorize, divide, log, multiply, sqrt, subtract,
+    Annualize, Apply, ArrayValue, DerefArrayView, ForwardAdjust, Gate, Lag, Map, Percentile,
+    RollingMean, RollingVariance, Select, SliceView, Split, Stack, StackSync, Winsorize, divide,
+    log, multiply, sqrt, subtract,
 };
 use tradingflow::{Scenario, Session};
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
@@ -726,7 +726,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             // [open, high, low, amount] as a contiguous rank-1 view of cols 2..6.
             let prices_extras = prices => SliceView::<f64, 1, 1>::new(vec![2, 3, 4, 5], 0, false);
             let adjusts = (close, dividends)
-                => ForwardAdjustViewDiv::<0, 1>::default().with_output_prices(false);
+                => ForwardAdjust::<0, 1>::default().with_output_prices(false);
             let adjusted_close = (close, adjusts) => multiply::<f64, 0>();
             let total_shares = equity => SliceView::<f64, 1, 0>::new(vec![0], 0, true);
             let circ_shares = equity => SliceView::<f64, 1, 0>::new(vec![1], 0, true);
@@ -738,8 +738,8 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             // Annualized income / cash flows (YTD → Annualize) and the balance
             // stocks [assets, liab, current_assets, current_liab, cash, inv, rec]
             // as a contiguous rank-1 view of cols 3..10.
-            let income_ann = income => AnnualizeView::default();
-            let cf_ann = cashflow => AnnualizeView::default();
+            let income_ann = income => Annualize::default();
+            let cf_ann = cashflow => Annualize::default();
             let balance_extras = balance => SliceView::<f64, 1, 1>::new(vec![3, 4, 5, 6, 7, 8, 9], 0, false);
             (
                 close,
@@ -811,18 +811,18 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     // Cross-sectional grouped panels (rank-1 `[K]` rows → rank-2 `[N, K]`); a
     // squeezing column `Select` (axis 1) recovers each field as rank-1 `[N]`.
     let income_xs = sc.add_operator(Stack::<f64, 1, 2>::new(0), &income_refs[..]); // (N, 4)
-    let balance_xs = sc.add_operator(StackView::<f64, 1, 2>::new(0), &bal_refs[..]); // (N, 7)
+    let balance_xs = sc.add_operator(Stack::<f64, 1, 2>::new(0), &bal_refs[..]); // (N, 7)
     let cf_xs = sc.add_operator(Stack::<f64, 1, 2>::new(0), &cf_refs[..]); // (N, 3)
-    let px_xs = sc.add_operator(StackSyncView::<f64, 1, 2>::new(0), &px_refs[..]); // (N, 4) [open, high, low, amount]
+    let px_xs = sc.add_operator(StackSync::<f64, 1, 2>::new(0), &px_refs[..]); // (N, 4) [open, high, low, amount]
 
     Stacked {
         // Per-stock scalars (rank-0) → rank-1 `[N]` cross-sections.
         close: sc.add_operator(StackSync::<f64, 0, 1>::new(0), &close_refs[..]),
-        volume: sc.add_operator(StackSyncView::<f64, 0, 1>::new(0), &volume_refs[..]),
+        volume: sc.add_operator(StackSync::<f64, 0, 1>::new(0), &volume_refs[..]),
         adjusted_close: sc.add_operator(StackSync::<f64, 0, 1>::new(0), &adj_close_refs[..]),
         adjusts: sc.add_operator(Stack::<f64, 0, 1>::new(0), &adjusts_refs[..]),
-        total_shares: sc.add_operator(StackView::<f64, 0, 1>::new(0), &total_refs[..]),
-        circ_shares: sc.add_operator(StackView::<f64, 0, 1>::new(0), &circ_refs[..]),
+        total_shares: sc.add_operator(Stack::<f64, 0, 1>::new(0), &total_refs[..]),
+        circ_shares: sc.add_operator(Stack::<f64, 0, 1>::new(0), &circ_refs[..]),
         parent_equity: sc.add_operator(Stack::<f64, 0, 1>::new(0), &peq_refs[..]),
         net_profit: sc.add_operator(Select::<f64, 2, 1>::new(vec![0], 1, true), income_xs),
         operating_profit: sc.add_operator(Select::<f64, 2, 1>::new(vec![1], 1, true), income_xs),

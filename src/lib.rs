@@ -3,8 +3,8 @@
 //! # Core data types
 //!
 //! * [`Array`] — dense N-dimensional array in standard (C-contiguous) layout,
-//!   parameterised by a [`Scalar`] element type. [`ArraySlice`] is its borrowed,
-//!   zero-copy view (the edge currency of the computation engine).
+//!   parameterised by a [`Scalar`] element type. [`ArrayView`] is its borrowed,
+//!   zero-copy strided view (the edge currency of the computation engine).
 //! * [`Series`] — append-only time series with temporal (as-of) lookups; each
 //!   element is a uniformly-shaped `Array`-compatible slice.
 //! * [`Schema`] — bidirectional name ↔ position mapping for labelling array axes.
@@ -21,7 +21,7 @@
 //!
 //! # Modules
 //!
-//! * [`data`] — primitive containers: [`Array`] / [`ArraySlice`], [`Series`],
+//! * [`data`] — primitive containers: [`Array`] / [`ArrayView`], [`Series`],
 //!   [`Instant`] / [`Duration`] (SI nanoseconds since the 1970 TAI epoch),
 //!   plus [`Scalar`] and [`PeekableReceiver`].
 //! * [`source`] — the [`Source`] trait.
