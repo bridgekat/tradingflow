@@ -1,54 +1,30 @@
 //! Stock-specific operators: `Annualize` (YTD → annualized) and `ForwardAdjust`
 //! (corporate-action price adjustment, message-passing on price vs dividend
-//! inputs). Implemented
-//! directly on [`flowgraph::typed::Operator`] and generic over the input edge
-//! kind ([`ArrayInput`]): owned `RefPort<Array<f64>>` edges (the default) or
-//! zero-copy [`ArraySlice`](crate::ArraySlice) views.
+//! inputs), over the strided [`ArrayView`] currency.
 
-use flowgraph::typed::{Interface, Operator, RefPort, ViewPort};
+use flowgraph::typed::{Operator, ViewPort};
 
-use super::op::{ArrayInput, ArrayValue};
-use crate::Array;
+use super::op::ArrayValue;
+use crate::{Array, ArrayView};
 
 // ---------------------------------------------------------------------------
 // Annualize
 // ---------------------------------------------------------------------------
 
-/// Convert YTD cumulative values `[year, day_of_year, ytd_1..ytd_N]` into
-/// annualized `[N]` values via days-based scaling.
-pub struct Annualize<In: ArrayInput<f64> = RefPort<Array<f64>>> {
-    _phantom: std::marker::PhantomData<fn() -> In>,
-}
+/// Convert a YTD cumulative vector `[year, day_of_year, ytd_1..ytd_N]` into
+/// annualized `[N]` values via days-based scaling (rank-1 in / rank-1 out).
+#[derive(Clone, Default)]
+pub struct Annualize;
 
-impl<In: ArrayInput<f64>> Clone for Annualize<In> {
-    fn clone(&self) -> Self {
-        Self {
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-// `new` is pinned to the defaulted (owned-edge) form so the bare
-// `Annualize::new()` keeps working — type-parameter defaults do not
-// participate in expression inference (cf. `Vec::new` pinning `Global`).
-// View-edge instantiations spell the type: [`AnnualizeView::default()`].
 impl Annualize {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 }
 
-impl<In: ArrayInput<f64>> Default for Annualize<In> {
-    fn default() -> Self {
-        Self {
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-/// [`Annualize`] over a zero-copy [`ArraySlice`](crate::ArraySlice) view edge
-/// (e.g. a gated [`Split`](super::Split) row). Construct via `default()`.
-pub type AnnualizeView = Annualize<ViewPort<ArrayValue<f64>>>;
+/// [`Annualize`] over a view edge — now the same operator (the currency is
+/// already views); retained for source compatibility. Construct via `default()`.
+pub type AnnualizeView = Annualize;
 
 /// Runtime state for [`Annualize`]: the previous-tick YTD snapshot plus the
 /// output buffer.
@@ -57,12 +33,12 @@ pub struct AnnualizeState {
     prev_year: i64,
     prev_day: f64,
     initialized: bool,
-    out: Array<f64>,
+    out: Array<f64, 1>,
 }
 
-impl<In: ArrayInput<f64>> Operator for Annualize<In> {
-    type Inputs = In;
-    type Outputs = RefPort<Array<f64>>;
+impl Operator for Annualize {
+    type Inputs = ViewPort<ArrayValue<f64, 1>>;
+    type Outputs = ViewPort<ArrayValue<f64, 1>>;
     type State = AnnualizeState;
 
     fn init(self) -> AnnualizeState {
@@ -71,17 +47,17 @@ impl<In: ArrayInput<f64>> Operator for Annualize<In> {
             prev_year: 0,
             prev_day: 0.0,
             initialized: false,
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0]),
         }
     }
 
     fn compute<'a, 'b: 'a>(
-        values: <In as Interface>::Values<'a>,
+        (_, view): (bool, ArrayView<'a, f64, 1>),
         state: &'b mut AnnualizeState,
         init: bool,
-    ) -> (bool, &'a Array<f64>) {
-        let input = In::data(&values);
-        let input = input.as_slice();
+    ) -> (bool, ArrayView<'a, f64, 1>) {
+        let xs = view.to_contiguous();
+        let input: &[f64] = &xs;
         if init {
             let input_len = input.len();
             assert!(
@@ -93,8 +69,8 @@ impl<In: ArrayInput<f64>> Operator for Annualize<In> {
             state.prev_year = 0;
             state.prev_day = 0.0;
             state.initialized = false;
-            state.out = Array::zeros(&[n]);
-            return (false, &state.out);
+            state.out = Array::zeros([n]);
+            return (false, state.out.view());
         }
         let year = input[0].floor() as i64;
         let day = input[1];
@@ -128,14 +104,14 @@ impl<In: ArrayInput<f64>> Operator for Annualize<In> {
         state.prev_year = year;
         state.prev_day = day;
         state.initialized = true;
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: <In as Interface>::Values<'a>,
+        _: (bool, ArrayView<'a, f64, 1>),
         state: &'b AnnualizeState,
-    ) -> (bool, &'a Array<f64>) {
-        (false, &state.out)
+    ) -> (bool, ArrayView<'a, f64, 1>) {
+        (false, state.out.view())
     }
 }
 
@@ -144,107 +120,94 @@ impl<In: ArrayInput<f64>> Operator for Annualize<In> {
 // ---------------------------------------------------------------------------
 
 /// Forward price adjustment for corporate actions. Inputs: `(price, dividend)`
-/// where dividend is `[share_dividends, cash_dividends]`. Message-passing on
-/// the two inputs via the notify flags (only notified input values are read).
-pub struct ForwardAdjust<P = RefPort<Array<f64>>, D = RefPort<Array<f64>>>
-where
-    P: ArrayInput<f64>,
-    D: ArrayInput<f64>,
-{
+/// where `price` is a single value (rank `NP`, one element) and `dividend` is
+/// `[share_dividends, cash_dividends]` (rank `ND`). The output mirrors the price
+/// shape (rank `NP`). Message-passing on the two inputs via the notify flags
+/// (only notified input values are read).
+pub struct ForwardAdjust<const NP: usize, const ND: usize> {
     output_prices: bool,
-    _phantom: std::marker::PhantomData<fn() -> (P, D)>,
 }
 
-impl<P: ArrayInput<f64>, D: ArrayInput<f64>> Clone for ForwardAdjust<P, D> {
+impl<const NP: usize, const ND: usize> Clone for ForwardAdjust<NP, ND> {
     fn clone(&self) -> Self {
         Self {
             output_prices: self.output_prices,
-            _phantom: std::marker::PhantomData,
         }
     }
 }
 
-// `new` is pinned to the defaulted (owned-edge) form so the bare
-// `ForwardAdjust::new()` keeps working (see the `Annualize::new` note);
-// view-edge instantiations spell the type and use `default()`, e.g.
-// [`ForwardAdjustViewDiv::default()`].
-impl ForwardAdjust {
+impl<const NP: usize, const ND: usize> ForwardAdjust<NP, ND> {
     pub fn new() -> Self {
         Self::default()
     }
-}
 
-impl<P: ArrayInput<f64>, D: ArrayInput<f64>> ForwardAdjust<P, D> {
     pub fn with_output_prices(mut self, output_prices: bool) -> Self {
         self.output_prices = output_prices;
         self
     }
 }
 
-impl<P: ArrayInput<f64>, D: ArrayInput<f64>> Default for ForwardAdjust<P, D> {
+impl<const NP: usize, const ND: usize> Default for ForwardAdjust<NP, ND> {
     fn default() -> Self {
         Self {
             output_prices: true,
-            _phantom: std::marker::PhantomData,
         }
     }
 }
 
-/// [`ForwardAdjust`] whose dividend input is a zero-copy
-/// [`ArraySlice`](crate::ArraySlice) view edge (e.g. a gated
-/// [`Split`](super::Split) row); the price input stays an owned edge.
-/// Construct via `default()`.
-pub type ForwardAdjustViewDiv = ForwardAdjust<RefPort<Array<f64>>, ViewPort<ArrayValue<f64>>>;
+/// [`ForwardAdjust`] whose dividend input is a view edge — now the same operator
+/// (the currency is already views). Construct via `default()`.
+pub type ForwardAdjustViewDiv<const NP: usize, const ND: usize> = ForwardAdjust<NP, ND>;
 
 /// Runtime state for [`ForwardAdjust`]: the adjustment factor and last price
 /// plus the output buffer.
-pub struct ForwardAdjustState {
+pub struct ForwardAdjustState<const NP: usize> {
     prev_price: f64,
     factor: f64,
     output_prices: bool,
-    out: Array<f64>,
+    out: Array<f64, NP>,
 }
 
-impl<P: ArrayInput<f64>, D: ArrayInput<f64>> Operator for ForwardAdjust<P, D> {
-    type Inputs = (P, D);
-    type Outputs = RefPort<Array<f64>>;
-    type State = ForwardAdjustState;
+impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
+    type Inputs = (ViewPort<ArrayValue<f64, NP>>, ViewPort<ArrayValue<f64, ND>>);
+    type Outputs = ViewPort<ArrayValue<f64, NP>>;
+    type State = ForwardAdjustState<NP>;
 
-    fn init(self) -> ForwardAdjustState {
+    fn init(self) -> Self::State {
         ForwardAdjustState {
             prev_price: f64::NAN,
             factor: 1.0,
             output_prices: self.output_prices,
-            out: Array::scalar(0.0),
+            out: Array::zeros([0; NP]),
         }
     }
 
     fn compute<'a, 'b: 'a>(
-        (price_values, dividend_values): (
-            <P as Interface>::Values<'a>,
-            <D as Interface>::Values<'a>,
+        ((price_notified, price_view), (div_notified, div_view)): (
+            (bool, ArrayView<'a, f64, NP>),
+            (bool, ArrayView<'a, f64, ND>),
         ),
-        state: &'b mut ForwardAdjustState,
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<f64>) {
-        let price = P::data(&price_values);
-        let dividend = D::data(&dividend_values);
+    ) -> (bool, ArrayView<'a, f64, NP>) {
+        let price = price_view.to_contiguous();
+        let dividend = div_view.to_contiguous();
         if init {
-            assert_eq!(price.stride(), 1, "stock price must be scalar");
+            assert_eq!(price.len(), 1, "stock price must be a single value");
             assert_eq!(
-                dividend.stride(),
+                dividend.len(),
                 2,
                 "dividend data must have shape [2]: [share_dividends, cash_dividends]"
             );
             state.prev_price = f64::NAN;
             state.factor = 1.0;
             let init_val = if state.output_prices { 0.0 } else { 1.0 };
-            state.out = Array::scalar(init_val);
-            return (false, &state.out);
+            state.out = Array::from_vec(price_view.extents(), vec![init_val]);
+            return (false, state.out.view());
         }
-        if D::notified(&dividend_values) {
-            let share_dividends = dividend.as_slice()[0];
-            let cash_dividends = dividend.as_slice()[1];
+        if div_notified {
+            let share_dividends = dividend[0];
+            let cash_dividends = dividend[1];
             let prev_price = state.prev_price;
             if !prev_price.is_nan() {
                 assert!(prev_price > cash_dividends);
@@ -252,27 +215,27 @@ impl<P: ArrayInput<f64>, D: ArrayInput<f64>> Operator for ForwardAdjust<P, D> {
                 state.factor *= 1.0 + share_dividends;
             }
         }
-        if P::notified(&price_values) {
-            let price = price.as_slice()[0];
+        if price_notified {
+            let p = price[0];
             state.out.as_mut_slice()[0] = if state.output_prices {
-                price * state.factor
+                p * state.factor
             } else {
                 state.factor
             };
-            state.prev_price = price;
-            (true, &state.out)
+            state.prev_price = p;
+            (true, state.out.view())
         } else {
-            (false, &state.out)
+            (false, state.out.view())
         }
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: (
-            <P as Interface>::Values<'a>,
-            <D as Interface>::Values<'a>,
+            (bool, ArrayView<'a, f64, NP>),
+            (bool, ArrayView<'a, f64, ND>),
         ),
-        state: &'b ForwardAdjustState,
-    ) -> (bool, &'a Array<f64>) {
-        (false, &state.out)
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, f64, NP>) {
+        (false, state.out.view())
     }
 }

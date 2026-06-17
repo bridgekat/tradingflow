@@ -582,6 +582,50 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for SliceView<T, IN, 
 }
 
 // ---------------------------------------------------------------------------
+// AsView (whole-array reference -> strided view: the source/owned bridge)
+// ---------------------------------------------------------------------------
+
+/// Bridge a `RefPort<Array<T, N>>` (a whole-array reference — e.g. a source cell
+/// or a `RefSource`) into the `ViewPort<ArrayValue<T, N>>` view currency by
+/// lending a contiguous [`ArrayView`] of it **by value**, zero-copy. Like
+/// [`SliceView`], the view is re-derived from the fresh input each generation,
+/// so it implements [`Segment`] and forwards the input's notify.
+pub struct AsView<T: Scalar, const N: usize> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> AsView<T, N> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for AsView<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Scalar, const N: usize> Segment for AsView<T, N> {
+    type Inputs = RefPort<Array<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = ();
+
+    fn init(self) {}
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        (notified, arr): (bool, &'a Array<T, N>),
+        _state: &'b mut (),
+        init: bool,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (notified && !init, arr.view())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Lag (value from N steps ago in a Series)
 // ---------------------------------------------------------------------------
 

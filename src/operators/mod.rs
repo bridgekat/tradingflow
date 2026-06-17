@@ -29,31 +29,23 @@
 
 mod arith;
 mod gating;
+mod metrics;
 mod num;
 mod op;
+mod reshape;
+mod rolling;
+mod stocks;
 mod structural;
+mod traders;
 mod transform;
 
-mod reshape;
-
-#[cfg(any())]
-mod metrics;
+// [array-view-refactor] the Python bridge is migrated in stage 5.
 #[cfg(any())]
 #[cfg(feature = "python")]
 mod pyhost;
 #[cfg(any())]
 #[cfg(feature = "python")]
 mod python;
-#[cfg(any())]
-mod rolling;
-#[cfg(any())]
-mod stocks;
-#[cfg(any())]
-mod structural;
-#[cfg(any())]
-mod traders;
-#[cfg(any())]
-mod transform;
 
 pub use op::{ArrayValue, Clock, StripNotify};
 
@@ -66,14 +58,19 @@ pub use num::{
 };
 pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
 pub use structural::{Cast, Id, Resample, Where};
-pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select, SelectView, SliceView};
+pub use transform::{
+    Apply, ApplyInplace, AsView, Lag, Map, MapInplace, Select, SelectView, SliceView,
+};
 pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync, StackSyncView, StackView};
+pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility};
+pub use stocks::{Annualize, AnnualizeView, ForwardAdjust, ForwardAdjustViewDiv};
+pub use rolling::{
+    Accumulator, CovarianceAccumulator, Ema, MeanAccumulator, Rolling, RollingCovariance,
+    RollingMean, RollingSum, RollingVariance, SumAccumulator, VarianceAccumulator, Window,
+};
+pub use traders::{Benchmark, RandomTrader, SimpleTrader};
 
-// [array-view-refactor] re-export blocks for gated families, restored per stage:
-// pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility};
-// pub use stocks::{Annualize, AnnualizeView, ForwardAdjust, ForwardAdjustViewDiv};
-// pub use rolling::{...};
-// pub use traders::{Benchmark, RandomTrader, SimpleTrader};
+// [array-view-refactor] the Python bridge re-exports are restored in stage 5:
 // #[cfg(feature = "python")]
 // pub use pyhost::{NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyParams};
 // #[cfg(feature = "python")]

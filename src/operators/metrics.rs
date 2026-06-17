@@ -1,15 +1,18 @@
-//! Clock-driven since-inception financial metrics, implemented directly on
-//! [`flowgraph::typed::Operator`]. The first four take `(data, clock)` inputs
-//! and gate on the clock's notify bit (emitting `notify = false` off-tick);
-//! `Drawdown` is single-input.
+//! Clock-driven since-inception financial metrics over the [`ArrayView`]
+//! currency. The first four take `(data, clock)` and gate on the clock's notify
+//! bit (emitting `notify = false` off-tick); `Drawdown`/`Turnover` are
+//! single-input. The data input is a rank-`N` view (the leading element is read
+//! for the scalar metrics; `Turnover` reads the whole weight vector); every
+//! output is a rank-0 scalar view.
 
 use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use flowgraph::typed::{Operator, RefPort};
+use flowgraph::typed::{Operator, RefPort, ViewPort};
 
-use crate::{Array, Scalar};
+use crate::operators::op::ArrayValue;
+use crate::{Array, ArrayView, Scalar};
 
 // ---------------------------------------------------------------------------
 // CompoundReturn
@@ -17,11 +20,11 @@ use crate::{Array, Scalar};
 
 /// `(current / first)^(1/n) - 1` over clock ticks since inception.
 #[derive(Clone)]
-pub struct CompoundReturn<T: Scalar + Float> {
+pub struct CompoundReturn<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> CompoundReturn<T> {
+impl<T: Scalar + Float, const N: usize> CompoundReturn<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -29,7 +32,7 @@ impl<T: Scalar + Float> CompoundReturn<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for CompoundReturn<T> {
+impl<T: Scalar + Float, const N: usize> Default for CompoundReturn<T, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -40,15 +43,15 @@ impl<T: Scalar + Float> Default for CompoundReturn<T> {
 pub struct CompoundReturnState<T: Scalar + Float> {
     first_value: T,
     count: usize,
-    out: Array<T>,
+    out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Operator for CompoundReturn<T> {
-    type Inputs = (RefPort<Array<T>>, RefPort<()>);
-    type Outputs = RefPort<Array<T>>;
+impl<T: Scalar + Float, const N: usize> Operator for CompoundReturn<T, N> {
+    type Inputs = (ViewPort<ArrayValue<T, N>>, RefPort<()>);
+    type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = CompoundReturnState<T>;
 
-    fn init(self) -> CompoundReturnState<T> {
+    fn init(self) -> Self::State {
         CompoundReturnState {
             first_value: T::nan(),
             count: 0,
@@ -57,19 +60,16 @@ impl<T: Scalar + Float> Operator for CompoundReturn<T> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, data), (produced_clock, _)): ((bool, &'a Array<T>), (bool, &'a ())),
-        state: &'b mut CompoundReturnState<T>,
+        ((_, data), (produced_clock, _)): ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
-        if init {
-            return (false, &state.out);
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        if init || !produced_clock {
+            return (false, state.out.view());
         }
-        if !produced_clock {
-            return (false, &state.out);
-        }
-        let current = data[0];
+        let current = data.to_contiguous()[0];
         if current.is_nan() {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
 
         state.count += 1;
@@ -77,12 +77,12 @@ impl<T: Scalar + Float> Operator for CompoundReturn<T> {
         if state.first_value.is_nan() {
             state.first_value = current;
             state.out[0] = T::zero();
-            return (true, &state.out);
+            return (true, state.out.view());
         }
 
         if state.first_value <= T::zero() || current <= T::zero() {
             state.out[0] = T::nan();
-            return (true, &state.out);
+            return (true, state.out.view());
         }
 
         let ratio = current / state.first_value;
@@ -92,14 +92,14 @@ impl<T: Scalar + Float> Operator for CompoundReturn<T> {
         } else {
             state.out[0] = ratio.powf(T::one() / n) - T::one();
         }
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, &'a Array<T>), (bool, &'a ())),
-        state: &'b CompoundReturnState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        (false, state.out.view())
     }
 }
 
@@ -109,11 +109,11 @@ impl<T: Scalar + Float> Operator for CompoundReturn<T> {
 
 /// Arithmetic mean of period returns since inception.
 #[derive(Clone)]
-pub struct AverageReturn<T: Scalar + Float> {
+pub struct AverageReturn<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> AverageReturn<T> {
+impl<T: Scalar + Float, const N: usize> AverageReturn<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -121,27 +121,26 @@ impl<T: Scalar + Float> AverageReturn<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for AverageReturn<T> {
+impl<T: Scalar + Float, const N: usize> Default for AverageReturn<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Runtime state for [`AverageReturn`]: the accumulators plus the output
-/// buffer.
+/// Runtime state for [`AverageReturn`]: the accumulators plus the output buffer.
 pub struct AverageReturnState<T: Scalar + Float> {
     prev: T,
     sum: T,
     count: usize,
-    out: Array<T>,
+    out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Operator for AverageReturn<T> {
-    type Inputs = (RefPort<Array<T>>, RefPort<()>);
-    type Outputs = RefPort<Array<T>>;
+impl<T: Scalar + Float, const N: usize> Operator for AverageReturn<T, N> {
+    type Inputs = (ViewPort<ArrayValue<T, N>>, RefPort<()>);
+    type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = AverageReturnState<T>;
 
-    fn init(self) -> AverageReturnState<T> {
+    fn init(self) -> Self::State {
         AverageReturnState {
             prev: T::nan(),
             sum: T::zero(),
@@ -151,19 +150,16 @@ impl<T: Scalar + Float> Operator for AverageReturn<T> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, data), (produced_clock, _)): ((bool, &'a Array<T>), (bool, &'a ())),
-        state: &'b mut AverageReturnState<T>,
+        ((_, data), (produced_clock, _)): ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
-        if init {
-            return (false, &state.out);
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        if init || !produced_clock {
+            return (false, state.out.view());
         }
-        if !produced_clock {
-            return (false, &state.out);
-        }
-        let current = data[0];
+        let current = data.to_contiguous()[0];
         if current.is_nan() {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
 
         if !state.prev.is_nan() && state.prev > T::zero() {
@@ -174,14 +170,14 @@ impl<T: Scalar + Float> Operator for AverageReturn<T> {
         }
 
         state.prev = current;
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, &'a Array<T>), (bool, &'a ())),
-        state: &'b AverageReturnState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        (false, state.out.view())
     }
 }
 
@@ -191,11 +187,11 @@ impl<T: Scalar + Float> Operator for AverageReturn<T> {
 
 /// Population standard deviation of period returns since inception.
 #[derive(Clone)]
-pub struct Volatility<T: Scalar + Float> {
+pub struct Volatility<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> Volatility<T> {
+impl<T: Scalar + Float, const N: usize> Volatility<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -203,7 +199,7 @@ impl<T: Scalar + Float> Volatility<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for Volatility<T> {
+impl<T: Scalar + Float, const N: usize> Default for Volatility<T, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -215,15 +211,15 @@ pub struct VolatilityState<T: Scalar + Float> {
     sum: T,
     sum_sq: T,
     count: usize,
-    out: Array<T>,
+    out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Operator for Volatility<T> {
-    type Inputs = (RefPort<Array<T>>, RefPort<()>);
-    type Outputs = RefPort<Array<T>>;
+impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
+    type Inputs = (ViewPort<ArrayValue<T, N>>, RefPort<()>);
+    type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = VolatilityState<T>;
 
-    fn init(self) -> VolatilityState<T> {
+    fn init(self) -> Self::State {
         VolatilityState {
             prev: T::nan(),
             sum: T::zero(),
@@ -234,19 +230,16 @@ impl<T: Scalar + Float> Operator for Volatility<T> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, data), (produced_clock, _)): ((bool, &'a Array<T>), (bool, &'a ())),
-        state: &'b mut VolatilityState<T>,
+        ((_, data), (produced_clock, _)): ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
-        if init {
-            return (false, &state.out);
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        if init || !produced_clock {
+            return (false, state.out.view());
         }
-        if !produced_clock {
-            return (false, &state.out);
-        }
-        let current = data[0];
+        let current = data.to_contiguous()[0];
         if current.is_nan() {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
 
         if !state.prev.is_nan() && state.prev > T::zero() {
@@ -261,14 +254,14 @@ impl<T: Scalar + Float> Operator for Volatility<T> {
         }
 
         state.prev = current;
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, &'a Array<T>), (bool, &'a ())),
-        state: &'b VolatilityState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        (false, state.out.view())
     }
 }
 
@@ -278,11 +271,11 @@ impl<T: Scalar + Float> Operator for Volatility<T> {
 
 /// `mean(r) / std(r)` of period returns since inception.
 #[derive(Clone)]
-pub struct SharpeRatio<T: Scalar + Float> {
+pub struct SharpeRatio<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> SharpeRatio<T> {
+impl<T: Scalar + Float, const N: usize> SharpeRatio<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -290,7 +283,7 @@ impl<T: Scalar + Float> SharpeRatio<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for SharpeRatio<T> {
+impl<T: Scalar + Float, const N: usize> Default for SharpeRatio<T, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -302,15 +295,15 @@ pub struct SharpeRatioState<T: Scalar + Float> {
     sum: T,
     sum_sq: T,
     count: usize,
-    out: Array<T>,
+    out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Operator for SharpeRatio<T> {
-    type Inputs = (RefPort<Array<T>>, RefPort<()>);
-    type Outputs = RefPort<Array<T>>;
+impl<T: Scalar + Float, const N: usize> Operator for SharpeRatio<T, N> {
+    type Inputs = (ViewPort<ArrayValue<T, N>>, RefPort<()>);
+    type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = SharpeRatioState<T>;
 
-    fn init(self) -> SharpeRatioState<T> {
+    fn init(self) -> Self::State {
         SharpeRatioState {
             prev: T::nan(),
             sum: T::zero(),
@@ -321,19 +314,16 @@ impl<T: Scalar + Float> Operator for SharpeRatio<T> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, data), (produced_clock, _)): ((bool, &'a Array<T>), (bool, &'a ())),
-        state: &'b mut SharpeRatioState<T>,
+        ((_, data), (produced_clock, _)): ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
-        if init {
-            return (false, &state.out);
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        if init || !produced_clock {
+            return (false, state.out.view());
         }
-        if !produced_clock {
-            return (false, &state.out);
-        }
-        let current = data[0];
+        let current = data.to_contiguous()[0];
         if current.is_nan() {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
 
         if !state.prev.is_nan() && state.prev > T::zero() {
@@ -354,14 +344,14 @@ impl<T: Scalar + Float> Operator for SharpeRatio<T> {
         }
 
         state.prev = current;
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, &'a Array<T>), (bool, &'a ())),
-        state: &'b SharpeRatioState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        (false, state.out.view())
     }
 }
 
@@ -371,11 +361,11 @@ impl<T: Scalar + Float> Operator for SharpeRatio<T> {
 
 /// Drawdown from the running maximum: `(current - max) / max` (non-positive).
 #[derive(Clone)]
-pub struct Drawdown<T: Scalar + Float> {
+pub struct Drawdown<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> Drawdown<T> {
+impl<T: Scalar + Float, const N: usize> Drawdown<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -383,7 +373,7 @@ impl<T: Scalar + Float> Drawdown<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for Drawdown<T> {
+impl<T: Scalar + Float, const N: usize> Default for Drawdown<T, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -392,15 +382,15 @@ impl<T: Scalar + Float> Default for Drawdown<T> {
 /// Runtime state for [`Drawdown`]: the running maximum plus the output buffer.
 pub struct DrawdownState<T: Scalar + Float> {
     running_max: T,
-    out: Array<T>,
+    out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Operator for Drawdown<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
+impl<T: Scalar + Float, const N: usize> Operator for Drawdown<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = DrawdownState<T>;
 
-    fn init(self) -> DrawdownState<T> {
+    fn init(self) -> Self::State {
         DrawdownState {
             running_max: T::nan(),
             out: Array::scalar(T::zero()),
@@ -408,16 +398,16 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, data): (bool, &'a Array<T>),
-        state: &'b mut DrawdownState<T>,
+        (_, data): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, 0>) {
         if init {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
-        let current = data[0];
+        let current = data.to_contiguous()[0];
         if current.is_nan() {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
 
         if state.running_max.is_nan() || current > state.running_max {
@@ -429,14 +419,14 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
         } else {
             T::zero()
         };
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b DrawdownState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        (false, state.out.view())
     }
 }
 
@@ -446,17 +436,14 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
 
 /// Per-update portfolio turnover: on each new weight vector, emits the L1 norm
 /// of the change since the previous one, `Σᵢ |wₜ,ᵢ − wₜ₋₁,ᵢ|` (non-finite
-/// weights treated as `0`, so a stock entering/leaving contributes its full
-/// weight). The first update is a warmup (caches the weights, does not notify);
-/// every later update emits a finite scalar. `Record` it for a turnover series,
-/// or feed `RollingMean` for an average. For long-only books summing to 1 the
-/// value lies in `[0, 2]`.
+/// weights treated as `0`). The first update is a warmup (caches the weights,
+/// does not notify); every later update emits a finite scalar.
 #[derive(Clone)]
-pub struct Turnover<T: Scalar + Float> {
+pub struct Turnover<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> Turnover<T> {
+impl<T: Scalar + Float, const N: usize> Turnover<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -464,7 +451,7 @@ impl<T: Scalar + Float> Turnover<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for Turnover<T> {
+impl<T: Scalar + Float, const N: usize> Default for Turnover<T, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -475,15 +462,15 @@ impl<T: Scalar + Float> Default for Turnover<T> {
 pub struct TurnoverState<T: Scalar + Float> {
     prev: Vec<T>,
     initialized: bool,
-    out: Array<T>,
+    out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Operator for Turnover<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
+impl<T: Scalar + Float, const N: usize> Operator for Turnover<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = TurnoverState<T>;
 
-    fn init(self) -> TurnoverState<T> {
+    fn init(self) -> Self::State {
         TurnoverState {
             prev: Vec::new(),
             initialized: false,
@@ -492,20 +479,21 @@ impl<T: Scalar + Float> Operator for Turnover<T> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, data): (bool, &'a Array<T>),
-        state: &'b mut TurnoverState<T>,
+        (_, data): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, 0>) {
         if init {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
-        let cur = data.as_slice();
+        let xs = data.to_contiguous();
+        let cur: &[T] = &xs;
         let clean = |v: T| if v.is_finite() { v } else { T::zero() };
 
         if !state.initialized {
             state.prev = cur.iter().map(|&v| clean(v)).collect();
             state.initialized = true;
-            return (false, &state.out);
+            return (false, state.out.view());
         }
 
         let mut turnover = T::zero();
@@ -515,20 +503,21 @@ impl<T: Scalar + Float> Operator for Turnover<T> {
             state.prev[i] = c;
         }
         state.out[0] = turnover;
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b TurnoverState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, 0>) {
+        (false, state.out.view())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operators::transform::AsView;
     use flowgraph::core::Pool;
     use flowgraph::typed::{Graph, GraphBuilder, RefSource};
 
@@ -537,25 +526,29 @@ mod tests {
     #[test]
     fn turnover_l1_change_with_nan_as_zero() {
         let mut b = GraphBuilder::new();
-        let w = b.push_source(RefSource::new(Array::from_vec(&[5], vec![0.0_f64; 5])));
-        let out = b.push(Turnover::<f64>::new(), *w);
+        let w = b.push_source(RefSource::new(Array::from_vec([5], vec![0.0_f64; 5])));
+        let wv = b.push(AsView::<f64, 1>::new(), *w);
+        let out = b.push(Turnover::<f64, 1>::new(), wv);
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
         // Warmup: caches the weights, does not notify → output stays NaN.
-        *g.state_mut(w) = Array::from_vec(&[5], vec![0.2, 0.2, 0.2, 0.2, 0.2]);
+        *g.state_mut(w) = Array::from_vec([5], vec![0.2, 0.2, 0.2, 0.2, 0.2]);
         g.stabilize(&mut pool);
-        assert!(g.ref_view(out).as_slice()[0].is_nan(), "warmup should not emit");
+        assert!(
+            g.view(out).contiguous_slice().unwrap()[0].is_nan(),
+            "warmup should not emit"
+        );
 
         // L1 change: |0.4-0.2|+|0.1-0.2|+0+0+|0.1-0.2| = 0.2+0.1+0.1 = 0.4.
-        *g.state_mut(w) = Array::from_vec(&[5], vec![0.4, 0.1, 0.2, 0.2, 0.1]);
+        *g.state_mut(w) = Array::from_vec([5], vec![0.4, 0.1, 0.2, 0.2, 0.1]);
         g.stabilize(&mut pool);
-        assert!((g.ref_view(out).as_slice()[0] - 0.4).abs() < 1e-12);
+        assert!((g.view(out).contiguous_slice().unwrap()[0] - 0.4).abs() < 1e-12);
 
         // NaN treated as 0: stock 1 leaves (0.1 → 0), contributing its full 0.1;
         // |0.4-0.4|+|0-0.1|+0+0+|0.2-0.1| = 0.1 + 0.1 = 0.2.
-        *g.state_mut(w) = Array::from_vec(&[5], vec![0.4, f64::NAN, 0.2, 0.2, 0.2]);
+        *g.state_mut(w) = Array::from_vec([5], vec![0.4, f64::NAN, 0.2, 0.2, 0.2]);
         g.stabilize(&mut pool);
-        assert!((g.ref_view(out).as_slice()[0] - 0.2).abs() < 1e-12);
+        assert!((g.view(out).contiguous_slice().unwrap()[0] - 0.2).abs() < 1e-12);
     }
 }
