@@ -75,6 +75,5 @@ pub use pyhost::{NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyP
 #[cfg(feature = "python")]
 pub use python::PyOperator;
 
-#[cfg(any())]
 #[cfg(test)]
 mod tests;
