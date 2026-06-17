@@ -292,7 +292,7 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
 /// Panics if the series' element rank is not `N` — the source→operator boundary
 /// where a runtime-shaped series meets a compile-time-rank consumer.
 #[inline]
-fn series_extents<T: Scalar, const N: usize>(series: &Series<T>) -> [usize; N] {
+pub(crate) fn series_extents<T: Scalar, const N: usize>(series: &Series<T>) -> [usize; N] {
     <[usize; N]>::try_from(series.shape()).unwrap_or_else(|_| {
         panic!(
             "series element rank {} != operator rank {N}",

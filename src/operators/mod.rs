@@ -32,6 +32,7 @@ mod gating;
 mod num;
 mod op;
 mod structural;
+mod transform;
 
 #[cfg(any())]
 mod metrics;
@@ -65,6 +66,7 @@ pub use num::{
 };
 pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
 pub use structural::{Cast, Id, Resample, Where};
+pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select, SelectView, SliceView};
 
 // [array-view-refactor] re-export blocks for gated families, restored per stage:
 // pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility};
