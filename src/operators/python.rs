@@ -174,10 +174,20 @@ use crate::Array;
 // PyOperator — N f64-array inputs → 1 f64-array output, via a Python callable
 // ===========================================================================
 
-/// A Python-backed operator. `source` is a Python expression that evaluates to
-/// a callable; the contract depends on the construction mode (see the module
-/// docs and [`new`](Self::new) / [`writing`](Self::writing)).
-pub struct PyOperator {
+/// A Python-backed operator over rank-`NI` inputs producing a rank-`NO` output.
+/// `source` is a Python expression that evaluates to a callable; the contract
+/// depends on the construction mode (see the module docs and [`new`](Self::new)
+/// / [`writing`](Self::writing)).
+///
+/// [array-view-refactor] The const-rank refactor parameterizes the input rank
+/// `NI` and output rank `NO`; inputs are a `RefPorts<Array<f64, NI>>` group and
+/// the output is a `RefPort<Array<f64, NO>>` (both whole-array reference
+/// currency — this operator owns a stable output buffer and copies inputs out,
+/// so it stays on `RefPort`, not the strided view kind). The NumPy boundary
+/// flattens both to 1-D `float64` (the cell's flat row-major buffer), so `NI`
+/// and `NO` default to `1` to match the ergonomic `add_py_operator` API; the
+/// shape negotiation is by element count, unchanged from the dynamic-rank era.
+pub struct PyOperator<const NI: usize = 1, const NO: usize = 1> {
     source: String,
     out_len: usize,
     /// `true` → write mode (`f(out, *inputs)`, writes `out` in place);
@@ -185,7 +195,7 @@ pub struct PyOperator {
     writes_output: bool,
 }
 
-impl PyOperator {
+impl<const NI: usize, const NO: usize> PyOperator<NI, NO> {
     /// Return mode (ergonomic default). The callable takes `n` positional
     /// `float64` ndarrays (copies of the inputs) and returns a 1-D `float64`
     /// array of length `out_len`, e.g. `"lambda a, b: a + b"`.
@@ -213,37 +223,40 @@ impl PyOperator {
 /// Operator state: the config consumed from the [`PyOperator`], the compiled
 /// callable (with `np` in its globals; compiled on the `init` build call), and
 /// the output buffer.
-pub struct PyOpState {
+pub struct PyOpState<const NO: usize> {
     source: String,
     out_len: usize,
     writes_output: bool,
     callable: Option<Py<PyAny>>,
-    out: Array<f64>,
+    out: Array<f64, NO>,
 }
 
-impl Operator for PyOperator {
-    type Inputs = RefPorts<Array<f64>>;
-    type Outputs = RefPort<Array<f64>>;
-    type State = PyOpState;
+impl<const NI: usize, const NO: usize> Operator for PyOperator<NI, NO> {
+    type Inputs = RefPorts<Array<f64, NI>>;
+    type Outputs = RefPort<Array<f64, NO>>;
+    type State = PyOpState<NO>;
 
-    fn init(self) -> PyOpState {
+    fn init(self) -> PyOpState<NO> {
         PyOpState {
             source: self.source,
             out_len: self.out_len,
             writes_output: self.writes_output,
             callable: None,
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; NO]),
         }
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, values): (&'a [bool], &'a [&'a Array<f64>]),
-        state: &'b mut PyOpState,
+        (_, values): (&'a [bool], &'a [&'a Array<f64, NI>]),
+        state: &'b mut PyOpState<NO>,
         init: bool,
-    ) -> (bool, &'a Array<f64>) {
+    ) -> (bool, &'a Array<f64, NO>) {
         if init {
             // Build call: compile/evaluate the callable and size the output
-            // buffer. No per-tick Python compute runs here.
+            // buffer. No per-tick Python compute runs here. The output buffer is
+            // 1-D `[out_len]` flattened into rank `NO` — for `NO > 1` the caller
+            // must size `out_len` to the product of the intended extents (the
+            // NumPy boundary is by element count).
             let code = CString::new(state.source.as_str()).expect("python source has interior NUL");
             let callable: Py<PyAny> = Python::attach(|py| {
                 let run = || -> PyResult<Py<PyAny>> {
@@ -262,7 +275,11 @@ impl Operator for PyOperator {
                 })
             });
             state.callable = Some(callable);
-            state.out = Array::zeros(&[state.out_len]);
+            let mut ext = [1usize; NO];
+            if NO > 0 {
+                ext[0] = state.out_len;
+            }
+            state.out = Array::zeros(ext);
             return (false, &state.out);
         }
 
@@ -338,9 +355,9 @@ impl Operator for PyOperator {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (&'a [bool], &'a [&'a Array<f64>]),
-        state: &'b PyOpState,
-    ) -> (bool, &'a Array<f64>) {
+        _: (&'a [bool], &'a [&'a Array<f64, NI>]),
+        state: &'b PyOpState<NO>,
+    ) -> (bool, &'a Array<f64, NO>) {
         (false, &state.out)
     }
 }
@@ -355,23 +372,55 @@ impl Operator for PyOperator {
 mod tests {
     use super::PyOperator;
     use flowgraph::core::Pool;
-    use flowgraph::typed::{Graph, GraphBuilder, RefSource};
+    use flowgraph::typed::{Graph, GraphBuilder, Operator, RefPort, RefSource};
 
     use crate::Array;
-    use crate::operators::Map;
+
+    /// A test operator that REALLOCATES its owned `Array<f64, 1>` output each
+    /// tick (a fresh `Box` per generation, freeing the previous) and lends it as
+    /// a whole-array `RefPort`. It feeds the `PyOperator` (whose inputs are
+    /// `RefPort<Array>`) so the snapshot-vs-UAF safety test can observe a freed
+    /// upstream buffer — the role the old view-less `Map` played.
+    struct ReallocOwned;
+    impl Operator for ReallocOwned {
+        type Inputs = RefPort<Array<f64, 1>>;
+        type Outputs = RefPort<Array<f64, 1>>;
+        type State = Option<Array<f64, 1>>;
+        fn init(self) -> Self::State {
+            None
+        }
+        fn compute<'a, 'b: 'a>(
+            (_, x): (bool, &'a Array<f64, 1>),
+            state: &'b mut Self::State,
+            _init: bool,
+        ) -> (bool, &'a Array<f64, 1>) {
+            // Fresh allocation each tick (old `Box` freed).
+            *state = Some(Array::from_vec([x.len()], x.as_slice().to_vec()));
+            (true, state.as_ref().unwrap())
+        }
+        fn passthrough<'a, 'b: 'a>(
+            _: (bool, &'a Array<f64, 1>),
+            state: &'b Self::State,
+        ) -> (bool, &'a Array<f64, 1>) {
+            (false, state.as_ref().unwrap())
+        }
+    }
 
     /// Return mode: element-wise NumPy add over two inputs.
     #[test]
     fn numpy_return_mode() {
         let mut b = GraphBuilder::new();
-        let a = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0])));
-        let bb = b.push_source(RefSource::new(Array::from_vec(&[3], vec![10.0_f64, 20.0, 30.0])));
-        let out = b.push(PyOperator::new("lambda a, b: a + b", 3), &[*a, *bb][..]);
+        let a = b.push_source(RefSource::new(Array::from_vec([3], vec![1.0_f64, 2.0, 3.0])));
+        let bb = b.push_source(RefSource::new(Array::from_vec([3], vec![10.0_f64, 20.0, 30.0])));
+        let out = b.push(
+            PyOperator::<1, 1>::new("lambda a, b: a + b", 3),
+            &[*a, *bb][..],
+        );
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
-        *g.state_mut(a) = Array::from_vec(&[3], vec![1.0, 2.0, 3.0]);
-        *g.state_mut(bb) = Array::from_vec(&[3], vec![10.0, 20.0, 30.0]);
+        *g.state_mut(a) = Array::from_vec([3], vec![1.0, 2.0, 3.0]);
+        *g.state_mut(bb) = Array::from_vec([3], vec![10.0, 20.0, 30.0]);
         g.stabilize(&mut pool);
         assert_eq!(g.ref_view(out).as_slice(), &[11.0, 22.0, 33.0]);
     }
@@ -381,15 +430,15 @@ mod tests {
     #[test]
     fn numpy_write_mode_zero_copy() {
         let mut b = GraphBuilder::new();
-        let a = b.push_source(RefSource::new(Array::from_vec(&[3], vec![1.0_f64, 2.0, 3.0])));
+        let a = b.push_source(RefSource::new(Array::from_vec([3], vec![1.0_f64, 2.0, 3.0])));
         let out = b.push(
-            PyOperator::writing("lambda out, a: np.multiply(a, 2.0, out=out)", 3),
+            PyOperator::<1, 1>::writing("lambda out, a: np.multiply(a, 2.0, out=out)", 3),
             &[*a][..],
         );
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
-        *g.state_mut(a) = Array::from_vec(&[3], vec![1.0, 2.0, 3.0]);
+        *g.state_mut(a) = Array::from_vec([3], vec![1.0, 2.0, 3.0]);
         g.stabilize(&mut pool);
         assert_eq!(g.ref_view(out).as_slice(), &[2.0, 4.0, 6.0]);
     }
@@ -398,9 +447,9 @@ mod tests {
     #[test]
     fn numpy_input_is_ndarray() {
         let mut b = GraphBuilder::new();
-        let a = b.push_source(RefSource::new(Array::from_vec(&[2], vec![1.0_f64, 2.0])));
+        let a = b.push_source(RefSource::new(Array::from_vec([2], vec![1.0_f64, 2.0])));
         let out = b.push(
-            PyOperator::writing(
+            PyOperator::<1, 1>::writing(
                 "lambda out, a: out.__setitem__(0, float(\
                    type(a).__name__ == 'ndarray' and a.dtype == np.float64 and a.ndim == 1 and len(a) == 2))",
                 1,
@@ -410,22 +459,22 @@ mod tests {
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
-        *g.state_mut(a) = Array::from_vec(&[2], vec![1.0, 2.0]);
+        *g.state_mut(a) = Array::from_vec([2], vec![1.0, 2.0]);
         g.stabilize(&mut pool);
         assert_eq!(g.ref_view(out).as_slice(), &[1.0]);
     }
 
     /// Safety regression: an operator that stashes an input across generations,
-    /// downstream of a `Map` that REALLOCATES its `Array<f64>` each tick. Inputs
-    /// are copied into NumPy-owned arrays, so the stash reads a live snapshot
-    /// (the gen-1 value) on gen 2 — never freed Rust heap.
+    /// downstream of a node ([`ReallocOwned`]) that REALLOCATES its `Array<f64>`
+    /// each tick. Inputs are copied into NumPy-owned arrays, so the stash reads a
+    /// live snapshot (the gen-1 value) on gen 2 — never freed Rust heap.
     #[test]
     fn retained_input_is_snapshot_not_uaf() {
         let mut b = GraphBuilder::new();
-        let src = b.push_source(RefSource::new(Array::from_vec(&[1], vec![5.0_f64])));
-        let mapped = b.push(Map::new(|a: &Array<f64>| a.clone()), *src);
+        let src = b.push_source(RefSource::new(Array::from_vec([1], vec![5.0_f64])));
+        let mapped = b.push(ReallocOwned, *src);
         let out = b.push(
-            PyOperator::writing(
+            PyOperator::<1, 1>::writing(
                 "lambda out, a: out.__setitem__(0, globals().setdefault('_S', a)[0])",
                 1,
             ),
@@ -434,12 +483,12 @@ mod tests {
         let mut g = Graph::from_builder(b);
         let mut pool = Pool::new(0);
 
-        *g.state_mut(src) = Array::from_vec(&[1], vec![5.0]);
+        *g.state_mut(src) = Array::from_vec([1], vec![5.0]);
         g.stabilize(&mut pool);
         assert_eq!(g.ref_view(out).as_slice(), &[5.0]);
 
-        // Map reallocates (old Box freed); the stashed snapshot still reads 5.0.
-        *g.state_mut(src) = Array::from_vec(&[1], vec![99.0]);
+        // ReallocOwned reallocates (old Box freed); the stashed snapshot still reads 5.0.
+        *g.state_mut(src) = Array::from_vec([1], vec![99.0]);
         g.stabilize(&mut pool);
         assert_eq!(g.ref_view(out).as_slice(), &[5.0]);
     }
@@ -458,24 +507,24 @@ mod tests {
                       for _ in range(6)) * 0 + xs[0])";
 
         let mut b = GraphBuilder::new();
-        let src = b.push_source(RefSource::new(Array::from_vec(&[1], vec![0.0_f64])));
+        let src = b.push_source(RefSource::new(Array::from_vec([1], vec![0.0_f64])));
         let outs: Vec<_> = (0..K)
-            .map(|_| b.push(PyOperator::writing(heavy, 1), &[*src][..]))
+            .map(|_| b.push(PyOperator::<1, 1>::writing(heavy, 1), &[*src][..]))
             .collect();
         let mut g = Graph::from_builder(b);
 
         let mut serial = Pool::new(0);
         let mut parallel = Pool::new(K);
 
-        *g.state_mut(src) = Array::from_vec(&[1], vec![1.0]);
+        *g.state_mut(src) = Array::from_vec([1], vec![1.0]);
         g.stabilize(&mut parallel); // warm up
 
-        *g.state_mut(src) = Array::from_vec(&[1], vec![2.0]);
+        *g.state_mut(src) = Array::from_vec([1], vec![2.0]);
         let t = std::time::Instant::now();
         g.stabilize(&mut serial);
         let t_serial = t.elapsed();
 
-        *g.state_mut(src) = Array::from_vec(&[1], vec![3.0]);
+        *g.state_mut(src) = Array::from_vec([1], vec![3.0]);
         let t = std::time::Instant::now();
         g.stabilize(&mut parallel);
         let t_parallel = t.elapsed();

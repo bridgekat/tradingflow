@@ -341,15 +341,20 @@ impl Scenario {
     /// length `out_len`, e.g. `"lambda a, b: a + b"`. Operators run on the shared
     /// (free-threaded) interpreter and execute in parallel on the pool. See the
     /// `operators::python` module docs for the data model, retention contract, and setup.
+    ///
+    /// [array-view-refactor] The convenience API is fixed to rank-1
+    /// (`RefPort<Array<f64, 1>>`) inputs/output — the NumPy boundary is 1-D
+    /// `float64`. For other ranks build `PyOperator::<NI, NO>` and wire it via
+    /// [`add_operator`](Self::add_operator).
     #[cfg(feature = "python")]
     pub fn add_py_operator(
         &mut self,
         source: &str,
-        inputs: &[Handle<RefPort<Array<f64>>>],
+        inputs: &[Handle<RefPort<Array<f64, 1>>>],
         out_len: usize,
-    ) -> Handle<RefPort<Array<f64>>> {
+    ) -> Handle<RefPort<Array<f64, 1>>> {
         self.builder
-            .push(crate::operators::PyOperator::new(source, out_len), inputs)
+            .push(crate::operators::PyOperator::<1, 1>::new(source, out_len), inputs)
     }
 
     /// Register a Python operator in **write mode** (feature `python`, zero-copy
@@ -362,11 +367,13 @@ impl Scenario {
     pub fn add_py_operator_writing(
         &mut self,
         source: &str,
-        inputs: &[Handle<RefPort<Array<f64>>>],
+        inputs: &[Handle<RefPort<Array<f64, 1>>>],
         out_len: usize,
-    ) -> Handle<RefPort<Array<f64>>> {
-        self.builder
-            .push(crate::operators::PyOperator::writing(source, out_len), inputs)
+    ) -> Handle<RefPort<Array<f64, 1>>> {
+        self.builder.push(
+            crate::operators::PyOperator::<1, 1>::writing(source, out_len),
+            inputs,
+        )
     }
 
     /// Register a class-based Python operator (feature `python`). `source` is a
@@ -375,16 +382,21 @@ impl Scenario {
     /// `compute(state, inputs, output, timestamp, produced) -> bool`. The driver
     /// [`Clock`] is wired through so the operator sees event time. `out_shape` is
     /// the output element shape (`[]` for a scalar). See [`PyClassOperator`](crate::operators::PyClassOperator).
+    ///
+    /// [array-view-refactor] Convenience-fixed to rank-1 `Array<f64, 1>` inputs
+    /// and output. Heterogeneous (Array + Series) or higher-rank operators
+    /// register the typed `PyClassOperator::<I, NO>` via
+    /// [`add_operator`](Self::add_operator).
     #[cfg(feature = "python")]
     pub fn add_py_class_operator(
         &mut self,
         source: &str,
         params: crate::operators::PyParams,
-        inputs: &[Handle<RefPort<Array<f64>>>],
+        inputs: &[Handle<RefPort<Array<f64, 1>>>],
         out_shape: &[usize],
-    ) -> Handle<RefPort<Array<f64>>> {
+    ) -> Handle<RefPort<Array<f64, 1>>> {
         self.builder.push(
-            crate::operators::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64>>>::from_source(
+            crate::operators::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64, 1>>, 1>::from_source(
                 source,
                 params,
                 out_shape.to_vec(),
@@ -397,19 +409,19 @@ impl Scenario {
     /// Register a class-based Python operator loaded from a plain `.py` file
     /// (feature `python`). The file defines `build(**kwargs)` (called with
     /// `params`) or binds `__op__`; see [`PyClassOperator`](crate::operators::PyClassOperator). Convenience for
-    /// all-`Array<f64>` inputs; heterogeneous (Array + Series) operators register
+    /// all-`Array<f64, 1>` inputs; heterogeneous (Array + Series) operators register
     /// via [`add_operator`](Self::add_operator) with
-    /// `PyClassOperator::<I>::from_file(..)`.
+    /// `PyClassOperator::<I, NO>::from_file(..)`.
     #[cfg(feature = "python")]
     pub fn add_py_operator_file(
         &mut self,
         path: impl AsRef<std::path::Path>,
         params: crate::operators::PyParams,
-        inputs: &[Handle<RefPort<Array<f64>>>],
+        inputs: &[Handle<RefPort<Array<f64, 1>>>],
         out_shape: &[usize],
-    ) -> Handle<RefPort<Array<f64>>> {
+    ) -> Handle<RefPort<Array<f64, 1>>> {
         self.builder.push(
-            crate::operators::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64>>>::from_file(
+            crate::operators::PyClassOperator::<flowgraph::typed::RefPorts<Array<f64, 1>>, 1>::from_file(
                 path,
                 params,
                 out_shape.to_vec(),

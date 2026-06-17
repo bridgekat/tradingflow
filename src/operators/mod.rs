@@ -39,11 +39,10 @@ mod structural;
 mod traders;
 mod transform;
 
-// [array-view-refactor] the Python bridge is migrated in stage 5.
-#[cfg(any())]
+// [array-view-refactor] the Python bridge is migrated to the const-rank view
+// currency in stage 5.
 #[cfg(feature = "python")]
 mod pyhost;
-#[cfg(any())]
 #[cfg(feature = "python")]
 mod python;
 
@@ -70,11 +69,11 @@ pub use rolling::{
 };
 pub use traders::{Benchmark, RandomTrader, SimpleTrader};
 
-// [array-view-refactor] the Python bridge re-exports are restored in stage 5:
-// #[cfg(feature = "python")]
-// pub use pyhost::{NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyParams};
-// #[cfg(feature = "python")]
-// pub use python::PyOperator;
+// [array-view-refactor] the Python bridge re-exports, restored in stage 5.
+#[cfg(feature = "python")]
+pub use pyhost::{NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyParams};
+#[cfg(feature = "python")]
+pub use python::PyOperator;
 
 #[cfg(any())]
 #[cfg(test)]
