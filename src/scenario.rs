@@ -27,7 +27,8 @@ use futures::stream::{FuturesUnordered, StreamExt};
 
 use flowgraph::core::Pool;
 use flowgraph::typed::{
-    Graph, GraphBuilder, Handle, InterfaceHandles, RefPort, RefSource, Segment, SourceHandle,
+    Graph, GraphBuilder, Handle, HandlesInterface, InterfaceHandles, RefPort, RefSource, Segment,
+    SourceHandle,
 };
 
 use crate::operators::{Clock, Record};
@@ -279,14 +280,14 @@ impl Scenario {
     /// Register a [`Segment`] (most operators implement
     /// [`flowgraph::typed::Operator`], which is one). `inputs` are the upstream
     /// handles, shaped like the segment's input tree.
-    pub fn add_operator<O>(
+    pub fn add_operator<O, H>(
         &mut self,
         operator: O,
-        inputs: <O::Inputs as InterfaceHandles>::Handles<'_>,
+        inputs: H,
     ) -> <O::Outputs as InterfaceHandles>::HandlesOwned
     where
-        O: Segment,
-        O::Inputs: InterfaceHandles,
+        H: HandlesInterface,
+        O: Segment<Inputs = H::Interface>,
         O::Outputs: InterfaceHandles,
     {
         self.builder.push(operator, inputs)
