@@ -22,22 +22,24 @@
 
 use flowgraph::typed::{Handle, RefPort};
 
-use tradingflow::operators::{Apply, Clocked, Map};
-use tradingflow::{Array, Scenario};
+use tradingflow::operators::{Apply, ArrayValue, Clocked, Map};
+use tradingflow::{Array, ArrayView, Scenario, ViewPort};
+
+use super::AvH;
 
 /// Full-market mask: `1.0` for stocks with finite positive market cap this
 /// rebalance, else `NaN`.
 pub fn build_full_market_universe(
     sc: &mut Scenario,
-    market_cap: Handle<RefPort<Array<f64>>>,
+    market_cap: AvH,
     rebalance_clock: Handle<RefPort<()>>,
-) -> Handle<RefPort<Array<f64>>> {
+) -> AvH {
     sc.add_operator(
-        Clocked::new(Map::new(|m: &Array<f64>| {
+        Clocked::new(Map::new(|m: ArrayView<f64, 1>| {
+            let s = m.to_contiguous();
             Array::from_vec(
-                m.shape(),
-                m.as_slice()
-                    .iter()
+                [s.len()],
+                s.iter()
                     .map(|&c| if c.is_finite() && c > 0.0 { 1.0 } else { f64::NAN })
                     .collect(),
             )
@@ -50,14 +52,14 @@ pub fn build_full_market_universe(
 /// falls in `[lo, hi)`. Approximates a size index without real constituents.
 pub fn build_caprank_universe(
     sc: &mut Scenario,
-    market_cap: Handle<RefPort<Array<f64>>>,
+    market_cap: AvH,
     rebalance_clock: Handle<RefPort<()>>,
     lo: usize,
     hi: usize,
-) -> Handle<RefPort<Array<f64>>> {
+) -> AvH {
     sc.add_operator(
-        Clocked::new(Map::new(move |m: &Array<f64>| {
-            let s = m.as_slice();
+        Clocked::new(Map::new(move |m: ArrayView<f64, 1>| {
+            let s = m.to_contiguous();
             let n = s.len();
             let mut idx: Vec<usize> =
                 (0..n).filter(|&i| s[i].is_finite() && s[i] > 0.0).collect();
@@ -68,7 +70,7 @@ pub fn build_caprank_universe(
                     mask[i] = 1.0;
                 }
             }
-            Array::from_vec(m.shape(), mask)
+            Array::from_vec([n], mask)
         })),
         (rebalance_clock, market_cap),
     )
@@ -80,17 +82,13 @@ pub fn build_caprank_universe(
 /// which the handbook drops — newly-listed A-shares have extreme first-year
 /// returns that scramble fundamental-factor signals. Both inputs are on the
 /// rebalance clock.
-pub fn with_listing_filter(
-    sc: &mut Scenario,
-    universe: Handle<RefPort<Array<f64>>>,
-    aged: Handle<RefPort<Array<f64>>>,
-) -> Handle<RefPort<Array<f64>>> {
+pub fn with_listing_filter(sc: &mut Scenario, universe: AvH, aged: AvH) -> AvH {
     sc.add_operator(
-        Apply::<(RefPort<Array<f64>>, RefPort<Array<f64>>), Array<f64>, _>::new(
-            |(u, a): (&Array<f64>, &Array<f64>)| {
-                let (us, as_) = (u.as_slice(), a.as_slice());
+        Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 1, _>::new(
+            |(u, a): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
+                let (us, as_) = (u.to_contiguous(), a.to_contiguous());
                 Array::from_vec(
-                    u.shape(),
+                    [us.len()],
                     (0..us.len())
                         .map(|i| if us[i] > 0.0 && as_[i].is_finite() { 1.0 } else { f64::NAN })
                         .collect(),
@@ -104,17 +102,13 @@ pub fn with_listing_filter(
 /// NaN out every entry where the universe mask is not `> 0`, leaving in-universe
 /// values untouched. Applied **before** cross-sectional `Percentile` so the rank
 /// is computed within the universe only.
-pub fn mask_to_universe(
-    sc: &mut Scenario,
-    data: Handle<RefPort<Array<f64>>>,
-    universe: Handle<RefPort<Array<f64>>>,
-) -> Handle<RefPort<Array<f64>>> {
+pub fn mask_to_universe(sc: &mut Scenario, data: AvH, universe: AvH) -> AvH {
     sc.add_operator(
-        Apply::<(RefPort<Array<f64>>, RefPort<Array<f64>>), Array<f64>, _>::new(
-            |(f, u): (&Array<f64>, &Array<f64>)| {
-                let (fs, us) = (f.as_slice(), u.as_slice());
+        Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 1, _>::new(
+            |(f, u): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
+                let (fs, us) = (f.to_contiguous(), u.to_contiguous());
                 Array::from_vec(
-                    f.shape(),
+                    [fs.len()],
                     (0..fs.len())
                         .map(|i| if us[i] > 0.0 { fs[i] } else { f64::NAN })
                         .collect(),

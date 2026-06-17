@@ -28,20 +28,25 @@ use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::Scenario;
 use tradingflow::operators::{
-    Benchmark, CompoundReturn, Diff, Drawdown, Log, Map, Multiply, PyClassOperator, PyParams,
-    RandomTrader, SharpeRatio, Stack,
+    ArrayValue, Benchmark, CompoundReturn, Diff, Drawdown, Map, PyClassOperator, PyParams,
+    RandomTrader, SharpeRatio, Stack, log, multiply,
 };
 use tradingflow::sources::clock;
-use tradingflow::{Array, Retention, Series};
+use tradingflow::{Array, ArrayView, Retention, Series, ViewPort};
+
+use common::{own, ref_view, AvH};
 
 const INITIAL_CASH: f64 = 1_000_000.0;
 /// Forward-return offset pairing `features[i]` with `target[i+1]`.
 const TARGET_OFFSET: i64 = 1;
 
-/// Map a trader's `(holdings_value, cash)` output to its scalar total value.
-fn total_value(sc: &mut Scenario, h: Handle<RefPort<Array<f64>>>) -> Handle<RefPort<Array<f64>>> {
+/// A scalar view handle (a rank-0 `ArrayView` port).
+type ScH = Handle<ViewPort<ArrayValue<f64, 0>>>;
+
+/// Map a trader's `(holdings_value, cash)` view to its scalar total value.
+fn total_value(sc: &mut Scenario, h: AvH) -> ScH {
     sc.add_operator(
-        Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())),
+        Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         h,
     )
 }
@@ -89,8 +94,8 @@ async fn main() {
     let features = common::build_strategy_features(&mut sc, &st, window, fset, feat_ret);
     let num_features = features.names.len() as i64;
     eprintln!("feature set `{feature_set}`: {} features", num_features);
-    let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
-    let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
+    let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
+    let log_adj = sc.add_operator(log::<f64, 1>(), st.adjusted_close);
     let (_target, _target_series, demeaned_series) =
         common::build_log_return_target(&mut sc, log_adj, feat_ret);
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
@@ -103,10 +108,13 @@ async fn main() {
         rebalance_clock,
         args.index_size,
     );
+    // The Python predictor/portfolio operators consume whole-array `RefPort`s;
+    // materialize the universe view once via `own`.
+    let universe_ref = own(&mut sc, universe);
 
     let predicted_returns = sc.add_operator(
         PyClassOperator::<(
-            RefPort<Array<f64>>,
+            RefPort<Array<f64, 1>>,
             RefPort<Series<f64>>,
             RefPort<Series<f64>>,
         )>::from_module(
@@ -121,11 +129,11 @@ async fn main() {
             vec![n],
             clk.clone(),
         ),
-        (universe, features.series, demeaned_series),
+        (universe_ref, features.series, demeaned_series),
     );
 
     let soft_positions = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>)>::from_module(
             "flowops.portfolios.mean.rank_linear",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -133,21 +141,24 @@ async fn main() {
             vec![n],
             clk.clone(),
         ),
-        (universe, predicted_returns),
+        (universe_ref, predicted_returns),
     );
+    // Bridge the Python `RefPort` positions back into the view currency the
+    // native traders speak.
+    let soft_positions_v = sc.as_view(soft_positions);
 
     // ---- Traders --------------------------------------------------------
     let index = sc.add_operator(
         Benchmark::new(n, 1.0, true),
-        &[universe, st.close, st.adjusts, upper, lower][..],
+        (universe, st.close, st.adjusts, upper, lower),
     );
     let strategy_frictionless = sc.add_operator(
         Benchmark::new(n, 1.0, true),
-        &[soft_positions, st.close, st.adjusts, upper, lower][..],
+        (soft_positions_v, st.close, st.adjusts, upper, lower),
     );
     let strategy_actual = sc.add_operator(
         RandomTrader::new(n, 20, INITIAL_CASH, 100.0, 5.0, 0.001, 0),
-        &[soft_positions, st.close, st.adjusts, upper, lower][..],
+        (soft_positions_v, st.close, st.adjusts, upper, lower),
     );
 
     // ---- Values + metrics (clock-gated, since inception) ----------------
@@ -155,21 +166,24 @@ async fn main() {
     let frictionless_value = total_value(&mut sc, strategy_frictionless);
     let actual_value = total_value(&mut sc, strategy_actual);
 
-    let sharpe = sc.add_operator(SharpeRatio::<f64>::new(), (actual_value, rebalance_clock));
+    let sharpe = sc.add_operator(SharpeRatio::<f64, 0>::new(), (actual_value, rebalance_clock));
     let compound = sc.add_operator(
-        CompoundReturn::<f64>::new(),
+        CompoundReturn::<f64, 0>::new(),
         (actual_value, rebalance_clock),
     );
-    let drawdown = sc.add_operator(Drawdown::<f64>::new(), actual_value);
+    let drawdown = sc.add_operator(Drawdown::<f64, 0>::new(), actual_value);
 
     // Rolling market beta / alpha vs the cap-weighted index, on daily log
     // returns of total value (regressor adds the intercept → output [beta, alpha]).
-    let log_actual = sc.add_operator(Log::<f64>::new(), actual_value);
-    let strat_logret = sc.add_operator(Diff::<f64>::new(), log_actual);
-    let log_index = sc.add_operator(Log::<f64>::new(), index_value);
-    let index_logret = sc.add_operator(Diff::<f64>::new(), log_index);
+    let log_actual = sc.add_operator(log::<f64, 0>(), actual_value);
+    let strat_logret = sc.add_operator(Diff::<f64, 0>::new(), log_actual);
+    let log_index = sc.add_operator(log::<f64, 0>(), index_value);
+    let index_logret = sc.add_operator(Diff::<f64, 0>::new(), log_index);
     let strat_logret_series = sc.add_record(strat_logret);
-    let index_logret_vec = sc.add_operator(Stack::<f64>::new(0), &[index_logret][..]); // scalar -> (1,)
+    // scalar -> (1,): bridge the rank-0 view into the `RefViewPort` slice `Stack`
+    // consumes, then stack into a 1-vector.
+    let index_logret_ref = ref_view::<0>(&mut sc, index_logret);
+    let index_logret_vec = sc.add_operator(Stack::<f64, 0, 1>::new(0), &[index_logret_ref][..]);
     let index_logret_series = sc.add_record(index_logret_vec);
     let beta_alpha = sc.add_operator(
         PyClassOperator::<(RefPort<()>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
@@ -191,7 +205,10 @@ async fn main() {
     let h_sharpe = sc.add_record(sharpe);
     let h_compound = sc.add_record(compound);
     let h_drawdown = sc.add_record(drawdown);
-    let h_beta_alpha = sc.add_record(beta_alpha);
+    // `beta_alpha` is a Python `RefPort<Array>` output; bridge into the view
+    // currency for recording.
+    let beta_alpha_v = sc.as_view(beta_alpha);
+    let h_beta_alpha = sc.add_record(beta_alpha_v);
 
     let mut session = sc.build_with_threads(args.threads);
     let total = session.estimated_event_count();

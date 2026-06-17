@@ -16,7 +16,9 @@
 use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::operators::{Benchmark, Clock, Map, PyClassOperator, PyParams, Turnover};
-use tradingflow::{Array, Scenario, Series};
+use tradingflow::{Array, ArrayView, Scenario, Series};
+
+use super::{own, AvH};
 
 /// Number of layered-backtest groups (deciles).
 pub const NUM_GROUPS: usize = 10;
@@ -36,19 +38,23 @@ pub struct DecileBacktest {
 #[allow(clippy::too_many_arguments)]
 fn bucket_nav(
     sc: &mut Scenario,
-    universe: Handle<RefPort<Array<f64>>>,
-    factor: Handle<RefPort<Array<f64>>>,
-    close: Handle<RefPort<Array<f64>>>,
-    adjusts: Handle<RefPort<Array<f64>>>,
-    upper: Handle<RefPort<Array<f64>>>,
-    lower: Handle<RefPort<Array<f64>>>,
+    universe: AvH,
+    factor: AvH,
+    close: AvH,
+    adjusts: AvH,
+    upper: AvH,
+    lower: AvH,
     n: usize,
     clk: &Clock,
     low: f64,
     high: f64,
 ) -> (Handle<RefPort<Series<f64>>>, Handle<RefPort<Series<f64>>>) {
+    // The Python portfolio consumes whole-array `RefPort` inputs; materialize the
+    // two view inputs via `own`.
+    let universe_ref = own(sc, universe);
+    let factor_ref = own(sc, factor);
     let positions = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 1>::from_module(
             "flowops.portfolios.mean.rank_bucket",
             PyParams::new()
                 .int("num_stocks", n as i64)
@@ -57,17 +63,19 @@ fn bucket_nav(
             vec![n],
             clk.clone(),
         ),
-        (universe, factor),
+        (universe_ref, factor_ref),
     );
+    // The trader speaks the view currency; bridge the `RefPort` positions back.
+    let positions_v = sc.as_view(positions);
     let trader = sc.add_operator(
         Benchmark::new(n, 1.0, true),
-        &[positions, close, adjusts, upper, lower][..],
+        (positions_v, close, adjusts, upper, lower),
     );
     let nav = sc.add_operator(
-        Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())),
+        Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         trader,
     );
-    let turnover = sc.add_operator(Turnover::<f64>::new(), positions);
+    let turnover = sc.add_operator(Turnover::<f64, 1>::new(), positions_v);
     (sc.add_record(nav), sc.add_record(turnover))
 }
 
@@ -75,12 +83,12 @@ fn bucket_nav(
 #[allow(clippy::too_many_arguments)]
 pub fn build_decile_backtest(
     sc: &mut Scenario,
-    universe: Handle<RefPort<Array<f64>>>,
-    factor: Handle<RefPort<Array<f64>>>,
-    close: Handle<RefPort<Array<f64>>>,
-    adjusts: Handle<RefPort<Array<f64>>>,
-    upper: Handle<RefPort<Array<f64>>>,
-    lower: Handle<RefPort<Array<f64>>>,
+    universe: AvH,
+    factor: AvH,
+    close: AvH,
+    adjusts: AvH,
+    upper: AvH,
+    lower: AvH,
     n: usize,
     clk: &Clock,
 ) -> DecileBacktest {

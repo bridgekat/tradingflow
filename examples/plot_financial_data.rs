@@ -25,13 +25,15 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, RefPort};
+use flowgraph::typed::{Handle, ViewPort};
 
 use tradingflow::data::Duration;
-use tradingflow::operators::{Annualize, Divide, Filter, Map, Multiply, Negate, RollingMean, Select};
+use tradingflow::operators::{
+    Annualize, ArrayValue, Filter, Map, RollingMean, Select, divide, multiply, negate,
+};
 use tradingflow::Scenario;
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
-use tradingflow::{Array, Instant, Series};
+use tradingflow::{Array, ArrayView, Instant, Series};
 
 const COLS: [&str; 10] = [
     "market_cap", "assets", "equity", "parent_equity", "op_income", "net_profit", "cash_flow",
@@ -50,10 +52,18 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
         .collect()
 }
 
-/// `Select` stock `i`'s row out of a panel and drop the all-NaN "no data" ticks.
-fn pick(sc: &mut Scenario, panel: Handle<RefPort<Array<f64>>>, i: usize) -> Handle<RefPort<Array<f64>>> {
-    let sel = sc.add_operator(Select::<f64>::new(vec![i], 0, true), panel);
-    sc.add_operator(Filter(|a: &Array<f64>| a.as_slice().iter().any(|x| x.is_finite())), sel)
+/// `Select` stock `i`'s row out of a `[N, K]` panel (→ rank-1 `[K]`) and drop the
+/// all-NaN "no data" ticks.
+fn pick(
+    sc: &mut Scenario,
+    panel: Handle<ViewPort<ArrayValue<f64, 2>>>,
+    i: usize,
+) -> Handle<ViewPort<ArrayValue<f64, 1>>> {
+    let sel = sc.add_operator(Select::<f64, 2, 1>::new(vec![i], 0, true), panel);
+    sc.add_operator(
+        Filter::<_, 1>(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
+        sel,
+    )
 }
 
 use clap::Parser;
@@ -86,17 +96,19 @@ async fn main() {
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
-    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<RefPort<Array<f64>>> {
+    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ViewPort<ArrayValue<f64, 1>>> {
         let s = ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
         let init = common::nan_array(&s.out_shape());
         let panel = sc.add_source(s, init);
+        let panel = sc.as_view(panel);
         pick(sc, panel, idx)
     };
-    let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<RefPort<Array<f64>>> {
+    let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<ViewPort<ArrayValue<f64, 1>>> {
         let s = ReportPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone())
             .with_report_date(with_report_date);
         let init = common::nan_array(&s.out_shape());
         let panel = sc.add_source(s, init);
+        let panel = sc.as_view(panel);
         pick(sc, panel, idx)
     };
 
@@ -127,32 +139,34 @@ async fn main() {
     // ------------------------------------------------------------------
     // Operators (identical to the CSV version).
     // ------------------------------------------------------------------
-    let close = sc.add_operator(Select::<f64>::new(vec![0], 0, true), prices);
-    let total_shares = sc.add_operator(Select::<f64>::new(vec![0], 0, true), equity);
-    let market_cap = sc.add_operator(Multiply::<f64>::new(), (close, total_shares));
+    let close = sc.add_operator(Select::<f64, 1, 0>::new(vec![0], 0, true), prices);
+    let total_shares = sc.add_operator(Select::<f64, 1, 0>::new(vec![0], 0, true), equity);
+    let market_cap = sc.add_operator(multiply::<f64, 0>(), (close, total_shares));
 
-    let assets = sc.add_operator(Select::<f64>::new(vec![0], 0, true), balance);
-    let neg_equity = sc.add_operator(Select::<f64>::new(vec![1], 0, true), balance);
-    let equity_val = sc.add_operator(Negate::<f64>::new(), neg_equity);
-    let neg_peq = sc.add_operator(Select::<f64>::new(vec![2, 3, 4], 0, false), balance);
+    let assets = sc.add_operator(Select::<f64, 1, 0>::new(vec![0], 0, true), balance);
+    let neg_equity = sc.add_operator(Select::<f64, 1, 0>::new(vec![1], 0, true), balance);
+    let equity_val = sc.add_operator(negate::<f64, 0>(), neg_equity);
+    let neg_peq = sc.add_operator(Select::<f64, 1, 1>::new(vec![2, 3, 4], 0, false), balance);
     let parent_equity = sc.add_operator(
-        Map::new(|a: &Array<f64>| Array::scalar(-a.as_slice().iter().sum::<f64>())),
+        Map::new(|a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous().iter().sum::<f64>())),
         neg_peq,
     );
 
     let income_ann = sc.add_operator(Annualize::new(), income); // [op_income, net_profit]
-    let op_income = sc.add_operator(Select::<f64>::new(vec![0], 0, true), income_ann);
-    let net_profit = sc.add_operator(Select::<f64>::new(vec![1], 0, true), income_ann);
+    let op_income = sc.add_operator(Select::<f64, 1, 0>::new(vec![0], 0, true), income_ann);
+    let net_profit = sc.add_operator(Select::<f64, 1, 0>::new(vec![1], 0, true), income_ann);
     let cf_ann = sc.add_operator(Annualize::new(), cf); // [change]
-    let cash_flow = sc.add_operator(Select::<f64>::new(vec![0], 0, true), cf_ann);
+    let cash_flow = sc.add_operator(Select::<f64, 1, 0>::new(vec![0], 0, true), cf_ann);
 
     let net_profit_series = sc.add_record(net_profit);
-    let net_profit_ttm =
-        sc.add_operator(RollingMean::<f64>::time_delta(Duration::from_days(365)), net_profit_series);
+    let net_profit_ttm = sc.add_operator(
+        RollingMean::<f64, 0>::time_delta(Duration::from_days(365)),
+        net_profit_series,
+    );
 
-    let ep = sc.add_operator(Divide::<f64>::new(), (net_profit_ttm, market_cap));
-    let bp = sc.add_operator(Divide::<f64>::new(), (parent_equity, market_cap));
-    let roe = sc.add_operator(Divide::<f64>::new(), (net_profit_ttm, parent_equity));
+    let ep = sc.add_operator(divide::<f64, 0>(), (net_profit_ttm, market_cap));
+    let bp = sc.add_operator(divide::<f64, 0>(), (parent_equity, market_cap));
+    let roe = sc.add_operator(divide::<f64, 0>(), (net_profit_ttm, parent_equity));
 
     let records = [
         sc.add_record(market_cap),

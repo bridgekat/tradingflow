@@ -25,22 +25,300 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
+use std::marker::PhantomData;
 
-use flowgraph::typed::{Handle, RefPort, RefViewPort, ViewPort};
+use flowgraph::typed::{Arena, Handle, Operator, RefPort, RefViewPort, Segment, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    AnnualizeView, Apply, ArrayValue, Divide, ForwardAdjustViewDiv, Gate, Lag, Log, Map, Multiply,
-    Percentile, Resample, RollingMean, RollingVariance, Select, SelectView, SliceView, Split, Sqrt,
-    Stack, StackSync, StackSyncView, StackView, Subtract, Winsorize,
+    AnnualizeView, Apply, ArrayValue, ForwardAdjustViewDiv, Gate, Lag, Map, Percentile,
+    RollingMean, RollingVariance, Select, SliceView, Split, Stack, StackSync, StackSyncView,
+    StackView, Winsorize, divide, log, multiply, sqrt, subtract,
 };
 use tradingflow::{Scenario, Session};
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
-use tradingflow::{Array, ArraySlice, Instant, Retention, Series, utc_to_tai};
+use tradingflow::{Array, ArrayView, Instant, Retention, Scalar, Series, utc_to_tai};
 
 /// Rows kept beyond a consumer's exact count look-back, absorbing the
 /// amortized-compaction slack and any off-by-one at the window boundary.
 pub const RETAIN_MARGIN: usize = 8;
+
+// ===========================================================================
+// View/ref currency bridges — examples speak the const-rank `ArrayView`
+// currency (`Av<N>`) end-to-end; only `Resample` (an `Id`-over-`RefPort`
+// segment) and the embedded-Python operators consume whole-array `RefPort`s.
+// ===========================================================================
+
+/// A rank-1 cross-sectional array view port — the `[num_stocks]` panel currency.
+pub type Av1 = ViewPort<ArrayValue<f64, 1>>;
+/// A rank-1 cross-sectional array view handle (a `[num_stocks]` panel handle).
+pub type AvH = Handle<Av1>;
+
+/// Materialize a strided [`ArrayView`] into an **owned** `RefPort<Array<f64, N>>`
+/// cell — the bridge from the view currency back to the whole-array reference
+/// currency that [`Resample`]/[`tradingflow::operators::PyClassOperator`] consume.
+/// Reallocates its owned output each notifying tick (and re-presents the last
+/// value un-notified), so the no-notify⟹unchanged contract holds.
+pub struct Own<T: Scalar, const N: usize> {
+    _p: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> Own<T, N> {
+    pub fn new() -> Self {
+        Self { _p: PhantomData }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for Own<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Scalar, const N: usize> Operator for Own<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = RefPort<Array<T, N>>;
+    type State = Option<Array<T, N>>;
+
+    fn init(self) -> Self::State {
+        None
+    }
+
+    fn compute<'a, 'b: 'a>(
+        (notified, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
+        init: bool,
+    ) -> (bool, &'a Array<T, N>) {
+        *state = Some(x.to_array());
+        (notified && !init, state.as_ref().unwrap())
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, &'a Array<T, N>) {
+        (false, state.as_ref().unwrap())
+    }
+}
+
+/// Materialize a view handle into a `RefPort<Array<f64, 1>>` handle (the common
+/// rank-1 [`Own`] bridge), e.g. before a Python operator.
+pub fn own(sc: &mut Scenario, h: AvH) -> Handle<RefPort<Array<f64, 1>>> {
+    sc.add_operator(Own::<f64, 1>::new(), h)
+}
+
+/// Bridge a by-value `ViewPort` handle into a by-reference `RefViewPort` handle —
+/// the adapter that lets independently-produced view handles (e.g. `Percentile`
+/// feature columns) be collected into the `&[RefViewPort]` slice a `Stack`
+/// consumes. There is no value↔reference adapter inside `segment!` (it forwards
+/// values positionally), so this is a hand-written [`Reref`] node: it homes the
+/// forwarded `ArrayView` (a `Copy` fat pointer into the producer's stable
+/// storage) in a per-generation arena — exactly as [`Split`] homes its row views
+/// — and lends it back by reference for the generation. Zero-copy (only the view
+/// struct is arena-homed, never the data) and notify-transparent.
+pub fn ref_view<const N: usize>(
+    sc: &mut Scenario,
+    h: Handle<ViewPort<ArrayValue<f64, N>>>,
+) -> Handle<RefViewPort<ArrayValue<f64, N>>> {
+    sc.add_operator(Reref::<f64, N>::new(), h)
+}
+
+/// Bridge a whole vector of `ViewPort` handles into the `RefViewPort` handle
+/// slice a [`Stack`]/[`StackSync`] consumes, at an explicit rank `N` (the
+/// rank-generic counterpart of [`ref_view`]).
+pub fn reref_all<const N: usize>(
+    sc: &mut Scenario,
+    handles: &[Handle<ViewPort<ArrayValue<f64, N>>>],
+) -> Vec<Handle<RefViewPort<ArrayValue<f64, N>>>> {
+    handles
+        .iter()
+        .map(|&h| sc.add_operator(Reref::<f64, N>::new(), h))
+        .collect()
+}
+
+/// The inverse of [`DerefView`]: re-present a by-value `ViewPort` as a
+/// by-reference `RefViewPort` so independently-produced view columns can be
+/// collected into the `&[RefViewPort]` slice a [`Stack`]/[`StackSync`] consumes.
+///
+/// `RefViewPort`'s payload is `(bool, &'a ArrayView)`; the engine's only producer
+/// of by-reference view rows is [`Split`] (via a per-generation [`Arena`]). This
+/// is the rank-preserving (single-row) counterpart: it homes the input view —
+/// which already points at the upstream's stable storage and is valid for the
+/// generation lifetime `'a` — in its own arena and lends `&'a ArrayView`. The
+/// arena holds only the fat-pointer view struct, so no array data is copied. It
+/// forwards the input's notify, so the no-notify⟹unchanged contract carries:
+/// when the input is silent the lent view still points at the upstream's last
+/// (unchanged) value.
+pub struct Reref<T: Scalar, const N: usize> {
+    _p: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> Reref<T, N> {
+    pub fn new() -> Self {
+        Self { _p: PhantomData }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for Reref<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Scalar, const N: usize> Segment for Reref<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = RefViewPort<ArrayValue<T, N>>;
+    type State = Arena;
+
+    fn init(self) -> Arena {
+        Arena::new()
+    }
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        (notified, x): (bool, ArrayView<'a, T, N>),
+        arena: &'b mut Arena,
+        init: bool,
+    ) -> (bool, &'a ArrayView<'a, T, N>) {
+        let alloc = arena.reset();
+        (notified && !init, &*alloc.alloc(x))
+    }
+}
+
+/// Re-derive a [`Split`] row's by-reference view (`RefViewPort`) as a by-value
+/// `ViewPort` — the zero-copy adapter that lets a `Split` row (whose leaf is a
+/// `&ArrayView`) feed the by-value view operators (`Gate`, `SliceView`, …). The
+/// inner `ArrayView` is `Copy`, so this just forwards it by value; like
+/// `SliceView`/`AsView` it is a [`Segment`] re-derived from the fresh input each
+/// generation, forwarding the input's notify.
+pub struct DerefView<T: Scalar, const N: usize> {
+    _p: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> DerefView<T, N> {
+    pub fn new() -> Self {
+        Self { _p: PhantomData }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for DerefView<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Scalar, const N: usize> Segment for DerefView<T, N> {
+    type Inputs = RefViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = ();
+
+    fn init(self) {}
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        (notified, v): (bool, &'a ArrayView<'a, T, N>),
+        _state: &'b mut (),
+        init: bool,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (notified && !init, *v)
+    }
+}
+
+/// State shared by the view-currency resamplers: the last data view
+/// materialized into an owned buffer (so it survives between clock ticks while
+/// the upstream view's storage may change).
+pub struct ResampleViewState<const ND: usize> {
+    out: Option<Array<f64, ND>>,
+}
+
+/// Clock-gated **view** passthrough whose clock is another data **view** (only
+/// its notify bit gates): re-emits the rank-`ND` data view on every tick of the
+/// rank-1 clock view, holding the last value between ticks. The view-currency
+/// counterpart of `Resample<Array, Array>` (e.g. resample a feature panel onto
+/// the daily-close pulse). Stays in the `ArrayView` currency end-to-end, so it
+/// needs no [`Own`] bridge on either side.
+pub struct ResampleView<const ND: usize>;
+
+impl<const ND: usize> ResampleView<ND> {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<const ND: usize> Default for ResampleView<ND> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const ND: usize> Segment for ResampleView<ND> {
+    type Inputs = (ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, ND>>);
+    type Outputs = ViewPort<ArrayValue<f64, ND>>;
+    type State = ResampleViewState<ND>;
+
+    fn init(self) -> Self::State {
+        ResampleViewState { out: None }
+    }
+
+    fn compute<'a, 'b: 'a>(
+        ((clock_fired, _), (_, x)): ((bool, ArrayView<'a, f64, 1>), (bool, ArrayView<'a, f64, ND>)),
+        state: &'b mut Self::State,
+        init: bool,
+    ) -> (bool, ArrayView<'a, f64, ND>) {
+        if init {
+            state.out = Some(x.to_array());
+            return (false, state.out.as_ref().unwrap().view());
+        }
+        if clock_fired {
+            state.out = Some(x.to_array());
+            return (true, state.out.as_ref().unwrap().view());
+        }
+        (false, state.out.as_ref().unwrap().view())
+    }
+}
+
+/// Clock-gated **view** passthrough whose clock is a unit (`RefPort<()>`) clock
+/// source (e.g. the rebalance clock): re-emits the rank-`ND` data view on every
+/// clock tick. The view-currency counterpart of `Resample<Array, ()>`.
+pub struct ResampleClocked<const ND: usize>;
+
+impl<const ND: usize> ResampleClocked<ND> {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<const ND: usize> Default for ResampleClocked<ND> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const ND: usize> Segment for ResampleClocked<ND> {
+    type Inputs = (RefPort<()>, ViewPort<ArrayValue<f64, ND>>);
+    type Outputs = ViewPort<ArrayValue<f64, ND>>;
+    type State = ResampleViewState<ND>;
+
+    fn init(self) -> Self::State {
+        ResampleViewState { out: None }
+    }
+
+    fn compute<'a, 'b: 'a>(
+        ((clock_fired, _), (_, x)): ((bool, &'a ()), (bool, ArrayView<'a, f64, ND>)),
+        state: &'b mut Self::State,
+        init: bool,
+    ) -> (bool, ArrayView<'a, f64, ND>) {
+        if init {
+            state.out = Some(x.to_array());
+            return (false, state.out.as_ref().unwrap().view());
+        }
+        if clock_fired {
+            state.out = Some(x.to_array());
+            return (true, state.out.as_ref().unwrap().view());
+        }
+        (false, state.out.as_ref().unwrap().view())
+    }
+}
 
 // The decile-backtest harness uses the `flowops` `rank_bucket` portfolio (a
 // `PyClassOperator`), so it only compiles with the `python` feature. Its sole
@@ -299,44 +577,45 @@ pub fn load_symbols(data_dir: &str) -> Vec<String> {
 /// and liabilities / expense items credit-**negative** — the factor formulas
 /// negate them where a positive magnitude is wanted.
 pub struct Stacked {
-    pub close: Handle<RefPort<Array<f64>>>,          // unadjusted close (StackSync)
-    pub volume: Handle<RefPort<Array<f64>>>,         // 成交量 shares (StackSync)
-    pub open: Handle<RefPort<Array<f64>>>,           // 开盘价 unadjusted (StackSync)
-    pub high: Handle<RefPort<Array<f64>>>,           // 最高价 unadjusted (StackSync)
-    pub low: Handle<RefPort<Array<f64>>>,            // 最低价 unadjusted (StackSync)
-    pub amount: Handle<RefPort<Array<f64>>>,         // 成交额 turnover value (StackSync)
-    pub adjusted_close: Handle<RefPort<Array<f64>>>, // close * forward-adjust factor (StackSync)
-    pub adjusts: Handle<RefPort<Array<f64>>>,        // forward-adjust factor (Stack)
-    pub total_shares: Handle<RefPort<Array<f64>>>,   // (Stack)
-    pub circ_shares: Handle<RefPort<Array<f64>>>,    // (Stack)
-    pub parent_equity: Handle<RefPort<Array<f64>>>,  // 归母净资产, positive (Stack)
-    pub net_profit: Handle<RefPort<Array<f64>>>,     // 净利润, annualized, positive
-    pub operating_profit: Handle<RefPort<Array<f64>>>, // 营业利润, annualized, positive
-    pub revenue: Handle<RefPort<Array<f64>>>,        // 营业收入, annualized, positive
-    pub operating_cost: Handle<RefPort<Array<f64>>>, // 营业成本, annualized, NEGATIVE (a deduction)
-    pub total_assets: Handle<RefPort<Array<f64>>>,   // 总资产, positive
-    pub total_liab: Handle<RefPort<Array<f64>>>,     // 总负债, NEGATIVE (credit side)
-    pub current_assets: Handle<RefPort<Array<f64>>>, // 流动资产, positive
-    pub current_liab: Handle<RefPort<Array<f64>>>,   // 流动负债, NEGATIVE (credit side)
-    pub cash: Handle<RefPort<Array<f64>>>,           // 货币资金, positive
-    pub inventories: Handle<RefPort<Array<f64>>>,    // 存货, positive
-    pub receivables: Handle<RefPort<Array<f64>>>,    // 应收票据及账款, positive
-    pub net_operating_cashflow: Handle<RefPort<Array<f64>>>, // 经营现金流净额, annualized
+    pub close: AvH,          // unadjusted close (StackSync)
+    pub volume: AvH,         // 成交量 shares (StackSync)
+    pub open: AvH,           // 开盘价 unadjusted (StackSync)
+    pub high: AvH,           // 最高价 unadjusted (StackSync)
+    pub low: AvH,            // 最低价 unadjusted (StackSync)
+    pub amount: AvH,         // 成交额 turnover value (StackSync)
+    pub adjusted_close: AvH, // close * forward-adjust factor (StackSync)
+    pub adjusts: AvH,        // forward-adjust factor (Stack)
+    pub total_shares: AvH,   // (Stack)
+    pub circ_shares: AvH,    // (Stack)
+    pub parent_equity: AvH,  // 归母净资产, positive (Stack)
+    pub net_profit: AvH,     // 净利润, annualized, positive
+    pub operating_profit: AvH, // 营业利润, annualized, positive
+    pub revenue: AvH,        // 营业收入, annualized, positive
+    pub operating_cost: AvH, // 营业成本, annualized, NEGATIVE (a deduction)
+    pub total_assets: AvH,   // 总资产, positive
+    pub total_liab: AvH,     // 总负债, NEGATIVE (credit side)
+    pub current_assets: AvH, // 流动资产, positive
+    pub current_liab: AvH,   // 流动负债, NEGATIVE (credit side)
+    pub cash: AvH,           // 货币资金, positive
+    pub inventories: AvH,    // 存货, positive
+    pub receivables: AvH,    // 应收票据及账款, positive
+    pub net_operating_cashflow: AvH, // 经营现金流净额, annualized
 }
 
-/// Predicate for the per-stock `FilterView`: the row has ≥1 finite entry, i.e.
+/// Predicate for the per-stock `Gate`: the row has ≥1 finite entry, i.e.
 /// the stock actually has data this tick (vs. an all-NaN "no data" cross-section
 /// the panel emits on a date where other stocks ticked but this one didn't).
-fn any_finite(a: ArraySlice<'_, f64>) -> bool {
-    a.as_slice().iter().any(|x| x.is_finite())
+fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
+    a.to_contiguous().iter().any(|x| x.is_finite())
 }
 
-/// An all-NaN `Array<f64>` of `shape` — the correct "no data yet" initial cell
-/// value for a panel source. The per-row sources only `write` rows that have an
-/// event, so an unwritten row must read as NaN (not `0.0`) for the per-stock
-/// [`pick`] `Filter` to drop it before the stock's first observation.
-pub fn nan_array(shape: &[usize]) -> Array<f64> {
-    Array::from_vec(shape, vec![f64::NAN; shape.iter().product()])
+/// An all-NaN rank-2 `Array<f64, 2>` of `[rows, cols]` — the correct "no data
+/// yet" initial cell value for a panel source. The per-row sources only `write`
+/// rows that have an event, so an unwritten row must read as NaN (not `0.0`) for
+/// the per-stock `Gate` to drop it before the stock's first observation.
+pub fn nan_array(shape: &[usize]) -> Array<f64, 2> {
+    let ext = <[usize; 2]>::try_from(shape).expect("panel out_shape is rank-2 [N, K]");
+    Array::from_vec(ext, vec![f64::NAN; ext.iter().product()])
 }
 
 /// Load the consolidated long-format parquet panels and stack into the
@@ -362,23 +641,27 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     // the carry-forward / NaN-fill is the downstream `Stack` / `StackSync`'s job).
     // Reports align on the **effective date** `max(report, notice)` — the
     // look-ahead-safe point-in-time a backtest may use them (`use_effective_date`).
-    let daily_panel = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<RefPort<Array<f64>>> {
+    // Panel sources emit a whole-array `RefPort<Array<f64, 2>>`; bridge to the
+    // view currency with `as_view` so the rank-2 panel feeds `Split`.
+    let daily_panel = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ViewPort<ArrayValue<f64, 2>>> {
         let s = ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
             .with_time_range(start, end);
         let init = nan_array(&s.out_shape());
-        sc.add_source(s, init)
+        let h = sc.add_source(s, init);
+        sc.as_view(h)
     };
     let report_panel = |sc: &mut Scenario,
                         kind: &str,
                         cols: Vec<String>,
                         with_report_date: bool|
-     -> Handle<RefPort<Array<f64>>> {
+     -> Handle<ViewPort<ArrayValue<f64, 2>>> {
         let s = ReportPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
             .with_report_date(with_report_date)
             .use_effective_date(Duration::ZERO)
             .with_time_range(start, end);
         let init = nan_array(&s.out_shape());
-        sc.add_source(s, init)
+        let h = sc.add_source(s, init);
+        sc.as_view(h)
     };
 
     let prices_panel = daily_panel(
@@ -445,13 +728,14 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         true,
     );
 
-    // One `Split` per panel: the `1 → N` row fan-out as a single node each.
-    let prices_rows = sc.add_operator(Split::<f64>::new(n), prices_panel);
-    let div_rows = sc.add_operator(Split::<f64>::new(n), div_panel);
-    let equity_rows = sc.add_operator(Split::<f64>::new(n), equity_panel);
-    let balance_rows = sc.add_operator(Split::<f64>::new(n), balance_panel);
-    let income_rows = sc.add_operator(Split::<f64>::new(n), income_panel);
-    let cashflow_rows = sc.add_operator(Split::<f64>::new(n), cashflow_panel);
+    // One `Split` per panel: the `1 → N` row fan-out as a single node each. The
+    // rank-2 `[N, K]` panel splits along axis 0 into `N` rank-1 `[K]` row views.
+    let prices_rows = sc.add_operator(Split::<f64, 2, 1>::new(n), prices_panel);
+    let div_rows = sc.add_operator(Split::<f64, 2, 1>::new(n), div_panel);
+    let equity_rows = sc.add_operator(Split::<f64, 2, 1>::new(n), equity_panel);
+    let balance_rows = sc.add_operator(Split::<f64, 2, 1>::new(n), balance_panel);
+    let income_rows = sc.add_operator(Split::<f64, 2, 1>::new(n), income_panel);
+    let cashflow_rows = sc.add_operator(Split::<f64, 2, 1>::new(n), cashflow_panel);
 
     let mut close_v = Vec::with_capacity(n);
     let mut volume_v = Vec::with_capacity(n);
@@ -487,56 +771,69 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         // output each — both to keep the segment within the tuple-arity limit
         // and to move less. The `Stack` joins below build the `(N, K)` panels;
         // a squeezing column `Select` recovers each field as `(N,)`.
-        let seg = flowgraph::segment!(|prices_row: RefViewPort<ArrayValue<f64>>,
-                                       div_row: RefViewPort<ArrayValue<f64>>,
-                                       equity_row: RefViewPort<ArrayValue<f64>>,
-                                       balance_row: RefViewPort<ArrayValue<f64>>,
-                                       income_row: RefViewPort<ArrayValue<f64>>,
-                                       cashflow_row: RefViewPort<ArrayValue<f64>>|
+        // Per-stock scalar fields are rank-0 `[]` views; grouped fields
+        // (`prices_extras` [4], `income_ann` [4], `balance_extras` [7], `cf_ann`
+        // [3]) are rank-1 `[K]` views. Each `Split` row is a by-reference
+        // `RefViewPort<ArrayValue<f64, 1>>`; `DerefView` re-derives it as the
+        // by-value `ViewPort` the `Gate`/view operators consume.
+        let seg = flowgraph::segment!(|prices_row: RefViewPort<ArrayValue<f64, 1>>,
+                                       div_row: RefViewPort<ArrayValue<f64, 1>>,
+                                       equity_row: RefViewPort<ArrayValue<f64, 1>>,
+                                       balance_row: RefViewPort<ArrayValue<f64, 1>>,
+                                       income_row: RefViewPort<ArrayValue<f64, 1>>,
+                                       cashflow_row: RefViewPort<ArrayValue<f64, 1>>|
             -> (
-            RefPort<Array<f64>>,
-            RefViewPort<ArrayValue<f64>>,
-            RefPort<Array<f64>>,
-            RefPort<Array<f64>>,
-            RefViewPort<ArrayValue<f64>>,
-            RefViewPort<ArrayValue<f64>>,
-            RefPort<Array<f64>>,
-            RefPort<Array<f64>>,
-            RefViewPort<ArrayValue<f64>>,
-            RefPort<Array<f64>>,
-            RefViewPort<ArrayValue<f64>>
+            ViewPort<ArrayValue<f64, 0>>, // close
+            ViewPort<ArrayValue<f64, 0>>, // volume
+            ViewPort<ArrayValue<f64, 0>>, // adjusted_close
+            ViewPort<ArrayValue<f64, 0>>, // adjusts
+            ViewPort<ArrayValue<f64, 0>>, // total_shares
+            ViewPort<ArrayValue<f64, 0>>, // circ_shares
+            ViewPort<ArrayValue<f64, 0>>, // parent_equity
+            ViewPort<ArrayValue<f64, 1>>, // income_ann [4]
+            ViewPort<ArrayValue<f64, 1>>, // balance_extras [7]
+            ViewPort<ArrayValue<f64, 1>>, // cf_ann [3]
+            ViewPort<ArrayValue<f64, 1>>  // prices_extras [4]
         ) {
-            let prices = prices_row => Gate(any_finite); // [close, volume, open, high, low, amount]
-            let dividends = div_row => Gate(any_finite); // [share, cash]
-            let equity = equity_row => Gate(any_finite); // [total, circulating]
-            let balance = balance_row => Gate(any_finite); // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
-            let income = income_row => Gate(any_finite); // [year, doy, profit, operating, revenue, cost]
-            let cashflow = cashflow_row => Gate(any_finite); // [year, doy, operating, investing, financing]
-            // Terminal column picks (whose only consumer is their cross-section
-            // join) stay zero-copy views (`SliceView`) into the retaining
-            // `Gate`'s stable storage. `close` is NOT terminal — it feeds
-            // `ForwardAdjust` and `Multiply` (owned inputs) — so it materializes
-            // here via the owned `SelectView`.
-            let close = prices => SelectView::<f64>::new(vec![0], 0, true);
-            let volume = prices => SliceView::new(vec![1], 0, true);
-            // [open, high, low, amount] as a contiguous view of cols 2..6.
-            let prices_extras = prices => SliceView::new(vec![2, 3, 4, 5], 0, false);
+            // Each `Split` row is a by-reference `RefViewPort`; `DerefView`
+            // re-derives the by-value `ViewPort` the `Gate` consumes (the macro
+            // allows one arrow per `let`, so the deref + gate are two steps).
+            let prices_v = prices_row => DerefView::<f64, 1>::new();
+            let prices = prices_v => Gate(any_finite); // [close, volume, open, high, low, amount]
+            let dividends_v = div_row => DerefView::<f64, 1>::new();
+            let dividends = dividends_v => Gate(any_finite); // [share, cash]
+            let equity_v = equity_row => DerefView::<f64, 1>::new();
+            let equity = equity_v => Gate(any_finite); // [total, circulating]
+            let balance_v = balance_row => DerefView::<f64, 1>::new();
+            let balance = balance_v => Gate(any_finite); // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
+            let income_v = income_row => DerefView::<f64, 1>::new();
+            let income = income_v => Gate(any_finite); // [year, doy, profit, operating, revenue, cost]
+            let cashflow_v = cashflow_row => DerefView::<f64, 1>::new();
+            let cashflow = cashflow_v => Gate(any_finite); // [year, doy, operating, investing, financing]
+            // Terminal column picks stay zero-copy views (`SliceView`) into the
+            // retaining `Gate`'s stable storage; squeezing one index drops the
+            // axis (rank-1 row → rank-0 scalar). `close` feeds `ForwardAdjust` /
+            // `multiply` and materializes via the owned `Select`.
+            let close = prices => Select::<f64, 1, 0>::new(vec![0], 0, true);
+            let volume = prices => SliceView::<f64, 1, 0>::new(vec![1], 0, true);
+            // [open, high, low, amount] as a contiguous rank-1 view of cols 2..6.
+            let prices_extras = prices => SliceView::<f64, 1, 1>::new(vec![2, 3, 4, 5], 0, false);
             let adjusts = (close, dividends)
-                => ForwardAdjustViewDiv::default().with_output_prices(false);
-            let adjusted_close = (close, adjusts) => Multiply::<f64>::new();
-            let total_shares = equity => SliceView::new(vec![0], 0, true);
-            let circ_shares = equity => SliceView::new(vec![1], 0, true);
+                => ForwardAdjustViewDiv::<0, 1>::default().with_output_prices(false);
+            let adjusted_close = (close, adjusts) => multiply::<f64, 0>();
+            let total_shares = equity => SliceView::<f64, 1, 0>::new(vec![0], 0, true);
+            let circ_shares = equity => SliceView::<f64, 1, 0>::new(vec![1], 0, true);
             // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).
             let parent_equity = balance
-                => Apply::<ViewPort<ArrayValue<f64>>, Array<f64>, _>::new(
-                    |a: ArraySlice<f64>| Array::scalar(-a.as_slice()[..3].iter().sum::<f64>()),
+                => Apply::<ViewPort<ArrayValue<f64, 1>>, f64, 0, _>::new(
+                    |a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous()[..3].iter().sum::<f64>()),
                 );
             // Annualized income / cash flows (YTD → Annualize) and the balance
-            // stocks [assets, liab, current_assets, current_liab, cash] as a
-            // contiguous view of cols 3..8.
+            // stocks [assets, liab, current_assets, current_liab, cash, inv, rec]
+            // as a contiguous rank-1 view of cols 3..10.
             let income_ann = income => AnnualizeView::default();
             let cf_ann = cashflow => AnnualizeView::default();
-            let balance_extras = balance => SliceView::new(vec![3, 4, 5, 6, 7, 8, 9], 0, false);
+            let balance_extras = balance => SliceView::<f64, 1, 1>::new(vec![3, 4, 5, 6, 7, 8, 9], 0, false);
             (
                 close,
                 volume,
@@ -588,37 +885,54 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         px_v.push(prices_extras);
     }
 
-    // Cross-sectional grouped panels; a squeezing column `Select` (axis 1)
-    // recovers each field as `(N,)`.
-    let income_xs = sc.add_operator(Stack::<f64>::new(0), &income_v[..]); // (N, 4)
-    let balance_xs = sc.add_operator(StackView::<f64>::new(0), &bal_v[..]); // (N, 5)
-    let cf_xs = sc.add_operator(Stack::<f64>::new(0), &cf_v[..]); // (N, 3)
-    let px_xs = sc.add_operator(StackSyncView::<f64>::new(0), &px_v[..]); // (N, 4) [open, high, low, amount]
+    // The per-stock segment outputs are by-value `ViewPort` handles; the carry
+    // joins (`Stack`/`StackSync`) consume by-reference `RefViewPort` rows, so
+    // bridge each vector through `Reref` (the value→reference adapter — the
+    // engine has none inside `segment!`) before stacking.
+    let income_refs = reref_all::<1>(sc, &income_v[..]);
+    let bal_refs = reref_all::<1>(sc, &bal_v[..]);
+    let cf_refs = reref_all::<1>(sc, &cf_v[..]);
+    let px_refs = reref_all::<1>(sc, &px_v[..]);
+    let close_refs = reref_all::<0>(sc, &close_v[..]);
+    let volume_refs = reref_all::<0>(sc, &volume_v[..]);
+    let adj_close_refs = reref_all::<0>(sc, &adj_close_v[..]);
+    let adjusts_refs = reref_all::<0>(sc, &adjusts_v[..]);
+    let total_refs = reref_all::<0>(sc, &total_v[..]);
+    let circ_refs = reref_all::<0>(sc, &circ_v[..]);
+    let peq_refs = reref_all::<0>(sc, &peq_v[..]);
+
+    // Cross-sectional grouped panels (rank-1 `[K]` rows → rank-2 `[N, K]`); a
+    // squeezing column `Select` (axis 1) recovers each field as rank-1 `[N]`.
+    let income_xs = sc.add_operator(Stack::<f64, 1, 2>::new(0), &income_refs[..]); // (N, 4)
+    let balance_xs = sc.add_operator(StackView::<f64, 1, 2>::new(0), &bal_refs[..]); // (N, 7)
+    let cf_xs = sc.add_operator(Stack::<f64, 1, 2>::new(0), &cf_refs[..]); // (N, 3)
+    let px_xs = sc.add_operator(StackSyncView::<f64, 1, 2>::new(0), &px_refs[..]); // (N, 4) [open, high, low, amount]
 
     Stacked {
-        close: sc.add_operator(StackSync::<f64>::new(0), &close_v[..]),
-        volume: sc.add_operator(StackSyncView::<f64>::new(0), &volume_v[..]),
-        adjusted_close: sc.add_operator(StackSync::<f64>::new(0), &adj_close_v[..]),
-        adjusts: sc.add_operator(Stack::<f64>::new(0), &adjusts_v[..]),
-        total_shares: sc.add_operator(StackView::<f64>::new(0), &total_v[..]),
-        circ_shares: sc.add_operator(StackView::<f64>::new(0), &circ_v[..]),
-        parent_equity: sc.add_operator(Stack::<f64>::new(0), &peq_v[..]),
-        net_profit: sc.add_operator(Select::<f64>::new(vec![0], 1, true), income_xs),
-        operating_profit: sc.add_operator(Select::<f64>::new(vec![1], 1, true), income_xs),
-        revenue: sc.add_operator(Select::<f64>::new(vec![2], 1, true), income_xs),
-        operating_cost: sc.add_operator(Select::<f64>::new(vec![3], 1, true), income_xs),
-        total_assets: sc.add_operator(Select::<f64>::new(vec![0], 1, true), balance_xs),
-        total_liab: sc.add_operator(Select::<f64>::new(vec![1], 1, true), balance_xs),
-        current_assets: sc.add_operator(Select::<f64>::new(vec![2], 1, true), balance_xs),
-        current_liab: sc.add_operator(Select::<f64>::new(vec![3], 1, true), balance_xs),
-        cash: sc.add_operator(Select::<f64>::new(vec![4], 1, true), balance_xs),
-        inventories: sc.add_operator(Select::<f64>::new(vec![5], 1, true), balance_xs),
-        receivables: sc.add_operator(Select::<f64>::new(vec![6], 1, true), balance_xs),
-        net_operating_cashflow: sc.add_operator(Select::<f64>::new(vec![0], 1, true), cf_xs),
-        open: sc.add_operator(Select::<f64>::new(vec![0], 1, true), px_xs),
-        high: sc.add_operator(Select::<f64>::new(vec![1], 1, true), px_xs),
-        low: sc.add_operator(Select::<f64>::new(vec![2], 1, true), px_xs),
-        amount: sc.add_operator(Select::<f64>::new(vec![3], 1, true), px_xs),
+        // Per-stock scalars (rank-0) → rank-1 `[N]` cross-sections.
+        close: sc.add_operator(StackSync::<f64, 0, 1>::new(0), &close_refs[..]),
+        volume: sc.add_operator(StackSyncView::<f64, 0, 1>::new(0), &volume_refs[..]),
+        adjusted_close: sc.add_operator(StackSync::<f64, 0, 1>::new(0), &adj_close_refs[..]),
+        adjusts: sc.add_operator(Stack::<f64, 0, 1>::new(0), &adjusts_refs[..]),
+        total_shares: sc.add_operator(StackView::<f64, 0, 1>::new(0), &total_refs[..]),
+        circ_shares: sc.add_operator(StackView::<f64, 0, 1>::new(0), &circ_refs[..]),
+        parent_equity: sc.add_operator(Stack::<f64, 0, 1>::new(0), &peq_refs[..]),
+        net_profit: sc.add_operator(Select::<f64, 2, 1>::new(vec![0], 1, true), income_xs),
+        operating_profit: sc.add_operator(Select::<f64, 2, 1>::new(vec![1], 1, true), income_xs),
+        revenue: sc.add_operator(Select::<f64, 2, 1>::new(vec![2], 1, true), income_xs),
+        operating_cost: sc.add_operator(Select::<f64, 2, 1>::new(vec![3], 1, true), income_xs),
+        total_assets: sc.add_operator(Select::<f64, 2, 1>::new(vec![0], 1, true), balance_xs),
+        total_liab: sc.add_operator(Select::<f64, 2, 1>::new(vec![1], 1, true), balance_xs),
+        current_assets: sc.add_operator(Select::<f64, 2, 1>::new(vec![2], 1, true), balance_xs),
+        current_liab: sc.add_operator(Select::<f64, 2, 1>::new(vec![3], 1, true), balance_xs),
+        cash: sc.add_operator(Select::<f64, 2, 1>::new(vec![4], 1, true), balance_xs),
+        inventories: sc.add_operator(Select::<f64, 2, 1>::new(vec![5], 1, true), balance_xs),
+        receivables: sc.add_operator(Select::<f64, 2, 1>::new(vec![6], 1, true), balance_xs),
+        net_operating_cashflow: sc.add_operator(Select::<f64, 2, 1>::new(vec![0], 1, true), cf_xs),
+        open: sc.add_operator(Select::<f64, 2, 1>::new(vec![0], 1, true), px_xs),
+        high: sc.add_operator(Select::<f64, 2, 1>::new(vec![1], 1, true), px_xs),
+        low: sc.add_operator(Select::<f64, 2, 1>::new(vec![2], 1, true), px_xs),
+        amount: sc.add_operator(Select::<f64, 2, 1>::new(vec![3], 1, true), px_xs),
     }
 }
 
@@ -628,9 +942,9 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
 
 /// The canonical 7-factor cross-sectional feature panel.
 pub struct Features {
-    /// Per-feature live handles (each `(num_stocks,)`), in column order.
+    /// Per-feature live view handles (each `(num_stocks,)`), in column order.
     pub names: Vec<String>,
-    pub handles: Vec<Handle<RefPort<Array<f64>>>>,
+    pub handles: Vec<AvH>,
     /// Trading-day-aligned `Record` of the `(num_stocks, n_features)` panel.
     pub series: Handle<RefPort<Series<f64>>>,
 }
@@ -649,36 +963,36 @@ pub fn build_features(
     let win_ret = Retention::count(window + RETAIN_MARGIN);
 
     // Fundamentals.
-    let market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.total_shares));
-    let bp = sc.add_operator(Divide::<f64>::new(), (st.parent_equity, market_cap));
+    let market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.total_shares));
+    let bp = sc.add_operator(divide::<f64, 1>(), (st.parent_equity, market_cap));
     // TTM net profit: a 365-day rolling mean → retain a 365-day (+margin) window.
     let net_profit_series =
         sc.add_record_retained(st.net_profit, Retention::duration(Duration::from_days(380)));
     let net_profit_ttm = sc.add_operator(
-        RollingMean::<f64>::time_delta(Duration::from_days(365)),
+        RollingMean::<f64, 1>::time_delta(Duration::from_days(365)),
         net_profit_series,
     );
-    let ttm_roe = sc.add_operator(Divide::<f64>::new(), (net_profit_ttm, st.parent_equity));
+    let ttm_roe = sc.add_operator(divide::<f64, 1>(), (net_profit_ttm, st.parent_equity));
 
     // Momentum: window-period log return of adjusted close.
-    let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
+    let log_adj = sc.add_operator(log::<f64, 1>(), st.adjusted_close);
     let log_adj_series = sc.add_record_retained(log_adj, win_ret);
-    let log_adj_lag = sc.add_operator(Lag::<f64>::new(window, f64::NAN), log_adj_series);
-    let momentum = sc.add_operator(Subtract::<f64>::new(), (log_adj, log_adj_lag));
+    let log_adj_lag = sc.add_operator(Lag::<f64, 1>::new(window, f64::NAN), log_adj_series);
+    let momentum = sc.add_operator(subtract::<f64, 1>(), (log_adj, log_adj_lag));
 
     // Volatility: rolling std of daily log returns.
-    let log_var = sc.add_operator(RollingVariance::<f64>::count(window), log_adj_series);
-    let volatility = sc.add_operator(Sqrt::<f64>::new(), log_var);
+    let log_var = sc.add_operator(RollingVariance::<f64, 1>::count(window), log_adj_series);
+    let volatility = sc.add_operator(sqrt::<f64, 1>(), log_var);
 
     // Turnover MA.
-    let turnover = sc.add_operator(Divide::<f64>::new(), (st.volume, st.circ_shares));
+    let turnover = sc.add_operator(divide::<f64, 1>(), (st.volume, st.circ_shares));
     let turnover_series = sc.add_record_retained(turnover, win_ret);
-    let turnover_ma = sc.add_operator(RollingMean::<f64>::count(window), turnover_series);
+    let turnover_ma = sc.add_operator(RollingMean::<f64, 1>::count(window), turnover_series);
 
     // Volume ratio.
     let volume_series = sc.add_record_retained(st.volume, win_ret);
-    let volume_ma = sc.add_operator(RollingMean::<f64>::count(window), volume_series);
-    let volume_ratio = sc.add_operator(Divide::<f64>::new(), (st.volume, volume_ma));
+    let volume_ma = sc.add_operator(RollingMean::<f64, 1>::count(window), volume_series);
+    let volume_ratio = sc.add_operator(divide::<f64, 1>(), (st.volume, volume_ma));
 
     let p = 0.01;
     let names = vec![
@@ -691,21 +1005,20 @@ pub fn build_features(
         format!("volume_ratio_{window}"),
     ];
     let handles = vec![
-        sc.add_operator(Percentile::<f64>::new(), market_cap),
-        sc.add_operator(Percentile::<f64>::new(), bp),
-        sc.add_operator(Percentile::<f64>::new(), ttm_roe),
-        sc.add_operator(Winsorize::<f64>::new(p), momentum),
-        sc.add_operator(Winsorize::<f64>::new(p), volatility),
-        sc.add_operator(Winsorize::<f64>::new(p), turnover_ma),
-        sc.add_operator(Winsorize::<f64>::new(p), volume_ratio),
+        sc.add_operator(Percentile::<f64, 1>::new(), market_cap),
+        sc.add_operator(Percentile::<f64, 1>::new(), bp),
+        sc.add_operator(Percentile::<f64, 1>::new(), ttm_roe),
+        sc.add_operator(Winsorize::<f64, 1>::new(p), momentum),
+        sc.add_operator(Winsorize::<f64, 1>::new(p), volatility),
+        sc.add_operator(Winsorize::<f64, 1>::new(p), turnover_ma),
+        sc.add_operator(Winsorize::<f64, 1>::new(p), volume_ratio),
     ];
 
     // Stack the 7 features into (N, 7) and re-emit on the daily close pulse.
-    let stacked_features = sc.add_operator(Stack::<f64>::new(1), &handles[..]);
-    let sampled = sc.add_operator(
-        Resample::<Array<f64>, Array<f64>>::new(),
-        (st.adjusted_close, stacked_features),
-    );
+    // `Stack` consumes by-reference views; bridge each feature handle via `ref_view`.
+    let feat_refs: Vec<_> = handles.iter().map(|&h| ref_view(sc, h)).collect();
+    let stacked_features = sc.add_operator(Stack::<f64, 1, 2>::new(1), &feat_refs[..]);
+    let sampled = sc.add_operator(ResampleView::<2>::new(), (st.adjusted_close, stacked_features));
     let series = sc.add_record_retained(sampled, feature_retention);
 
     Features {
@@ -812,11 +1125,9 @@ pub fn build_factor_features(
 
     // Stack into (N, F), resample onto the daily close pulse, and record under
     // the caller's retention (the predictor only reads a short trailing window).
-    let stacked_features = sc.add_operator(Stack::<f64>::new(1), &handles[..]);
-    let sampled = sc.add_operator(
-        Resample::<Array<f64>, Array<f64>>::new(),
-        (st.adjusted_close, stacked_features),
-    );
+    let feat_refs: Vec<_> = handles.iter().map(|&h| ref_view(sc, h)).collect();
+    let stacked_features = sc.add_operator(Stack::<f64, 1, 2>::new(1), &feat_refs[..]);
+    let sampled = sc.add_operator(ResampleView::<2>::new(), (st.adjusted_close, stacked_features));
     let series = sc.add_record_retained(sampled, feature_retention);
 
     Features { names, handles, series }
@@ -874,15 +1185,16 @@ pub fn calculate_index_weights(mc: &[f64], k: usize) -> Vec<f64> {
 /// the `Handle<RefPort<()>>` of a [`clock`](tradingflow::sources::clock) source.
 pub fn build_cap_weighted_universe(
     sc: &mut Scenario,
-    market_cap: Handle<RefPort<Array<f64>>>,
+    market_cap: AvH,
     rebalance_clock: Handle<RefPort<()>>,
     index_size: usize,
-) -> Handle<RefPort<Array<f64>>> {
+) -> AvH {
     use tradingflow::operators::Clocked;
     let k = index_size;
     sc.add_operator(
-        Clocked::new(Map::new(move |m: &Array<f64>| {
-            Array::from_vec(m.shape(), calculate_index_weights(m.as_slice(), k))
+        Clocked::new(Map::new(move |m: ArrayView<f64, 1>| {
+            let s = m.to_contiguous();
+            Array::from_vec([s.len()], calculate_index_weights(&s, k))
         })),
         (rebalance_clock, market_cap),
     )
@@ -897,12 +1209,12 @@ pub fn build_cap_weighted_universe(
 /// [`Retention::UNBOUNDED`] when full history is needed.
 pub fn build_log_return_target(
     sc: &mut Scenario,
-    log_adj: Handle<RefPort<Array<f64>>>,
+    log_adj: AvH,
     target_retention: Retention,
-) -> (Handle<RefPort<Array<f64>>>, Handle<RefPort<Series<f64>>>, Handle<RefPort<Series<f64>>>) {
+) -> (AvH, Handle<RefPort<Series<f64>>>, Handle<RefPort<Series<f64>>>) {
     use tradingflow::operators::Diff;
-    let log_returns = sc.add_operator(Diff::<f64>::new(), log_adj);
-    let target = sc.add_operator(Winsorize::<f64>::new(0.01), log_returns);
+    let log_returns = sc.add_operator(Diff::<f64, 1>::new(), log_adj);
+    let target = sc.add_operator(Winsorize::<f64, 1>::new(0.01), log_returns);
     let target_series = sc.add_record_retained(target, target_retention);
     let demeaned = sc.add_operator(Map::new(demean), target);
     let demeaned_series = sc.add_record_retained(demeaned, target_retention);
@@ -910,11 +1222,11 @@ pub fn build_log_return_target(
 }
 
 /// Cross-sectional demean preserving NaN.
-fn demean(r: &Array<f64>) -> Array<f64> {
-    let s = r.as_slice();
+fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
+    let s = r.to_contiguous();
     let mut sum = 0.0;
     let mut cnt = 0usize;
-    for &x in s {
+    for &x in s.iter() {
         if x.is_finite() {
             sum += x;
             cnt += 1;
@@ -922,7 +1234,7 @@ fn demean(r: &Array<f64>) -> Array<f64> {
     }
     let mean = if cnt > 0 { sum / cnt as f64 } else { 0.0 };
     Array::from_vec(
-        r.shape(),
+        [s.len()],
         s.iter()
             .map(|&x| if x.is_finite() { x - mean } else { x })
             .collect(),
@@ -933,20 +1245,20 @@ fn demean(r: &Array<f64>) -> Array<f64> {
 /// 0.01 yuan. Returns `(upper, lower)`; first tick is NaN (no prior close).
 pub fn build_price_limits(
     sc: &mut Scenario,
-    close: Handle<RefPort<Array<f64>>>,
+    close: AvH,
     limit_pct: f64,
-) -> (Handle<RefPort<Array<f64>>>, Handle<RefPort<Array<f64>>>) {
+) -> (AvH, AvH) {
     // Only a 1-step lag reads this record; keep a tiny trailing window.
     let close_series = sc.add_record_retained(close, Retention::count(1 + RETAIN_MARGIN));
-    let prev_close = sc.add_operator(Lag::<f64>::new(1, f64::NAN), close_series);
+    let prev_close = sc.add_operator(Lag::<f64, 1>::new(1, f64::NAN), close_series);
     let up = limit_pct;
     let dn = limit_pct;
     let upper = sc.add_operator(
-        Map::new(move |c: &Array<f64>| {
+        Map::new(move |c: ArrayView<f64, 1>| {
+            let s = c.to_contiguous();
             Array::from_vec(
-                c.shape(),
-                c.as_slice()
-                    .iter()
+                [s.len()],
+                s.iter()
                     .map(|&x| ((x * (1.0 + up)) * 100.0).round() / 100.0)
                     .collect(),
             )
@@ -954,11 +1266,11 @@ pub fn build_price_limits(
         prev_close,
     );
     let lower = sc.add_operator(
-        Map::new(move |c: &Array<f64>| {
+        Map::new(move |c: ArrayView<f64, 1>| {
+            let s = c.to_contiguous();
             Array::from_vec(
-                c.shape(),
-                c.as_slice()
-                    .iter()
+                [s.len()],
+                s.iter()
                     .map(|&x| ((x * (1.0 - dn)) * 100.0).round() / 100.0)
                     .collect(),
             )

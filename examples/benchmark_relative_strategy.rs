@@ -21,18 +21,28 @@ mod common;
 
 use flowgraph::typed::{Handle, RefPort};
 
-use tradingflow::operators::{Benchmark, Log, Map, Multiply, PyClassOperator, PyParams};
+use tradingflow::operators::{
+    log, multiply, ArrayValue, Benchmark, Map, PyClassOperator, PyParams,
+};
 use tradingflow::Scenario;
 use tradingflow::sources::clock;
-use tradingflow::{Array, Series};
+use tradingflow::{Array, ArrayView, Series, ViewPort};
+
+use common::{own, AvH};
 
 const INITIAL_CASH: f64 = 1_000_000.0;
 const NUM_FEATURES: i64 = 7;
 const TRACKING_ERRORS_ANN: [f64; 3] = [0.02, 0.05, 0.10];
 const TRADING_DAYS: f64 = 252.0;
 
-fn total_value(sc: &mut Scenario, h: Handle<RefPort<Array<f64>>>) -> Handle<RefPort<Array<f64>>> {
-    sc.add_operator(Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())), h)
+/// A scalar view handle (a rank-0 `ArrayView` port).
+type ScH = Handle<ViewPort<ArrayValue<f64, 0>>>;
+
+fn total_value(sc: &mut Scenario, h: AvH) -> ScH {
+    sc.add_operator(
+        Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
+        h,
+    )
 }
 
 fn nav_stats(v: &[f64]) -> (f64, f64, f64) {
@@ -87,8 +97,8 @@ async fn main() {
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let features = common::build_features(&mut sc, &st, window, tradingflow::Retention::UNBOUNDED);
-    let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
-    let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
+    let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
+    let log_adj = sc.add_operator(log::<f64, 1>(), st.adjusted_close);
     let (_target, target_series, demeaned_series) =
         common::build_log_return_target(&mut sc, log_adj, tradingflow::Retention::UNBOUNDED);
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
@@ -96,9 +106,10 @@ async fn main() {
     let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
     let universe =
         common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
+    let universe_ref = own(&mut sc, universe);
 
     let predicted_returns = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -110,10 +121,10 @@ async fn main() {
             vec![n],
             clk.clone(),
         ),
-        (universe, features.series, demeaned_series),
+        (universe_ref, features.series, demeaned_series),
     );
     let predicted_cov = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
             "flowops.predictors.variance.shrinkage",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -126,12 +137,12 @@ async fn main() {
             vec![n, n],
             clk.clone(),
         ),
-        (universe, features.series, target_series),
+        (universe_ref, features.series, target_series),
     );
 
     let index = sc.add_operator(
         Benchmark::new(n, 1.0, true),
-        &[universe, st.close, st.adjusts, upper, lower][..],
+        (universe, st.close, st.adjusts, upper, lower),
     );
     let index_value = total_value(&mut sc, index);
     let h_index = sc.add_record(index_value);
@@ -141,7 +152,7 @@ async fn main() {
     for &gamma_ann in &TRACKING_ERRORS_ANN {
         let gamma_daily = gamma_ann / TRADING_DAYS.sqrt();
         let soft = sc.add_operator(
-            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>)>::from_module(
                 "flowops.portfolios.mean_variance.benchmark_relative",
                 PyParams::new()
                     .int("num_stocks", n_i)
@@ -152,11 +163,12 @@ async fn main() {
                 vec![n],
                 clk.clone(),
             ),
-            (universe, predicted_returns, predicted_cov),
+            (universe_ref, predicted_returns, predicted_cov),
         );
+        let soft_v = sc.as_view(soft);
         let fric = sc.add_operator(
             Benchmark::new(n, 1.0, true),
-            &[soft, st.close, st.adjusts, upper, lower][..],
+            (soft_v, st.close, st.adjusts, upper, lower),
         );
         let value = total_value(&mut sc, fric);
         variant_handles.push((gamma_ann, sc.add_record(value)));

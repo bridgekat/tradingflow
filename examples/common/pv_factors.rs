@@ -20,15 +20,15 @@
 use flowgraph::typed::{Handle, Operator, RefPort};
 
 use tradingflow::operators::{
-    Diff, Divide, Lag, Log, Map, Max, Min, Multiply, Percentile, RollingMean, RollingSum,
-    RollingVariance, Select, Sqrt, Stack, Subtract,
+    Apply, ArrayValue, Diff, Lag, Percentile, RollingMean, RollingSum, RollingVariance, Select,
+    divide, log, max, min, multiply, sqrt, subtract,
 };
-use tradingflow::{Array, Retention, Scenario, Series};
+use tradingflow::{Array, ArrayView, Retention, Scenario, Series, ViewPort};
 
 use super::factors::{rank_impute, FactorSet};
-use super::{Stacked, RETAIN_MARGIN};
+use super::{AvH, Stacked, RETAIN_MARGIN};
 
-type H = Handle<RefPort<Array<f64>>>;
+type H = AvH;
 type Ser = Handle<RefPort<Series<f64>>>;
 
 /// Catalog records feed count-windowed reductions up to `Y` (one trading year)
@@ -37,42 +37,43 @@ fn rec(sc: &mut Scenario, h: H) -> Ser {
     sc.add_record_retained(h, Retention::count(Y + RETAIN_MARGIN))
 }
 
-fn log(sc: &mut Scenario, h: H) -> H {
-    sc.add_operator(Log::<f64>::new(), h)
+fn log_h(sc: &mut Scenario, h: H) -> H {
+    sc.add_operator(log::<f64, 1>(), h)
 }
 fn sub(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.add_operator(Subtract::<f64>::new(), (a, b))
+    sc.add_operator(subtract::<f64, 1>(), (a, b))
 }
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.add_operator(Divide::<f64>::new(), (a, b))
+    sc.add_operator(divide::<f64, 1>(), (a, b))
 }
 fn lag(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.add_operator(Lag::<f64>::new(n, f64::NAN), s)
+    sc.add_operator(Lag::<f64, 1>::new(n, f64::NAN), s)
 }
 fn rsum(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.add_operator(RollingSum::<f64>::count(n), s)
+    sc.add_operator(RollingSum::<f64, 1>::count(n), s)
 }
 fn rmean(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.add_operator(RollingMean::<f64>::count(n), s)
+    sc.add_operator(RollingMean::<f64, 1>::count(n), s)
 }
 /// Elementwise map preserving shape and NaN.
 fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
     sc.add_operator(
-        Map::new(move |a: &Array<f64>| {
-            Array::from_vec(a.shape(), a.as_slice().iter().map(|&x| f(x)).collect())
+        tradingflow::operators::Map::new(move |a: ArrayView<f64, 1>| {
+            let s = a.to_contiguous();
+            Array::from_vec([s.len()], s.iter().map(|&x| f(x)).collect())
         }),
         h,
     )
 }
 fn mul(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.add_operator(Multiply::<f64>::new(), (a, b))
+    sc.add_operator(multiply::<f64, 1>(), (a, b))
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
     sc.add_operator(
-        flowgraph::segment!(|x: RefPort<Series<f64>>| -> RefPort<Array<f64>> {
-            let var = x => RollingVariance::<f64>::count(n);
-            let sd = var => Sqrt::<f64>::new();
+        flowgraph::segment!(|x: RefPort<Series<f64>>| -> ViewPort<ArrayValue<f64, 1>> {
+            let var = x => RollingVariance::<f64, 1>::count(n);
+            let sd = var => sqrt::<f64, 1>();
             sd
         }),
         s,
@@ -101,6 +102,31 @@ fn rcorr(sc: &mut Scenario, x: H, y: H, n: usize) -> H {
 const M: usize = 21; // ~1 trading month
 const Y: usize = 252; // ~1 trading year
 
+/// Interleave two rank-1 `[N]` views into an owned `(N, 2)` rank-2 array (col 0
+/// from `a`, col 1 from `b`). The 2-input stack the old `Stack::new(1)` over two
+/// whole-array handles did — but those inputs are now by-value `ViewPort` views,
+/// and the native `Stack` consumes by-reference `RefViewPorts`, so there is no
+/// `ViewPort -> RefViewPort` adapter to feed it. This `Apply` builds the same
+/// `(N, 2)` cross-section the downstream `WindowReduce2`/`ChipDist` expect (their
+/// `series.at(i)` reads `[a_i, b_i]` pairs).
+fn stack2(sc: &mut Scenario, a: H, b: H) -> Handle<ViewPort<ArrayValue<f64, 2>>> {
+    sc.add_operator(
+        Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 2, _>::new(
+            |(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
+                let (av, bv) = (a.to_contiguous(), b.to_contiguous());
+                let n = av.len();
+                let mut out = vec![0.0; n * 2];
+                for i in 0..n {
+                    out[i * 2] = av[i];
+                    out[i * 2 + 1] = bv[i];
+                }
+                Array::from_vec([n, 2], out)
+            },
+        ),
+        (a, b),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // WindowReduce: a per-element rolling-window reduction that needs the full
 // window (not an incremental accumulator) — for time-series rank / argmax-age.
@@ -114,32 +140,31 @@ struct WindowReduce {
 struct WindowReduceState {
     window: usize,
     f: fn(&[f64]) -> f64,
-    out: Array<f64>,
+    out: Array<f64, 1>,
 }
 impl Operator for WindowReduce {
     type Inputs = RefPort<Series<f64>>;
-    type Outputs = RefPort<Array<f64>>;
+    type Outputs = ViewPort<ArrayValue<f64, 1>>;
     type State = WindowReduceState;
 
     fn init(self) -> WindowReduceState {
-        WindowReduceState { window: self.window, f: self.f, out: Array::zeros(&[0]) }
+        WindowReduceState { window: self.window, f: self.f, out: Array::zeros([0]) }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, &'a Series<f64>),
         state: &'b mut WindowReduceState,
         init: bool,
-    ) -> (bool, &'a Array<f64>) {
+    ) -> (bool, ArrayView<'a, f64, 1>) {
         if init {
-            let shape = series.shape().to_vec();
-            let stride: usize = shape.iter().product();
-            state.out = Array::from_vec(&shape, vec![f64::NAN; stride]);
-            return (false, &state.out);
+            let n: usize = series.shape().iter().product();
+            state.out = Array::from_vec([n], vec![f64::NAN; n]);
+            return (false, state.out.view());
         }
         let w = state.window;
         let len = series.len();
         if len < w {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
         let f = state.f;
         let n: usize = series.shape().iter().product();
@@ -152,14 +177,14 @@ impl Operator for WindowReduce {
             }
             out[j] = f(&buf);
         }
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, &'a Series<f64>),
         state: &'b WindowReduceState,
-    ) -> (bool, &'a Array<f64>) {
-        (false, &state.out)
+    ) -> (bool, ArrayView<'a, f64, 1>) {
+        (false, state.out.view())
     }
 }
 fn window_reduce(sc: &mut Scenario, s: Ser, n: usize, f: fn(&[f64]) -> f64) -> H {
@@ -207,31 +232,31 @@ struct WindowReduce2 {
 struct WindowReduce2State {
     window: usize,
     f: fn(&[f64], &[f64]) -> f64,
-    out: Array<f64>,
+    out: Array<f64, 1>,
 }
 impl Operator for WindowReduce2 {
     type Inputs = RefPort<Series<f64>>;
-    type Outputs = RefPort<Array<f64>>;
+    type Outputs = ViewPort<ArrayValue<f64, 1>>;
     type State = WindowReduce2State;
 
     fn init(self) -> WindowReduce2State {
-        WindowReduce2State { window: self.window, f: self.f, out: Array::zeros(&[0]) }
+        WindowReduce2State { window: self.window, f: self.f, out: Array::zeros([0]) }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, &'a Series<f64>),
         state: &'b mut WindowReduce2State,
         init: bool,
-    ) -> (bool, &'a Array<f64>) {
+    ) -> (bool, ArrayView<'a, f64, 1>) {
         let n = series.shape()[0]; // (N, 2) -> N
         if init {
-            state.out = Array::from_vec(&[n], vec![f64::NAN; n]);
-            return (false, &state.out);
+            state.out = Array::from_vec([n], vec![f64::NAN; n]);
+            return (false, state.out.view());
         }
         let w = state.window;
         let len = series.len();
         if len < w {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
         let f = state.f;
         let slices: Vec<&[f64]> = (0..w).map(|k| series.at(len - w + k)).collect();
@@ -244,14 +269,14 @@ impl Operator for WindowReduce2 {
             }
             out[j] = f(&c0, &c1);
         }
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, &'a Series<f64>),
         state: &'b WindowReduce2State,
-    ) -> (bool, &'a Array<f64>) {
-        (false, &state.out)
+    ) -> (bool, ArrayView<'a, f64, 1>) {
+        (false, state.out.view())
     }
 }
 fn window_reduce2(sc: &mut Scenario, s: Ser, n: usize, f: fn(&[f64], &[f64]) -> f64) -> H {
@@ -292,31 +317,31 @@ struct ChipDist {
 }
 struct ChipDistState {
     window: usize,
-    out: Array<f64>,
+    out: Array<f64, 2>,
 }
 impl Operator for ChipDist {
     type Inputs = RefPort<Series<f64>>;
-    type Outputs = RefPort<Array<f64>>;
+    type Outputs = ViewPort<ArrayValue<f64, 2>>;
     type State = ChipDistState;
 
     fn init(self) -> ChipDistState {
-        ChipDistState { window: self.window, out: Array::zeros(&[0]) }
+        ChipDistState { window: self.window, out: Array::zeros([0, CHIP_COLS]) }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, &'a Series<f64>),
         state: &'b mut ChipDistState,
         init: bool,
-    ) -> (bool, &'a Array<f64>) {
+    ) -> (bool, ArrayView<'a, f64, 2>) {
         let n = series.shape()[0];
         if init {
-            state.out = Array::from_vec(&[n, CHIP_COLS], vec![f64::NAN; n * CHIP_COLS]);
-            return (false, &state.out);
+            state.out = Array::from_vec([n, CHIP_COLS], vec![f64::NAN; n * CHIP_COLS]);
+            return (false, state.out.view());
         }
         let w = state.window;
         let len = series.len();
         if len < w {
-            return (false, &state.out);
+            return (false, state.out.view());
         }
         let slices: Vec<&[f64]> = (0..w).map(|k| series.at(len - w + k)).collect();
         let out = state.out.as_mut_slice();
@@ -396,14 +421,14 @@ impl Operator for ChipDist {
             out[base..base + CHIP_COLS]
                 .copy_from_slice(&[avg, std, skew, kurt, max_prob_ret, bal, pl, ps, ls, ll]);
         }
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, &'a Series<f64>),
         state: &'b ChipDistState,
-    ) -> (bool, &'a Array<f64>) {
-        (false, &state.out)
+    ) -> (bool, ArrayView<'a, f64, 2>) {
+        (false, state.out.view())
     }
 }
 
@@ -417,14 +442,14 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     };
 
     // --- daily building blocks (recorded on the price pulse) ---
-    let lc = log(sc, st.adjusted_close); // adjusted log close
+    let lc = log_h(sc, st.adjusted_close); // adjusted log close
     let lc_s = rec(sc, lc);
     let adjclose_s = rec(sc, st.adjusted_close);
-    let lo = log(sc, st.open); // raw log open
-    let lcr = log(sc, st.close); // raw log close
+    let lo = log_h(sc, st.open); // raw log open
+    let lcr = log_h(sc, st.close); // raw log close
     let lcr_s = rec(sc, lcr);
 
-    let daily_ret = sc.add_operator(Diff::<f64>::new(), lc); // adjusted close-to-close log return
+    let daily_ret = sc.add_operator(Diff::<f64, 1>::new(), lc); // adjusted close-to-close log return
     let dret_s = rec(sc, daily_ret);
     let intraday = sub(sc, lcr, lo); // log(close/open)
     let intra_s = rec(sc, intraday);
@@ -436,7 +461,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let absret_s = rec(sc, abs_ret);
     let sign_ret = emap(sc, daily_ret, |x| if x.is_finite() { x.signum() } else { f64::NAN });
     let sign_s = rec(sc, sign_ret);
-    let xs_rank = sc.add_operator(Percentile::<f64>::new(), daily_ret); // daily cross-sectional rank
+    let xs_rank = sc.add_operator(Percentile::<f64, 1>::new(), daily_ret); // daily cross-sectional rank
     let xsr_s = rec(sc, xs_rank);
 
     // shared rolling sums (reused by the _M / _A pairs)
@@ -529,7 +554,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // ============ 量价相关性 (price-volume correlation, 20-day) — 图表40 ============
     // sync = corr(turn_t, x_t); post (量领先) = corr(turn_t, x_{t+1}) = corr(lag(turn,1), x);
     // prior (价领先) = corr(turn_t, x_{t-1}) = corr(turn, lag(x,1)).
-    let turnover_change = sc.add_operator(Diff::<f64>::new(), turnover);
+    let turnover_change = sc.add_operator(Diff::<f64, 1>::new(), turnover);
     let turnchg_s = rec(sc, turnover_change);
     let lag_turn1 = lag(sc, turnover_s, 1);
     let lag_turnd1 = lag(sc, turnchg_s, 1);
@@ -555,8 +580,8 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let highlow = div(sc, st.high, st.low); // 日内振幅 = 最高/最低
     let highlow_s = rec(sc, highlow);
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
-    let max_oc = sc.add_operator(Max::<f64>::new(), (st.open, st.close));
-    let min_oc = sc.add_operator(Min::<f64>::new(), (st.open, st.close));
+    let max_oc = sc.add_operator(max::<f64, 1>(), (st.open, st.close));
+    let min_oc = sc.add_operator(min::<f64, 1>(), (st.open, st.close));
     let up_num = sub(sc, st.high, max_oc); // 上影线 = 最高 − max(开,收)
     let upshadow = div(sc, up_num, st.low);
     let upshadow_s = rec(sc, upshadow);
@@ -588,15 +613,15 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 
     // 振幅调整动量 (mmt_range): pair amplitude (high/low) with the daily return as a
     // (N,2) series and reduce each window via `range_mom`.
-    let amp_ret = sc.add_operator(Stack::<f64>::new(1), &[highlow, daily_ret][..]); // (N, 2)
-    let amp_ret_s = rec(sc, amp_ret);
+    let amp_ret = stack2(sc, highlow, daily_ret); // (N, 2)
+    let amp_ret_s = rec_2(sc, amp_ret);
     add("mmt_range_M", window_reduce2(sc, amp_ret_s, M, range_mom));
     add("mmt_range_A", window_reduce2(sc, amp_ret_s, Y, range_mom));
 
     // ============ 筹码分布 (chip distribution) — 图表52 ============
     // (adjusted close, turnover) -> ChipDist -> (N, 10); column-select each factor.
-    let chip_in = sc.add_operator(Stack::<f64>::new(1), &[st.adjusted_close, turnover][..]); // (N, 2)
-    let chip_in_s = rec(sc, chip_in);
+    let chip_in = stack2(sc, st.adjusted_close, turnover); // (N, 2)
+    let chip_in_s = rec_2(sc, chip_in);
     let chip = sc.add_operator(ChipDist { window: 250 }, chip_in_s); // (N, 10)
     for (c, name) in [
         "distribution_ret_avg",
@@ -613,11 +638,18 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     .into_iter()
     .enumerate()
     {
-        add(name, sc.add_operator(Select::<f64>::new(vec![c], 1, true), chip));
+        add(name, sc.add_operator(Select::<f64, 2, 1>::new(vec![c], 1, true), chip));
     }
 
     drop(add);
     // Finalize each entry into its model-ready feature: rank + impute.
     let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();
     FactorSet { names, feature }
+}
+
+/// Record a rank-2 `(N, 2)` cross-section into a `Series` (the two-channel chip /
+/// range inputs); retains the deepest count look-back the consumers read (`Y` /
+/// the 250-day chip window) plus the margin.
+fn rec_2(sc: &mut Scenario, h: Handle<ViewPort<ArrayValue<f64, 2>>>) -> Ser {
+    sc.add_record_retained(h, Retention::count(Y + RETAIN_MARGIN))
 }

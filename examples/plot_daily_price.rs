@@ -19,14 +19,15 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, RefPort};
+use flowgraph::typed::{Handle, ViewPort};
 
 use tradingflow::operators::{
-    Add, Filter, ForwardAdjust, Multiply, RollingMean, RollingVariance, Select, Sqrt, Subtract,
+    ArrayValue, Filter, ForwardAdjust, RollingMean, RollingVariance, Select, add, multiply, sqrt,
+    subtract,
 };
 use tradingflow::Scenario;
 use tradingflow::sources::ParquetPanelSource;
-use tradingflow::{Array, Instant, Series};
+use tradingflow::{Array, ArrayView, Instant, Series};
 
 const WINDOW: usize = 252;
 const MULTIPLE: f64 = 2.0;
@@ -44,10 +45,18 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
         .collect()
 }
 
-/// `Select` stock `i`'s row out of a panel and drop the all-NaN "no data" ticks.
-fn pick(sc: &mut Scenario, panel: Handle<RefPort<Array<f64>>>, i: usize) -> Handle<RefPort<Array<f64>>> {
-    let sel = sc.add_operator(Select::<f64>::new(vec![i], 0, true), panel);
-    sc.add_operator(Filter(|a: &Array<f64>| a.as_slice().iter().any(|x| x.is_finite())), sel)
+/// `Select` stock `i`'s row out of a `[N, K]` panel (→ rank-1 `[K]`) and drop the
+/// all-NaN "no data" ticks.
+fn pick(
+    sc: &mut Scenario,
+    panel: Handle<ViewPort<ArrayValue<f64, 2>>>,
+    i: usize,
+) -> Handle<ViewPort<ArrayValue<f64, 1>>> {
+    let sel = sc.add_operator(Select::<f64, 2, 1>::new(vec![i], 0, true), panel);
+    sc.add_operator(
+        Filter::<_, 1>(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
+        sel,
+    )
 }
 
 use clap::Parser;
@@ -88,7 +97,8 @@ async fn main() {
     );
     let price_panel = {
         let init = common::nan_array(&price_src.out_shape());
-        sc.add_source(price_src, init)
+        let h = sc.add_source(price_src, init);
+        sc.as_view(h)
     };
     let div_src = ParquetPanelSource::new(
         dividends_pq,
@@ -97,27 +107,31 @@ async fn main() {
     );
     let div_panel = {
         let init = common::nan_array(&div_src.out_shape());
-        sc.add_source(div_src, init)
+        let h = sc.add_source(div_src, init);
+        sc.as_view(h)
     };
 
-    // Select the target stock; close (scalar) and volume (scalar) from its row.
+    // Select the target stock; close (scalar) and volume (scalar) from its row
+    // (rank-1 `[K]` → rank-0 scalar via the squeezing `Select`).
     let prices = pick(&mut sc, price_panel, idx);
     let dividends = pick(&mut sc, div_panel, idx);
-    let closes = sc.add_operator(Select::<f64>::new(vec![0], 0, true), prices);
-    let volume = sc.add_operator(Select::<f64>::new(vec![1], 0, true), prices);
+    let closes = sc.add_operator(Select::<f64, 1, 0>::new(vec![0], 0, true), prices);
+    let volume = sc.add_operator(Select::<f64, 1, 0>::new(vec![1], 0, true), prices);
 
-    // Forward-adjusted close, recorded into a Series for the rolling stats.
-    let adj_closes = sc.add_operator(ForwardAdjust::new(), (closes, dividends));
+    // Forward-adjusted close (scalar close `0`, dividends row `1`), recorded into
+    // a Series for the rolling stats.
+    let adj_closes = sc.add_operator(ForwardAdjust::<0, 1>::new(), (closes, dividends));
     let adj_series = sc.add_record(adj_closes);
 
-    // 252-day MA + rolling std → Bollinger bands.
-    let ma = sc.add_operator(RollingMean::<f64>::count(WINDOW), adj_series);
-    let var = sc.add_operator(RollingVariance::<f64>::count(WINDOW), adj_series);
-    let std = sc.add_operator(Sqrt::<f64>::new(), var);
-    let multiple = sc.add_const(Array::scalar(MULTIPLE));
-    let band = sc.add_operator(Multiply::<f64>::new(), (std, *multiple));
-    let upper = sc.add_operator(Add::<f64>::new(), (ma, band));
-    let lower = sc.add_operator(Subtract::<f64>::new(), (ma, band));
+    // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).
+    let ma = sc.add_operator(RollingMean::<f64, 0>::count(WINDOW), adj_series);
+    let var = sc.add_operator(RollingVariance::<f64, 0>::count(WINDOW), adj_series);
+    let std = sc.add_operator(sqrt::<f64, 0>(), var);
+    let multiple_src = sc.add_const(Array::scalar(MULTIPLE));
+    let multiple = sc.as_view(*multiple_src);
+    let band = sc.add_operator(multiply::<f64, 0>(), (std, multiple));
+    let upper = sc.add_operator(add::<f64, 0>(), (ma, band));
+    let lower = sc.add_operator(subtract::<f64, 0>(), (ma, band));
 
     // Record the outputs.
     let h_adj = sc.add_record(adj_closes);

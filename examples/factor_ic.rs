@@ -21,10 +21,10 @@ mod common;
 
 use flowgraph::typed::RefPort;
 
-use tradingflow::operators::{Apply, Lag, Log, Multiply, PyClassOperator, PyParams, Resample};
+use tradingflow::operators::{Apply, ArrayValue, Lag, PyClassOperator, PyParams, log, multiply};
 use tradingflow::Scenario;
 use tradingflow::sources::clock;
-use tradingflow::Array;
+use tradingflow::{Array, ArrayView, ViewPort};
 
 use clap::Parser;
 
@@ -51,8 +51,8 @@ async fn main() {
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let features = common::build_features(&mut sc, &st, window, tradingflow::Retention::UNBOUNDED);
-    let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
-    let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
+    let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
+    let log_adj = sc.add_operator(log::<f64, 1>(), st.adjusted_close);
     let (target, _target_series, _demeaned) =
         common::build_log_return_target(&mut sc, log_adj, tradingflow::Retention::UNBOUNDED);
 
@@ -65,34 +65,35 @@ async fn main() {
     for &feature in &features.handles {
         // Lag one trading day, resample onto the rebalance clock.
         let feature_series = sc.add_record(feature);
-        let lagged = sc.add_operator(Lag::<f64>::new(1, f64::NAN), feature_series);
-        let aligned = sc.add_operator(
-            Resample::<Array<f64>, ()>::new(),
-            (rebalance_clock, lagged),
-        );
+        let lagged = sc.add_operator(Lag::<f64, 1>::new(1, f64::NAN), feature_series);
+        let aligned = sc.add_operator(common::ResampleClocked::<1>::new(), (rebalance_clock, lagged));
         // NaN-mask out-of-universe stocks so they don't dilute the rank corr.
         let masked = sc.add_operator(
-            Apply::<(RefPort<Array<f64>>, RefPort<Array<f64>>), Array<f64>, _>::new(
-                |(f, u): (&Array<f64>, &Array<f64>)| {
-                    let (fs, us) = (f.as_slice(), u.as_slice());
+            Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 1, _>::new(
+                |(f, u): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
+                    let (fs, us) = (f.to_contiguous(), u.to_contiguous());
                     Array::from_vec(
-                        f.shape(),
+                        [fs.len()],
                         (0..fs.len()).map(|i| if us[i] > 0.0 { fs[i] } else { f64::NAN }).collect(),
                     )
                 },
             ),
             (aligned, universe),
         );
+        // The Python metric consumes whole-array `RefPort`s; bridge both views.
+        let masked_ref = common::own(&mut sc, masked);
+        let target_ref = common::own(&mut sc, target);
         let metric = sc.add_operator(
-            PyClassOperator::<(RefPort<Array<f64>>, RefPort<Array<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 0>::from_module(
                 "flowops.metrics.mean.information_coefficient",
                 PyParams::new().int("num_stocks", n_i),
                 vec![],
                 clk.clone(),
             ),
-            (masked, target),
+            (masked_ref, target_ref),
         );
-        ic_handles.push(sc.add_record(metric));
+        let metric_v = sc.as_view(metric);
+        ic_handles.push(sc.add_record(metric_v));
     }
 
     let mut session = sc.build_with_threads(args.threads);

@@ -37,14 +37,14 @@ use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    Add, Diff, Divide, Fillna, Lag, Log, Multiply, Negate, Percentile, Record, Resample,
-    RollingMean, Subtract,
+    self, ArrayValue, Diff, Fillna, Lag, Percentile, Record, RollingMean, divide, log, multiply,
+    negate, subtract,
 };
-use tradingflow::{Array, Retention, Scenario};
+use tradingflow::{Retention, Scenario, ViewPort};
 
-use super::{Stacked, RETAIN_MARGIN};
+use super::{AvH, ResampleClocked, ResampleView, Stacked, RETAIN_MARGIN};
 
-type H = Handle<RefPort<Array<f64>>>;
+type H = AvH;
 
 /// Trading days a 变动/同比 level is lagged (the 次新 ~1-year idiom); its recorded
 /// series only needs this look-back (plus the compaction margin) retained.
@@ -53,7 +53,7 @@ const LAG_YEAR: usize = 244;
 /// Resample `data` onto a daily-`Array` clock pulse. Aliased so the two-comma
 /// turbofish does not appear at a `segment!` arrow call site (the macro's
 /// tuple-input arm cannot parse a comma inside the operator's generics).
-type ResampleDaily = Resample<Array<f64>, Array<f64>>;
+type ResampleDaily = ResampleView<1>;
 
 /// A named set of **model-ready feature** handles, in column order — each factor
 /// is already cross-sectionally ranked and its missing values imputed (see
@@ -73,9 +73,9 @@ pub struct FactorSet {
 /// The rank → fill chain is fused into one node via `segment!`.
 pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
     sc.add_operator(
-        flowgraph::segment!(|x: RefPort<Array<f64>>| -> RefPort<Array<f64>> {
-            let ranked = x => Percentile::<f64>::new();
-            let filled = ranked => Fillna::<f64>::new(0.5);
+        flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
+            let ranked = x => Percentile::<f64, 1>::new();
+            let filled = ranked => Fillna::<f64, 1>::new(0.5);
             filled
         }),
         h,
@@ -84,12 +84,12 @@ pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
 
 /// Total market cap = unadjusted close × total shares.
 pub fn market_cap(sc: &mut Scenario, st: &Stacked) -> H {
-    sc.add_operator(Multiply::<f64>::new(), (st.close, st.total_shares))
+    sc.add_operator(multiply::<f64, 1>(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
 pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> H {
-    sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares))
+    sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
@@ -99,9 +99,9 @@ fn ttm(sc: &mut Scenario, h: H) -> H {
     let clk = sc.clock();
     let ret = Retention::duration(Duration::from_days(380));
     sc.add_operator(
-        flowgraph::segment!(|x: RefPort<Array<f64>>| -> RefPort<Array<f64>> {
-            let series = x => Record::<f64>::with_retention(clk, ret);
-            let ttm = series => RollingMean::<f64>::time_delta(Duration::from_days(365));
+        flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
+            let series = x => Record::<f64, 1>::with_retention(clk, ret);
+            let ttm = series => RollingMean::<f64, 1>::time_delta(Duration::from_days(365));
             ttm
         }),
         h,
@@ -109,15 +109,15 @@ fn ttm(sc: &mut Scenario, h: H) -> H {
 }
 
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.add_operator(Divide::<f64>::new(), (a, b))
+    sc.add_operator(divide::<f64, 1>(), (a, b))
 }
 
-fn log(sc: &mut Scenario, h: H) -> H {
-    sc.add_operator(Log::<f64>::new(), h)
+fn log_h(sc: &mut Scenario, h: H) -> H {
+    sc.add_operator(log::<f64, 1>(), h)
 }
 
 fn neg(sc: &mut Scenario, h: H) -> H {
-    sc.add_operator(Negate::<f64>::new(), h)
+    sc.add_operator(negate::<f64, 1>(), h)
 }
 
 /// 变动 (period-over-period delta): `level − level₋₁ᵧ`. The whole chain —
@@ -130,11 +130,11 @@ fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
     let clk = sc.clock();
     let ret = Retention::count(LAG_YEAR + RETAIN_MARGIN);
     sc.add_operator(
-        flowgraph::segment!(|adj: RefPort<Array<f64>>, lvl: RefPort<Array<f64>>| -> RefPort<Array<f64>> {
+        flowgraph::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
             let daily = (adj, lvl) => ResampleDaily::new();
-            let series = daily => Record::<f64>::with_retention(clk, ret);
-            let prev = series => Lag::<f64>::new(LAG_YEAR, f64::NAN);
-            let d = (daily, prev) => Subtract::<f64>::new();
+            let series = daily => Record::<f64, 1>::with_retention(clk, ret);
+            let prev = series => Lag::<f64, 1>::new(LAG_YEAR, f64::NAN);
+            let d = (daily, prev) => subtract::<f64, 1>();
             d
         }),
         (st.adjusted_close, level),
@@ -147,12 +147,12 @@ fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
     let clk = sc.clock();
     let ret = Retention::count(LAG_YEAR + RETAIN_MARGIN);
     sc.add_operator(
-        flowgraph::segment!(|adj: RefPort<Array<f64>>, lvl: RefPort<Array<f64>>| -> RefPort<Array<f64>> {
+        flowgraph::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
             let daily = (adj, lvl) => ResampleDaily::new();
-            let series = daily => Record::<f64>::with_retention(clk, ret);
-            let prev = series => Lag::<f64>::new(LAG_YEAR, f64::NAN);
-            let diff = (daily, prev) => Subtract::<f64>::new();
-            let g = (diff, prev) => Divide::<f64>::new();
+            let series = daily => Record::<f64, 1>::with_retention(clk, ret);
+            let prev = series => Lag::<f64, 1>::new(LAG_YEAR, f64::NAN);
+            let diff = (daily, prev) => subtract::<f64, 1>();
+            let g = (diff, prev) => divide::<f64, 1>();
             g
         }),
         (st.adjusted_close, level),
@@ -178,16 +178,17 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let op_ttm = ttm(sc, st.operating_profit);
     let cost_ttm = ttm(sc, st.operating_cost); // negative (a deduction)
     // Gross profit = revenue − COGS = revenue + cost_ttm (cost stored negative).
-    let gross_ttm = sc.add_operator(Add::<f64>::new(), (rev_ttm, cost_ttm));
+    // (`operators::add` is fully qualified — the local `add` binding shadows it.)
+    let gross_ttm = sc.add_operator(operators::add::<f64, 1>(), (rev_ttm, cost_ttm));
     // Positive-magnitude liabilities (parquet stores them credit-negative).
     let debt = neg(sc, st.total_liab);
     let cur_liab = neg(sc, st.current_liab);
     let eps = div(sc, np_ttm, st.total_shares); // 每股收益 TTM
     let cogs_ttm = neg(sc, cost_ttm); // 营业成本 (positive magnitude)
     // 应计利润 = 净利润 − 经营现金流 (earnings not backed by cash).
-    let accruals_ttm = sc.add_operator(Subtract::<f64>::new(), (np_ttm, ocf_ttm));
+    let accruals_ttm = sc.add_operator(subtract::<f64, 1>(), (np_ttm, ocf_ttm));
     // 投入资本 ≈ 总资产 − 流动负债 (net of non-interest-bearing current liabilities).
-    let invested_capital = sc.add_operator(Subtract::<f64>::new(), (st.total_assets, cur_liab));
+    let invested_capital = sc.add_operator(subtract::<f64, 1>(), (st.total_assets, cur_liab));
 
     // ---- Profitability (盈利能力) ----
     let roe = div(sc, np_ttm, st.parent_equity); // 净利润 TTM / 净资产
@@ -207,8 +208,8 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     add("OCFP_TTM", div(sc, ocf_ttm, mc)); // 经营现金流 TTM / 总市值
 
     // ---- Size (规模) ----
-    add("Ln_MC", log(sc, mc)); // 总市值对数
-    add("Ln_FC", log(sc, fc)); // 流通市值对数
+    add("Ln_MC", log_h(sc, mc)); // 总市值对数
+    add("Ln_FC", log_h(sc, fc)); // 流通市值对数
     add("FC_MC", div(sc, fc, mc)); // 流通市值 / 总市值
 
     // ---- Operating efficiency (营运效率) ----
@@ -272,10 +273,10 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // Trailing ~1-month log return of adjusted close. Expect a NEGATIVE forward
     // IC (short-term reversal); a contemporaneous (non-lagged) wiring bug would
     // instead make this strongly POSITIVE (the factor overlapping the return).
-    let log_adj = log(sc, st.adjusted_close);
+    let log_adj = log_h(sc, st.adjusted_close);
     let log_adj_series = sc.add_record_retained(log_adj, Retention::count(21 + RETAIN_MARGIN));
-    let lag_1m = sc.add_operator(Lag::<f64>::new(21, f64::NAN), log_adj_series);
-    add("REV_1M", sc.add_operator(Subtract::<f64>::new(), (log_adj, lag_1m)));
+    let lag_1m = sc.add_operator(Lag::<f64, 1>::new(21, f64::NAN), log_adj_series);
+    add("REV_1M", sc.add_operator(subtract::<f64, 1>(), (log_adj, lag_1m)));
 
     drop(add);
     // Each catalog entry is finalized into its model-ready feature: rank + impute.
@@ -289,6 +290,6 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// the factor stored at `t-1` inside `InformationCoefficient`, it is the
 /// next-period return the factor is meant to predict.
 pub fn build_forward_return(sc: &mut Scenario, log_adj: H, rebalance_clock: Handle<RefPort<()>>) -> H {
-    let resampled = sc.add_operator(Resample::<Array<f64>, ()>::new(), (rebalance_clock, log_adj));
-    sc.add_operator(Diff::<f64>::new(), resampled)
+    let resampled = sc.add_operator(ResampleClocked::<1>::new(), (rebalance_clock, log_adj));
+    sc.add_operator(Diff::<f64, 1>::new(), resampled)
 }

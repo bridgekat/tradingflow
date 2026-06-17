@@ -19,12 +19,12 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::RefPort;
-
-use tradingflow::operators::{Apply, Benchmark, Map, Multiply, Resample};
+use tradingflow::operators::{Apply, ArrayValue, Benchmark, Map, multiply};
 use tradingflow::Scenario;
 use tradingflow::sources::clock;
-use tradingflow::Array;
+use tradingflow::{Array, ArrayView, ViewPort};
+
+use common::ResampleView;
 
 use clap::Parser;
 
@@ -45,24 +45,21 @@ async fn main() {
     let mut sc = Scenario::new();
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
+    let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
 
     let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
     let universe =
         common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
 
     // Hold the rebalance-day universe fixed between rebalances by re-emitting it
-    // on the daily close pulse.
-    let daily_universe = sc.add_operator(
-        Resample::<Array<f64>, Array<f64>>::new(),
-        (st.close, universe),
-    );
+    // on the daily close pulse (clock = the close view, data = the universe).
+    let daily_universe = sc.add_operator(ResampleView::<1>::new(), (st.close, universe));
 
     // Summed circulating market cap of the current constituents.
     let index_circ_market_cap = sc.add_operator(
-        Apply::<(RefPort<Array<f64>>, RefPort<Array<f64>>), Array<f64>, _>::new(
-            |(u, c): (&Array<f64>, &Array<f64>)| {
-                let (us, cs) = (u.as_slice(), c.as_slice());
+        Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 0, _>::new(
+            |(u, c): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
+                let (us, cs) = (u.to_contiguous(), c.to_contiguous());
                 let mut s = 0.0;
                 for i in 0..us.len() {
                     if us[i] > 0.0 && cs[i].is_finite() {
@@ -79,10 +76,10 @@ async fn main() {
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
     let index = sc.add_operator(
         Benchmark::new(n, 1.0, true),
-        &[universe, st.close, st.adjusts, upper, lower][..],
+        (universe, st.close, st.adjusts, upper, lower),
     );
     let index_value = sc.add_operator(
-        Map::new(|a: &Array<f64>| Array::scalar(a.as_slice().iter().sum::<f64>())),
+        Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         index,
     );
 
