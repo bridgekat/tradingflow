@@ -1,28 +1,23 @@
+# TradingFlow
+
 [![Test](https://github.com/bridgekat/tradingflow/actions/workflows/test.yml/badge.svg)](https://github.com/bridgekat/tradingflow/actions/workflows/test.yml)
 
-**TradingFlow** is a lightweight library for quantitative investment research that supports multi-frequency market data, formulaic factors, forecasting models, portfolio optimization methods and backtesting in a unified data model. The runtime is implemented in Rust for performance; operators can additionally be written in Python (the [`flowops`](python/flowops/) package) and run on an embedded interpreter, giving strategies direct access to NumPy / SciPy / cvxpy.
+A [Flowgraph](https://github.com/bridgekat/flowgraph/) operator library for quantitative investment research. Operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
 
-Main design goals:
+## Get started
 
-- **Composable modules:** trading strategies are computation graphs, whose nodes are either data sources or operators. Common sources and operators are provided out of the box, and new ones can be readily implemented in either Rust or Python.
-- **Agent-friendly codebase:** code-documentation consistency and a hierarchy of documented modules is maintained to facilitate LLM code exploration and generation. When using LLM coding agents (Claude Code, Codex, OpenCode, etc.), start every session by instructing the agent to read [AGENTS.md](AGENTS.md) and then describe your tasks.
-
-# Get started
-
-Prerequisites: a stable Rust toolchain ([rustup.rs](https://rustup.rs)), and — for Python operators / examples — Python 3.12+.
+Prerequisites: a stable Rust toolchain ([rustup.rs](https://rustup.rs)), and Python 3.12+ for the `python` feature.
 
 ```bash
 git clone https://github.com/bridgekat/tradingflow.git
 cd tradingflow
-cargo build                 # the Rust engine + operator library
-pip install -e ".[dev]"     # the flowops Python operators (for the `python` feature)
+cargo build                    # the Rust operator library
+cargo build --features python  # with Python operators (`flowops` package)
 ```
 
-The Rust crate builds with Cargo. `flowops` is a pure-Python package; the engine embeds a CPython interpreter to run it when built with the `python` feature (`cargo build --features python`).
+## Examples
 
-# Usage
-
-A strategy is a computation graph. The three things you do in every program: create a `Scenario`, register sources and operators, then `run()` the event loop. Below is a tiny example that records a synthetic price series, takes a rolling mean, and prints its tail.
+A strategy is a computation graph: see [Flowgraph](https://github.com/bridgekat/flowgraph/) documentation for more details. The three things you do in every program: create a `Scenario`, register sources and operators, then `run()` the event loop. Below is a tiny example that records a synthetic price series, takes a rolling mean, and prints its tail.
 
 ```rust
 use tradingflow::{Array, Scenario, Series};
@@ -74,8 +69,6 @@ flowchart LR
 ```
 
 This is the whole pattern. An actual strategy can contain many more operators — `ForwardAdjust`, `LinearRegression`, `Shrinkage`, `MeanVariancePortfolio`, `RandomTrader`, `SharpeRatio` — but the structure stays the same. Run `cargo doc --open` for the full API reference.
-
-# Examples
 
 The [`examples/`](examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines (see [`examples/README.md`](examples/README.md) for build/run instructions). To follow along, install the `examples` extras (which fetch the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler) from GitHub) and download data:
 
