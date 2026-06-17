@@ -34,6 +34,8 @@ mod op;
 mod structural;
 mod transform;
 
+mod reshape;
+
 #[cfg(any())]
 mod metrics;
 #[cfg(any())]
@@ -42,8 +44,6 @@ mod pyhost;
 #[cfg(any())]
 #[cfg(feature = "python")]
 mod python;
-#[cfg(any())]
-mod reshape;
 #[cfg(any())]
 mod rolling;
 #[cfg(any())]
@@ -67,14 +67,12 @@ pub use num::{
 pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
 pub use structural::{Cast, Id, Resample, Where};
 pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select, SelectView, SliceView};
+pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync, StackSyncView, StackView};
 
 // [array-view-refactor] re-export blocks for gated families, restored per stage:
 // pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility};
-// pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync, StackSyncView, StackView};
 // pub use stocks::{Annualize, AnnualizeView, ForwardAdjust, ForwardAdjustViewDiv};
-// pub use transform::{Apply, ApplyInplace, Lag, Map, MapInplace, Select, SelectView, SliceView};
 // pub use rolling::{...};
-// pub use structural::{Cast, Id, Resample, Where};
 // pub use traders::{Benchmark, RandomTrader, SimpleTrader};
 // #[cfg(feature = "python")]
 // pub use pyhost::{NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyParams};
