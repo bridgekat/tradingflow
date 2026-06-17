@@ -1,11 +1,25 @@
 //! Operator-contract helpers shared by TradingFlow operators: the [`Clock`],
-//! the [`StripNotify`] payload helper, and the [`ArrayValue`] view kind.
+//! the [`ArrayValue`] view kind, and the [`StripNotify`] payload helper.
 //!
 //! TradingFlow operators implement [`flowgraph::typed::Operator`]
 //! (notify-gated; the common case) or [`flowgraph::typed::Segment`] (custom
 //! gating, e.g. [`Clocked`](super::Clocked)) **directly** — there is no
 //! TradingFlow-side operator trait or bridge, so operators compose with
 //! `flowgraph`'s combinators and the `segment!` fusion macro as-is.
+//!
+//! # The array currency
+//!
+//! Array-shaped edges all carry a borrowed, strided
+//! [`ArrayView<'a, T, N>`](crate::ArrayView) by value through a
+//! `ViewPort<ArrayValue<T, N>>` leaf — one currency for owned-buffer outputs and
+//! zero-copy slices alike. A compute operator homes its output buffer in `State`
+//! (an owned [`Array<T, N>`](crate::Array)) and returns a `ViewPort` view of it;
+//! a slicing operator ([`SliceView`](super::SliceView)) re-derives a strided view
+//! of its input by value, needing neither in-state shape nor an arena. Edges that
+//! fan a single buffer into / out of `N` views ([`Split`](super::Split) outputs,
+//! [`StackView`](super::StackView) inputs) use the by-reference
+//! `RefViewPorts<ArrayValue<T, N>>` kind, whose `N` views are homed in a
+//! per-generation arena.
 //!
 //! Conventions shared by every operator in this module tree:
 //!
@@ -24,19 +38,15 @@
 //!   re-present it — it may never forward the dropped value under
 //!   `notify = false`. A carry reader trusts this *universally*, so a single
 //!   violating producer silently corrupts it; honour it in every operator.
-//! * **Output storage lives in `State`** (owned buffers); `compute` writes the
-//!   state-owned buffer and returns `(notify, &out)` references into it — or,
-//!   for view-emitting operators ([`Split`](super::Split),
-//!   [`SliceView`](super::SliceView)), lends [`ArraySlice`] views of its inputs
-//!   through a per-generation [`Arena`](flowgraph::typed::Arena). State cells
-//!   are boxed by the engine, so returned references stay valid across
-//!   generations (`passthrough` never reallocates).
+//! * **Output storage lives in `State`** (owned buffers). Because array buffers
+//!   are overwritten in place and never reallocated after the build call, a
+//!   `ViewPort` view returned into `&'b mut State` stays valid across
+//!   generations (`passthrough` re-lends the same buffer).
 //! * **The `init == true` call replicates the legacy `init(&self, inputs)`.**
 //!   It only sizes/seeds the state and output from the build-time input values
-//!   and returns `(false, &out)` — no per-tick side effect (no counter bump, no
+//!   and returns `(false, …)` — no per-tick side effect (no counter bump, no
 //!   series append) may run on the build call.
-//! * **`passthrough` returns `(false, &out)`** — the previous value,
-//!   un-notified.
+//! * **`passthrough` returns `(false, …)`** — the previous value, un-notified.
 //!
 //! Operators are **pure** with respect to time. Event time is needed by the few
 //! operators that stamp it (e.g. [`Record`](super::Record)); they receive the
@@ -46,9 +56,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use flowgraph::typed::{Interface, RefPort, RefViewPort, RefViewPorts, ValueView, ViewPort};
+use flowgraph::typed::{Interface, RefViewPort, RefViewPorts, ValueView, ViewPort};
 
-use crate::{Array, ArraySlice, Instant, Scalar};
+use crate::{ArrayView, Instant, Scalar};
 
 // ===========================================================================
 // Clock — driver-advanced event time, held only by operators that need it.
@@ -85,75 +95,21 @@ impl Default for Clock {
 }
 
 // ===========================================================================
-// ArrayValue — the `ArraySlice` view kind for flowgraph ports.
+// ArrayValue — the `ArrayView` view kind for flowgraph ports.
 // ===========================================================================
 
-/// [`ValueView`] kind passing a borrowed [`ArraySlice`] across interfaces:
-/// `ViewPort<ArrayValue<T>>` / `RefViewPort<ArrayValue<T>>` leaves carry
-/// `ArraySlice<'a, T>` with the engine's per-generation lifetime — fully
-/// borrow-checked zero-copy edges (see [`Split`](super::Split)).
-pub struct ArrayValue<T>(PhantomData<T>);
+/// [`ValueView`] kind passing a borrowed [`ArrayView<'a, T, N>`](crate::ArrayView)
+/// across interfaces: `ViewPort<ArrayValue<T, N>>` /
+/// `RefViewPort<ArrayValue<T, N>>` / `RefViewPorts<ArrayValue<T, N>>` leaves
+/// carry the strided view with the engine's per-generation lifetime — fully
+/// borrow-checked zero-copy edges. The rank `N` is compile-time; the operator's
+/// generic rank is inferred from the input handle types at `add_operator`.
+pub struct ArrayValue<T, const N: usize>(PhantomData<T>);
 
-// SAFETY: `ArraySlice<'a, T>` holds only `&'a` references (data + shape), so
-// it is covariant in `'a` — the only `ValueView` obligation.
-unsafe impl<T: Scalar> ValueView for ArrayValue<T> {
-    type View<'a> = ArraySlice<'a, T>;
-}
-
-// ===========================================================================
-// ArrayInput — array-payload leaves, abstracted over the edge kind.
-// ===========================================================================
-
-/// An interface leaf carrying array data, abstracted over **how** it rides the
-/// wire: an owned [`Array`](crate::Array) by reference (`RefPort<Array<T>>`)
-/// or a borrowed [`ArraySlice`] view (`ViewPort<ArrayValue<T>>` /
-/// `RefViewPort<ArrayValue<T>>`). Array-shaped operators ([`Select`]
-/// (super::Select), [`ForwardAdjust`](super::ForwardAdjust), [`Annualize`]
-/// (super::Annualize)) are generic over this trait — one implementation serves
-/// owned and zero-copy edges alike, with the owned kind as the default type
-/// parameter so existing call sites are unchanged.
-pub trait ArrayInput<T: Scalar>: Interface {
-    /// The leaf's notify flag.
-    fn notified(values: &Self::Values<'_>) -> bool;
-
-    /// The array payload as a borrowed view.
-    fn data<'a>(values: &Self::Values<'a>) -> ArraySlice<'a, T>;
-}
-
-impl<T: Scalar> ArrayInput<T> for RefPort<Array<T>> {
-    #[inline(always)]
-    fn notified(values: &Self::Values<'_>) -> bool {
-        values.0
-    }
-
-    #[inline(always)]
-    fn data<'a>(values: &Self::Values<'a>) -> ArraySlice<'a, T> {
-        ArraySlice::from(values.1)
-    }
-}
-
-impl<T: Scalar> ArrayInput<T> for RefViewPort<ArrayValue<T>> {
-    #[inline(always)]
-    fn notified(values: &Self::Values<'_>) -> bool {
-        values.0
-    }
-
-    #[inline(always)]
-    fn data<'a>(values: &Self::Values<'a>) -> ArraySlice<'a, T> {
-        *values.1
-    }
-}
-
-impl<T: Scalar> ArrayInput<T> for ViewPort<ArrayValue<T>> {
-    #[inline(always)]
-    fn notified(values: &Self::Values<'_>) -> bool {
-        values.0
-    }
-
-    #[inline(always)]
-    fn data<'a>(values: &Self::Values<'a>) -> ArraySlice<'a, T> {
-        values.1
-    }
+// SAFETY: `ArrayView<'a, T, N>` holds only `&'a [T]` plus plain `usize`s, so it
+// is covariant in `'a` — the only `ValueView` obligation.
+unsafe impl<T: Scalar, const N: usize> ValueView for ArrayValue<T, N> {
+    type View<'a> = ArrayView<'a, T, N>;
 }
 
 // ===========================================================================
@@ -162,8 +118,9 @@ impl<T: Scalar> ArrayInput<T> for ViewPort<ArrayValue<T>> {
 
 /// Maps an [`Interface`] payload tree (`(bool, value)` leaves) onto its
 /// values-only tree, dropping the notify flags. Lets closure operators
-/// ([`Map`](super::Map) / [`Apply`](super::Apply)) keep their legacy closure
-/// signatures, e.g. `Fn((&Array<f64>, &Array<f64>)) -> T` for a two-port input.
+/// ([`Map`](super::Map) / [`Apply`](super::Apply)) keep ergonomic closure
+/// signatures, e.g. `Fn((ArrayView<f64, 2>, ArrayView<f64, 2>))` for a two-port
+/// input.
 pub trait StripNotify: Interface {
     /// The values-only payload tree.
     type Plain<'a>: Copy;

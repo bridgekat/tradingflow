@@ -34,10 +34,10 @@
 //! * [`utils`] — [`Schema`].
 
 pub mod data;
-// [array-view-refactor] operators/scenario/sources are mid-migration to the
-// const-rank `ArrayView` currency; temporarily gated so the `data` foundation
-// lands + tests green on its own. Re-enabled file-by-file in stages 2–5.
-#[cfg(any())]
+// [array-view-refactor] scenario/sources are mid-migration to the const-rank
+// `ArrayView` currency; temporarily gated. `operators` is enabled but itself
+// gates its un-migrated submodules (see operators/mod.rs). Re-enabled in
+// stages 4–5.
 pub mod operators;
 #[cfg(any())]
 pub mod scenario;

@@ -1,16 +1,24 @@
-//! Element-wise / cross-tick / cross-sectional numeric operators, implemented
-//! directly on [`flowgraph::typed::Operator`]. The loop bodies are unchanged
-//! from the legacy port; the output buffer lives in the operator state and is
-//! sized/seeded on the `init` build call.
+//! Element-wise / cross-tick / cross-sectional numeric operators over the
+//! strided [`ArrayView`] currency. Each homes an output [`Array<T, N>`] in its
+//! state, reads the input through [`to_contiguous`](ArrayView::to_contiguous)
+//! (zero-copy when the view is contiguous, materialized only when strided), and
+//! lends a `ViewPort` view of the output.
+//!
+//! The build (`init`) call seeds the output with the faithful transform of the
+//! build value (not zeros — a fabricated finite observation would leak through
+//! carry readers) without notifying; the cross-tick operators ([`Diff`],
+//! [`PctChange`], [`ForwardFill`]) instead seed NaN and run no per-tick state
+//! update on the build call.
 
 use std::cmp::Ordering;
 use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use flowgraph::typed::{Operator, RefPort};
+use flowgraph::typed::{Operator, ViewPort};
 
-use crate::{Array, Scalar};
+use crate::operators::op::ArrayValue;
+use crate::{Array, ArrayView, Scalar};
 
 // ---------------------------------------------------------------------------
 // Clamp
@@ -18,62 +26,62 @@ use crate::{Array, Scalar};
 
 /// Element-wise clamp to `[lo, hi]`.
 #[derive(Clone)]
-pub struct Clamp<T: Scalar> {
+pub struct Clamp<T: Scalar, const N: usize> {
     lo: T,
     hi: T,
 }
 
-impl<T: Scalar + Float> Clamp<T> {
+impl<T: Scalar + Float, const N: usize> Clamp<T, N> {
     pub fn new(lo: T, hi: T) -> Self {
         Self { lo, hi }
     }
 }
 
 /// Runtime state for [`Clamp`]: the bounds plus the output buffer.
-pub struct ClampState<T: Scalar> {
+pub struct ClampState<T: Scalar, const N: usize> {
     lo: T,
     hi: T,
-    out: Array<T>,
+    out: Array<T, N>,
 }
 
-impl<T: Scalar + Float> Operator for Clamp<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = ClampState<T>;
+impl<T: Scalar + Float, const N: usize> Operator for Clamp<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = ClampState<T, N>;
 
-    fn init(self) -> ClampState<T> {
+    fn init(self) -> Self::State {
         ClampState {
             lo: self.lo,
             hi: self.hi,
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        state: &'b mut ClampState<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            state.out = Array::zeros(a.shape());
-            return (false, &state.out);
+            state.out = Array::zeros(x.extents());
         }
         let (lo, hi) = (state.lo, state.hi);
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let dst = state.out.as_mut_slice();
         for i in 0..dst.len() {
             dst[i] = lo.max(hi.min(src[i]));
         }
-        (true, &state.out)
+        (!init, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b ClampState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 }
 
@@ -83,59 +91,59 @@ impl<T: Scalar + Float> Operator for Clamp<T> {
 
 /// Element-wise NaN replacement with a constant.
 #[derive(Clone)]
-pub struct Fillna<T: Scalar> {
+pub struct Fillna<T: Scalar, const N: usize> {
     val: T,
 }
 
-impl<T: Scalar + Float> Fillna<T> {
+impl<T: Scalar + Float, const N: usize> Fillna<T, N> {
     pub fn new(val: T) -> Self {
         Self { val }
     }
 }
 
 /// Runtime state for [`Fillna`]: the fill value plus the output buffer.
-pub struct FillnaState<T: Scalar> {
+pub struct FillnaState<T: Scalar, const N: usize> {
     val: T,
-    out: Array<T>,
+    out: Array<T, N>,
 }
 
-impl<T: Scalar + Float> Operator for Fillna<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = FillnaState<T>;
+impl<T: Scalar + Float, const N: usize> Operator for Fillna<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = FillnaState<T, N>;
 
-    fn init(self) -> FillnaState<T> {
+    fn init(self) -> Self::State {
         FillnaState {
             val: self.val,
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        state: &'b mut FillnaState<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            state.out = Array::zeros(a.shape());
-            return (false, &state.out);
+            state.out = Array::zeros(x.extents());
         }
         let val = state.val;
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let dst = state.out.as_mut_slice();
         for i in 0..dst.len() {
             dst[i] = if src[i].is_nan() { val } else { src[i] };
         }
-        (true, &state.out)
+        (!init, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b FillnaState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 }
 
@@ -145,11 +153,11 @@ impl<T: Scalar + Float> Operator for Fillna<T> {
 
 /// Forward-fills NaN with the last valid observation (per element position).
 #[derive(Clone)]
-pub struct ForwardFill<T: Scalar + Float> {
+pub struct ForwardFill<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> ForwardFill<T> {
+impl<T: Scalar + Float, const N: usize> ForwardFill<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -157,50 +165,49 @@ impl<T: Scalar + Float> ForwardFill<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for ForwardFill<T> {
+impl<T: Scalar + Float, const N: usize> Default for ForwardFill<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Scalar + Float> Operator for ForwardFill<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
+impl<T: Scalar + Float, const N: usize> Operator for ForwardFill<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
     // The output buffer doubles as the fill memory: cells keep their last
     // non-NaN value across ticks because the state persists.
-    type State = Array<T>;
+    type State = Array<T, N>;
 
-    fn init(self) -> Array<T> {
-        Array::zeros(&[0])
+    fn init(self) -> Self::State {
+        Array::zeros([0; N])
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        out: &'b mut Array<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        out: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            let shape = a.shape();
-            let stride: usize = shape.iter().product();
-            *out = Array::from_vec(shape, vec![T::nan(); stride]);
-            return (false, &*out);
+            *out = Array::full(x.extents(), T::nan());
+            return (false, out.view());
         }
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let dst = out.as_mut_slice();
         for i in 0..dst.len() {
             if !src[i].is_nan() {
                 dst[i] = src[i];
             }
         }
-        (true, &*out)
+        (true, out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        out: &'b Array<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, out)
+        _: (bool, ArrayView<'a, T, N>),
+        out: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, out.view())
     }
 }
 
@@ -210,66 +217,65 @@ impl<T: Scalar + Float> Operator for ForwardFill<T> {
 
 /// Element-wise first difference across ticks: `input - input_prev`.
 #[derive(Clone)]
-pub struct Diff<T: Scalar + Float>(PhantomData<T>);
+pub struct Diff<T: Scalar + Float, const N: usize>(PhantomData<T>);
 
-impl<T: Scalar + Float> Diff<T> {
+impl<T: Scalar + Float, const N: usize> Diff<T, N> {
     pub fn new() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<T: Scalar + Float> Default for Diff<T> {
+impl<T: Scalar + Float, const N: usize> Default for Diff<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Runtime state for [`Diff`]: the previous input array (NaN-initialised)
-/// plus the output buffer.
-pub struct DiffState<T: Scalar + Float> {
+/// Runtime state for [`Diff`]: the previous input (NaN-initialised) plus the
+/// output buffer.
+pub struct DiffState<T: Scalar + Float, const N: usize> {
     prev: Vec<T>,
-    out: Array<T>,
+    out: Array<T, N>,
 }
 
-impl<T: Scalar + Float> Operator for Diff<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = DiffState<T>;
+impl<T: Scalar + Float, const N: usize> Operator for Diff<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = DiffState<T, N>;
 
-    fn init(self) -> DiffState<T> {
+    fn init(self) -> Self::State {
         DiffState {
             prev: Vec::new(),
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        state: &'b mut DiffState<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            let shape = a.shape();
-            let stride: usize = shape.iter().product();
-            state.prev = vec![T::nan(); stride];
-            state.out = Array::from_vec(shape, vec![T::nan(); stride]);
-            return (false, &state.out);
+            state.prev = vec![T::nan(); x.len()];
+            state.out = Array::full(x.extents(), T::nan());
+            return (false, state.out.view());
         }
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let dst = state.out.as_mut_slice();
         for i in 0..dst.len() {
             dst[i] = src[i] - state.prev[i];
         }
         state.prev.copy_from_slice(src);
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b DiffState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 }
 
@@ -279,67 +285,66 @@ impl<T: Scalar + Float> Operator for Diff<T> {
 
 /// Element-wise one-step linear return: `input / input_prev - 1`.
 #[derive(Clone)]
-pub struct PctChange<T: Scalar + Float>(PhantomData<T>);
+pub struct PctChange<T: Scalar + Float, const N: usize>(PhantomData<T>);
 
-impl<T: Scalar + Float> PctChange<T> {
+impl<T: Scalar + Float, const N: usize> PctChange<T, N> {
     pub fn new() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<T: Scalar + Float> Default for PctChange<T> {
+impl<T: Scalar + Float, const N: usize> Default for PctChange<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Runtime state for [`PctChange`]: the previous input array (NaN-initialised)
-/// plus the output buffer.
-pub struct PctChangeState<T: Scalar + Float> {
+/// Runtime state for [`PctChange`]: the previous input (NaN-initialised) plus
+/// the output buffer.
+pub struct PctChangeState<T: Scalar + Float, const N: usize> {
     prev: Vec<T>,
-    out: Array<T>,
+    out: Array<T, N>,
 }
 
-impl<T: Scalar + Float> Operator for PctChange<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = PctChangeState<T>;
+impl<T: Scalar + Float, const N: usize> Operator for PctChange<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = PctChangeState<T, N>;
 
-    fn init(self) -> PctChangeState<T> {
+    fn init(self) -> Self::State {
         PctChangeState {
             prev: Vec::new(),
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        state: &'b mut PctChangeState<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            let shape = a.shape();
-            let stride: usize = shape.iter().product();
-            state.prev = vec![T::nan(); stride];
-            state.out = Array::from_vec(shape, vec![T::nan(); stride]);
-            return (false, &state.out);
+            state.prev = vec![T::nan(); x.len()];
+            state.out = Array::full(x.extents(), T::nan());
+            return (false, state.out.view());
         }
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let dst = state.out.as_mut_slice();
         let one = T::one();
         for i in 0..dst.len() {
             dst[i] = src[i] / state.prev[i] - one;
         }
         state.prev.copy_from_slice(src);
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b PctChangeState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 }
 
@@ -347,13 +352,13 @@ impl<T: Scalar + Float> Operator for PctChange<T> {
 // Gaussianize (cross-sectional rank → Gaussian)
 // ---------------------------------------------------------------------------
 
-/// Cross-sectional rank-to-Gaussian transform on a 1-D array.
+/// Cross-sectional rank-to-Gaussian transform over the flat cross-section.
 #[derive(Clone)]
-pub struct Gaussianize<T: Scalar + Float> {
+pub struct Gaussianize<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> Gaussianize<T> {
+impl<T: Scalar + Float, const N: usize> Gaussianize<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -361,7 +366,7 @@ impl<T: Scalar + Float> Gaussianize<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for Gaussianize<T> {
+impl<T: Scalar + Float, const N: usize> Default for Gaussianize<T, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -369,35 +374,35 @@ impl<T: Scalar + Float> Default for Gaussianize<T> {
 
 /// Runtime state for [`Gaussianize`]: the index sort scratch buffer plus the
 /// output buffer.
-pub struct GaussianizeState<T: Scalar + Float> {
+pub struct GaussianizeState<T: Scalar + Float, const N: usize> {
     scratch: Vec<usize>,
-    out: Array<T>,
+    out: Array<T, N>,
 }
 
-impl<T: Scalar + Float> Operator for Gaussianize<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = GaussianizeState<T>;
+impl<T: Scalar + Float, const N: usize> Operator for Gaussianize<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = GaussianizeState<T, N>;
 
-    fn init(self) -> GaussianizeState<T> {
+    fn init(self) -> Self::State {
         GaussianizeState {
             scratch: Vec::new(),
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        state: &'b mut GaussianizeState<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            state.scratch = vec![0; a.as_slice().len()];
-            state.out = Array::zeros(a.shape());
-            return (false, &state.out);
+            state.scratch = vec![0; x.len()];
+            state.out = Array::zeros(x.extents());
         }
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let n = src.len();
 
         let mut n_valid = 0usize;
@@ -423,15 +428,15 @@ impl<T: Scalar + Float> Operator for Gaussianize<T> {
                 dst[state.scratch[rank]] = T::from(z).unwrap_or(nan);
             }
         }
-        (true, &state.out)
+        (!init, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b GaussianizeState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 }
 
@@ -490,13 +495,13 @@ fn norm_inv(p: f64) -> f64 {
 // Percentile (cross-sectional rank → percentile)
 // ---------------------------------------------------------------------------
 
-/// Cross-sectional rank-to-percentile transform on a 1-D array.
+/// Cross-sectional rank-to-percentile transform over the flat cross-section.
 #[derive(Clone)]
-pub struct Percentile<T: Scalar + Float> {
+pub struct Percentile<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> Percentile<T> {
+impl<T: Scalar + Float, const N: usize> Percentile<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -504,7 +509,7 @@ impl<T: Scalar + Float> Percentile<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for Percentile<T> {
+impl<T: Scalar + Float, const N: usize> Default for Percentile<T, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -512,35 +517,35 @@ impl<T: Scalar + Float> Default for Percentile<T> {
 
 /// Runtime state for [`Percentile`]: the index sort scratch buffer plus the
 /// output buffer.
-pub struct PercentileState<T: Scalar + Float> {
+pub struct PercentileState<T: Scalar + Float, const N: usize> {
     scratch: Vec<usize>,
-    out: Array<T>,
+    out: Array<T, N>,
 }
 
-impl<T: Scalar + Float> Operator for Percentile<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = PercentileState<T>;
+impl<T: Scalar + Float, const N: usize> Operator for Percentile<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = PercentileState<T, N>;
 
-    fn init(self) -> PercentileState<T> {
+    fn init(self) -> Self::State {
         PercentileState {
             scratch: Vec::new(),
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        state: &'b mut PercentileState<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            state.scratch = vec![0; a.as_slice().len()];
-            state.out = Array::zeros(a.shape());
-            return (false, &state.out);
+            state.scratch = vec![0; x.len()];
+            state.out = Array::zeros(x.extents());
         }
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let n = src.len();
 
         let mut n_valid = 0usize;
@@ -566,15 +571,15 @@ impl<T: Scalar + Float> Operator for Percentile<T> {
                 dst[state.scratch[rank]] = p;
             }
         }
-        (true, &state.out)
+        (!init, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b PercentileState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 }
 
@@ -584,11 +589,11 @@ impl<T: Scalar + Float> Operator for Percentile<T> {
 
 /// Cross-sectional z-score (population std; NaN if < 2 finite or σ = 0).
 #[derive(Clone)]
-pub struct Standardize<T: Scalar + Float> {
+pub struct Standardize<T: Scalar + Float, const N: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> Standardize<T> {
+impl<T: Scalar + Float, const N: usize> Standardize<T, N> {
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -596,33 +601,32 @@ impl<T: Scalar + Float> Standardize<T> {
     }
 }
 
-impl<T: Scalar + Float> Default for Standardize<T> {
+impl<T: Scalar + Float, const N: usize> Default for Standardize<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Scalar + Float> Operator for Standardize<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = Array<T>;
+impl<T: Scalar + Float, const N: usize> Operator for Standardize<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = Array<T, N>;
 
-    fn init(self) -> Array<T> {
-        Array::zeros(&[0])
+    fn init(self) -> Self::State {
+        Array::zeros([0; N])
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        out: &'b mut Array<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        out: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            *out = Array::zeros(a.shape());
-            return (false, &*out);
+            *out = Array::zeros(x.extents());
         }
-        let src = a.as_slice();
-        let dst = out.as_mut_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let n = src.len();
         let nan = T::nan();
 
@@ -636,11 +640,12 @@ impl<T: Scalar + Float> Operator for Standardize<T> {
             }
         }
 
+        let dst = out.as_mut_slice();
         if n_valid < 2 {
             for slot in dst.iter_mut() {
                 *slot = nan;
             }
-            return (true, &*out);
+            return (!init, out.view());
         }
 
         let mean = sum / T::from(n_valid).unwrap();
@@ -660,22 +665,22 @@ impl<T: Scalar + Float> Operator for Standardize<T> {
             for slot in dst.iter_mut() {
                 *slot = nan;
             }
-            return (true, &*out);
+            return (!init, out.view());
         }
 
         for i in 0..n {
             let v = src[i];
             dst[i] = if v.is_nan() { nan } else { (v - mean) / std };
         }
-        (true, &*out)
+        (!init, out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        out: &'b Array<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, out)
+        _: (bool, ArrayView<'a, T, N>),
+        out: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, out.view())
     }
 }
 
@@ -686,12 +691,12 @@ impl<T: Scalar + Float> Operator for Standardize<T> {
 /// Cross-sectional winsorization: clip non-NaN values to the `[p, 1-p]`
 /// quantile range of the cross-section.
 #[derive(Clone)]
-pub struct Winsorize<T: Scalar + Float> {
+pub struct Winsorize<T: Scalar + Float, const N: usize> {
     p: T,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Scalar + Float> Winsorize<T> {
+impl<T: Scalar + Float, const N: usize> Winsorize<T, N> {
     pub fn new(p: T) -> Self {
         assert!(p >= T::zero(), "Winsorize requires p >= 0");
         assert!(p < T::from(0.5).unwrap(), "Winsorize requires p < 0.5");
@@ -702,39 +707,39 @@ impl<T: Scalar + Float> Winsorize<T> {
     }
 }
 
-/// Runtime state for [`Winsorize`]: the quantile, a scratch sort buffer and
-/// the output buffer.
-pub struct WinsorizeState<T: Scalar + Float> {
+/// Runtime state for [`Winsorize`]: the quantile, a scratch sort buffer and the
+/// output buffer.
+pub struct WinsorizeState<T: Scalar + Float, const N: usize> {
     p: T,
     sort_buf: Vec<T>,
-    out: Array<T>,
+    out: Array<T, N>,
 }
 
-impl<T: Scalar + Float> Operator for Winsorize<T> {
-    type Inputs = RefPort<Array<T>>;
-    type Outputs = RefPort<Array<T>>;
-    type State = WinsorizeState<T>;
+impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = WinsorizeState<T, N>;
 
-    fn init(self) -> WinsorizeState<T> {
+    fn init(self) -> Self::State {
         WinsorizeState {
             p: self.p,
             sort_buf: Vec::new(),
-            out: Array::zeros(&[0]),
+            out: Array::zeros([0; N]),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, &'a Array<T>),
-        state: &'b mut WinsorizeState<T>,
+        (_, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Array<T>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            state.sort_buf = vec![T::zero(); a.as_slice().len()];
-            state.out = Array::zeros(a.shape());
-            return (false, &state.out);
+            state.sort_buf = vec![T::zero(); x.len()];
+            state.out = Array::zeros(x.extents());
         }
-        let src = a.as_slice();
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
         let n = src.len();
 
         let mut n_valid = 0usize;
@@ -753,7 +758,7 @@ impl<T: Scalar + Float> Operator for Winsorize<T> {
             for slot in dst.iter_mut() {
                 *slot = nan;
             }
-            return (true, &state.out);
+            return (!init, state.out.view());
         }
 
         let p_f = state.p.to_f64().unwrap_or(0.0);
@@ -773,14 +778,14 @@ impl<T: Scalar + Float> Operator for Winsorize<T> {
                 dst[i] = v;
             }
         }
-        (true, &state.out)
+        (!init, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Array<T>),
-        state: &'b WinsorizeState<T>,
-    ) -> (bool, &'a Array<T>) {
-        (false, &state.out)
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 }
