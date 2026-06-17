@@ -42,6 +42,12 @@ use tradingflow::{Array, ArraySlice, Instant, Retention, Series, utc_to_tai};
 /// amortized-compaction slack and any off-by-one at the window boundary.
 pub const RETAIN_MARGIN: usize = 8;
 
+// The decile-backtest harness uses the `flowops` `rank_bucket` portfolio (a
+// `PyClassOperator`), so it only compiles with the `python` feature. Its sole
+// consumer, the `factor_handbook` example, is itself `required-features =
+// ["python"]`; gating the module keeps the native examples (which pull in this
+// `common` module too) buildable without Python.
+#[cfg(feature = "python")]
 pub mod backtest;
 pub mod factors;
 pub mod pv_factors;
