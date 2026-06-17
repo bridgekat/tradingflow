@@ -330,6 +330,17 @@ impl Scenario {
         self.builder.push(crate::operators::DerefArrayView::<T, N>::new(), data)
     }
 
+    /// Materialize a by-value view handle back into an **owned** whole-array
+    /// `RefPort<Array<T, N>>` cell, via [`Own`](crate::operators::Own) — the
+    /// inverse of [`as_view`](Self::as_view), e.g. before a whole-array consumer
+    /// such as a `PyClassOperator`.
+    pub fn own<T: Scalar, const N: usize>(
+        &mut self,
+        data: Handle<ViewPort<ArrayValue<T, N>>>,
+    ) -> Handle<RefPort<Array<T, N>>> {
+        self.builder.push(crate::operators::Own::<T, N>::new(), data)
+    }
+
     /// Register a [`Record`] for a data stream, wiring the driver's [`Clock`]
     /// so each recorded row is stamped with the current event time. `Record`
     /// needs the clock, so it cannot go through [`add_operator`](Self::add_operator).

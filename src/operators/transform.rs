@@ -725,6 +725,62 @@ impl<T: Scalar, const N: usize> Segment for DerefArrayView<T, N> {
 }
 
 // ---------------------------------------------------------------------------
+// Own (strided view -> owned whole-array reference: the inverse of AsView)
+// ---------------------------------------------------------------------------
+
+/// Materialize a strided [`ArrayView`] back into an **owned** `Array<T, N>` homed
+/// in state, lent as a whole-array `RefPort<Array<T, N>>` — the inverse of
+/// [`AsView`], bridging the view currency back to the whole-array reference
+/// currency that whole-array consumers (e.g. [`Resample`](super::Resample), or a
+/// `PyClassOperator` under the `python` feature) take. Materializes its owned
+/// output each notifying tick (via [`ArrayView::to_array`]) and re-presents the
+/// last value un-notified, so the no-notify⟹output-unchanged contract holds.
+pub struct Own<T: Scalar, const N: usize> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> Own<T, N> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for Own<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Scalar, const N: usize> Operator for Own<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = RefPort<Array<T, N>>;
+    type State = Option<Array<T, N>>;
+
+    fn init(self) -> Self::State {
+        None
+    }
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        (notified, x): (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
+        init: bool,
+    ) -> (bool, &'a Array<T, N>) {
+        *state = Some(x.to_array());
+        (notified && !init, state.as_ref().unwrap())
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b Self::State,
+    ) -> (bool, &'a Array<T, N>) {
+        (false, state.as_ref().unwrap())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Lag (value from N steps ago in a Series)
 // ---------------------------------------------------------------------------
 

@@ -58,7 +58,7 @@ pub use num::{
 pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
 pub use structural::{Cast, Id, Resample, Where};
 pub use transform::{
-    Apply, ApplyInplace, AsView, DerefArrayView, Lag, Map, MapInplace, RefArrayView, Select,
+    Apply, ApplyInplace, AsView, DerefArrayView, Lag, Map, MapInplace, Own, RefArrayView, Select,
     SliceView,
 };
 pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync};

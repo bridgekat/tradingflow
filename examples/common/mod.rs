@@ -25,9 +25,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
-use std::marker::PhantomData;
 
-use flowgraph::typed::{Handle, Operator, RefPort, RefViewPort, Segment, ViewPort};
+use flowgraph::typed::{Handle, RefPort, RefViewPort, Segment, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
@@ -37,7 +36,7 @@ use tradingflow::operators::{
 };
 use tradingflow::{Scenario, Session};
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
-use tradingflow::{Array, ArrayView, Instant, Retention, Scalar, Series, utc_to_tai};
+use tradingflow::{Array, ArrayView, Instant, Retention, Series, utc_to_tai};
 
 /// Rows kept beyond a consumer's exact count look-back, absorbing the
 /// amortized-compaction slack and any off-by-one at the window boundary.
@@ -54,57 +53,10 @@ pub type Av1 = ViewPort<ArrayValue<f64, 1>>;
 /// A rank-1 cross-sectional array view handle (a `[num_stocks]` panel handle).
 pub type AvH = Handle<Av1>;
 
-/// Materialize a strided [`ArrayView`] into an **owned** `RefPort<Array<f64, N>>`
-/// cell — the bridge from the view currency back to the whole-array reference
-/// currency that [`Resample`]/[`tradingflow::operators::PyClassOperator`] consume.
-/// Reallocates its owned output each notifying tick (and re-presents the last
-/// value un-notified), so the no-notify⟹unchanged contract holds.
-pub struct Own<T: Scalar, const N: usize> {
-    _p: PhantomData<T>,
-}
-
-impl<T: Scalar, const N: usize> Own<T, N> {
-    pub fn new() -> Self {
-        Self { _p: PhantomData }
-    }
-}
-
-impl<T: Scalar, const N: usize> Default for Own<T, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Scalar, const N: usize> Operator for Own<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = RefPort<Array<T, N>>;
-    type State = Option<Array<T, N>>;
-
-    fn init(self) -> Self::State {
-        None
-    }
-
-    fn compute<'a, 'b: 'a>(
-        (notified, x): (bool, ArrayView<'a, T, N>),
-        state: &'b mut Self::State,
-        init: bool,
-    ) -> (bool, &'a Array<T, N>) {
-        *state = Some(x.to_array());
-        (notified && !init, state.as_ref().unwrap())
-    }
-
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, T, N>),
-        state: &'b Self::State,
-    ) -> (bool, &'a Array<T, N>) {
-        (false, state.as_ref().unwrap())
-    }
-}
-
-/// Materialize a view handle into a `RefPort<Array<f64, 1>>` handle (the common
-/// rank-1 [`Own`] bridge), e.g. before a Python operator.
+/// Materialize a view handle into an owned `RefPort<Array<f64, 1>>` cell (the
+/// common rank-1 case), via [`Scenario::own`] — e.g. before a Python operator.
 pub fn own(sc: &mut Scenario, h: AvH) -> Handle<RefPort<Array<f64, 1>>> {
-    sc.add_operator(Own::<f64, 1>::new(), h)
+    sc.own::<f64, 1>(h)
 }
 
 /// Bridge a by-value `ViewPort` handle into a by-reference `RefViewPort` handle
