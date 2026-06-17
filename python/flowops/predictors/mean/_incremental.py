@@ -7,11 +7,15 @@ independent of how far back history reaches.
 
 The design splits cleanly into a generic *harness* and a model *pool*:
 
-* :class:`IncrementalMeanPredictor` -- the harness. Each rebalance it folds the
-  trading days added since the last one into the pool (``add_samples``, keyed by a
-  monotone day index), drops the days that aged out of a rolling window
-  (``remove_samples``), and asks the pool to ``predict``. It owns only the day
-  counter, the ``target_offset`` pairing and the refit cadence.
+* :class:`IncrementalMeanPredictor` -- the harness. On **every tick** it folds
+  the trading days added since the last one into the pool (``add_samples``, keyed
+  by a monotone day index) and drops the days that aged out of a rolling window
+  (``remove_samples``); on **rebalance ticks** it then asks the pool to
+  ``predict``. Folding eagerly (not lazily on rebalances) keeps each fold to a
+  single freshly-formable pair, so the harness never reads further back than
+  ``target_offset`` -- the recorded feature/target series can be retention-bounded
+  to a handful of rows. It owns only the day counter, the ``target_offset``
+  pairing and the refit cadence.
 * :class:`RlsMeanPool` -- the model. It maintains the per-stock OLS/Ridge moments,
   the **active aggregate** Gram, and the active mask, and does the fit + predict.
 
@@ -271,8 +275,6 @@ class IncrementalMeanPredictor:
         produced: tuple[bool, ...],
     ) -> bool:
         universe_view, features_series_view, target_series_view = inputs
-        if not produced[0]:  # rebalance trigger
-            return False
 
         n_features = len(features_series_view)
         n_target = len(target_series_view)
@@ -286,17 +288,31 @@ class IncrementalMeanPredictor:
         pool = state.pool
         off = state.target_offset
 
-        # Fold in the days added since the last rebalance (each seen once).
+        # Fold in every newly-formable pair as soon as its forward target lands —
+        # **on every tick**, not only on rebalances. A pair is read once, folded
+        # into the pool, and discarded, so the harness never looks back further
+        # than `target_offset`: between consecutive ticks the panel grows by one
+        # cross-section, so this loop folds a single pair, and the recorded
+        # feature/target series need only retain the last ``target_offset + 1``
+        # rows. (Folding lazily on rebalances instead would force a full-history
+        # backfill of the first rebalance, defeating bounded retention.)
         for i in range(state.n_added, n_pair):
             pool.add_samples(i, features_series_view[i], target_series_view[i + off])
         state.n_added = n_pair
 
         # Rolling window: drop the days that aged out of [n_pair - window, n_pair).
+        # `remove_samples` re-reads from the pool's own retained copies, not the
+        # series, so the down-date is independent of the series retention.
         if state.window is not None:
             window_start = max(0, n_pair - state.window)
             for i in range(state.n_removed, window_start):
                 pool.remove_samples(i)
             state.n_removed = window_start
+
+        # Predict (and refit if due) only on rebalance ticks; other ticks just
+        # fold and carry the previous prediction (notify = False).
+        if not produced[0]:
+            return False
 
         refit_due = (state.rebalance_count % state.refit_every) == 0
         state.rebalance_count += 1

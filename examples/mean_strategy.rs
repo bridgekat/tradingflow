@@ -32,9 +32,11 @@ use tradingflow::operators::{
 };
 use tradingflow::Scenario;
 use tradingflow::sources::clock;
-use tradingflow::{Array, Series};
+use tradingflow::{Array, Retention, Series};
 
 const INITIAL_CASH: f64 = 1_000_000.0;
+/// Forward-return offset pairing `features[i]` with `target[i+1]`.
+const TARGET_OFFSET: i64 = 1;
 
 /// Map a trader's `(holdings_value, cash)` output to its scalar total value.
 fn total_value(sc: &mut Scenario, h: Handle<RefPort<Array<f64>>>) -> Handle<RefPort<Array<f64>>> {
@@ -76,14 +78,17 @@ async fn main() {
     let clk = sc.clock();
 
     // ---- Data + features ------------------------------------------------
+    // The incremental mean predictor folds one (feature, target) pair per tick,
+    // so the recorded panel / target only need the last `TARGET_OFFSET + 1` rows.
+    let feat_ret = Retention::count(TARGET_OFFSET as usize + common::RETAIN_MARGIN);
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let features = common::build_strategy_features(&mut sc, &st, window, fset);
+    let features = common::build_strategy_features(&mut sc, &st, window, fset, feat_ret);
     let num_features = features.names.len() as i64;
     eprintln!("feature set `{feature_set}`: {} features", num_features);
     let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
     let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
     let (_target, _target_series, demeaned_series) =
-        common::build_log_return_target(&mut sc, log_adj);
+        common::build_log_return_target(&mut sc, log_adj, feat_ret);
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
 
     // ---- Universe + predictor + portfolio -------------------------------
@@ -102,7 +107,7 @@ async fn main() {
                 .int("num_stocks", n_i)
                 .int("num_features", num_features)
                 .int("universe_size", idx)
-                .int("target_offset", 1)
+                .int("target_offset", TARGET_OFFSET)
                 .int("min_periods", 100)
                 .float("alpha", 1.0),
             vec![n],

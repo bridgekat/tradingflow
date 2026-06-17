@@ -28,12 +28,16 @@ use flowgraph::typed::{Handle, RefPort};
 use tradingflow::operators::{Benchmark, Log, Map, Multiply, PyClassOperator, PyParams};
 use tradingflow::Scenario;
 use tradingflow::sources::clock;
-use tradingflow::{Array, Series};
+use tradingflow::{Array, Retention, Series};
 
 const INITIAL_CASH: f64 = 1_000_000.0;
 const DELTAS: [f64; 8] = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0];
 /// Mode.MIN_MEAN_VARIANCE in `flowops.portfolios.mean_variance._modes`.
 const MODE_MIN_MEAN_VARIANCE: i64 = 3;
+/// Forward-return offset pairing `features[i]` with `target[i+1]`.
+const TARGET_OFFSET: i64 = 1;
+/// Shrinkage covariance training window (most-recent pairs fed to the fit).
+const COV_MAX_PERIODS: i64 = 200;
 
 fn total_value(sc: &mut Scenario, h: Handle<RefPort<Array<f64>>>) -> Handle<RefPort<Array<f64>>> {
     sc.add_operator(
@@ -112,14 +116,19 @@ async fn main() {
     let mut sc = Scenario::new();
     let clk = sc.clock();
 
+    // The shared panel / target feed the shrinkage covariance predictor too,
+    // which fits over its last `COV_MAX_PERIODS` pairs — so the records must
+    // retain that window (the mean predictor's single-pair need is subsumed).
+    let panel_ret =
+        Retention::count((COV_MAX_PERIODS + TARGET_OFFSET) as usize + common::RETAIN_MARGIN);
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let features = common::build_strategy_features(&mut sc, &st, window, fset);
+    let features = common::build_strategy_features(&mut sc, &st, window, fset, panel_ret);
     let num_features = features.names.len() as i64;
     eprintln!("feature set `{feature_set}`: {} features", num_features);
     let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
     let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
     let (_target, target_series, demeaned_series) =
-        common::build_log_return_target(&mut sc, log_adj);
+        common::build_log_return_target(&mut sc, log_adj, panel_ret);
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
 
     let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
@@ -138,7 +147,7 @@ async fn main() {
                 .int("num_stocks", n_i)
                 .int("num_features", num_features)
                 .int("universe_size", idx)
-                .int("target_offset", 1)
+                .int("target_offset", TARGET_OFFSET)
                 .int("min_periods", 100)
                 .float("alpha", 1.0),
             vec![n],
@@ -153,8 +162,8 @@ async fn main() {
                 .int("num_stocks", n_i)
                 .int("num_features", num_features)
                 .int("universe_size", idx)
-                .int("target_offset", 1)
-                .int("max_periods", 200)
+                .int("target_offset", TARGET_OFFSET)
+                .int("max_periods", COV_MAX_PERIODS)
                 .int("min_periods", 100)
                 .int("target", 1), // Target.COMMON_COVARIANCE
             vec![n, n],

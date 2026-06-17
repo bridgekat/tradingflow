@@ -23,13 +23,19 @@ use tradingflow::operators::{
     Diff, Divide, Lag, Log, Map, Max, Min, Multiply, Percentile, RollingMean, RollingSum,
     RollingVariance, Select, Sqrt, Stack, Subtract,
 };
-use tradingflow::{Array, Scenario, Series};
+use tradingflow::{Array, Retention, Scenario, Series};
 
 use super::factors::FactorSet;
-use super::Stacked;
+use super::{Stacked, RETAIN_MARGIN};
 
 type H = Handle<RefPort<Array<f64>>>;
 type Ser = Handle<RefPort<Series<f64>>>;
+
+/// Catalog records feed count-windowed reductions up to `Y` (one trading year)
+/// or the 250-day chip window; retain that deepest look-back plus the margin.
+fn rec(sc: &mut Scenario, h: H) -> Ser {
+    sc.add_record_retained(h, Retention::count(Y + RETAIN_MARGIN))
+}
 
 fn log(sc: &mut Scenario, h: H) -> H {
     sc.add_operator(Log::<f64>::new(), h)
@@ -70,10 +76,11 @@ fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
 /// `cov(x,y) = mean(xy) − mean(x)·mean(y)`, normalized by `σx·σy`. Records each
 /// input internally (some redundancy across factors, but keeps call sites simple).
 fn rcorr(sc: &mut Scenario, x: H, y: H, n: usize) -> H {
-    let xs = sc.add_record(x);
-    let ys = sc.add_record(y);
+    let win = Retention::count(n + RETAIN_MARGIN);
+    let xs = sc.add_record_retained(x, win);
+    let ys = sc.add_record_retained(y, win);
     let xy = mul(sc, x, y);
-    let xys = sc.add_record(xy);
+    let xys = sc.add_record_retained(xy, win);
     let mx = rmean(sc, xs, n);
     let my = rmean(sc, ys, n);
     let mxy = rmean(sc, xys, n);
@@ -405,26 +412,26 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 
     // --- daily building blocks (recorded on the price pulse) ---
     let lc = log(sc, st.adjusted_close); // adjusted log close
-    let lc_s = sc.add_record(lc);
-    let adjclose_s = sc.add_record(st.adjusted_close);
+    let lc_s = rec(sc, lc);
+    let adjclose_s = rec(sc, st.adjusted_close);
     let lo = log(sc, st.open); // raw log open
     let lcr = log(sc, st.close); // raw log close
-    let lcr_s = sc.add_record(lcr);
+    let lcr_s = rec(sc, lcr);
 
     let daily_ret = sc.add_operator(Diff::<f64>::new(), lc); // adjusted close-to-close log return
-    let dret_s = sc.add_record(daily_ret);
+    let dret_s = rec(sc, daily_ret);
     let intraday = sub(sc, lcr, lo); // log(close/open)
-    let intra_s = sc.add_record(intraday);
+    let intra_s = rec(sc, intraday);
     let prev_lcr = lag(sc, lcr_s, 1);
     let overnight = sub(sc, lo, prev_lcr); // log(open / prev close)
-    let over_s = sc.add_record(overnight);
+    let over_s = rec(sc, overnight);
 
     let abs_ret = emap(sc, daily_ret, f64::abs);
-    let absret_s = sc.add_record(abs_ret);
+    let absret_s = rec(sc, abs_ret);
     let sign_ret = emap(sc, daily_ret, |x| if x.is_finite() { x.signum() } else { f64::NAN });
-    let sign_s = sc.add_record(sign_ret);
+    let sign_s = rec(sc, sign_ret);
     let xs_rank = sc.add_operator(Percentile::<f64>::new(), daily_ret); // daily cross-sectional rank
-    let xsr_s = sc.add_record(xs_rank);
+    let xsr_s = rec(sc, xs_rank);
 
     // shared rolling sums (reused by the _M / _A pairs)
     let rs_intra_m = rsum(sc, intra_s, M);
@@ -475,23 +482,23 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
             f64::NAN
         }
     });
-    let masked_s = sc.add_record(masked_ret);
+    let masked_s = rec(sc, masked_ret);
     add("mmt_off_limit_M", rsum(sc, masked_s, M));
     add("mmt_off_limit_A", rsum(sc, masked_s, Y));
 
     // 时序 rank 动量: daily time-series percentile of the log price within 1 year,
     // averaged over 20 days. 最高价距今天数: ticks since the 1-year high.
     let trank = window_reduce(sc, lc_s, Y, ts_rank);
-    let trank_s = sc.add_record(trank);
+    let trank_s = rec(sc, trank);
     add("mmt_time_rank_M", rmean(sc, trank_s, 20));
     add("mmt_highest_days_A", window_reduce(sc, adjclose_s, Y, argmax_age));
 
     // ============ 流动性 (liquidity) — 图表28 ============
     let turnover = div(sc, st.volume, st.circ_shares); // daily turnover 换手率
-    let turnover_s = sc.add_record(turnover);
-    let amount_s = sc.add_record(st.amount);
+    let turnover_s = rec(sc, turnover);
+    let amount_s = rec(sc, st.amount);
     let amihud = div(sc, abs_ret, st.amount); // |日收益率| / 成交额
-    let amihud_s = sc.add_record(amihud);
+    let amihud_s = rec(sc, amihud);
     // 日K线最短路径 = 2*(最高-最低) − |开盘−收盘|; shortcut 非流动 = 路径 / 成交额.
     let hl = sub(sc, st.high, st.low);
     let two_hl = emap(sc, hl, |x| 2.0 * x);
@@ -499,7 +506,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let abs_oc = emap(sc, oc, f64::abs);
     let path = sub(sc, two_hl, abs_oc);
     let shortcut = div(sc, path, st.amount);
-    let shortcut_s = sc.add_record(shortcut);
+    let shortcut_s = rec(sc, shortcut);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
         add(&format!("liq_turn_avg_{tag}"), rmean(sc, turnover_s, w)); // 换手率均值
@@ -517,7 +524,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // sync = corr(turn_t, x_t); post (量领先) = corr(turn_t, x_{t+1}) = corr(lag(turn,1), x);
     // prior (价领先) = corr(turn_t, x_{t-1}) = corr(turn, lag(x,1)).
     let turnover_change = sc.add_operator(Diff::<f64>::new(), turnover);
-    let turnchg_s = sc.add_record(turnover_change);
+    let turnchg_s = rec(sc, turnover_change);
     let lag_turn1 = lag(sc, turnover_s, 1);
     let lag_turnd1 = lag(sc, turnchg_s, 1);
     let lag_price1 = lag(sc, adjclose_s, 1);
@@ -536,26 +543,26 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // ============ 波动率 (volatility) — 图表16 ============
     // Downside / upside daily returns (positive/negative clamped to 0).
     let downside = emap(sc, daily_ret, |x| if x.is_finite() { x.min(0.0) } else { f64::NAN });
-    let downside_s = sc.add_record(downside);
+    let downside_s = rec(sc, downside);
     let upside = emap(sc, daily_ret, |x| if x.is_finite() { x.max(0.0) } else { f64::NAN });
-    let upside_s = sc.add_record(upside);
+    let upside_s = rec(sc, upside);
     let highlow = div(sc, st.high, st.low); // 日内振幅 = 最高/最低
-    let highlow_s = sc.add_record(highlow);
+    let highlow_s = rec(sc, highlow);
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
     let max_oc = sc.add_operator(Max::<f64>::new(), (st.open, st.close));
     let min_oc = sc.add_operator(Min::<f64>::new(), (st.open, st.close));
     let up_num = sub(sc, st.high, max_oc); // 上影线 = 最高 − max(开,收)
     let upshadow = div(sc, up_num, st.low);
-    let upshadow_s = sc.add_record(upshadow);
+    let upshadow_s = rec(sc, upshadow);
     let down_num = sub(sc, min_oc, st.low); // 下影线 = min(开,收) − 最低
     let downshadow = div(sc, down_num, st.low);
-    let downshadow_s = sc.add_record(downshadow);
+    let downshadow_s = rec(sc, downshadow);
     let wup_num = sub(sc, st.high, st.close); // 威廉上影线 = 最高 − 收
     let w_upshadow = div(sc, wup_num, st.low);
-    let w_upshadow_s = sc.add_record(w_upshadow);
+    let w_upshadow_s = rec(sc, w_upshadow);
     let wdown_num = sub(sc, st.close, st.low); // 威廉下影线 = 收 − 最低
     let w_downshadow = div(sc, wdown_num, st.low);
-    let w_downshadow_s = sc.add_record(w_downshadow);
+    let w_downshadow_s = rec(sc, w_downshadow);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
         add(&format!("vol_std_{tag}"), rstd(sc, dret_s, w)); // 波动率
@@ -576,14 +583,14 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // 振幅调整动量 (mmt_range): pair amplitude (high/low) with the daily return as a
     // (N,2) series and reduce each window via `range_mom`.
     let amp_ret = sc.add_operator(Stack::<f64>::new(1), &[highlow, daily_ret][..]); // (N, 2)
-    let amp_ret_s = sc.add_record(amp_ret);
+    let amp_ret_s = rec(sc, amp_ret);
     add("mmt_range_M", window_reduce2(sc, amp_ret_s, M, range_mom));
     add("mmt_range_A", window_reduce2(sc, amp_ret_s, Y, range_mom));
 
     // ============ 筹码分布 (chip distribution) — 图表52 ============
     // (adjusted close, turnover) -> ChipDist -> (N, 10); column-select each factor.
     let chip_in = sc.add_operator(Stack::<f64>::new(1), &[st.adjusted_close, turnover][..]); // (N, 2)
-    let chip_in_s = sc.add_record(chip_in);
+    let chip_in_s = rec(sc, chip_in);
     let chip = sc.add_operator(ChipDist { window: 250 }, chip_in_s); // (N, 10)
     for (c, name) in [
         "distribution_ret_avg",

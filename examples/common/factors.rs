@@ -37,11 +37,15 @@ use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{Add, Diff, Divide, Lag, Log, Multiply, Negate, Record, Resample, RollingMean, Subtract};
-use tradingflow::{Array, Scenario};
+use tradingflow::{Array, Retention, Scenario};
 
-use super::Stacked;
+use super::{Stacked, RETAIN_MARGIN};
 
 type H = Handle<RefPort<Array<f64>>>;
+
+/// Trading days a 变动/同比 level is lagged (the 次新 ~1-year idiom); its recorded
+/// series only needs this look-back (plus the compaction margin) retained.
+const LAG_YEAR: usize = 244;
 
 /// Resample `data` onto a daily-`Array` clock pulse. Aliased so the two-comma
 /// turbofish does not appear at a `segment!` arrow call site (the macro's
@@ -67,7 +71,8 @@ pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> H {
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
 /// annualized (effective-date-aligned) series.
 fn ttm(sc: &mut Scenario, h: H) -> H {
-    let series = sc.add_record(h);
+    // 365-day rolling mean → retain a 365-day (+margin) time window.
+    let series = sc.add_record_retained(h, Retention::duration(Duration::from_days(380)));
     sc.add_operator(RollingMean::<f64>::time_delta(Duration::from_days(365)), series)
 }
 
@@ -91,11 +96,12 @@ fn neg(sc: &mut Scenario, h: H) -> H {
 /// The 次新 listing filter excludes names without a full prior year.
 fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
     let clk = sc.clock();
+    let ret = Retention::count(LAG_YEAR + RETAIN_MARGIN);
     sc.add_operator(
         flowgraph::segment!(|adj: RefPort<Array<f64>>, lvl: RefPort<Array<f64>>| -> RefPort<Array<f64>> {
             let daily = (adj, lvl) => ResampleDaily::new();
-            let series = daily => Record::<f64>::new(clk);
-            let prev = series => Lag::<f64>::new(244, f64::NAN);
+            let series = daily => Record::<f64>::with_retention(clk, ret);
+            let prev = series => Lag::<f64>::new(LAG_YEAR, f64::NAN);
             let d = (daily, prev) => Subtract::<f64>::new();
             d
         }),
@@ -107,11 +113,12 @@ fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
 /// resample→record→lag chain as [`delta`], with the extra `Divide`.
 fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
     let clk = sc.clock();
+    let ret = Retention::count(LAG_YEAR + RETAIN_MARGIN);
     sc.add_operator(
         flowgraph::segment!(|adj: RefPort<Array<f64>>, lvl: RefPort<Array<f64>>| -> RefPort<Array<f64>> {
             let daily = (adj, lvl) => ResampleDaily::new();
-            let series = daily => Record::<f64>::new(clk);
-            let prev = series => Lag::<f64>::new(244, f64::NAN);
+            let series = daily => Record::<f64>::with_retention(clk, ret);
+            let prev = series => Lag::<f64>::new(LAG_YEAR, f64::NAN);
             let diff = (daily, prev) => Subtract::<f64>::new();
             let g = (diff, prev) => Divide::<f64>::new();
             g
@@ -234,7 +241,7 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // IC (short-term reversal); a contemporaneous (non-lagged) wiring bug would
     // instead make this strongly POSITIVE (the factor overlapping the return).
     let log_adj = log(sc, st.adjusted_close);
-    let log_adj_series = sc.add_record(log_adj);
+    let log_adj_series = sc.add_record_retained(log_adj, Retention::count(21 + RETAIN_MARGIN));
     let lag_1m = sc.add_operator(Lag::<f64>::new(21, f64::NAN), log_adj_series);
     add("REV_1M", sc.add_operator(Subtract::<f64>::new(), (log_adj, lag_1m)));
 

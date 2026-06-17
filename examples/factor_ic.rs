@@ -50,10 +50,11 @@ async fn main() {
     let clk = sc.clock();
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let features = common::build_features(&mut sc, &st, window);
+    let features = common::build_features(&mut sc, &st, window, tradingflow::Retention::UNBOUNDED);
     let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
     let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
-    let (target, _target_series, _demeaned) = common::build_log_return_target(&mut sc, log_adj);
+    let (target, _target_series, _demeaned) =
+        common::build_log_return_target(&mut sc, log_adj, tradingflow::Retention::UNBOUNDED);
 
     let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
     let universe =

@@ -171,7 +171,9 @@ impl NativeSeriesView {
         unsafe { &*self.ptr }.shape().to_vec()
     }
 
-    /// Values in `[start, end)` as a `(end-start, *element_shape)` NumPy array.
+    /// Values in logical `[start, end)` as a `(end-start, *element_shape)` NumPy
+    /// array. Indices are clamped to the retained window `[base, len)`, so for a
+    /// retention-bounded series the default `values()` returns the kept tail.
     #[pyo3(signature = (start=0, end=None))]
     fn values<'py>(
         &self,
@@ -181,10 +183,10 @@ impl NativeSeriesView {
     ) -> Bound<'py, PyArrayDyn<f64>> {
         let s = unsafe { &*self.ptr };
         let n = s.len();
-        let start = start.min(n);
-        let end = end.unwrap_or(n).min(n).max(start);
-        let stride = s.stride();
-        let flat = &s.values()[start * stride..end * stride];
+        let base = s.base();
+        let start = start.clamp(base, n);
+        let end = end.unwrap_or(n).clamp(start, n);
+        let flat = s.values_range(start, end);
         let mut full = vec![end - start];
         full.extend_from_slice(s.shape());
         let nd = ArrayD::from_shape_vec(IxDyn(&full), flat.to_vec()).expect("series shape mismatch");
@@ -199,7 +201,8 @@ impl NativeSeriesView {
         Ok(PyArrayDyn::from_owned_array(py, nd))
     }
 
-    /// Element at positional index `i` (supports negative indexing).
+    /// Element at logical index `i` (supports negative indexing). Raises
+    /// `IndexError` if the index has been dropped by the retention bound.
     fn at<'py>(&self, py: Python<'py>, i: isize) -> PyResult<Bound<'py, PyArrayDyn<f64>>> {
         let s = unsafe { &*self.ptr };
         let n = s.len() as isize;
@@ -207,19 +210,31 @@ impl NativeSeriesView {
         if idx < 0 || idx >= n {
             return Err(PyIndexError::new_err(format!("index {i} out of bounds (len {n})")));
         }
-        let elem = s.at(idx as usize);
+        let idx = idx as usize;
+        if idx < s.base() {
+            return Err(PyIndexError::new_err(format!(
+                "index {i} evicted from retained window [{}, {n})",
+                s.base()
+            )));
+        }
+        let elem = s.at(idx);
         let nd = ArrayD::from_shape_vec(IxDyn(s.shape()), elem.to_vec()).expect("series shape mismatch");
         Ok(PyArrayDyn::from_owned_array(py, nd))
     }
 
-    /// Timestamps in `[start, end)` as an int64 (TAI ns) NumPy array.
+    /// Timestamps in logical `[start, end)` as an int64 (TAI ns) NumPy array.
+    /// Indices are clamped to the retained window `[base, len)`.
     #[pyo3(signature = (start=0, end=None))]
     fn slice<'py>(&self, py: Python<'py>, start: usize, end: Option<usize>) -> Bound<'py, PyArray1<i64>> {
         let s = unsafe { &*self.ptr };
         let n = s.len();
-        let start = start.min(n);
-        let end = end.unwrap_or(n).min(n).max(start);
-        let ts: Vec<i64> = s.timestamps()[start..end].iter().map(|t| t.as_nanos()).collect();
+        let base = s.base();
+        let start = start.clamp(base, n);
+        let end = end.unwrap_or(n).clamp(start, n);
+        let ts: Vec<i64> = s.timestamps()[start - base..end - base]
+            .iter()
+            .map(|t| t.as_nanos())
+            .collect();
         PyArray1::from_slice(py, &ts)
     }
 

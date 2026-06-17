@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use flowgraph::typed::{Interface, Operator, RefPort, RefViewPort, Segment, ViewPort};
 
 use super::op::{ArrayValue, Clock};
-use crate::{Array, ArraySlice, Scalar, Series};
+use crate::{Array, ArraySlice, Retention, Scalar, Series};
 
 // ---------------------------------------------------------------------------
 // Filter — whole-array gate by predicate (the cutoff operator).
@@ -147,23 +147,40 @@ where
 /// event time read from the [`Clock`] in its state. The one operator that needs
 /// time — constructed via [`Scenario::add_record`](super::Scenario::add_record),
 /// which supplies the driver's clock.
+///
+/// An optional [`Retention`] bound (via [`with_retention`](Self::with_retention)
+/// / [`Scenario::add_record_retained`](super::Scenario::add_record_retained))
+/// caps the recorded history: the recorded `Series` drops its oldest rows once
+/// they fall outside the bound, keeping memory bounded for records whose
+/// consumers only look back a fixed window. The default is unbounded (full
+/// history), matching the original behaviour.
 pub struct Record<T: Scalar> {
     clock: Clock,
+    retention: Retention,
     _p: PhantomData<T>,
 }
 
 impl<T: Scalar> Record<T> {
+    /// An unbounded record (retains full history).
     pub fn new(clock: Clock) -> Self {
+        Self::with_retention(clock, Retention::UNBOUNDED)
+    }
+
+    /// A record whose `Series` keeps only the history within `retention`.
+    pub fn with_retention(clock: Clock, retention: Retention) -> Self {
         Self {
             clock,
+            retention,
             _p: PhantomData,
         }
     }
 }
 
-/// Runtime state for [`Record`]: the clock plus the recorded series.
+/// Runtime state for [`Record`]: the clock, the retention bound, plus the
+/// recorded series.
 pub struct RecordState<T: Scalar> {
     clock: Clock,
+    retention: Retention,
     out: Series<T>,
 }
 
@@ -175,6 +192,7 @@ impl<T: Scalar> Operator for Record<T> {
     fn init(self) -> RecordState<T> {
         RecordState {
             clock: self.clock,
+            retention: self.retention,
             out: Series::new(&[]),
         }
     }
@@ -185,7 +203,7 @@ impl<T: Scalar> Operator for Record<T> {
         init: bool,
     ) -> (bool, &'a Series<T>) {
         if init {
-            state.out = Series::new(x.shape());
+            state.out = Series::with_retention(x.shape(), state.retention);
             return (false, &state.out);
         }
         state.out.push(state.clock.get(), x.as_slice());

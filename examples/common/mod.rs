@@ -36,7 +36,11 @@ use tradingflow::operators::{
 };
 use tradingflow::{Scenario, Session};
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
-use tradingflow::{Array, ArraySlice, Instant, Series, utc_to_tai};
+use tradingflow::{Array, ArraySlice, Instant, Retention, Series, utc_to_tai};
+
+/// Rows kept beyond a consumer's exact count look-back, absorbing the
+/// amortized-compaction slack and any off-by-one at the window boundary.
+pub const RETAIN_MARGIN: usize = 8;
 
 pub mod backtest;
 pub mod factors;
@@ -627,13 +631,23 @@ pub struct Features {
 
 /// Build the canonical factor panel (3 percentile-ranked fundamentals plus
 /// momentum / volatility / turnover-MA / volume-ratio), recorded on the daily
-/// trading pulse.
-pub fn build_features(sc: &mut Scenario, st: &Stacked, window: usize) -> Features {
+/// trading pulse. The returned panel `Series` is recorded under
+/// `feature_retention` (pass [`Retention::UNBOUNDED`] when a consumer needs full
+/// history); the internal rolling-input records are bounded to their own windows.
+pub fn build_features(
+    sc: &mut Scenario,
+    st: &Stacked,
+    window: usize,
+    feature_retention: Retention,
+) -> Features {
+    let win_ret = Retention::count(window + RETAIN_MARGIN);
 
     // Fundamentals.
     let market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.total_shares));
     let bp = sc.add_operator(Divide::<f64>::new(), (st.parent_equity, market_cap));
-    let net_profit_series = sc.add_record(st.net_profit);
+    // TTM net profit: a 365-day rolling mean → retain a 365-day (+margin) window.
+    let net_profit_series =
+        sc.add_record_retained(st.net_profit, Retention::duration(Duration::from_days(380)));
     let net_profit_ttm = sc.add_operator(
         RollingMean::<f64>::time_delta(Duration::from_days(365)),
         net_profit_series,
@@ -642,7 +656,7 @@ pub fn build_features(sc: &mut Scenario, st: &Stacked, window: usize) -> Feature
 
     // Momentum: window-period log return of adjusted close.
     let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
-    let log_adj_series = sc.add_record(log_adj);
+    let log_adj_series = sc.add_record_retained(log_adj, win_ret);
     let log_adj_lag = sc.add_operator(Lag::<f64>::new(window, f64::NAN), log_adj_series);
     let momentum = sc.add_operator(Subtract::<f64>::new(), (log_adj, log_adj_lag));
 
@@ -652,11 +666,11 @@ pub fn build_features(sc: &mut Scenario, st: &Stacked, window: usize) -> Feature
 
     // Turnover MA.
     let turnover = sc.add_operator(Divide::<f64>::new(), (st.volume, st.circ_shares));
-    let turnover_series = sc.add_record(turnover);
+    let turnover_series = sc.add_record_retained(turnover, win_ret);
     let turnover_ma = sc.add_operator(RollingMean::<f64>::count(window), turnover_series);
 
     // Volume ratio.
-    let volume_series = sc.add_record(st.volume);
+    let volume_series = sc.add_record_retained(st.volume, win_ret);
     let volume_ma = sc.add_operator(RollingMean::<f64>::count(window), volume_series);
     let volume_ratio = sc.add_operator(Divide::<f64>::new(), (st.volume, volume_ma));
 
@@ -686,7 +700,7 @@ pub fn build_features(sc: &mut Scenario, st: &Stacked, window: usize) -> Feature
         Resample::<Array<f64>, Array<f64>>::new(),
         (st.adjusted_close, stacked_features),
     );
-    let series = sc.add_record(sampled);
+    let series = sc.add_record_retained(sampled, feature_retention);
 
     Features {
         names,
@@ -751,7 +765,12 @@ const CICC_SUBSET: &[&str] = &[
 /// stacked into `(N, F)`, resampled onto the daily pulse, and recorded. `set`
 /// must be [`FeatureSet::Cicc`] or [`FeatureSet::All`] (use [`build_features`]
 /// for [`FeatureSet::Canonical`]).
-pub fn build_factor_features(sc: &mut Scenario, st: &Stacked, set: FeatureSet) -> Features {
+pub fn build_factor_features(
+    sc: &mut Scenario,
+    st: &Stacked,
+    set: FeatureSet,
+    feature_retention: Retention,
+) -> Features {
     // Both catalogs (fundamental + price-volume); select columns by name.
     let fund = factors::build_factor_catalog(sc, st);
     let pv = pv_factors::build_pv_catalog(sc, st);
@@ -782,13 +801,14 @@ pub fn build_factor_features(sc: &mut Scenario, st: &Stacked, set: FeatureSet) -
         handles.push(sc.add_operator(Percentile::<f64>::new(), all_raw[i]));
     }
 
-    // Stack into (N, F), resample onto the daily close pulse, and record.
+    // Stack into (N, F), resample onto the daily close pulse, and record under
+    // the caller's retention (the predictor only reads a short trailing window).
     let stacked_features = sc.add_operator(Stack::<f64>::new(1), &handles[..]);
     let sampled = sc.add_operator(
         Resample::<Array<f64>, Array<f64>>::new(),
         (st.adjusted_close, stacked_features),
     );
-    let series = sc.add_record(sampled);
+    let series = sc.add_record_retained(sampled, feature_retention);
 
     Features { names, handles, series }
 }
@@ -801,10 +821,11 @@ pub fn build_strategy_features(
     st: &Stacked,
     window: usize,
     set: FeatureSet,
+    feature_retention: Retention,
 ) -> Features {
     match set {
-        FeatureSet::Canonical => build_features(sc, st, window),
-        _ => build_factor_features(sc, st, set),
+        FeatureSet::Canonical => build_features(sc, st, window, feature_retention),
+        _ => build_factor_features(sc, st, set, feature_retention),
     }
 }
 
@@ -860,17 +881,22 @@ pub fn build_cap_weighted_universe(
 
 /// Winsorized daily log returns: `(target, target_series, demeaned_series)`.
 /// The covariance predictor consumes `target_series` (raw); the mean predictor
-/// consumes `demeaned_series` (cross-sectionally demeaned).
+/// consumes `demeaned_series` (cross-sectionally demeaned). Both series are
+/// recorded under `target_retention` — size it to the deepest consumer
+/// look-back (the incremental mean predictor reads a single trailing pair, the
+/// shrinkage covariance reads its `max_periods` window); pass
+/// [`Retention::UNBOUNDED`] when full history is needed.
 pub fn build_log_return_target(
     sc: &mut Scenario,
     log_adj: Handle<RefPort<Array<f64>>>,
+    target_retention: Retention,
 ) -> (Handle<RefPort<Array<f64>>>, Handle<RefPort<Series<f64>>>, Handle<RefPort<Series<f64>>>) {
     use tradingflow::operators::Diff;
     let log_returns = sc.add_operator(Diff::<f64>::new(), log_adj);
     let target = sc.add_operator(Winsorize::<f64>::new(0.01), log_returns);
-    let target_series = sc.add_record(target);
+    let target_series = sc.add_record_retained(target, target_retention);
     let demeaned = sc.add_operator(Map::new(demean), target);
-    let demeaned_series = sc.add_record(demeaned);
+    let demeaned_series = sc.add_record_retained(demeaned, target_retention);
     (target, target_series, demeaned_series)
 }
 
@@ -901,7 +927,8 @@ pub fn build_price_limits(
     close: Handle<RefPort<Array<f64>>>,
     limit_pct: f64,
 ) -> (Handle<RefPort<Array<f64>>>, Handle<RefPort<Array<f64>>>) {
-    let close_series = sc.add_record(close);
+    // Only a 1-step lag reads this record; keep a tiny trailing window.
+    let close_series = sc.add_record_retained(close, Retention::count(1 + RETAIN_MARGIN));
     let prev_close = sc.add_operator(Lag::<f64>::new(1, f64::NAN), close_series);
     let up = limit_pct;
     let dn = limit_pct;

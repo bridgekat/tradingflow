@@ -299,6 +299,20 @@ impl Scenario {
         self.builder.push(Record::new(self.clock.clone()), data)
     }
 
+    /// Register a [`Record`] whose recorded `Series` keeps only the history
+    /// within `retention`, dropping older rows to bound memory. Use for records
+    /// consumed only within a fixed look-back window (rolling / lag operators, a
+    /// predictor's training tail); the bound must cover every consumer's deepest
+    /// look-back. Otherwise identical to [`add_record`](Self::add_record).
+    pub fn add_record_retained<T: Scalar>(
+        &mut self,
+        data: Handle<RefPort<Array<T>>>,
+        retention: crate::Retention,
+    ) -> Handle<RefPort<Series<T>>> {
+        self.builder
+            .push(Record::with_retention(self.clock.clone(), retention), data)
+    }
+
     /// The driver's [`Clock`]. For building custom time-reading operators (held
     /// in their own state, like [`Record`]); ordinary operators are clock-free.
     pub fn clock(&self) -> Clock {

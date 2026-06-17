@@ -5,8 +5,11 @@
 //! `Accumulator: Send + Sync` bound holds because the accumulator lives in the
 //! operator State, which is a `Send + Sync` cell.
 //!
-//! Note: rolling reads event time from `series.timestamps()`, NOT the threaded
-//! `Instant`, so the time-delta window needs no clock wiring.
+//! Note: rolling reads event time from the series (`timestamp_at`), NOT the
+//! threaded `Instant`, so the time-delta window needs no clock wiring. It
+//! addresses the series by logical index (`at` / `timestamp_at`), so a
+//! retention-bounded record works unchanged as long as the bound covers the
+//! window (the sliding `start` never drops below the series `base`).
 
 use std::marker::PhantomData;
 
@@ -141,9 +144,9 @@ impl<A: Accumulator> Operator for Rolling<A> {
                 }
             }
             Window::TimeDelta(w) => {
-                let current_ts = series.timestamps()[len - 1];
+                let current_ts = series.timestamp_at(len - 1);
                 let cutoff = current_ts - w;
-                while state.start < len && series.timestamps()[state.start] < cutoff {
+                while state.start < len && series.timestamp_at(state.start) < cutoff {
                     state.accumulator.remove(series.at(state.start));
                     state.start += 1;
                     state.count -= 1;

@@ -1,20 +1,117 @@
-//! Time series with append-only semantics and temporal lookups.
+//! Time series with append-only semantics, bounded retention, and temporal
+//! lookups.
+//!
+//! # Logical vs physical indexing
+//!
+//! A series addresses its elements by **logical index** — the absolute position
+//! since the series was created (`0` is the first element ever pushed). [`len`]
+//! is the logical length: the total number of elements pushed, regardless of how
+//! many are still physically retained.
+//!
+//! A series may carry a [`Retention`] bound (a maximum element count and/or a
+//! maximum time span). When set, [`push`] drops the oldest elements from the
+//! front so that physical storage stays bounded. A [`base`] offset records how
+//! many leading elements have been dropped; positional accessors map a logical
+//! index `i` to the physical slot `i - base`. The default retention is
+//! **unbounded** — nothing is ever dropped, `base` stays `0`, and logical and
+//! physical indices coincide (so all existing behaviour is unchanged).
+//!
+//! Positional accessors ([`at`], [`values_range`], [`timestamp_at`]) take logical
+//! indices and panic if asked for an element that has been evicted (`i < base`).
+//! The bulk accessors that return the whole backing buffer ([`values`],
+//! [`timestamps`], [`view`], [`tail`]) return only the **retained window**
+//! `[base, len)`; for an unbounded series that is the full history.
+//!
+//! [`len`]: Series::len
+//! [`base`]: Series::base
+//! [`push`]: Series::push
+//! [`at`]: Series::at
+//! [`values_range`]: Series::values_range
+//! [`timestamp_at`]: Series::timestamp_at
+//! [`values`]: Series::values
+//! [`timestamps`]: Series::timestamps
+//! [`view`]: Series::view
+//! [`tail`]: Series::tail
 
 use ndarray::{ArrayViewD, ArrayViewMutD, IxDyn};
 
-use super::time::Instant;
+use super::time::{Duration, Instant};
 use super::Scalar;
+
+/// A retention bound for a [`Series`]: how much history to keep.
+///
+/// A bound is the **union** of its active constraints — an element is retained
+/// if *either* it is among the most-recent `count` elements *or* its timestamp
+/// is within `duration` of the latest. This lets a single record feed both a
+/// count-windowed consumer (e.g. `Lag(244)`, `RollingMean::count(252)`) and a
+/// time-windowed one (e.g. `RollingMean::time_delta(365d)`): set both, and the
+/// larger window wins. The default (both `None`) is unbounded — nothing is
+/// dropped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Retention {
+    /// Keep at least the most-recent `count` elements (`None` = no count bound).
+    pub count: Option<usize>,
+    /// Keep at least all elements within `duration` of the latest timestamp
+    /// (`None` = no time bound).
+    pub duration: Option<Duration>,
+}
+
+impl Retention {
+    /// Unbounded retention: never drop anything (the default).
+    pub const UNBOUNDED: Retention = Retention {
+        count: None,
+        duration: None,
+    };
+
+    /// Keep the most-recent `count` elements.
+    pub fn count(count: usize) -> Self {
+        Self {
+            count: Some(count),
+            duration: None,
+        }
+    }
+
+    /// Keep all elements within `duration` of the latest timestamp.
+    pub fn duration(duration: Duration) -> Self {
+        Self {
+            count: None,
+            duration: Some(duration),
+        }
+    }
+
+    /// Keep the union of a `count` window and a `duration` window.
+    pub fn count_and_duration(count: usize, duration: Duration) -> Self {
+        Self {
+            count: Some(count),
+            duration: Some(duration),
+        }
+    }
+
+    /// Whether this bound retains everything (no trimming).
+    #[inline(always)]
+    pub fn is_unbounded(&self) -> bool {
+        self.count.is_none() && self.duration.is_none()
+    }
+}
 
 /// A time series of N-dimensional arrays in row-major contiguous layout.
 ///
 /// Timestamps are [`Instant`]s (SI nanoseconds since the PTP epoch) in
-/// non-decreasing order.
+/// non-decreasing order. See the [module docs](self) for logical vs physical
+/// indexing and bounded retention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Series<T: Scalar> {
+    /// Physically retained elements (row-major, `stride` scalars each).
     data: Vec<T>,
+    /// Physically retained timestamps (one per element).
     timestamps: Vec<Instant>,
     shape: Box<[usize]>,
     stride: usize,
+    /// Logical index of physical element `0` — the count of elements dropped
+    /// off the front. `0` for an unbounded series.
+    base: usize,
+    /// Retention bound applied on [`push`](Self::push).
+    retention: Retention,
 }
 
 // ===========================================================================
@@ -22,18 +119,25 @@ pub struct Series<T: Scalar> {
 // ===========================================================================
 
 impl<T: Scalar> Series<T> {
-    /// Create an empty series with the given element shape.
+    /// Create an empty, unbounded series with the given element shape.
     pub fn new(shape: &[usize]) -> Self {
+        Self::with_retention(shape, Retention::UNBOUNDED)
+    }
+
+    /// Create an empty series with the given element shape and retention bound.
+    pub fn with_retention(shape: &[usize], retention: Retention) -> Self {
         let stride = shape.iter().product::<usize>();
         Self {
             data: Vec::new(),
             timestamps: Vec::new(),
             shape: shape.into(),
             stride,
+            base: 0,
+            retention,
         }
     }
 
-    /// Create a series from timestamp and flat value vectors.
+    /// Create an unbounded series from timestamp and flat value vectors.
     pub fn from_vec(shape: &[usize], timestamps: Vec<Instant>, values: Vec<T>) -> Self {
         let stride = shape.iter().product::<usize>();
         assert_eq!(
@@ -48,6 +152,8 @@ impl<T: Scalar> Series<T> {
             timestamps,
             shape: shape.into(),
             stride,
+            base: 0,
+            retention: Retention::UNBOUNDED,
         }
     }
 }
@@ -75,13 +181,39 @@ impl<T: Scalar> Series<T> {
         self.stride
     }
 
-    /// Number of elements.
+    /// Logical length: the total number of elements ever pushed (including any
+    /// since dropped by the retention bound).
     #[inline(always)]
     pub fn len(&self) -> usize {
+        self.base + self.timestamps.len()
+    }
+
+    /// Number of physically retained elements (`len - base`).
+    #[inline(always)]
+    pub fn retained_len(&self) -> usize {
         self.timestamps.len()
     }
 
-    /// Whether the series is empty.
+    /// Logical index of the oldest retained element (count of dropped elements).
+    #[inline(always)]
+    pub fn base(&self) -> usize {
+        self.base
+    }
+
+    /// The retention bound applied on [`push`](Self::push).
+    #[inline(always)]
+    pub fn retention(&self) -> Retention {
+        self.retention
+    }
+
+    /// Set the retention bound. Does not retroactively trim already-stored
+    /// history; the bound applies on the next [`push`](Self::push).
+    #[inline(always)]
+    pub fn set_retention(&mut self, retention: Retention) {
+        self.retention = retention;
+    }
+
+    /// Whether the series has had any element pushed.
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.timestamps.is_empty()
@@ -89,29 +221,29 @@ impl<T: Scalar> Series<T> {
 }
 
 // ===========================================================================
-// Bulk access
+// Bulk access (retained window [base, len))
 // ===========================================================================
 
 impl<T: Scalar> Series<T> {
-    /// Flat immutable slice of all timestamps.
+    /// Flat immutable slice of the retained timestamps (logical `[base, len)`).
     #[inline(always)]
     pub fn timestamps(&self) -> &[Instant] {
         &self.timestamps
     }
 
-    /// Flat mutable slice of all timestamps.
+    /// Flat mutable slice of the retained timestamps (logical `[base, len)`).
     #[inline(always)]
     pub fn timestamps_mut(&mut self) -> &mut [Instant] {
         &mut self.timestamps
     }
 
-    /// Flat immutable slice of all elements.
+    /// Flat immutable slice of the retained elements (logical `[base, len)`).
     #[inline(always)]
     pub fn values(&self) -> &[T] {
         &self.data
     }
 
-    /// Flat mutable slice of all elements.
+    /// Flat mutable slice of the retained elements (logical `[base, len)`).
     #[inline(always)]
     pub fn values_mut(&mut self) -> &mut [T] {
         &mut self.data
@@ -119,49 +251,56 @@ impl<T: Scalar> Series<T> {
 }
 
 // ===========================================================================
-// Positional access
+// Positional access (logical indices)
 // ===========================================================================
 
 impl<T: Scalar> Series<T> {
-    /// Element at positional index `i` (0-based) as a flat slice.
+    /// Element at logical index `i` as a flat slice.
     ///
     /// # Panics
     ///
-    /// Panics if `i >= self.len()`.
+    /// Panics if `i` is outside the retained range `[base, len)` (either not yet
+    /// pushed, or already dropped by the retention bound).
     #[inline(always)]
     pub fn at(&self, i: usize) -> &[T] {
+        let len = self.len();
         assert!(
-            i < self.len(),
-            "index {i} out of bounds (len {})",
-            self.len()
+            i >= self.base && i < len,
+            "index {i} out of retained range [{}, {len})",
+            self.base
         );
+        let p = i - self.base;
         let s = self.stride;
-        &self.data[i * s..(i + 1) * s]
+        &self.data[p * s..(p + 1) * s]
     }
 
-    /// Element at positional index `i` (0-based) as a mutable flat slice.
+    /// Element at logical index `i` as a mutable flat slice.
     ///
     /// # Panics
     ///
-    /// Panics if `i >= self.len()`.
+    /// Panics if `i` is outside the retained range `[base, len)`.
     #[inline(always)]
     pub fn at_mut(&mut self, i: usize) -> &mut [T] {
+        let len = self.len();
         assert!(
-            i < self.len(),
-            "index {i} out of bounds (len {})",
-            self.len()
+            i >= self.base && i < len,
+            "index {i} out of retained range [{}, {len})",
+            self.base
         );
+        let p = i - self.base;
         let s = self.stride;
-        &mut self.data[i * s..(i + 1) * s]
+        &mut self.data[p * s..(p + 1) * s]
     }
 
     /// The most recent element as a flat slice, or `None` if empty.
     #[inline(always)]
     pub fn last(&self) -> Option<&[T]> {
-        if self.is_empty() {
+        let plen = self.timestamps.len();
+        if plen == 0 {
             None
         } else {
-            Some(self.at(self.len() - 1))
+            let s = self.stride;
+            Some(&self.data[(plen - 1) * s..plen * s])
         }
     }
 
@@ -171,31 +310,50 @@ impl<T: Scalar> Series<T> {
         self.timestamps.last().copied()
     }
 
-    /// Values in `[start, end)` as a flat slice.
+    /// Timestamp at logical index `i`.
     ///
     /// # Panics
     ///
-    /// Panics if `end > self.len()` or `start > end`.
+    /// Panics if `i` is outside the retained range `[base, len)`.
     #[inline(always)]
-    pub fn values_range(&self, start: usize, end: usize) -> &[T] {
+    pub fn timestamp_at(&self, i: usize) -> Instant {
+        let len = self.len();
         assert!(
-            end <= self.len() && start <= end,
-            "values_range: [{start}, {end}) out of bounds (len {})",
-            self.len()
+            i >= self.base && i < len,
+            "timestamp_at {i} out of retained range [{}, {len})",
+            self.base
         );
-        let s = self.stride;
-        &self.data[start * s..end * s]
+        self.timestamps[i - self.base]
     }
 
-    /// Last `n` elements as `(timestamps, flat_values)`.
+    /// Values in logical `[start, end)` as a flat slice.
     ///
-    /// Returns `min(n, len)` elements.
-    pub fn tail(&self, n: usize) -> (&[Instant], &[T]) {
+    /// # Panics
+    ///
+    /// Panics if `start < base`, `end > len`, or `start > end`.
+    #[inline(always)]
+    pub fn values_range(&self, start: usize, end: usize) -> &[T] {
         let len = self.len();
-        let n = n.min(len);
-        let start = len - n;
+        assert!(
+            start >= self.base && end <= len && start <= end,
+            "values_range: [{start}, {end}) out of retained range [{}, {len})",
+            self.base
+        );
         let s = self.stride;
-        (&self.timestamps[start..], &self.data[start * s..len * s])
+        let ps = start - self.base;
+        let pe = end - self.base;
+        &self.data[ps * s..pe * s]
+    }
+
+    /// Last `n` retained elements as `(timestamps, flat_values)`.
+    ///
+    /// Returns `min(n, retained_len)` elements.
+    pub fn tail(&self, n: usize) -> (&[Instant], &[T]) {
+        let plen = self.timestamps.len();
+        let n = n.min(plen);
+        let start = plen - n;
+        let s = self.stride;
+        (&self.timestamps[start..], &self.data[start * s..plen * s])
     }
 }
 
@@ -204,23 +362,28 @@ impl<T: Scalar> Series<T> {
 // ===========================================================================
 
 impl<T: Scalar> Series<T> {
-    /// As-of lookup: find the most recent element with `ts <= query_ts`.
+    /// As-of lookup over the retained window: the most recent element with
+    /// `ts <= query_ts`.
     ///
-    /// Returns `None` if no element satisfies the condition.
+    /// Returns `None` if no *retained* element satisfies the condition (an older
+    /// qualifying element may have been dropped by the retention bound).
     pub fn asof(&self, query_ts: Instant) -> Option<&[T]> {
-        let idx = self.timestamps.partition_point(|&ts| ts <= query_ts);
-        if idx == 0 {
+        let p = self.timestamps.partition_point(|&ts| ts <= query_ts);
+        if p == 0 {
             None
         } else {
-            Some(self.at(idx - 1))
+            let s = self.stride;
+            Some(&self.data[(p - 1) * s..p * s])
         }
     }
 
-    /// Index of first timestamp `>= query_ts` (binary search).
+    /// Logical index of the first timestamp `>= query_ts` (binary search over
+    /// the retained window).
     ///
-    /// Returns `len` if all timestamps are less than `query_ts`.
+    /// Returns `len` if all retained timestamps are less than `query_ts`, and
+    /// `base` if `query_ts` precedes the retained window.
     pub fn search(&self, query_ts: Instant) -> usize {
-        self.timestamps.partition_point(|&ts| ts < query_ts)
+        self.base + self.timestamps.partition_point(|&ts| ts < query_ts)
     }
 }
 
@@ -229,30 +392,32 @@ impl<T: Scalar> Series<T> {
 // ===========================================================================
 
 impl<T: Scalar> Series<T> {
-    /// Immutable ndarray view of element at index `i`.
+    /// Immutable ndarray view of element at logical index `i`.
     pub fn view_at(&self, i: usize) -> ArrayViewD<'_, T> {
         ArrayViewD::from_shape(IxDyn(&self.shape), self.at(i)).unwrap()
     }
 
-    /// Mutable ndarray view of element at index `i`.
+    /// Mutable ndarray view of element at logical index `i`.
     pub fn view_at_mut(&mut self, i: usize) -> ArrayViewMutD<'_, T> {
         ArrayViewMutD::from_shape(IxDyn(&self.shape), self.at_mut(i)).unwrap()
     }
 
-    /// Immutable ndarray view of the logical series: shape `[len, s0, s1, ...]`.
+    /// Immutable ndarray view of the retained window: shape
+    /// `[retained_len, s0, s1, ...]`.
     pub fn view(&self) -> ArrayViewD<'_, T> {
-        let len = self.len();
+        let plen = self.timestamps.len();
         let mut full_shape = Vec::with_capacity(self.shape.len() + 1);
-        full_shape.push(len);
+        full_shape.push(plen);
         full_shape.extend_from_slice(&self.shape);
         ArrayViewD::from_shape(IxDyn(&full_shape), self.values()).unwrap()
     }
 
-    /// Mutable ndarray view of the logical series: shape `[len, s0, s1, ...]`.
+    /// Mutable ndarray view of the retained window: shape
+    /// `[retained_len, s0, s1, ...]`.
     pub fn view_mut(&mut self) -> ArrayViewMutD<'_, T> {
-        let len = self.len();
+        let plen = self.timestamps.len();
         let mut full_shape = Vec::with_capacity(self.shape.len() + 1);
-        full_shape.push(len);
+        full_shape.push(plen);
         full_shape.extend_from_slice(&self.shape);
         ArrayViewMutD::from_shape(IxDyn(&full_shape), self.values_mut()).unwrap()
     }
@@ -263,7 +428,8 @@ impl<T: Scalar> Series<T> {
 // ===========================================================================
 
 impl<T: Scalar> Series<T> {
-    /// Append an element with the given timestamp.
+    /// Append an element with the given timestamp, then trim the front to honour
+    /// the retention bound.
     ///
     /// # Panics
     ///
@@ -279,6 +445,47 @@ impl<T: Scalar> Series<T> {
         );
         self.data.extend_from_slice(value);
         self.timestamps.push(timestamp);
+        self.maybe_trim();
+    }
+
+    /// Drop the oldest elements from the front to honour [`retention`], in
+    /// amortized `O(1)`: a front drain is `O(retained_len)`, so we only compact
+    /// when we can reclaim at least half the buffer — paying each drain down
+    /// over the next ~`retained_len / 2` pushes. Physical storage therefore
+    /// stays within `2x` the retained window.
+    ///
+    /// [`retention`]: Self::retention
+    #[inline]
+    fn maybe_trim(&mut self) {
+        if self.retention.is_unbounded() {
+            return;
+        }
+        let plen = self.timestamps.len();
+        if plen == 0 {
+            return;
+        }
+        let len = self.base + plen; // logical length
+
+        // Oldest logical index the (union of) active bounds requires keeping.
+        let mut keep_from = len;
+        if let Some(c) = self.retention.count {
+            keep_from = keep_from.min(len.saturating_sub(c.max(1)));
+        }
+        if let Some(d) = self.retention.duration {
+            let cutoff = self.timestamps[plen - 1] - d;
+            let p = self.timestamps.partition_point(|&t| t < cutoff);
+            keep_from = keep_from.min(self.base + p);
+        }
+        // Never drop the most recent element.
+        keep_from = keep_from.min(len - 1);
+
+        let droppable = keep_from.saturating_sub(self.base);
+        if droppable > 0 && droppable * 2 >= plen {
+            let s = self.stride;
+            self.data.drain(0..droppable * s);
+            self.timestamps.drain(0..droppable);
+            self.base += droppable;
+        }
     }
 }
 
@@ -393,8 +600,6 @@ mod tests {
         assert_eq!(s.stride(), 12);
     }
 
-    // -- New method tests ----------------------------------------------------
-
     #[test]
     fn last_timestamp() {
         let mut s = Series::<f64>::new(&[]);
@@ -450,5 +655,78 @@ mod tests {
         assert_eq!(s.search(ts(200)), 1); // exact second
         assert_eq!(s.search(ts(300)), 2); // exact last
         assert_eq!(s.search(ts(999)), 3); // after all
+    }
+
+    // -- Retention -----------------------------------------------------------
+
+    #[test]
+    fn count_retention_bounds_storage_and_preserves_logical_reads() {
+        // Keep the most recent 3 elements; push 10.
+        let mut s = Series::<f64>::with_retention(&[1], Retention::count(3));
+        for i in 0..10 {
+            s.push(ts((i + 1) * 100), &[i as f64]);
+        }
+        // Logical length is the full count; physical storage is bounded (<= 2x
+        // the window thanks to amortized compaction).
+        assert_eq!(s.len(), 10);
+        assert!(s.retained_len() <= 6, "retained {} > 2x window", s.retained_len());
+        assert!(s.retained_len() >= 3, "fewer than the window retained");
+        assert_eq!(s.base(), s.len() - s.retained_len());
+
+        // The required window [7, 10) reads identically to an unbounded series.
+        assert_eq!(s.at(7), &[7.0]);
+        assert_eq!(s.at(8), &[8.0]);
+        assert_eq!(s.at(9), &[9.0]);
+        assert_eq!(s.last(), Some([9.0].as_slice()));
+        assert_eq!(s.timestamp_at(9), ts(1000));
+        assert_eq!(s.values_range(7, 10), &[7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of retained range")]
+    fn count_retention_evicts_old_indices() {
+        let mut s = Series::<f64>::with_retention(&[1], Retention::count(3));
+        for i in 0..10 {
+            s.push(ts((i + 1) * 100), &[i as f64]);
+        }
+        // Index 0 was dropped long ago.
+        let _ = s.at(0);
+    }
+
+    #[test]
+    fn duration_retention_keeps_time_window() {
+        // Keep everything within 250ns of the latest; ticks are 100ns apart.
+        let mut s = Series::<f64>::with_retention(&[1], Retention::duration(Duration::from_nanos(250)));
+        for i in 0..10 {
+            s.push(ts((i + 1) * 100), &[i as f64]);
+        }
+        // Latest ts = 1000; cutoff = 750 → keep ts in {800, 900, 1000} = indices 7,8,9.
+        assert_eq!(s.len(), 10);
+        assert_eq!(s.at(9), &[9.0]);
+        assert_eq!(s.at(8), &[8.0]);
+        assert_eq!(s.at(7), &[7.0]);
+        assert!(s.base() <= 7, "kept window too small: base {}", s.base());
+    }
+
+    #[test]
+    fn bounded_matches_unbounded_within_window() {
+        // A bounded series reads identically to an unbounded one for every index
+        // that the bound retains — the equivalence the retention contract rests on.
+        let window = 5usize;
+        let mut bounded = Series::<f64>::with_retention(&[2], Retention::count(window));
+        let mut unbounded = Series::<f64>::new(&[2]);
+        for i in 0..40usize {
+            let row = [i as f64, (i * 2) as f64];
+            let t = ts((i as i64 + 1) * 10);
+            bounded.push(t, &row);
+            unbounded.push(t, &row);
+            assert_eq!(bounded.len(), unbounded.len());
+            let lo = bounded.base();
+            for j in lo..bounded.len() {
+                assert_eq!(bounded.at(j), unbounded.at(j), "value mismatch at {j}");
+                assert_eq!(bounded.timestamp_at(j), unbounded.timestamp_at(j));
+            }
+            assert_eq!(bounded.last(), unbounded.last());
+        }
     }
 }

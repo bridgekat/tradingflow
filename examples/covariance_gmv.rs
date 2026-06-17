@@ -74,11 +74,11 @@ async fn main() {
     let clk = sc.clock();
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let features = common::build_features(&mut sc, &st, window);
+    let features = common::build_features(&mut sc, &st, window, tradingflow::Retention::UNBOUNDED);
     let circ_market_cap = sc.add_operator(Multiply::<f64>::new(), (st.close, st.circ_shares));
     let log_adj = sc.add_operator(Log::<f64>::new(), st.adjusted_close);
     let (_target, target_series, demeaned_series) =
-        common::build_log_return_target(&mut sc, log_adj);
+        common::build_log_return_target(&mut sc, log_adj, tradingflow::Retention::UNBOUNDED);
     // Raw daily log returns for the realized-variance metric.
     let log_returns = sc.add_operator(Diff::<f64>::new(), log_adj);
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);

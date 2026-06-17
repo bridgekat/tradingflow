@@ -41,7 +41,8 @@ pub mod sources;
 pub mod utils;
 
 pub use data::{
-    Array, ArraySlice, Duration, Instant, PeekableReceiver, Scalar, Series, tai_to_utc, utc_to_tai,
+    Array, ArraySlice, Duration, Instant, PeekableReceiver, Retention, Scalar, Series, tai_to_utc,
+    utc_to_tai,
 };
 pub use scenario::{Scenario, Session, ShutdownFlag};
 pub use source::Source;

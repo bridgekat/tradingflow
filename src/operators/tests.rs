@@ -7,7 +7,7 @@ use flowgraph::core::Pool;
 use flowgraph::typed::{Graph, GraphBuilder, RefPort, RefSource};
 
 use super::*;
-use crate::{Array, ArraySlice, Instant, Series};
+use crate::{Array, ArraySlice, Instant, Retention, Series};
 
 fn ts(n: i64) -> Instant {
     Instant::from_nanos(n)
@@ -127,6 +127,53 @@ fn last_of_record() {
     }
 
     assert_eq!(g.ref_view(lst).as_slice(), &[20.0]);
+}
+
+/// A retention-bounded `Record` feeding `Lag` and `RollingMean` produces the
+/// same outputs as an unbounded one, across front-compaction. Exercises the
+/// engine path for logical indexing: the rolling window's `start` and `Lag`'s
+/// offset address the series by absolute (logical) index while the front is
+/// dropped underneath them.
+#[test]
+fn bounded_record_feeds_rolling_and_lag() {
+    let clock = Clock::new();
+    let mut b = GraphBuilder::new();
+    let src = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
+    // RollingMean(5) reads back 6 on eviction, Lag(3) back 4 → retain 8 covers both.
+    let rec = b.push(Record::with_retention(clock.clone(), Retention::count(8)), *src);
+    let lag = b.push(Lag::<f64>::new(3, f64::NAN), rec);
+    let rmean = b.push(RollingMean::<f64>::count(5), rec);
+    let mut g = Graph::from_builder(b);
+    let mut pool = Pool::new(0);
+
+    let m = 30_i64;
+    for t in 1..=m {
+        clock.set(ts(t));
+        *g.state_mut(src) = Array::scalar(t as f64);
+        g.stabilize(&mut pool);
+        if t >= 5 {
+            // Mean of the last 5 values {t-4..t} == t - 2.
+            assert!(
+                (g.ref_view(rmean).as_slice()[0] - (t as f64 - 2.0)).abs() < 1e-9,
+                "rmean@{t} = {}",
+                g.ref_view(rmean).as_slice()[0],
+            );
+        }
+        if t > 3 {
+            // Lag(3): the value from 3 steps ago == t - 3.
+            assert!(
+                (g.ref_view(lag).as_slice()[0] - (t as f64 - 3.0)).abs() < 1e-9,
+                "lag@{t} = {}",
+                g.ref_view(lag).as_slice()[0],
+            );
+        }
+    }
+
+    let s: &Series<f64> = g.ref_view(rec);
+    assert_eq!(s.len(), m as usize, "logical length preserved across compaction");
+    assert!(s.base() > 0, "expected front-compaction (base={})", s.base());
+    assert!(s.retained_len() <= 16, "physical storage unbounded: {}", s.retained_len());
+    assert_eq!(s.last(), Some([m as f64].as_slice()), "latest value intact");
 }
 
 /// `scenario_run_periodic_single_input`: data [10,20,30]@[1,2,3], clock @2 only

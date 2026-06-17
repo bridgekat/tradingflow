@@ -430,6 +430,85 @@ def test_incremental_all_samples():
     print(f"  incremental all-samples OK (max|d|={max_d:.2e})")
 
 
+def test_incremental_tight_retention():
+    """Per-tick folding reads only the last ``target_offset + 1`` rows, so a
+    tightly retention-bounded feature/target series (older rows *evicted*, as the
+    Rust ``NativeSeriesView`` does once a ``Record`` trims them) drives a fit
+    identical to the unbounded one -- and never touches an evicted index. Mirrors
+    the engine cadence: fold on every tick, predict only on rebalance ticks.
+    """
+    from flowops.predictors.mean import incremental_ridge as i_ridge
+
+    class RetainedSeriesView:
+        """`FakeSeriesView` under a count-retention bound: logical length ``t``,
+        rows older than ``base = max(0, t - window)`` raise ``IndexError`` on
+        access -- exactly what the Rust view does for a trimmed `Series`."""
+
+        def __init__(self, values, t, window, elem_shape):
+            self._all = values
+            self._t = t
+            self._base = max(0, t - window)
+            self._shape = tuple(elem_shape)
+
+        def __len__(self):
+            return self._t
+
+        @property
+        def shape(self):
+            return self._shape
+
+        def at(self, i):
+            idx = self._t + i if i < 0 else i
+            if idx < self._base or idx >= self._t:
+                raise IndexError(f"index {i} evicted (retained [{self._base}, {self._t}))")
+            return self._all[idx].copy()
+
+        def __getitem__(self, key):
+            if isinstance(key, slice):
+                raise AssertionError("tight-retention harness must not slice the series")
+            return self.at(key)
+
+    off, alpha, minp = 1, 0.7, 3
+    window = off + 4   # the engine retains target_offset + a small margin
+    every = 5          # rebalance cadence in ticks
+    rng = np.random.default_rng(7)
+    true_beta = rng.normal(size=F)
+    feats = [rng.normal(size=(N, F)) for _ in range(T)]
+    targs = [feats[t] @ true_beta + 0.1 * rng.normal(size=N) for t in range(T)]
+    universe = FakeArrayView(np.ones(N), writable=False)
+    cfg = dict(num_stocks=N, num_features=F, universe_size=N,
+               target_offset=off, alpha=alpha, min_periods=minp)
+
+    op_o = i_ridge.build(**cfg)  # unbounded oracle
+    op_b = i_ridge.build(**cfg)  # tightly retention-bounded
+    so = op_o.init((universe, FakeSeriesView(feats, elem_shape=(N, F)),
+                    FakeSeriesView(targs, elem_shape=(N,))), 0)
+    sb = op_b.init((universe, RetainedSeriesView(feats, T, window, (N, F)),
+                    RetainedSeriesView(targs, T, window, (N,))), 0)
+
+    rebalances = 0
+    for t in range(1, T + 1):
+        produced = (t % every == 0, True, True)
+        fo = FakeSeriesView(feats[:t], elem_shape=(N, F))
+        to = FakeSeriesView(targs[:t], elem_shape=(N,))
+        fb = RetainedSeriesView(feats, t, window, (N, F))
+        tb = RetainedSeriesView(targs, t, window, (N,))
+        oo = FakeArrayView(np.zeros(N), writable=True)
+        ob = FakeArrayView(np.zeros(N), writable=True)
+        eo = op_o.compute(so, (universe, fo, to), oo, t, produced)
+        # Raises IndexError here if per-tick folding ever reads an evicted row.
+        eb = op_b.compute(sb, (universe, fb, tb), ob, t, produced)
+        assert eo == eb, f"emit mismatch at t={t}"
+        if produced[0]:
+            rebalances += 1
+            assert np.allclose(oo.written, ob.written, atol=1e-9, equal_nan=True), (
+                f"bounded != unbounded at t={t}, "
+                f"max|d|={np.nanmax(np.abs(oo.written - ob.written)):.3e}"
+            )
+    assert rebalances > 0, "test fired no rebalances"
+    print(f"  incremental tight retention OK ({rebalances} rebalances, window={window})")
+
+
 def main():
     tests = [
         test_mean_sample,
@@ -440,6 +519,7 @@ def main():
         test_mean_subsample,
         test_incremental_equivalence,
         test_incremental_all_samples,
+        test_incremental_tight_retention,
         test_var_sample,
         test_var_single_index,
         test_var_shrinkage,
