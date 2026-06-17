@@ -10,7 +10,7 @@
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Interface, Operator, Segment, RefPort, ViewPort};
+use flowgraph::typed::{Arena, Interface, Operator, RefPort, RefViewPort, Segment, ViewPort};
 
 use super::op::{ArrayValue, StripNotify};
 use crate::data::array::Shape;
@@ -622,6 +622,108 @@ impl<T: Scalar, const N: usize> Segment for AsView<T, N> {
         init: bool,
     ) -> (bool, ArrayView<'a, T, N>) {
         (notified && !init, arr.view())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RefArrayView / DerefArrayView (the ViewPort <-> RefViewPort bridges)
+// ---------------------------------------------------------------------------
+
+/// Bridge a by-value `ViewPort<ArrayValue<T, N>>` into a by-reference
+/// `RefViewPort<ArrayValue<T, N>>` — the adapter that lets independently-produced
+/// view handles (e.g. separate feature columns) be collected into the
+/// `&[RefViewPort]` slice the carry-join combines ([`Stack`](super::Stack) /
+/// [`StackSync`](super::StackSync) / [`Concat`](super::Concat)) consume.
+///
+/// There is no value↔reference adapter inside `flowgraph::segment!` (it forwards
+/// values positionally), and an `Operator::State: 'static` cannot store an
+/// `ArrayView<'a>` — so the engine's only *intrinsic* producer of by-reference
+/// view rows is [`Split`](super::Split) (via a per-generation [`Arena`]). This is
+/// the rank-preserving, single-handle counterpart: each `compute` homes the input
+/// view — a `Copy` fat pointer already pointing at the upstream's stable storage,
+/// valid for the generation lifetime `'a` — in its own arena and lends back
+/// `&'a ArrayView`. The arena holds only the view struct, so no array data is
+/// copied. It forwards the input's notify, so the no-notify⟹output-unchanged
+/// contract carries: when the input is silent the lent view still points at the
+/// upstream's last (unchanged) value. [`DerefArrayView`] is the exact inverse.
+pub struct RefArrayView<T: Scalar, const N: usize> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> RefArrayView<T, N> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for RefArrayView<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Scalar, const N: usize> Segment for RefArrayView<T, N> {
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = RefViewPort<ArrayValue<T, N>>;
+    type State = Arena;
+
+    fn init(self) -> Arena {
+        Arena::new()
+    }
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        (notified, x): (bool, ArrayView<'a, T, N>),
+        arena: &'b mut Arena,
+        init: bool,
+    ) -> (bool, &'a ArrayView<'a, T, N>) {
+        let alloc = arena.reset();
+        (notified && !init, &*alloc.alloc(x))
+    }
+}
+
+/// Re-derive a by-reference `RefViewPort<ArrayValue<T, N>>` (e.g. a
+/// [`Split`](super::Split) row, whose leaf is a `&ArrayView`) as a by-value
+/// `ViewPort<ArrayValue<T, N>>` — the zero-copy adapter that lets a by-reference
+/// view feed the by-value view operators ([`Gate`](super::Gate), [`SliceView`],
+/// the arithmetic ops, …). The inner `ArrayView` is `Copy`, so this forwards it
+/// by value; like [`SliceView`] / [`AsView`] it is a [`Segment`] re-derived from
+/// the fresh input each generation, forwarding the input's notify. It is the
+/// exact inverse of [`RefArrayView`].
+pub struct DerefArrayView<T: Scalar, const N: usize> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> DerefArrayView<T, N> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for DerefArrayView<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Scalar, const N: usize> Segment for DerefArrayView<T, N> {
+    type Inputs = RefViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = ();
+
+    fn init(self) {}
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        (notified, v): (bool, &'a ArrayView<'a, T, N>),
+        _state: &'b mut (),
+        init: bool,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (notified && !init, *v)
     }
 }
 

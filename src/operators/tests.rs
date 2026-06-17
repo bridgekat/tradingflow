@@ -51,32 +51,30 @@ fn vec_src(
 
 /// Push an independent rank-0 source whose value is exposed as a **by-reference**
 /// view (`RefViewPort`) — the leaf kind the carry-join combines (`Stack` /
-/// `StackSync` / `Concat`) consume. The only `RefViewPort` array producer is
-/// [`Split`] (the by-reference fan-out), so the bridge wraps the scalar as a
-/// `[1]` array and splits axis-0 into its single rank-0 row. Each source pokes
-/// independently, so the row notifies independently — preserving the original
-/// per-element notify semantics the carry tests rely on.
+/// `StackSync` / `Concat`) consume. Bridges the scalar source through [`AsView`]
+/// then [`RefArrayView`] (the value→reference adapter). Each source pokes
+/// independently, so the row notifies independently — preserving the per-element
+/// notify semantics the carry tests rely on.
 fn scalar_ref_src(
     b: &mut GraphBuilder,
     v: f64,
-) -> (SourceHandle<RefSource<Array<f64, 1>>>, Handle<RVp<0>>) {
-    let s = b.push_source(RefSource::new(Array::from_vec([1], vec![v])));
-    let view = b.push(AsView::<f64, 1>::new(), *s);
-    let rows = b.push(Split::<f64, 1, 0>::new(1), view);
-    (s, rows[0])
+) -> (SourceHandle<RefSource<Array<f64, 0>>>, Handle<RVp<0>>) {
+    let s = b.push_source(RefSource::new(Array::scalar(v)));
+    let view = b.push(AsView::<f64, 0>::new(), *s);
+    let refv = b.push(RefArrayView::<f64, 0>::new(), view);
+    (s, refv)
 }
 
-/// Like [`scalar_ref_src`] but for a rank-1 value (wraps it as `[1, len]` and
-/// splits the leading axis into its single rank-1 row — feeds `Concat`).
+/// Like [`scalar_ref_src`] but for a rank-1 value (bridges the `[len]` source
+/// through [`AsView`] then [`RefArrayView`] — feeds `Concat`).
 fn vec_ref_src(
     b: &mut GraphBuilder,
     v: Vec<f64>,
-) -> (SourceHandle<RefSource<Array<f64, 2>>>, Handle<RVp<1>>) {
-    let len = v.len();
-    let s = b.push_source(RefSource::new(Array::from_vec([1, len], v)));
-    let view = b.push(AsView::<f64, 2>::new(), *s);
-    let rows = b.push(Split::<f64, 2, 1>::new(1), view);
-    (s, rows[0])
+) -> (SourceHandle<RefSource<Array<f64, 1>>>, Handle<RVp<1>>) {
+    let s = b.push_source(RefSource::new(Array::from_vec([v.len()], v)));
+    let view = b.push(AsView::<f64, 1>::new(), *s);
+    let refv = b.push(RefArrayView::<f64, 1>::new(), view);
+    (s, refv)
 }
 
 // ===========================================================================
@@ -310,14 +308,14 @@ fn slice_stack_and_sync() {
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
-    *g.state_mut(s0) = Array::from_vec([1], vec![1.0]);
-    *g.state_mut(s1) = Array::from_vec([1], vec![2.0]);
-    *g.state_mut(s2) = Array::from_vec([1], vec![3.0]);
+    *g.state_mut(s0) = Array::scalar(1.0);
+    *g.state_mut(s1) = Array::scalar(2.0);
+    *g.state_mut(s2) = Array::scalar(3.0);
     g.stabilize(&mut pool);
     assert_eq!(g.view(stacked).contiguous_slice().unwrap(), &[1.0, 2.0, 3.0]);
     assert_eq!(g.view(synced).contiguous_slice().unwrap(), &[1.0, 2.0, 3.0]);
 
-    *g.state_mut(s1) = Array::from_vec([1], vec![20.0]);
+    *g.state_mut(s1) = Array::scalar(20.0);
     g.stabilize(&mut pool);
     assert_eq!(g.view(stacked).contiguous_slice().unwrap(), &[1.0, 20.0, 3.0]);
     let v = g.view(synced).contiguous_slice().unwrap();
@@ -661,8 +659,8 @@ fn concat_axis0() {
     let mut g = Graph::from_builder(b);
     let mut pool = Pool::new(0);
 
-    *g.state_mut(a) = Array::from_vec([1, 2], vec![1.0, 2.0]);
-    *g.state_mut(bb) = Array::from_vec([1, 2], vec![3.0, 4.0]);
+    *g.state_mut(a) = Array::from_vec([2], vec![1.0, 2.0]);
+    *g.state_mut(bb) = Array::from_vec([2], vec![3.0, 4.0]);
     g.stabilize(&mut pool);
     assert_eq!(g.view(cc).contiguous_slice().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
 }

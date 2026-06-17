@@ -58,7 +58,8 @@ pub use num::{
 pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
 pub use structural::{Cast, Id, Resample, Where};
 pub use transform::{
-    Apply, ApplyInplace, AsView, Lag, Map, MapInplace, Select, SelectView, SliceView,
+    Apply, ApplyInplace, AsView, DerefArrayView, Lag, Map, MapInplace, RefArrayView, Select,
+    SelectView, SliceView,
 };
 pub use reshape::{Concat, ConcatSync, Split, Stack, StackSync, StackSyncView, StackView};
 pub use metrics::{AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility};

@@ -27,13 +27,13 @@ use std::fmt::Write as _;
 use std::fs;
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Arena, Handle, Operator, RefPort, RefViewPort, Segment, ViewPort};
+use flowgraph::typed::{Handle, Operator, RefPort, RefViewPort, Segment, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    AnnualizeView, Apply, ArrayValue, ForwardAdjustViewDiv, Gate, Lag, Map, Percentile,
-    RollingMean, RollingVariance, Select, SliceView, Split, Stack, StackSync, StackSyncView,
-    StackView, Winsorize, divide, log, multiply, sqrt, subtract,
+    AnnualizeView, Apply, ArrayValue, DerefArrayView, ForwardAdjustViewDiv, Gate, Lag, Map,
+    Percentile, RollingMean, RollingVariance, Select, SliceView, Split, Stack, StackSync,
+    StackSyncView, StackView, Winsorize, divide, log, multiply, sqrt, subtract,
 };
 use tradingflow::{Scenario, Session};
 use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
@@ -107,121 +107,28 @@ pub fn own(sc: &mut Scenario, h: AvH) -> Handle<RefPort<Array<f64, 1>>> {
     sc.add_operator(Own::<f64, 1>::new(), h)
 }
 
-/// Bridge a by-value `ViewPort` handle into a by-reference `RefViewPort` handle —
-/// the adapter that lets independently-produced view handles (e.g. `Percentile`
-/// feature columns) be collected into the `&[RefViewPort]` slice a `Stack`
-/// consumes. There is no value↔reference adapter inside `segment!` (it forwards
-/// values positionally), so this is a hand-written [`Reref`] node: it homes the
-/// forwarded `ArrayView` (a `Copy` fat pointer into the producer's stable
-/// storage) in a per-generation arena — exactly as [`Split`] homes its row views
-/// — and lends it back by reference for the generation. Zero-copy (only the view
-/// struct is arena-homed, never the data) and notify-transparent.
+/// Bridge a by-value `ViewPort` handle into a by-reference `RefViewPort` handle
+/// (via [`tradingflow::operators::RefArrayView`]) — lets independently-produced
+/// view handles (e.g. `Percentile` feature columns) be collected into the
+/// `&[RefViewPort]` slice a `Stack`/`StackSync`/`Concat` consumes.
 pub fn ref_view<const N: usize>(
     sc: &mut Scenario,
     h: Handle<ViewPort<ArrayValue<f64, N>>>,
 ) -> Handle<RefViewPort<ArrayValue<f64, N>>> {
-    sc.add_operator(Reref::<f64, N>::new(), h)
+    sc.ref_array_view::<f64, N>(h)
 }
 
 /// Bridge a whole vector of `ViewPort` handles into the `RefViewPort` handle
-/// slice a [`Stack`]/[`StackSync`] consumes, at an explicit rank `N` (the
-/// rank-generic counterpart of [`ref_view`]).
+/// slice a [`Stack`]/[`StackSync`] consumes, at an explicit rank `N` (the vector
+/// counterpart of [`ref_view`]).
 pub fn reref_all<const N: usize>(
     sc: &mut Scenario,
     handles: &[Handle<ViewPort<ArrayValue<f64, N>>>],
 ) -> Vec<Handle<RefViewPort<ArrayValue<f64, N>>>> {
     handles
         .iter()
-        .map(|&h| sc.add_operator(Reref::<f64, N>::new(), h))
+        .map(|&h| sc.ref_array_view::<f64, N>(h))
         .collect()
-}
-
-/// The inverse of [`DerefView`]: re-present a by-value `ViewPort` as a
-/// by-reference `RefViewPort` so independently-produced view columns can be
-/// collected into the `&[RefViewPort]` slice a [`Stack`]/[`StackSync`] consumes.
-///
-/// `RefViewPort`'s payload is `(bool, &'a ArrayView)`; the engine's only producer
-/// of by-reference view rows is [`Split`] (via a per-generation [`Arena`]). This
-/// is the rank-preserving (single-row) counterpart: it homes the input view —
-/// which already points at the upstream's stable storage and is valid for the
-/// generation lifetime `'a` — in its own arena and lends `&'a ArrayView`. The
-/// arena holds only the fat-pointer view struct, so no array data is copied. It
-/// forwards the input's notify, so the no-notify⟹unchanged contract carries:
-/// when the input is silent the lent view still points at the upstream's last
-/// (unchanged) value.
-pub struct Reref<T: Scalar, const N: usize> {
-    _p: PhantomData<T>,
-}
-
-impl<T: Scalar, const N: usize> Reref<T, N> {
-    pub fn new() -> Self {
-        Self { _p: PhantomData }
-    }
-}
-
-impl<T: Scalar, const N: usize> Default for Reref<T, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Scalar, const N: usize> Segment for Reref<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = RefViewPort<ArrayValue<T, N>>;
-    type State = Arena;
-
-    fn init(self) -> Arena {
-        Arena::new()
-    }
-
-    #[inline(always)]
-    fn compute<'a, 'b: 'a>(
-        (notified, x): (bool, ArrayView<'a, T, N>),
-        arena: &'b mut Arena,
-        init: bool,
-    ) -> (bool, &'a ArrayView<'a, T, N>) {
-        let alloc = arena.reset();
-        (notified && !init, &*alloc.alloc(x))
-    }
-}
-
-/// Re-derive a [`Split`] row's by-reference view (`RefViewPort`) as a by-value
-/// `ViewPort` — the zero-copy adapter that lets a `Split` row (whose leaf is a
-/// `&ArrayView`) feed the by-value view operators (`Gate`, `SliceView`, …). The
-/// inner `ArrayView` is `Copy`, so this just forwards it by value; like
-/// `SliceView`/`AsView` it is a [`Segment`] re-derived from the fresh input each
-/// generation, forwarding the input's notify.
-pub struct DerefView<T: Scalar, const N: usize> {
-    _p: PhantomData<T>,
-}
-
-impl<T: Scalar, const N: usize> DerefView<T, N> {
-    pub fn new() -> Self {
-        Self { _p: PhantomData }
-    }
-}
-
-impl<T: Scalar, const N: usize> Default for DerefView<T, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Scalar, const N: usize> Segment for DerefView<T, N> {
-    type Inputs = RefViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
-    type State = ();
-
-    fn init(self) {}
-
-    #[inline(always)]
-    fn compute<'a, 'b: 'a>(
-        (notified, v): (bool, &'a ArrayView<'a, T, N>),
-        _state: &'b mut (),
-        init: bool,
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (notified && !init, *v)
-    }
 }
 
 /// State shared by the view-currency resamplers: the last data view
@@ -774,7 +681,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         // Per-stock scalar fields are rank-0 `[]` views; grouped fields
         // (`prices_extras` [4], `income_ann` [4], `balance_extras` [7], `cf_ann`
         // [3]) are rank-1 `[K]` views. Each `Split` row is a by-reference
-        // `RefViewPort<ArrayValue<f64, 1>>`; `DerefView` re-derives it as the
+        // `RefViewPort<ArrayValue<f64, 1>>`; `DerefArrayView` re-derives it as the
         // by-value `ViewPort` the `Gate`/view operators consume.
         let seg = flowgraph::segment!(|prices_row: RefViewPort<ArrayValue<f64, 1>>,
                                        div_row: RefViewPort<ArrayValue<f64, 1>>,
@@ -795,20 +702,20 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             ViewPort<ArrayValue<f64, 1>>, // cf_ann [3]
             ViewPort<ArrayValue<f64, 1>>  // prices_extras [4]
         ) {
-            // Each `Split` row is a by-reference `RefViewPort`; `DerefView`
+            // Each `Split` row is a by-reference `RefViewPort`; `DerefArrayView`
             // re-derives the by-value `ViewPort` the `Gate` consumes (the macro
             // allows one arrow per `let`, so the deref + gate are two steps).
-            let prices_v = prices_row => DerefView::<f64, 1>::new();
+            let prices_v = prices_row => DerefArrayView::<f64, 1>::new();
             let prices = prices_v => Gate(any_finite); // [close, volume, open, high, low, amount]
-            let dividends_v = div_row => DerefView::<f64, 1>::new();
+            let dividends_v = div_row => DerefArrayView::<f64, 1>::new();
             let dividends = dividends_v => Gate(any_finite); // [share, cash]
-            let equity_v = equity_row => DerefView::<f64, 1>::new();
+            let equity_v = equity_row => DerefArrayView::<f64, 1>::new();
             let equity = equity_v => Gate(any_finite); // [total, circulating]
-            let balance_v = balance_row => DerefView::<f64, 1>::new();
+            let balance_v = balance_row => DerefArrayView::<f64, 1>::new();
             let balance = balance_v => Gate(any_finite); // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
-            let income_v = income_row => DerefView::<f64, 1>::new();
+            let income_v = income_row => DerefArrayView::<f64, 1>::new();
             let income = income_v => Gate(any_finite); // [year, doy, profit, operating, revenue, cost]
-            let cashflow_v = cashflow_row => DerefView::<f64, 1>::new();
+            let cashflow_v = cashflow_row => DerefArrayView::<f64, 1>::new();
             let cashflow = cashflow_v => Gate(any_finite); // [year, doy, operating, investing, financing]
             // Terminal column picks stay zero-copy views (`SliceView`) into the
             // retaining `Gate`'s stable storage; squeezing one index drops the
@@ -887,7 +794,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
 
     // The per-stock segment outputs are by-value `ViewPort` handles; the carry
     // joins (`Stack`/`StackSync`) consume by-reference `RefViewPort` rows, so
-    // bridge each vector through `Reref` (the value→reference adapter — the
+    // bridge each vector through `RefArrayView` (the value→reference adapter — the
     // engine has none inside `segment!`) before stacking.
     let income_refs = reref_all::<1>(sc, &income_v[..]);
     let bal_refs = reref_all::<1>(sc, &bal_v[..]);

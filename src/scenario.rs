@@ -27,8 +27,8 @@ use futures::stream::{FuturesUnordered, StreamExt};
 
 use flowgraph::core::Pool;
 use flowgraph::typed::{
-    Graph, GraphBuilder, Handle, HandlesInterface, InterfaceHandles, RefPort, RefSource, Segment,
-    SourceHandle, ViewPort,
+    Graph, GraphBuilder, Handle, HandlesInterface, InterfaceHandles, RefPort, RefSource,
+    RefViewPort, Segment, SourceHandle, ViewPort,
 };
 
 use crate::operators::{ArrayValue, Clock, Record};
@@ -303,6 +303,31 @@ impl Scenario {
         data: Handle<RefPort<Array<T, N>>>,
     ) -> Handle<ViewPort<ArrayValue<T, N>>> {
         self.builder.push(crate::operators::AsView::<T, N>::new(), data)
+    }
+
+    /// Bridge a by-value view handle into the by-reference `RefViewPort` currency
+    /// the carry-join combines ([`Stack`](crate::operators::Stack) /
+    /// [`Concat`](crate::operators::Concat)) consume, via
+    /// [`RefArrayView`](crate::operators::RefArrayView). Lets independently-produced
+    /// view handles (e.g. separate feature columns) be collected into the
+    /// `&[RefViewPort]` slice those combines take.
+    pub fn ref_array_view<T: Scalar, const N: usize>(
+        &mut self,
+        data: Handle<ViewPort<ArrayValue<T, N>>>,
+    ) -> Handle<RefViewPort<ArrayValue<T, N>>> {
+        self.builder.push(crate::operators::RefArrayView::<T, N>::new(), data)
+    }
+
+    /// Re-derive a by-reference view handle (e.g. a
+    /// [`Split`](crate::operators::Split) row) as the by-value `ViewPort` currency
+    /// the elementwise operators consume, via
+    /// [`DerefArrayView`](crate::operators::DerefArrayView). The inverse of
+    /// [`ref_array_view`](Self::ref_array_view).
+    pub fn deref_array_view<T: Scalar, const N: usize>(
+        &mut self,
+        data: Handle<RefViewPort<ArrayValue<T, N>>>,
+    ) -> Handle<ViewPort<ArrayValue<T, N>>> {
+        self.builder.push(crate::operators::DerefArrayView::<T, N>::new(), data)
     }
 
     /// Register a [`Record`] for a data stream, wiring the driver's [`Clock`]
