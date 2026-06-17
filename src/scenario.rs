@@ -752,15 +752,15 @@ async fn drain_live(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operators::{Add, Filter};
+    use crate::operators::{Filter, add};
     use crate::sources::ArraySource;
-    use crate::{Array, Series};
+    use crate::{Array, ArrayView, Series};
 
     fn tss(xs: &[i64]) -> Vec<Instant> {
         xs.iter().copied().map(Instant::from_nanos).collect()
     }
 
-    fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64> {
+    fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
         ArraySource::new(
             Series::from_vec(&[], tss(ts), vals.to_vec()),
             Array::scalar(0.0),
@@ -772,7 +772,8 @@ mod tests {
     async fn run_single_source_record() {
         let mut sc = Scenario::new();
         let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]), Array::scalar(0.0));
-        let hrec = sc.add_record(h);
+        let hv = sc.as_view(h);
+        let hrec = sc.add_record(hv);
 
         let mut session = sc.build();
         session.run(|_, _| {}).await;
@@ -789,7 +790,8 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]), Array::scalar(0.0));
         let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]), Array::scalar(0.0));
-        let ho = sc.add_operator(Add::<f64>::new(), (ha, hb));
+        let (hav, hbv) = (sc.as_view(ha), sc.as_view(hb));
+        let ho = sc.add_operator(add::<f64, 0>(), (hav, hbv));
         let hrec = sc.add_record(ho);
 
         let mut session = sc.build();
@@ -807,7 +809,8 @@ mod tests {
         let mut sc = Scenario::new();
         let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]), Array::scalar(0.0));
         let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]), Array::scalar(0.0));
-        let ho = sc.add_operator(Add::<f64>::new(), (ha, hb));
+        let (hav, hbv) = (sc.as_view(ha), sc.as_view(hb));
+        let ho = sc.add_operator(add::<f64, 0>(), (hav, hbv));
         let hrec = sc.add_record(ho);
 
         let mut session = sc.build();
@@ -827,7 +830,8 @@ mod tests {
             src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]),
             Array::scalar(0.0),
         );
-        let hf = sc.add_operator(Filter(|v: &Array<f64>| v[0] > 3.0), h);
+        let hv = sc.as_view(h);
+        let hf = sc.add_operator(Filter::<_, 0>(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), hv);
         let hrec = sc.add_record(hf);
 
         let mut session = sc.build();
@@ -844,7 +848,8 @@ mod tests {
     async fn on_flush_per_batch() {
         let mut sc = Scenario::new();
         let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]), Array::scalar(0.0));
-        let _ = sc.add_record(h);
+        let hv = sc.as_view(h);
+        let _ = sc.add_record(hv);
 
         let mut session = sc.build();
         let mut batches = Vec::new();
@@ -871,7 +876,7 @@ mod tests {
 
     impl Source for PrefilledSource {
         type Event = f64;
-        type Output = Array<f64>;
+        type Output = Array<f64, 0>;
         type State = ();
 
         fn init(
@@ -880,7 +885,7 @@ mod tests {
         ) -> (
             mpsc::Receiver<(Instant, f64)>,
             mpsc::Receiver<(Instant, f64)>,
-            Array<f64>,
+            Array<f64, 0>,
             (),
         ) {
             let (hist_tx, hist_rx) = mpsc::channel(self.hist_events.len().max(1));
@@ -896,7 +901,7 @@ mod tests {
             (hist_rx, live_rx, Array::scalar(0.0), ())
         }
 
-        fn write(_state: &mut (), event: f64, output: &mut Array<f64>, _ts: Instant) -> usize {
+        fn write(_state: &mut (), event: f64, output: &mut Array<f64, 0>, _ts: Instant) -> usize {
             output[0] = event;
             1
         }
@@ -912,7 +917,7 @@ mod tests {
     }
 
     impl FgOperator for GlobalLogger {
-        type Inputs = RefPort<Array<f64>>;
+        type Inputs = RefPort<Array<f64, 0>>;
         type Outputs = ();
         type State = (usize, Arc<Mutex<Vec<(i64, usize)>>>, Clock);
 
@@ -921,7 +926,7 @@ mod tests {
         }
 
         fn compute<'a, 'b: 'a>(
-            _: (bool, &'a Array<f64>),
+            _: (bool, &'a Array<f64, 0>),
             state: &'b mut Self::State,
             init: bool,
         ) {
@@ -930,7 +935,7 @@ mod tests {
             }
         }
 
-        fn passthrough<'a, 'b: 'a>(_: (bool, &'a Array<f64>), _: &'b Self::State) {}
+        fn passthrough<'a, 'b: 'a>(_: (bool, &'a Array<f64, 0>), _: &'b Self::State) {}
     }
 
     type EventVec = Vec<(Instant, f64)>;
@@ -1019,7 +1024,8 @@ mod tests {
                     },
                     Array::scalar(0.0),
                 );
-                records.push(sc.add_record(h));
+                let hv = sc.as_view(h);
+                records.push(sc.add_record(hv));
                 let clk = sc.clock();
                 sc.add_operator(
                     GlobalLogger {
@@ -1060,7 +1066,7 @@ mod tests {
 
         impl Source for ManualChannel {
             type Event = f64;
-            type Output = Array<f64>;
+            type Output = Array<f64, 0>;
             type State = ();
 
             fn init(
@@ -1069,14 +1075,14 @@ mod tests {
             ) -> (
                 mpsc::Receiver<(Instant, f64)>,
                 mpsc::Receiver<(Instant, f64)>,
-                Array<f64>,
+                Array<f64, 0>,
                 (),
             ) {
                 let (hist_rx, live_rx) = self.channels.lock().unwrap().take().expect("init once");
                 (hist_rx, live_rx, Array::scalar(0.0), ())
             }
 
-            fn write(_state: &mut (), event: f64, output: &mut Array<f64>, _ts: Instant) -> usize {
+            fn write(_state: &mut (), event: f64, output: &mut Array<f64, 0>, _ts: Instant) -> usize {
                 output[0] = event;
                 1
             }
@@ -1094,7 +1100,8 @@ mod tests {
             },
             Array::scalar(0.0),
         );
-        let hrec = sc.add_record(hs);
+        let hsv = sc.as_view(hs);
+        let hrec = sc.add_record(hsv);
 
         tokio::spawn(async move {
             live_tx.send((Instant::from_nanos(50), 2.0)).await.unwrap();
