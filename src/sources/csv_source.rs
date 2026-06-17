@@ -343,8 +343,8 @@ fn parse_values(record: &StringRecord, value_indices: &[usize]) -> Result<Vec<f6
 }
 
 impl Source for CsvSource {
-    type Event = Array<f64>;
-    type Output = Array<f64>;
+    type Event = Array<f64, 1>;
+    type Output = Array<f64, 1>;
     type State = ();
 
     fn estimated_event_count(&self) -> Option<usize> {
@@ -365,9 +365,9 @@ impl Source for CsvSource {
         &self,
         _timestamp: Instant,
     ) -> (
-        mpsc::Receiver<(Instant, Array<f64>)>,
-        mpsc::Receiver<(Instant, Array<f64>)>,
-        Array<f64>,
+        mpsc::Receiver<(Instant, Array<f64, 1>)>,
+        mpsc::Receiver<(Instant, Array<f64, 1>)>,
+        Array<f64, 1>,
         (),
     ) {
         let num_columns = self.value_columns.len();
@@ -453,17 +453,17 @@ impl Source for CsvSource {
                         return;
                     }
                 };
-                let arr = Array::from_vec(&[num_columns], values);
+                let arr = Array::from_vec([num_columns], values);
                 if hist_tx.send((ts, arr)).await.is_err() {
                     break;
                 }
             }
         });
 
-        (hist_rx, live_rx, Array::zeros(&[num_columns]), ())
+        (hist_rx, live_rx, Array::zeros([num_columns]), ())
     }
 
-    fn write(_state: &mut (), payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> usize {
+    fn write(_state: &mut (), payload: Array<f64, 1>, output: &mut Array<f64, 1>, _timestamp: Instant) -> usize {
         output.assign(payload.as_slice());
         1
     }

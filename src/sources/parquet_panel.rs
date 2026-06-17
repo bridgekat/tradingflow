@@ -113,8 +113,8 @@ impl ParquetPanelSource {
     /// [`Scenario::add_source`](crate::Scenario::add_source): the per-tick
     /// `write` only sets rows that have an event, so an unwritten row must read as
     /// `NaN` (not `0.0`) for the per-stock `Filter` to drop it.
-    pub fn out_shape(&self) -> Vec<usize> {
-        vec![self.symbols.len(), self.value_columns.len()]
+    pub fn out_shape(&self) -> [usize; 2] {
+        [self.symbols.len(), self.value_columns.len()]
     }
 }
 
@@ -175,7 +175,7 @@ impl Default for PanelState {
 pub(crate) fn panel_write(
     state: &mut PanelState,
     batch: Vec<RowUpdate>,
-    output: &mut Array<f64>,
+    output: &mut Array<f64, 2>,
     ts: Instant,
 ) -> usize {
     let Some(first) = batch.first() else { return 0 };
@@ -199,7 +199,7 @@ pub(crate) fn panel_write(
 
 impl Source for ParquetPanelSource {
     type Event = Vec<RowUpdate>;
-    type Output = Array<f64>;
+    type Output = Array<f64, 2>;
     type State = PanelState;
 
     fn estimated_event_count(&self) -> Option<usize> {
@@ -223,7 +223,7 @@ impl Source for ParquetPanelSource {
     ) -> (
         mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
         mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
-        Array<f64>,
+        Array<f64, 2>,
         PanelState,
     ) {
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
@@ -239,10 +239,10 @@ impl Source for ParquetPanelSource {
             }
         });
 
-        (hist_rx, live_rx, Array::zeros(&out_shape), PanelState::default())
+        (hist_rx, live_rx, Array::zeros(out_shape), PanelState::default())
     }
 
-    fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64>, ts: Instant) -> usize {
+    fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64, 2>, ts: Instant) -> usize {
         panel_write(state, batch, output, ts)
     }
 }

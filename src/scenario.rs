@@ -28,10 +28,10 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use flowgraph::core::Pool;
 use flowgraph::typed::{
     Graph, GraphBuilder, Handle, HandlesInterface, InterfaceHandles, RefPort, RefSource, Segment,
-    SourceHandle,
+    SourceHandle, ViewPort,
 };
 
-use crate::operators::{Clock, Record};
+use crate::operators::{ArrayValue, Clock, Record};
 use crate::source::{PollFn, Source};
 use crate::{Array, Instant, PeekableReceiver, Scalar, Series};
 
@@ -293,10 +293,25 @@ impl Scenario {
         self.builder.push(operator, inputs)
     }
 
+    /// Bridge a whole-array reference handle (a source cell / [`add_const`]
+    /// (Self::add_const) / any `RefPort<Array<T, N>>`) into the
+    /// `ViewPort<ArrayValue<T, N>>` view currency the operators speak, via a
+    /// zero-copy [`AsView`](crate::operators::AsView). Source outputs are
+    /// whole-array references; everything downstream is views.
+    pub fn as_view<T: Scalar, const N: usize>(
+        &mut self,
+        data: Handle<RefPort<Array<T, N>>>,
+    ) -> Handle<ViewPort<ArrayValue<T, N>>> {
+        self.builder.push(crate::operators::AsView::<T, N>::new(), data)
+    }
+
     /// Register a [`Record`] for a data stream, wiring the driver's [`Clock`]
     /// so each recorded row is stamped with the current event time. `Record`
     /// needs the clock, so it cannot go through [`add_operator`](Self::add_operator).
-    pub fn add_record<T: Scalar>(&mut self, data: Handle<RefPort<Array<T>>>) -> Handle<RefPort<Series<T>>> {
+    pub fn add_record<T: Scalar, const N: usize>(
+        &mut self,
+        data: Handle<ViewPort<ArrayValue<T, N>>>,
+    ) -> Handle<RefPort<Series<T>>> {
         self.builder.push(Record::new(self.clock.clone()), data)
     }
 
@@ -305,9 +320,9 @@ impl Scenario {
     /// consumed only within a fixed look-back window (rolling / lag operators, a
     /// predictor's training tail); the bound must cover every consumer's deepest
     /// look-back. Otherwise identical to [`add_record`](Self::add_record).
-    pub fn add_record_retained<T: Scalar>(
+    pub fn add_record_retained<T: Scalar, const N: usize>(
         &mut self,
-        data: Handle<RefPort<Array<T>>>,
+        data: Handle<ViewPort<ArrayValue<T, N>>>,
         retention: crate::Retention,
     ) -> Handle<RefPort<Series<T>>> {
         self.builder

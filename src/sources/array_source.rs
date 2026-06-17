@@ -13,23 +13,23 @@ use crate::{Array, Scalar, Series, Source};
 ///
 /// Requires a tokio runtime to be active when added to a scenario.
 #[derive(Clone)]
-pub struct ArraySource<T: Scalar> {
+pub struct ArraySource<T: Scalar, const N: usize> {
     series: Series<T>,
-    default: Array<T>,
+    default: Array<T, N>,
 }
 
-impl<T: Scalar> ArraySource<T> {
+impl<T: Scalar, const N: usize> ArraySource<T, N> {
     /// Create from timestamp and flat value arrays.
     ///
     /// `values.len()` must equal `timestamps.len() * stride`.
-    pub fn new(series: Series<T>, default: Array<T>) -> Self {
+    pub fn new(series: Series<T>, default: Array<T, N>) -> Self {
         Self { series, default }
     }
 }
 
-impl<T: Scalar> Source for ArraySource<T> {
-    type Event = Array<T>;
-    type Output = Array<T>;
+impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
+    type Event = Array<T, N>;
+    type Output = Array<T, N>;
     type State = ();
 
     fn estimated_event_count(&self) -> Option<usize> {
@@ -40,9 +40,9 @@ impl<T: Scalar> Source for ArraySource<T> {
         &self,
         _timestamp: Instant,
     ) -> (
-        mpsc::Receiver<(Instant, Array<T>)>,
-        mpsc::Receiver<(Instant, Array<T>)>,
-        Array<T>,
+        mpsc::Receiver<(Instant, Array<T, N>)>,
+        mpsc::Receiver<(Instant, Array<T, N>)>,
+        Array<T, N>,
         (),
     ) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
@@ -56,7 +56,9 @@ impl<T: Scalar> Source for ArraySource<T> {
                 let stride = series.stride();
                 let start = i * stride;
                 let slice = &series.values()[start..start + stride];
-                let arr = Array::from_vec(series.shape(), slice.to_vec());
+                let extents = <[usize; N]>::try_from(series.shape())
+                    .expect("ArraySource: series element rank != N");
+                let arr = Array::from_vec(extents, slice.to_vec());
                 if hist_tx.send((ts, arr)).await.is_err() {
                     break;
                 }
@@ -66,7 +68,7 @@ impl<T: Scalar> Source for ArraySource<T> {
         (hist_rx, live_rx, self.default.clone(), ())
     }
 
-    fn write(_state: &mut (), payload: Array<T>, output: &mut Array<T>, _timestamp: Instant) -> usize {
+    fn write(_state: &mut (), payload: Array<T, N>, output: &mut Array<T, N>, _timestamp: Instant) -> usize {
         output.assign(payload.as_slice());
         1
     }

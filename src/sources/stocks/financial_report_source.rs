@@ -244,8 +244,8 @@ fn read_csv(
 }
 
 impl Source for FinancialReportSource {
-    type Event = Array<f64>;
-    type Output = Array<f64>;
+    type Event = Array<f64, 1>;
+    type Output = Array<f64, 1>;
     type State = ();
 
     fn estimated_event_count(&self) -> Option<usize> {
@@ -278,9 +278,9 @@ impl Source for FinancialReportSource {
         &self,
         _timestamp: Instant,
     ) -> (
-        mpsc::Receiver<(Instant, Array<f64>)>,
-        mpsc::Receiver<(Instant, Array<f64>)>,
-        Array<f64>,
+        mpsc::Receiver<(Instant, Array<f64, 1>)>,
+        mpsc::Receiver<(Instant, Array<f64, 1>)>,
+        Array<f64, 1>,
         (),
     ) {
         let num_values = self.value_columns.len();
@@ -341,17 +341,17 @@ impl Source for FinancialReportSource {
                 } else {
                     row.values.clone()
                 };
-                let arr = Array::from_vec(&[output_len], data);
+                let arr = Array::from_vec([output_len], data);
                 if hist_tx.send((row.event_ts, arr)).await.is_err() {
                     break;
                 }
             }
         });
 
-        (hist_rx, live_rx, Array::zeros(&[output_len]), ())
+        (hist_rx, live_rx, Array::zeros([output_len]), ())
     }
 
-    fn write(_state: &mut (), payload: Array<f64>, output: &mut Array<f64>, _timestamp: Instant) -> usize {
+    fn write(_state: &mut (), payload: Array<f64, 1>, output: &mut Array<f64, 1>, _timestamp: Instant) -> usize {
         output.assign(payload.as_slice());
         1
     }

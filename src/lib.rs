@@ -34,15 +34,9 @@
 //! * [`utils`] — [`Schema`].
 
 pub mod data;
-// [array-view-refactor] scenario/sources are mid-migration to the const-rank
-// `ArrayView` currency; temporarily gated. `operators` is enabled but itself
-// gates its un-migrated submodules (see operators/mod.rs). Re-enabled in
-// stages 4–5.
 pub mod operators;
-#[cfg(any())]
 pub mod scenario;
 pub mod source;
-#[cfg(any())]
 pub mod sources;
 pub mod utils;
 
@@ -50,7 +44,6 @@ pub use data::{
     Array, ArrayView, Duration, Instant, PeekableReceiver, Retention, Scalar, Series, Shape,
     tai_to_utc, utc_to_tai,
 };
-#[cfg(any())]
 pub use scenario::{Scenario, Session, ShutdownFlag};
 pub use source::Source;
 pub use utils::Schema;

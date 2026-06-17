@@ -123,8 +123,8 @@ impl ReportPanelSource {
     }
 
     /// Emitted element shape, `[N, row_width]`.
-    pub fn out_shape(&self) -> Vec<usize> {
-        vec![self.symbols.len(), self.row_width()]
+    pub fn out_shape(&self) -> [usize; 2] {
+        [self.symbols.len(), self.row_width()]
     }
 }
 
@@ -138,7 +138,7 @@ struct ReportRow {
 
 impl Source for ReportPanelSource {
     type Event = Vec<RowUpdate>;
-    type Output = Array<f64>;
+    type Output = Array<f64, 2>;
     type State = PanelState;
 
     fn estimated_event_count(&self) -> Option<usize> {
@@ -157,7 +157,7 @@ impl Source for ReportPanelSource {
     ) -> (
         mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
         mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
-        Array<f64>,
+        Array<f64, 2>,
         PanelState,
     ) {
         // One item per tick (a batch of that date's reports); small buffer.
@@ -172,10 +172,10 @@ impl Source for ReportPanelSource {
             }
         });
 
-        (hist_rx, live_rx, Array::zeros(&out_shape), PanelState::default())
+        (hist_rx, live_rx, Array::zeros(out_shape), PanelState::default())
     }
 
-    fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64>, ts: Instant) -> usize {
+    fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64, 2>, ts: Instant) -> usize {
         panel_write(state, batch, output, ts)
     }
 }
