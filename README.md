@@ -2,7 +2,11 @@
 
 [![Test](https://github.com/bridgekat/tradingflow/actions/workflows/test.yml/badge.svg)](https://github.com/bridgekat/tradingflow/actions/workflows/test.yml)
 
-A [Flowgraph](https://github.com/bridgekat/flowgraph/) operator library for quantitative investment research. Operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
+A [Flowgraph](https://github.com/bridgekat/flowgraph/) operator library for quantitative investment research.
+
+A trading strategy is a static computation graph: feature extraction, model prediction, portfolio optimization, trading simulation and performance evaluation are all operator nodes in this graph. This library provides common reusable nodes as basic building blocks, and handles data loading from various types of sources.
+
+Operator nodes can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
 
 ## Get started
 
@@ -17,7 +21,7 @@ cargo build --features python  # with Python operators (`flowops` package)
 
 ## Examples
 
-A strategy is a computation graph: see [Flowgraph](https://github.com/bridgekat/flowgraph/) documentation for more details. The three things you do in every program: create a `Scenario`, register sources and operators, then `run()` the event loop. Below is a tiny example that records a synthetic price series, takes a rolling mean, and prints its tail.
+The three things you do in every program: create a `Scenario`, register sources and operators, then `run()` the event loop. Below is a tiny example that records a synthetic price series, takes a rolling mean, and prints its tail.
 
 ```rust
 use tradingflow::{Array, Scenario, Series};
@@ -38,8 +42,9 @@ async fn main() {
         ArraySource::new(Series::from_vec(&[], timestamps, values), Array::scalar(0.0)),
         Array::scalar(0.0),
     );
+    let prices = sc.as_view(prices);
     let history = sc.add_record(prices);
-    let ma = sc.add_operator(RollingMean::<f64>::count(10), history);
+    let ma = sc.add_operator(RollingMean::<f64, 0>::count(10), history);
     let ma_history = sc.add_record(ma);
 
     // Run the event loop until all sources are exhausted, then inspect results.

@@ -10,7 +10,8 @@
 
 use std::marker::PhantomData;
 
-use flowgraph::typed::{Arena, Interface, Operator, RefPort, RefViewPort, Segment, ViewPort};
+use bumpalo::Bump;
+use flowgraph::typed::{Interface, Operator, RefPort, RefViewPort, Segment, ViewPort};
 
 use super::op::{ArrayValue, StripNotify};
 use crate::data::array::Shape;
@@ -664,19 +665,20 @@ impl<T: Scalar, const N: usize> Default for RefArrayView<T, N> {
 impl<T: Scalar, const N: usize> Segment for RefArrayView<T, N> {
     type Inputs = ViewPort<ArrayValue<T, N>>;
     type Outputs = RefViewPort<ArrayValue<T, N>>;
-    type State = Arena;
+    type State = Bump;
 
-    fn init(self) -> Arena {
-        Arena::new()
+    fn init(self) -> Bump {
+        Bump::new()
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (notified, x): (bool, ArrayView<'a, T, N>),
-        arena: &'b mut Arena,
+        arena: &'b mut Bump,
         init: bool,
     ) -> (bool, &'a ArrayView<'a, T, N>) {
-        let alloc = arena.reset();
+        arena.reset();
+        let alloc: &'a Bump = arena;
         (notified && !init, &*alloc.alloc(x))
     }
 }

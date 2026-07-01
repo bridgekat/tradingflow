@@ -1,4 +1,3 @@
-use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
 use crate::Instant;
@@ -74,18 +73,3 @@ pub trait Source: 'static {
         None
     }
 }
-
-/// Type-erased poll function pointer for a source channel, monomorphised per
-/// event type by the [`scenario`](crate::scenario) driver.
-///
-/// # Parameters
-///
-/// * `rx_ptr: *mut u8` — points to [`PeekableReceiver<(Instant, E)>`](crate::PeekableReceiver).
-/// * `cx: &mut Context<'_>` — async task context.
-///
-/// # Returns
-///
-/// * `Poll::Ready(Some(ts))` if an event is buffered with timestamp `ts`.
-/// * `Poll::Ready(None)` if the channel is closed.
-/// * `Poll::Pending` if no event ready; waker registered.
-pub type PollFn = unsafe fn(*mut u8, &mut Context<'_>) -> Poll<Option<Instant>>;

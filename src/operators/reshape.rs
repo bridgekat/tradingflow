@@ -12,7 +12,8 @@
 
 use num_traits::Float;
 
-use flowgraph::typed::{Arena, Interface, Operator, RefViewPorts, Segment, ViewPort};
+use bumpalo::Bump;
+use flowgraph::typed::{Interface, Operator, RefViewPorts, Segment, ViewPort};
 
 use super::op::ArrayValue;
 use crate::data::array::Shape;
@@ -422,7 +423,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Split<T, IN, OUT> {
 /// arena backing the notify/value planes.
 pub struct SplitState {
     axis_size: usize,
-    arena: Arena,
+    arena: Bump,
 }
 
 impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT> {
@@ -433,7 +434,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
     fn init(self) -> SplitState {
         SplitState {
             axis_size: self.axis_size,
-            arena: Arena::new(),
+            arena: Bump::new(),
         }
     }
 
@@ -463,11 +464,12 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
             inner_str[d] = strd[d + 1];
         }
         let row_shape = Shape::strided(inner_ext, inner_str);
-        let alloc = state.arena.reset();
-        let flags = alloc.slice(std::iter::repeat_n(notified && !init, n));
-        let views = alloc.slice((0..n).map(|i| {
+        state.arena.reset();
+        let alloc: &'a Bump = &state.arena;
+        let flags = alloc.alloc_slice_fill_iter(std::iter::repeat_n(notified && !init, n));
+        let views = alloc.alloc_slice_fill_iter((0..n).map(|i| {
             &*alloc.alloc(ArrayView::from_parts(data, base + i * strd[0], row_shape))
         }));
-        (flags, views)
+        (&*flags, &*views)
     }
 }

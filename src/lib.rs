@@ -53,7 +53,7 @@ pub use utils::Schema;
 // [`operators::Id`] is the structural identity operator; reach the combinator
 // via its full path.)
 pub use flowgraph::typed::{
-    Arena, Handle, Interface, InterfaceHandles, Operator, Port, RefPort, RefPorts, RefSource,
+    Handle, Interface, InterfaceHandles, Operator, Port, RefPort, RefPorts, RefSource,
     RefViewPort, RefViewPorts, Scalar as ScalarValue, Segment, SegmentExt, Source as ValueSource,
     SourceHandle, ValueView, ViewPort, ViewSource,
 };
