@@ -14,16 +14,16 @@
 //! Operators ([`operators`]) are implemented directly on
 //! [`flowgraph::typed::Operator`] / [`Segment`](flowgraph::typed::Segment) (no
 //! TradingFlow-side operator trait), composed with the `flowgraph::segment!`
-//! fusion macro, and driven by [`Scenario`] / [`Session`] ([`scenario`]) over an
-//! async source event loop. A [`Source`] feeds events into source cells via
-//! historical + live channels; time is threaded out-of-band through a shared
-//! [`Clock`](operators::Clock).
+//! fusion macro, and driven by [`Scenario`] / [`Session`] ([`scenario`]) over a
+//! [`flowgraph::ingest`] timestamp-merge event loop. A [`Source`] streams
+//! timestamped events into source cells through an async channel; time is
+//! threaded out-of-band through a shared [`Clock`](operators::Clock).
 //!
 //! # Modules
 //!
 //! * [`data`] — primitive containers: [`Array`] / [`ArrayView`], [`Series`],
 //!   [`Instant`] / [`Duration`] (SI nanoseconds since the 1970 TAI epoch),
-//!   plus [`Scalar`] and [`PeekableReceiver`].
+//!   plus [`Scalar`].
 //! * [`source`] — the [`Source`] trait.
 //! * [`sources`] — built-in data sources: `ArraySource`, `CsvSource`,
 //!   `IterSource`, the columnar panel sources, and the `clock` trigger.
@@ -41,8 +41,7 @@ pub mod sources;
 pub mod utils;
 
 pub use data::{
-    Array, ArrayView, Duration, Instant, PeekableReceiver, Retention, Scalar, Series, Shape,
-    tai_to_utc, utc_to_tai,
+    Array, ArrayView, Duration, Instant, Retention, Scalar, Series, Shape, tai_to_utc, utc_to_tai,
 };
 pub use scenario::{Scenario, Session, ShutdownFlag};
 pub use source::Source;

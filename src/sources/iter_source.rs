@@ -112,17 +112,8 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
         self.estimated_event_count
     }
 
-    fn init(
-        &self,
-        _timestamp: Instant,
-    ) -> (
-        mpsc::Receiver<(Instant, T)>,
-        mpsc::Receiver<(Instant, T)>,
-        T,
-        (),
-    ) {
+    fn init(&self, _timestamp: Instant) -> (mpsc::Receiver<(Instant, T)>, T, ()) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
-        let (_, live_rx) = mpsc::channel(1);
 
         let iter = (self.factory)();
         tokio::spawn(async move {
@@ -133,7 +124,7 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
             }
         });
 
-        (hist_rx, live_rx, self.default.clone(), ())
+        (hist_rx, self.default.clone(), ())
     }
 
     fn write(_state: &mut (), payload: T, output: &mut T, _timestamp: Instant) -> usize {

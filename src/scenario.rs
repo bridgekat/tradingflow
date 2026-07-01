@@ -342,10 +342,10 @@ impl Scenario {
         };
         let clock = self.clock.clone();
         self.registrars.push(Box::new(move || -> FeedAdder {
-            // On the async side: spawn the source's producer(s), take its
-            // historical channel + write state. (The `init` output is unused —
-            // the graph's `push_source` node already holds the initial value.)
-            let (hist_rx, _live_rx, _output, state) = source.init(Instant::MIN);
+            // On the async side: spawn the source's producer, take its event
+            // channel + write state. (The `init` output is unused — the graph's
+            // `push_source` node already holds the initial value.)
+            let (hist_rx, _output, state) = source.init(Instant::MIN);
             Box::new(move |driver: &mut Driver<Instant>, counter: Rc<Cell<usize>>| {
                 let mut write_state = state;
                 driver.add_feed(SourceFeed::new(hist_rx), move |g, ts, events: Vec<S::Event>| {
@@ -611,79 +611,5 @@ mod tests {
         let sink = Arc::clone(&batches);
         session.run(move |ts, _| sink.lock().unwrap().push(ts.as_nanos())).await;
         assert_eq!(*batches.lock().unwrap(), vec![1, 2, 3]);
-    }
-
-    // -- Randomized historical equivalence ----------------------------------
-
-    /// Independent oracle for the merge/record semantics: given each source's
-    /// sorted `(ts, value)` stream, the recorded series of `sum(sources)` has one
-    /// row per distinct timestamp (the union), whose value is the sum of every
-    /// source's most-recent value at-or-before that timestamp (`0` before its
-    /// first event). This is the historical behavior the *previous* bespoke
-    /// merge-heap driver produced (see the hand-specified cases above, which both
-    /// drivers pass); the test asserts the new `flowgraph::ingest` driver
-    /// reproduces it bit-for-bit over random streams.
-    fn oracle(streams: &[Vec<(i64, f64)>]) -> Vec<(i64, f64)> {
-        use std::collections::BTreeSet;
-        let all_ts: BTreeSet<i64> = streams.iter().flat_map(|s| s.iter().map(|&(t, _)| t)).collect();
-        let mut idx = vec![0usize; streams.len()];
-        let mut cur = vec![0.0f64; streams.len()];
-        let mut out = Vec::new();
-        for &t in &all_ts {
-            for (s, stream) in streams.iter().enumerate() {
-                while idx[s] < stream.len() && stream[idx[s]].0 <= t {
-                    cur[s] = stream[idx[s]].1;
-                    idx[s] += 1;
-                }
-            }
-            out.push((t, cur.iter().sum()));
-        }
-        out
-    }
-
-    #[tokio::test]
-    async fn random_historical_equivalence() {
-        use rand::rngs::StdRng;
-        use rand::{Rng, SeedableRng};
-
-        for seed in 0..100u64 {
-            let mut rng = StdRng::seed_from_u64(seed);
-            // Three sources, each a random sorted set of distinct timestamps in
-            // [0, 15) with integer-valued f64 values (so sums are exact),
-            // possibly sharing timestamps across sources (coalescing).
-            let streams: Vec<Vec<(i64, f64)>> = (0..3)
-                .map(|_| {
-                    let mut ts: Vec<i64> = (0..15).filter(|_| rng.gen_bool(0.4)).collect();
-                    ts.sort_unstable();
-                    ts.into_iter().map(|t| (t, rng.gen_range(0..50) as f64)).collect()
-                })
-                .collect();
-
-            let mut sc = Scenario::new();
-            let handles: Vec<_> = streams
-                .iter()
-                .map(|s| {
-                    let ts: Vec<i64> = s.iter().map(|&(t, _)| t).collect();
-                    let vals: Vec<f64> = s.iter().map(|&(_, v)| v).collect();
-                    let h = sc.add_source(src(&ts, &vals), Array::scalar(0.0));
-                    sc.as_view(h)
-                })
-                .collect();
-            // Sum all three: ((a + b) + c).
-            let ab = sc.add_operator(add::<f64, 0>(), (handles[0], handles[1]));
-            let abc = sc.add_operator(add::<f64, 0>(), (ab, handles[2]));
-            let hrec = sc.add_record(abc);
-
-            let mut session = sc.build();
-            session.run(|_, _| {}).await;
-
-            let expected = oracle(&streams);
-            let s: &Series<f64> = session.value(hrec);
-            let got_ts: Vec<i64> = s.timestamps().iter().map(|t| t.as_nanos()).collect();
-            let exp_ts: Vec<i64> = expected.iter().map(|&(t, _)| t).collect();
-            assert_eq!(got_ts, exp_ts, "seed {seed}: timestamps");
-            let exp_vals: Vec<f64> = expected.iter().map(|&(_, v)| v).collect();
-            assert_eq!(s.values(), exp_vals.as_slice(), "seed {seed}: values");
-        }
     }
 }

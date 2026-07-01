@@ -2,9 +2,9 @@
 //!
 //! Every source in this module implements [`Source`](crate::Source) and is
 //! registered into a [`Scenario`](crate::Scenario) via
-//! [`Scenario::add_source`](crate::Scenario::add_source). Sources feed events
-//! into the graph through historical and live channels; the event loop
-//! ([`Session::run`](crate::Session::run)) drains them in timestamp order.
+//! [`Scenario::add_source`](crate::Scenario::add_source). Sources stream events
+//! into the graph through an async channel; the event loop
+//! ([`Session::run`](crate::Session::run)) merges them in timestamp order.
 //!
 //! # Data sources
 //!

@@ -364,15 +364,9 @@ impl Source for CsvSource {
     fn init(
         &self,
         _timestamp: Instant,
-    ) -> (
-        mpsc::Receiver<(Instant, Array<f64, 1>)>,
-        mpsc::Receiver<(Instant, Array<f64, 1>)>,
-        Array<f64, 1>,
-        (),
-    ) {
+    ) -> (mpsc::Receiver<(Instant, Array<f64, 1>)>, Array<f64, 1>, ()) {
         let num_columns = self.value_columns.len();
         let (hist_tx, hist_rx) = mpsc::channel(64);
-        let (_, live_rx) = mpsc::channel(1);
 
         // Snapshot config into owned values so the spawned driver can
         // outlive `&self` - the spec stays borrowable for future sessions.
@@ -460,7 +454,7 @@ impl Source for CsvSource {
             }
         });
 
-        (hist_rx, live_rx, Array::zeros([num_columns]), ())
+        (hist_rx, Array::zeros([num_columns]), ())
     }
 
     fn write(_state: &mut (), payload: Array<f64, 1>, output: &mut Array<f64, 1>, _timestamp: Instant) -> usize {

@@ -2,14 +2,15 @@ use tokio::sync::mpsc;
 
 use crate::Instant;
 
-/// An asynchronous data source that receives events via channels and writes
-/// a typed output into a graph source cell.
+/// An asynchronous data source that streams timestamped events into a graph
+/// source cell.
 ///
 /// # Lifecycle
 ///
-/// 1. [`init`](Self::init) reads the spec by reference and produces two
-///    channel receivers (historical + live), the initial
-///    [`Output`](Self::Output), and the initial write [`State`](Self::State).
+/// 1. [`init`](Self::init) reads the spec by reference and produces a channel
+///    receiver of `(timestamp, event)` (filled by a spawned producer task, in
+///    non-decreasing timestamp order), the initial [`Output`](Self::Output), and
+///    the initial write [`State`](Self::State).
 /// 2. [`write`](Self::write) is called for each received channel item to update
 ///    the output (threading `State`), returning how many logical events it
 ///    represented.
@@ -35,18 +36,12 @@ pub trait Source: 'static {
     /// here. Lives on the driver thread, so no `Sync` bound.
     type State: Send + 'static;
 
-    /// Build channel receivers, the initial output, and the initial write
-    /// [`State`](Self::State) from a borrow of the spec.
-    #[allow(clippy::type_complexity)]
+    /// Build the event channel receiver, the initial output, and the initial
+    /// write [`State`](Self::State) from a borrow of the spec.
     fn init(
         &self,
         timestamp: Instant,
-    ) -> (
-        mpsc::Receiver<(Instant, Self::Event)>,
-        mpsc::Receiver<(Instant, Self::Event)>,
-        Self::Output,
-        Self::State,
-    );
+    ) -> (mpsc::Receiver<(Instant, Self::Event)>, Self::Output, Self::State);
 
     /// Apply a received channel item to the output, threading `state`, and return
     /// **how many logical events it represents** (for the run's event count).
@@ -64,7 +59,7 @@ pub trait Source: 'static {
     ) -> usize;
 
     /// Estimated total number of events this source will emit over its
-    /// lifetime. `None` for live / unbounded sources.
+    /// lifetime. `None` for unbounded sources.
     ///
     /// Used only for progress reporting via
     /// [`Session::run`](crate::Session::run)'s `on_flush` callback —

@@ -7,9 +7,8 @@ use crate::{Array, Scalar, Series, Source};
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
 ///
-/// Each event carries an `Array<T>` value.  The historical channel is filled
-/// by a spawned tokio task with bounded back-pressure; the live channel is
-/// empty.
+/// Each event carries an `Array<T>` value.  The event channel is filled by a
+/// spawned tokio task with bounded back-pressure.
 ///
 /// Requires a tokio runtime to be active when added to a scenario.
 #[derive(Clone)]
@@ -39,14 +38,8 @@ impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
     fn init(
         &self,
         _timestamp: Instant,
-    ) -> (
-        mpsc::Receiver<(Instant, Array<T, N>)>,
-        mpsc::Receiver<(Instant, Array<T, N>)>,
-        Array<T, N>,
-        (),
-    ) {
+    ) -> (mpsc::Receiver<(Instant, Array<T, N>)>, Array<T, N>, ()) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
-        let (_, live_rx) = mpsc::channel(1);
 
         // Clone the series for the spawned driver; the spec stays
         // borrowable so the same source can drive multiple sessions.
@@ -65,7 +58,7 @@ impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
             }
         });
 
-        (hist_rx, live_rx, self.default.clone(), ())
+        (hist_rx, self.default.clone(), ())
     }
 
     fn write(_state: &mut (), payload: Array<T, N>, output: &mut Array<T, N>, _timestamp: Instant) -> usize {

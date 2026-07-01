@@ -220,16 +220,10 @@ impl Source for ParquetPanelSource {
     fn init(
         &self,
         _timestamp: Instant,
-    ) -> (
-        mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
-        mpsc::Receiver<(Instant, Vec<RowUpdate>)>,
-        Array<f64, 2>,
-        PanelState,
-    ) {
+    ) -> (mpsc::Receiver<(Instant, Vec<RowUpdate>)>, Array<f64, 2>, PanelState) {
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
         let (hist_tx, hist_rx) = mpsc::channel(16);
-        let (_, live_rx) = mpsc::channel(1);
         let cfg = self.clone();
         let out_shape = self.out_shape();
 
@@ -239,7 +233,7 @@ impl Source for ParquetPanelSource {
             }
         });
 
-        (hist_rx, live_rx, Array::zeros(out_shape), PanelState::default())
+        (hist_rx, Array::zeros(out_shape), PanelState::default())
     }
 
     fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64, 2>, ts: Instant) -> usize {
