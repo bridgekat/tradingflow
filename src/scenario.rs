@@ -5,34 +5,37 @@
 //! [`Session`] owns the built graph + a worker [`Pool`] + the shared
 //! [`Clock`](crate::operators::Clock), and drives them via [`Session::run`].
 //!
-//! The event loop is [`flowgraph::ingest`]: a timestamp-ordered watermark merge
-//! with same-timestamp coalescing. Each source becomes a [`Feed`] whose
-//! `watermark`/`take_through` **block** on the source's historical channel to
-//! reveal the next in-order row; the sync driver runs on a `spawn_blocking`
-//! thread while the sources' async producer tasks stream rows into the channels
-//! with back-pressure. Per coalesced batch the driver pokes each fired source's
-//! cell (via the typed `Graph::state_mut`, which marks the dirty cone) through
-//! the source's [`write`](Source::write), advances the [`Clock`] to the batch
-//! timestamp, and runs one `stabilize`.
+//! The event loop is a [`flowgraph::ingest::Queue`]: an async,
+//! timestamp-ordered merge with same-timestamp coalescing, writing straight
+//! into the session's graph as its sink. Each source becomes a lazy feed —
+//! registered at [`Scenario::add_source`], but materialized (spawning the
+//! source's producer task) only at the first [`Session::run`] step, on the
+//! session's own task — whose channel adapts into a `Stream` of
+//! explicitly-stamped events with back-pressure. Per coalesced batch the
+//! queue writes each fired source's cell (via the typed `Graph::state_mut`,
+//! which marks the dirty cone) through the source's [`write`](Source::write),
+//! then the session runs one `stabilize`; everything happens on the session's
+//! own task, with no blocking bridge threads. The ingest wall clock is the
+//! real TAI [`WallClock`]: historical timestamps replay at full speed, while
+//! future-dated events wait for real time.
 //!
-//! Time is threaded out-of-band through the [`Clock`]: the apply step sets it to
+//! Time is threaded out-of-band through the [`Clock`]: the write step sets it to
 //! the batch timestamp before `stabilize`, and time-reading operators (e.g.
 //! [`Record`]) read it during compute.
 
-use std::cell::Cell;
-use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tokio::sync::mpsc;
 
 use flowgraph::core::Pool;
-use flowgraph::ingest::{Driver, Feed, Progress};
+use flowgraph::ingest::{Event, Feed, LazyFeed, Queue, Stamp, StreamFeed};
 use flowgraph::typed::{
     Graph, GraphBuilder, Handle, HandlesInterface, InterfaceHandles, RefPort, RefSource,
     RefViewPort, Segment, SourceHandle, ViewPort,
 };
 
+use crate::clock::WallClock;
 use crate::operators::{ArrayValue, Clock, Record};
 use crate::source::Source;
 use crate::{Array, Instant, Scalar, Series};
@@ -41,74 +44,26 @@ use crate::{Array, Instant, Scalar, Series};
 pub type ShutdownFlag = Arc<AtomicBool>;
 
 // ---------------------------------------------------------------------------
-// SourceFeed — bridges a source's historical channel to an ingest `Feed`
+// Ingest bridges — channel-to-feed adapter
 // ---------------------------------------------------------------------------
 
-/// A [`Feed`] over a source's historical event channel. `watermark`/`take_through`
-/// **block** (`blocking_recv`) on the channel until the next in-order row arrives
-/// or the channel closes (= the source is exhausted) — the driver runs on a
-/// dedicated blocking thread, so this "wait for the next row before advancing"
-/// is exactly the historical-ordering constraint. A one-slot peek buffer keeps
-/// `watermark` idempotent before a drain.
-struct SourceFeed<E> {
+/// The queue instantiation the session runs, sinking into the graph.
+type SessionQueue = Queue<Instant, Graph, WallClock>;
+
+/// Adapt a source's event channel (a stream of explicitly-stamped events,
+/// ending when the producer closes it) plus its write closure into a boxed
+/// graph-sink feed.
+fn feed<E: Send + 'static>(
     rx: mpsc::Receiver<(Instant, E)>,
-    buf: Option<(Instant, E)>,
-    closed: bool,
+    write: impl FnMut(&mut Graph, Instant, E) + Send + 'static,
+) -> Box<dyn Feed<Instant, Graph>> {
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        let (ts, event) = rx.recv().await?;
+        let event = Event { stamp: Stamp::Instant(ts), payload: Some(event) };
+        Some((event, rx))
+    });
+    Box::new(StreamFeed::new(stream, write))
 }
-
-impl<E: Send + 'static> SourceFeed<E> {
-    fn new(rx: mpsc::Receiver<(Instant, E)>) -> Self {
-        Self { rx, buf: None, closed: false }
-    }
-
-    /// Block until the next row is buffered (or the channel closes); return its
-    /// timestamp.
-    fn peek_ts(&mut self) -> Option<Instant> {
-        if self.buf.is_none() && !self.closed {
-            match self.rx.blocking_recv() {
-                Some(item) => self.buf = Some(item),
-                None => self.closed = true,
-            }
-        }
-        self.buf.as_ref().map(|(t, _)| *t)
-    }
-}
-
-impl<E: Send + 'static> Feed for SourceFeed<E> {
-    type Time = Instant;
-    type Delta = Vec<E>;
-
-    fn watermark(&mut self) -> Option<Instant> {
-        self.peek_ts()
-    }
-
-    fn take_through(&mut self, through: Instant) -> Option<Vec<E>> {
-        let mut batch = Vec::new();
-        while let Some(t) = self.peek_ts() {
-            if t > through {
-                break;
-            }
-            batch.push(self.buf.take().unwrap().1);
-        }
-        (!batch.is_empty()).then_some(batch)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Source erasure — a per-source registrar (async init) → feed-adder (driver)
-// ---------------------------------------------------------------------------
-
-/// Registers one source's feed into the driver. Created on the driver thread
-/// (so nothing here needs the tokio runtime), capturing the source's channel +
-/// write state + cell handle + clock — all `Send`, so it crosses to the driver
-/// thread. The `Rc` counter (driver-thread-local) accumulates the run's logical
-/// event count for the progress callback.
-type FeedAdder = Box<dyn FnOnce(&mut Driver<Instant>, Rc<Cell<usize>>) + Send>;
-
-/// Initialises one source (on the async side, spawning its producer task) and
-/// returns a [`FeedAdder`]. Kept in the [`Scenario`]/[`Session`] until
-/// [`run`](Session::run), which is when a source's producers should start.
-type Registrar = Box<dyn FnOnce() -> FeedAdder>;
 
 // ---------------------------------------------------------------------------
 // Scenario — builder
@@ -118,7 +73,12 @@ type Registrar = Box<dyn FnOnce() -> FeedAdder>;
 pub struct Scenario {
     builder: GraphBuilder,
     clock: Clock,
-    registrars: Vec<Registrar>,
+    /// The event queue. Sources register lazy feeds here at
+    /// [`add_source`](Self::add_source); their producers start at the first
+    /// [`Session::run`] step.
+    queue: SessionQueue,
+    /// Cumulative logical event count, for the progress callback.
+    counter: Arc<AtomicUsize>,
     /// Sum of every source's [`Source::estimated_event_count`]; `None` once any
     /// source can't estimate. Used only for the [`Session::run`] progress callback.
     estimated_total: Option<usize>,
@@ -129,7 +89,8 @@ impl Scenario {
         Self {
             builder: GraphBuilder::new(),
             clock: Clock::new(),
-            registrars: Vec::new(),
+            queue: SessionQueue::new(WallClock),
+            counter: Arc::new(AtomicUsize::new(0)),
             estimated_total: Some(0),
         }
     }
@@ -321,18 +282,15 @@ impl Scenario {
         )
     }
 
-    /// Register a [`Source`]. Its output cell is a `RefSource` node; the source's
-    /// producer task is spawned at [`run`](Session::run), and its events are
-    /// merged in timestamp order and written into the cell via [`Source::write`].
-    pub fn add_source<S: Source>(
-        &mut self,
-        source: S,
-        initial: S::Output,
-    ) -> Handle<RefPort<S::Output>>
+    /// Register a [`Source`]. Its output cell is a `RefSource` node holding
+    /// [`Source::initial`]; the source's producer task is spawned at
+    /// [`run`](Session::run), and its events are merged in timestamp order and
+    /// written into the cell via [`Source::write`].
+    pub fn add_source<S: Source>(&mut self, source: S) -> Handle<RefPort<S::Output>>
     where
         S::Output: Send + Sync + 'static,
     {
-        let handle = self.builder.push_source(RefSource::new(initial));
+        let handle = self.builder.push_source(RefSource::new(source.initial()));
         // Accumulate the progress estimate before the source is moved into the
         // registrar; a single un-estimable source makes the whole total unknown.
         let est = source.estimated_event_count();
@@ -341,24 +299,17 @@ impl Scenario {
             _ => None,
         };
         let clock = self.clock.clone();
-        self.registrars.push(Box::new(move || -> FeedAdder {
-            // On the async side: spawn the source's producer, take its event
-            // channel + write state. (The `init` output is unused — the graph's
-            // `push_source` node already holds the initial value.)
-            let (hist_rx, _output, state) = source.init(Instant::MIN);
-            Box::new(move |driver: &mut Driver<Instant>, counter: Rc<Cell<usize>>| {
-                let mut write_state = state;
-                driver.add_feed(SourceFeed::new(hist_rx), move |g, ts, events: Vec<S::Event>| {
-                    clock.set(ts);
-                    let out = g.state_mut(handle);
-                    let mut n = 0usize;
-                    for ev in events {
-                        n += S::write(&mut write_state, ev, out, ts);
-                    }
-                    counter.set(counter.get() + n);
-                });
+        let counter = Arc::clone(&self.counter);
+        // The feed is lazy: `init` (which spawns the producer task) runs on
+        // the session task at the first `run` step, not here.
+        self.queue.add_feed(Box::new(LazyFeed::new(move || {
+            let (rx, mut state) = source.init();
+            feed(rx, move |g, ts, event| {
+                clock.set(ts);
+                let n = S::write(&mut state, event, g.state_mut(handle), ts);
+                counter.fetch_add(n, Ordering::Relaxed);
             })
-        }));
+        })));
         *handle
     }
 
@@ -372,14 +323,16 @@ impl Scenario {
         let Scenario {
             builder,
             clock,
-            registrars,
+            queue,
+            counter,
             estimated_total,
         } = self;
         Session {
-            graph: Some(Graph::from_builder(builder)),
-            pool: Some(Pool::new(n)),
+            graph: Graph::from_builder(builder),
+            pool: Pool::new(n),
             clock,
-            registrars,
+            queue,
+            counter,
             estimated_total,
         }
     }
@@ -395,23 +348,17 @@ impl Default for Scenario {
 // Session — runtime + event loop
 // ---------------------------------------------------------------------------
 
-/// A live execution: owns the graph, the worker pool, and the clock. The graph
-/// and pool are `Option`-held so [`run`](Self::run) can lend them to the driver
-/// thread and reclaim them (they are `Some` except during a `run`).
+/// A live execution: owns the graph, the worker pool, the clock, and the
+/// event queue. The queue never takes the graph — [`run`](Self::run) lends it
+/// to [`Queue::step`] as the sink, one borrow at a time.
 pub struct Session {
-    graph: Option<Graph>,
-    pool: Option<Pool>,
+    graph: Graph,
+    pool: Pool,
     clock: Clock,
-    registrars: Vec<Registrar>,
+    queue: SessionQueue,
+    counter: Arc<AtomicUsize>,
     estimated_total: Option<usize>,
 }
-
-// SAFETY: the graph and pool are `Send`; the clock is an `Arc<AtomicI64>`. The
-// registrars capture the (possibly `!Send`) source specs but are only ever run
-// on the async task that owns the session, before their `Send` feed-adders (and
-// only those) cross to the driver thread. The session is driven from a single
-// task.
-unsafe impl Send for Session {}
 
 impl Session {
     /// Sum of every source's estimated event count, or `None` if any source
@@ -423,7 +370,7 @@ impl Session {
 
     /// Immutable access to a by-reference node value.
     pub fn value<T: Send + Sync + 'static>(&self, handle: Handle<RefPort<T>>) -> &T {
-        self.graph.as_ref().unwrap().ref_view(handle)
+        self.graph.ref_view(handle)
     }
 
     /// Mutable access to a source cell's value (marks its dirty cone). Only
@@ -433,72 +380,41 @@ impl Session {
         &mut self,
         handle: SourceHandle<RefSource<T>>,
     ) -> &mut T {
-        self.graph.as_mut().unwrap().state_mut(handle)
+        self.graph.state_mut(handle)
     }
 
     /// Manually advance the clock and stabilize (the synchronous-step API).
     /// Call after mutating one or more source cells via [`cell_mut`](Self::cell_mut).
     pub fn flush(&mut self, timestamp: Instant) {
         self.clock.set(timestamp);
-        let pool = self.pool.as_mut().unwrap();
-        self.graph.as_mut().unwrap().stabilize(pool);
+        self.graph.stabilize(&mut self.pool);
     }
 
     /// Drive the event loop until every source is exhausted.
     ///
     /// `on_flush(batch_ts, events_processed_so_far)` is invoked once per
-    /// coalesced batch.
-    pub async fn run(&mut self, on_flush: impl FnMut(Instant, usize) + Send + 'static) {
+    /// coalesced batch, after its stabilize.
+    pub async fn run(&mut self, on_flush: impl FnMut(Instant, usize)) {
         self.run_with_shutdown(on_flush, Arc::new(AtomicBool::new(false)))
             .await;
     }
 
-    /// Like [`run`](Self::run), but cooperatively cancellable via `shutdown`.
+    /// Like [`run`](Self::run), but cooperatively cancellable via `shutdown`
+    /// (checked between batches).
     pub async fn run_with_shutdown(
         &mut self,
-        on_flush: impl FnMut(Instant, usize) + Send + 'static,
+        mut on_flush: impl FnMut(Instant, usize),
         shutdown: ShutdownFlag,
     ) {
-        if self.registrars.is_empty() {
-            return;
+        // The lazy feeds materialize (spawning their producer tasks) at the
+        // first step, on this task. Per completed batch: stabilize, then
+        // `on_flush` with the batch timestamp and the cumulative event count.
+        while !shutdown.load(Ordering::Relaxed)
+            && let Some(ts) = self.queue.step(&mut self.graph).await
+        {
+            self.graph.stabilize(&mut self.pool);
+            on_flush(ts, self.counter.load(Ordering::Relaxed));
         }
-        // Initialise every source on the async side (spawns its producer task),
-        // producing `Send` feed-adders that cross to the driver thread.
-        let adders: Vec<FeedAdder> = self.registrars.drain(..).map(|r| r()).collect();
-        let graph = self.graph.take().unwrap();
-        let pool = self.pool.take().unwrap();
-        let clock = self.clock.clone();
-
-        // Run the synchronous merge driver on a blocking thread: its feeds block
-        // on the source channels, which the producer tasks fill concurrently.
-        let (graph, pool) = tokio::task::spawn_blocking(move || {
-            let counter = Rc::new(Cell::new(0usize));
-            let mut driver = Driver::new(graph, pool);
-            for adder in adders {
-                adder(&mut driver, Rc::clone(&counter));
-            }
-            let mut on_flush = on_flush;
-            loop {
-                if shutdown.load(Ordering::Relaxed) {
-                    break;
-                }
-                // `on_flush` runs after stabilize with the batch timestamp (from
-                // the clock the apply step set) and the cumulative event count.
-                let progress = driver.step(|_g| on_flush(clock.get(), counter.get()));
-                match progress {
-                    // Historical feeds always make progress until exhausted, so
-                    // `Idle` should not occur; treat it as a safe stop.
-                    Progress::Done | Progress::Idle => break,
-                    Progress::Stabilized => {}
-                }
-            }
-            driver.into_parts()
-        })
-        .await
-        .unwrap();
-
-        self.graph = Some(graph);
-        self.pool = Some(pool);
     }
 }
 
@@ -525,7 +441,7 @@ mod tests {
     #[tokio::test]
     async fn run_single_source_record() {
         let mut sc = Scenario::new();
-        let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]), Array::scalar(0.0));
+        let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
         let hv = sc.as_view(h);
         let hrec = sc.add_record(hv);
 
@@ -542,8 +458,8 @@ mod tests {
     #[tokio::test]
     async fn run_two_sources_add() {
         let mut sc = Scenario::new();
-        let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]), Array::scalar(0.0));
-        let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]), Array::scalar(0.0));
+        let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]));
+        let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]));
         let (hav, hbv) = (sc.as_view(ha), sc.as_view(hb));
         let ho = sc.add_operator(add::<f64, 0>(), (hav, hbv));
         let hrec = sc.add_record(ho);
@@ -561,8 +477,8 @@ mod tests {
     #[tokio::test]
     async fn run_coalescing() {
         let mut sc = Scenario::new();
-        let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]), Array::scalar(0.0));
-        let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]), Array::scalar(0.0));
+        let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]));
+        let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]));
         let (hav, hbv) = (sc.as_view(ha), sc.as_view(hb));
         let ho = sc.add_operator(add::<f64, 0>(), (hav, hbv));
         let hrec = sc.add_record(ho);
@@ -580,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn run_filter_cutoff() {
         let mut sc = Scenario::new();
-        let h = sc.add_source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]), Array::scalar(0.0));
+        let h = sc.add_source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
         let hv = sc.as_view(h);
         let hf = sc.add_operator(Filter::<_, 0>(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), hv);
         let hrec = sc.add_record(hf);
@@ -595,21 +511,17 @@ mod tests {
     }
 
     /// `on_flush` fires once per coalesced batch (3 distinct timestamps here).
-    /// The callback runs on the driver's `spawn_blocking` thread, so results are
-    /// collected through a `Send` shared vec.
+    /// The callback runs on the session's own task, so it can borrow locals.
     #[tokio::test]
     async fn on_flush_per_batch() {
-        use std::sync::{Arc, Mutex};
-
         let mut sc = Scenario::new();
-        let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]), Array::scalar(0.0));
+        let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
         let hv = sc.as_view(h);
         let _ = sc.add_record(hv);
 
         let mut session = sc.build();
-        let batches = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&batches);
-        session.run(move |ts, _| sink.lock().unwrap().push(ts.as_nanos())).await;
-        assert_eq!(*batches.lock().unwrap(), vec![1, 2, 3]);
+        let mut batches = Vec::new();
+        session.run(|ts, _| batches.push(ts.as_nanos())).await;
+        assert_eq!(batches, vec![1, 2, 3]);
     }
 }

@@ -101,7 +101,7 @@ async fn main() {
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
 
     // ---- Universe + predictor + portfolio -------------------------------
-    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
+    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
     let universe = common::build_cap_weighted_universe(
         &mut sc,
         circ_market_cap,

@@ -93,7 +93,7 @@ async fn main() {
     let log_returns = sc.add_operator(Diff::<f64, 1>::new(), log_adj);
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
 
-    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
+    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
     let universe =
         common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
     // The Python predictor/portfolio operators consume whole-array `RefPort`s;

@@ -468,15 +468,6 @@ fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
     a.to_contiguous().iter().any(|x| x.is_finite())
 }
 
-/// An all-NaN rank-2 `Array<f64, 2>` of `[rows, cols]` — the correct "no data
-/// yet" initial cell value for a panel source. The per-row sources only `write`
-/// rows that have an event, so an unwritten row must read as NaN (not `0.0`) for
-/// the per-stock `Gate` to drop it before the stock's first observation.
-pub fn nan_array(shape: &[usize]) -> Array<f64, 2> {
-    let ext = <[usize; 2]>::try_from(shape).expect("panel out_shape is rank-2 [N, K]");
-    Array::from_vec(ext, vec![f64::NAN; ext.iter().product()])
-}
-
 /// Load the consolidated long-format parquet panels and stack into the
 /// cross-sectional panel. One [`ParquetPanelSource`] / [`ReportPanelSource`] per
 /// data kind (one sequential scan each) replaces the per-symbol CSV fan-in.
@@ -505,8 +496,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     let daily_panel = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ViewPort<ArrayValue<f64, 2>>> {
         let s = ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
             .with_time_range(start, end);
-        let init = nan_array(&s.out_shape());
-        let h = sc.add_source(s, init);
+        let h = sc.add_source(s);
         sc.as_view(h)
     };
     let report_panel = |sc: &mut Scenario,
@@ -518,8 +508,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             .with_report_date(with_report_date)
             .use_effective_date(Duration::ZERO)
             .with_time_range(start, end);
-        let init = nan_array(&s.out_shape());
-        let h = sc.add_source(s, init);
+        let h = sc.add_source(s);
         sc.as_view(h)
     };
 

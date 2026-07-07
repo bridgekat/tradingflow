@@ -56,7 +56,7 @@ async fn main() {
     let (target, _target_series, _demeaned) =
         common::build_log_return_target(&mut sc, log_adj, tradingflow::Retention::UNBOUNDED);
 
-    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
+    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
     let universe =
         common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
 

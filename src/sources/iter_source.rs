@@ -1,6 +1,6 @@
 //! Iterator-based source - feeds events from an arbitrary iterator factory.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
@@ -12,13 +12,11 @@ type EventIter<T> = Box<dyn Iterator<Item = (Instant, T)> + Send>;
 
 /// Shared, cheaply-cloned factory that produces fresh event iterators.
 ///
-/// Stored behind `Rc<...>` so the [`IterSource`] spec satisfies `Clone`
-/// (refcount bump only) and can drive multiple scenario sessions, each
-/// with a freshly built iterator.  `Rc` (rather than `Arc`) is used
-/// deliberately: the spec is constructed and consumed on the registering
-/// thread, and the produced iterator (which crosses thread boundaries
-/// via the tokio task spawned in [`Source::init`]) is itself `Send`.
-type IterFactory<T> = Rc<dyn Fn() -> EventIter<T>>;
+/// Stored behind `Arc<...>` so the [`IterSource`] spec satisfies `Clone`
+/// (refcount bump only) and can drive multiple scenario sessions, each with a
+/// freshly built iterator — and `Send`, as [`Source`] requires (the spec
+/// moves into the session's lazily-started feed).
+type IterFactory<T> = Arc<dyn Fn() -> EventIter<T> + Send + Sync>;
 
 /// A source driven by a factory of `(timestamp, event)` iterators.
 ///
@@ -40,7 +38,7 @@ pub struct IterSource<T: Clone + Send + 'static> {
 impl<T: Clone + Send + 'static> Clone for IterSource<T> {
     fn clone(&self) -> Self {
         Self {
-            factory: Rc::clone(&self.factory),
+            factory: Arc::clone(&self.factory),
             default: self.default.clone(),
             estimated_event_count: self.estimated_event_count,
         }
@@ -52,14 +50,14 @@ impl<T: Clone + Send + 'static> IterSource<T> {
     ///
     /// `factory` is called once per [`Source::init`] invocation and must
     /// produce a fresh iterator over `(timestamp, value)` pairs each time.
-    /// The factory is shared via `Rc` across clones of the source.
+    /// The factory is shared via `Arc` across clones of the source.
     pub fn new<I, F>(factory: F, default: T) -> Self
     where
         I: Iterator<Item = (Instant, T)> + Send + 'static,
-        F: Fn() -> I + 'static,
+        F: Fn() -> I + Send + Sync + 'static,
     {
         Self {
-            factory: Rc::new(move || Box::new(factory())),
+            factory: Arc::new(move || Box::new(factory())),
             default,
             estimated_event_count: None,
         }
@@ -72,16 +70,19 @@ impl<T: Clone + Send + 'static> IterSource<T> {
     /// event count is set to the vector length automatically.
     pub fn from_vec(events: Vec<(Instant, T)>) -> Self
     where
-        T: Default,
+        T: Default + Sync,
     {
         Self::from_vec_with_default(events, T::default())
     }
 
     /// Like [`from_vec`](Self::from_vec) but with an explicit default
     /// output value.
-    pub fn from_vec_with_default(events: Vec<(Instant, T)>, default: T) -> Self {
+    pub fn from_vec_with_default(events: Vec<(Instant, T)>, default: T) -> Self
+    where
+        T: Sync,
+    {
         let count = events.len();
-        let events = Rc::new(events);
+        let events = Arc::new(events);
         Self::new(
             move || {
                 let snapshot: Vec<(Instant, T)> = (*events).clone();
@@ -112,7 +113,11 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
         self.estimated_event_count
     }
 
-    fn init(&self, _timestamp: Instant) -> (mpsc::Receiver<(Instant, T)>, T, ()) {
+    fn initial(&self) -> T {
+        self.default.clone()
+    }
+
+    fn init(&self) -> (mpsc::Receiver<(Instant, T)>, ()) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
         let iter = (self.factory)();
@@ -124,7 +129,7 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
             }
         });
 
-        (hist_rx, self.default.clone(), ())
+        (hist_rx, ())
     }
 
     fn write(_state: &mut (), payload: T, output: &mut T, _timestamp: Instant) -> usize {

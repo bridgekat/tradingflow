@@ -7,11 +7,13 @@ use crate::Instant;
 ///
 /// # Lifecycle
 ///
-/// 1. [`init`](Self::init) reads the spec by reference and produces a channel
+/// 1. [`initial`](Self::initial) produces the value the source cell holds
+///    before any event (read at graph-build time).
+/// 2. [`init`](Self::init) reads the spec by reference and produces a channel
 ///    receiver of `(timestamp, event)` (filled by a spawned producer task, in
-///    non-decreasing timestamp order), the initial [`Output`](Self::Output), and
-///    the initial write [`State`](Self::State).
-/// 2. [`write`](Self::write) is called for each received channel item to update
+///    non-decreasing timestamp order) and the initial write
+///    [`State`](Self::State).
+/// 3. [`write`](Self::write) is called for each received channel item to update
 ///    the output (threading `State`), returning how many logical events it
 ///    represented.
 ///
@@ -21,10 +23,13 @@ use crate::Instant;
 /// [`Session`](crate::Session)s — the driver keeps the spec by value and
 /// calls `init` against the shared reference on every session start.
 /// Implementations should treat the spec as immutable configuration; per-session
-/// state lives in [`Output`](Self::Output) / [`State`](Self::State) (built fresh
-/// by `init`). Clone any field that needs to move into an async driver task
-/// (e.g. into [`tokio::spawn`]) explicitly.
-pub trait Source: 'static {
+/// state lives in [`State`](Self::State) (built fresh by `init`). Clone any
+/// field that needs to move into an async producer task (e.g. into
+/// [`tokio::spawn`]) explicitly.
+///
+/// `Send` because the spec moves into its session's lazily-started feed,
+/// which lives inside the (Send) event queue until the run begins.
+pub trait Source: Send + 'static {
     /// Channel event type.
     type Event: Send + 'static;
     /// Output type.
@@ -33,15 +38,16 @@ pub trait Source: 'static {
     /// call (created by [`init`](Self::init)). Use `()` for stateless sources;
     /// sources that need to remember something across events — e.g. a panel that
     /// clears the previous tick's entries when the timestamp advances — keep it
-    /// here. Lives on the driver thread, so no `Sync` bound.
+    /// here.
     type State: Send + 'static;
 
-    /// Build the event channel receiver, the initial output, and the initial
-    /// write [`State`](Self::State) from a borrow of the spec.
-    fn init(
-        &self,
-        timestamp: Instant,
-    ) -> (mpsc::Receiver<(Instant, Self::Event)>, Self::Output, Self::State);
+    /// The value the source cell holds before any event arrives.
+    fn initial(&self) -> Self::Output;
+
+    /// Build the event channel receiver and the initial write
+    /// [`State`](Self::State) from a borrow of the spec, spawning the
+    /// producer task.
+    fn init(&self) -> (mpsc::Receiver<(Instant, Self::Event)>, Self::State);
 
     /// Apply a received channel item to the output, threading `state`, and return
     /// **how many logical events it represents** (for the run's event count).

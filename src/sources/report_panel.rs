@@ -39,7 +39,8 @@ use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::parquet_panel::{
-    PanelState, RowUpdate, count_rows_in_range, instant_from_days, panel_write, report_year_and_doy,
+    PanelState, RowUpdate, count_rows_in_range, instant_from_days, nan_panel, panel_write,
+    report_year_and_doy,
     resolve_symbols,
 };
 use crate::{Array, Duration, Instant, Source};
@@ -151,14 +152,14 @@ impl Source for ReportPanelSource {
         )
     }
 
-    fn init(
-        &self,
-        _timestamp: Instant,
-    ) -> (mpsc::Receiver<(Instant, Vec<RowUpdate>)>, Array<f64, 2>, PanelState) {
+    fn initial(&self) -> Array<f64, 2> {
+        nan_panel(self.out_shape())
+    }
+
+    fn init(&self) -> (mpsc::Receiver<(Instant, Vec<RowUpdate>)>, PanelState) {
         // One item per tick (a batch of that date's reports); small buffer.
         let (hist_tx, hist_rx) = mpsc::channel(16);
         let cfg = self.clone();
-        let out_shape = self.out_shape();
 
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_reports(&cfg, &hist_tx) {
@@ -166,7 +167,7 @@ impl Source for ReportPanelSource {
             }
         });
 
-        (hist_rx, Array::zeros(out_shape), PanelState::default())
+        (hist_rx, PanelState::default())
     }
 
     fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64, 2>, ts: Instant) -> usize {

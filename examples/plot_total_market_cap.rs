@@ -47,7 +47,7 @@ async fn main() {
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
 
-    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
+    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
     let universe =
         common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
 

@@ -398,7 +398,9 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
     /// Materialize the view into a fresh row-major `Vec<T>`.
     pub fn to_vec(&self) -> Vec<T> {
         let mut out = Vec::with_capacity(self.shape.len());
-        for_each_offset(&self.shape, self.offset, |off| out.push(self.data[off].clone()));
+        for_each_offset(&self.shape, self.offset, |off| {
+            out.push(self.data[off].clone())
+        });
         out
     }
 

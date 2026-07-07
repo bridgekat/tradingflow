@@ -103,7 +103,7 @@ async fn main() {
         common::build_log_return_target(&mut sc, log_adj, tradingflow::Retention::UNBOUNDED);
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
 
-    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()), ());
+    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
     let universe =
         common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
     let universe_ref = own(&mut sc, universe);

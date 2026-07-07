@@ -38,10 +38,10 @@ async fn main() {
 
     // A source feeds timestamped values into the graph; `Record` collects them
     // into a time series; `RollingMean` reduces the series to its last-N mean.
-    let prices = sc.add_source(
-        ArraySource::new(Series::from_vec(&[], timestamps, values), Array::scalar(0.0)),
+    let prices = sc.add_source(ArraySource::new(
+        Series::from_vec(&[], timestamps, values),
         Array::scalar(0.0),
-    );
+    ));
     let prices = sc.as_view(prices);
     let history = sc.add_record(prices);
     let ma = sc.add_operator(RollingMean::<f64, 0>::count(10), history);

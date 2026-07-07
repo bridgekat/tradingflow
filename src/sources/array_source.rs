@@ -35,10 +35,11 @@ impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
         Some(self.series.len())
     }
 
-    fn init(
-        &self,
-        _timestamp: Instant,
-    ) -> (mpsc::Receiver<(Instant, Array<T, N>)>, Array<T, N>, ()) {
+    fn initial(&self) -> Array<T, N> {
+        self.default.clone()
+    }
+
+    fn init(&self) -> (mpsc::Receiver<(Instant, Array<T, N>)>, ()) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
         // Clone the series for the spawned driver; the spec stays
@@ -58,7 +59,7 @@ impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
             }
         });
 
-        (hist_rx, self.default.clone(), ())
+        (hist_rx, ())
     }
 
     fn write(_state: &mut (), payload: Array<T, N>, output: &mut Array<T, N>, _timestamp: Instant) -> usize {

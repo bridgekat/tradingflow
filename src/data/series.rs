@@ -33,8 +33,8 @@
 //! [`view`]: Series::view
 //! [`tail`]: Series::tail
 
-use super::time::{Duration, Instant};
 use super::Scalar;
+use super::time::{Duration, Instant};
 
 /// A retention bound for a [`Series`]: how much history to keep.
 ///
@@ -616,7 +616,11 @@ mod tests {
         // Logical length is the full count; physical storage is bounded (<= 2x
         // the window thanks to amortized compaction).
         assert_eq!(s.len(), 10);
-        assert!(s.retained_len() <= 6, "retained {} > 2x window", s.retained_len());
+        assert!(
+            s.retained_len() <= 6,
+            "retained {} > 2x window",
+            s.retained_len()
+        );
         assert!(s.retained_len() >= 3, "fewer than the window retained");
         assert_eq!(s.base(), s.len() - s.retained_len());
 
@@ -643,7 +647,8 @@ mod tests {
     #[test]
     fn duration_retention_keeps_time_window() {
         // Keep everything within 250ns of the latest; ticks are 100ns apart.
-        let mut s = Series::<f64>::with_retention(&[1], Retention::duration(Duration::from_nanos(250)));
+        let mut s =
+            Series::<f64>::with_retention(&[1], Retention::duration(Duration::from_nanos(250)));
         for i in 0..10 {
             s.push(ts((i + 1) * 100), &[i as f64]);
         }

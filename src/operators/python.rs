@@ -90,8 +90,8 @@
 //!
 //! High level, via [`Scenario`](crate::Scenario):
 //! ```ignore
-//! let a = sc.add_source(/* ... */, Array::zeros(&[n]));
-//! let b = sc.add_source(/* ... */, Array::zeros(&[n]));
+//! let a = sc.add_source(/* ... */);
+//! let b = sc.add_source(/* ... */);
 //! let sum = sc.add_py_operator("lambda a, b: a + b", &[a, b], n);          // return mode
 //! let dbl = sc.add_py_operator_writing("lambda out, a: np.multiply(a, 2.0, out=out)", &[a], n);
 //! ```

@@ -98,16 +98,14 @@ async fn main() {
     // ------------------------------------------------------------------
     let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ViewPort<ArrayValue<f64, 1>>> {
         let s = ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
-        let init = common::nan_array(&s.out_shape());
-        let panel = sc.add_source(s, init);
+        let panel = sc.add_source(s);
         let panel = sc.as_view(panel);
         pick(sc, panel, idx)
     };
     let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<ViewPort<ArrayValue<f64, 1>>> {
         let s = ReportPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone())
             .with_report_date(with_report_date);
-        let init = common::nan_array(&s.out_shape());
-        let panel = sc.add_source(s, init);
+        let panel = sc.add_source(s);
         let panel = sc.as_view(panel);
         pick(sc, panel, idx)
     };

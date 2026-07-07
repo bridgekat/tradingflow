@@ -96,8 +96,7 @@ async fn main() {
         symbols.clone(),
     );
     let price_panel = {
-        let init = common::nan_array(&price_src.out_shape());
-        let h = sc.add_source(price_src, init);
+        let h = sc.add_source(price_src);
         sc.as_view(h)
     };
     let div_src = ParquetPanelSource::new(
@@ -106,8 +105,7 @@ async fn main() {
         symbols.clone(),
     );
     let div_panel = {
-        let init = common::nan_array(&div_src.out_shape());
-        let h = sc.add_source(div_src, init);
+        let h = sc.add_source(div_src);
         sc.as_view(h)
     };
 

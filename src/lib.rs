@@ -21,6 +21,7 @@
 //!
 //! # Modules
 //!
+//! * [`clock`] — the real TAI [`WallClock`] driving the event loop.
 //! * [`data`] — primitive containers: [`Array`] / [`ArrayView`], [`Series`],
 //!   [`Instant`] / [`Duration`] (SI nanoseconds since the 1970 TAI epoch),
 //!   plus [`Scalar`].
@@ -33,6 +34,7 @@
 //!   (the async event-loop driver).
 //! * [`utils`] — [`Schema`].
 
+pub mod clock;
 pub mod data;
 pub mod operators;
 pub mod scenario;
@@ -40,6 +42,7 @@ pub mod source;
 pub mod sources;
 pub mod utils;
 
+pub use clock::WallClock;
 pub use data::{
     Array, ArrayView, Duration, Instant, Retention, Scalar, Series, Shape, tai_to_utc, utc_to_tai,
 };

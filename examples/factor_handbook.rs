@@ -240,7 +240,7 @@ async fn main() {
     let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
     let log_adj = sc.add_operator(log::<f64, 1>(), st.adjusted_close);
 
-    let rebalance_clock = sc.add_source(clock(args.common.rebalance_instants()), ());
+    let rebalance_clock = sc.add_source(clock(args.common.rebalance_instants()));
 
     // Universe = the top-`index_size` stocks by circulating market cap, recomputed
     // each rebalance — a synthetic cap-ranked index, uniform with the other

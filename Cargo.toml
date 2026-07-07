@@ -27,6 +27,7 @@ tokio = { version = "1", features = [
     "sync",
     "macros",
     "fs",
+    "time",
 ] }
 hifitime = "4"
 pyo3 = { version = "0.28.2", optional = true }
@@ -40,10 +41,11 @@ rand = "0.8"
 csv = "1.3"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 csv-async = { version = "1.3.1", features = ["tokio"] }
-# The synchronous parallel DAG engine that tradingflow wraps. Pinned by commit
-# for reproducibility (Cargo.lock pins it too); to hack on flowgraph locally,
-# see the `[patch]` at the bottom of this file.
-flowgraph = { git = "https://github.com/bridgekat/flowgraph.git", rev = "055fd355ff4436288e60b7df492c385e60846991" }
+# The parallel DAG engine that tradingflow wraps; the `ingest` feature is its
+# async timestamp-merge event loop. Pinned by commit for reproducibility
+# (Cargo.lock pins it too); to hack on flowgraph locally, see the `[patch]` at
+# the bottom of this file.
+flowgraph = { git = "https://github.com/bridgekat/flowgraph.git", rev = "97437b4f9cdd7601fe3b3b08cb6f686690e35fe4", features = ["ingest"] }
 arrow = "58.3.0"
 parquet = { version = "58.3.0", features = ["arrow", "zstd"] }
 

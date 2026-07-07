@@ -274,10 +274,17 @@ impl Source for FinancialReportSource {
         ))
     }
 
-    fn init(
-        &self,
-        _timestamp: Instant,
-    ) -> (mpsc::Receiver<(Instant, Array<f64, 1>)>, Array<f64, 1>, ()) {
+    fn initial(&self) -> Array<f64, 1> {
+        let num_values = self.value_columns.len();
+        let output_len = if self.with_report_date {
+            2 + num_values
+        } else {
+            num_values
+        };
+        Array::zeros([output_len])
+    }
+
+    fn init(&self) -> (mpsc::Receiver<(Instant, Array<f64, 1>)>, ()) {
         let num_values = self.value_columns.len();
         let output_len = if self.with_report_date {
             2 + num_values
@@ -342,7 +349,7 @@ impl Source for FinancialReportSource {
             }
         });
 
-        (hist_rx, Array::zeros([output_len]), ())
+        (hist_rx, ())
     }
 
     fn write(_state: &mut (), payload: Array<f64, 1>, output: &mut Array<f64, 1>, _timestamp: Instant) -> usize {

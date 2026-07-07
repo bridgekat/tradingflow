@@ -40,5 +40,3 @@ impl Scalar for u64 {}
 impl Scalar for f32 {}
 impl Scalar for f64 {}
 impl Scalar for String {}
-
-

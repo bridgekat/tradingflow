@@ -361,10 +361,11 @@ impl Source for CsvSource {
         ))
     }
 
-    fn init(
-        &self,
-        _timestamp: Instant,
-    ) -> (mpsc::Receiver<(Instant, Array<f64, 1>)>, Array<f64, 1>, ()) {
+    fn initial(&self) -> Array<f64, 1> {
+        Array::zeros([self.value_columns.len()])
+    }
+
+    fn init(&self) -> (mpsc::Receiver<(Instant, Array<f64, 1>)>, ()) {
         let num_columns = self.value_columns.len();
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
@@ -454,7 +455,7 @@ impl Source for CsvSource {
             }
         });
 
-        (hist_rx, Array::zeros([num_columns]), ())
+        (hist_rx, ())
     }
 
     fn write(_state: &mut (), payload: Array<f64, 1>, output: &mut Array<f64, 1>, _timestamp: Instant) -> usize {

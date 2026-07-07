@@ -108,11 +108,7 @@ impl ParquetPanelSource {
         self
     }
 
-    /// Emitted element shape, `[N, value_columns]`. Pass an **all-NaN** array of
-    /// this shape as the `initial` value to
-    /// [`Scenario::add_source`](crate::Scenario::add_source): the per-tick
-    /// `write` only sets rows that have an event, so an unwritten row must read as
-    /// `NaN` (not `0.0`) for the per-stock `Filter` to drop it.
+    /// Emitted element shape, `[N, value_columns]`.
     pub fn out_shape(&self) -> [usize; 2] {
         [self.symbols.len(), self.value_columns.len()]
     }
@@ -172,6 +168,13 @@ impl Default for PanelState {
 /// in a batch shares the tick's `ts` and the source's `K` (taken from the first
 /// row, so it works for both 2-D `[N, K]` and squeezed `[N]` cells). Returns the
 /// number of rows applied — the per-event count the run reports.
+/// The all-NaN initial panel: the per-tick `write` only sets rows that have
+/// an event, so an unwritten row must read as `NaN` (not `0.0`) for the
+/// per-stock `Filter` to drop it.
+pub(crate) fn nan_panel(shape: [usize; 2]) -> Array<f64, 2> {
+    Array::from_vec(shape, vec![f64::NAN; shape.iter().product()])
+}
+
 pub(crate) fn panel_write(
     state: &mut PanelState,
     batch: Vec<RowUpdate>,
@@ -217,15 +220,15 @@ impl Source for ParquetPanelSource {
         )
     }
 
-    fn init(
-        &self,
-        _timestamp: Instant,
-    ) -> (mpsc::Receiver<(Instant, Vec<RowUpdate>)>, Array<f64, 2>, PanelState) {
+    fn initial(&self) -> Array<f64, 2> {
+        nan_panel(self.out_shape())
+    }
+
+    fn init(&self) -> (mpsc::Receiver<(Instant, Vec<RowUpdate>)>, PanelState) {
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
         let (hist_tx, hist_rx) = mpsc::channel(16);
         let cfg = self.clone();
-        let out_shape = self.out_shape();
 
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_panel(&cfg, &hist_tx) {
@@ -233,7 +236,7 @@ impl Source for ParquetPanelSource {
             }
         });
 
-        (hist_rx, Array::zeros(out_shape), PanelState::default())
+        (hist_rx, PanelState::default())
     }
 
     fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64, 2>, ts: Instant) -> usize {
