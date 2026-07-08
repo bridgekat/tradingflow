@@ -2,26 +2,28 @@
 //!
 //! [`Scenario`] builds a `flowgraph` graph whose source cells are `push_source`
 //! nodes and registers a [`Source`](crate::source::Source) per source cell.
-//! [`Session`] owns the built graph + a worker [`Pool`] + the shared
-//! [`Clock`](crate::operators::Clock), and drives them via [`Session::run`].
+//! [`Session`] owns the ingest [`Driver`] (graph + worker [`Pool`] + event
+//! queue) plus the shared [`Clock`](crate::operators::Clock), and drives them
+//! via [`Session::run`].
 //!
-//! The event loop is a [`flowgraph::ingest::Queue`]: an async,
-//! timestamp-ordered merge with same-timestamp coalescing, writing straight
-//! into the session's graph as its sink. Each source becomes a lazy feed —
-//! registered at [`Scenario::add_source`], but materialized (spawning the
-//! source's producer task) only at the first [`Session::run`] step, on the
-//! session's own task — whose channel adapts into a `Stream` of
+//! The event loop is a [`flowgraph::ingest`] [`Driver`] over a [`Queue`]: an
+//! async, timestamp-ordered merge with same-timestamp coalescing, writing
+//! straight into the session's graph as its sink. Each source becomes a lazy
+//! feed — registered at [`Scenario::add_source`], but materialized (spawning
+//! the source's producer task) only at the first [`Session::run`] step, on
+//! the session's own task — whose channel adapts into a `Stream` of
 //! explicitly-stamped events with back-pressure. Per coalesced batch the
-//! queue writes each fired source's cell (via the typed `Graph::state_mut`,
-//! which marks the dirty cone) through the source's [`write`](Source::write),
-//! then the session runs one `stabilize`; everything happens on the session's
-//! own task, with no blocking bridge threads. The ingest wall clock is the
-//! real TAI [`WallClock`]: historical timestamps replay at full speed, while
+//! session steps the driver (each fired source writes its cell via the typed
+//! `Graph::state_mut`, which marks the dirty cone, through the source's
+//! [`write`](Source::write)), sets the [`Clock`] to the batch timestamp, and
+//! runs one `stabilize`; everything happens on the session's own task, with
+//! no blocking bridge threads. The ingest wall clock is the real TAI
+//! [`WallClock`]: historical timestamps replay at full speed, while
 //! future-dated events wait for real time.
 //!
-//! Time is threaded out-of-band through the [`Clock`]: the write step sets it to
-//! the batch timestamp before `stabilize`, and time-reading operators (e.g.
-//! [`Record`]) read it during compute.
+//! Time is threaded out-of-band through the [`Clock`]: [`Session::run`] sets
+//! it between a batch's writes and its `stabilize`, and time-reading
+//! operators (e.g. [`Record`]) read it during compute.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -29,7 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 
 use flowgraph::core::Pool;
-use flowgraph::ingest::{Event, Feed, LazyFeed, Queue, Stamp, StreamFeed};
+use flowgraph::ingest::{Driver, Event, Feed, LazyFeed, Queue, StreamFeed};
 use flowgraph::typed::{
     Graph, GraphBuilder, Handle, HandlesInterface, InterfaceHandles, RefPort, RefSource,
     RefViewPort, Segment, SourceHandle, ViewPort,
@@ -50,6 +52,9 @@ pub type ShutdownFlag = Arc<AtomicBool>;
 /// The queue instantiation the session runs, sinking into the graph.
 type SessionQueue = Queue<Instant, Graph, WallClock>;
 
+/// The driver instantiation the session runs.
+type SessionDriver = Driver<Instant, WallClock>;
+
 /// Adapt a source's event channel (a stream of explicitly-stamped events,
 /// ending when the producer closes it) plus its write closure into a boxed
 /// graph-sink feed.
@@ -59,8 +64,7 @@ fn feed<E: Send + 'static>(
 ) -> Box<dyn Feed<Instant, Graph>> {
     let stream = futures::stream::unfold(rx, |mut rx| async move {
         let (ts, event) = rx.recv().await?;
-        let event = Event { stamp: Stamp::Instant(ts), payload: Some(event) };
-        Some((event, rx))
+        Some((Event::at(ts, event), rx))
     });
     Box::new(StreamFeed::new(stream, write))
 }
@@ -298,18 +302,18 @@ impl Scenario {
             (Some(acc), Some(n)) => Some(acc.saturating_add(n)),
             _ => None,
         };
-        let clock = self.clock.clone();
         let counter = Arc::clone(&self.counter);
         // The feed is lazy: `init` (which spawns the producer task) runs on
-        // the session task at the first `run` step, not here.
-        self.queue.add_feed(Box::new(LazyFeed::new(move || {
+        // the session task at the first `run` step, not here. The operator
+        // [`Clock`] is untouched by writes — the run loop sets it once per
+        // batch, between the batch's writes and its stabilize.
+        self.queue.add_feed(LazyFeed::new(move || {
             let (rx, mut state) = source.init();
             feed(rx, move |g, ts, event| {
-                clock.set(ts);
                 let n = S::write(&mut state, event, g.state_mut(handle), ts);
                 counter.fetch_add(n, Ordering::Relaxed);
             })
-        })));
+        }));
         *handle
     }
 
@@ -328,10 +332,8 @@ impl Scenario {
             estimated_total,
         } = self;
         Session {
-            graph: Graph::from_builder(builder),
-            pool: Pool::new(n),
+            driver: SessionDriver::from_parts(Graph::from_builder(builder), Pool::new(n), queue),
             clock,
-            queue,
             counter,
             estimated_total,
         }
@@ -348,14 +350,12 @@ impl Default for Scenario {
 // Session — runtime + event loop
 // ---------------------------------------------------------------------------
 
-/// A live execution: owns the graph, the worker pool, the clock, and the
-/// event queue. The queue never takes the graph — [`run`](Self::run) lends it
-/// to [`Queue::step`] as the sink, one borrow at a time.
+/// A live execution: owns the ingest [`Driver`] (graph + worker pool + event
+/// queue) plus the shared operator [`Clock`]. Per batch, [`run`](Self::run)
+/// steps the driver, sets the clock to the batch timestamp, and stabilizes.
 pub struct Session {
-    graph: Graph,
-    pool: Pool,
+    driver: SessionDriver,
     clock: Clock,
-    queue: SessionQueue,
     counter: Arc<AtomicUsize>,
     estimated_total: Option<usize>,
 }
@@ -370,7 +370,7 @@ impl Session {
 
     /// Immutable access to a by-reference node value.
     pub fn value<T: Send + Sync + 'static>(&self, handle: Handle<RefPort<T>>) -> &T {
-        self.graph.ref_view(handle)
+        self.driver.graph().ref_view(handle)
     }
 
     /// Mutable access to a source cell's value (marks its dirty cone). Only
@@ -380,14 +380,14 @@ impl Session {
         &mut self,
         handle: SourceHandle<RefSource<T>>,
     ) -> &mut T {
-        self.graph.state_mut(handle)
+        self.driver.graph_mut().state_mut(handle)
     }
 
     /// Manually advance the clock and stabilize (the synchronous-step API).
     /// Call after mutating one or more source cells via [`cell_mut`](Self::cell_mut).
     pub fn flush(&mut self, timestamp: Instant) {
         self.clock.set(timestamp);
-        self.graph.stabilize(&mut self.pool);
+        self.driver.stabilize();
     }
 
     /// Drive the event loop until every source is exhausted.
@@ -407,12 +407,15 @@ impl Session {
         shutdown: ShutdownFlag,
     ) {
         // The lazy feeds materialize (spawning their producer tasks) at the
-        // first step, on this task. Per completed batch: stabilize, then
-        // `on_flush` with the batch timestamp and the cumulative event count.
+        // first step, on this task. Per completed batch: set the operator
+        // [`Clock`] to the batch timestamp (so time-reading operators observe
+        // event time), stabilize, then `on_flush` with the batch timestamp
+        // and the cumulative event count.
         while !shutdown.load(Ordering::Relaxed)
-            && let Some(ts) = self.queue.step(&mut self.graph).await
+            && let Some(ts) = self.driver.step().await
         {
-            self.graph.stabilize(&mut self.pool);
+            self.clock.set(ts);
+            self.driver.stabilize();
             on_flush(ts, self.counter.load(Ordering::Relaxed));
         }
     }
