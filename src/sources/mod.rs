@@ -17,6 +17,11 @@
 //! - [`IterSource`] - source driven by an arbitrary `(timestamp, value)`
 //!   iterator. More flexible than `ArraySource`; supports lazy/computed sequences
 //!   and arbitrary output types. Requires a tokio runtime.
+//! - [`ParquetPanelSource`] - cross-sectional panel over a long-format Parquet
+//!   table; emits one wide `[N, K]` cross-section per date. Requires a tokio
+//!   runtime.
+//! - [`ReportPanelSource`] - panel variant for financial-report long tables,
+//!   with point-in-time effective-date alignment. Requires a tokio runtime.
 //!
 //! # Clock sources
 //!
@@ -36,13 +41,13 @@ pub mod array_source;
 pub mod clock;
 pub mod csv_source;
 pub mod iter_source;
-pub mod parquet_panel;
-pub mod report_panel;
+pub mod parquet_panel_source;
+pub mod report_panel_source;
 pub mod stocks;
 
 pub use array_source::ArraySource;
 pub use clock::clock;
 pub use csv_source::CsvSource;
 pub use iter_source::IterSource;
-pub use parquet_panel::ParquetPanelSource;
-pub use report_panel::ReportPanelSource;
+pub use parquet_panel_source::ParquetPanelSource;
+pub use report_panel_source::ReportPanelSource;

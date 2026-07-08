@@ -38,10 +38,9 @@ use arrow::datatypes::DataType;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-use super::parquet_panel::{
+use super::parquet_panel_source::{
     PanelState, RowUpdate, count_rows_in_range, instant_from_days, nan_panel, panel_write,
-    report_year_and_doy,
-    resolve_symbols,
+    report_year_and_doy, resolve_symbols,
 };
 use crate::{Array, Duration, Instant, Source};
 
