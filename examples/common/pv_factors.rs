@@ -29,7 +29,8 @@ use super::factors::{rank_impute, FactorSet};
 use super::{AvH, Stacked, RETAIN_MARGIN};
 
 type H = AvH;
-type Ser = Handle<RefPort<Series<f64>>>;
+type Ser = Handle<RefPort<Series<f64, 1>>>;
+type Ser2 = Handle<RefPort<Series<f64, 2>>>;
 
 /// Catalog records feed count-windowed reductions up to `Y` (one trading year)
 /// or the 250-day chip window; retain that deepest look-back plus the margin.
@@ -71,7 +72,7 @@ fn mul(sc: &mut Scenario, a: H, b: H) -> H {
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
     sc.add_operator(
-        flowgraph::segment!(|x: RefPort<Series<f64>>| -> ViewPort<ArrayValue<f64, 1>> {
+        flowgraph::segment!(|x: RefPort<Series<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
             let var = x => RollingVariance::<f64, 1>::count(n);
             let sd = var => sqrt::<f64, 1>();
             sd
@@ -143,7 +144,7 @@ struct WindowReduceState {
     out: Array<f64, 1>,
 }
 impl Operator for WindowReduce {
-    type Inputs = RefPort<Series<f64>>;
+    type Inputs = RefPort<Series<f64, 1>>;
     type Outputs = ViewPort<ArrayValue<f64, 1>>;
     type State = WindowReduceState;
 
@@ -152,12 +153,12 @@ impl Operator for WindowReduce {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<f64>),
+        (_, series): (bool, &'a Series<f64, 1>),
         state: &'b mut WindowReduceState,
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         if init {
-            let n: usize = series.shape().iter().product();
+            let n = series.stride();
             state.out = Array::from_vec([n], vec![f64::NAN; n]);
             return (false, state.out.view());
         }
@@ -167,7 +168,7 @@ impl Operator for WindowReduce {
             return (false, state.out.view());
         }
         let f = state.f;
-        let n: usize = series.shape().iter().product();
+        let n = series.stride();
         let slices: Vec<&[f64]> = (0..w).map(|k| series.at(len - w + k)).collect();
         let out = state.out.as_mut_slice();
         let mut buf = vec![0.0f64; w];
@@ -181,7 +182,7 @@ impl Operator for WindowReduce {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<f64>),
+        _: (bool, &'a Series<f64, 1>),
         state: &'b WindowReduceState,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         (false, state.out.view())
@@ -235,7 +236,7 @@ struct WindowReduce2State {
     out: Array<f64, 1>,
 }
 impl Operator for WindowReduce2 {
-    type Inputs = RefPort<Series<f64>>;
+    type Inputs = RefPort<Series<f64, 2>>;
     type Outputs = ViewPort<ArrayValue<f64, 1>>;
     type State = WindowReduce2State;
 
@@ -244,11 +245,11 @@ impl Operator for WindowReduce2 {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<f64>),
+        (_, series): (bool, &'a Series<f64, 2>),
         state: &'b mut WindowReduce2State,
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 1>) {
-        let n = series.shape()[0]; // (N, 2) -> N
+        let n = series.extents()[0]; // (N, 2) -> N
         if init {
             state.out = Array::from_vec([n], vec![f64::NAN; n]);
             return (false, state.out.view());
@@ -273,13 +274,13 @@ impl Operator for WindowReduce2 {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<f64>),
+        _: (bool, &'a Series<f64, 2>),
         state: &'b WindowReduce2State,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         (false, state.out.view())
     }
 }
-fn window_reduce2(sc: &mut Scenario, s: Ser, n: usize, f: fn(&[f64], &[f64]) -> f64) -> H {
+fn window_reduce2(sc: &mut Scenario, s: Ser2, n: usize, f: fn(&[f64], &[f64]) -> f64) -> H {
     sc.add_operator(WindowReduce2 { window: n, f }, s)
 }
 /// 振幅调整动量: Σ(returns on the top-20%-amplitude days) − Σ(bottom-20%-amplitude
@@ -320,7 +321,7 @@ struct ChipDistState {
     out: Array<f64, 2>,
 }
 impl Operator for ChipDist {
-    type Inputs = RefPort<Series<f64>>;
+    type Inputs = RefPort<Series<f64, 2>>;
     type Outputs = ViewPort<ArrayValue<f64, 2>>;
     type State = ChipDistState;
 
@@ -329,11 +330,11 @@ impl Operator for ChipDist {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<f64>),
+        (_, series): (bool, &'a Series<f64, 2>),
         state: &'b mut ChipDistState,
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 2>) {
-        let n = series.shape()[0];
+        let n = series.extents()[0];
         if init {
             state.out = Array::from_vec([n, CHIP_COLS], vec![f64::NAN; n * CHIP_COLS]);
             return (false, state.out.view());
@@ -425,7 +426,7 @@ impl Operator for ChipDist {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<f64>),
+        _: (bool, &'a Series<f64, 2>),
         state: &'b ChipDistState,
     ) -> (bool, ArrayView<'a, f64, 2>) {
         (false, state.out.view())
@@ -650,6 +651,6 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// Record a rank-2 `(N, 2)` cross-section into a `Series` (the two-channel chip /
 /// range inputs); retains the deepest count look-back the consumers read (`Y` /
 /// the 250-day chip window) plus the margin.
-fn rec_2(sc: &mut Scenario, h: Handle<ViewPort<ArrayValue<f64, 2>>>) -> Ser {
+fn rec_2(sc: &mut Scenario, h: Handle<ViewPort<ArrayValue<f64, 2>>>) -> Ser2 {
     sc.add_record_retained(h, Retention::count(Y + RETAIN_MARGIN))
 }

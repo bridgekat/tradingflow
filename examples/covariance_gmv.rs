@@ -104,7 +104,7 @@ async fn main() {
     let log_returns_ref = own(&mut sc, log_returns);
 
     let predicted_returns = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64, 2>>, RefPort<Series<f64, 1>>)>::from_module(
             "flowops.predictors.mean.incremental_linear_regression",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -138,9 +138,9 @@ async fn main() {
     // Per-estimator records: (name, long NAV, long-short NAV, GMV realized variance).
     struct Rec {
         name: &'static str,
-        long: Handle<RefPort<Series<f64>>>,
-        ls: Handle<RefPort<Series<f64>>>,
-        mv: Handle<RefPort<Series<f64>>>,
+        long: Handle<RefPort<Series<f64, 0>>>,
+        ls: Handle<RefPort<Series<f64, 0>>>,
+        mv: Handle<RefPort<Series<f64, 0>>>,
     }
     let mut recs: Vec<Rec> = Vec::new();
 
@@ -165,8 +165,8 @@ async fn main() {
             PyClassOperator::<
                 (
                     RefPort<Array<f64, 1>>,
-                    RefPort<Series<f64>>,
-                    RefPort<Series<f64>>,
+                    RefPort<Series<f64, 2>>,
+                    RefPort<Series<f64, 1>>,
                 ),
                 2,
             >::from_module(
@@ -190,7 +190,7 @@ async fn main() {
         );
 
         // Long-only and long-short Markowitz portfolios.
-        let mut nav: Vec<Handle<RefPort<Series<f64>>>> = Vec::with_capacity(2);
+        let mut nav: Vec<Handle<RefPort<Series<f64, 0>>>> = Vec::with_capacity(2);
         for long_only in [true, false] {
             let soft = sc.add_operator(
                 PyClassOperator::<(

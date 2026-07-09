@@ -5,8 +5,7 @@
 //! cross-section reflects only that date's reports, `NaN` elsewhere; the
 //! carry-forward is the downstream [`Stack`](crate::operators::Stack)'s job). It
 //! additionally understands the report layout — two date columns (`date` =
-//! period-end, `notice_date` = publication, nullable) — and the
-//! [`FinancialReportSource`](super::stocks::FinancialReportSource) point-in-time
+//! period-end, `notice_date` = publication, nullable) — and point-in-time
 //! semantics:
 //!
 //! * **`use_effective_date = false`** (default) — events fire on the report
@@ -22,10 +21,10 @@
 //! The financial tables are small, so this is a **load-and-sort** entirely inside
 //! the source; the engine sees a clean timestamp-non-decreasing stream.
 //!
-//! [`with_report_date`](ReportPanelSource::with_report_date) prepends
+//! [`with_report_date`](ParquetFinancialReportPanelSource::with_report_date) prepends
 //! `[year, day_of_year]` of the **report** date (for
-//! [`Annualize`](crate::operators::Annualize)), exactly as `FinancialReportSource`. A
-//! per-stock pipeline is recovered downstream by `Select` + a NaN `Filter`.
+//! [`Annualize`](crate::operators::Annualize)). A per-stock pipeline is recovered
+//! downstream by `Select` + a NaN `Filter`.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -46,7 +45,7 @@ use crate::{Array, Duration, Instant, Source};
 
 /// Historical-only panel source for financial-report long tables. See module docs.
 #[derive(Clone)]
-pub struct ReportPanelSource {
+pub struct ParquetFinancialReportPanelSource {
     path: String,
     value_columns: Vec<String>,
     symbols: Vec<String>,
@@ -60,7 +59,7 @@ pub struct ReportPanelSource {
     end: Option<Instant>,
 }
 
-impl ReportPanelSource {
+impl ParquetFinancialReportPanelSource {
     /// Create a report panel source. `value_columns` are emitted in order (each
     /// cast to `f64`); `symbols` is the universe row order. Defaults to report-date
     /// alignment (`use_effective_date = false`).
@@ -136,7 +135,7 @@ struct ReportRow {
     values: Vec<f64>,
 }
 
-impl Source for ReportPanelSource {
+impl Source for ParquetFinancialReportPanelSource {
     type Event = Vec<RowUpdate>;
     type Output = Array<f64, 2>;
     type State = PanelState;
@@ -162,7 +161,7 @@ impl Source for ReportPanelSource {
 
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_reports(&cfg, &hist_tx) {
-                eprintln!("ReportPanelSource error ({}): {e}", cfg.path);
+                eprintln!("ParquetFinancialReportPanelSource error ({}): {e}", cfg.path);
             }
         });
 
@@ -175,7 +174,7 @@ impl Source for ReportPanelSource {
 }
 
 fn read_reports(
-    cfg: &ReportPanelSource,
+    cfg: &ParquetFinancialReportPanelSource,
     hist_tx: &mpsc::Sender<(Instant, Vec<RowUpdate>)>,
 ) -> Result<(), String> {
     let value_offset = if cfg.with_report_date { 2 } else { 0 };

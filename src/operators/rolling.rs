@@ -57,13 +57,15 @@ pub enum Window {
 // Generic rolling operator
 // ===========================================================================
 
-/// Pairs an [`Accumulator`] with a [`Window`] strategy. `NO` is the output rank.
-pub struct Rolling<A: Accumulator, const NO: usize> {
+/// Pairs an [`Accumulator`] with a [`Window`] strategy. `NI` is the input
+/// series' element rank, `NO` the output rank (they differ only for
+/// rank-changing accumulators, e.g. covariance `[K] → [K, K]`).
+pub struct Rolling<A: Accumulator, const NI: usize, const NO: usize> {
     window: Window,
     _phantom: PhantomData<A>,
 }
 
-impl<A: Accumulator, const NO: usize> Clone for Rolling<A, NO> {
+impl<A: Accumulator, const NI: usize, const NO: usize> Clone for Rolling<A, NI, NO> {
     fn clone(&self) -> Self {
         Self {
             window: self.window,
@@ -72,7 +74,7 @@ impl<A: Accumulator, const NO: usize> Clone for Rolling<A, NO> {
     }
 }
 
-impl<A: Accumulator, const NO: usize> Rolling<A, NO> {
+impl<A: Accumulator, const NI: usize, const NO: usize> Rolling<A, NI, NO> {
     /// Count-based window of the last `window` elements; output only once full.
     pub fn count(window: usize) -> Self {
         assert!(window > 0, "window must be > 0");
@@ -102,8 +104,8 @@ pub struct RollingState<A: Accumulator, const NO: usize> {
     out: Array<A::Scalar, NO>,
 }
 
-impl<A: Accumulator, const NO: usize> Operator for Rolling<A, NO> {
-    type Inputs = RefPort<Series<A::Scalar>>;
+impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, NI, NO> {
+    type Inputs = RefPort<Series<A::Scalar, NI>>;
     type Outputs = ViewPort<ArrayValue<A::Scalar, NO>>;
     type State = RollingState<A, NO>;
 
@@ -120,17 +122,17 @@ impl<A: Accumulator, const NO: usize> Operator for Rolling<A, NO> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<A::Scalar>),
+        (_, series): (bool, &'a Series<A::Scalar, NI>),
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, A::Scalar, NO>) {
         if init {
-            let input_shape = series.shape();
-            let output_shape = A::output_shape(input_shape);
+            let input_shape = series.extents();
+            let output_shape = A::output_shape(&input_shape);
             let output_stride: usize = output_shape.iter().product();
             state.start = 0;
             state.count = 0;
-            state.accumulator = A::new(input_shape);
+            state.accumulator = A::new(&input_shape);
             state.out =
                 Array::from_vec(out_extents::<NO>(&output_shape), vec![A::Scalar::nan(); output_stride]);
             return (false, state.out.view());
@@ -171,7 +173,7 @@ impl<A: Accumulator, const NO: usize> Operator for Rolling<A, NO> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<A::Scalar>),
+        _: (bool, &'a Series<A::Scalar, NI>),
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, A::Scalar, NO>) {
         (false, state.out.view())
@@ -442,13 +444,13 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
 }
 
 /// Element-wise rolling sum (output rank `NO` = input element rank).
-pub type RollingSum<T, const NO: usize> = Rolling<SumAccumulator<T>, NO>;
+pub type RollingSum<T, const NO: usize> = Rolling<SumAccumulator<T>, NO, NO>;
 /// Element-wise rolling mean (output rank `NO` = input element rank).
-pub type RollingMean<T, const NO: usize> = Rolling<MeanAccumulator<T>, NO>;
+pub type RollingMean<T, const NO: usize> = Rolling<MeanAccumulator<T>, NO, NO>;
 /// Element-wise rolling population variance (output rank `NO` = input rank).
-pub type RollingVariance<T, const NO: usize> = Rolling<VarianceAccumulator<T>, NO>;
+pub type RollingVariance<T, const NO: usize> = Rolling<VarianceAccumulator<T>, NO, NO>;
 /// Pairwise rolling covariance matrix (`[K] → [K, K]`, output rank 2).
-pub type RollingCovariance<T> = Rolling<CovarianceAccumulator<T>, 2>;
+pub type RollingCovariance<T> = Rolling<CovarianceAccumulator<T>, 1, 2>;
 
 // ===========================================================================
 // EMA (standalone — does not use the Accumulator abstraction)
@@ -499,7 +501,7 @@ pub struct EmaState<T: Scalar + Float, const NO: usize> {
 }
 
 impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
-    type Inputs = RefPort<Series<T>>;
+    type Inputs = RefPort<Series<T, NO>>;
     type Outputs = ViewPort<ArrayValue<T, NO>>;
     type State = EmaState<T, NO>;
 
@@ -524,7 +526,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<T>),
+        (_, series): (bool, &'a Series<T, NO>),
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, T, NO>) {
@@ -533,7 +535,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
             state.weighted_sum = vec![T::zero(); stride];
             state.nonfinite_count = vec![0; stride];
             state.fill_decay = T::one();
-            state.out = Array::from_vec(out_extents::<NO>(series.shape()), vec![T::nan(); stride]);
+            state.out = Array::from_vec(series.extents(), vec![T::nan(); stride]);
             return (false, state.out.view());
         }
 
@@ -586,7 +588,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<T>),
+        _: (bool, &'a Series<T, NO>),
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, NO>) {
         (false, state.out.view())

@@ -26,8 +26,9 @@
 //!   [`Instant`] / [`Duration`] (SI nanoseconds since the 1970 TAI epoch),
 //!   plus [`Scalar`].
 //! * [`source`] — the [`Source`] trait.
-//! * [`sources`] — built-in data sources: `ArraySource`, `CsvSource`,
-//!   `IterSource`, the columnar panel sources, and the `clock` trigger.
+//! * [`sources`] — built-in data sources: `ArraySource`, `IterSource`, the
+//!   columnar panel sources (`ParquetPanelSource` / `ParquetFinancialReportPanelSource`), and
+//!   the `clock` trigger.
 //! * [`operators`] — the operator library. Behind the `python` feature it also
 //!   runs Python operators on an embedded interpreter.
 //! * [`scenario`] — the engine: [`Scenario`] (graph builder) and [`Session`]
@@ -44,7 +45,8 @@ pub mod utils;
 
 pub use clock::WallClock;
 pub use data::{
-    Array, ArrayView, Duration, Instant, Retention, Scalar, Series, Shape, tai_to_utc, utc_to_tai,
+    Array, ArrayView, Duration, Instant, Retention, Scalar, Series, SeriesView, Shape, tai_to_utc,
+    utc_to_tai,
 };
 pub use scenario::{Scenario, Session, ShutdownFlag};
 pub use source::Source;

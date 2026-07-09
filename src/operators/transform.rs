@@ -548,10 +548,10 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for SliceView<T, IN, 
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, T, OUT>) {
-        let (data, base) = v.buffer();
+        let data = v.buffer();
         let shape = v.shape();
         let (ext, strd) = (shape.extents(), shape.strides());
-        let offset = base + state.start * strd[state.axis];
+        let offset = state.start * strd[state.axis];
 
         // Build the output (extents, strides) by dropping (squeeze) or shrinking
         // (range) the sliced axis — purely strided, no copy.
@@ -574,7 +574,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for SliceView<T, IN, 
                 os[d] = strd[d];
             }
         }
-        let out = ArrayView::from_parts(data, offset, Shape::strided(oe, os));
+        let out = ArrayView::from_parts(&data[offset..], Shape::strided(oe, os));
         (notified && !init, out)
     }
 }
@@ -786,8 +786,8 @@ impl<T: Scalar, const N: usize> Operator for Own<T, N> {
 // Lag (value from N steps ago in a Series)
 // ---------------------------------------------------------------------------
 
-/// Emits the `Series<T>` element from `offset` steps ago (else `fill`), as a
-/// rank-`N` view of its homed buffer.
+/// Emits the `Series<T, N>` element from `offset` steps ago (else `fill`), as
+/// a rank-`N` view of its homed buffer.
 #[derive(Clone)]
 pub struct Lag<T: Scalar, const N: usize> {
     offset: usize,
@@ -809,7 +809,7 @@ pub struct LagState<T: Scalar, const N: usize> {
 }
 
 impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
-    type Inputs = RefPort<Series<T>>;
+    type Inputs = RefPort<Series<T, N>>;
     type Outputs = ViewPort<ArrayValue<T, N>>;
     type State = LagState<T, N>;
 
@@ -822,13 +822,12 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<T>),
+        (_, series): (bool, &'a Series<T, N>),
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            let ext = super::gating::series_extents::<T, N>(series);
-            state.out = Array::full(ext, state.fill.clone());
+            state.out = Array::full(series.extents(), state.fill.clone());
             return (false, state.out.view());
         }
         let len = series.len();
@@ -842,7 +841,7 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<T>),
+        _: (bool, &'a Series<T, N>),
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())

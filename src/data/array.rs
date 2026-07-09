@@ -5,15 +5,17 @@
 //! * [`Array<T, N>`] — owned, row-major **contiguous** backing store; lives in
 //!   operator `State`.
 //! * [`ArrayView<'a, T, N>`] ≈ `mdspan<T, dextents<usize, N>, layout_stride>`:
-//!   `&[T]` + `offset` + per-axis `extents` + per-axis `strides`, all inline.
+//!   `&[T]` (from the view's origin) + per-axis `extents` + per-axis
+//!   `strides`, all inline.
 //!   It is `Copy`, `Send`, `Sync`, and self-contained — there is **no**
 //!   by-reference shape, so view-emitting operators need neither in-state shape
 //!   storage nor a per-generation arena.
 //!
 //! The rank `N` is static (known at compile time); the extents and strides are
 //! dynamic (runtime). A zero-copy slice of an array (a column, a squeezed axis)
-//! is just another `ArrayView` with adjusted `offset`/`strides` over the same
-//! buffer; the elementwise core ([`apply_unary`]/[`apply_binary`]) has a
+//! is just another `ArrayView` with an origin-advanced `&[T]` and adjusted
+//! `strides` over the same buffer; the elementwise core
+//! ([`apply_unary`]/[`apply_binary`]) has a
 //! contiguous fast path and a strided fallback, so a strided view feeds directly
 //! into the next operator with no materialization.
 
@@ -210,7 +212,6 @@ impl<T: Scalar, const N: usize> Array<T, N> {
     pub fn view(&self) -> ArrayView<'_, T, N> {
         ArrayView {
             data: &self.data,
-            offset: 0,
             shape: self.shape,
         }
     }
@@ -284,17 +285,17 @@ impl<T: Scalar, const N: usize> Array<T, N> {
 /// A borrowed, strided (`mdspan`-like), rank-`N` view: the zero-copy edge
 /// currency of the operator interface.
 ///
-/// It holds the whole backing buffer (`&[T]`) plus an `offset` and a
-/// [`Shape`]; `offset` + `strides` address into the buffer, so a column or a
-/// squeezed axis is a view over the **same** buffer with no copy. `Copy` (the
+/// It holds a backing slice (`&[T]`) that **starts at the view's origin**
+/// element, plus a [`Shape`]; `strides` address into that slice (the
+/// `[0, …, 0]` element is `data[0]`), so a column or a squeezed axis is a view
+/// over the **same** buffer (advanced to its origin) with no copy. `Copy` (the
 /// payload is references + plain `usize`s) and fully lifetime-checked — a view
 /// cannot outlive the array it borrows from. The engine's per-generation
 /// contract keeps wire-borne views valid between recomputes.
 #[derive(Debug)]
 pub struct ArrayView<'a, T: Scalar, const N: usize> {
-    /// The whole backing buffer; `offset` + `strides` address into it.
+    /// The backing buffer from the view's origin; `strides` address into it.
     data: &'a [T],
-    offset: usize,
     shape: Shape<N>,
 }
 
@@ -324,23 +325,15 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
             shape.len(),
             data.len(),
         );
-        Self {
-            data,
-            offset: 0,
-            shape,
-        }
+        Self { data, shape }
     }
 
-    /// Build a strided view directly from parts: the backing buffer, a flat
-    /// `offset`, and a [`Shape`]. The caller guarantees every addressed element
-    /// `offset + Σ idx[d]·strides[d]` lies in `data`.
+    /// Build a strided view from a backing slice whose **first element is the
+    /// view's origin** (`[0, …, 0]`) and a [`Shape`]. The caller guarantees
+    /// every addressed element `Σ idx[d]·strides[d]` lies in `data`.
     #[inline(always)]
-    pub fn from_parts(data: &'a [T], offset: usize, shape: Shape<N>) -> Self {
-        Self {
-            data,
-            offset,
-            shape,
-        }
+    pub fn from_parts(data: &'a [T], shape: Shape<N>) -> Self {
+        Self { data, shape }
     }
 
     /// The view shape (extents + strides).
@@ -367,11 +360,12 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
         self.shape.is_empty()
     }
 
-    /// The flat backing buffer plus the addressing `offset` — for callers that
-    /// walk the view with explicit stride arithmetic.
+    /// The backing slice from the view's origin — for callers that walk the
+    /// view with explicit stride arithmetic (index `0` is the `[0, …, 0]`
+    /// element).
     #[inline(always)]
-    pub fn buffer(&self) -> (&'a [T], usize) {
-        (self.data, self.offset)
+    pub fn buffer(&self) -> &'a [T] {
+        self.data
     }
 
     /// The contiguous fast path: `Some(flat slice)` iff the view is exhaustive
@@ -379,7 +373,7 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
     #[inline(always)]
     pub fn contiguous_slice(&self) -> Option<&'a [T]> {
         if self.shape.is_contiguous() {
-            Some(&self.data[self.offset..self.offset + self.shape.len()])
+            Some(&self.data[..self.shape.len()])
         } else {
             None
         }
@@ -398,9 +392,7 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
     /// Materialize the view into a fresh row-major `Vec<T>`.
     pub fn to_vec(&self) -> Vec<T> {
         let mut out = Vec::with_capacity(self.shape.len());
-        for_each_offset(&self.shape, self.offset, |off| {
-            out.push(self.data[off].clone())
-        });
+        for_each_offset(&self.shape, |off| out.push(self.data[off].clone()));
         out
     }
 
@@ -450,14 +442,14 @@ fn advance<const N: usize>(
 
 /// Visit every element's flat offset in row-major order, calling `f(offset)`.
 #[inline]
-fn for_each_offset<const N: usize>(shape: &Shape<N>, base: usize, mut f: impl FnMut(usize)) {
+fn for_each_offset<const N: usize>(shape: &Shape<N>, mut f: impl FnMut(usize)) {
     let total = shape.len();
     if total == 0 {
         return;
     }
     let (ext, strd) = (shape.extents, shape.strides);
     let mut idx = [0usize; N];
-    let mut off = base;
+    let mut off = 0usize;
     for _ in 0..total {
         f(off);
         advance(&mut idx, &ext, &strd, &mut off);
@@ -479,7 +471,7 @@ pub(crate) fn apply_unary<T: Scalar, const N: usize>(
     }
     let data = x.data;
     let mut i = 0usize;
-    for_each_offset(&x.shape, x.offset, |off| {
+    for_each_offset(&x.shape, |off| {
         o[i] = f(data[off].clone());
         i += 1;
     });
@@ -504,7 +496,7 @@ pub(crate) fn apply_binary<T: Scalar, const N: usize>(
     let ext = a.shape.extents;
     let (stra, strb) = (a.shape.strides, b.shape.strides);
     let mut idx = [0usize; N];
-    let (mut oa, mut ob) = (a.offset, b.offset);
+    let (mut oa, mut ob) = (0usize, 0usize);
     for dst in o.iter_mut() {
         *dst = f(a.data[oa].clone(), b.data[ob].clone());
         let mut d = N;
@@ -533,7 +525,7 @@ pub(crate) fn write_row_major<T: Scalar, const N: usize>(dst: &mut [T], v: &Arra
     }
     let data = v.data;
     let mut i = 0usize;
-    for_each_offset(&v.shape, v.offset, |off| {
+    for_each_offset(&v.shape, |off| {
         dst[i] = data[off].clone();
         i += 1;
     });
@@ -599,9 +591,9 @@ mod tests {
         use std::mem::size_of;
         let word = size_of::<usize>();
         let fatptr = size_of::<&[f64]>(); // 2 words
-        // data(&[T]) + offset(usize) + extents[N] + strides[N] — all inline.
-        assert_eq!(size_of::<ArrayView<f64, 1>>(), fatptr + word * (1 + 2));
-        assert_eq!(size_of::<ArrayView<f64, 2>>(), fatptr + word * (1 + 4));
+        // data(&[T]) + extents[N] + strides[N] — all inline (no offset).
+        assert_eq!(size_of::<ArrayView<f64, 1>>(), fatptr + word * 2);
+        assert_eq!(size_of::<ArrayView<f64, 2>>(), fatptr + word * 4);
         fn assert_copy<T: Copy>() {}
         assert_copy::<ArrayView<f64, 3>>();
     }
@@ -618,8 +610,8 @@ mod tests {
         );
         assert!(panel.view().contiguous_slice().is_some());
 
-        // Column 1: extent 3, stride 4, offset 1 — strided.
-        let col1 = ArrayView::from_parts(panel.as_slice(), 1, Shape::strided([3], [4]));
+        // Column 1: extent 3, stride 4, from index 1 — strided.
+        let col1 = ArrayView::from_parts(&panel.as_slice()[1..], Shape::strided([3], [4]));
         assert!(col1.contiguous_slice().is_none());
         assert_eq!(col1.to_vec(), vec![1.0, 5.0, 9.0]);
         assert_eq!(&*col1.to_contiguous(), &[1.0, 5.0, 9.0]);
@@ -633,7 +625,7 @@ mod tests {
         assert_eq!(out.as_slice(), &[1.0, 2.0, 3.0]);
 
         let panel = Array::from_vec([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let col1 = ArrayView::from_parts(panel.as_slice(), 1, Shape::strided([3], [2]));
+        let col1 = ArrayView::from_parts(&panel.as_slice()[1..], Shape::strided([3], [2]));
         let mut out = Array::<f64, 1>::zeros([3]);
         apply_unary(&mut out, &col1, &|v: f64| v * 10.0);
         assert_eq!(out.as_slice(), &[20.0, 40.0, 60.0]);
@@ -643,7 +635,7 @@ mod tests {
     fn binary_mixed_contiguous_and_strided() {
         let a = Array::from_vec([3], vec![100.0, 200.0, 300.0]);
         let panel = Array::from_vec([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let bcol = ArrayView::from_parts(panel.as_slice(), 1, Shape::strided([3], [2]));
+        let bcol = ArrayView::from_parts(&panel.as_slice()[1..], Shape::strided([3], [2]));
         let mut out = Array::<f64, 1>::zeros([3]);
         apply_binary(&mut out, &a.view(), &bcol, &|x, y| x + y);
         assert_eq!(out.as_slice(), &[102.0, 204.0, 306.0]);
@@ -652,8 +644,8 @@ mod tests {
     #[test]
     fn write_row_major_squeezes_strided() {
         let panel = Array::from_vec([2, 3], vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
-        // Column 2: extent 2, stride 3, offset 2 -> [2.0, 5.0].
-        let col2 = ArrayView::from_parts(panel.as_slice(), 2, Shape::strided([2], [3]));
+        // Column 2: extent 2, stride 3, from index 2 -> [2.0, 5.0].
+        let col2 = ArrayView::from_parts(&panel.as_slice()[2..], Shape::strided([2], [3]));
         let mut dst = [0.0; 2];
         write_row_major(&mut dst, &col2);
         assert_eq!(dst, [2.0, 5.0]);

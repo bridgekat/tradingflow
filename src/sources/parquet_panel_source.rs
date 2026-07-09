@@ -8,11 +8,9 @@
 //! number of emitted value columns. Row `i` is symbol `symbols[i]`'s values for
 //! that date; symbols **absent** that date are `NaN`.
 //!
-//! This replaces the per-symbol [`CsvSource`](super::CsvSource) fan-in with a
-//! single sequential, date-ordered scan. Downstream, a per-stock pipeline is
-//! recovered by `Select`ing one row of the panel:
-//! `Select::new(vec![i], 0, true)` yields symbol `i`'s `[K]` vector, a drop-in
-//! for the old per-symbol source output.
+//! It reads the panel in a single sequential, date-ordered scan. Downstream, a
+//! per-stock pipeline is recovered by `Select`ing one row of the panel:
+//! `Select::new(vec![i], 0, true)` yields symbol `i`'s `[K]` vector.
 //!
 //! # Semantics — pure StackSync; the carry lives downstream
 //!
@@ -38,9 +36,8 @@
 //! # Timestamps
 //!
 //! `date` is a Parquet `date32` (days since 1970-01-01). The event timestamp is
-//! the day's UTC-midnight instant via [`hifitime`] — identical to
-//! [`CsvSource`](super::CsvSource)'s default parse, so a panel→select→filter
-//! stream is timestamp-identical to the original per-symbol source.
+//! the day's UTC-midnight instant via [`hifitime`], so a panel→select→filter
+//! stream is timestamp-aligned across kinds.
 //!
 //! Requires a tokio runtime when added to a scenario (the Parquet scan runs on a
 //! `spawn_blocking` task feeding the historical channel with back-pressure).
@@ -121,15 +118,14 @@ fn epoch_from_days(days: i32) -> Epoch {
     ))
 }
 
-/// `date32` days → event [`Instant`] (UTC midnight → TAI), matching `CsvSource`.
+/// `date32` days → event [`Instant`] (UTC midnight → TAI).
 pub(crate) fn instant_from_days(days: i32) -> Instant {
     Instant::from_hifitime_epoch(epoch_from_days(days))
 }
 
-/// `(year, day_of_year)` (1-based) for a report date, via the **same** hifitime
-/// path as [`FinancialReportSource`](super::stocks::FinancialReportSource)
+/// `(year, day_of_year)` (1-based) for a report date via hifitime
 /// (`Epoch::year_days_of_year() + 1`), so [`Annualize`](crate::operators::Annualize)
-/// matches it bit-for-bit. Used by [`ReportPanelSource`](super::ReportPanelSource).
+/// consumes it directly. Used by [`ParquetFinancialReportPanelSource`](super::ParquetFinancialReportPanelSource).
 pub(crate) fn report_year_and_doy(days: i32) -> (f64, f64) {
     let (year, day_of_year) = epoch_from_days(days).year_days_of_year();
     (year as f64, day_of_year + 1.0)

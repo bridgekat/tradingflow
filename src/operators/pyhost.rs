@@ -61,7 +61,7 @@ use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 use flowgraph::typed::{Interface, InterfaceHandles, Operator, RefPort, RefPorts};
 
 use super::op::Clock;
-use crate::{Array, Series};
+use crate::{Array, Instant, Series};
 
 // ===========================================================================
 // NativeArrayView — Python-visible view over a cell's `Array<f64, N>`
@@ -178,11 +178,27 @@ impl NativeArrayView {
 // NativeSeriesView — Python-visible view over a cell's `Series<f64>` (history)
 // ===========================================================================
 
-/// Read-only view over a graph cell's `Series<f64>`: positional history access
-/// matching the legacy `SeriesView`. Valid only during the call that created it.
+/// Read-only view over a graph cell's `Series<f64, N>`: positional history
+/// access (logical indices) matching the legacy Python `SeriesView`. Valid
+/// only during the call that created it. Rank-erased like
+/// [`NativeArrayView`]: the per-leaf [`PyArgs`] impl knows the concrete rank
+/// `N` at the bind site and captures the retained window's raw parts plus the
+/// logical bookkeeping there, so a single non-generic pyclass serves every
+/// rank.
 #[pyclass]
 pub struct NativeSeriesView {
-    ptr: *const Series<f64>,
+    /// Retained window: flat row-major values (`retained * stride` scalars).
+    values: *const f64,
+    /// Retained window: one timestamp per element.
+    timestamps: *const Instant,
+    /// Number of physically retained elements.
+    retained: usize,
+    /// Logical index of retained element 0 (count of evicted elements).
+    base: usize,
+    /// Scalars per element.
+    stride: usize,
+    /// Element extents (the cell's static `[usize; N]`, as a runtime vector).
+    extents: Vec<usize>,
 }
 
 // SAFETY: single-threaded per compute, never retained/shared (module docs).
@@ -192,13 +208,13 @@ unsafe impl Sync for NativeSeriesView {}
 #[pymethods]
 impl NativeSeriesView {
     fn __len__(&self) -> usize {
-        unsafe { &*self.ptr }.len()
+        self.base + self.retained
     }
 
     /// Element shape (without the time axis).
     #[getter]
     fn shape(&self) -> Vec<usize> {
-        unsafe { &*self.ptr }.shape().to_vec()
+        self.extents.clone()
     }
 
     /// Values in logical `[start, end)` as a `(end-start, *element_shape)` NumPy
@@ -211,44 +227,51 @@ impl NativeSeriesView {
         start: usize,
         end: Option<usize>,
     ) -> Bound<'py, PyArrayDyn<f64>> {
-        let s = unsafe { &*self.ptr };
-        let n = s.len();
-        let base = s.base();
-        let start = start.clamp(base, n);
+        let n = self.base + self.retained;
+        let start = start.clamp(self.base, n);
         let end = end.unwrap_or(n).clamp(start, n);
-        let flat = s.values_range(start, end);
+        // SAFETY: the cell outlives this call and [start, end) ⊆ [base, n).
+        let flat = unsafe {
+            std::slice::from_raw_parts(
+                self.values.add((start - self.base) * self.stride),
+                (end - start) * self.stride,
+            )
+        };
         let mut full = vec![end - start];
-        full.extend_from_slice(s.shape());
+        full.extend_from_slice(&self.extents);
         let nd = ArrayD::from_shape_vec(IxDyn(&full), flat.to_vec()).expect("series shape mismatch");
         PyArrayDyn::from_owned_array(py, nd)
     }
 
     /// Most recent element as an `element_shape` NumPy array.
     fn last<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArrayDyn<f64>>> {
-        let s = unsafe { &*self.ptr };
-        let last = s.last().ok_or_else(|| PyIndexError::new_err("last() on empty series"))?;
-        let nd = ArrayD::from_shape_vec(IxDyn(s.shape()), last.to_vec()).expect("series shape mismatch");
-        Ok(PyArrayDyn::from_owned_array(py, nd))
+        if self.retained == 0 {
+            return Err(PyIndexError::new_err("last() on empty series"));
+        }
+        self.at(py, (self.base + self.retained) as isize - 1)
     }
 
     /// Element at logical index `i` (supports negative indexing). Raises
     /// `IndexError` if the index has been dropped by the retention bound.
     fn at<'py>(&self, py: Python<'py>, i: isize) -> PyResult<Bound<'py, PyArrayDyn<f64>>> {
-        let s = unsafe { &*self.ptr };
-        let n = s.len() as isize;
+        let n = (self.base + self.retained) as isize;
         let idx = if i < 0 { n + i } else { i };
         if idx < 0 || idx >= n {
             return Err(PyIndexError::new_err(format!("index {i} out of bounds (len {n})")));
         }
         let idx = idx as usize;
-        if idx < s.base() {
+        if idx < self.base {
             return Err(PyIndexError::new_err(format!(
                 "index {i} evicted from retained window [{}, {n})",
-                s.base()
+                self.base
             )));
         }
-        let elem = s.at(idx);
-        let nd = ArrayD::from_shape_vec(IxDyn(s.shape()), elem.to_vec()).expect("series shape mismatch");
+        // SAFETY: the cell outlives this call and idx ∈ [base, n).
+        let elem = unsafe {
+            std::slice::from_raw_parts(self.values.add((idx - self.base) * self.stride), self.stride)
+        };
+        let nd =
+            ArrayD::from_shape_vec(IxDyn(&self.extents), elem.to_vec()).expect("series shape mismatch");
         Ok(PyArrayDyn::from_owned_array(py, nd))
     }
 
@@ -256,15 +279,14 @@ impl NativeSeriesView {
     /// Indices are clamped to the retained window `[base, len)`.
     #[pyo3(signature = (start=0, end=None))]
     fn slice<'py>(&self, py: Python<'py>, start: usize, end: Option<usize>) -> Bound<'py, PyArray1<i64>> {
-        let s = unsafe { &*self.ptr };
-        let n = s.len();
-        let base = s.base();
-        let start = start.clamp(base, n);
+        let n = self.base + self.retained;
+        let start = start.clamp(self.base, n);
         let end = end.unwrap_or(n).clamp(start, n);
-        let ts: Vec<i64> = s.timestamps()[start - base..end - base]
-            .iter()
-            .map(|t| t.as_nanos())
-            .collect();
+        // SAFETY: the cell outlives this call and [start, end) ⊆ [base, n).
+        let window = unsafe {
+            std::slice::from_raw_parts(self.timestamps.add(start - self.base), end - start)
+        };
+        let ts: Vec<i64> = window.iter().map(|t| t.as_nanos()).collect();
         PyArray1::from_slice(py, &ts)
     }
 
@@ -276,7 +298,7 @@ impl NativeSeriesView {
         let sl = key.cast::<PySlice>().map_err(|_| {
             PyValueError::new_err("series index must be an int or a contiguous slice")
         })?;
-        let n = unsafe { &*self.ptr }.len();
+        let n = self.base + self.retained;
         let ind = sl.indices(n as isize)?;
         if ind.step != 1 {
             return Err(PyValueError::new_err("only contiguous (step 1) slices supported"));
@@ -286,8 +308,19 @@ impl NativeSeriesView {
 }
 
 impl NativeSeriesView {
-    fn bind<'py>(py: Python<'py>, ptr: *const Series<f64>) -> PyResult<Bound<'py, PyAny>> {
-        Ok(Bound::new(py, NativeSeriesView { ptr })?.into_any())
+    /// Bind a view over a `Series<f64, N>` cell. The concrete rank `N` is
+    /// known at the call site, so the static extents and the retained window's
+    /// raw parts are read here; the pyclass itself is rank-erased.
+    fn bind<'py, const N: usize>(py: Python<'py>, s: &Series<f64, N>) -> PyResult<Bound<'py, PyAny>> {
+        let view = NativeSeriesView {
+            values: s.values().as_ptr(),
+            timestamps: s.timestamps().as_ptr(),
+            retained: s.retained_len(),
+            base: s.base(),
+            stride: s.stride(),
+            extents: s.extents().to_vec(),
+        };
+        Ok(Bound::new(py, view)?.into_any())
     }
 }
 
@@ -327,7 +360,7 @@ impl<const N: usize> PyArgs for RefPort<Array<f64, N>> {
     }
 }
 
-impl PyArgs for RefPort<Series<f64>> {
+impl<const N: usize> PyArgs for RefPort<Series<f64, N>> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
@@ -335,7 +368,7 @@ impl PyArgs for RefPort<Series<f64>> {
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
         let (notify, value) = refs;
-        views.push(NativeSeriesView::bind(py, value as *const Series<f64>)?);
+        views.push(NativeSeriesView::bind::<N>(py, value)?);
         produced.push(notify);
         Ok(())
     }
@@ -375,7 +408,7 @@ impl<const N: usize> PyArgs for RefPorts<Array<f64, N>> {
     }
 }
 
-impl PyArgs for RefPorts<Series<f64>> {
+impl<const N: usize> PyArgs for RefPorts<Series<f64, N>> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
@@ -385,7 +418,7 @@ impl PyArgs for RefPorts<Series<f64>> {
         let (flags, values) = refs;
         debug_assert!(flags.len() == values.len(), "RefPorts refs planes disagree on length");
         for (i, &value) in values.iter().enumerate() {
-            <RefPort<Series<f64>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
+            <RefPort<Series<f64, N>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
         }
         Ok(())
     }
@@ -833,7 +866,7 @@ __op__ = HistDot()
         let series = b.push(Record::new(clock.clone()), feed_v);
         let out = b.push(
             // Scalar output (`vec![]`), so NO = 0.
-            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64>>), 0>::from_source(
+            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64, 1>>), 0>::from_source(
                 HIST_DOT,
                 PyParams::new(),
                 vec![],
@@ -930,7 +963,7 @@ def build(scale=1.0):
         let tgt_series = b.push(Record::new(clock.clone()), tgt_v);
         let pred = b.push(
             // Output is the (N,) prediction → NO = 1 (the default).
-            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64, 2>>, RefPort<Series<f64, 1>>)>::from_module(
                 "flowops.predictors.mean.linear_regression",
                 PyParams::new()
                     .int("num_stocks", N as i64)

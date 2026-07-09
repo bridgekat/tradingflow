@@ -1,5 +1,5 @@
 //! Financial-data plot, reading the consolidated long **parquet** panels via
-//! [`ParquetPanelSource`] / [`ReportPanelSource`].
+//! [`ParquetPanelSource`] / [`ParquetFinancialReportPanelSource`].
 //!
 //! Loads daily prices, equity-structure events, and quarterly financial reports
 //! for one A-shares stock by `Select`ing that stock's row out of each
@@ -8,8 +8,8 @@
 //! ratios with native operators, writing the recorded series to a tidy CSV for
 //! `examples/plot_financial_data.py` (matplotlib).
 //!
-//! The report panels are aligned on the report `date` (point-in-time), matching
-//! the previous `FinancialReportSource(use_effective_date=false)`. Binary ops
+//! The report panels are aligned on the report `date` (point-in-time), i.e.
+//! `ParquetFinancialReportPanelSource` with `use_effective_date = false`. Binary ops
 //! carry the last-known value of the slower input, so ratios update on every tick
 //! of either input; the wide CSV has `NaN` where a column did not tick.
 //!
@@ -32,7 +32,7 @@ use tradingflow::operators::{
     Annualize, ArrayValue, Filter, Map, RollingMean, Select, divide, multiply, negate,
 };
 use tradingflow::Scenario;
-use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
+use tradingflow::sources::{ParquetPanelSource, ParquetFinancialReportPanelSource};
 use tradingflow::{Array, ArrayView, Instant, Series};
 
 const COLS: [&str; 10] = [
@@ -103,7 +103,7 @@ async fn main() {
         pick(sc, panel, idx)
     };
     let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<ViewPort<ArrayValue<f64, 1>>> {
-        let s = ReportPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone())
+        let s = ParquetFinancialReportPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone())
             .with_report_date(with_report_date);
         let panel = sc.add_source(s);
         let panel = sc.as_view(panel);
@@ -189,7 +189,7 @@ async fn main() {
 
     let mut rows: BTreeMap<i64, [f64; 10]> = BTreeMap::new();
     for (c, h) in records.iter().enumerate() {
-        let series: &Series<f64> = session.value(*h);
+        let series: &Series<f64, 0> = session.value(*h);
         for (ts, v) in series.timestamps().iter().zip(series.values().iter()) {
             rows.entry(ts.as_nanos()).or_insert([f64::NAN; 10])[c] = *v;
         }

@@ -212,7 +212,7 @@ fn monotonicity(anns: &[f64]) -> f64 {
     (sxy / (sxx.sqrt() * syy.sqrt())).abs()
 }
 
-type NavHandle = flowgraph::typed::Handle<RefPort<tradingflow::Series<f64>>>;
+type NavHandle = flowgraph::typed::Handle<RefPort<tradingflow::Series<f64, 0>>>;
 
 #[tokio::main]
 async fn main() {
@@ -373,7 +373,7 @@ async fn main() {
 
     // ---- Time-averaged factor correlation matrix ------------------------
     if let Some(h) = corr_handle {
-        let s: &tradingflow::Series<f64> = session.value(h);
+        let s: &tradingflow::Series<f64, 2> = session.value(h);
         let k = ic_names.len();
         let stride = k * k;
         let nt = s.len();

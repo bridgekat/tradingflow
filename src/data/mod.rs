@@ -5,10 +5,12 @@
 //!
 //! # Sub-modules
 //!
-//! * [`array`] - [`Array`](array::Array): dense N-dimensional array with
-//!   row-major contiguous layout.
-//! * [`series`] - [`Series`](series::Series): append-only time series of
-//!   uniformly-shaped arrays.
+//! * [`array`] - [`Array`](array::Array) / [`ArrayView`](array::ArrayView):
+//!   dense rank-`N` array with row-major contiguous layout, and its borrowed
+//!   strided view.
+//! * [`series`] - [`Series`](series::Series) / [`SeriesView`](series::SeriesView):
+//!   append-only time series of uniformly-shaped rank-`N` elements, and its
+//!   borrowed window.
 //! * [`time`] - [`Instant`](time::Instant) and [`Duration`](time::Duration):
 //!   SI-nanosecond timestamps anchored at the PTP epoch (1970-01-01 TAI).
 //!
@@ -21,7 +23,7 @@ pub mod series;
 pub mod time;
 
 pub use array::{Array, ArrayView, Shape};
-pub use series::{Retention, Series};
+pub use series::{Retention, Series, SeriesView};
 pub use time::{Duration, Instant, tai_to_utc, utc_to_tai};
 
 /// A permitted array scalar type.

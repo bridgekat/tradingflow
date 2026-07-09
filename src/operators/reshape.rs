@@ -444,7 +444,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
         init: bool,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let n = state.axis_size;
-        let (data, base) = x.buffer();
+        let data = x.buffer();
         let shape = x.shape();
         let (ext, strd) = (shape.extents(), shape.strides());
         if init {
@@ -468,7 +468,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
         let alloc: &'a Bump = &state.arena;
         let flags = alloc.alloc_slice_fill_iter(std::iter::repeat_n(notified && !init, n));
         let views = alloc.alloc_slice_fill_iter((0..n).map(|i| {
-            &*alloc.alloc(ArrayView::from_parts(data, base + i * strd[0], row_shape))
+            &*alloc.alloc(ArrayView::from_parts(&data[i * strd[0]..], row_shape))
         }));
         (&*flags, &*views)
     }

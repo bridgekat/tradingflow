@@ -157,8 +157,8 @@ async fn main() {
     let predicted_returns = sc.add_operator(
         PyClassOperator::<(
             RefPort<Array<f64, 1>>,
-            RefPort<Series<f64>>,
-            RefPort<Series<f64>>,
+            RefPort<Series<f64, 2>>,
+            RefPort<Series<f64, 1>>,
         )>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
@@ -177,8 +177,8 @@ async fn main() {
         PyClassOperator::<
             (
                 RefPort<Array<f64, 1>>,
-                RefPort<Series<f64>>,
-                RefPort<Series<f64>>,
+                RefPort<Series<f64, 2>>,
+                RefPort<Series<f64, 1>>,
             ),
             2,
         >::from_module(
@@ -206,7 +206,7 @@ async fn main() {
     let h_index = sc.add_record(index_value);
 
     // One Markowitz portfolio per delta.
-    let mut variant_handles: Vec<(f64, Handle<RefPort<Series<f64>>>)> = Vec::new();
+    let mut variant_handles: Vec<(f64, Handle<RefPort<Series<f64, 0>>>)> = Vec::new();
     for &delta in &DELTAS {
         let soft = sc.add_operator(
             PyClassOperator::<(

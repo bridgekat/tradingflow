@@ -145,7 +145,7 @@ where
 // Record — append an Array stream into a Series, stamping with event time.
 // ---------------------------------------------------------------------------
 
-/// Records an `Array<T, N>` stream into a `Series<T>`, stamping each row with
+/// Records an `Array<T, N>` stream into a `Series<T, N>`, stamping each row with
 /// the event time read from the [`Clock`] in its state. The one operator that
 /// needs time — constructed via
 /// [`Scenario::add_record`](super::Scenario::add_record), which supplies the
@@ -178,22 +178,22 @@ impl<T: Scalar, const N: usize> Record<T, N> {
 
 /// Runtime state for [`Record`]: the clock, the retention bound, plus the
 /// recorded series.
-pub struct RecordState<T: Scalar> {
+pub struct RecordState<T: Scalar, const N: usize> {
     clock: Clock,
     retention: Retention,
-    out: Series<T>,
+    out: Series<T, N>,
 }
 
 impl<T: Scalar, const N: usize> Operator for Record<T, N> {
     type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = RefPort<Series<T>>;
-    type State = RecordState<T>;
+    type Outputs = RefPort<Series<T, N>>;
+    type State = RecordState<T, N>;
 
     fn init(self) -> Self::State {
         RecordState {
             clock: self.clock,
             retention: self.retention,
-            out: Series::new(&[]),
+            out: Series::new([0; N]),
         }
     }
 
@@ -201,20 +201,19 @@ impl<T: Scalar, const N: usize> Operator for Record<T, N> {
         (_, x): (bool, ArrayView<'a, T, N>),
         state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Series<T>) {
+    ) -> (bool, &'a Series<T, N>) {
         if init {
-            state.out = Series::with_retention(&x.extents(), state.retention);
+            state.out = Series::with_retention(x.extents(), state.retention);
             return (false, &state.out);
         }
-        let xs = x.to_contiguous();
-        state.out.push(state.clock.get(), &xs);
+        state.out.push_view(state.clock.get(), &x);
         (true, &state.out)
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, T, N>),
         state: &'b Self::State,
-    ) -> (bool, &'a Series<T>) {
+    ) -> (bool, &'a Series<T, N>) {
         (false, &state.out)
     }
 }
@@ -223,7 +222,7 @@ impl<T: Scalar, const N: usize> Operator for Record<T, N> {
 // Last — most recent element of a Series as an Array.
 // ---------------------------------------------------------------------------
 
-/// Extracts the most recent element of a `Series<T>` as a rank-`N`
+/// Extracts the most recent element of a `Series<T, N>` as a rank-`N`
 /// [`ArrayView`], substituting `fill` when the series is empty.
 pub struct Last<T: Scalar, const N: usize> {
     fill: T,
@@ -242,7 +241,7 @@ pub struct LastState<T: Scalar, const N: usize> {
 }
 
 impl<T: Scalar, const N: usize> Operator for Last<T, N> {
-    type Inputs = RefPort<Series<T>>;
+    type Inputs = RefPort<Series<T, N>>;
     type Outputs = ViewPort<ArrayValue<T, N>>;
     type State = LastState<T, N>;
 
@@ -254,12 +253,12 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<T>),
+        (_, series): (bool, &'a Series<T, N>),
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            let ext = series_extents::<T, N>(series);
+            let ext = series.extents();
             state.out = match series.last() {
                 Some(last) => Array::from_vec(ext, last.to_vec()),
                 None => Array::full(ext, state.fill.clone()),
@@ -278,27 +277,11 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<T>),
+        _: (bool, &'a Series<T, N>),
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }
-}
-
-/// The element extents of a (dynamic-rank) `Series` as a static `[usize; N]`.
-///
-/// # Panics
-///
-/// Panics if the series' element rank is not `N` — the source→operator boundary
-/// where a runtime-shaped series meets a compile-time-rank consumer.
-#[inline]
-pub(crate) fn series_extents<T: Scalar, const N: usize>(series: &Series<T>) -> [usize; N] {
-    <[usize; N]>::try_from(series.shape()).unwrap_or_else(|_| {
-        panic!(
-            "series element rank {} != operator rank {N}",
-            series.shape().len(),
-        )
-    })
 }
 
 // ---------------------------------------------------------------------------

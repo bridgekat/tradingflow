@@ -115,8 +115,8 @@ async fn main() {
     let predicted_returns = sc.add_operator(
         PyClassOperator::<(
             RefPort<Array<f64, 1>>,
-            RefPort<Series<f64>>,
-            RefPort<Series<f64>>,
+            RefPort<Series<f64, 2>>,
+            RefPort<Series<f64, 1>>,
         )>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
@@ -186,7 +186,7 @@ async fn main() {
     let index_logret_vec = sc.add_operator(Stack::<f64, 0, 1>::new(0), &[index_logret_ref][..]);
     let index_logret_series = sc.add_record(index_logret_vec);
     let beta_alpha = sc.add_operator(
-        PyClassOperator::<(RefPort<()>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<()>, RefPort<Series<f64, 0>>, RefPort<Series<f64, 1>>)>::from_module(
             "flowops.metrics.mean.regression_coefficients",
             PyParams::new()
                 .int("num_features", 1)
@@ -254,7 +254,7 @@ async fn main() {
         .into_iter()
         .filter(|x| x.is_finite())
         .fold(0.0_f64, f64::min);
-    let ba = session.value(h_beta_alpha) as &Series<f64>;
+    let ba = session.value(h_beta_alpha) as &Series<f64, 1>;
     let (beta, alpha) = ba
         .values()
         .rchunks(2)

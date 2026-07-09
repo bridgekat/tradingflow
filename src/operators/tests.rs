@@ -139,7 +139,7 @@ fn record_series() {
     *g.state_mut(hb) = Array::scalar(7.0);
     g.stabilize(&mut pool);
 
-    let s: &Series<f64> = g.ref_view(rec);
+    let s: &Series<f64, 0> = g.ref_view(rec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.timestamps(), &[ts(1), ts(2)]);
     assert_eq!(s.values(), &[13.0, 27.0]);
@@ -163,7 +163,7 @@ fn filter_gates_record() {
         g.stabilize(&mut pool);
     }
 
-    let s: &Series<f64> = g.ref_view(rec);
+    let s: &Series<f64, 0> = g.ref_view(rec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.values(), &[5.0, 10.0]);
     assert_eq!(s.timestamps(), &[ts(2), ts(4)]);
@@ -232,7 +232,7 @@ fn bounded_record_feeds_rolling_and_lag() {
         }
     }
 
-    let s: &Series<f64> = g.ref_view(rec);
+    let s: &Series<f64, 0> = g.ref_view(rec);
     assert_eq!(s.len(), m as usize, "logical length preserved across compaction");
     assert!(s.base() > 0, "expected front-compaction (base={})", s.base());
     assert!(s.retained_len() <= 16, "physical storage unbounded: {}", s.retained_len());
@@ -265,7 +265,7 @@ fn clocked_periodic() {
         g.stabilize(&mut pool);
     }
 
-    let s: &Series<f64> = g.ref_view(rec);
+    let s: &Series<f64, 0> = g.ref_view(rec);
     assert_eq!(s.len(), 1);
     assert_eq!(s.values(), &[20.0]);
     assert_eq!(s.timestamps(), &[ts(2)]);

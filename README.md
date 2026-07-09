@@ -39,7 +39,7 @@ async fn main() {
     // A source feeds timestamped values into the graph; `Record` collects them
     // into a time series; `RollingMean` reduces the series to its last-N mean.
     let prices = sc.add_source(ArraySource::new(
-        Series::from_vec(&[], timestamps, values),
+        Series::from_vec([], timestamps, values),
         Array::scalar(0.0),
     ));
     let prices = sc.as_view(prices);
@@ -50,7 +50,7 @@ async fn main() {
     // Run the event loop until all sources are exhausted, then inspect results.
     let mut session = sc.build();
     session.run(|_, _| {}).await;
-    let series: &Series<f64> = session.value(ma_history);
+    let series: &Series<f64, 0> = session.value(ma_history);
     println!("{:?}", series.values());
 }
 ```

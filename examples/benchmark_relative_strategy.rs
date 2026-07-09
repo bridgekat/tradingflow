@@ -109,7 +109,7 @@ async fn main() {
     let universe_ref = own(&mut sc, universe);
 
     let predicted_returns = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64, 2>>, RefPort<Series<f64, 1>>)>::from_module(
             "flowops.predictors.mean.incremental_ridge",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -124,7 +124,7 @@ async fn main() {
         (universe_ref, features.series, demeaned_series),
     );
     let predicted_cov = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64>>, RefPort<Series<f64>>)>::from_module(
+        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64, 2>>, RefPort<Series<f64, 1>>)>::from_module(
             "flowops.predictors.variance.shrinkage",
             PyParams::new()
                 .int("num_stocks", n_i)
@@ -148,7 +148,7 @@ async fn main() {
     let h_index = sc.add_record(index_value);
 
     // One BenchmarkRelative portfolio per (daily) tracking-error budget.
-    let mut variant_handles: Vec<(f64, Handle<RefPort<Series<f64>>>)> = Vec::new();
+    let mut variant_handles: Vec<(f64, Handle<RefPort<Series<f64, 0>>>)> = Vec::new();
     for &gamma_ann in &TRACKING_ERRORS_ANN {
         let gamma_daily = gamma_ann / TRADING_DAYS.sqrt();
         let soft = sc.add_operator(

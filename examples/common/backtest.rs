@@ -26,11 +26,11 @@ pub const NUM_GROUPS: usize = 10;
 /// Recorded NAV / turnover series for the decile portfolios and the benchmark.
 pub struct DecileBacktest {
     /// Per-decile NAV series (group 0 = lowest factor value … group 9 = highest).
-    pub decile_nav: Vec<Handle<RefPort<Series<f64>>>>,
+    pub decile_nav: Vec<Handle<RefPort<Series<f64, 0>>>>,
     /// Per-decile turnover series (L1 weight change per rebalance).
-    pub decile_turnover: Vec<Handle<RefPort<Series<f64>>>>,
+    pub decile_turnover: Vec<Handle<RefPort<Series<f64, 0>>>>,
     /// Equal-weight-universe benchmark NAV series.
-    pub bench_nav: Handle<RefPort<Series<f64>>>,
+    pub bench_nav: Handle<RefPort<Series<f64, 0>>>,
 }
 
 /// One `RankBucket(low, high)` portfolio → `Benchmark` trader → `(NAV record,
@@ -48,7 +48,7 @@ fn bucket_nav(
     clk: &Clock,
     low: f64,
     high: f64,
-) -> (Handle<RefPort<Series<f64>>>, Handle<RefPort<Series<f64>>>) {
+) -> (Handle<RefPort<Series<f64, 0>>>, Handle<RefPort<Series<f64, 0>>>) {
     // The Python portfolio consumes whole-array `RefPort` inputs; materialize the
     // two view inputs via `own`.
     let universe_ref = own(sc, universe);

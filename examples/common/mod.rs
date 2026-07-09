@@ -13,8 +13,8 @@
 //! * Calendar/timezone handling is the caller's job in Rust (the core has no
 //!   tz database), so rebalance dates are generated here from a plain
 //!   `Duration::from_days` step, and date strings are turned into `Instant`s
-//!   via [`instant_from_days`] — which reproduces `CsvSource`'s default
-//!   UTC-midnight parse exactly (`utc_to_tai(days * 86_400e9)`).
+//!   via [`instant_from_days`] — a UTC-midnight → TAI parse
+//!   (`utc_to_tai(days * 86_400e9)`) matching `ParquetPanelSource`'s.
 //! * The Python lambdas (`calculate_index_weights`, cross-sectional demean,
 //!   price-limit rounding) become native Rust closures fed to `Map`/`Apply`.
 //! * All symbols in `symbol_list.csv` are loaded (matching the original);
@@ -35,7 +35,7 @@ use tradingflow::operators::{
     log, multiply, sqrt, subtract,
 };
 use tradingflow::{Scenario, Session};
-use tradingflow::sources::{ParquetPanelSource, ReportPanelSource};
+use tradingflow::sources::{ParquetPanelSource, ParquetFinancialReportPanelSource};
 use tradingflow::{Array, ArrayView, Instant, Retention, Series, utc_to_tai};
 
 /// Rows kept beyond a consumer's exact count look-back, absorbing the
@@ -206,7 +206,7 @@ pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 /// `Instant` at UTC midnight of the given days-since-epoch count, matching
-/// `CsvSource`'s default (`is_utc = true`) date parse exactly.
+/// `ParquetPanelSource`'s `date32` → event-timestamp parse exactly.
 pub fn instant_from_days(days: i64) -> Instant {
     Instant::from_nanos(utc_to_tai(days * 86_400 * 1_000_000_000))
 }
@@ -469,7 +469,7 @@ fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
 }
 
 /// Load the consolidated long-format parquet panels and stack into the
-/// cross-sectional panel. One [`ParquetPanelSource`] / [`ReportPanelSource`] per
+/// cross-sectional panel. One [`ParquetPanelSource`] / [`ParquetFinancialReportPanelSource`] per
 /// data kind (one sequential scan each) replaces the per-symbol CSV fan-in.
 /// Each panel fans out through a single [`Split`] node (`1 → N` rows), every
 /// stock's whole transform chain (NaN `Filter` + column `Select`s +
@@ -504,7 +504,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
                         cols: Vec<String>,
                         with_report_date: bool|
      -> Handle<ViewPort<ArrayValue<f64, 2>>> {
-        let s = ReportPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
+        let s = ParquetFinancialReportPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
             .with_report_date(with_report_date)
             .use_effective_date(Duration::ZERO)
             .with_time_range(start, end);
@@ -794,7 +794,7 @@ pub struct Features {
     pub names: Vec<String>,
     pub handles: Vec<AvH>,
     /// Trading-day-aligned `Record` of the `(num_stocks, n_features)` panel.
-    pub series: Handle<RefPort<Series<f64>>>,
+    pub series: Handle<RefPort<Series<f64, 2>>>,
 }
 
 /// Build the canonical factor panel (3 percentile-ranked fundamentals plus
@@ -1059,7 +1059,7 @@ pub fn build_log_return_target(
     sc: &mut Scenario,
     log_adj: AvH,
     target_retention: Retention,
-) -> (AvH, Handle<RefPort<Series<f64>>>, Handle<RefPort<Series<f64>>>) {
+) -> (AvH, Handle<RefPort<Series<f64, 1>>>, Handle<RefPort<Series<f64, 1>>>) {
     use tradingflow::operators::Diff;
     let log_returns = sc.add_operator(Diff::<f64, 1>::new(), log_adj);
     let target = sc.add_operator(Winsorize::<f64, 1>::new(0.01), log_returns);
@@ -1133,8 +1133,8 @@ pub fn build_price_limits(
 // ===========================================================================
 
 /// Read a recorded **scalar** series into `(timestamps_ns, values)`.
-pub fn read_scalar_series(session: &Session, h: Handle<RefPort<Series<f64>>>) -> (Vec<i64>, Vec<f64>) {
-    let s: &Series<f64> = session.value(h);
+pub fn read_scalar_series(session: &Session, h: Handle<RefPort<Series<f64, 0>>>) -> (Vec<i64>, Vec<f64>) {
+    let s: &Series<f64, 0> = session.value(h);
     let ts = s.timestamps().iter().map(|t| t.as_nanos()).collect();
     let vals = s.values().to_vec();
     (ts, vals)

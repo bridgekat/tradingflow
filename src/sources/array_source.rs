@@ -13,7 +13,7 @@ use crate::{Array, Scalar, Series, Source};
 /// Requires a tokio runtime to be active when added to a scenario.
 #[derive(Clone)]
 pub struct ArraySource<T: Scalar, const N: usize> {
-    series: Series<T>,
+    series: Series<T, N>,
     default: Array<T, N>,
 }
 
@@ -21,7 +21,7 @@ impl<T: Scalar, const N: usize> ArraySource<T, N> {
     /// Create from timestamp and flat value arrays.
     ///
     /// `values.len()` must equal `timestamps.len() * stride`.
-    pub fn new(series: Series<T>, default: Array<T, N>) -> Self {
+    pub fn new(series: Series<T, N>, default: Array<T, N>) -> Self {
         Self { series, default }
     }
 }
@@ -46,14 +46,10 @@ impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
         // borrowable so the same source can drive multiple sessions.
         let series = self.series.clone();
         tokio::spawn(async move {
-            for (i, &ts) in series.timestamps().iter().enumerate() {
-                let stride = series.stride();
-                let start = i * stride;
-                let slice = &series.values()[start..start + stride];
-                let extents = <[usize; N]>::try_from(series.shape())
-                    .expect("ArraySource: series element rank != N");
-                let arr = Array::from_vec(extents, slice.to_vec());
-                if hist_tx.send((ts, arr)).await.is_err() {
+            let view = series.view();
+            for i in 0..view.len() {
+                let arr = view.element(i).to_array();
+                if hist_tx.send((view.timestamp_at(i), arr)).await.is_err() {
                     break;
                 }
             }

@@ -11,16 +11,13 @@
 //! - [`ArraySource`] - historical-only source backed by pre-loaded timestamp
 //!   and value arrays. Each event carries an `Array<T>`. Requires a tokio
 //!   runtime.
-//! - [`CsvSource`] - historical-only source that reads a timestamp column and
-//!   named value columns from a CSV file on disk. Outputs `Array<f64>`. Requires
-//!   a tokio runtime.
 //! - [`IterSource`] - source driven by an arbitrary `(timestamp, value)`
 //!   iterator. More flexible than `ArraySource`; supports lazy/computed sequences
 //!   and arbitrary output types. Requires a tokio runtime.
 //! - [`ParquetPanelSource`] - cross-sectional panel over a long-format Parquet
 //!   table; emits one wide `[N, K]` cross-section per date. Requires a tokio
 //!   runtime.
-//! - [`ReportPanelSource`] - panel variant for financial-report long tables,
+//! - [`ParquetFinancialReportPanelSource`] - panel variant for financial-report long tables,
 //!   with point-in-time effective-date alignment. Requires a tokio runtime.
 //!
 //! # Clock sources
@@ -32,22 +29,15 @@
 //!   (daily / monthly in a given timezone) are constructed in Python via
 //!   `zoneinfo` and passed in as a pre-computed list, keeping the Rust core
 //!   free of timezone data.
-//!
-//! # Sub-modules
-//!
-//! - [`stocks`] - stock-specific data sources.
 
 pub mod array_source;
 pub mod clock;
-pub mod csv_source;
 pub mod iter_source;
 pub mod parquet_panel_source;
-pub mod report_panel_source;
-pub mod stocks;
+pub mod parquet_financial_report_panel_source;
 
 pub use array_source::ArraySource;
 pub use clock::clock;
-pub use csv_source::CsvSource;
 pub use iter_source::IterSource;
 pub use parquet_panel_source::ParquetPanelSource;
-pub use report_panel_source::ReportPanelSource;
+pub use parquet_financial_report_panel_source::ParquetFinancialReportPanelSource;

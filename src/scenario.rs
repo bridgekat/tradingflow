@@ -176,7 +176,7 @@ impl Scenario {
     pub fn add_record<T: Scalar, const N: usize>(
         &mut self,
         data: Handle<ViewPort<ArrayValue<T, N>>>,
-    ) -> Handle<RefPort<Series<T>>> {
+    ) -> Handle<RefPort<Series<T, N>>> {
         self.builder.push(Record::new(self.clock.clone()), data)
     }
 
@@ -189,7 +189,7 @@ impl Scenario {
         &mut self,
         data: Handle<ViewPort<ArrayValue<T, N>>>,
         retention: crate::Retention,
-    ) -> Handle<RefPort<Series<T>>> {
+    ) -> Handle<RefPort<Series<T, N>>> {
         self.builder
             .push(Record::with_retention(self.clock.clone(), retention), data)
     }
@@ -437,7 +437,7 @@ mod tests {
     }
 
     fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
-        ArraySource::new(Series::from_vec(&[], tss(ts), vals.to_vec()), Array::scalar(0.0))
+        ArraySource::new(Series::from_vec([], tss(ts), vals.to_vec()), Array::scalar(0.0))
     }
 
     /// Replay [10,20,30] @ [1,2,3] into a Record.
@@ -451,7 +451,7 @@ mod tests {
         let mut session = sc.build();
         session.run(|_, _| {}).await;
 
-        let s: &Series<f64> = session.value(hrec);
+        let s: &Series<f64, 0> = session.value(hrec);
         assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
         assert_eq!(s.values(), &[10.0, 20.0, 30.0]);
     }
@@ -470,7 +470,7 @@ mod tests {
         let mut session = sc.build();
         session.run(|_, _| {}).await;
 
-        let s: &Series<f64> = session.value(hrec);
+        let s: &Series<f64, 0> = session.value(hrec);
         assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
         assert_eq!(s.values(), &[10.0, 30.0, 70.0]);
     }
@@ -489,7 +489,7 @@ mod tests {
         let mut session = sc.build();
         session.run(|_, _| {}).await;
 
-        let s: &Series<f64> = session.value(hrec);
+        let s: &Series<f64, 0> = session.value(hrec);
         assert_eq!(s.timestamps(), tss(&[1, 2]).as_slice());
         assert_eq!(s.values(), &[110.0, 220.0]);
     }
@@ -507,7 +507,7 @@ mod tests {
         let mut session = sc.build();
         session.run(|_, _| {}).await;
 
-        let s: &Series<f64> = session.value(hrec);
+        let s: &Series<f64, 0> = session.value(hrec);
         assert_eq!(s.len(), 2);
         assert_eq!(s.timestamps(), tss(&[2, 4]).as_slice());
         assert_eq!(s.values(), &[5.0, 10.0]);

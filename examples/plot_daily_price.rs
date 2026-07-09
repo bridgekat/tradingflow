@@ -145,7 +145,7 @@ async fn main() {
     eprintln!();
 
     // Align the recorded scalar series by timestamp and write a wide CSV.
-    let cols: [(&str, &Series<f64>); 5] = [
+    let cols: [(&str, &Series<f64, 0>); 5] = [
         ("adj_close", session.value(h_adj)),
         ("ma", session.value(h_ma)),
         ("upper", session.value(h_upper)),
