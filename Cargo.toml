@@ -13,7 +13,7 @@ debug = true
 [features]
 default = []
 # Python operators (optional): the engine embeds a CPython interpreter to run
-# `flowops` operators (`src/operators/python.rs` / `pyhost.rs`). The pure-Rust
+# `flowops` operators (`src/operators/pyhost.rs`). The pure-Rust
 # engine + native operators build WITHOUT a Python toolchain; enabling `python`
 # links libpython, so set PYO3_PYTHON (see examples/env.ps1). A free-threaded
 # interpreter gives pure-Python parallelism; on a GIL build, numpy/scipy/cvxpy

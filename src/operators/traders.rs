@@ -186,6 +186,11 @@ impl Operator for Benchmark {
                 holdings_value += state.shares[i] * state.last_close[i];
             }
         }
+        // Ruin check. The negation is deliberate and NOT equivalent to
+        // `<= 0.0`: net worth is `NaN` when a held price is missing, and
+        // `!(NaN > 0.0)` is `true` while `NaN <= 0.0` is `false`. Rewriting
+        // this comparison would let a NaN-valued book keep trading.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !(state.cash + holdings_value > 0.0) {
             state.shares.iter_mut().for_each(|s| *s = 0.0);
             state.cash = 0.0;
@@ -226,7 +231,13 @@ struct TraderCore {
 }
 
 impl TraderCore {
-    fn new(num_stocks: usize, initial_cash: f64, lot_size: f64, fee_base: f64, fee_rate: f64) -> Self {
+    fn new(
+        num_stocks: usize,
+        initial_cash: f64,
+        lot_size: f64,
+        fee_base: f64,
+        fee_rate: f64,
+    ) -> Self {
         let n = num_stocks;
         Self {
             num_stocks: n,
@@ -249,6 +260,10 @@ impl TraderCore {
 /// `pos_notified` is the positions notify flag; `lots` computes the per-stock
 /// net trade in *lots*. Writes `[holdings, cash]` into `s.out`.
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::needless_range_loop,
+    reason = "i walks the per-stock book arrays (shares/last_close/last_adjust) in lockstep with the price inputs"
+)]
 fn run_tick<L>(
     s: &mut TraderCore,
     pos_notified: bool,
@@ -309,7 +324,14 @@ where
             }
         }
         // Step 3: per-stock net lots from the operator-specific sizer.
-        lots(current_value, closes, &s.shares, s.lot_size, &pending, &mut s.lots_buf);
+        lots(
+            current_value,
+            closes,
+            &s.shares,
+            s.lot_size,
+            &pending,
+            &mut s.lots_buf,
+        );
         // Step 4: execute lots at today's close.
         for i in 0..n {
             let valid_exec = closes[i].is_finite() && closes[i] > 0.0;
@@ -346,6 +368,9 @@ where
             holdings_value += s.shares[i] * s.last_close[i];
         }
     }
+    // Ruin check — see the note in `Benchmark::compute`: `!(x > 0.0)` catches
+    // `NaN` (a missing price makes net worth `NaN`), which `x <= 0.0` does not.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(s.cash + holdings_value > 0.0) {
         s.shares.iter_mut().for_each(|x| *x = 0.0);
         s.cash = 0.0;
@@ -469,7 +494,13 @@ pub struct SimpleTrader {
 }
 
 impl SimpleTrader {
-    pub fn new(num_stocks: usize, initial_cash: f64, lot_size: f64, fee_base: f64, fee_rate: f64) -> Self {
+    pub fn new(
+        num_stocks: usize,
+        initial_cash: f64,
+        lot_size: f64,
+        fee_base: f64,
+        fee_rate: f64,
+    ) -> Self {
         Self {
             num_stocks,
             initial_cash,
@@ -492,7 +523,13 @@ impl Operator for SimpleTrader {
 
     fn init(self) -> SimpleTraderState {
         SimpleTraderState {
-            core: TraderCore::new(self.num_stocks, self.initial_cash, self.lot_size, self.fee_base, self.fee_rate),
+            core: TraderCore::new(
+                self.num_stocks,
+                self.initial_cash,
+                self.lot_size,
+                self.fee_base,
+                self.fee_rate,
+            ),
         }
     }
 
@@ -559,7 +596,13 @@ impl Operator for RandomTrader {
 
     fn init(self) -> RandomTraderState {
         RandomTraderState {
-            core: TraderCore::new(self.num_stocks, self.initial_cash, self.lot_size, self.fee_base, self.fee_rate),
+            core: TraderCore::new(
+                self.num_stocks,
+                self.initial_cash,
+                self.lot_size,
+                self.fee_base,
+                self.fee_rate,
+            ),
             rng: StdRng::seed_from_u64(self.seed),
             portfolio_size: self.portfolio_size,
         }
@@ -570,7 +613,11 @@ impl Operator for RandomTrader {
         state: &'b mut RandomTraderState,
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 1>) {
-        let RandomTraderState { core, rng, portfolio_size } = state;
+        let RandomTraderState {
+            core,
+            rng,
+            portfolio_size,
+        } = state;
         let ps = *portfolio_size;
         run_trader(core, values, init, |cv, exec, shares, ls, soft, out| {
             random_lots(rng, ps, cv, exec, shares, ls, soft, out)
@@ -639,10 +686,7 @@ mod tests {
 
     /// Push a `RefSource` of `v` plus an `AsView` bridge; return the source
     /// handle (for `state_mut`) and the view handle (for wiring).
-    fn src(
-        b: &mut Builder,
-        v: &[f64],
-    ) -> (SourceHandle<RefSource<Array<f64, 1>>>, Handle<Vp>) {
+    fn src(b: &mut Builder, v: &[f64]) -> (SourceHandle<RefSource<Array<f64, 1>>>, Handle<Vp>) {
         let s = b.push_source(RefSource::new(arr(v)));
         let view = b.push(AsView::<f64, 1>::new(), *s);
         (s, view)
@@ -677,7 +721,12 @@ mod tests {
         let o = g.view(out).contiguous_slice().unwrap().to_vec();
         let nav = o[0] + o[1];
         let expected = 0.5 * (12.0 / 11.0) + 0.5;
-        assert!((nav - expected).abs() < 1e-12, "tick3 NAV {} != {}", nav, expected);
+        assert!(
+            (nav - expected).abs() < 1e-12,
+            "tick3 NAV {} != {}",
+            nav,
+            expected
+        );
     }
 
     #[test]
@@ -699,13 +748,20 @@ mod tests {
         *g.state_mut(close) = arr(&[10.0]);
         g.stabilize(&mut pool);
         let o = g.view(out).contiguous_slice().unwrap().to_vec();
-        assert!((o[0] - 1.0).abs() < 1e-12 && o[1].abs() < 1e-12, "fully invested: {o:?}");
+        assert!(
+            (o[0] - 1.0).abs() < 1e-12 && o[1].abs() < 1e-12,
+            "fully invested: {o:?}"
+        );
 
         *g.state_mut(adj) = arr(&[2.0]);
         *g.state_mut(close) = arr(&[10.0]);
         g.stabilize(&mut pool);
         let o = g.view(out).contiguous_slice().unwrap().to_vec();
-        assert!((o[0] - 2.0).abs() < 1e-12, "reinvested holdings {} != 2.0", o[0]);
+        assert!(
+            (o[0] - 2.0).abs() < 1e-12,
+            "reinvested holdings {} != 2.0",
+            o[0]
+        );
     }
 
     #[test]
@@ -731,7 +787,10 @@ mod tests {
 
         *g.state_mut(close) = arr(&[10.0]);
         g.stabilize(&mut pool);
-        assert_eq!(g.view(out).contiguous_slice().unwrap(), &[1_000_000.0, -1000.0]);
+        assert_eq!(
+            g.view(out).contiguous_slice().unwrap(),
+            &[1_000_000.0, -1000.0]
+        );
     }
 
     #[test]
@@ -764,9 +823,16 @@ mod tests {
         let (inv1, mk1) = run();
         let (_inv2, mk2) = run();
 
-        assert_eq!(inv1, vec![1000.0, 0.0], "should be fully invested after rebalance");
+        assert_eq!(
+            inv1,
+            vec![1000.0, 0.0],
+            "should be fully invested after rebalance"
+        );
         assert_eq!(mk1, mk2, "same seed must give identical results");
         let nav = mk1[0] + mk1[1];
-        assert!(nav > 900.0 && nav < 1100.0, "tick3 NAV {nav} out of held-leg bounds");
+        assert!(
+            nav > 900.0 && nav < 1100.0,
+            "tick3 NAV {nav} out of held-leg bounds"
+        );
     }
 }

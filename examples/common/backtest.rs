@@ -16,12 +16,13 @@
 use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::operators::{
-    Clock, PyClassOperator, PyParams, as_view, benchmark, map, own, py_class_operator, record,
+    EventTime, PyClassOperator, PyParams, as_view, benchmark, map, own, py_class_operator, record,
     turnover,
 };
 use tradingflow::{Array, ArrayView, Scenario, Series};
 
 use super::AvH;
+use super::strategy::NavH;
 
 /// Number of layered-backtest groups (deciles).
 pub const NUM_GROUPS: usize = 10;
@@ -48,10 +49,10 @@ fn bucket_nav(
     upper: AvH,
     lower: AvH,
     n: usize,
-    clk: &Clock,
+    clk: &EventTime,
     low: f64,
     high: f64,
-) -> (Handle<RefPort<Series<f64, 0>>>, Handle<RefPort<Series<f64, 0>>>) {
+) -> (NavH, NavH) {
     // The Python portfolio consumes whole-array `RefPort` inputs; materialize the
     // two view inputs via `own`.
     let universe_ref = sc.push(own(), universe);
@@ -93,20 +94,22 @@ pub fn build_decile_backtest(
     upper: AvH,
     lower: AvH,
     n: usize,
-    clk: &Clock,
+    clk: &EventTime,
 ) -> DecileBacktest {
     let mut decile_nav = Vec::with_capacity(NUM_GROUPS);
     let mut decile_turnover = Vec::with_capacity(NUM_GROUPS);
     for d in 0..NUM_GROUPS {
         let low = d as f64 / NUM_GROUPS as f64;
         let high = (d + 1) as f64 / NUM_GROUPS as f64;
-        let (nav, turn) =
-            bucket_nav(sc, universe, factor, close, adjusts, upper, lower, n, clk, low, high);
+        let (nav, turn) = bucket_nav(
+            sc, universe, factor, close, adjusts, upper, lower, n, clk, low, high,
+        );
         decile_nav.push(nav);
         decile_turnover.push(turn);
     }
-    let (bench_nav, _bench_turn) =
-        bucket_nav(sc, universe, factor, close, adjusts, upper, lower, n, clk, 0.0, 1.0);
+    let (bench_nav, _bench_turn) = bucket_nav(
+        sc, universe, factor, close, adjusts, upper, lower, n, clk, 0.0, 1.0,
+    );
     DecileBacktest {
         decile_nav,
         decile_turnover,

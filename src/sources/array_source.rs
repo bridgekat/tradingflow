@@ -43,7 +43,12 @@ impl<T: Scalar, const N: usize> EventSource<Instant> for ArraySource<T, N> {
         self.default.clone()
     }
 
-    fn init(&self) -> (impl Stream<Item = Event<Instant, Array<T, N>>> + Send + 'static, ()) {
+    fn init(
+        &self,
+    ) -> (
+        impl Stream<Item = Event<Instant, Array<T, N>>> + Send + 'static,
+        (),
+    ) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
         // Clone the series for the spawned driver; the spec stays
@@ -62,7 +67,12 @@ impl<T: Scalar, const N: usize> EventSource<Instant> for ArraySource<T, N> {
         (receiver_stream(hist_rx), ())
     }
 
-    fn write(_state: &mut (), payload: Array<T, N>, output: &mut Array<T, N>, _timestamp: Instant) -> usize {
+    fn write(
+        _state: &mut (),
+        payload: Array<T, N>,
+        output: &mut Array<T, N>,
+        _timestamp: Instant,
+    ) -> usize {
         output.assign(payload.as_slice());
         1
     }

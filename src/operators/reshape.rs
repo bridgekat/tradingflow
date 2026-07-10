@@ -234,7 +234,6 @@ impl<T: Scalar + Float, const IN: usize, const OUT: usize> Operator for StackSyn
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Concat / ConcatSync — existing axis (rank-preserving).
 // ---------------------------------------------------------------------------
@@ -384,7 +383,11 @@ impl<T: Scalar + Float, const N: usize> Operator for ConcatSync<T, N> {
 
 #[inline(always)]
 fn self_axis_ok(axis: usize, rank: usize, allow_equal: bool) -> bool {
-    if allow_equal { axis <= rank } else { axis < rank }
+    if allow_equal {
+        axis <= rank
+    } else {
+        axis < rank
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -459,17 +462,17 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
         // Each row drops axis 0, keeping the inner axes' extents/strides.
         let mut inner_ext = [0usize; OUT];
         let mut inner_str = [0usize; OUT];
-        for d in 0..OUT {
-            inner_ext[d] = ext[d + 1];
-            inner_str[d] = strd[d + 1];
-        }
+        inner_ext.copy_from_slice(&ext[1..]);
+        inner_str.copy_from_slice(&strd[1..]);
         let row_shape = Shape::strided(inner_ext, inner_str);
         state.arena.reset();
         let alloc: &'a Bump = &state.arena;
         let flags = alloc.alloc_slice_fill_iter(std::iter::repeat_n(notified && !init, n));
-        let views = alloc.alloc_slice_fill_iter((0..n).map(|i| {
-            &*alloc.alloc(ArrayView::from_parts(&data[i * strd[0]..], row_shape))
-        }));
+        let views =
+            alloc
+                .alloc_slice_fill_iter((0..n).map(|i| {
+                    &*alloc.alloc(ArrayView::from_parts(&data[i * strd[0]..], row_shape))
+                }));
         (&*flags, &*views)
     }
 }
@@ -502,8 +505,6 @@ pub fn concat_sync<T: Scalar + Float, const N: usize>(axis: usize) -> ConcatSync
 }
 
 /// Split a rank-`IN` array into `axis_size` rank-`OUT` by-reference view rows.
-pub fn split<T: Scalar, const IN: usize, const OUT: usize>(
-    axis_size: usize,
-) -> Split<T, IN, OUT> {
+pub fn split<T: Scalar, const IN: usize, const OUT: usize>(axis_size: usize) -> Split<T, IN, OUT> {
     Split::new(axis_size)
 }

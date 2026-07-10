@@ -11,7 +11,10 @@ fn tss(xs: &[i64]) -> Vec<Instant> {
 }
 
 fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
-    ArraySource::new(Series::from_vec([], tss(ts), vals.to_vec()), Array::scalar(0.0))
+    ArraySource::new(
+        Series::from_vec([], tss(ts), vals.to_vec()),
+        Array::scalar(0.0),
+    )
 }
 
 /// Replay [10,20,30] @ [1,2,3] into a Record.
@@ -40,7 +43,7 @@ async fn run_two_sources_add() {
     let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]));
     let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]));
     let (hav, hbv) = (sc.push(as_view(), ha), sc.push(as_view(), hb));
-    let ho = sc.push(add::<f64, 0>(), (hav, hbv));
+    let ho = sc.push(add(), (hav, hbv));
     let hrec = sc.push(record(&clk), ho);
 
     let mut session = sc.build();
@@ -60,7 +63,7 @@ async fn run_coalescing() {
     let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]));
     let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]));
     let (hav, hbv) = (sc.push(as_view(), ha), sc.push(as_view(), hb));
-    let ho = sc.push(add::<f64, 0>(), (hav, hbv));
+    let ho = sc.push(add(), (hav, hbv));
     let hrec = sc.push(record(&clk), ho);
 
     let mut session = sc.build();
@@ -79,7 +82,10 @@ async fn run_filter_cutoff() {
     let clk = sc.time();
     let h = sc.add_source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
     let hv = sc.push(as_view(), h);
-    let hf = sc.push(filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), hv);
+    let hf = sc.push(
+        filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0),
+        hv,
+    );
     let hrec = sc.push(record(&clk), hf);
 
     let mut session = sc.build();

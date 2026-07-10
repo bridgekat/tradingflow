@@ -20,7 +20,7 @@
 mod common;
 
 use tradingflow::operators::{apply, benchmark, map, multiply, record, resample_view};
-use tradingflow::sources::clock;
+use tradingflow::sources::pulse;
 use tradingflow::{Array, ArrayView, Scenario, WallClock};
 
 use clap::Parser;
@@ -43,11 +43,15 @@ async fn main() {
     let clk = sc.time();
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let circ_market_cap = sc.push(multiply::<f64, 1>(), (st.close, st.circ_shares));
+    let circ_market_cap = sc.push(multiply(), (st.close, st.circ_shares));
 
-    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
-    let universe =
-        common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
+    let rebalance_clock = sc.add_source(pulse(args.rebalance_instants()));
+    let universe = common::build_cap_weighted_universe(
+        &mut sc,
+        circ_market_cap,
+        rebalance_clock,
+        args.index_size,
+    );
 
     // Hold the rebalance-day universe fixed between rebalances by re-emitting it
     // on the daily close pulse (clock = the close view, data = the universe).
@@ -55,18 +59,16 @@ async fn main() {
 
     // Summed circulating market cap of the current constituents.
     let index_circ_market_cap = sc.push(
-        apply(
-            |(u, c): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
-                let (us, cs) = (u.to_contiguous(), c.to_contiguous());
-                let mut s = 0.0;
-                for i in 0..us.len() {
-                    if us[i] > 0.0 && cs[i].is_finite() {
-                        s += cs[i];
-                    }
+        apply(|(u, c): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
+            let (us, cs) = (u.to_contiguous(), c.to_contiguous());
+            let mut s = 0.0;
+            for i in 0..us.len() {
+                if us[i] > 0.0 && cs[i].is_finite() {
+                    s += cs[i];
                 }
-                Array::scalar(s)
-            },
-        ),
+            }
+            Array::scalar(s)
+        }),
         (daily_universe, circ_market_cap),
     );
 

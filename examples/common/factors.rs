@@ -34,12 +34,12 @@
 
 use flowgraph::typed::{Handle, RefPort, ViewPort};
 
+use tradingflow::Scenario;
 use tradingflow::data::Duration;
 use tradingflow::operators::{
     self, ArrayValue, ResampleView, change, diff, divide, fillna, growth, log, ma_time, multiply,
     negate, percentile, resample_clocked, subtract,
 };
-use tradingflow::Scenario;
 
 use super::{AvH, Stacked};
 
@@ -80,12 +80,12 @@ pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
 
 /// Total market cap = unadjusted close × total shares.
 pub fn market_cap(sc: &mut Scenario, st: &Stacked) -> H {
-    sc.push(multiply::<f64, 1>(), (st.close, st.total_shares))
+    sc.push(multiply(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
 pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> H {
-    sc.push(multiply::<f64, 1>(), (st.close, st.circ_shares))
+    sc.push(multiply(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
@@ -97,15 +97,15 @@ fn ttm(sc: &mut Scenario, h: H) -> H {
 }
 
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.push(divide::<f64, 1>(), (a, b))
+    sc.push(divide(), (a, b))
 }
 
 fn log_h(sc: &mut Scenario, h: H) -> H {
-    sc.push(log::<f64, 1>(), h)
+    sc.push(log(), h)
 }
 
 fn neg(sc: &mut Scenario, h: H) -> H {
-    sc.push(negate::<f64, 1>(), h)
+    sc.push(negate(), h)
 }
 
 /// 变动 (period-over-period delta): `level − level₋₁ᵧ`. The whole chain —
@@ -156,16 +156,16 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let cost_ttm = ttm(sc, st.operating_cost); // negative (a deduction)
     // Gross profit = revenue − COGS = revenue + cost_ttm (cost stored negative).
     // (`operators::add` is fully qualified — the local `add` binding shadows it.)
-    let gross_ttm = sc.push(operators::add::<f64, 1>(), (rev_ttm, cost_ttm));
+    let gross_ttm = sc.push(operators::add(), (rev_ttm, cost_ttm));
     // Positive-magnitude liabilities (parquet stores them credit-negative).
     let debt = neg(sc, st.total_liab);
     let cur_liab = neg(sc, st.current_liab);
     let eps = div(sc, np_ttm, st.total_shares); // 每股收益 TTM
     let cogs_ttm = neg(sc, cost_ttm); // 营业成本 (positive magnitude)
     // 应计利润 = 净利润 − 经营现金流 (earnings not backed by cash).
-    let accruals_ttm = sc.push(subtract::<f64, 1>(), (np_ttm, ocf_ttm));
+    let accruals_ttm = sc.push(subtract(), (np_ttm, ocf_ttm));
     // 投入资本 ≈ 总资产 − 流动负债 (net of non-interest-bearing current liabilities).
-    let invested_capital = sc.push(subtract::<f64, 1>(), (st.total_assets, cur_liab));
+    let invested_capital = sc.push(subtract(), (st.total_assets, cur_liab));
 
     // ---- Profitability (盈利能力) ----
     let roe = div(sc, np_ttm, st.parent_equity); // 净利润 TTM / 净资产
@@ -254,7 +254,6 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let clk = sc.time();
     add("REV_1M", sc.push(change(&clk, 21), log_adj));
 
-    drop(add);
     // Each catalog entry is finalized into its model-ready feature: rank + impute.
     let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();
     FactorSet { names, feature }
@@ -265,7 +264,11 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// At rebalance `t` this is the realized log return over `[t-1, t]`; paired with
 /// the factor stored at `t-1` inside `InformationCoefficient`, it is the
 /// next-period return the factor is meant to predict.
-pub fn build_forward_return(sc: &mut Scenario, log_adj: H, rebalance_clock: Handle<RefPort<()>>) -> H {
+pub fn build_forward_return(
+    sc: &mut Scenario,
+    log_adj: H,
+    rebalance_clock: Handle<RefPort<()>>,
+) -> H {
     let resampled = sc.push(resample_clocked(), (rebalance_clock, log_adj));
     sc.push(diff(), resampled)
 }

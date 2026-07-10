@@ -25,8 +25,8 @@ use tradingflow::operators::{
 };
 use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
 
-use super::factors::{rank_impute, FactorSet};
-use super::{AvH, Stacked, RETAIN_MARGIN};
+use super::factors::{FactorSet, rank_impute};
+use super::{AvH, RETAIN_MARGIN, Stacked};
 
 type H = AvH;
 type Ser = Handle<RefPort<Series<f64, 1>>>;
@@ -40,13 +40,13 @@ fn rec(sc: &mut Scenario, h: H) -> Ser {
 }
 
 fn log_h(sc: &mut Scenario, h: H) -> H {
-    sc.push(log::<f64, 1>(), h)
+    sc.push(log(), h)
 }
 fn sub(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.push(subtract::<f64, 1>(), (a, b))
+    sc.push(subtract(), (a, b))
 }
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.push(divide::<f64, 1>(), (a, b))
+    sc.push(divide(), (a, b))
 }
 fn lag(sc: &mut Scenario, s: Ser, n: usize) -> H {
     sc.push(lag_series(n, f64::NAN), s)
@@ -68,13 +68,13 @@ fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
     )
 }
 fn mul(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.push(multiply::<f64, 1>(), (a, b))
+    sc.push(multiply(), (a, b))
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
     sc.push(
         flowgraph::segment!(|x: RefPort<Series<f64, 1>>| {
-            sqrt::<f64, 1>() @ rolling_variance(Window::Count(n)) @ x
+            sqrt() @ rolling_variance(Window::Count(n)) @ x
         }),
         s,
     )
@@ -112,18 +112,16 @@ const Y: usize = 252; // ~1 trading year
 /// `series.at(i)` reads `[a_i, b_i]` pairs).
 fn stack2(sc: &mut Scenario, a: H, b: H) -> Handle<ViewPort<ArrayValue<f64, 2>>> {
     sc.push(
-        apply(
-            |(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
-                let (av, bv) = (a.to_contiguous(), b.to_contiguous());
-                let n = av.len();
-                let mut out = vec![0.0; n * 2];
-                for i in 0..n {
-                    out[i * 2] = av[i];
-                    out[i * 2 + 1] = bv[i];
-                }
-                Array::from_vec([n, 2], out)
-            },
-        ),
+        apply(|(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
+            let (av, bv) = (a.to_contiguous(), b.to_contiguous());
+            let n = av.len();
+            let mut out = vec![0.0; n * 2];
+            for i in 0..n {
+                out[i * 2] = av[i];
+                out[i * 2 + 1] = bv[i];
+            }
+            Array::from_vec([n, 2], out)
+        }),
         (a, b),
     )
 }
@@ -149,7 +147,11 @@ impl Operator for WindowReduce {
     type State = WindowReduceState;
 
     fn init(self) -> WindowReduceState {
-        WindowReduceState { window: self.window, f: self.f, out: Array::zeros([0]) }
+        WindowReduceState {
+            window: self.window,
+            f: self.f,
+            out: Array::zeros([0]),
+        }
     }
 
     fn compute<'a, 'b: 'a>(
@@ -206,7 +208,11 @@ fn ts_rank(w: &[f64]) -> f64 {
             }
         }
     }
-    if tot < 2 { f64::NAN } else { less as f64 / (tot - 1) as f64 }
+    if tot < 2 {
+        f64::NAN
+    } else {
+        less as f64 / (tot - 1) as f64
+    }
 }
 /// Age (ticks since) the window maximum; 0 if the latest value is the max.
 fn argmax_age(w: &[f64]) -> f64 {
@@ -241,7 +247,11 @@ impl Operator for WindowReduce2 {
     type State = WindowReduce2State;
 
     fn init(self) -> WindowReduce2State {
-        WindowReduce2State { window: self.window, f: self.f, out: Array::zeros([0]) }
+        WindowReduce2State {
+            window: self.window,
+            f: self.f,
+            out: Array::zeros([0]),
+        }
     }
 
     fn compute<'a, 'b: 'a>(
@@ -326,7 +336,10 @@ impl Operator for ChipDist {
     type State = ChipDistState;
 
     fn init(self) -> ChipDistState {
-        ChipDistState { window: self.window, out: Array::zeros([0, CHIP_COLS]) }
+        ChipDistState {
+            window: self.window,
+            out: Array::zeros([0, CHIP_COLS]),
+        }
     }
 
     fn compute<'a, 'b: 'a>(
@@ -356,8 +369,16 @@ impl Operator for ChipDist {
             // Survival-decay weights: weight[i] = turn[i] · Π_{l>i}(1 − turn[l]).
             let mut surv = 1.0f64;
             for i in (0..w).rev() {
-                let t = if turn[i].is_finite() { turn[i].clamp(0.0, 1.0) } else { 0.0 };
-                weight[i] = if price[i].is_finite() && price[i] > 0.0 { t * surv } else { 0.0 };
+                let t = if turn[i].is_finite() {
+                    turn[i].clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                weight[i] = if price[i].is_finite() && price[i] > 0.0 {
+                    t * surv
+                } else {
+                    0.0
+                };
                 surv *= 1.0 - t;
             }
             let p_cur = price[w - 1];
@@ -371,7 +392,11 @@ impl Operator for ChipDist {
             }
             for i in 0..w {
                 weight[i] /= total;
-                ret[i] = if weight[i] > 0.0 { p_cur / price[i] - 1.0 } else { 0.0 };
+                ret[i] = if weight[i] > 0.0 {
+                    p_cur / price[i] - 1.0
+                } else {
+                    0.0
+                };
             }
             // Weighted moments of the holder-return distribution.
             let mut avg = 0.0;
@@ -387,7 +412,11 @@ impl Operator for ChipDist {
                 m4 += wd * d2 * d2;
             }
             let std = m2.sqrt();
-            let skew = if m2 > 1e-16 { m3 / (m2 * std) } else { f64::NAN };
+            let skew = if m2 > 1e-16 {
+                m3 / (m2 * std)
+            } else {
+                f64::NAN
+            };
             let kurt = if m2 > 1e-16 { m4 / (m2 * m2) } else { f64::NAN };
             // Profit/loss-band chip proportions + modal-bin return.
             let (mut bal, mut pl, mut ps, mut ls, mut ll) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -412,15 +441,25 @@ impl Operator for ChipDist {
                 bins[b] += wd;
             }
             let (mut maxb, mut maxv) = (0usize, bins[0]);
-            for b in 1..50 {
-                if bins[b] > maxv {
-                    maxv = bins[b];
+            for (b, &v) in bins.iter().enumerate().skip(1) {
+                if v > maxv {
+                    maxv = v;
                     maxb = b;
                 }
             }
             let max_prob_ret = -0.5 + (maxb as f64 + 0.5) * 0.02;
-            out[base..base + CHIP_COLS]
-                .copy_from_slice(&[avg, std, skew, kurt, max_prob_ret, bal, pl, ps, ls, ll]);
+            out[base..base + CHIP_COLS].copy_from_slice(&[
+                avg,
+                std,
+                skew,
+                kurt,
+                max_prob_ret,
+                bal,
+                pl,
+                ps,
+                ls,
+                ll,
+            ]);
         }
         (true, state.out.view())
     }
@@ -460,7 +499,9 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 
     let abs_ret = emap(sc, daily_ret, f64::abs);
     let absret_s = rec(sc, abs_ret);
-    let sign_ret = emap(sc, daily_ret, |x| if x.is_finite() { x.signum() } else { f64::NAN });
+    let sign_ret = emap(sc, daily_ret, |x| {
+        if x.is_finite() { x.signum() } else { f64::NAN }
+    });
     let sign_s = rec(sc, sign_ret);
     let xs_rank = sc.push(percentile(), daily_ret); // daily cross-sectional rank
     let xsr_s = rec(sc, xs_rank);
@@ -523,7 +564,10 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let trank = window_reduce(sc, lc_s, Y, ts_rank);
     let trank_s = rec(sc, trank);
     add("mmt_time_rank_M", rmean(sc, trank_s, 20));
-    add("mmt_highest_days_A", window_reduce(sc, adjclose_s, Y, argmax_age));
+    add(
+        "mmt_highest_days_A",
+        window_reduce(sc, adjclose_s, Y, argmax_age),
+    );
 
     // ============ 流动性 (liquidity) — 图表28 ============
     let turnover = div(sc, st.volume, st.circ_shares); // daily turnover 换手率
@@ -562,27 +606,49 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let lag_price1 = lag(sc, adjclose_s, 1);
     let lag_ret1 = lag(sc, dret_s, 1);
     const WC: usize = 20;
-    add("corr_price_turn_1M", rcorr(sc, turnover, st.adjusted_close, WC));
-    add("corr_price_turn_post_1M", rcorr(sc, lag_turn1, st.adjusted_close, WC));
-    add("corr_price_turn_prior_1M", rcorr(sc, turnover, lag_price1, WC));
+    add(
+        "corr_price_turn_1M",
+        rcorr(sc, turnover, st.adjusted_close, WC),
+    );
+    add(
+        "corr_price_turn_post_1M",
+        rcorr(sc, lag_turn1, st.adjusted_close, WC),
+    );
+    add(
+        "corr_price_turn_prior_1M",
+        rcorr(sc, turnover, lag_price1, WC),
+    );
     add("corr_ret_turn_1M", rcorr(sc, turnover, daily_ret, WC));
     add("corr_ret_turn_post_1M", rcorr(sc, lag_turn1, daily_ret, WC));
     add("corr_ret_turn_prior_1M", rcorr(sc, turnover, lag_ret1, WC));
-    add("corr_ret_turnd_1M", rcorr(sc, turnover_change, daily_ret, WC));
-    add("corr_ret_turnd_post_1M", rcorr(sc, lag_turnd1, daily_ret, WC));
-    add("corr_ret_turnd_prior_1M", rcorr(sc, turnover_change, lag_ret1, WC));
+    add(
+        "corr_ret_turnd_1M",
+        rcorr(sc, turnover_change, daily_ret, WC),
+    );
+    add(
+        "corr_ret_turnd_post_1M",
+        rcorr(sc, lag_turnd1, daily_ret, WC),
+    );
+    add(
+        "corr_ret_turnd_prior_1M",
+        rcorr(sc, turnover_change, lag_ret1, WC),
+    );
 
     // ============ 波动率 (volatility) — 图表16 ============
     // Downside / upside daily returns (positive/negative clamped to 0).
-    let downside = emap(sc, daily_ret, |x| if x.is_finite() { x.min(0.0) } else { f64::NAN });
+    let downside = emap(sc, daily_ret, |x| {
+        if x.is_finite() { x.min(0.0) } else { f64::NAN }
+    });
     let downside_s = rec(sc, downside);
-    let upside = emap(sc, daily_ret, |x| if x.is_finite() { x.max(0.0) } else { f64::NAN });
+    let upside = emap(sc, daily_ret, |x| {
+        if x.is_finite() { x.max(0.0) } else { f64::NAN }
+    });
     let upside_s = rec(sc, upside);
     let highlow = div(sc, st.high, st.low); // 日内振幅 = 最高/最低
     let highlow_s = rec(sc, highlow);
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
-    let max_oc = sc.push(max::<f64, 1>(), (st.open, st.close));
-    let min_oc = sc.push(min::<f64, 1>(), (st.open, st.close));
+    let max_oc = sc.push(max(), (st.open, st.close));
+    let min_oc = sc.push(min(), (st.open, st.close));
     let up_num = sub(sc, st.high, max_oc); // 上影线 = 最高 − max(开,收)
     let upshadow = div(sc, up_num, st.low);
     let upshadow_s = rec(sc, upshadow);
@@ -604,12 +670,30 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
         add(&format!("vol_highlow_std_{tag}"), rstd(sc, highlow_s, w));
         add(&format!("vol_upshadow_avg_{tag}"), rmean(sc, upshadow_s, w));
         add(&format!("vol_upshadow_std_{tag}"), rstd(sc, upshadow_s, w));
-        add(&format!("vol_downshadow_avg_{tag}"), rmean(sc, downshadow_s, w));
-        add(&format!("vol_downshadow_std_{tag}"), rstd(sc, downshadow_s, w));
-        add(&format!("vol_w_upshadow_avg_{tag}"), rmean(sc, w_upshadow_s, w));
-        add(&format!("vol_w_upshadow_std_{tag}"), rstd(sc, w_upshadow_s, w));
-        add(&format!("vol_w_downshadow_avg_{tag}"), rmean(sc, w_downshadow_s, w));
-        add(&format!("vol_w_downshadow_std_{tag}"), rstd(sc, w_downshadow_s, w));
+        add(
+            &format!("vol_downshadow_avg_{tag}"),
+            rmean(sc, downshadow_s, w),
+        );
+        add(
+            &format!("vol_downshadow_std_{tag}"),
+            rstd(sc, downshadow_s, w),
+        );
+        add(
+            &format!("vol_w_upshadow_avg_{tag}"),
+            rmean(sc, w_upshadow_s, w),
+        );
+        add(
+            &format!("vol_w_upshadow_std_{tag}"),
+            rstd(sc, w_upshadow_s, w),
+        );
+        add(
+            &format!("vol_w_downshadow_avg_{tag}"),
+            rmean(sc, w_downshadow_s, w),
+        );
+        add(
+            &format!("vol_w_downshadow_std_{tag}"),
+            rstd(sc, w_downshadow_s, w),
+        );
     }
 
     // 振幅调整动量 (mmt_range): pair amplitude (high/low) with the daily return as a
@@ -642,7 +726,6 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
         add(name, sc.push(select(vec![c], 1, true), chip));
     }
 
-    drop(add);
     // Finalize each entry into its model-ready feature: rank + impute.
     let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();
     FactorSet { names, feature }

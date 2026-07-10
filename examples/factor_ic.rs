@@ -28,10 +28,10 @@ use clap::Parser;
 use tradingflow::operators::{lag_series, own, record, resample_clocked};
 use tradingflow::{Retention, Scenario, WallClock};
 
+use common::FeatureSet;
 use common::ic::{ic_series, ic_stats};
 use common::strategy::Market;
 use common::universe::mask_to_universe;
-use common::FeatureSet;
 
 /// Factor IC evaluation on the A-shares cross-sectional panel.
 #[derive(Parser)]
@@ -81,10 +81,7 @@ async fn main() {
             // the stocks outside the universe so they don't dilute the correlation.
             let feature_series = sc.push(record(&clk), feature);
             let lagged = sc.push(lag_series(1, f64::NAN), feature_series);
-            let aligned = sc.push(
-                resample_clocked(),
-                (m.rebalance_clock, lagged),
-            );
+            let aligned = sc.push(resample_clocked(), (m.rebalance_clock, lagged));
             let masked = mask_to_universe(&mut sc, aligned, m.universe);
             ic_series(&mut sc, masked, target_ref, m.n, &clk)
         })

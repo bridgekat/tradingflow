@@ -23,9 +23,9 @@ use clap::Parser;
 
 use tradingflow::{Retention, Scenario, WallClock};
 
+use common::FeatureSet;
 use common::models::{benchmark_relative, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable, TRADING_DAYS};
-use common::FeatureSet;
 
 const TRACKING_ERRORS_ANN: [f64; 3] = [0.02, 0.05, 0.10];
 const COV_MAX_PERIODS: i64 = 200;

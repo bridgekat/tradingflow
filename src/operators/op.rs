@@ -1,4 +1,4 @@
-//! Operator-contract helpers shared by TradingFlow operators: the [`Clock`],
+//! Operator-contract helpers shared by TradingFlow operators: the [`EventTime`],
 //! the [`ArrayValue`] view kind, and the [`StripNotify`] payload helper.
 //!
 //! TradingFlow operators implement [`flowgraph::typed::Operator`]
@@ -50,7 +50,7 @@
 //!
 //! Operators are **pure** with respect to time. Event time is needed by the few
 //! operators that stamp it (e.g. [`Record`](super::Record)); they receive the
-//! [`Clock`] in their own state, so the clock is never a universal dependency.
+//! [`EventTime`] in their own state, so the clock is never a universal dependency.
 
 use std::marker::PhantomData;
 
@@ -59,7 +59,7 @@ use flowgraph::typed::{Interface, RefViewPort, RefViewPorts, ValueView, ViewPort
 use crate::{ArrayView, Instant, Scalar};
 
 // ===========================================================================
-// Clock — driver-advanced event time, held only by operators that need it.
+// EventTime — driver-advanced event time, held only by operators that need it.
 // ===========================================================================
 
 /// The event-time cell the driver advances before each `stabilize` — the
@@ -67,7 +67,7 @@ use crate::{ArrayView, Instant, Scalar};
 /// operators that stamp event time ([`Record`](super::Record)) hold a clone in
 /// their own state and read it via `get` (which returns `None` before the
 /// first batch).
-pub type Clock = flowgraph::ingest::SharedTime<Instant>;
+pub type EventTime = flowgraph::ingest::SharedTime<Instant>;
 
 // ===========================================================================
 // ArrayValue — the `ArrayView` view kind for flowgraph ports.

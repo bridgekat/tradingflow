@@ -40,7 +40,6 @@ use flowgraph::typed::{Handle, ViewPort};
 
 use tradingflow::operators::ArrayValue;
 
-
 // These modules wrap `flowops` operators (`PyClassOperator`), so they only
 // compile with the `python` feature. Their consumers (the strategy examples,
 // `factor_handbook`) are themselves `required-features = ["python"]`; gating
@@ -64,19 +63,21 @@ pub mod report;
 pub mod target;
 pub mod universe;
 
-pub use args::{load_symbols, parse_date_days, CommonArgs};
-pub use data::{build_stacked, Stacked};
-pub use features::{build_factor_features, build_features, build_strategy_features, FeatureSet, Features};
+pub use args::{CommonArgs, load_symbols, parse_date_days};
+pub use data::{Stacked, build_stacked};
+pub use features::{
+    FeatureSet, Features, build_factor_features, build_features, build_strategy_features,
+};
 pub use report::{date_str, progress, read_scalar_series, write_long_csv, write_wide_csv};
 pub use target::{build_log_return_target, build_price_limits};
 pub use universe::{build_cap_weighted_universe, calculate_index_weights};
 
 #[cfg(feature = "python")]
-pub use ic::{ic_series, ic_stats, IcStats};
+pub use ic::{IcStats, ic_series, ic_stats};
 #[cfg(feature = "python")]
 pub use strategy::{
-    nav_final, nav_stats, run, total_value, trim_scale, Market, NavH, NavStats, NavTable, PosH,
-    ScH, INITIAL_CASH, TARGET_OFFSET, TRADING_DAYS,
+    INITIAL_CASH, Market, NavH, NavStats, NavTable, PosH, ScH, TARGET_OFFSET, TRADING_DAYS,
+    nav_final, nav_stats, run, total_value, trim_scale,
 };
 
 /// Rows kept beyond a consumer's exact count look-back, absorbing the

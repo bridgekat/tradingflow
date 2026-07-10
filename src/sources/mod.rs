@@ -21,12 +21,12 @@
 //! - [`ParquetFinancialReportPanelSource`] - panel variant for financial-report long tables,
 //!   with point-in-time effective-date alignment. Requires a tokio runtime.
 //!
-//! # Clock sources
+//! # Pulse sources
 //!
-//! Clock sources emit `()` events at specified timestamps and are used as
-//! triggers for periodic operators.
+//! Pulse sources emit `()` events at specified timestamps and are used as
+//! triggers for periodic (clock-gated) operators.
 //!
-//! - [`clock`] - clock from explicit timestamps.  Calendar-aligned schedules
+//! - [`pulse()`] - `()` triggers from explicit timestamps.  Calendar-aligned schedules
 //!   (daily / monthly in a given timezone) are constructed in Python via
 //!   `zoneinfo` and passed in as a pre-computed list, keeping the Rust core
 //!   free of timezone data.
@@ -39,16 +39,16 @@ use flowgraph::ingest::Event;
 use crate::Instant;
 
 pub mod array_source;
-pub mod clock;
 pub mod iter_source;
-pub mod parquet_panel_source;
 pub mod parquet_financial_report_panel_source;
+pub mod parquet_panel_source;
+pub mod pulse;
 
 pub use array_source::ArraySource;
-pub use clock::clock;
 pub use iter_source::IterSource;
-pub use parquet_panel_source::ParquetPanelSource;
 pub use parquet_financial_report_panel_source::ParquetFinancialReportPanelSource;
+pub use parquet_panel_source::ParquetPanelSource;
+pub use pulse::pulse;
 
 /// Adapt a producer channel — `(timestamp, event)` items in non-decreasing
 /// timestamp order, closed when the producer finishes — into the

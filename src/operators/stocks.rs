@@ -22,7 +22,6 @@ impl Annualize {
     }
 }
 
-
 /// Runtime state for [`Annualize`]: the previous-tick YTD snapshot plus the
 /// output buffer.
 pub struct AnnualizeState {
@@ -151,7 +150,6 @@ impl<const NP: usize, const ND: usize> Default for ForwardAdjust<NP, ND> {
         }
     }
 }
-
 
 /// Runtime state for [`ForwardAdjust`]: the adjustment factor and last price
 /// plus the output buffer.

@@ -140,4 +140,3 @@ impl<T: Clone + Send + Sync + 'static> EventSource<Instant> for IterSource<T> {
         1
     }
 }
-

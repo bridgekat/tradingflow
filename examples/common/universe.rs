@@ -46,7 +46,13 @@ pub fn build_full_market_universe(
             Array::from_vec(
                 [s.len()],
                 s.iter()
-                    .map(|&c| if c.is_finite() && c > 0.0 { 1.0 } else { f64::NAN })
+                    .map(|&c| {
+                        if c.is_finite() && c > 0.0 {
+                            1.0
+                        } else {
+                            f64::NAN
+                        }
+                    })
                     .collect(),
             )
         })),
@@ -67,8 +73,7 @@ pub fn build_caprank_universe(
         clocked(map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             let n = s.len();
-            let mut idx: Vec<usize> =
-                (0..n).filter(|&i| s[i].is_finite() && s[i] > 0.0).collect();
+            let mut idx: Vec<usize> = (0..n).filter(|&i| s[i].is_finite() && s[i] > 0.0).collect();
             idx.sort_by(|&a, &b| s[b].partial_cmp(&s[a]).unwrap());
             let mut mask = vec![f64::NAN; n];
             for (rank, &i) in idx.iter().enumerate() {
@@ -91,11 +96,8 @@ pub fn build_caprank_universe(
 pub fn with_listing_filter(sc: &mut Scenario, universe: AvH, aged: AvH) -> AvH {
     sc.push(
         flowgraph::segment!(|u: Av1, aged: Av1| {
-            let keep = and::<1>() @ (
-                greater_than::<f64, 1>(0.0) @ u,
-                is_finite::<f64, 1>() @ aged,
-            );
-            indicator::<f64, 1>(1.0, f64::NAN) @ keep
+            let keep = and() @ (greater_than(0.0) @ u, is_finite() @ aged);
+            indicator(1.0, f64::NAN) @ keep
         }),
         (universe, aged),
     )
@@ -108,8 +110,8 @@ pub fn with_listing_filter(sc: &mut Scenario, universe: AvH, aged: AvH) -> AvH {
 pub fn mask_to_universe(sc: &mut Scenario, data: AvH, universe: AvH) -> AvH {
     sc.push(
         flowgraph::segment!(|data: Av1, u: Av1| {
-            let keep = indicator::<f64, 1>(1.0, f64::NAN) @ (greater_than::<f64, 1>(0.0) @ u);
-            multiply::<f64, 1>() @ (data, keep)
+            let keep = indicator(1.0, f64::NAN) @ (greater_than(0.0) @ u);
+            multiply() @ (data, keep)
         }),
         (data, universe),
     )
@@ -145,7 +147,7 @@ pub fn calculate_index_weights(mc: &[f64], k: usize) -> Vec<f64> {
 /// Cap-**weighted** top-`index_size` universe (a weight vector, not a mask),
 /// recomputed on each rebalance tick. `market_cap` is the per-stock circulating
 /// market cap; `rebalance_clock` is the `Handle<RefPort<()>>` of a
-/// [`clock`](tradingflow::sources::clock) source.
+/// [`pulse`](tradingflow::sources::pulse) source.
 pub fn build_cap_weighted_universe(
     sc: &mut Scenario,
     market_cap: AvH,

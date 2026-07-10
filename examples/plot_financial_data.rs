@@ -32,13 +32,21 @@ use tradingflow::operators::{
     ArrayValue, Window, annualize, as_view, divide, filter, map, multiply, negate, record,
     rolling_mean, select,
 };
-use tradingflow::{Scenario, WallClock};
-use tradingflow::sources::{ParquetPanelSource, ParquetFinancialReportPanelSource};
+use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
 use tradingflow::{Array, ArrayView, Instant, Series};
+use tradingflow::{Scenario, WallClock};
 
 const COLS: [&str; 10] = [
-    "market_cap", "assets", "equity", "parent_equity", "op_income", "net_profit", "cash_flow",
-    "ep_ratio", "bp_ratio", "roe",
+    "market_cap",
+    "assets",
+    "equity",
+    "parent_equity",
+    "op_income",
+    "net_profit",
+    "cash_flow",
+    "ep_ratio",
+    "bp_ratio",
+    "roe",
 ];
 
 fn load_symbols(data_dir: &str) -> Vec<String> {
@@ -46,7 +54,10 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     let mut lines = text.lines();
     let header = lines.next().expect("symbol_list header");
-    let col = header.split(',').position(|h| h.trim() == "symbol").expect("`symbol` column");
+    let col = header
+        .split(',')
+        .position(|h| h.trim() == "symbol")
+        .expect("`symbol` column");
     lines
         .filter_map(|l| l.split(',').nth(col).map(|s| s.trim().to_string()))
         .filter(|s| !s.is_empty())
@@ -82,7 +93,9 @@ async fn main() {
     let data_dir = "examples/data";
     let prices_pq = format!("{data_dir}/daily_prices.parquet");
     if !std::path::Path::new(&prices_pq).exists() {
-        eprintln!("data not found: {prices_pq}\n(run the crawler with --export-long parquet; see examples/README.md)");
+        eprintln!(
+            "data not found: {prices_pq}\n(run the crawler with --export-long parquet; see examples/README.md)"
+        );
         std::process::exit(1);
     }
 
@@ -98,15 +111,27 @@ async fn main() {
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
-    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ViewPort<ArrayValue<f64, 1>>> {
-        let s = ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
+    let daily = |sc: &mut Scenario,
+                 kind: &str,
+                 cols: Vec<String>|
+     -> Handle<ViewPort<ArrayValue<f64, 1>>> {
+        let s =
+            ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
         let panel = sc.add_source(s);
         let panel = sc.push(as_view(), panel);
         pick(sc, panel, idx)
     };
-    let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<ViewPort<ArrayValue<f64, 1>>> {
-        let s = ParquetFinancialReportPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone())
-            .with_report_date(with_report_date);
+    let report = |sc: &mut Scenario,
+                  kind: &str,
+                  cols: Vec<String>,
+                  with_report_date: bool|
+     -> Handle<ViewPort<ArrayValue<f64, 1>>> {
+        let s = ParquetFinancialReportPanelSource::new(
+            format!("{data_dir}/{kind}.parquet"),
+            cols,
+            symbols.clone(),
+        )
+        .with_report_date(with_report_date);
         let panel = sc.add_source(s);
         let panel = sc.push(as_view(), panel);
         pick(sc, panel, idx)
@@ -131,21 +156,29 @@ async fn main() {
     let income = report(
         &mut sc,
         "income_statements",
-        vec!["income_statement.profit.operating.income".into(), "income_statement.profit".into()],
+        vec![
+            "income_statement.profit.operating.income".into(),
+            "income_statement.profit".into(),
+        ],
         true,
     ); // [year, day_of_year, op_income, net_profit]
-    let cf = report(&mut sc, "cash_flow_statements", vec!["cash_flow_statement.change".into()], true); // [year, day_of_year, change]
+    let cf = report(
+        &mut sc,
+        "cash_flow_statements",
+        vec!["cash_flow_statement.change".into()],
+        true,
+    ); // [year, day_of_year, change]
 
     // ------------------------------------------------------------------
     // Operators (identical to the CSV version).
     // ------------------------------------------------------------------
     let close = sc.push(select(vec![0], 0, true), prices);
     let total_shares = sc.push(select(vec![0], 0, true), equity);
-    let market_cap = sc.push(multiply::<f64, 0>(), (close, total_shares));
+    let market_cap = sc.push(multiply(), (close, total_shares));
 
     let assets = sc.push(select(vec![0], 0, true), balance);
     let neg_equity = sc.push(select(vec![1], 0, true), balance);
-    let equity_val = sc.push(negate::<f64, 0>(), neg_equity);
+    let equity_val = sc.push(negate(), neg_equity);
     let neg_peq = sc.push(select(vec![2, 3, 4], 0, false), balance);
     let parent_equity = sc.push(
         map(|a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous().iter().sum::<f64>())),
@@ -164,9 +197,9 @@ async fn main() {
         net_profit_series,
     );
 
-    let ep = sc.push(divide::<f64, 0>(), (net_profit_ttm, market_cap));
-    let bp = sc.push(divide::<f64, 0>(), (parent_equity, market_cap));
-    let roe = sc.push(divide::<f64, 0>(), (net_profit_ttm, parent_equity));
+    let ep = sc.push(divide(), (net_profit_ttm, market_cap));
+    let bp = sc.push(divide(), (parent_equity, market_cap));
+    let roe = sc.push(divide(), (net_profit_ttm, parent_equity));
 
     let records = [
         sc.push(record(&clk), market_cap),

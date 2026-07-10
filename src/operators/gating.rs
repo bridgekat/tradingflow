@@ -1,13 +1,13 @@
 //! Core gating / recording operators, implemented directly on
 //! [`flowgraph::typed::Operator`] / [`Segment`]. (The legacy `Const` cell is
-//! gone — source cells are `Builder::push_source` nodes now, registered
-//! via [`ScenarioExt::add_const`](crate::ScenarioExt::add_const).)
+//! gone — source cells are
+//! [`push_source`](flowgraph::typed::Builder::push_source) nodes now.)
 
 use std::marker::PhantomData;
 
 use flowgraph::typed::{Interface, Operator, RefPort, Segment, ViewPort};
 
-use super::op::{ArrayValue, Clock};
+use super::op::{ArrayValue, EventTime};
 use crate::{Array, ArrayView, Retention, Scalar, Series};
 
 // ---------------------------------------------------------------------------
@@ -16,21 +16,21 @@ use crate::{Array, ArrayView, Retention, Scalar, Series};
 
 /// Passes the input through when the predicate holds, else drops it (emits
 /// `notify = false` → downstream gated off, previous value retained).
-pub struct Filter<F, const N: usize>(pub F);
+pub struct Filter<T: Scalar, F, const N: usize>(pub F, pub PhantomData<T>);
 
 /// Runtime state for [`Filter`]: the predicate plus the retained output.
-pub struct FilterState<F, const N: usize> {
+pub struct FilterState<T: Scalar, F, const N: usize> {
     predicate: F,
-    out: Array<f64, N>,
+    out: Array<T, N>,
 }
 
-impl<F, const N: usize> Operator for Filter<F, N>
+impl<T: Scalar, F, const N: usize> Operator for Filter<T, F, N>
 where
-    F: for<'x> Fn(ArrayView<'x, f64, N>) -> bool + Send + Sync + 'static,
+    F: for<'x> Fn(ArrayView<'x, T, N>) -> bool + Send + Sync + 'static,
 {
-    type Inputs = ViewPort<ArrayValue<f64, N>>;
-    type Outputs = ViewPort<ArrayValue<f64, N>>;
-    type State = FilterState<F, N>;
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = FilterState<T, F, N>;
 
     fn init(self) -> Self::State {
         FilterState {
@@ -40,10 +40,10 @@ where
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, x): (bool, ArrayView<'a, f64, N>),
+        (_, x): (bool, ArrayView<'a, T, N>),
         state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, ArrayView<'a, f64, N>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
             state.out = x.to_array();
             return (false, state.out.view());
@@ -58,9 +58,9 @@ where
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, f64, N>),
+        _: (bool, ArrayView<'a, T, N>),
         state: &'b Self::State,
-    ) -> (bool, ArrayView<'a, f64, N>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }
 }
@@ -84,22 +84,22 @@ where
 /// notifies — so a view stored by an out-of-cone consumer always reads the
 /// frozen last-passed value. This makes `Gate`'s output a stable backing for
 /// downstream zero-copy view chains.
-pub struct Gate<F, const N: usize>(pub F);
+pub struct Gate<T: Scalar, F, const N: usize>(pub F, pub PhantomData<T>);
 
 /// Runtime state for [`Gate`]: the predicate plus the retained last-passed row,
 /// which the `ViewPort` output borrows.
-pub struct GateState<F, const N: usize> {
+pub struct GateState<T: Scalar, F, const N: usize> {
     predicate: F,
-    out: Array<f64, N>,
+    out: Array<T, N>,
 }
 
-impl<F, const N: usize> Operator for Gate<F, N>
+impl<T: Scalar, F, const N: usize> Operator for Gate<T, F, N>
 where
-    F: for<'x> Fn(ArrayView<'x, f64, N>) -> bool + Send + Sync + 'static,
+    F: for<'x> Fn(ArrayView<'x, T, N>) -> bool + Send + Sync + 'static,
 {
-    type Inputs = ViewPort<ArrayValue<f64, N>>;
-    type Outputs = ViewPort<ArrayValue<f64, N>>;
-    type State = GateState<F, N>;
+    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = GateState<T, F, N>;
 
     fn init(self) -> Self::State {
         GateState {
@@ -110,10 +110,10 @@ where
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (notified, view): (bool, ArrayView<'a, f64, N>),
+        (notified, view): (bool, ArrayView<'a, T, N>),
         state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, ArrayView<'a, f64, N>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         if init {
             // Seed the retained buffer with the faithful build-time row (so the
             // first view matches what `Split` lends), but do not notify.
@@ -134,9 +134,9 @@ where
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, f64, N>),
+        _: (bool, ArrayView<'a, T, N>),
         state: &'b Self::State,
-    ) -> (bool, ArrayView<'a, f64, N>) {
+    ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }
 }
@@ -146,7 +146,7 @@ where
 // ---------------------------------------------------------------------------
 
 /// Records an `Array<T, N>` stream into a `Series<T, N>`, stamping each row with
-/// the event time read from the [`Clock`] in its state. The one operator that
+/// the event time read from the [`EventTime`] in its state. The one operator that
 /// needs time — constructed via the [`record`](super::record) /
 /// [`record_bounded`](super::record_bounded) formula constructors, which take
 /// the driver's clock as a parameter.
@@ -154,19 +154,19 @@ where
 /// An optional [`Retention`] bound (via [`with_retention`](Self::with_retention)
 /// / [`record_bounded`](super::record_bounded)) caps the recorded history.
 pub struct Record<T: Scalar, const N: usize> {
-    clock: Clock,
+    clock: EventTime,
     retention: Retention,
     _p: PhantomData<T>,
 }
 
 impl<T: Scalar, const N: usize> Record<T, N> {
     /// An unbounded record (retains full history).
-    pub fn new(clock: Clock) -> Self {
+    pub fn new(clock: EventTime) -> Self {
         Self::with_retention(clock, Retention::UNBOUNDED)
     }
 
     /// A record whose `Series` keeps only the history within `retention`.
-    pub fn with_retention(clock: Clock, retention: Retention) -> Self {
+    pub fn with_retention(clock: EventTime, retention: Retention) -> Self {
         Self {
             clock,
             retention,
@@ -178,7 +178,7 @@ impl<T: Scalar, const N: usize> Record<T, N> {
 /// Runtime state for [`Record`]: the clock, the retention bound, plus the
 /// recorded series.
 pub struct RecordState<T: Scalar, const N: usize> {
-    clock: Clock,
+    clock: EventTime,
     retention: Retention,
     out: Series<T, N>,
 }
@@ -395,14 +395,14 @@ impl<O: Operator, C: Sync + 'static> Segment for Clocked<O, C> {
 /// Pass the input through iff `predicate` holds, else drop the tick (emitting
 /// `notify = false`). The cutoff operator: a dropped tick suppresses every
 /// downstream side effect, including a [`Record`] append.
-pub fn filter<F, const N: usize>(predicate: F) -> Filter<F, N> {
-    Filter(predicate)
+pub fn filter<T: Scalar, F, const N: usize>(predicate: F) -> Filter<T, F, N> {
+    Filter(predicate, PhantomData)
 }
 
 /// Like [`filter`], but re-presents the last passed row as a stable
 /// [`ViewPort`] view (the carry-safe view gate).
-pub fn gate<F, const N: usize>(predicate: F) -> Gate<F, N> {
-    Gate(predicate)
+pub fn gate<T: Scalar, F, const N: usize>(predicate: F) -> Gate<T, F, N> {
+    Gate(predicate, PhantomData)
 }
 
 /// The most recent element of a [`Series`] as an array view, `fill` when empty.

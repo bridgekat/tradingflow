@@ -104,7 +104,11 @@ impl ParquetPanelSource {
     }
 
     /// Override the `date` / `symbol` column names (defaults `"date"` / `"symbol"`).
-    pub fn with_columns(mut self, date_column: impl Into<String>, symbol_column: impl Into<String>) -> Self {
+    pub fn with_columns(
+        mut self,
+        date_column: impl Into<String>,
+        symbol_column: impl Into<String>,
+    ) -> Self {
         self.date_column = date_column.into();
         self.symbol_column = symbol_column.into();
         self
@@ -152,15 +156,10 @@ pub struct RowUpdate {
 /// being assembled and the rows it dirtied. When the timestamp **strictly
 /// advances**, [`panel_write`] NaN-clears those rows first — reproducing the
 /// per-tick "only this date's rows" cross-section (pure StackSync, no carry).
+#[derive(Default)]
 pub struct PanelState {
     last_ts: Option<Instant>,
     dirty: Vec<usize>,
-}
-
-impl Default for PanelState {
-    fn default() -> Self {
-        Self { last_ts: None, dirty: Vec::new() }
-    }
 }
 
 /// Shared `Source::write` body for both panel sources: apply one tick's batch.
@@ -227,7 +226,10 @@ impl EventSource<Instant> for ParquetPanelSource {
 
     fn init(
         &self,
-    ) -> (impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static, PanelState) {
+    ) -> (
+        impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static,
+        PanelState,
+    ) {
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
         let (hist_tx, hist_rx) = mpsc::channel(16);
@@ -242,7 +244,12 @@ impl EventSource<Instant> for ParquetPanelSource {
         (receiver_stream(hist_rx), PanelState::default())
     }
 
-    fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64, 2>, ts: Instant) -> usize {
+    fn write(
+        state: &mut PanelState,
+        batch: Vec<RowUpdate>,
+        output: &mut Array<f64, 2>,
+        ts: Instant,
+    ) -> usize {
         panel_write(state, batch, output, ts)
     }
 }
@@ -253,13 +260,21 @@ impl EventSource<Instant> for ParquetPanelSource {
 /// changes (and flushing the last date after the scan) keeps one channel message
 /// per tick; [`panel_write`] then reassembles each date's `[N, K]` cross-section
 /// and clears the previous date's rows when the timestamp advances.
+#[expect(
+    clippy::needless_range_loop,
+    reason = "row drives the arrow column accessors (`dates.value(row)`), not just a slice"
+)]
 fn read_panel(
     cfg: &ParquetPanelSource,
     hist_tx: &mpsc::Sender<(Instant, Vec<RowUpdate>)>,
 ) -> Result<(), String> {
     let k = cfg.value_columns.len();
-    let sym_index: HashMap<&str, usize> =
-        cfg.symbols.iter().enumerate().map(|(i, s)| (s.as_str(), i)).collect();
+    let sym_index: HashMap<&str, usize> = cfg
+        .symbols
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.as_str(), i))
+        .collect();
 
     let file = File::open(&cfg.path).map_err(|e| format!("open: {e}"))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| e.to_string())?;
@@ -315,7 +330,11 @@ fn read_panel(
             .collect::<Result<_, _>>()?;
         let vals: Vec<&arrow::array::Float64Array> = val_refs
             .iter()
-            .map(|a| a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap())
+            .map(|a| {
+                a.as_any()
+                    .downcast_ref::<arrow::array::Float64Array>()
+                    .unwrap()
+            })
             .collect();
 
         for row in 0..batch.num_rows() {
@@ -329,10 +348,12 @@ fn read_panel(
             let Some(ui) = row_uni[row] else { continue };
             // Date changed → ship the accumulated tick as one batch.
             if cur_ts != Some(ts) {
-                if let Some(t) = cur_ts {
-                    if hist_tx.blocking_send((t, std::mem::take(&mut tick))).is_err() {
-                        return Ok(());
-                    }
+                if let Some(t) = cur_ts
+                    && hist_tx
+                        .blocking_send((t, std::mem::take(&mut tick)))
+                        .is_err()
+                {
+                    return Ok(());
                 }
                 cur_ts = Some(ts);
             }
@@ -342,14 +363,17 @@ fn read_panel(
                     payload[vi] = va.value(row);
                 }
             }
-            tick.push(RowUpdate { row: ui, vals: payload.into_boxed_slice() });
+            tick.push(RowUpdate {
+                row: ui,
+                vals: payload.into_boxed_slice(),
+            });
         }
     }
     // Flush the final tick (also the last in-window tick when we broke on `end`).
-    if let Some(t) = cur_ts {
-        if !tick.is_empty() {
-            let _ = hist_tx.blocking_send((t, tick));
-        }
+    if let Some(t) = cur_ts
+        && !tick.is_empty()
+    {
+        let _ = hist_tx.blocking_send((t, tick));
     }
     Ok(())
 }
@@ -377,8 +401,11 @@ fn date_row_groups_in_range(
 ) -> Vec<usize> {
     let meta = builder.metadata();
     let n = meta.num_row_groups();
-    let Some(date_leaf) =
-        builder.parquet_schema().columns().iter().position(|c| c.name() == date_column)
+    let Some(date_leaf) = builder
+        .parquet_schema()
+        .columns()
+        .iter()
+        .position(|c| c.name() == date_column)
     else {
         return (0..n).collect();
     };
@@ -417,7 +444,10 @@ pub(crate) fn count_rows_in_range(
 ) -> Result<usize, String> {
     let file = File::open(path).map_err(|e| format!("open: {e}"))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| e.to_string())?;
-    let leaf = builder.schema().index_of(date_column).map_err(|e| e.to_string())?;
+    let leaf = builder
+        .schema()
+        .index_of(date_column)
+        .map_err(|e| e.to_string())?;
     let mask = ProjectionMask::leaves(builder.parquet_schema(), vec![leaf]);
     let row_groups = date_row_groups_in_range(&builder, date_column, start, end);
     let reader = builder
@@ -455,15 +485,19 @@ pub(crate) fn resolve_symbols(
     sym_col: &ArrayRef,
     sym_index: &HashMap<&str, usize>,
 ) -> Result<Vec<Option<usize>>, String> {
-    if let Some(dict) = sym_col.as_any().downcast_ref::<DictionaryArray<Int32Type>>() {
+    if let Some(dict) = sym_col
+        .as_any()
+        .downcast_ref::<DictionaryArray<Int32Type>>()
+    {
         let values = dict
             .values()
             .as_any()
             .downcast_ref::<StringArray>()
             .ok_or("dictionary values are not utf8")?;
         // Dictionary entry -> universe index (computed once; dictionary is small).
-        let entry_uni: Vec<Option<usize>> =
-            (0..values.len()).map(|key| sym_index.get(values.value(key)).copied()).collect();
+        let entry_uni: Vec<Option<usize>> = (0..values.len())
+            .map(|key| sym_index.get(values.value(key)).copied())
+            .collect();
         let keys: &Int32Array = dict.keys();
         Ok((0..keys.len())
             .map(|row| {
@@ -482,7 +516,13 @@ pub(crate) fn resolve_symbols(
             .downcast_ref::<StringArray>()
             .ok_or("symbol column is not string-castable")?;
         Ok((0..sa.len())
-            .map(|row| if sa.is_null(row) { None } else { sym_index.get(sa.value(row)).copied() })
+            .map(|row| {
+                if sa.is_null(row) {
+                    None
+                } else {
+                    sym_index.get(sa.value(row)).copied()
+                }
+            })
             .collect())
     }
 }

@@ -5,14 +5,14 @@ use flowgraph::typed::{Handle, RefViewPort, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    ArrayValue, Gate, annualize, apply, as_view, deref_array_view, forward_adjust, multiply,
+    ArrayValue, annualize, apply, as_view, deref_array_view, forward_adjust, gate, multiply,
     ref_array_views, select, slice_view, split, stack, stack_sync,
 };
 use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
 use tradingflow::{Array, ArrayView, Scenario};
 
-use super::args::CommonArgs;
 use super::AvH;
+use super::args::CommonArgs;
 
 /// Cross-sectional `(num_stocks,)` panels produced by [`build_stacked`].
 ///
@@ -23,28 +23,28 @@ use super::AvH;
 /// debit-positive and liabilities / expense items credit-**negative** — the factor
 /// formulas negate them where a positive magnitude is wanted.
 pub struct Stacked {
-    pub close: AvH,          // unadjusted close (StackSync)
-    pub volume: AvH,         // 成交量 shares (StackSync)
-    pub open: AvH,           // 开盘价 unadjusted (StackSync)
-    pub high: AvH,           // 最高价 unadjusted (StackSync)
-    pub low: AvH,            // 最低价 unadjusted (StackSync)
-    pub amount: AvH,         // 成交额 turnover value (StackSync)
-    pub adjusted_close: AvH, // close * forward-adjust factor (StackSync)
-    pub adjusts: AvH,        // forward-adjust factor (Stack)
-    pub total_shares: AvH,   // (Stack)
-    pub circ_shares: AvH,    // (Stack)
-    pub parent_equity: AvH,  // 归母净资产, positive (Stack)
-    pub net_profit: AvH,     // 净利润, annualized, positive
-    pub operating_profit: AvH, // 营业利润, annualized, positive
-    pub revenue: AvH,        // 营业收入, annualized, positive
-    pub operating_cost: AvH, // 营业成本, annualized, NEGATIVE (a deduction)
-    pub total_assets: AvH,   // 总资产, positive
-    pub total_liab: AvH,     // 总负债, NEGATIVE (credit side)
-    pub current_assets: AvH, // 流动资产, positive
-    pub current_liab: AvH,   // 流动负债, NEGATIVE (credit side)
-    pub cash: AvH,           // 货币资金, positive
-    pub inventories: AvH,    // 存货, positive
-    pub receivables: AvH,    // 应收票据及账款, positive
+    pub close: AvH,                  // unadjusted close (StackSync)
+    pub volume: AvH,                 // 成交量 shares (StackSync)
+    pub open: AvH,                   // 开盘价 unadjusted (StackSync)
+    pub high: AvH,                   // 最高价 unadjusted (StackSync)
+    pub low: AvH,                    // 最低价 unadjusted (StackSync)
+    pub amount: AvH,                 // 成交额 turnover value (StackSync)
+    pub adjusted_close: AvH,         // close * forward-adjust factor (StackSync)
+    pub adjusts: AvH,                // forward-adjust factor (Stack)
+    pub total_shares: AvH,           // (Stack)
+    pub circ_shares: AvH,            // (Stack)
+    pub parent_equity: AvH,          // 归母净资产, positive (Stack)
+    pub net_profit: AvH,             // 净利润, annualized, positive
+    pub operating_profit: AvH,       // 营业利润, annualized, positive
+    pub revenue: AvH,                // 营业收入, annualized, positive
+    pub operating_cost: AvH,         // 营业成本, annualized, NEGATIVE (a deduction)
+    pub total_assets: AvH,           // 总资产, positive
+    pub total_liab: AvH,             // 总负债, NEGATIVE (credit side)
+    pub current_assets: AvH,         // 流动资产, positive
+    pub current_liab: AvH,           // 流动负债, NEGATIVE (credit side)
+    pub cash: AvH,                   // 货币资金, positive
+    pub inventories: AvH,            // 存货, positive
+    pub receivables: AvH,            // 应收票据及账款, positive
     pub net_operating_cashflow: AvH, // 经营现金流净额, annualized
 }
 
@@ -138,10 +138,10 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             "balance_sheet.equity.parent_interests".into(),
             // [3..8]: point-in-time balance stocks for the fundamental factors
             // (assets debit-positive, liabilities credit-negative).
-            "balance_sheet.assets".into(),              // 3 total assets
-            "balance_sheet.liab".into(),                // 4 total liabilities (negative)
-            "balance_sheet.assets.current".into(),      // 5 current assets
-            "balance_sheet.liab.current".into(),        // 6 current liabilities (negative)
+            "balance_sheet.assets".into(),         // 3 total assets
+            "balance_sheet.liab".into(),           // 4 total liabilities (negative)
+            "balance_sheet.assets.current".into(), // 5 current assets
+            "balance_sheet.liab.current".into(),   // 6 current liabilities (negative)
             "balance_sheet.assets.current.cash".into(), // 7 cash & equivalents
             "balance_sheet.assets.current.inventories".into(), // 8 inventories
             "balance_sheet.assets.current.receivables.notes_and_accounts".into(), // 9 应收票据及账款
@@ -152,8 +152,8 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         sc,
         "income_statements",
         vec![
-            "income_statement.profit".into(),                          // 0 net profit
-            "income_statement.profit.operating".into(),                // 1 operating profit
+            "income_statement.profit".into(),           // 0 net profit
+            "income_statement.profit.operating".into(), // 1 operating profit
             "income_statement.profit.operating.income.revenue".into(), // 2 revenue
             "income_statement.profit.operating.expenses.costs".into(), // 3 operating cost (negative)
         ],
@@ -237,12 +237,12 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         ) {
             // Each `Split` row is a by-reference `RefViewPort`; `DerefArrayView`
             // re-derives the by-value `ViewPort` the `Gate` consumes.
-            let prices = Gate(any_finite) @ deref_array_view() @ prices_row; // [close, volume, open, high, low, amount]
-            let dividends = Gate(any_finite) @ deref_array_view() @ div_row; // [share, cash]
-            let equity = Gate(any_finite) @ deref_array_view() @ equity_row; // [total, circulating]
-            let balance = Gate(any_finite) @ deref_array_view() @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
-            let income = Gate(any_finite) @ deref_array_view() @ income_row; // [year, doy, profit, operating, revenue, cost]
-            let cashflow = Gate(any_finite) @ deref_array_view() @ cashflow_row; // [year, doy, operating, investing, financing]
+            let prices = gate(any_finite) @ deref_array_view() @ prices_row; // [close, volume, open, high, low, amount]
+            let dividends = gate(any_finite) @ deref_array_view() @ div_row; // [share, cash]
+            let equity = gate(any_finite) @ deref_array_view() @ equity_row; // [total, circulating]
+            let balance = gate(any_finite) @ deref_array_view() @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
+            let income = gate(any_finite) @ deref_array_view() @ income_row; // [year, doy, profit, operating, revenue, cost]
+            let cashflow = gate(any_finite) @ deref_array_view() @ cashflow_row; // [year, doy, operating, investing, financing]
             // Terminal column picks stay zero-copy views (`SliceView`) into the
             // retaining `Gate`'s stable storage; squeezing one index drops the
             // axis (rank-1 row → rank-0 scalar). `close` feeds `ForwardAdjust` /
@@ -253,7 +253,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             let prices_extras = slice_view(vec![2, 3, 4, 5], 0, false) @ prices;
             let adjusts =
                 forward_adjust().with_output_prices(false) @ (close, dividends);
-            let adjusted_close = multiply::<f64, 0>() @ (close, adjusts);
+            let adjusted_close = multiply() @ (close, adjusts);
             let total_shares = slice_view(vec![0], 0, true) @ equity;
             let circ_shares = slice_view(vec![1], 0, true) @ equity;
             // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).

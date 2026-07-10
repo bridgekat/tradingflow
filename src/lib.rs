@@ -39,8 +39,15 @@
 //! fusion macro. A data source implements [`flowgraph::ingest::EventSource`],
 //! streaming timestamped events into its source cell; time is threaded
 //! out-of-band through the driver-advanced
-//! [`SharedTime`](flowgraph::ingest::SharedTime) cell ([`operators::Clock`] is
-//! its [`Instant`] instantiation).
+//! [`SharedTime`](flowgraph::ingest::SharedTime) cell ([`operators::EventTime`]
+//! is its [`Instant`] instantiation).
+//!
+//! Three distinct notions carry a clock-like name, and they are not the same
+//! thing: [`WallClock`] is the wall clock that *drives* the event loop (an
+//! impl of [`flowgraph::ingest::Clock`]); [`operators::EventTime`] is the
+//! out-of-band *cell* holding the current batch's event time; and
+//! [`sources::pulse()`] is a *source* emitting bare `()` triggers at given
+//! timestamps, which clock-gated operators take as a leading input port.
 //!
 //! # Modules
 //!
@@ -50,7 +57,7 @@
 //!   plus [`Scalar`].
 //! * [`sources`] — built-in data sources: `ArraySource`, `IterSource`, the
 //!   columnar panel sources (`ParquetPanelSource` / `ParquetFinancialReportPanelSource`), and
-//!   the `clock` trigger.
+//!   the [`pulse()`](sources::pulse()) trigger.
 //! * [`operators`] — the operator library. Behind the `python` feature it also
 //!   runs Python operators on an embedded interpreter.
 //! * [`utils`] — [`Schema`].

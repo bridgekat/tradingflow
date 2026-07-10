@@ -1,8 +1,7 @@
 //! Class-based Python operator host (feature `python`).
 //!
-//! Where [`PyOperator`](super::python::PyOperator) wraps a single lambda
-//! (`f(*inputs) -> ndarray`), [`PyClassOperator`] hosts a full Python operator
-//! object mirroring the legacy `tradingflow.operator.Operator` contract, so the
+//! [`PyClassOperator`] is a graph node whose compute step runs a Python operator
+//! object, mirroring the legacy `tradingflow.operator.Operator` contract, so the
 //! Python-resident operator layer (predictors / portfolios / stateful
 //! metrics) ports nearly verbatim:
 //!
@@ -14,7 +13,7 @@
 //! `inputs` is a tuple of **views** — [`NativeArrayView`] for `Array<f64>` cells
 //! and [`NativeSeriesView`] for `Series<f64>` cells (history), `None` for unit
 //! (clock) inputs. `output` is a writable array view, `timestamp` is TAI
-//! nanoseconds (from the driver [`Clock`]), `produced` is a `tuple[bool, ...]`
+//! nanoseconds (from the driver [`EventTime`]), `produced` is a `tuple[bool, ...]`
 //! parallel to `inputs`, and `state` is a Python object carried across ticks.
 //!
 //! The `source` is a Python *program* (statements) executed in the operator's
@@ -39,6 +38,53 @@
 //! Copies make retention safe and the cost is negligible against the NumPy/SciPy
 //! math these operators run.
 //!
+//! # Interpreter model (single shared interpreter; easy to switch)
+//!
+//! The bridge embeds **one shared CPython** and enters it per `compute` via
+//! PyO3's [`Python::attach`]. This same code runs, with **no change**, on any of:
+//!
+//! * **Standard GIL CPython — the default.** Only one thread runs *Python* at a
+//!   time, but operator work that **releases the GIL** runs truly in parallel on
+//!   the pool: NumPy ufuncs/BLAS, SciPy, and convex solvers (cvxpy + CLARABEL /
+//!   SCS / OSQP) all drop the GIL during their native solve. In quant operators
+//!   that native/solve time *is* the cost, so solve-bound graphs parallelize;
+//!   only pure-Python glue serializes. This is the default because the cvxpy
+//!   solver stack has no free-threaded wheels yet.
+//! * **Free-threaded CPython** (PEP 703, `python3.13t`): no GIL, so pure-Python
+//!   parallelizes too. Build against it by pointing `PYO3_PYTHON` at a
+//!   free-threaded venv — nothing in this module assumes one interpreter mode.
+//! * **Own-GIL sub-interpreters** (PEP 684) are a possible future direction but
+//!   cannot `import numpy` (NumPy declares no multiple-interpreter support), so
+//!   they are not used here.
+//!
+//! Because operators only touch Python under `Python::attach` and never assume
+//! the GIL is present or absent, switching modes is a build/runtime config change
+//! (`PYO3_PYTHON` + the venv), not a code change.
+//!
+//! # Setup
+//!
+//! A venv with the operators' deps (NumPy, and SciPy/cvxpy for the optimizers):
+//!
+//! ```console
+//! python -m venv .venv && .venv\Scripts\python -m pip install numpy scipy cvxpy
+//! ```
+//!
+//! PyO3 links the interpreter named by `PYO3_PYTHON` at build time; the embedded
+//! interpreter computes `sys.path` from the base install, so make the venv's
+//! packages (and `python/`, for the `flowops` operator package) visible at
+//! runtime via `PYTHONPATH`. Build and test with:
+//!
+//! ```console
+//! set PYO3_PYTHON=<abs>\.venv\Scripts\python.exe
+//! set PATH=<dir containing python3xx.dll>;%PATH%
+//! set PYTHONPATH=<repo>\python;<abs>\.venv\Lib\site-packages
+//! cargo test --features python operators::pyhost
+//! ```
+//!
+//! For free-threaded instead, swap the venv for a `python3.13t` one (`py install
+//! 3.13t-64`) and the dll dir accordingly. In production, point
+//! `PYTHONPATH`/`PYTHONHOME` at the deployment environment.
+//!
 //! # Safety
 //!
 //! The view pyclasses hold a raw pointer to a graph cell, valid only for the
@@ -60,7 +106,7 @@ use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 
 use flowgraph::typed::{Interface, InterfaceHandles, Operator, RefPort, RefPorts};
 
-use super::op::Clock;
+use super::op::EventTime;
 use crate::{Array, Instant, Series};
 
 // ===========================================================================
@@ -129,7 +175,9 @@ impl NativeArrayView {
     /// Overwrite the output cell from a NumPy array of matching element count.
     fn write(&self, value: PyReadonlyArrayDyn<'_, f64>) -> PyResult<()> {
         if !self.writable {
-            return Err(PyValueError::new_err("cannot write to a read-only (input) view"));
+            return Err(PyValueError::new_err(
+                "cannot write to a read-only (input) view",
+            ));
         }
         let src = value
             .as_slice()
@@ -239,7 +287,8 @@ impl NativeSeriesView {
         };
         let mut full = vec![end - start];
         full.extend_from_slice(&self.extents);
-        let nd = ArrayD::from_shape_vec(IxDyn(&full), flat.to_vec()).expect("series shape mismatch");
+        let nd =
+            ArrayD::from_shape_vec(IxDyn(&full), flat.to_vec()).expect("series shape mismatch");
         PyArrayDyn::from_owned_array(py, nd)
     }
 
@@ -257,7 +306,9 @@ impl NativeSeriesView {
         let n = (self.base + self.retained) as isize;
         let idx = if i < 0 { n + i } else { i };
         if idx < 0 || idx >= n {
-            return Err(PyIndexError::new_err(format!("index {i} out of bounds (len {n})")));
+            return Err(PyIndexError::new_err(format!(
+                "index {i} out of bounds (len {n})"
+            )));
         }
         let idx = idx as usize;
         if idx < self.base {
@@ -268,17 +319,25 @@ impl NativeSeriesView {
         }
         // SAFETY: the cell outlives this call and idx ∈ [base, n).
         let elem = unsafe {
-            std::slice::from_raw_parts(self.values.add((idx - self.base) * self.stride), self.stride)
+            std::slice::from_raw_parts(
+                self.values.add((idx - self.base) * self.stride),
+                self.stride,
+            )
         };
-        let nd =
-            ArrayD::from_shape_vec(IxDyn(&self.extents), elem.to_vec()).expect("series shape mismatch");
+        let nd = ArrayD::from_shape_vec(IxDyn(&self.extents), elem.to_vec())
+            .expect("series shape mismatch");
         Ok(PyArrayDyn::from_owned_array(py, nd))
     }
 
     /// Timestamps in logical `[start, end)` as an int64 (TAI ns) NumPy array.
     /// Indices are clamped to the retained window `[base, len)`.
     #[pyo3(signature = (start=0, end=None))]
-    fn slice<'py>(&self, py: Python<'py>, start: usize, end: Option<usize>) -> Bound<'py, PyArray1<i64>> {
+    fn slice<'py>(
+        &self,
+        py: Python<'py>,
+        start: usize,
+        end: Option<usize>,
+    ) -> Bound<'py, PyArray1<i64>> {
         let n = self.base + self.retained;
         let start = start.clamp(self.base, n);
         let end = end.unwrap_or(n).clamp(start, n);
@@ -291,7 +350,11 @@ impl NativeSeriesView {
     }
 
     /// Positional indexing: `int` -> single element, contiguous `slice` -> range.
-    fn __getitem__<'py>(&self, py: Python<'py>, key: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    fn __getitem__<'py>(
+        &self,
+        py: Python<'py>,
+        key: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         if let Ok(i) = key.extract::<isize>() {
             return Ok(self.at(py, i)?.into_any());
         }
@@ -301,9 +364,13 @@ impl NativeSeriesView {
         let n = self.base + self.retained;
         let ind = sl.indices(n as isize)?;
         if ind.step != 1 {
-            return Err(PyValueError::new_err("only contiguous (step 1) slices supported"));
+            return Err(PyValueError::new_err(
+                "only contiguous (step 1) slices supported",
+            ));
         }
-        Ok(self.values(py, ind.start as usize, Some(ind.stop as usize)).into_any())
+        Ok(self
+            .values(py, ind.start as usize, Some(ind.stop as usize))
+            .into_any())
     }
 }
 
@@ -311,7 +378,10 @@ impl NativeSeriesView {
     /// Bind a view over a `Series<f64, N>` cell. The concrete rank `N` is
     /// known at the call site, so the static extents and the retained window's
     /// raw parts are read here; the pyclass itself is rank-erased.
-    fn bind<'py, const N: usize>(py: Python<'py>, s: &Series<f64, N>) -> PyResult<Bound<'py, PyAny>> {
+    fn bind<'py, const N: usize>(
+        py: Python<'py>,
+        s: &Series<f64, N>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let view = NativeSeriesView {
             values: s.values().as_ptr(),
             timestamps: s.timestamps().as_ptr(),
@@ -400,9 +470,17 @@ impl<const N: usize> PyArgs for RefPorts<Array<f64, N>> {
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
         let (flags, values) = refs;
-        debug_assert!(flags.len() == values.len(), "RefPorts refs planes disagree on length");
+        debug_assert!(
+            flags.len() == values.len(),
+            "RefPorts refs planes disagree on length"
+        );
         for (i, &value) in values.iter().enumerate() {
-            <RefPort<Array<f64, N>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
+            <RefPort<Array<f64, N>> as PyArgs>::append_views(
+                py,
+                (flags[i], value),
+                views,
+                produced,
+            )?;
         }
         Ok(())
     }
@@ -416,9 +494,17 @@ impl<const N: usize> PyArgs for RefPorts<Series<f64, N>> {
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
         let (flags, values) = refs;
-        debug_assert!(flags.len() == values.len(), "RefPorts refs planes disagree on length");
+        debug_assert!(
+            flags.len() == values.len(),
+            "RefPorts refs planes disagree on length"
+        );
         for (i, &value) in values.iter().enumerate() {
-            <RefPort<Series<f64, N>> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
+            <RefPort<Series<f64, N>> as PyArgs>::append_views(
+                py,
+                (flags[i], value),
+                views,
+                produced,
+            )?;
         }
         Ok(())
     }
@@ -569,17 +655,15 @@ fn resolve_operator<'py>(
 /// importable module, or an inline source; each defines `build(**kwargs)` (called
 /// with [`PyParams`]) or binds `__op__`.
 ///
-/// [array-view-refactor] `NO` is the static output rank, defaulting to `1` to
-/// match the ergonomic
-/// [`ScenarioExt::add_py_class_operator`](crate::ScenarioExt::add_py_class_operator)
-/// convenience (the strategy operators all emit `(N,)` predictions / weights).
-/// The output's element shape comes from `out_shape` (its product must equal the
-/// rank-`NO` extents' product); the NumPy boundary negotiates by element count.
+/// `NO` is the static output rank, defaulting to `1` because the strategy
+/// operators all emit `(N,)` predictions / weights. The output's element shape
+/// comes from `out_shape` (its product must equal the rank-`NO` extents'
+/// product); the NumPy boundary negotiates by element count.
 pub struct PyClassOperator<I: PyArgs = RefPorts<Array<f64, 1>>, const NO: usize = 1> {
     loader: Loader,
     params: PyParams,
     out_shape: Vec<usize>,
-    clock: Clock,
+    clock: EventTime,
     _marker: PhantomData<fn() -> I>,
 }
 
@@ -589,12 +673,11 @@ impl<I: PyArgs, const NO: usize> PyClassOperator<I, NO> {
         path: impl AsRef<std::path::Path>,
         params: PyParams,
         out_shape: Vec<usize>,
-        clock: Clock,
+        clock: EventTime,
     ) -> Self {
         let path = path.as_ref();
-        let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            panic!("cannot read python operator file {}: {e}", path.display())
-        });
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("cannot read python operator file {}: {e}", path.display()));
         Self::from_source(src, params, out_shape, clock)
     }
 
@@ -603,7 +686,7 @@ impl<I: PyArgs, const NO: usize> PyClassOperator<I, NO> {
         module: impl Into<String>,
         params: PyParams,
         out_shape: Vec<usize>,
-        clock: Clock,
+        clock: EventTime,
     ) -> Self {
         Self {
             loader: Loader::Module(module.into()),
@@ -619,7 +702,7 @@ impl<I: PyArgs, const NO: usize> PyClassOperator<I, NO> {
         source: impl Into<String>,
         params: PyParams,
         out_shape: Vec<usize>,
-        clock: Clock,
+        clock: EventTime,
     ) -> Self {
         Self {
             loader: Loader::Source(source.into()),
@@ -640,7 +723,7 @@ pub struct PyClassState<const NO: usize> {
     out_shape: Vec<usize>,
     operator: Option<Py<PyAny>>,
     py_state: Option<Py<PyAny>>,
-    clock: Clock,
+    clock: EventTime,
     out: Array<f64, NO>,
 }
 
@@ -683,7 +766,7 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
                     let operator = resolve_operator(py, &loader, &params)?;
                     let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
                     let mut produced: Vec<bool> = Vec::new(); // discarded on init
-                    I::append_views(py, inputs.clone(), &mut views, &mut produced)?;
+                    I::append_views(py, inputs, &mut views, &mut produced)?;
                     let st = operator.call_method1("init", (PyTuple::new(py, views)?, ts))?;
                     Ok((operator.unbind(), st.unbind()))
                 };
@@ -716,7 +799,7 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
             let run = || -> PyResult<bool> {
                 let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
                 let mut bits: Vec<bool> = Vec::new();
-                I::append_views(py, inputs.clone(), &mut views, &mut bits)?;
+                I::append_views(py, inputs, &mut views, &mut bits)?;
                 let out_view = NativeArrayView::bind::<NO>(py, out_ptr, true)?;
                 let op = operator.bind(py);
                 op.call_method1(
@@ -782,7 +865,7 @@ pub fn py_class_operator<I: PyArgs, const NO: usize>(
     module: impl Into<String>,
     params: PyParams,
     out_shape: Vec<usize>,
-    clock: &Clock,
+    clock: &EventTime,
 ) -> PyClassOperator<I, NO> {
     PyClassOperator::from_module(module, params, out_shape, clock.clone())
 }
@@ -792,7 +875,7 @@ pub fn py_class_operator_source<I: PyArgs, const NO: usize>(
     source: impl Into<String>,
     params: PyParams,
     out_shape: Vec<usize>,
-    clock: &Clock,
+    clock: &EventTime,
 ) -> PyClassOperator<I, NO> {
     PyClassOperator::from_source(source, params, out_shape, clock.clone())
 }
@@ -802,7 +885,7 @@ pub fn py_class_operator_file<I: PyArgs, const NO: usize>(
     path: impl AsRef<std::path::Path>,
     params: PyParams,
     out_shape: Vec<usize>,
-    clock: &Clock,
+    clock: &EventTime,
 ) -> PyClassOperator<I, NO> {
     PyClassOperator::from_file(path, params, out_shape, clock.clone())
 }
@@ -814,7 +897,7 @@ mod tests {
     use flowgraph::typed::{Builder, RefPort, RefPorts, RefSource};
 
     use crate::Instant;
-    use crate::operators::{AsView, Clock, Record};
+    use crate::operators::{AsView, EventTime, Record};
     use crate::{Array, Series};
 
     /// A small stateful operator over one Array input (L1 turnover), used here
@@ -846,7 +929,7 @@ __op__ = Turnover()
 
     #[test]
     fn py_class_operator_turnover() {
-        let clock = Clock::new();
+        let clock = EventTime::new();
         let mut b = Builder::new();
         let src = b.push_source(RefSource::new(Array::from_vec([2], vec![0.5_f64, 0.5])));
         let out = b.push(
@@ -896,7 +979,7 @@ __op__ = HistDot()
 
     #[test]
     fn py_class_operator_heterogeneous_series() {
-        let clock = Clock::new();
+        let clock = EventTime::new();
         let mut b = Builder::new();
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
         let weights = b.push_source(RefSource::new(Array::from_vec([2], vec![1.0_f64, 1.0])));
@@ -959,9 +1042,12 @@ def build(scale=1.0):
             )
             .unwrap();
 
-        let clock = Clock::new();
+        let clock = EventTime::new();
         let mut b = Builder::new();
-        let src = b.push_source(RefSource::new(Array::from_vec([4], vec![1.0_f64, 2.0, 3.0, 4.0])));
+        let src = b.push_source(RefSource::new(Array::from_vec(
+            [4],
+            vec![1.0_f64, 2.0, 3.0, 4.0],
+        )));
         let out = b.push(
             // Scalar output (`vec![]`), so NO = 0.
             PyClassOperator::<RefPorts<Array<f64, 1>>, 0>::from_file(
@@ -991,7 +1077,7 @@ def build(scale=1.0):
     fn flowops_linear_regression_predictor() {
         const N: usize = 3;
         const F: usize = 2;
-        let clock = Clock::new();
+        let clock = EventTime::new();
         let mut b = Builder::new();
         let universe = b.push_source(RefSource::new(Array::from_vec([N], vec![1.0; N])));
         let feat_feed = b.push_source(RefSource::new(Array::<f64, 2>::zeros([N, F])));
@@ -1003,7 +1089,11 @@ def build(scale=1.0):
         let tgt_series = b.push(Record::new(clock.clone()), tgt_v);
         let pred = b.push(
             // Output is the (N,) prediction → NO = 1 (the default).
-            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64, 2>>, RefPort<Series<f64, 1>>)>::from_module(
+            PyClassOperator::<(
+                RefPort<Array<f64, 1>>,
+                RefPort<Series<f64, 2>>,
+                RefPort<Series<f64, 1>>,
+            )>::from_module(
                 "flowops.predictors.mean.linear_regression",
                 PyParams::new()
                     .int("num_stocks", N as i64)
@@ -1032,6 +1122,9 @@ def build(scale=1.0):
 
         let mu = g.ref_view(pred).as_slice();
         assert_eq!(mu.len(), N);
-        assert!(mu.iter().all(|v| v.is_finite()), "prediction has non-finite entries: {mu:?}");
+        assert!(
+            mu.iter().all(|v| v.is_finite()),
+            "prediction has non-finite entries: {mu:?}"
+        );
     }
 }

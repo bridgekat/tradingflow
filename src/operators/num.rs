@@ -403,11 +403,10 @@ impl<T: Scalar + Float, const N: usize> Operator for Gaussianize<T, N> {
         }
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        let n = src.len();
 
         let mut n_valid = 0usize;
-        for i in 0..n {
-            if !src[i].is_nan() {
+        for (i, v) in src.iter().enumerate() {
+            if !v.is_nan() {
                 state.scratch[n_valid] = i;
                 n_valid += 1;
             }
@@ -447,7 +446,7 @@ fn norm_inv(p: f64) -> f64 {
         -3.969683028665376e+01,
         2.209460984245205e+02,
         -2.759285104469687e+02,
-        1.383577518672690e+02,
+        1.383_577_518_672_69e2,
         -3.066479806614716e+01,
         2.506628277459239e+00,
     ];
@@ -546,11 +545,10 @@ impl<T: Scalar + Float, const N: usize> Operator for Percentile<T, N> {
         }
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        let n = src.len();
 
         let mut n_valid = 0usize;
-        for i in 0..n {
-            if !src[i].is_nan() {
+        for (i, v) in src.iter().enumerate() {
+            if !v.is_nan() {
                 state.scratch[n_valid] = i;
                 n_valid += 1;
             }
@@ -632,8 +630,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Standardize<T, N> {
 
         let mut n_valid = 0usize;
         let mut sum = T::zero();
-        for i in 0..n {
-            let v = src[i];
+        for &v in src.iter() {
             if !v.is_nan() {
                 n_valid += 1;
                 sum = sum + v;
@@ -651,8 +648,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Standardize<T, N> {
         let mean = sum / T::from(n_valid).unwrap();
 
         let mut ssd = T::zero();
-        for i in 0..n {
-            let v = src[i];
+        for &v in src.iter() {
             if !v.is_nan() {
                 let d = v - mean;
                 ssd = ssd + d * d;
@@ -743,9 +739,9 @@ impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
         let n = src.len();
 
         let mut n_valid = 0usize;
-        for i in 0..n {
-            if !src[i].is_nan() {
-                state.sort_buf[n_valid] = src[i];
+        for &v in src.iter() {
+            if !v.is_nan() {
+                state.sort_buf[n_valid] = v;
                 n_valid += 1;
             }
         }

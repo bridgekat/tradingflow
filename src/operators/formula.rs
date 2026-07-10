@@ -48,7 +48,7 @@
 //! # Time as a parameter
 //!
 //! [`Record`] stamps rows with event time, so every constructor that records
-//! takes the driver's [`Clock`] as its first argument (get it once per builder
+//! takes the driver's [`EventTime`] as its first argument (get it once per builder
 //! function via [`Builder::time`](flowgraph::ingest::Builder::time)); the
 //! constructor clones the handle, so pass it by reference and reuse it freely
 //! within a formula.
@@ -69,7 +69,7 @@ use num_traits::Float;
 
 use super::arith::{BinaryFn, UnaryFn, divide, sqrt, subtract};
 use super::gating::Record;
-use super::op::{ArrayValue, Clock};
+use super::op::{ArrayValue, EventTime};
 use super::rolling::{Ema, RollingMean, RollingSum, RollingVariance};
 use super::transform::Lag;
 use crate::{Duration, Retention, Scalar};
@@ -97,7 +97,7 @@ pub type WithLagged<T, const N: usize, O> =
 /// An unbounded [`Record`] of the input stream: `record(&clk) @ x` appends
 /// every notified value of `x`, stamped with event time. Prefer
 /// [`record_bounded`] whenever the consumers' look-back is known.
-pub fn record<T: Scalar, const N: usize>(clock: &Clock) -> Record<T, N> {
+pub fn record<T: Scalar, const N: usize>(clock: &EventTime) -> Record<T, N> {
     Record::new(clock.clone())
 }
 
@@ -106,21 +106,21 @@ pub fn record<T: Scalar, const N: usize>(clock: &Clock) -> Record<T, N> {
 /// `retention` to the deepest consumer look-back plus a compaction margin (see
 /// the module docs).
 pub fn record_bounded<T: Scalar, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     retention: Retention,
 ) -> Record<T, N> {
     Record::with_retention(clock.clone(), retention)
 }
 
 /// A private record sized for a count look-back of `n`.
-fn buffer<T: Scalar, const N: usize>(clock: &Clock, n: usize) -> Record<T, N> {
+fn buffer<T: Scalar, const N: usize>(clock: &EventTime, n: usize) -> Record<T, N> {
     Record::with_retention(clock.clone(), Retention::count(n + COUNT_MARGIN))
 }
 
 /// Rolling mean of the last `n` ticks: `ma(&clk, n) @ x`. Self-recording;
 /// `NaN` (un-notified) until `n` values have been seen.
 pub fn ma<T: Scalar + Float, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     n: usize,
 ) -> Windowed<T, N, RollingMean<T, N>> {
     Comp(buffer(clock, n), RollingMean::count(n))
@@ -128,7 +128,7 @@ pub fn ma<T: Scalar + Float, const N: usize>(
 
 /// Rolling sum of the last `n` ticks: `msum(&clk, n) @ x`. Self-recording.
 pub fn msum<T: Scalar + Float, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     n: usize,
 ) -> Windowed<T, N, RollingSum<T, N>> {
     Comp(buffer(clock, n), RollingSum::count(n))
@@ -137,7 +137,7 @@ pub fn msum<T: Scalar + Float, const N: usize>(
 /// Rolling population variance of the last `n` ticks: `mvar(&clk, n) @ x`.
 /// Self-recording.
 pub fn mvar<T: Scalar + Float, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     n: usize,
 ) -> Windowed<T, N, RollingVariance<T, N>> {
     Comp(buffer(clock, n), RollingVariance::count(n))
@@ -146,7 +146,7 @@ pub fn mvar<T: Scalar + Float, const N: usize>(
 /// Rolling standard deviation of the last `n` ticks (variance → square root,
 /// fused): `mstd(&clk, n) @ x`. Self-recording.
 pub fn mstd<T: Scalar + Float, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     n: usize,
 ) -> Comp<Windowed<T, N, RollingVariance<T, N>>, UnaryFn<T, N>> {
     Comp(mvar(clock, n), sqrt())
@@ -156,7 +156,7 @@ pub fn mstd<T: Scalar + Float, const N: usize>(
 /// the latest tick): `ma_time(&clk, Duration::from_days(365)) @ x` — the TTM
 /// idiom. Self-recording; see the module docs for the retention margin.
 pub fn ma_time<T: Scalar + Float, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     window: Duration,
 ) -> Windowed<T, N, RollingMean<T, N>> {
     Comp(
@@ -168,7 +168,7 @@ pub fn ma_time<T: Scalar + Float, const N: usize>(
 /// Exponential moving average with window-normalized weights (see [`Ema`]):
 /// `ema(&clk, alpha, window) @ x`. Self-recording.
 pub fn ema<T: Scalar + Float, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     alpha: T,
     window: usize,
 ) -> Windowed<T, N, Ema<T, N>> {
@@ -178,7 +178,7 @@ pub fn ema<T: Scalar + Float, const N: usize>(
 /// The value from `n` ticks ago: `lag(&clk, n) @ x`. Self-recording; `NaN`
 /// until more than `n` values have been seen.
 pub fn lag<T: Scalar + Float, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     n: usize,
 ) -> Windowed<T, N, Lag<T, N>> {
     lag_or(clock, n, T::nan())
@@ -187,7 +187,7 @@ pub fn lag<T: Scalar + Float, const N: usize>(
 /// [`lag`] with an explicit fill value — for non-float scalars, or when a
 /// missing lag should read as something other than `NaN`.
 pub fn lag_or<T: Scalar, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     n: usize,
     fill: T,
 ) -> Windowed<T, N, Lag<T, N>> {
@@ -198,7 +198,7 @@ pub fn lag_or<T: Scalar, const N: usize>(
 /// Self-recording; `NaN` until the lag is available. The one-tick special
 /// case, without a private record, is [`diff`](super::diff).
 pub fn change<T: Scalar + Float, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     n: usize,
 ) -> WithLagged<T, N, BinaryFn<T, N>> {
     Comp(Fork(Id::default(), lag(clock, n)), subtract())
@@ -212,7 +212,7 @@ pub fn change<T: Scalar + Float, const N: usize>(
 /// [`pct_change`](super::pct_change).
 #[allow(clippy::type_complexity)] // the combinator tree is the documentation
 pub fn growth<T: Scalar + Float, const N: usize>(
-    clock: &Clock,
+    clock: &EventTime,
     n: usize,
 ) -> WithLagged<
     T,

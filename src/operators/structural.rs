@@ -321,7 +321,7 @@ impl<T: Scalar, const N: usize> Segment for ResampleView<T, N> {
 }
 
 /// Clock-gated **view** passthrough whose clock is a unit (`RefPort<()>`) clock
-/// source (e.g. a rebalance [`clock`](crate::sources::clock)): re-emits the
+/// source (e.g. a rebalance [`pulse`](crate::sources::pulse())): re-emits the
 /// rank-`N` data view on every clock tick. The unit-clock counterpart of
 /// [`ResampleView`].
 #[derive(Clone)]

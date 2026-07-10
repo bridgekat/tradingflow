@@ -25,9 +25,9 @@ use tradingflow::operators::{
     ArrayValue, Window, add, as_view, filter, forward_adjust, multiply, record, rolling_mean,
     rolling_variance, select, sqrt, subtract,
 };
-use tradingflow::{Scenario, WallClock};
 use tradingflow::sources::ParquetPanelSource;
 use tradingflow::{Array, ArrayView, Instant, Series};
+use tradingflow::{Scenario, WallClock};
 
 const WINDOW: usize = 252;
 const MULTIPLE: f64 = 2.0;
@@ -38,7 +38,10 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     let mut lines = text.lines();
     let header = lines.next().expect("symbol_list header");
-    let col = header.split(',').position(|h| h.trim() == "symbol").expect("`symbol` column");
+    let col = header
+        .split(',')
+        .position(|h| h.trim() == "symbol")
+        .expect("`symbol` column");
     lines
         .filter_map(|l| l.split(',').nth(col).map(|s| s.trim().to_string()))
         .filter(|s| !s.is_empty())
@@ -76,7 +79,9 @@ async fn main() {
     let dividends_pq = format!("{data_dir}/dividends.parquet");
     for p in [&prices_pq, &dividends_pq] {
         if !std::path::Path::new(p).exists() {
-            eprintln!("data not found: {p}\n(run the crawler with --export-long parquet; see examples/README.md)");
+            eprintln!(
+                "data not found: {p}\n(run the crawler with --export-long parquet; see examples/README.md)"
+            );
             std::process::exit(1);
         }
     }
@@ -125,12 +130,12 @@ async fn main() {
     // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).
     let ma = sc.push(rolling_mean(Window::Count(WINDOW)), adj_series);
     let var = sc.push(rolling_variance(Window::Count(WINDOW)), adj_series);
-    let std = sc.push(sqrt::<f64, 0>(), var);
+    let std = sc.push(sqrt(), var);
     let multiple_src = sc.push_source(RefSource::new(Array::scalar(MULTIPLE)));
     let multiple = sc.push(as_view(), *multiple_src);
-    let band = sc.push(multiply::<f64, 0>(), (std, multiple));
-    let upper = sc.push(add::<f64, 0>(), (ma, band));
-    let lower = sc.push(subtract::<f64, 0>(), (ma, band));
+    let band = sc.push(multiply(), (std, multiple));
+    let upper = sc.push(add(), (ma, band));
+    let lower = sc.push(subtract(), (ma, band));
 
     // Record the outputs.
     let h_adj = sc.push(record(&clk), adj_closes);
@@ -176,7 +181,5 @@ async fn main() {
     }
     let path = "target/plot_daily_price.csv";
     fs::write(path, csv).expect("write csv");
-    println!(
-        "{symbol}: {n} trading days -> {path}\nplot with:  python examples/plot.py {path}"
-    );
+    println!("{symbol}: {n} trading days -> {path}\nplot with:  python examples/plot.py {path}");
 }

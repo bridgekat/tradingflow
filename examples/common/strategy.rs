@@ -8,19 +8,17 @@
 
 use flowgraph::typed::{Handle, RefPort, ViewPort};
 
-use tradingflow::operators::{
-    ArrayValue, as_view, benchmark, log, map, multiply, own, record,
-};
-use tradingflow::sources::clock;
+use tradingflow::operators::{ArrayValue, as_view, benchmark, log, map, multiply, own, record};
+use tradingflow::sources::pulse;
 use tradingflow::{Array, ArrayView, Retention, Scenario, Series, Session};
 
+use super::AvH;
 use super::args::CommonArgs;
-use super::data::{build_stacked, Stacked};
-use super::features::{build_strategy_features, FeatureSet, Features};
+use super::data::{Stacked, build_stacked};
+use super::features::{FeatureSet, Features, build_strategy_features};
 use super::models::Dims;
 use super::target::{build_log_return_target, build_price_limits};
 use super::universe::build_cap_weighted_universe;
-use super::AvH;
 
 /// Starting capital for the reported NAV curves (the unit-cash traders are
 /// scaled by this at report time).
@@ -88,13 +86,13 @@ impl Market {
         let n = symbols.len();
         let st = build_stacked(sc, symbols, args);
         let features = build_strategy_features(sc, &st, window, set, retention);
-        let circ_market_cap = sc.push(multiply::<f64, 1>(), (st.close, st.circ_shares));
-        let log_adj = sc.push(log::<f64, 1>(), st.adjusted_close);
+        let circ_market_cap = sc.push(multiply(), (st.close, st.circ_shares));
+        let log_adj = sc.push(log(), st.adjusted_close);
         let (target, target_series, demeaned_series) =
             build_log_return_target(sc, log_adj, retention);
         let (upper, lower) = build_price_limits(sc, st.close, PRICE_LIMIT);
 
-        let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
+        let rebalance_clock = sc.add_source(pulse(args.rebalance_instants()));
         let universe =
             build_cap_weighted_universe(sc, circ_market_cap, rebalance_clock, args.index_size);
         // The Python predictor/portfolio operators consume whole-array
@@ -143,7 +141,13 @@ impl Market {
     {
         let book = sc.push(
             trader,
-            (positions, self.st.close, self.st.adjusts, self.upper, self.lower),
+            (
+                positions,
+                self.st.close,
+                self.st.adjusts,
+                self.upper,
+                self.lower,
+            ),
         );
         total_value(sc, book)
     }

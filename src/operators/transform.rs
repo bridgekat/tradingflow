@@ -47,7 +47,8 @@ pub struct MapState<SO: Scalar, const NO: usize, F> {
     out: Option<Array<SO, NO>>,
 }
 
-impl<SI: Scalar, const NI: usize, SO: Scalar, const NO: usize, F> Operator for Map<SI, NI, SO, NO, F>
+impl<SI: Scalar, const NI: usize, SO: Scalar, const NO: usize, F> Operator
+    for Map<SI, NI, SO, NO, F>
 where
     F: for<'a> Fn(ArrayView<'a, SI, NI>) -> Array<SO, NO> + Send + Sync + 'static,
 {
@@ -229,7 +230,10 @@ where
 pub struct ApplyInplace<I, SO: Scalar, const NO: usize, F>
 where
     I: StripNotify + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut Array<SO, NO>) -> bool + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut Array<SO, NO>) -> bool
+        + Send
+        + Sync
+        + 'static,
 {
     f: F,
     initial: Array<SO, NO>,
@@ -239,7 +243,10 @@ where
 impl<I, SO: Scalar, const NO: usize, F> ApplyInplace<I, SO, NO, F>
 where
     I: StripNotify + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut Array<SO, NO>) -> bool + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut Array<SO, NO>) -> bool
+        + Send
+        + Sync
+        + 'static,
 {
     pub fn new(f: F, initial: Array<SO, NO>) -> Self {
         Self {
@@ -261,7 +268,10 @@ pub struct ApplyInplaceState<SO: Scalar, const NO: usize, F> {
 impl<I, SO: Scalar, const NO: usize, F> Operator for ApplyInplace<I, SO, NO, F>
 where
     I: StripNotify + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut Array<SO, NO>) -> bool + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut Array<SO, NO>) -> bool
+        + Send
+        + Sync
+        + 'static,
 {
     type Inputs = I;
     type Outputs = ViewPort<ArrayValue<SO, NO>>;
@@ -463,7 +473,6 @@ fn select_out_extents<const OUT: usize>(
     <[usize; OUT]>::try_from(v.as_slice())
         .unwrap_or_else(|_| panic!("Select: output rank {} != OUT {OUT}", v.len()))
 }
-
 
 // ---------------------------------------------------------------------------
 // SliceView (zero-copy strided selection → borrowed view, no arena/no copy)
@@ -892,7 +901,10 @@ pub fn apply_inplace<I, SO: Scalar, const NO: usize, F>(
 ) -> ApplyInplace<I, SO, NO, F>
 where
     I: StripNotify + 'static,
-    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut Array<SO, NO>) -> bool + Send + Sync + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut Array<SO, NO>) -> bool
+        + Send
+        + Sync
+        + 'static,
 {
     ApplyInplace::new(f, initial)
 }
@@ -975,6 +987,6 @@ pub fn ref_array_views<T: Scalar, const N: usize>(
     data: &[flowgraph::typed::Handle<ViewPort<ArrayValue<T, N>>>],
 ) -> Vec<flowgraph::typed::Handle<RefViewPort<ArrayValue<T, N>>>> {
     data.iter()
-        .map(|&h| builder.push(ref_array_view::<T, N>(), h))
+        .map(|&h| builder.push(ref_array_view(), h))
         .collect()
 }

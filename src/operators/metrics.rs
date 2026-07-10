@@ -1,9 +1,14 @@
 //! Clock-driven since-inception financial metrics over the [`ArrayView`]
-//! currency. The first four take `(data, clock)` and gate on the clock's notify
+//! currency. The first four take `(clock, data)` and gate on the clock's notify
 //! bit (emitting `notify = false` off-tick); `Drawdown`/`Turnover` are
 //! single-input. The data input is a rank-`N` view (the leading element is read
 //! for the scalar metrics; `Turnover` reads the whole weight vector); every
 //! output is a rank-0 scalar view.
+//!
+//! The clock is the **leading** port, matching every other clock-gated operator
+//! in the library ([`Clocked`](super::Clocked), [`Resample`](super::Resample),
+//! [`ResampleClocked`](super::ResampleClocked)), so the gated shapes stay
+//! interchangeable.
 
 use std::marker::PhantomData;
 
@@ -47,7 +52,7 @@ pub struct CompoundReturnState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for CompoundReturn<T, N> {
-    type Inputs = (ViewPort<ArrayValue<T, N>>, RefPort<()>);
+    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
     type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = CompoundReturnState<T>;
 
@@ -60,7 +65,7 @@ impl<T: Scalar + Float, const N: usize> Operator for CompoundReturn<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, data), (produced_clock, _)): ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        ((produced_clock, _), (_, data)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, T, 0>) {
@@ -96,7 +101,7 @@ impl<T: Scalar + Float, const N: usize> Operator for CompoundReturn<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        _: ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, 0>) {
         (false, state.out.view())
@@ -136,7 +141,7 @@ pub struct AverageReturnState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for AverageReturn<T, N> {
-    type Inputs = (ViewPort<ArrayValue<T, N>>, RefPort<()>);
+    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
     type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = AverageReturnState<T>;
 
@@ -150,7 +155,7 @@ impl<T: Scalar + Float, const N: usize> Operator for AverageReturn<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, data), (produced_clock, _)): ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        ((produced_clock, _), (_, data)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, T, 0>) {
@@ -174,7 +179,7 @@ impl<T: Scalar + Float, const N: usize> Operator for AverageReturn<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        _: ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, 0>) {
         (false, state.out.view())
@@ -215,7 +220,7 @@ pub struct VolatilityState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
-    type Inputs = (ViewPort<ArrayValue<T, N>>, RefPort<()>);
+    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
     type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = VolatilityState<T>;
 
@@ -230,7 +235,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, data), (produced_clock, _)): ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        ((produced_clock, _), (_, data)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, T, 0>) {
@@ -250,7 +255,11 @@ impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
             let n = T::from(state.count).unwrap();
             let mean = state.sum / n;
             let var = state.sum_sq / n - mean * mean;
-            state.out[0] = if var > T::zero() { var.sqrt() } else { T::zero() };
+            state.out[0] = if var > T::zero() {
+                var.sqrt()
+            } else {
+                T::zero()
+            };
         }
 
         state.prev = current;
@@ -258,7 +267,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        _: ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, 0>) {
         (false, state.out.view())
@@ -299,7 +308,7 @@ pub struct SharpeRatioState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for SharpeRatio<T, N> {
-    type Inputs = (ViewPort<ArrayValue<T, N>>, RefPort<()>);
+    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
     type Outputs = ViewPort<ArrayValue<T, 0>>;
     type State = SharpeRatioState<T>;
 
@@ -314,7 +323,7 @@ impl<T: Scalar + Float, const N: usize> Operator for SharpeRatio<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, data), (produced_clock, _)): ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        ((produced_clock, _), (_, data)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, T, 0>) {
@@ -348,7 +357,7 @@ impl<T: Scalar + Float, const N: usize> Operator for SharpeRatio<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, ArrayView<'a, T, N>), (bool, &'a ())),
+        _: ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, 0>) {
         (false, state.out.view())
@@ -497,10 +506,10 @@ impl<T: Scalar + Float, const N: usize> Operator for Turnover<T, N> {
         }
 
         let mut turnover = T::zero();
-        for i in 0..cur.len() {
-            let c = clean(cur[i]);
-            turnover = turnover + (c - state.prev[i]).abs();
-            state.prev[i] = c;
+        for (&raw, prev) in cur.iter().zip(state.prev.iter_mut()) {
+            let c = clean(raw);
+            turnover = turnover + (c - *prev).abs();
+            *prev = c;
         }
         state.out[0] = turnover;
         (true, state.out.view())

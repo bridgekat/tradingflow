@@ -25,9 +25,9 @@ use clap::Parser;
 use tradingflow::operators::{as_view, diff, own, record};
 use tradingflow::{Retention, Scenario, WallClock};
 
-use common::models::{linear_regression_mean, markowitz, minimum_variance, CovEstimator, Mode};
-use common::strategy::{Market, NavH, NavTable};
 use common::FeatureSet;
+use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};
+use common::strategy::{Market, NavH, NavTable};
 
 const RISK_AVERSION: f64 = 1.0;
 const MIN_PERIODS: i64 = 100;

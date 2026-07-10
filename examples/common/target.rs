@@ -7,6 +7,9 @@ use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
 
 use super::AvH;
 
+/// A recorded rank-1 cross-sectional series (the target / demeaned target).
+pub type SerH = Handle<RefPort<Series<f64, 1>>>;
+
 /// Cross-sectional demean preserving NaN.
 fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
     let s = r.to_contiguous();
@@ -38,11 +41,7 @@ pub fn build_log_return_target(
     sc: &mut Scenario,
     log_adj: AvH,
     target_retention: Retention,
-) -> (
-    AvH,
-    Handle<RefPort<Series<f64, 1>>>,
-    Handle<RefPort<Series<f64, 1>>>,
-) {
+) -> (AvH, SerH, SerH) {
     let clk = sc.time();
     let log_returns = sc.push(diff(), log_adj);
     let target = sc.push(winsorize(0.01), log_returns);

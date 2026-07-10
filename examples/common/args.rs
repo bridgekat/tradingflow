@@ -2,8 +2,8 @@
 
 use std::fs;
 
-use tradingflow::data::days_from_civil;
 use tradingflow::Instant;
+use tradingflow::data::days_from_civil;
 
 /// Parse a `YYYY-MM-DD` string into days since 1970-01-01 (a `clap` value parser,
 /// so a malformed date yields a usage error rather than a panic).

@@ -133,8 +133,10 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
             state.start = 0;
             state.count = 0;
             state.accumulator = A::new(&input_shape);
-            state.out =
-                Array::from_vec(out_extents::<NO>(&output_shape), vec![A::Scalar::nan(); output_stride]);
+            state.out = Array::from_vec(
+                out_extents::<NO>(&output_shape),
+                vec![A::Scalar::nan(); output_stride],
+            );
             return (false, state.out.view());
         }
 
@@ -168,7 +170,9 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
             }
         }
 
-        state.accumulator.write(state.count, state.out.as_mut_slice());
+        state
+            .accumulator
+            .write(state.count, state.out.as_mut_slice());
         (true, state.out.view())
     }
 
@@ -370,6 +374,10 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
         vec![input_shape[0], input_shape[0]]
     }
 
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "i/j also address the flat k*k `sum_cross` cross-moment matrix"
+    )]
     fn add(&mut self, element: &[T]) {
         let k = self.k;
         for i in 0..k {
@@ -399,6 +407,10 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
         }
     }
 
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "i/j also address the flat k*k `sum_cross` cross-moment matrix"
+    )]
     fn remove(&mut self, element: &[T]) {
         let k = self.k;
         for i in 0..k {
@@ -433,7 +445,8 @@ impl<T: Scalar + Float> Accumulator for CovarianceAccumulator<T> {
         let n = T::from(count).unwrap();
         for i in 0..k {
             for j in 0..k {
-                output[i * k + j] = if self.nonfinite_count[i] == 0 && self.nonfinite_count[j] == 0 {
+                output[i * k + j] = if self.nonfinite_count[i] == 0 && self.nonfinite_count[j] == 0
+                {
                     self.sum_cross[i * k + j] / n - (self.sum[i] / n) * (self.sum[j] / n)
                 } else {
                     T::nan()
@@ -571,6 +584,10 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
         }
     }
 
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "i walks several parallel per-column arrays plus `series.at(..)[i]`"
+    )]
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, &'a Series<T, NO>),
         state: &'b mut Self::State,

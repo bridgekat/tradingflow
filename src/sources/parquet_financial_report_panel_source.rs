@@ -150,7 +150,8 @@ impl EventSource<Instant> for ParquetFinancialReportPanelSource {
         // report-date timeline — a close proxy (reports are a small minority of
         // total events). On any read error fall back to `Some(0)`.
         Some(
-            count_rows_in_range(&self.path, &self.report_date_column, self.start, self.end).unwrap_or(0),
+            count_rows_in_range(&self.path, &self.report_date_column, self.start, self.end)
+                .unwrap_or(0),
         )
     }
 
@@ -160,46 +161,71 @@ impl EventSource<Instant> for ParquetFinancialReportPanelSource {
 
     fn init(
         &self,
-    ) -> (impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static, PanelState) {
+    ) -> (
+        impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static,
+        PanelState,
+    ) {
         // One item per tick (a batch of that date's reports); small buffer.
         let (hist_tx, hist_rx) = mpsc::channel(16);
         let cfg = self.clone();
 
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_reports(&cfg, &hist_tx) {
-                eprintln!("ParquetFinancialReportPanelSource error ({}): {e}", cfg.path);
+                eprintln!(
+                    "ParquetFinancialReportPanelSource error ({}): {e}",
+                    cfg.path
+                );
             }
         });
 
         (receiver_stream(hist_rx), PanelState::default())
     }
 
-    fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64, 2>, ts: Instant) -> usize {
+    fn write(
+        state: &mut PanelState,
+        batch: Vec<RowUpdate>,
+        output: &mut Array<f64, 2>,
+        ts: Instant,
+    ) -> usize {
         panel_write(state, batch, output, ts)
     }
 }
 
+#[expect(
+    clippy::needless_range_loop,
+    reason = "row drives the arrow column accessors (`dates.value(row)`), not just a slice"
+)]
 fn read_reports(
     cfg: &ParquetFinancialReportPanelSource,
     hist_tx: &mpsc::Sender<(Instant, Vec<RowUpdate>)>,
 ) -> Result<(), String> {
     let value_offset = if cfg.with_report_date { 2 } else { 0 };
     let r = value_offset + cfg.value_columns.len();
-    let sym_index: HashMap<&str, usize> =
-        cfg.symbols.iter().enumerate().map(|(i, s)| (s.as_str(), i)).collect();
+    let sym_index: HashMap<&str, usize> = cfg
+        .symbols
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.as_str(), i))
+        .collect();
 
     let file = File::open(&cfg.path).map_err(|e| format!("open: {e}"))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| e.to_string())?;
     let schema = builder.schema();
-    let mut needed: Vec<&str> =
-        vec![cfg.report_date_column.as_str(), cfg.notice_date_column.as_str(), cfg.symbol_column.as_str()];
+    let mut needed: Vec<&str> = vec![
+        cfg.report_date_column.as_str(),
+        cfg.notice_date_column.as_str(),
+        cfg.symbol_column.as_str(),
+    ];
     needed.extend(cfg.value_columns.iter().map(|s| s.as_str()));
     let leaf_indices: Vec<usize> = needed
         .iter()
         .map(|name| schema.index_of(name).map_err(|e| e.to_string()))
         .collect::<Result<_, _>>()?;
     let mask = ProjectionMask::leaves(builder.parquet_schema(), leaf_indices);
-    let reader = builder.with_projection(mask).build().map_err(|e| e.to_string())?;
+    let reader = builder
+        .with_projection(mask)
+        .build()
+        .map_err(|e| e.to_string())?;
 
     // 1. Read every row, keyed by its event timestamp.
     let mut rows: Vec<ReportRow> = Vec::new();
@@ -212,7 +238,12 @@ fn read_reports(
         let report_dates = report_col
             .as_any()
             .downcast_ref::<Date32Array>()
-            .ok_or_else(|| format!("report date column {:?} is not date32", cfg.report_date_column))?;
+            .ok_or_else(|| {
+                format!(
+                    "report date column {:?} is not date32",
+                    cfg.report_date_column
+                )
+            })?;
         let notice_dates = batch
             .column_by_name(&cfg.notice_date_column)
             .and_then(|c| c.as_any().downcast_ref::<Date32Array>());
@@ -234,7 +265,11 @@ fn read_reports(
             .collect::<Result<_, _>>()?;
         let vals: Vec<&arrow::array::Float64Array> = val_refs
             .iter()
-            .map(|a| a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap())
+            .map(|a| {
+                a.as_any()
+                    .downcast_ref::<arrow::array::Float64Array>()
+                    .unwrap()
+            })
             .collect();
 
         for row in 0..batch.num_rows() {
@@ -252,9 +287,20 @@ fn read_reports(
             };
             let values: Vec<f64> = vals
                 .iter()
-                .map(|va| if va.is_null(row) { f64::NAN } else { va.value(row) })
+                .map(|va| {
+                    if va.is_null(row) {
+                        f64::NAN
+                    } else {
+                        va.value(row)
+                    }
+                })
                 .collect();
-            rows.push(ReportRow { key_ts, report_days, ui, values });
+            rows.push(ReportRow {
+                key_ts,
+                report_days,
+                ui,
+                values,
+            });
         }
     }
 
@@ -303,10 +349,12 @@ fn read_reports(
             continue;
         }
         if cur_ts != Some(ts) {
-            if let Some(t) = cur_ts {
-                if hist_tx.blocking_send((t, std::mem::take(&mut tick))).is_err() {
-                    return Ok(());
-                }
+            if let Some(t) = cur_ts
+                && hist_tx
+                    .blocking_send((t, std::mem::take(&mut tick)))
+                    .is_err()
+            {
+                return Ok(());
             }
             cur_ts = Some(ts);
         }
@@ -319,13 +367,16 @@ fn read_reports(
         for (vi, v) in row.values.iter().enumerate() {
             payload[value_offset + vi] = *v;
         }
-        tick.push(RowUpdate { row: row.ui, vals: payload.into_boxed_slice() });
+        tick.push(RowUpdate {
+            row: row.ui,
+            vals: payload.into_boxed_slice(),
+        });
     }
     // Flush the final (also last in-window) tick.
-    if let Some(t) = cur_ts {
-        if !tick.is_empty() {
-            let _ = hist_tx.blocking_send((t, tick));
-        }
+    if let Some(t) = cur_ts
+        && !tick.is_empty()
+    {
+        let _ = hist_tx.blocking_send((t, tick));
     }
     Ok(())
 }

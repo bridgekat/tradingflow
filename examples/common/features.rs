@@ -11,7 +11,7 @@ use tradingflow::operators::{
 use tradingflow::{Retention, Scenario, Series};
 
 use super::data::Stacked;
-use super::{factors, pv_factors, AvH, RETAIN_MARGIN};
+use super::{AvH, RETAIN_MARGIN, factors, pv_factors};
 
 /// A cross-sectional feature panel.
 pub struct Features {
@@ -34,10 +34,7 @@ fn stack_and_record(
     let clk = sc.time();
     let refs = ref_array_views(sc, &handles);
     let stacked = sc.push(stack(1), &refs[..]);
-    let sampled = sc.push(
-        resample_view(),
-        (st.adjusted_close, stacked),
-    );
+    let sampled = sc.push(resample_view(), (st.adjusted_close, stacked));
     let series = sc.push(record_bounded(&clk, retention), sampled);
     Features {
         names,
@@ -61,29 +58,29 @@ pub fn build_features(
     let clk = sc.time();
 
     // Fundamentals.
-    let market_cap = sc.push(multiply::<f64, 1>(), (st.close, st.total_shares));
-    let bp = sc.push(divide::<f64, 1>(), (st.parent_equity, market_cap));
+    let market_cap = sc.push(multiply(), (st.close, st.total_shares));
+    let bp = sc.push(divide(), (st.parent_equity, market_cap));
     // TTM net profit: a self-recording 365-day rolling mean.
     let net_profit_ttm = sc.push(ma_time(&clk, Duration::from_days(365)), st.net_profit);
-    let ttm_roe = sc.push(divide::<f64, 1>(), (net_profit_ttm, st.parent_equity));
+    let ttm_roe = sc.push(divide(), (net_profit_ttm, st.parent_equity));
 
     // Momentum: window-period log return of adjusted close.
-    let log_adj = sc.push(log::<f64, 1>(), st.adjusted_close);
+    let log_adj = sc.push(log(), st.adjusted_close);
     let log_adj_series = sc.push(record_bounded(&clk, win_ret), log_adj);
     let log_adj_lag = sc.push(lag_series(window, f64::NAN), log_adj_series);
-    let momentum = sc.push(subtract::<f64, 1>(), (log_adj, log_adj_lag));
+    let momentum = sc.push(subtract(), (log_adj, log_adj_lag));
 
     // Volatility: rolling std of daily log returns.
     let log_var = sc.push(rolling_variance(Window::Count(window)), log_adj_series);
-    let volatility = sc.push(sqrt::<f64, 1>(), log_var);
+    let volatility = sc.push(sqrt(), log_var);
 
     // Turnover MA (self-recording).
-    let turnover = sc.push(divide::<f64, 1>(), (st.volume, st.circ_shares));
+    let turnover = sc.push(divide(), (st.volume, st.circ_shares));
     let turnover_ma = sc.push(ma(&clk, window), turnover);
 
     // Volume ratio (self-recording MA).
     let volume_ma = sc.push(ma(&clk, window), st.volume);
-    let volume_ratio = sc.push(divide::<f64, 1>(), (st.volume, volume_ma));
+    let volume_ratio = sc.push(divide(), (st.volume, volume_ma));
 
     let p = 0.01;
     let names = vec![
@@ -140,17 +137,35 @@ impl FeatureSet {
 /// [`factors::build_factor_catalog`] / [`pv_factors::build_pv_catalog`].
 const CICC_SUBSET: &[&str] = &[
     // Value / quality / growth / size (fundamental)
-    "BP_LR", "SP_TTM", "EP_TTM", "ROE_TTM", "GPM_TTM", "CFOA", "APR_TTM", "TA_YOY", "Ln_MC",
+    "BP_LR",
+    "SP_TTM",
+    "EP_TTM",
+    "ROE_TTM",
+    "GPM_TTM",
+    "CFOA",
+    "APR_TTM",
+    "TA_YOY",
+    "Ln_MC",
     // Momentum / reversal (price-volume)
-    "mmt_normal_M", "mmt_intraday_M", "mmt_overnight_M", "mmt_range_M", "mmt_route_M",
+    "mmt_normal_M",
+    "mmt_intraday_M",
+    "mmt_overnight_M",
+    "mmt_range_M",
+    "mmt_route_M",
     // Volatility
-    "vol_std_1M", "vol_up_std_1M", "vol_w_downshadow_std_1M",
+    "vol_std_1M",
+    "vol_up_std_1M",
+    "vol_w_downshadow_std_1M",
     // Liquidity / illiquidity
-    "liq_turn_std_1M", "liq_amihud_avg_1M", "liq_vstd_1M",
+    "liq_turn_std_1M",
+    "liq_amihud_avg_1M",
+    "liq_vstd_1M",
     // Price-volume correlation
-    "corr_price_turn_1M", "corr_ret_turnd_1M",
+    "corr_price_turn_1M",
+    "corr_ret_turnd_1M",
     // Chip distribution
-    "distribution_loss_l", "distribution_ret_avg",
+    "distribution_loss_l",
+    "distribution_ret_avg",
 ];
 
 /// Build a cross-sectionally percentile-ranked factor panel from the CICC

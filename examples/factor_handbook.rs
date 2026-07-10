@@ -38,7 +38,7 @@ use tradingflow::operators::{
     ArrayValue, lag_series, log, multiply, own, percentile, record, ref_array_views,
     resample_clocked, stack,
 };
-use tradingflow::sources::clock;
+use tradingflow::sources::pulse;
 use tradingflow::{Array, ArrayView, Scenario, WallClock};
 
 use clap::Parser;
@@ -85,7 +85,10 @@ impl Operator for CorrMatrix {
 
     fn init(self) -> CorrMatrixState {
         let k = self.k;
-        CorrMatrixState { k, out: Array::from_vec([k, k], vec![f64::NAN; k * k]) }
+        CorrMatrixState {
+            k,
+            out: Array::from_vec([k, k], vec![f64::NAN; k * k]),
+        }
     }
 
     fn compute<'a, 'b: 'a>(
@@ -237,10 +240,10 @@ async fn main() {
         other => panic!("unknown catalog {other:?} (expected fundamental|pv)"),
     };
 
-    let circ_market_cap = sc.push(multiply::<f64, 1>(), (st.close, st.circ_shares));
-    let log_adj = sc.push(log::<f64, 1>(), st.adjusted_close);
+    let circ_market_cap = sc.push(multiply(), (st.close, st.circ_shares));
+    let log_adj = sc.push(log(), st.adjusted_close);
 
-    let rebalance_clock = sc.add_source(clock(args.common.rebalance_instants()));
+    let rebalance_clock = sc.add_source(pulse(args.common.rebalance_instants()));
 
     // Universe = the top-`index_size` stocks by circulating market cap, recomputed
     // each rebalance — a synthetic cap-ranked index, uniform with the other
@@ -259,8 +262,7 @@ async fn main() {
     // ticks) ago, i.e. the stock was already listed a year before the rebalance.
     let log_adj_series = sc.push(record(&clk), log_adj);
     let prior_year = sc.push(lag_series(244, f64::NAN), log_adj_series);
-    let prior_year_reb =
-        sc.push(resample_clocked(), (rebalance_clock, prior_year));
+    let prior_year_reb = sc.push(resample_clocked(), (rebalance_clock, prior_year));
     let universe = common::universe::with_listing_filter(&mut sc, universe, prior_year_reb);
 
     // Forward (next-period) return, masked to the universe and cross-sectionally ranked.
@@ -277,7 +279,12 @@ async fn main() {
     let want: Option<Vec<String>> = if args.factor == "all" {
         None
     } else {
-        Some(args.factor.split(',').map(|s| s.trim().to_string()).collect())
+        Some(
+            args.factor
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect(),
+        )
     };
 
     let mut ic_handles = Vec::new();
@@ -285,10 +292,10 @@ async fn main() {
     let mut ranks: Vec<common::AvH> = Vec::new();
     let mut backtests: Vec<(String, common::backtest::DecileBacktest)> = Vec::new();
     for (name, &feat) in catalog.names.iter().zip(catalog.feature.iter()) {
-        if let Some(w) = &want {
-            if !w.iter().any(|x| x == name) {
-                continue;
-            }
+        if let Some(w) = &want
+            && !w.iter().any(|x| x == name)
+        {
+            continue;
         }
         // Resample the (catalog-ranked+imputed) feature onto the rebalance clock,
         // mask to universe, and re-rank within it (monotonic for stocks that have
@@ -325,7 +332,9 @@ async fn main() {
 
     let mut session = sc.build_with_threads(args.common.threads);
     let total = session.estimated_event_count();
-    session.run(common::progress(total, args.common.begin())).await;
+    session
+        .run(common::progress(total, args.common.begin()))
+        .await;
     eprintln!();
 
     // IC summary per factor.
@@ -373,11 +382,15 @@ async fn main() {
             csv.push_str(name);
         }
         csv.push('\n');
-        for a in 0..k {
-            csv.push_str(&ic_names[a]);
+        for (a, name) in ic_names.iter().enumerate() {
+            csv.push_str(name);
             for b in 0..k {
                 let c = a * k + b;
-                let v = if cnt[c] > 0 { sum[c] / cnt[c] as f64 } else { f64::NAN };
+                let v = if cnt[c] > 0 {
+                    sum[c] / cnt[c] as f64
+                } else {
+                    f64::NAN
+                };
                 csv.push_str(&format!(",{v:.6}"));
             }
             csv.push('\n');
@@ -446,7 +459,8 @@ async fn main() {
         common::write_long_csv(nav_path, &nav_cols);
         println!("\nwrote {nav_path}");
         let dec_path = "target/factor_handbook_decile.csv";
-        std::fs::write(dec_path, decile_summary).unwrap_or_else(|e| panic!("write {dec_path}: {e}"));
+        std::fs::write(dec_path, decile_summary)
+            .unwrap_or_else(|e| panic!("write {dec_path}: {e}"));
         println!("wrote {dec_path}");
     }
 }

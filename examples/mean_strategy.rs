@@ -32,9 +32,9 @@ use tradingflow::operators::{
 };
 use tradingflow::{Retention, Scenario, Series, WallClock};
 
-use common::models::{rank_linear, regression_coefficients, ridge_mean};
-use common::strategy::{trim_scale, Market, INITIAL_CASH, TARGET_OFFSET};
 use common::FeatureSet;
+use common::models::{rank_linear, regression_coefficients, ridge_mean};
+use common::strategy::{INITIAL_CASH, Market, TARGET_OFFSET, trim_scale};
 
 const MIN_PERIODS: i64 = 100;
 const RIDGE_ALPHA: f64 = 0.01;
@@ -101,8 +101,7 @@ async fn main() {
 
     // ---- Traders (the cost-model swap point) ----------------------------
     let index_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), m.universe);
-    let frictionless_value =
-        m.simulate(&mut sc, benchmark(m.n, 1.0, true), soft_positions_v);
+    let frictionless_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), soft_positions_v);
     let actual_value = m.simulate(
         &mut sc,
         random_trader(m.n, 20, INITIAL_CASH, 100.0, 5.0, 0.001, 0),
@@ -110,21 +109,15 @@ async fn main() {
     );
 
     // ---- Metrics (clock-gated, since inception) -------------------------
-    let sharpe = sc.push(
-        sharpe_ratio(),
-        (actual_value, m.rebalance_clock),
-    );
-    let compound = sc.push(
-        compound_return(),
-        (actual_value, m.rebalance_clock),
-    );
+    let sharpe = sc.push(sharpe_ratio(), (m.rebalance_clock, actual_value));
+    let compound = sc.push(compound_return(), (m.rebalance_clock, actual_value));
     let drawdown = sc.push(drawdown(), actual_value);
 
     // Rolling market beta / alpha vs the cap-weighted index, on daily log
     // returns of total value (regressor adds the intercept → output [beta, alpha]).
-    let log_actual = sc.push(log::<f64, 0>(), actual_value);
+    let log_actual = sc.push(log(), actual_value);
     let strat_logret = sc.push(diff(), log_actual);
-    let log_index = sc.push(log::<f64, 0>(), index_value);
+    let log_index = sc.push(log(), index_value);
     let index_logret = sc.push(diff(), log_index);
     let strat_logret_series = sc.push(record(&clk), strat_logret);
     // scalar -> (1,): bridge the rank-0 view into the `RefViewPort` slice `Stack`

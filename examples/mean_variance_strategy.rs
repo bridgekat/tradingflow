@@ -27,7 +27,7 @@ use clap::Parser;
 
 use tradingflow::{Retention, Scenario, WallClock};
 
-use common::models::{markowitz, ridge_mean, shrinkage_cov, Mode};
+use common::models::{Mode, markowitz, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable};
 use common::{FeatureSet, TARGET_OFFSET};
 

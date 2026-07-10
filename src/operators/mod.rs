@@ -23,7 +23,7 @@
 //! * **The contract that makes this sound: *no-notify ⟹ output unchanged*.** See
 //!   the [`op`] module conventions; it is a producer-side duty obeyed by every
 //!   operator here.
-//! * Time is threaded out-of-band through a shared [`Clock`] the driver advances
+//! * Time is threaded out-of-band through a shared [`EventTime`] the driver advances
 //!   before each `stabilize` (only operators that stamp event time read it).
 //! * **Every segment has a lowercase free constructor** — `percentile()`,
 //!   `winsorize(p)`, `stack(axis)`, `benchmark(n, cash, adj)`, … — taking the
@@ -58,14 +58,10 @@ mod structural;
 mod traders;
 mod transform;
 
-// [array-view-refactor] the Python bridge is migrated to the const-rank view
-// currency in stage 5.
 #[cfg(feature = "python")]
 mod pyhost;
-#[cfg(feature = "python")]
-mod python;
 
-pub use op::{ArrayValue, Clock, StripNotify};
+pub use op::{ArrayValue, EventTime, StripNotify};
 
 pub use arith::{
     Binary, BinaryFn, BinaryMap, Choose, Compare, CompareFn, Predicate, PredicateFn, Unary,
@@ -75,48 +71,43 @@ pub use arith::{
     not_equal_to, or, pow, recip, round, sign, sqrt, subtract, xor,
 };
 pub use formula::{
-    WithLagged, Windowed, change, ema, growth, lag, lag_or, ma, ma_time, mstd, msum, mvar, record,
+    Windowed, WithLagged, change, ema, growth, lag, lag_or, ma, ma_time, mstd, msum, mvar, record,
     record_bounded,
+};
+pub use gating::{Clocked, Count, Filter, Gate, Last, Record, clocked, count, filter, gate, last};
+pub use metrics::{
+    AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility, average_return,
+    compound_return, drawdown, sharpe_ratio, turnover, volatility,
 };
 pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
     clamp, diff, fillna, forward_fill, gaussianize, pct_change, percentile, standardize, winsorize,
 };
-pub use gating::{Clocked, Count, Filter, Gate, Last, Record, clocked, count, filter, gate, last};
-pub use structural::{
-    Cast, Id, Resample, ResampleClocked, ResampleView, Where, cast, id, keep_where, resample,
-    resample_clocked, resample_view,
-};
-pub use transform::{
-    Apply, ApplyInplace, AsView, DerefArrayView, Lag, Map, MapInplace, Own, RefArrayView, Select,
-    SliceView, apply, apply_inplace, as_view, deref_array_view, lag_series, map, map_inplace, own,
-    ref_array_view, ref_array_views, select, select_along_axis, select_flat, slice_view,
-};
 pub use reshape::{
     Concat, ConcatSync, Split, Stack, StackSync, concat, concat_sync, split, stack, stack_sync,
 };
-pub use metrics::{
-    AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility, average_return,
-    compound_return, drawdown, sharpe_ratio, turnover, volatility,
-};
-pub use stocks::{Annualize, ForwardAdjust, annualize, forward_adjust};
 pub use rolling::{
     Accumulator, CovarianceAccumulator, Ema, MeanAccumulator, Rolling, RollingCovariance,
     RollingMean, RollingSum, RollingVariance, SumAccumulator, VarianceAccumulator, Window,
     ema_series, rolling, rolling_covariance, rolling_mean, rolling_sum, rolling_variance,
 };
-pub use traders::{
-    Benchmark, RandomTrader, SimpleTrader, benchmark, random_trader, simple_trader,
+pub use stocks::{Annualize, ForwardAdjust, annualize, forward_adjust};
+pub use structural::{
+    Cast, Id, Resample, ResampleClocked, ResampleView, Where, cast, id, keep_where, resample,
+    resample_clocked, resample_view,
+};
+pub use traders::{Benchmark, RandomTrader, SimpleTrader, benchmark, random_trader, simple_trader};
+pub use transform::{
+    Apply, ApplyInplace, AsView, DerefArrayView, Lag, Map, MapInplace, Own, RefArrayView, Select,
+    SliceView, apply, apply_inplace, as_view, deref_array_view, lag_series, map, map_inplace, own,
+    ref_array_view, ref_array_views, select, select_along_axis, select_flat, slice_view,
 };
 
-// [array-view-refactor] the Python bridge re-exports, restored in stage 5.
 #[cfg(feature = "python")]
 pub use pyhost::{
     NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyParams, py_class_operator,
     py_class_operator_file, py_class_operator_source,
 };
-#[cfg(feature = "python")]
-pub use python::{PyOperator, py_operator, py_operator_writing};
 
 #[cfg(test)]
 mod tests;

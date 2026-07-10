@@ -8,11 +8,11 @@
 //! and the summary statistics are the same, and live here.
 
 use tradingflow::Scenario;
-use tradingflow::operators::{Clock, as_view, own, record};
+use tradingflow::operators::{EventTime, as_view, own, record};
 
+use super::AvH;
 use super::models::information_coefficient;
 use super::strategy::{NavH, PosH};
-use super::AvH;
 
 /// Record the per-rebalance IC of `factor` against an already-bridged `target`.
 /// Bridge the target once outside the loop — it is shared across factors.
@@ -21,11 +21,14 @@ pub fn ic_series(
     factor: AvH,
     target: PosH,
     num_stocks: usize,
-    clk: &Clock,
+    clk: &EventTime,
 ) -> NavH {
     // The Python metric consumes whole-array `RefPort`s; bridge the factor view.
     let factor_ref = sc.push(own(), factor);
-    let ic = sc.push(information_coefficient(num_stocks, clk), (factor_ref, target));
+    let ic = sc.push(
+        information_coefficient(num_stocks, clk),
+        (factor_ref, target),
+    );
     let ic_v = sc.push(as_view(), ic);
     sc.push(record(clk), ic_v)
 }
