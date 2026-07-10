@@ -2,10 +2,13 @@
 
 use std::sync::Arc;
 
+use futures::stream::Stream;
 use tokio::sync::mpsc;
 
+use flowgraph::ingest::{Event, EventSource};
+
+use super::receiver_stream;
 use crate::Instant;
-use crate::source::Source;
 
 /// Boxed iterator type produced by an [`IterSource`] factory.
 type EventIter<T> = Box<dyn Iterator<Item = (Instant, T)> + Send>;
@@ -14,7 +17,7 @@ type EventIter<T> = Box<dyn Iterator<Item = (Instant, T)> + Send>;
 ///
 /// Stored behind `Arc<...>` so the [`IterSource`] spec satisfies `Clone`
 /// (refcount bump only) and can drive multiple scenario sessions, each with a
-/// freshly built iterator — and `Send`, as [`Source`] requires (the spec
+/// freshly built iterator — and `Send`, as [`EventSource`] requires (the spec
 /// moves into the session's lazily-started feed).
 type IterFactory<T> = Arc<dyn Fn() -> EventIter<T> + Send + Sync>;
 
@@ -48,7 +51,7 @@ impl<T: Clone + Send + 'static> Clone for IterSource<T> {
 impl<T: Clone + Send + 'static> IterSource<T> {
     /// Create from an iterator factory and a default output value.
     ///
-    /// `factory` is called once per [`Source::init`] invocation and must
+    /// `factory` is called once per [`EventSource::init`] invocation and must
     /// produce a fresh iterator over `(timestamp, value)` pairs each time.
     /// The factory is shared via `Arc` across clones of the source.
     pub fn new<I, F>(factory: F, default: T) -> Self
@@ -65,8 +68,8 @@ impl<T: Clone + Send + 'static> IterSource<T> {
 
     /// Create from a fixed `Vec` of `(timestamp, value)` events.
     ///
-    /// The vector is shared across clones via `Rc` and cloned on each
-    /// [`Source::init`] call to produce a fresh iterator.  The estimated
+    /// The vector is shared across clones via `Arc` and cloned on each
+    /// [`EventSource::init`] call to produce a fresh iterator.  The estimated
     /// event count is set to the vector length automatically.
     pub fn from_vec(events: Vec<(Instant, T)>) -> Self
     where
@@ -96,15 +99,15 @@ impl<T: Clone + Send + 'static> IterSource<T> {
     /// Advertise an estimated total event count.
     ///
     /// Call this when the iterator length is known at construction time
-    /// (e.g. clock sources backed by a `Vec`).  Used only by
-    /// [`Session::run`](crate::Session::run)'s progress callback.
+    /// (e.g. clock sources backed by a `Vec`).  Used only for progress
+    /// reporting ([`Graph::estimated_event_count`](flowgraph::ingest::Graph::estimated_event_count)).
     pub fn with_estimated_count(mut self, count: usize) -> Self {
         self.estimated_event_count = Some(count);
         self
     }
 }
 
-impl<T: Clone + Send + 'static> Source for IterSource<T> {
+impl<T: Clone + Send + Sync + 'static> EventSource<Instant> for IterSource<T> {
     type Event = T;
     type Output = T;
     type State = ();
@@ -117,7 +120,7 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
         self.default.clone()
     }
 
-    fn init(&self) -> (mpsc::Receiver<(Instant, T)>, ()) {
+    fn init(&self) -> (impl Stream<Item = Event<Instant, T>> + Send + 'static, ()) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
         let iter = (self.factory)();
@@ -129,7 +132,7 @@ impl<T: Clone + Send + 'static> Source for IterSource<T> {
             }
         });
 
-        (hist_rx, ())
+        (receiver_stream(hist_rx), ())
     }
 
     fn write(_state: &mut (), payload: T, output: &mut T, _timestamp: Instant) -> usize {

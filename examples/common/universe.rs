@@ -22,19 +22,25 @@
 
 use flowgraph::typed::{Handle, RefPort};
 
-use tradingflow::operators::{Apply, ArrayValue, Clocked, Map};
-use tradingflow::{Array, ArrayView, Scenario, ViewPort};
+use tradingflow::operators::{
+    and, greater_than, indicator, is_finite, multiply, ArrayValue, Clocked, Map,
+};
+use tradingflow::{Array, ArrayView, Scenario};
 
-use super::AvH;
+use super::{Av1, AvH};
 
 /// Full-market mask: `1.0` for stocks with finite positive market cap this
 /// rebalance, else `NaN`.
+///
+/// Clock-gated, so this stays a `Map` closure: [`Clocked`] wraps an `Operator`
+/// (it needs `passthrough` to re-present the last mask between ticks), whereas a
+/// fused `segment!` chain is a bare `Segment`.
 pub fn build_full_market_universe(
     sc: &mut Scenario,
     market_cap: AvH,
     rebalance_clock: Handle<RefPort<()>>,
 ) -> AvH {
-    sc.add_operator(
+    sc.push(
         Clocked::new(Map::new(|m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             Array::from_vec(
@@ -57,7 +63,7 @@ pub fn build_caprank_universe(
     lo: usize,
     hi: usize,
 ) -> AvH {
-    sc.add_operator(
+    sc.push(
         Clocked::new(Map::new(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             let n = s.len();
@@ -83,38 +89,75 @@ pub fn build_caprank_universe(
 /// returns that scramble fundamental-factor signals. Both inputs are on the
 /// rebalance clock.
 pub fn with_listing_filter(sc: &mut Scenario, universe: AvH, aged: AvH) -> AvH {
-    sc.add_operator(
-        Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 1, _>::new(
-            |(u, a): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
-                let (us, as_) = (u.to_contiguous(), a.to_contiguous());
-                Array::from_vec(
-                    [us.len()],
-                    (0..us.len())
-                        .map(|i| if us[i] > 0.0 && as_[i].is_finite() { 1.0 } else { f64::NAN })
-                        .collect(),
-                )
-            },
-        ),
+    sc.push(
+        flowgraph::segment!(|u: Av1, aged: Av1| {
+            let keep = and::<1>() @ (
+                greater_than::<f64, 1>(0.0) @ u,
+                is_finite::<f64, 1>() @ aged,
+            );
+            indicator::<f64, 1>(1.0, f64::NAN) @ keep
+        }),
         (universe, aged),
     )
 }
 
 /// NaN out every entry where the universe mask is not `> 0`, leaving in-universe
 /// values untouched. Applied **before** cross-sectional `Percentile` so the rank
-/// is computed within the universe only.
+/// is computed within the universe only. Multiplying by a `1.0 / NaN` indicator
+/// leaves in-universe values bit-exact (`x * 1.0 == x`, including `±0` and `±∞`).
 pub fn mask_to_universe(sc: &mut Scenario, data: AvH, universe: AvH) -> AvH {
-    sc.add_operator(
-        Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 1, _>::new(
-            |(f, u): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
-                let (fs, us) = (f.to_contiguous(), u.to_contiguous());
-                Array::from_vec(
-                    [fs.len()],
-                    (0..fs.len())
-                        .map(|i| if us[i] > 0.0 { fs[i] } else { f64::NAN })
-                        .collect(),
-                )
-            },
-        ),
+    sc.push(
+        flowgraph::segment!(|data: Av1, u: Av1| {
+            let keep = indicator::<f64, 1>(1.0, f64::NAN) @ (greater_than::<f64, 1>(0.0) @ u);
+            multiply::<f64, 1>() @ (data, keep)
+        }),
         (data, universe),
+    )
+}
+
+/// Market-cap-weighted index weights for the top-`k` stocks (proportional to
+/// cap, normalised to 1; others zero).
+pub fn calculate_index_weights(mc: &[f64], k: usize) -> Vec<f64> {
+    let n = mc.len();
+    let mut w = vec![0.0f64; n];
+    let mut valid: Vec<usize> = (0..n)
+        .filter(|&i| mc[i].is_finite() && mc[i] > 0.0)
+        .collect();
+    if valid.is_empty() {
+        return w;
+    }
+    let k = k.min(valid.len());
+    valid.sort_by(|&a, &b| mc[b].partial_cmp(&mc[a]).unwrap());
+    let top = &valid[..k];
+    let mut s = 0.0;
+    for &i in top {
+        w[i] = mc[i];
+        s += mc[i];
+    }
+    if s > 0.0 {
+        for &i in top {
+            w[i] /= s;
+        }
+    }
+    w
+}
+
+/// Cap-**weighted** top-`index_size` universe (a weight vector, not a mask),
+/// recomputed on each rebalance tick. `market_cap` is the per-stock circulating
+/// market cap; `rebalance_clock` is the `Handle<RefPort<()>>` of a
+/// [`clock`](tradingflow::sources::clock) source.
+pub fn build_cap_weighted_universe(
+    sc: &mut Scenario,
+    market_cap: AvH,
+    rebalance_clock: Handle<RefPort<()>>,
+    index_size: usize,
+) -> AvH {
+    let k = index_size;
+    sc.push(
+        Clocked::new(Map::new(move |m: ArrayView<f64, 1>| {
+            let s = m.to_contiguous();
+            Array::from_vec([s.len()], calculate_index_weights(&s, k))
+        })),
+        (rebalance_clock, market_cap),
     )
 }

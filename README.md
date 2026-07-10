@@ -24,8 +24,8 @@ cargo build --features python  # with Python operators (`flowops` package)
 The three things you do in every program: create a `Scenario`, register sources and operators, then `run()` the event loop. Below is a tiny example that records a synthetic price series, takes a rolling mean, and prints its tail.
 
 ```rust
-use tradingflow::{Array, Scenario, Series};
-use tradingflow::operators::RollingMean;
+use tradingflow::{Array, Scenario, ScenarioExt, Series, WallClock};
+use tradingflow::operators::{ma, record};
 use tradingflow::sources::ArraySource;
 
 #[tokio::main]
@@ -34,23 +34,24 @@ async fn main() {
     let timestamps: Vec<_> = (0..90).map(tradingflow::Instant::from_nanos).collect();
     let values: Vec<f64> = /* ... */ vec![100.0; 90];
 
-    let mut sc = Scenario::new();
+    let mut sc = Scenario::new(WallClock);
+    let clk = sc.time();
 
-    // A source feeds timestamped values into the graph; `Record` collects them
-    // into a time series; `RollingMean` reduces the series to its last-N mean.
+    // A source feeds timestamped values into the graph; `ma` is a
+    // self-recording last-N rolling mean; `record` collects a stream into a
+    // time series, stamping rows with the event time read from `clk`.
     let prices = sc.add_source(ArraySource::new(
         Series::from_vec([], timestamps, values),
         Array::scalar(0.0),
     ));
     let prices = sc.as_view(prices);
-    let history = sc.add_record(prices);
-    let ma = sc.add_operator(RollingMean::<f64, 0>::count(10), history);
-    let ma_history = sc.add_record(ma);
+    let mean = sc.push(ma(&clk, 10), prices);
+    let ma_history = sc.push(record(&clk), mean);
 
     // Run the event loop until all sources are exhausted, then inspect results.
     let mut session = sc.build();
     session.run(|_, _| {}).await;
-    let series: &Series<f64, 0> = session.value(ma_history);
+    let series: &Series<f64, 0> = session.ref_view(ma_history);
     println!("{:?}", series.values());
 }
 ```
@@ -61,19 +62,30 @@ The resulting computation graph:
 flowchart LR
     start(( )):::hidden
     prices(["Array<br/><code>prices</code>"]):::array
-    history(["Series<br/><code>history</code>"]):::series
-    ma(["Array<br/><code>ma</code>"]):::array
+    mean(["Array<br/><code>mean</code>"]):::array
     ma_history(["Series<br/><code>ma_history</code>"]):::series
     start -- ArraySource --> prices
-    prices -- Record --> history
-    history -- "RollingMean(window=10)" --> ma
-    ma -- Record --> ma_history
+    prices -- "ma(10) = Record → RollingMean, fused" --> mean
+    mean -- Record --> ma_history
     classDef hidden fill:#fff,stroke:#fff,color:#fff
     classDef array fill:#e6f2ff,stroke:#3b82f6,color:#1e3a8a
     classDef series fill:#f5f5f5,stroke:#6b7280,color:#111827
 ```
 
-This is the whole pattern. An actual strategy can contain many more operators — `ForwardAdjust`, `LinearRegression`, `Shrinkage`, `MeanVariancePortfolio`, `RandomTrader`, `SharpeRatio` — but the structure stays the same. Run `cargo doc --open` for the full API reference.
+This is the whole pattern. An actual strategy can contain many more operators — `ForwardAdjust`, `LinearRegression`, `Shrinkage`, `MeanVariancePortfolio`, `RandomTrader`, `SharpeRatio` — but the structure stays the same. Formula-shaped signals compose with the `flowgraph::segment!` macro and the self-recording formula constructors, so `MA(x, 10) − MA(x, 5) > 0 AND NOT LAG(…, 1) > 0` is a two-line fused node:
+
+```rust,ignore
+flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {
+    let d = subtract() @ (ma(&clk, 10) @ x, ma(&clk, 5) @ x);
+    and() @ (greater_than(0.0) @ d, not() @ (greater_than(0.0) @ lag(&clk, 1) @ d))
+})
+```
+
+Run `cargo doc --open` for the full API reference.
+
+The engine itself lives in Flowgraph: `Scenario` / `Session` are the TAI-instant instantiations of `flowgraph::ingest`'s `Builder` / `Graph`, and data sources implement `flowgraph::ingest::EventSource`. Both deref to their `flowgraph::typed` counterparts, which is where the inherited `push` (register a segment) and `ref_view` (read a result) above come from. What this crate adds on top is the data model (`Array` / `Series`), the operator library (including the self-recording formula constructors like `ma` / `lag` / `record` above), the concrete sources, and the `ScenarioExt` extension trait supplying the TradingFlow-specific registrars (`add_const`, `as_view`, the Python operators) — hence the `ScenarioExt` import above.
+
+TradingFlow deliberately re-exports nothing from Flowgraph: graph-building code that names engine types (`Handle`, `ViewPort`, `Segment`, the `segment!` macro, …) adds `flowgraph` as a direct dependency alongside `tradingflow`.
 
 The [`examples/`](examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines (see [`examples/README.md`](examples/README.md) for build/run instructions). To follow along, install the `examples` extras (which fetch the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler) from GitHub) and download data:
 

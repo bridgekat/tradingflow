@@ -32,13 +32,13 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Operator, RefPort};
+use flowgraph::typed::{Operator, RefPort, ViewPort};
 
 use tradingflow::operators::{
-    ArrayValue, Lag, Percentile, PyClassOperator, PyParams, Stack, log, multiply,
+    ArrayValue, Lag, Percentile, ResampleClocked, Stack, log, multiply, record,
 };
 use tradingflow::sources::clock;
-use tradingflow::{Array, ArrayView, Scenario, ViewPort};
+use tradingflow::{Array, ArrayView, Scenario, ScenarioExt, WallClock};
 
 use clap::Parser;
 
@@ -219,7 +219,6 @@ async fn main() {
     let args = Args::parse();
     let symbols = common::load_symbols(&args.common.data_dir);
     let n = symbols.len();
-    let n_i = n as i64;
     eprintln!(
         "loaded {n} symbols; universe = synthetic top-{} cap-ranked index \
          (a cap-weighted-index approximation, NOT a true 沪深300/中证500 \
@@ -227,8 +226,8 @@ async fn main() {
         args.common.index_size
     );
 
-    let mut sc = Scenario::new();
-    let clk = sc.clock();
+    let mut sc = Scenario::new(WallClock);
+    let clk = sc.time();
 
     let st = common::build_stacked(&mut sc, &symbols, &args.common);
     let catalog = match args.catalog.as_str() {
@@ -237,8 +236,8 @@ async fn main() {
         other => panic!("unknown catalog {other:?} (expected fundamental|pv)"),
     };
 
-    let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
-    let log_adj = sc.add_operator(log::<f64, 1>(), st.adjusted_close);
+    let circ_market_cap = sc.push(multiply::<f64, 1>(), (st.close, st.circ_shares));
+    let log_adj = sc.push(log::<f64, 1>(), st.adjusted_close);
 
     let rebalance_clock = sc.add_source(clock(args.common.rebalance_instants()));
 
@@ -257,19 +256,19 @@ async fn main() {
 
     // 次新 exclusion: require a finite adjusted price ~1 trading year (244 daily
     // ticks) ago, i.e. the stock was already listed a year before the rebalance.
-    let log_adj_series = sc.add_record(log_adj);
-    let prior_year = sc.add_operator(Lag::<f64, 1>::new(244, f64::NAN), log_adj_series);
+    let log_adj_series = sc.push(record(&clk), log_adj);
+    let prior_year = sc.push(Lag::<f64, 1>::new(244, f64::NAN), log_adj_series);
     let prior_year_reb =
-        sc.add_operator(common::ResampleClocked::<1>::new(), (rebalance_clock, prior_year));
+        sc.push(ResampleClocked::<f64, 1>::new(), (rebalance_clock, prior_year));
     let universe = common::universe::with_listing_filter(&mut sc, universe, prior_year_reb);
 
     // Forward (next-period) return, masked to the universe and cross-sectionally ranked.
     let fwd = common::factors::build_forward_return(&mut sc, log_adj, rebalance_clock);
     let fwd_masked = common::universe::mask_to_universe(&mut sc, fwd, universe);
-    let fwd_rank = sc.add_operator(Percentile::<f64, 1>::new(), fwd_masked);
+    let fwd_rank = sc.push(Percentile::<f64, 1>::new(), fwd_masked);
     // The Python IC metric consumes a whole-array `RefPort`; the forward rank is
     // shared across every factor, so bridge it once before the loop.
-    let fwd_rank_ref = common::own(&mut sc, fwd_rank);
+    let fwd_rank_ref = sc.own::<f64, 1>(fwd_rank);
 
     // Daily ±10% price limits (涨跌停) for the trader's limit-blocking.
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
@@ -293,24 +292,12 @@ async fn main() {
         // Resample the (catalog-ranked+imputed) feature onto the rebalance clock,
         // mask to universe, and re-rank within it (monotonic for stocks that have
         // the factor; imputed stocks enter the RankIC at the median rank).
-        let reb = sc.add_operator(common::ResampleClocked::<1>::new(), (rebalance_clock, feat));
+        let reb = sc.push(ResampleClocked::<f64, 1>::new(), (rebalance_clock, feat));
         let masked = common::universe::mask_to_universe(&mut sc, reb, universe);
-        let rank = sc.add_operator(Percentile::<f64, 1>::new(), masked);
+        let rank = sc.push(Percentile::<f64, 1>::new(), masked);
         ranks.push(rank);
         // RankIC vs the forward return (corrcoef of two rank vectors = Spearman).
-        // The Python metric consumes whole-array `RefPort`s; bridge the rank view.
-        let rank_ref = common::own(&mut sc, rank);
-        let ic = sc.add_operator(
-            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 0>::from_module(
-                "flowops.metrics.mean.information_coefficient",
-                PyParams::new().int("num_stocks", n_i),
-                vec![],
-                clk.clone(),
-            ),
-            (rank_ref, fwd_rank_ref),
-        );
-        let ic_v = sc.as_view(ic);
-        ic_handles.push(sc.add_record(ic_v));
+        ic_handles.push(common::ic::ic_series(&mut sc, rank, fwd_rank_ref, n, &clk));
         ic_names.push(name.clone());
 
         // 10-group layered backtest on the feature (RankBucket ranks internally).
@@ -327,10 +314,10 @@ async fn main() {
     // `(K, K)` correlation matrix each rebalance (recorded; time-averaged below).
     let corr_handle = if args.correlations && ranks.len() >= 2 {
         // `Stack` consumes by-reference views; bridge each rank handle via `reref_all`.
-        let rank_refs = common::reref_all::<1>(&mut sc, &ranks[..]);
-        let panel = sc.add_operator(Stack::<f64, 1, 2>::new(1), &rank_refs[..]); // (N, K)
-        let corr = sc.add_operator(CorrMatrix { k: ranks.len() }, panel); // (K, K)
-        Some(sc.add_record(corr))
+        let rank_refs = sc.ref_array_views::<f64, 1>(&ranks);
+        let panel = sc.push(Stack::<f64, 1, 2>::new(1), &rank_refs[..]); // (N, K)
+        let corr = sc.push(CorrMatrix { k: ranks.len() }, panel); // (K, K)
+        Some(sc.push(record(&clk), corr))
     } else {
         None
     };
@@ -348,21 +335,12 @@ async fn main() {
     let mut cols: Vec<(String, Vec<i64>, Vec<f64>)> = Vec::new();
     for (name, h) in ic_names.iter().zip(ic_handles.iter()) {
         let (ts, v) = common::read_scalar_series(&session, *h);
-        let finite: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
-        let m = finite.len();
-        if m == 0 {
-            println!("{name:>14}  {:>9}", "n/a");
-        } else {
-            let mean = finite.iter().sum::<f64>() / m as f64;
-            let var = finite.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / m as f64;
-            let std = var.sqrt();
-            let ir = if std > 0.0 { mean / std } else { f64::NAN };
-            let t = if std > 0.0 {
-                mean / std * (m as f64).sqrt()
-            } else {
-                f64::NAN
-            };
-            println!("{name:>14}  {mean:>+9.4}  {ir:>+7.4}  {t:>+7.2}  {m:>6}");
+        match common::ic::ic_stats(&v) {
+            None => println!("{name:>14}  {:>9}", "n/a"),
+            Some(s) => println!(
+                "{name:>14}  {:>+9.4}  {:>+7.4}  {:>+7.2}  {:>6}",
+                s.mean, s.ir, s.t, s.n
+            ),
         }
         cols.push((name.clone(), ts, v));
     }
@@ -373,7 +351,7 @@ async fn main() {
 
     // ---- Time-averaged factor correlation matrix ------------------------
     if let Some(h) = corr_handle {
-        let s: &tradingflow::Series<f64, 2> = session.value(h);
+        let s: &tradingflow::Series<f64, 2> = session.ref_view(h);
         let k = ic_names.len();
         let stride = k * k;
         let nt = s.len();

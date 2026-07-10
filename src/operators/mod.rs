@@ -1,6 +1,8 @@
 //! `operators` — the operator library for the TradingFlow engine, built on
-//! `flowgraph`. The engine/driver itself ([`Scenario`](crate::Scenario) /
-//! [`Session`](crate::Session)) lives in [`scenario`](crate::scenario).
+//! `flowgraph`. The engine/driver itself is `flowgraph::ingest`'s
+//! [`Builder`](flowgraph::ingest::Builder) / [`Graph`](flowgraph::ingest::Graph)
+//! (instantiated as [`Scenario`](crate::Scenario) / [`Session`](crate::Session);
+//! domain registrars in [`ScenarioExt`](crate::ScenarioExt)).
 //!
 //! # Design
 //!
@@ -22,12 +24,19 @@
 //!   operator here.
 //! * Time is threaded out-of-band through a shared [`Clock`] the driver advances
 //!   before each `stabilize` (only operators that stamp event time read it).
+//! * The **formula constructors** ([`ma`], [`lag`], [`change`], …) curry a
+//!   private, bounded [`Record`] into the windowed operators, so a `segment!`
+//!   formula over live array handles reads like the formula itself — retention
+//!   sizing and clock wiring happen inside the constructor (the clock is its
+//!   explicit first parameter). See the [`formula`] module docs for the
+//!   private-record trade-off and the hoisted shared-record escape hatch.
 //!
 //! [array-view-refactor] Submodules are re-enabled file-by-file as they migrate
 //! to the const-rank `ArrayView` currency (stages 2–4). `op`/`arith`/`num` are
 //! migrated; the rest are temporarily gated.
 
 mod arith;
+mod formula;
 mod gating;
 mod metrics;
 mod num;
@@ -49,14 +58,21 @@ mod python;
 pub use op::{ArrayValue, Clock, StripNotify};
 
 pub use arith::{
-    Binary, BinaryFn, Unary, UnaryFn, abs, add, ceil, divide, exp, exp2, floor, log, log2, log10,
-    max, min, multiply, negate, pow, recip, round, sign, sqrt, subtract,
+    Binary, BinaryFn, BinaryMap, Choose, Compare, CompareFn, Predicate, PredicateFn, Unary,
+    UnaryFn, UnaryMap, abs, add, and, at_least, at_most, ceil, divide, equal, equal_to, exp, exp2,
+    floor, greater, greater_equal, greater_than, indicator, is_finite, is_nan, less, less_equal,
+    less_than, log, log2, log10, max, min, multiply, negate, not, not_equal, not_equal_to, or, pow,
+    recip, round, sign, sqrt, subtract, xor,
+};
+pub use formula::{
+    WithLagged, Windowed, change, ema, lag, lag_or, ma, ma_time, mstd, msum, mvar, pct_change,
+    record, record_bounded,
 };
 pub use num::{
     Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
 };
 pub use gating::{Clocked, Count, Filter, Gate, Last, Record};
-pub use structural::{Cast, Id, Resample, Where};
+pub use structural::{Cast, Id, Resample, ResampleClocked, ResampleView, Where};
 pub use transform::{
     Apply, ApplyInplace, AsView, DerefArrayView, Lag, Map, MapInplace, Own, RefArrayView, Select,
     SliceView,

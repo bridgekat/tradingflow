@@ -29,7 +29,10 @@
 use std::collections::HashMap;
 use std::fs::File;
 
+use futures::stream::Stream;
 use tokio::sync::mpsc;
+
+use flowgraph::ingest::{Event, EventSource};
 
 use arrow::array::{Array as _, Date32Array};
 use arrow::compute::cast;
@@ -41,7 +44,8 @@ use super::parquet_panel_source::{
     PanelState, RowUpdate, count_rows_in_range, instant_from_days, nan_panel, panel_write,
     report_year_and_doy, resolve_symbols,
 };
-use crate::{Array, Duration, Instant, Source};
+use super::receiver_stream;
+use crate::{Array, Duration, Instant};
 
 /// Historical-only panel source for financial-report long tables. See module docs.
 #[derive(Clone)]
@@ -135,7 +139,7 @@ struct ReportRow {
     values: Vec<f64>,
 }
 
-impl Source for ParquetFinancialReportPanelSource {
+impl EventSource<Instant> for ParquetFinancialReportPanelSource {
     type Event = Vec<RowUpdate>;
     type Output = Array<f64, 2>;
     type State = PanelState;
@@ -154,7 +158,9 @@ impl Source for ParquetFinancialReportPanelSource {
         nan_panel(self.out_shape())
     }
 
-    fn init(&self) -> (mpsc::Receiver<(Instant, Vec<RowUpdate>)>, PanelState) {
+    fn init(
+        &self,
+    ) -> (impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static, PanelState) {
         // One item per tick (a batch of that date's reports); small buffer.
         let (hist_tx, hist_rx) = mpsc::channel(16);
         let cfg = self.clone();
@@ -165,7 +171,7 @@ impl Source for ParquetFinancialReportPanelSource {
             }
         });
 
-        (hist_rx, PanelState::default())
+        (receiver_stream(hist_rx), PanelState::default())
     }
 
     fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64, 2>, ts: Instant) -> usize {

@@ -20,46 +20,29 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, RefPort};
+use clap::Parser;
 
-use tradingflow::operators::{
-    ArrayValue, Benchmark, Diff, Map, PyClassOperator, PyParams, log, multiply,
-};
-use tradingflow::Scenario;
-use tradingflow::sources::clock;
-use tradingflow::{Array, ArrayView, Series, ViewPort};
+use tradingflow::operators::{Diff, record};
+use tradingflow::{Retention, Scenario, ScenarioExt, WallClock};
 
-use common::{own, AvH};
+use common::models::{linear_regression_mean, markowitz, minimum_variance, CovEstimator, Mode};
+use common::strategy::{Market, NavH, NavTable};
+use common::FeatureSet;
 
-const INITIAL_CASH: f64 = 1_000_000.0;
-const NUM_FEATURES: i64 = 7;
 const RISK_AVERSION: f64 = 1.0;
-const MODE_MIN_MEAN_VARIANCE: i64 = 3;
+const MIN_PERIODS: i64 = 100;
 const TRADING_DAYS: f64 = 252.0;
 
-/// A covariance estimator: module + optional shrinkage `target` / RMT `mode`.
-struct Est {
-    name: &'static str,
-    module: &'static str,
-    target: Option<i64>,
-    mode: Option<&'static str>,
-}
-
-/// A scalar view handle (a rank-0 `ArrayView` port).
-type ScH = Handle<ViewPort<ArrayValue<f64, 0>>>;
-
-fn total_value(sc: &mut Scenario, h: AvH) -> ScH {
-    sc.add_operator(
-        Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
-        h,
-    )
-}
-
-fn nav_final(v: &[f64]) -> f64 {
-    v.iter().rev().copied().find(|x| x.is_finite()).unwrap_or(f64::NAN)
-}
-
-use clap::Parser;
+/// The estimators under comparison, in report order.
+const ESTIMATORS: [CovEstimator; 7] = [
+    CovEstimator::sample("sample"),
+    CovEstimator::shrinkage("shrinkage_comm_cov", 1),
+    CovEstimator::shrinkage("shrinkage_const_corr", 2),
+    CovEstimator::shrinkage("shrinkage_single_index", 3),
+    CovEstimator::rmt("rmt_0", "zero"),
+    CovEstimator::rmt("rmt_m", "mean"),
+    CovEstimator::single_index("single_index"),
+];
 
 /// Variance-estimator comparison via GMV portfolio realized variance.
 #[derive(Parser)]
@@ -71,185 +54,109 @@ struct Args {
     window: usize,
 }
 
+/// Per-estimator records: long / long-short NAV and the GMV realized variance.
+struct Rec {
+    name: &'static str,
+    long: NavH,
+    ls: NavH,
+    mv: NavH,
+}
+
 #[tokio::main]
 async fn main() {
-    let Args { common: args, window } = Args::parse();
+    let Args {
+        common: args,
+        window,
+    } = Args::parse();
     let symbols = common::load_symbols(&args.data_dir);
-    let n = symbols.len();
-    let n_i = n as i64;
-    let idx = args.index_size as i64;
-    eprintln!("loaded {n} symbols; index_size={}", args.index_size);
-
-    let mut sc = Scenario::new();
-    let clk = sc.clock();
-
-    let st = common::build_stacked(&mut sc, &symbols, &args);
-    let features = common::build_features(&mut sc, &st, window, tradingflow::Retention::UNBOUNDED);
-    let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
-    let log_adj = sc.add_operator(log::<f64, 1>(), st.adjusted_close);
-    let (_target, target_series, demeaned_series) =
-        common::build_log_return_target(&mut sc, log_adj, tradingflow::Retention::UNBOUNDED);
-    // Raw daily log returns for the realized-variance metric.
-    let log_returns = sc.add_operator(Diff::<f64, 1>::new(), log_adj);
-    let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
-
-    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
-    let universe =
-        common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
-    // The Python predictor/portfolio operators consume whole-array `RefPort`s;
-    // materialize the universe view once via `own`.
-    let universe_ref = own(&mut sc, universe);
-    // The realized-variance metric consumes raw returns as a whole-array
-    // `RefPort`; bridge the `Diff` view once.
-    let log_returns_ref = own(&mut sc, log_returns);
-
-    let predicted_returns = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64, 2>>, RefPort<Series<f64, 1>>)>::from_module(
-            "flowops.predictors.mean.incremental_linear_regression",
-            PyParams::new()
-                .int("num_stocks", n_i)
-                .int("num_features", NUM_FEATURES)
-                .int("universe_size", idx)
-                .int("target_offset", 1)
-                .int("min_periods", 100),
-            vec![n],
-            clk.clone(),
-        ),
-        (universe_ref, features.series, demeaned_series),
+    eprintln!(
+        "loaded {} symbols; index_size={}",
+        symbols.len(),
+        args.index_size
     );
 
-    let index = sc.add_operator(
-        Benchmark::new(n, 1.0, true),
-        (universe, st.close, st.adjusts, upper, lower),
+    let mut sc = Scenario::new(WallClock);
+    let clk = sc.time();
+
+    let m = Market::build(
+        &mut sc,
+        &symbols,
+        &args,
+        window,
+        FeatureSet::Canonical,
+        Retention::UNBOUNDED,
     );
-    let index_value = total_value(&mut sc, index);
-    let h_index = sc.add_record(index_value);
+    // Raw daily log returns for the realized-variance metric, as a whole-array
+    // `RefPort` (the metric is a Python operator).
+    let log_returns = sc.push(Diff::<f64, 1>::new(), m.log_adj);
+    let log_returns_ref = sc.own::<f64, 1>(log_returns);
 
-    let ests = [
-        Est { name: "sample", module: "flowops.predictors.variance.sample", target: None, mode: None },
-        Est { name: "shrinkage_comm_cov", module: "flowops.predictors.variance.shrinkage", target: Some(1), mode: None },
-        Est { name: "shrinkage_const_corr", module: "flowops.predictors.variance.shrinkage", target: Some(2), mode: None },
-        Est { name: "shrinkage_single_index", module: "flowops.predictors.variance.shrinkage", target: Some(3), mode: None },
-        Est { name: "rmt_0", module: "flowops.predictors.variance.rmt", target: None, mode: Some("zero") },
-        Est { name: "rmt_m", module: "flowops.predictors.variance.rmt", target: None, mode: Some("mean") },
-        Est { name: "single_index", module: "flowops.predictors.variance.single_index", target: None, mode: None },
-    ];
+    let predicted_returns = sc.push(
+        linear_regression_mean(m.dims, MIN_PERIODS, &clk),
+        (m.universe_ref, m.features.series, m.demeaned_series),
+    );
 
-    // Per-estimator records: (name, long NAV, long-short NAV, GMV realized variance).
-    struct Rec {
-        name: &'static str,
-        long: Handle<RefPort<Series<f64, 0>>>,
-        ls: Handle<RefPort<Series<f64, 0>>>,
-        mv: Handle<RefPort<Series<f64, 0>>>,
-    }
-    let mut recs: Vec<Rec> = Vec::new();
+    let h_index = m.index_nav(&mut sc);
 
-    for e in &ests {
-        // Covariance predictor.
-        // Covariance window = rebalance period, and there is no per-stock
-        // `min_periods` filter on the covariance estimators (the
-        // mean `LinearRegression` above keeps its own `min_periods=100`).
-        let mut p = PyParams::new()
-            .int("num_stocks", n_i)
-            .int("num_features", NUM_FEATURES)
-            .int("universe_size", idx)
-            .int("target_offset", 1)
-            .int("max_periods", args.rebalance_days);
-        if let Some(t) = e.target {
-            p = p.int("target", t);
-        }
-        if let Some(m) = e.mode {
-            p = p.str("mode", m);
-        }
-        let cov = sc.add_operator(
-            PyClassOperator::<
-                (
-                    RefPort<Array<f64, 1>>,
-                    RefPort<Series<f64, 2>>,
-                    RefPort<Series<f64, 1>>,
-                ),
-                2,
-            >::from_module(
-                e.module,
-                p,
-                vec![n, n],
-                clk.clone(),
-            ),
-            (universe_ref, features.series, target_series),
-        );
-
-        // GMV realized-variance metric (diagnostic; fed cov + raw returns).
-        let mv = sc.add_operator(
-            PyClassOperator::<(RefPort<Array<f64, 2>>, RefPort<Array<f64, 1>>), 0>::from_module(
-                "flowops.metrics.variance.minimum_variance",
-                PyParams::new().int("num_stocks", n_i),
-                vec![],
-                clk.clone(),
-            ),
-            (cov, log_returns_ref),
-        );
-
-        // Long-only and long-short Markowitz portfolios.
-        let mut nav: Vec<Handle<RefPort<Series<f64, 0>>>> = Vec::with_capacity(2);
-        for long_only in [true, false] {
-            let soft = sc.add_operator(
-                PyClassOperator::<(
-                    RefPort<Array<f64, 1>>,
-                    RefPort<Array<f64, 1>>,
-                    RefPort<Array<f64, 2>>,
-                )>::from_module(
-                    "flowops.portfolios.mean_variance.markowitz",
-                    PyParams::new()
-                        .int("num_stocks", n_i)
-                        .int("max_universe_size", idx)
-                        .int("mode", MODE_MIN_MEAN_VARIANCE)
-                        .float("bound", RISK_AVERSION)
-                        .bool("long_only", long_only),
-                    vec![n],
-                    clk.clone(),
-                ),
-                (universe_ref, predicted_returns, cov),
+    let recs: Vec<Rec> = ESTIMATORS
+        .iter()
+        .map(|e| {
+            // Covariance window = rebalance period, and there is no per-stock
+            // `min_periods` filter on the covariance estimators (the mean
+            // `LinearRegression` above keeps its own `min_periods`).
+            let cov = sc.push(
+                e.build(m.dims, args.rebalance_days, None, &clk),
+                (m.universe_ref, m.features.series, m.target_series),
             );
-            // Bridge the Python `RefPort` positions into the view currency the
-            // native trader speaks.
-            let soft_v = sc.as_view(soft);
-            let fric = sc.add_operator(
-                Benchmark::new(n, 1.0, true),
-                (soft_v, st.close, st.adjusts, upper, lower),
-            );
-            let value = total_value(&mut sc, fric);
-            nav.push(sc.add_record(value));
-        }
 
-        // Bridge the Python `RefPort` metric output into the view currency for
-        // recording.
-        let mv_v = sc.as_view(mv);
-        recs.push(Rec { name: e.name, long: nav[0], ls: nav[1], mv: sc.add_record(mv_v) });
-    }
+            // GMV realized-variance metric (diagnostic; fed cov + raw returns).
+            let mv = sc.push(minimum_variance(m.n, &clk), (cov, log_returns_ref));
+            let mv_v = sc.as_view(mv);
 
-    let mut session = sc.build_with_threads(args.threads);
-    let total = session.estimated_event_count();
-    session.run(common::progress(total, args.begin())).await;
-    eprintln!();
+            // Long-only and long-short Markowitz portfolios.
+            let nav: Vec<NavH> = [true, false]
+                .into_iter()
+                .map(|long_only| {
+                    let soft = sc.push(
+                        markowitz(
+                            m.n,
+                            args.index_size,
+                            Mode::MinMeanVariance,
+                            RISK_AVERSION,
+                            long_only,
+                            &clk,
+                        ),
+                        (m.universe_ref, predicted_returns, cov),
+                    );
+                    m.record_nav(&mut sc, soft)
+                })
+                .collect();
+
+            Rec {
+                name: e.name,
+                long: nav[0],
+                ls: nav[1],
+                mv: sc.push(record(&clk), mv_v),
+            }
+        })
+        .collect();
+
+    let session = common::run(sc, &args).await;
 
     let begin = args.begin().as_nanos();
-    let trim_scale = |ts: Vec<i64>, v: Vec<f64>| -> (Vec<i64>, Vec<f64>) {
-        ts.into_iter().zip(v).filter(|(t, _)| *t >= begin).map(|(t, x)| (t, x * INITIAL_CASH)).unzip()
-    };
+    let mut table = NavTable::default();
+    let index = table.add(&session, "index", begin, h_index);
+    println!("index: final={:.0} CNY", index.final_finite);
 
-    let (it, iv) = common::read_scalar_series(&session, h_index);
-    let (it, iv) = trim_scale(it, iv);
-    println!("index: final={:.0} CNY", nav_final(&iv));
-
-    let mut cols: Vec<(String, Vec<i64>, Vec<f64>)> = vec![("index".into(), it, iv)];
     for r in &recs {
-        let (lt, lv) = common::read_scalar_series(&session, r.long);
-        let (lt, lv) = trim_scale(lt, lv);
-        let (st_, sv) = common::read_scalar_series(&session, r.ls);
-        let (st_, sv) = trim_scale(st_, sv);
+        let long = table.add(&session, format!("{}_long", r.name), begin, r.long);
+        let ls = table.add(&session, format!("{}_ls", r.name), begin, r.ls);
         // Mean GMV realized variance → annualized realized vol.
         let mvv = common::read_scalar_series(&session, r.mv).1;
-        let finite: Vec<f64> = mvv.into_iter().filter(|x| x.is_finite() && *x >= 0.0).collect();
+        let finite: Vec<f64> = mvv
+            .into_iter()
+            .filter(|x| x.is_finite() && *x >= 0.0)
+            .collect();
         let ann_vol = if finite.is_empty() {
             f64::NAN
         } else {
@@ -257,16 +164,9 @@ async fn main() {
         };
         println!(
             "{:>13}: GMV ann_vol={:.4}  long_final={:.0}  ls_final={:.0} CNY",
-            r.name,
-            ann_vol,
-            nav_final(&lv),
-            nav_final(&sv),
+            r.name, ann_vol, long.final_finite, ls.final_finite,
         );
-        cols.push((format!("{}_long", r.name), lt, lv));
-        cols.push((format!("{}_ls", r.name), st_, sv));
     }
 
-    let path = "target/covariance_gmv.csv";
-    common::write_wide_csv(path, &cols);
-    println!("wrote {path}\nplot with:  python examples/plot_strategy.py {path}");
+    table.write("target/covariance_gmv.csv");
 }

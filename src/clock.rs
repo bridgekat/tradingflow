@@ -21,6 +21,8 @@ fn tai_now() -> Instant {
 /// runs: historical timestamps sit below `now` and replay at full speed,
 /// future-dated events are released only once their timestamp actually
 /// arrives, and implicit `Stamp::Now` events are stamped with real TAI time.
+///
+/// Pass it to `Scenario::new(WallClock)` to drive a session on real time.
 pub struct WallClock;
 
 impl flowgraph::ingest::Clock<Instant> for WallClock {

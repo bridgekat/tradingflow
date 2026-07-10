@@ -19,12 +19,13 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::operators::{Apply, ArrayValue, Benchmark, Map, multiply};
-use tradingflow::Scenario;
+use tradingflow::operators::{Apply, ArrayValue, Benchmark, Map, multiply, record};
+use tradingflow::{Scenario, WallClock};
 use tradingflow::sources::clock;
-use tradingflow::{Array, ArrayView, ViewPort};
+use flowgraph::typed::ViewPort;
+use tradingflow::{Array, ArrayView};
 
-use common::ResampleView;
+use tradingflow::operators::ResampleView;
 
 use clap::Parser;
 
@@ -42,10 +43,11 @@ async fn main() {
     let n = symbols.len();
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);
 
-    let mut sc = Scenario::new();
+    let mut sc = Scenario::new(WallClock);
+    let clk = sc.time();
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
+    let circ_market_cap = sc.push(multiply::<f64, 1>(), (st.close, st.circ_shares));
 
     let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
     let universe =
@@ -53,10 +55,10 @@ async fn main() {
 
     // Hold the rebalance-day universe fixed between rebalances by re-emitting it
     // on the daily close pulse (clock = the close view, data = the universe).
-    let daily_universe = sc.add_operator(ResampleView::<1>::new(), (st.close, universe));
+    let daily_universe = sc.push(ResampleView::<f64, 1>::new(), (st.close, universe));
 
     // Summed circulating market cap of the current constituents.
-    let index_circ_market_cap = sc.add_operator(
+    let index_circ_market_cap = sc.push(
         Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 0, _>::new(
             |(u, c): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
                 let (us, cs) = (u.to_contiguous(), c.to_contiguous());
@@ -74,17 +76,17 @@ async fn main() {
 
     // Frictionless cap-weighted index NAV via the native Benchmark trader.
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
-    let index = sc.add_operator(
+    let index = sc.push(
         Benchmark::new(n, 1.0, true),
         (universe, st.close, st.adjusts, upper, lower),
     );
-    let index_value = sc.add_operator(
+    let index_value = sc.push(
         Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         index,
     );
 
-    let h_mc = sc.add_record(index_circ_market_cap);
-    let h_nav = sc.add_record(index_value);
+    let h_mc = sc.push(record(&clk), index_circ_market_cap);
+    let h_nav = sc.push(record(&clk), index_value);
 
     let mut session = sc.build_with_threads(args.threads);
     // Trim warmup output before `begin` so only the live index window is shown.

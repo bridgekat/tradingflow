@@ -590,7 +590,7 @@ mod tests {
     use super::*;
     use crate::operators::transform::AsView;
     use flowgraph::core::Pool;
-    use flowgraph::typed::{Graph, GraphBuilder, Handle, RefSource, SourceHandle};
+    use flowgraph::typed::{Builder, Handle, RefSource, SourceHandle};
 
     fn arr(v: &[f64]) -> Array<f64, 1> {
         Array::from_vec([v.len()], v.to_vec())
@@ -599,7 +599,7 @@ mod tests {
     /// Push a `RefSource` of `v` plus an `AsView` bridge; return the source
     /// handle (for `state_mut`) and the view handle (for wiring).
     fn src(
-        b: &mut GraphBuilder,
+        b: &mut Builder,
         v: &[f64],
     ) -> (SourceHandle<RefSource<Array<f64, 1>>>, Handle<Vp>) {
         let s = b.push_source(RefSource::new(arr(v)));
@@ -610,14 +610,14 @@ mod tests {
     #[test]
     fn benchmark_one_tick_delay_exec_and_mark() {
         let nan = f64::NAN;
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let (pos, posv) = src(&mut b, &[nan, nan]);
         let (close, closev) = src(&mut b, &[nan, nan]);
         let (_adj, adjv) = src(&mut b, &[1.0, 1.0]);
         let (_up, upv) = src(&mut b, &[nan, nan]);
         let (_lo, lov) = src(&mut b, &[nan, nan]);
         let out = b.push(Benchmark::new(2, 1.0, true), (posv, closev, adjv, upv, lov));
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         *g.state_mut(pos) = arr(&[0.5, 0.5]);
@@ -642,14 +642,14 @@ mod tests {
     #[test]
     fn benchmark_reinvests_dividends() {
         let nan = f64::NAN;
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let (pos, posv) = src(&mut b, &[nan]);
         let (close, closev) = src(&mut b, &[nan]);
         let (adj, adjv) = src(&mut b, &[1.0]);
         let (_up, upv) = src(&mut b, &[nan]);
         let (_lo, lov) = src(&mut b, &[nan]);
         let out = b.push(Benchmark::new(1, 1.0, true), (posv, closev, adjv, upv, lov));
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         *g.state_mut(pos) = arr(&[1.0]);
@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn simple_trader_value_weight_with_fees_and_lots() {
         let nan = f64::NAN;
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let (pos, posv) = src(&mut b, &[nan]);
         let (close, closev) = src(&mut b, &[nan]);
         let (_adj, adjv) = src(&mut b, &[1.0]);
@@ -680,7 +680,7 @@ mod tests {
             SimpleTrader::new(1, 1_000_000.0, 100.0, 5.0, 0.001),
             (posv, closev, adjv, upv, lov),
         );
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         *g.state_mut(pos) = arr(&[1.0]);
@@ -697,7 +697,7 @@ mod tests {
     fn random_trader_invests_and_is_seed_deterministic() {
         let nan = f64::NAN;
         let run = || {
-            let mut b = GraphBuilder::new();
+            let mut b = Builder::new();
             let (pos, posv) = src(&mut b, &[nan; 5]);
             let (close, closev) = src(&mut b, &[nan; 5]);
             let (_adj, adjv) = src(&mut b, &[1.0; 5]);
@@ -707,7 +707,7 @@ mod tests {
                 RandomTrader::new(5, 2, 1000.0, 1.0, 0.0, 0.0, 0),
                 (posv, closev, adjv, upv, lov),
             );
-            let mut g = Graph::from_builder(b);
+            let mut g = b.build();
             let mut pool = Pool::new(0);
             *g.state_mut(pos) = arr(&[0.2; 5]);
             *g.state_mut(close) = arr(&[10.0; 5]);

@@ -8,6 +8,10 @@
 //! metric. Per-feature IC series are written long-format for cumulative-IC
 //! plotting; mean / std / IR are printed.
 //!
+//! This is the minimal IC harness. `factor_handbook` scores the full CICC
+//! catalogs instead, and ranks both sides first (RankIC); both share
+//! `common::ic`.
+//!
 //! The IC metric is a Python (`flowops`) operator (no cvxpy), so this needs
 //! `--features python` and a venv with NumPy (a standard GIL venv is fine).
 //!
@@ -19,14 +23,15 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::RefPort;
-
-use tradingflow::operators::{Apply, ArrayValue, Lag, PyClassOperator, PyParams, log, multiply};
-use tradingflow::Scenario;
-use tradingflow::sources::clock;
-use tradingflow::{Array, ArrayView, ViewPort};
-
 use clap::Parser;
+
+use tradingflow::operators::{Lag, ResampleClocked, record};
+use tradingflow::{Retention, Scenario, ScenarioExt, WallClock};
+
+use common::ic::{ic_series, ic_stats};
+use common::strategy::Market;
+use common::universe::mask_to_universe;
+use common::FeatureSet;
 
 /// Factor IC evaluation on the A-shares cross-sectional panel.
 #[derive(Parser)]
@@ -40,83 +45,63 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    let Args { common: args, window } = Args::parse();
+    let Args {
+        common: args,
+        window,
+    } = Args::parse();
     let symbols = common::load_symbols(&args.data_dir);
-    let n = symbols.len();
-    let n_i = n as i64;
-    eprintln!("loaded {n} symbols; index_size={}", args.index_size);
+    eprintln!(
+        "loaded {} symbols; index_size={}",
+        symbols.len(),
+        args.index_size
+    );
 
-    let mut sc = Scenario::new();
-    let clk = sc.clock();
+    let mut sc = Scenario::new(WallClock);
+    let clk = sc.time();
 
-    let st = common::build_stacked(&mut sc, &symbols, &args);
-    let features = common::build_features(&mut sc, &st, window, tradingflow::Retention::UNBOUNDED);
-    let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
-    let log_adj = sc.add_operator(log::<f64, 1>(), st.adjusted_close);
-    let (target, _target_series, _demeaned) =
-        common::build_log_return_target(&mut sc, log_adj, tradingflow::Retention::UNBOUNDED);
+    let m = Market::build(
+        &mut sc,
+        &symbols,
+        &args,
+        window,
+        FeatureSet::Canonical,
+        Retention::UNBOUNDED,
+    );
+    // `Market` records the target series; the IC metric wants the live view. It
+    // is shared across every factor, so bridge it once, before the loop.
+    let target_ref = sc.own::<f64, 1>(m.target);
 
-    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
-    let universe =
-        common::build_cap_weighted_universe(&mut sc, circ_market_cap, rebalance_clock, args.index_size);
+    let names = m.features.names.clone();
+    let ic_handles: Vec<_> = m
+        .features
+        .handles
+        .iter()
+        .map(|&feature| {
+            // Lag one trading day, resample onto the rebalance clock, then NaN out
+            // the stocks outside the universe so they don't dilute the correlation.
+            let feature_series = sc.push(record(&clk), feature);
+            let lagged = sc.push(Lag::<f64, 1>::new(1, f64::NAN), feature_series);
+            let aligned = sc.push(
+                ResampleClocked::<f64, 1>::new(),
+                (m.rebalance_clock, lagged),
+            );
+            let masked = mask_to_universe(&mut sc, aligned, m.universe);
+            ic_series(&mut sc, masked, target_ref, m.n, &clk)
+        })
+        .collect();
 
-    let names = features.names.clone();
-    let mut ic_handles = Vec::new();
-    for &feature in &features.handles {
-        // Lag one trading day, resample onto the rebalance clock.
-        let feature_series = sc.add_record(feature);
-        let lagged = sc.add_operator(Lag::<f64, 1>::new(1, f64::NAN), feature_series);
-        let aligned = sc.add_operator(common::ResampleClocked::<1>::new(), (rebalance_clock, lagged));
-        // NaN-mask out-of-universe stocks so they don't dilute the rank corr.
-        let masked = sc.add_operator(
-            Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 1, _>::new(
-                |(f, u): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
-                    let (fs, us) = (f.to_contiguous(), u.to_contiguous());
-                    Array::from_vec(
-                        [fs.len()],
-                        (0..fs.len()).map(|i| if us[i] > 0.0 { fs[i] } else { f64::NAN }).collect(),
-                    )
-                },
-            ),
-            (aligned, universe),
-        );
-        // The Python metric consumes whole-array `RefPort`s; bridge both views.
-        let masked_ref = common::own(&mut sc, masked);
-        let target_ref = common::own(&mut sc, target);
-        let metric = sc.add_operator(
-            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 0>::from_module(
-                "flowops.metrics.mean.information_coefficient",
-                PyParams::new().int("num_stocks", n_i),
-                vec![],
-                clk.clone(),
-            ),
-            (masked_ref, target_ref),
-        );
-        let metric_v = sc.as_view(metric);
-        ic_handles.push(sc.add_record(metric_v));
-    }
-
-    let mut session = sc.build_with_threads(args.threads);
-    let total = session.estimated_event_count();
-    session.run(common::progress(total, args.begin())).await;
-    eprintln!();
+    let session = common::run(sc, &args).await;
 
     // Per-feature IC stats + long-format CSV.
     let mut cols: Vec<(String, Vec<i64>, Vec<f64>)> = Vec::new();
     for (name, h) in names.iter().zip(ic_handles.iter()) {
         let (ts, v) = common::read_scalar_series(&session, *h);
-        let finite: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
-        if finite.is_empty() {
-            println!("{name:>18}: no valid values");
-        } else {
-            let mean = finite.iter().sum::<f64>() / finite.len() as f64;
-            let var = finite.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / finite.len() as f64;
-            let std = var.sqrt();
-            let ir = if std > 0.0 { mean / std } else { f64::NAN };
-            println!(
-                "{name:>18}: mean={mean:+.4} std={std:.4} IR={ir:+.4} ({} periods)",
-                finite.len()
-            );
+        match ic_stats(&v) {
+            None => println!("{name:>18}: no valid values"),
+            Some(s) => println!(
+                "{name:>18}: mean={:+.4} std={:.4} IR={:+.4} ({} periods)",
+                s.mean, s.std, s.ir, s.n
+            ),
         }
         cols.push((name.clone(), ts, v));
     }

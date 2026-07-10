@@ -519,17 +519,17 @@ mod tests {
     use super::*;
     use crate::operators::transform::AsView;
     use flowgraph::core::Pool;
-    use flowgraph::typed::{Graph, GraphBuilder, RefSource};
+    use flowgraph::typed::{Builder, RefSource};
 
     /// Turnover: warmup emits nothing; later updates emit the L1 change, with
     /// non-finite weights treated as zero.
     #[test]
     fn turnover_l1_change_with_nan_as_zero() {
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let w = b.push_source(RefSource::new(Array::from_vec([5], vec![0.0_f64; 5])));
         let wv = b.push(AsView::<f64, 1>::new(), *w);
         let out = b.push(Turnover::<f64, 1>::new(), wv);
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         // Warmup: caches the weights, does not notify → output stays NaN.

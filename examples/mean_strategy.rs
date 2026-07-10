@@ -24,34 +24,22 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, RefPort};
-
-use tradingflow::Scenario;
-use tradingflow::operators::{
-    ArrayValue, Benchmark, CompoundReturn, Diff, Drawdown, Map, PyClassOperator, PyParams,
-    RandomTrader, SharpeRatio, Stack, log, multiply,
-};
-use tradingflow::sources::clock;
-use tradingflow::{Array, ArrayView, Retention, Series, ViewPort};
-
-use common::{own, ref_view, AvH};
-
-const INITIAL_CASH: f64 = 1_000_000.0;
-/// Forward-return offset pairing `features[i]` with `target[i+1]`.
-const TARGET_OFFSET: i64 = 1;
-
-/// A scalar view handle (a rank-0 `ArrayView` port).
-type ScH = Handle<ViewPort<ArrayValue<f64, 0>>>;
-
-/// Map a trader's `(holdings_value, cash)` view to its scalar total value.
-fn total_value(sc: &mut Scenario, h: AvH) -> ScH {
-    sc.add_operator(
-        Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
-        h,
-    )
-}
-
 use clap::Parser;
+
+use tradingflow::operators::{
+    Benchmark, CompoundReturn, Diff, Drawdown, RandomTrader, SharpeRatio, Stack, log, record,
+};
+use tradingflow::{Retention, Scenario, ScenarioExt, Series, WallClock};
+
+use common::models::{rank_linear, regression_coefficients, ridge_mean};
+use common::strategy::{trim_scale, Market, INITIAL_CASH, TARGET_OFFSET};
+use common::FeatureSet;
+
+const MIN_PERIODS: i64 = 100;
+const RIDGE_ALPHA: f64 = 0.01;
+/// Rolling window (trading days) of the market beta/alpha regression.
+const BETA_MAX_PERIODS: i64 = 252;
+const BETA_MIN_PERIODS: i64 = 20;
 
 /// Mean-only strategy: periodic linear regression + rank-linear portfolio.
 #[derive(Parser)]
@@ -76,163 +64,103 @@ async fn main() {
         window,
         feature_set,
     } = Args::parse();
-    let fset = common::FeatureSet::parse(&feature_set);
+    let fset = FeatureSet::parse(&feature_set);
     let symbols = common::load_symbols(&args.data_dir);
-    let n = symbols.len();
-    let n_i = n as i64;
-    let idx = args.index_size as i64;
-    eprintln!("loaded {n} symbols; index_size={}", args.index_size);
+    eprintln!(
+        "loaded {} symbols; index_size={}",
+        symbols.len(),
+        args.index_size
+    );
 
-    let mut sc = Scenario::new();
-    let clk = sc.clock();
+    let mut sc = Scenario::new(WallClock);
+    let clk = sc.time();
 
     // ---- Data + features ------------------------------------------------
     // The incremental mean predictor folds one (feature, target) pair per tick,
     // so the recorded panel / target only need the last `TARGET_OFFSET + 1` rows.
     let feat_ret = Retention::count(TARGET_OFFSET as usize + common::RETAIN_MARGIN);
-    let st = common::build_stacked(&mut sc, &symbols, &args);
-    let features = common::build_strategy_features(&mut sc, &st, window, fset, feat_ret);
-    let num_features = features.names.len() as i64;
-    eprintln!("feature set `{feature_set}`: {} features", num_features);
-    let circ_market_cap = sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares));
-    let log_adj = sc.add_operator(log::<f64, 1>(), st.adjusted_close);
-    let (_target, _target_series, demeaned_series) =
-        common::build_log_return_target(&mut sc, log_adj, feat_ret);
-    let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
-
-    // ---- Universe + predictor + portfolio -------------------------------
-    let rebalance_clock = sc.add_source(clock(args.rebalance_instants()));
-    let universe = common::build_cap_weighted_universe(
-        &mut sc,
-        circ_market_cap,
-        rebalance_clock,
-        args.index_size,
-    );
-    // The Python predictor/portfolio operators consume whole-array `RefPort`s;
-    // materialize the universe view once via `own`.
-    let universe_ref = own(&mut sc, universe);
-
-    let predicted_returns = sc.add_operator(
-        PyClassOperator::<(
-            RefPort<Array<f64, 1>>,
-            RefPort<Series<f64, 2>>,
-            RefPort<Series<f64, 1>>,
-        )>::from_module(
-            "flowops.predictors.mean.incremental_ridge",
-            PyParams::new()
-                .int("num_stocks", n_i)
-                .int("num_features", num_features)
-                .int("universe_size", idx)
-                .int("target_offset", TARGET_OFFSET)
-                .int("min_periods", 100)
-                .float("alpha", 0.01),
-            vec![n],
-            clk.clone(),
-        ),
-        (universe_ref, features.series, demeaned_series),
+    let m = Market::build(&mut sc, &symbols, &args, window, fset, feat_ret);
+    eprintln!(
+        "feature set `{feature_set}`: {} features",
+        m.dims.num_features
     );
 
-    let soft_positions = sc.add_operator(
-        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>)>::from_module(
-            "flowops.portfolios.mean.rank_linear",
-            PyParams::new()
-                .int("num_stocks", n_i)
-                .float("top_fraction", 1.0),
-            vec![n],
-            clk.clone(),
-        ),
-        (universe_ref, predicted_returns),
+    // ---- Predictor + portfolio ------------------------------------------
+    let predicted_returns = sc.push(
+        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA, &clk),
+        (m.universe_ref, m.features.series, m.demeaned_series),
+    );
+    let soft_positions = sc.push(
+        rank_linear(m.n, 1.0, &clk),
+        (m.universe_ref, predicted_returns),
     );
     // Bridge the Python `RefPort` positions back into the view currency the
     // native traders speak.
     let soft_positions_v = sc.as_view(soft_positions);
 
-    // ---- Traders --------------------------------------------------------
-    let index = sc.add_operator(
-        Benchmark::new(n, 1.0, true),
-        (universe, st.close, st.adjusts, upper, lower),
-    );
-    let strategy_frictionless = sc.add_operator(
-        Benchmark::new(n, 1.0, true),
-        (soft_positions_v, st.close, st.adjusts, upper, lower),
-    );
-    let strategy_actual = sc.add_operator(
-        RandomTrader::new(n, 20, INITIAL_CASH, 100.0, 5.0, 0.001, 0),
-        (soft_positions_v, st.close, st.adjusts, upper, lower),
+    // ---- Traders (the cost-model swap point) ----------------------------
+    let index_value = m.simulate(&mut sc, Benchmark::new(m.n, 1.0, true), m.universe);
+    let frictionless_value =
+        m.simulate(&mut sc, Benchmark::new(m.n, 1.0, true), soft_positions_v);
+    let actual_value = m.simulate(
+        &mut sc,
+        RandomTrader::new(m.n, 20, INITIAL_CASH, 100.0, 5.0, 0.001, 0),
+        soft_positions_v,
     );
 
-    // ---- Values + metrics (clock-gated, since inception) ----------------
-    let index_value = total_value(&mut sc, index);
-    let frictionless_value = total_value(&mut sc, strategy_frictionless);
-    let actual_value = total_value(&mut sc, strategy_actual);
-
-    let sharpe = sc.add_operator(SharpeRatio::<f64, 0>::new(), (actual_value, rebalance_clock));
-    let compound = sc.add_operator(
+    // ---- Metrics (clock-gated, since inception) -------------------------
+    let sharpe = sc.push(
+        SharpeRatio::<f64, 0>::new(),
+        (actual_value, m.rebalance_clock),
+    );
+    let compound = sc.push(
         CompoundReturn::<f64, 0>::new(),
-        (actual_value, rebalance_clock),
+        (actual_value, m.rebalance_clock),
     );
-    let drawdown = sc.add_operator(Drawdown::<f64, 0>::new(), actual_value);
+    let drawdown = sc.push(Drawdown::<f64, 0>::new(), actual_value);
 
     // Rolling market beta / alpha vs the cap-weighted index, on daily log
     // returns of total value (regressor adds the intercept → output [beta, alpha]).
-    let log_actual = sc.add_operator(log::<f64, 0>(), actual_value);
-    let strat_logret = sc.add_operator(Diff::<f64, 0>::new(), log_actual);
-    let log_index = sc.add_operator(log::<f64, 0>(), index_value);
-    let index_logret = sc.add_operator(Diff::<f64, 0>::new(), log_index);
-    let strat_logret_series = sc.add_record(strat_logret);
+    let log_actual = sc.push(log::<f64, 0>(), actual_value);
+    let strat_logret = sc.push(Diff::<f64, 0>::new(), log_actual);
+    let log_index = sc.push(log::<f64, 0>(), index_value);
+    let index_logret = sc.push(Diff::<f64, 0>::new(), log_index);
+    let strat_logret_series = sc.push(record(&clk), strat_logret);
     // scalar -> (1,): bridge the rank-0 view into the `RefViewPort` slice `Stack`
     // consumes, then stack into a 1-vector.
-    let index_logret_ref = ref_view::<0>(&mut sc, index_logret);
-    let index_logret_vec = sc.add_operator(Stack::<f64, 0, 1>::new(0), &[index_logret_ref][..]);
-    let index_logret_series = sc.add_record(index_logret_vec);
-    let beta_alpha = sc.add_operator(
-        PyClassOperator::<(RefPort<()>, RefPort<Series<f64, 0>>, RefPort<Series<f64, 1>>)>::from_module(
-            "flowops.metrics.mean.regression_coefficients",
-            PyParams::new()
-                .int("num_features", 1)
-                .int("max_periods", 252)
-                .int("min_periods", 20),
-            vec![2],
-            clk.clone(),
-        ),
-        (rebalance_clock, strat_logret_series, index_logret_series),
+    let index_logret_ref = sc.ref_array_view::<f64, 0>(index_logret);
+    let index_logret_vec = sc.push(Stack::<f64, 0, 1>::new(0), &[index_logret_ref][..]);
+    let index_logret_series = sc.push(record(&clk), index_logret_vec);
+    let beta_alpha = sc.push(
+        regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS, &clk),
+        (m.rebalance_clock, strat_logret_series, index_logret_series),
     );
 
     // ---- Records --------------------------------------------------------
-    let h_index = sc.add_record(index_value);
-    let h_fric = sc.add_record(frictionless_value);
-    let h_actual = sc.add_record(actual_value);
-    let h_sharpe = sc.add_record(sharpe);
-    let h_compound = sc.add_record(compound);
-    let h_drawdown = sc.add_record(drawdown);
+    let h_index = sc.push(record(&clk), index_value);
+    let h_fric = sc.push(record(&clk), frictionless_value);
+    let h_actual = sc.push(record(&clk), actual_value);
+    let h_sharpe = sc.push(record(&clk), sharpe);
+    let h_compound = sc.push(record(&clk), compound);
+    let h_drawdown = sc.push(record(&clk), drawdown);
     // `beta_alpha` is a Python `RefPort<Array>` output; bridge into the view
     // currency for recording.
     let beta_alpha_v = sc.as_view(beta_alpha);
-    let h_beta_alpha = sc.add_record(beta_alpha_v);
+    let h_beta_alpha = sc.push(record(&clk), beta_alpha_v);
 
-    let mut session = sc.build_with_threads(args.threads);
-    let total = session.estimated_event_count();
-    session.run(common::progress(total, args.begin())).await;
-    eprintln!();
+    let session = common::run(sc, &args).await;
 
     // ---- Extract + report ----------------------------------------------
     let begin = args.begin().as_nanos();
+    // The index / frictionless baselines are unit-cash: scale to the actual
+    // capital. The actual trader already runs on `INITIAL_CASH`.
     let (it, iv) = common::read_scalar_series(&session, h_index);
+    let (it, iv) = trim_scale(begin, it, iv);
     let (ft, fv) = common::read_scalar_series(&session, h_fric);
+    let (ft, fv) = trim_scale(begin, ft, fv);
     let (at, av) = common::read_scalar_series(&session, h_actual);
-    // Unit-cash baselines (index / frictionless) scaled to the actual capital.
-    let scale = |ts: Vec<i64>, v: Vec<f64>, k: f64| -> (Vec<i64>, Vec<f64>) {
-        let v = v.into_iter().map(|x| x * k).collect();
-        (ts, v)
-    };
-    let trim = |ts: Vec<i64>, v: Vec<f64>| -> (Vec<i64>, Vec<f64>) {
-        ts.into_iter().zip(v).filter(|(t, _)| *t >= begin).unzip()
-    };
-    let (it, iv) = trim(it, iv);
-    let (ft, fv) = trim(ft, fv);
-    let (at, av) = trim(at, av);
-    let (it, iv) = scale(it, iv, INITIAL_CASH);
-    let (ft, fv) = scale(ft, fv, INITIAL_CASH);
+    let (at, av): (Vec<i64>, Vec<f64>) =
+        at.into_iter().zip(av).filter(|(t, _)| *t >= begin).unzip();
 
     if av.is_empty() {
         eprintln!("no data produced");
@@ -254,7 +182,7 @@ async fn main() {
         .into_iter()
         .filter(|x| x.is_finite())
         .fold(0.0_f64, f64::min);
-    let ba = session.value(h_beta_alpha) as &Series<f64, 1>;
+    let ba = session.ref_view(h_beta_alpha) as &Series<f64, 1>;
     let (beta, alpha) = ba
         .values()
         .rchunks(2)

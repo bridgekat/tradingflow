@@ -1,7 +1,7 @@
 //! Core gating / recording operators, implemented directly on
 //! [`flowgraph::typed::Operator`] / [`Segment`]. (The legacy `Const` cell is
-//! gone — source cells are `GraphBuilder::push_source` nodes now, registered
-//! via [`Scenario::add_const`](super::Scenario::add_const).)
+//! gone — source cells are `Builder::push_source` nodes now, registered
+//! via [`ScenarioExt::add_const`](crate::ScenarioExt::add_const).)
 
 use std::marker::PhantomData;
 
@@ -147,13 +147,12 @@ where
 
 /// Records an `Array<T, N>` stream into a `Series<T, N>`, stamping each row with
 /// the event time read from the [`Clock`] in its state. The one operator that
-/// needs time — constructed via
-/// [`Scenario::add_record`](super::Scenario::add_record), which supplies the
-/// driver's clock.
+/// needs time — constructed via the [`record`](super::record) /
+/// [`record_bounded`](super::record_bounded) formula constructors, which take
+/// the driver's clock as a parameter.
 ///
 /// An optional [`Retention`] bound (via [`with_retention`](Self::with_retention)
-/// / [`Scenario::add_record_retained`](super::Scenario::add_record_retained))
-/// caps the recorded history.
+/// / [`record_bounded`](super::record_bounded)) caps the recorded history.
 pub struct Record<T: Scalar, const N: usize> {
     clock: Clock,
     retention: Retention,
@@ -206,7 +205,11 @@ impl<T: Scalar, const N: usize> Operator for Record<T, N> {
             state.out = Series::with_retention(x.extents(), state.retention);
             return (false, &state.out);
         }
-        state.out.push_view(state.clock.get(), &x);
+        let t = state
+            .clock
+            .get()
+            .expect("Record: event time unset (the driver sets it before each stabilize)");
+        state.out.push_view(t, &x);
         (true, &state.out)
     }
 

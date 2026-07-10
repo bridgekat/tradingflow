@@ -1,9 +1,13 @@
 //! Historical-only source backed by pre-loaded arrays.
 
+use futures::stream::Stream;
 use tokio::sync::mpsc;
 
+use flowgraph::ingest::{Event, EventSource};
+
+use super::receiver_stream;
 use crate::Instant;
-use crate::{Array, Scalar, Series, Source};
+use crate::{Array, Scalar, Series};
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
 ///
@@ -26,7 +30,7 @@ impl<T: Scalar, const N: usize> ArraySource<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
+impl<T: Scalar, const N: usize> EventSource<Instant> for ArraySource<T, N> {
     type Event = Array<T, N>;
     type Output = Array<T, N>;
     type State = ();
@@ -39,7 +43,7 @@ impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
         self.default.clone()
     }
 
-    fn init(&self) -> (mpsc::Receiver<(Instant, Array<T, N>)>, ()) {
+    fn init(&self) -> (impl Stream<Item = Event<Instant, Array<T, N>>> + Send + 'static, ()) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
         // Clone the series for the spawned driver; the spec stays
@@ -55,7 +59,7 @@ impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
             }
         });
 
-        (hist_rx, ())
+        (receiver_stream(hist_rx), ())
     }
 
     fn write(_state: &mut (), payload: Array<T, N>, output: &mut Array<T, N>, _timestamp: Instant) -> usize {

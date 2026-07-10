@@ -1,12 +1,40 @@
-//! Element-wise numeric operators.
+//! Element-wise numeric, comparison and logical operators.
 //!
 //! The whole family collapses to two operators parameterized by a callable —
-//! [`Unary<T, N, F>`] (`Fn(T) -> T`) and [`Binary<T, N, F>`] (`Fn(T, T) -> T`) —
-//! over the strided [`ArrayView`] currency, sharing the one contiguous-fast /
-//! strided-slow elementwise core ([`apply_unary`](crate::data::array::apply_unary)
-//! / `apply_binary`). The named constructors below ([`add`], [`log`], …) are
-//! thin wrappers that pin the callable, so `add()` / `log()` read like the old
-//! `Add` / `Log` nodes while inferring the rank `N` from the wiring.
+//! [`UnaryMap<T, U, N, F>`] (`Fn(T) -> U`) and [`BinaryMap<T, U, N, F>`]
+//! (`Fn(T, T) -> U`) — over the strided [`ArrayView`] currency, sharing the one
+//! contiguous-fast / strided-slow elementwise core
+//! ([`apply_unary`](crate::data::array::apply_unary) / `apply_binary`).
+//!
+//! Fixing the output scalar `U` names the three sub-families:
+//!
+//! | `U` | Alias | Family | Constructors |
+//! | --- | --- | --- | --- |
+//! | `T` | [`Unary`] / [`Binary`] | arithmetic | [`add`], [`log`], … |
+//! | `bool` | [`Predicate`] / [`Compare`] | comparison | [`greater`], [`greater_than`], [`is_finite`], … |
+//! | `T`, at `T = bool` | [`Unary`] / [`Binary`] | logical | [`and`], [`or`], [`not`], … |
+//!
+//! and [`Indicator`] (`bool -> T`) / [`Choose`] (`(bool, T, T) -> T`) read a
+//! mask back into the numeric currency. The named constructors are thin wrappers
+//! that pin the callable, so `add()` / `log()` read like the old `Add` / `Log`
+//! nodes while inferring the rank `N` from the wiring.
+//!
+//! A worked signal — `MA(x, 10) - MA(x, 5) > 0 AND NOT LAG(that, 1) > 0`, over
+//! a live array handle via the self-recording formula constructors
+//! ([`ma`](super::ma), [`lag`](super::lag), …; every generic is inferred from
+//! the one parameter annotation):
+//!
+//! ```ignore
+//! flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {
+//!     let d = subtract() @ (ma(&clk, 10) @ x, ma(&clk, 5) @ x);
+//!     and() @ (greater_than(0.0) @ d, not() @ (greater_than(0.0) @ lag(&clk, 1) @ d))
+//! })
+//! ```
+//!
+//! Comparisons follow IEEE 754: a `NaN` operand compares `false` under every
+//! ordering predicate (and `true` under [`not_equal`] / [`not_equal_to`]). Use
+//! [`is_finite`] to test for missing data explicitly rather than relying on a
+//! comparison to filter it.
 
 use std::marker::PhantomData;
 use std::ops;
@@ -20,36 +48,43 @@ use crate::operators::op::ArrayValue;
 use crate::{Array, ArrayView, Scalar};
 
 // ===========================================================================
-// Unary — one elementwise operator, parameterized by a callable.
+// UnaryMap — one elementwise operator, parameterized by a callable.
 // ===========================================================================
 
-/// Element-wise `out[i] = f(x[i])` over a rank-`N` [`ArrayView`].
-pub struct Unary<T: Scalar, const N: usize, F> {
+/// Element-wise `out[i] = f(x[i])` over a rank-`N` [`ArrayView`], mapping the
+/// input scalar `T` to the output scalar `U`.
+pub struct UnaryMap<T: Scalar, U: Scalar, const N: usize, F> {
     f: F,
-    _p: PhantomData<T>,
+    _p: PhantomData<(T, U)>,
 }
 
-impl<T: Scalar, const N: usize, F: Fn(T) -> T + Send + Sync + 'static> Unary<T, N, F> {
+impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T) -> U + Send + Sync + 'static>
+    UnaryMap<T, U, N, F>
+{
     pub fn new(f: F) -> Self {
         Self { f, _p: PhantomData }
     }
 }
 
-/// Runtime state for [`Unary`]: the callable plus the output buffer.
-pub struct UnaryState<T: Scalar, const N: usize, F> {
+/// Runtime state for [`UnaryMap`]: the callable plus the output buffer.
+pub struct UnaryMapState<T: Scalar, U: Scalar, const N: usize, F> {
     f: F,
-    out: Array<T, N>,
+    out: Array<U, N>,
+    _p: PhantomData<T>,
 }
 
-impl<T: Scalar, const N: usize, F: Fn(T) -> T + Send + Sync + 'static> Operator for Unary<T, N, F> {
+impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T) -> U + Send + Sync + 'static> Operator
+    for UnaryMap<T, U, N, F>
+{
     type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
-    type State = UnaryState<T, N, F>;
+    type Outputs = ViewPort<ArrayValue<U, N>>;
+    type State = UnaryMapState<T, U, N, F>;
 
     fn init(self) -> Self::State {
-        UnaryState {
+        UnaryMapState {
             f: self.f,
             out: Array::zeros([0; N]),
+            _p: PhantomData,
         }
     }
 
@@ -58,7 +93,7 @@ impl<T: Scalar, const N: usize, F: Fn(T) -> T + Send + Sync + 'static> Operator 
         (_, x): (bool, ArrayView<'a, T, N>),
         state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, ArrayView<'a, T, N>) {
+    ) -> (bool, ArrayView<'a, U, N>) {
         // The build call seeds the output with the transformed build value (not
         // zeros — a fabricated finite observation would leak through carry
         // readers) but does not notify.
@@ -73,45 +108,49 @@ impl<T: Scalar, const N: usize, F: Fn(T) -> T + Send + Sync + 'static> Operator 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, T, N>),
         state: &'b Self::State,
-    ) -> (bool, ArrayView<'a, T, N>) {
+    ) -> (bool, ArrayView<'a, U, N>) {
         (false, state.out.view())
     }
 }
 
 // ===========================================================================
-// Binary — the two-input elementwise operator.
+// BinaryMap — the two-input elementwise operator.
 // ===========================================================================
 
 /// Element-wise `out[i] = f(a[i], b[i])` over rank-`N` [`ArrayView`]s sharing
-/// extents.
-pub struct Binary<T: Scalar, const N: usize, F> {
+/// extents, mapping the input scalar `T` to the output scalar `U`.
+pub struct BinaryMap<T: Scalar, U: Scalar, const N: usize, F> {
     f: F,
-    _p: PhantomData<T>,
+    _p: PhantomData<(T, U)>,
 }
 
-impl<T: Scalar, const N: usize, F: Fn(T, T) -> T + Send + Sync + 'static> Binary<T, N, F> {
+impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T, T) -> U + Send + Sync + 'static>
+    BinaryMap<T, U, N, F>
+{
     pub fn new(f: F) -> Self {
         Self { f, _p: PhantomData }
     }
 }
 
-/// Runtime state for [`Binary`]: the callable plus the output buffer.
-pub struct BinaryState<T: Scalar, const N: usize, F> {
+/// Runtime state for [`BinaryMap`]: the callable plus the output buffer.
+pub struct BinaryMapState<T: Scalar, U: Scalar, const N: usize, F> {
     f: F,
-    out: Array<T, N>,
+    out: Array<U, N>,
+    _p: PhantomData<T>,
 }
 
-impl<T: Scalar, const N: usize, F: Fn(T, T) -> T + Send + Sync + 'static> Operator
-    for Binary<T, N, F>
+impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T, T) -> U + Send + Sync + 'static> Operator
+    for BinaryMap<T, U, N, F>
 {
     type Inputs = (ViewPort<ArrayValue<T, N>>, ViewPort<ArrayValue<T, N>>);
-    type Outputs = ViewPort<ArrayValue<T, N>>;
-    type State = BinaryState<T, N, F>;
+    type Outputs = ViewPort<ArrayValue<U, N>>;
+    type State = BinaryMapState<T, U, N, F>;
 
     fn init(self) -> Self::State {
-        BinaryState {
+        BinaryMapState {
             f: self.f,
             out: Array::zeros([0; N]),
+            _p: PhantomData,
         }
     }
 
@@ -120,7 +159,7 @@ impl<T: Scalar, const N: usize, F: Fn(T, T) -> T + Send + Sync + 'static> Operat
         ((_, a), (_, b)): ((bool, ArrayView<'a, T, N>), (bool, ArrayView<'a, T, N>)),
         state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, ArrayView<'a, T, N>) {
+    ) -> (bool, ArrayView<'a, U, N>) {
         if init {
             state.out = Array::zeros(a.extents());
         }
@@ -132,20 +171,37 @@ impl<T: Scalar, const N: usize, F: Fn(T, T) -> T + Send + Sync + 'static> Operat
     fn passthrough<'a, 'b: 'a>(
         _: ((bool, ArrayView<'a, T, N>), (bool, ArrayView<'a, T, N>)),
         state: &'b Self::State,
-    ) -> (bool, ArrayView<'a, T, N>) {
+    ) -> (bool, ArrayView<'a, U, N>) {
         (false, state.out.view())
     }
 }
 
 // ===========================================================================
-// Named constructors — the legacy `Add`/`Log`/… nodes as thin wrappers.
+// Aliases naming the three sub-families.
 // ===========================================================================
+
+/// Arithmetic unary: `T -> T` (also the logical `not` at `T = bool`).
+pub type Unary<T, const N: usize, F> = UnaryMap<T, T, N, F>;
+/// Arithmetic binary: `(T, T) -> T` (also `and`/`or`/`xor` at `T = bool`).
+pub type Binary<T, const N: usize, F> = BinaryMap<T, T, N, F>;
+/// Comparison against a constant: `T -> bool`.
+pub type Predicate<T, const N: usize, F> = UnaryMap<T, bool, N, F>;
+/// Comparison of two arrays: `(T, T) -> bool`.
+pub type Compare<T, const N: usize, F> = BinaryMap<T, bool, N, F>;
 
 /// A [`Unary`] whose callable is a plain function pointer (the type of every
 /// non-capturing named constructor below — nameable, `Copy`, `Send + Sync`).
 pub type UnaryFn<T, const N: usize> = Unary<T, N, fn(T) -> T>;
 /// A [`Binary`] whose callable is a plain function pointer.
 pub type BinaryFn<T, const N: usize> = Binary<T, N, fn(T, T) -> T>;
+/// A [`Predicate`] whose callable is a plain function pointer.
+pub type PredicateFn<T, const N: usize> = Predicate<T, N, fn(T) -> bool>;
+/// A [`Compare`] whose callable is a plain function pointer.
+pub type CompareFn<T, const N: usize> = Compare<T, N, fn(T, T) -> bool>;
+
+// ===========================================================================
+// Named constructors — arithmetic.
+// ===========================================================================
 
 macro_rules! define_unary {
     ($(#[$meta:meta])* $name:ident [$($bounds:tt)*], |$x:ident| $body:expr) => {
@@ -209,4 +265,168 @@ define_binary!(/// Element-wise maximum (IEEE 754).
 /// captures the exponent, so it is not a plain function pointer).
 pub fn pow<T: Scalar + Float, const N: usize>(n: T) -> Unary<T, N, impl Fn(T) -> T + Send + Sync> {
     Unary::new(move |x: T| x.powf(n))
+}
+
+// ===========================================================================
+// Named constructors — comparison.
+// ===========================================================================
+
+macro_rules! define_compare {
+    ($(#[$meta:meta])* $name:ident, |$a:ident, $b:ident| $body:expr) => {
+        $(#[$meta])*
+        pub fn $name<T: Scalar + PartialOrd, const N: usize>() -> CompareFn<T, N> {
+            Compare::new(|$a, $b| $body)
+        }
+    };
+}
+
+define_compare!(/// Element-wise `a > b`; a `NaN` operand yields `false`.
+    greater, |a, b| a > b);
+define_compare!(/// Element-wise `a >= b`; a `NaN` operand yields `false`.
+    greater_equal, |a, b| a >= b);
+define_compare!(/// Element-wise `a < b`; a `NaN` operand yields `false`.
+    less, |a, b| a < b);
+define_compare!(/// Element-wise `a <= b`; a `NaN` operand yields `false`.
+    less_equal, |a, b| a <= b);
+define_compare!(/// Element-wise `a == b`; a `NaN` operand yields `false`.
+    equal, |a, b| a == b);
+define_compare!(/// Element-wise `a != b`; a `NaN` operand yields `true`.
+    not_equal, |a, b| a != b);
+
+macro_rules! define_predicate {
+    ($(#[$meta:meta])* $name:ident, |$x:ident, $v:ident| $body:expr) => {
+        $(#[$meta])*
+        pub fn $name<T: Scalar + PartialOrd, const N: usize>(
+            $v: T,
+        ) -> Predicate<T, N, impl Fn(T) -> bool + Send + Sync> {
+            Predicate::new(move |$x: T| $body)
+        }
+    };
+}
+
+define_predicate!(/// Element-wise `x > v`; `NaN` yields `false`.
+    greater_than, |x, v| x > v);
+define_predicate!(/// Element-wise `x >= v`; `NaN` yields `false`.
+    at_least, |x, v| x >= v);
+define_predicate!(/// Element-wise `x < v`; `NaN` yields `false`.
+    less_than, |x, v| x < v);
+define_predicate!(/// Element-wise `x <= v`; `NaN` yields `false`.
+    at_most, |x, v| x <= v);
+define_predicate!(/// Element-wise `x == v`; `NaN` yields `false`.
+    equal_to, |x, v| x == v);
+define_predicate!(/// Element-wise `x != v`; `NaN` yields `true`.
+    not_equal_to, |x, v| x != v);
+
+/// Element-wise `x.is_finite()` — test for missing data explicitly, rather than
+/// relying on an ordering comparison to filter `NaN`s.
+pub fn is_finite<T: Scalar + Float, const N: usize>() -> PredicateFn<T, N> {
+    Predicate::new(|x: T| x.is_finite())
+}
+
+/// Element-wise `x.is_nan()`.
+pub fn is_nan<T: Scalar + Float, const N: usize>() -> PredicateFn<T, N> {
+    Predicate::new(|x: T| x.is_nan())
+}
+
+// ===========================================================================
+// Named constructors — logical connectives (`Unary`/`Binary` at `T = bool`).
+// ===========================================================================
+
+/// Element-wise logical AND. Both masks are always evaluated — a graph edge
+/// carries a whole cross-section, so there is nothing to short-circuit.
+pub fn and<const N: usize>() -> BinaryFn<bool, N> {
+    Binary::new(|a, b| a && b)
+}
+
+/// Element-wise logical OR. Both masks are always evaluated.
+pub fn or<const N: usize>() -> BinaryFn<bool, N> {
+    Binary::new(|a, b| a || b)
+}
+
+/// Element-wise logical XOR.
+pub fn xor<const N: usize>() -> BinaryFn<bool, N> {
+    Binary::new(|a, b| a ^ b)
+}
+
+/// Element-wise logical NOT.
+pub fn not<const N: usize>() -> UnaryFn<bool, N> {
+    Unary::new(|a| !a)
+}
+
+// ===========================================================================
+// Mask consumers — back from `bool` into the numeric currency.
+// ===========================================================================
+
+/// Read a mask into the numeric currency: `if mask[i] { on } else { off }`.
+/// `indicator(1.0, 0.0)` is the 0/1 indicator; `indicator(1.0, f64::NAN)` is the
+/// NaN-masking universe filter.
+pub fn indicator<T: Scalar, const N: usize>(
+    on: T,
+    off: T,
+) -> UnaryMap<bool, T, N, impl Fn(bool) -> T + Send + Sync> {
+    UnaryMap::new(move |m: bool| if m { on.clone() } else { off.clone() })
+}
+
+/// Element-wise `if cond[i] { a[i] } else { b[i] }` — the three-input selector.
+pub struct Choose<T: Scalar, const N: usize> {
+    _p: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> Choose<T, N> {
+    pub fn new() -> Self {
+        Self { _p: PhantomData }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for Choose<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Scalar, const N: usize> Operator for Choose<T, N> {
+    type Inputs = (
+        ViewPort<ArrayValue<bool, N>>,
+        ViewPort<ArrayValue<T, N>>,
+        ViewPort<ArrayValue<T, N>>,
+    );
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = Array<T, N>;
+
+    fn init(self) -> Self::State {
+        Array::zeros([0; N])
+    }
+
+    #[inline(always)]
+    fn compute<'a, 'b: 'a>(
+        ((_, cond), (_, a), (_, b)): (
+            (bool, ArrayView<'a, bool, N>),
+            (bool, ArrayView<'a, T, N>),
+            (bool, ArrayView<'a, T, N>),
+        ),
+        out: &'b mut Self::State,
+        init: bool,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        if init {
+            *out = Array::zeros(cond.extents());
+        }
+        let (cs, as_, bs) = (cond.to_contiguous(), a.to_contiguous(), b.to_contiguous());
+        let dst = out.as_mut_slice();
+        for i in 0..dst.len() {
+            dst[i] = if cs[i] { as_[i].clone() } else { bs[i].clone() };
+        }
+        (!init, out.view())
+    }
+
+    #[inline(always)]
+    fn passthrough<'a, 'b: 'a>(
+        _: (
+            (bool, ArrayView<'a, bool, N>),
+            (bool, ArrayView<'a, T, N>),
+            (bool, ArrayView<'a, T, N>),
+        ),
+        out: &'b Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, out.view())
+    }
 }

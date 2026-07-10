@@ -9,8 +9,8 @@
 //! RankIC against the forward return.
 //!
 //! TTM (trailing-twelve-month) flows are a 365-day rolling mean of the annualized
-//! quarterly flow (`RollingMean::time_delta(365d)` over a `Record`ed series) — the
-//! same idiom as [`build_features`](super::build_features). Balance-sheet stocks
+//! quarterly flow (the self-recording [`ma_time`] constructor) — the same idiom
+//! as [`build_features`](super::build_features). Balance-sheet stocks
 //! (assets, equity, liabilities, cash) are used at their latest carried-forward
 //! value (no TTM). The parquet stores assets debit-positive and liabilities /
 //! expense items credit-**negative**; the formulas negate them where a positive
@@ -20,9 +20,8 @@
 //! computed once, reused), so each level factor is one `Divide`/`Log`. The
 //! period-over-period **变动 (delta)** and **同比 (YoY growth)** factors need a
 //! ~1-year lag of an irregular-cadence series: the level is resampled onto the
-//! daily close pulse, `Record`ed, and `Lag`ged 244 trading days (the 次新 idiom).
-//! A delta is then `level − level₋₁ᵧ`; a growth is the faithful `(cur − prev) /
-//! prev`, whose two-op Array→Array chain is fused into one node via a nested
+//! daily close pulse and run through the self-recording 244-day [`change`] /
+//! [`pct_change`] (the 次新 idiom), fused into one node via a nested
 //! [`segment!`](flowgraph::segment) — the form recommended for individual
 //! factors. (`(cur − prev)/prev` is NOT rank-equivalent to `cur/prev` once a
 //! year-ago base goes negative, so the subtraction is kept rather than dropped.)
@@ -33,27 +32,26 @@
 //! and a cash-tax-paid term), dividend yield/payout (DP/DPR), and the regression
 //! / SUE / composite (Profit/Growth/Safe/QQC) factors.
 
-use flowgraph::typed::{Handle, RefPort};
+use flowgraph::typed::{Handle, RefPort, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    self, ArrayValue, Diff, Fillna, Lag, Percentile, Record, RollingMean, divide, log, multiply,
-    negate, subtract,
+    self, ArrayValue, Diff, Fillna, Percentile, ResampleClocked, ResampleView, change, divide,
+    log, ma_time, multiply, negate, pct_change, subtract,
 };
-use tradingflow::{Retention, Scenario, ViewPort};
+use tradingflow::{Scenario, ScenarioExt};
 
-use super::{AvH, ResampleClocked, ResampleView, Stacked, RETAIN_MARGIN};
+use super::{AvH, Stacked};
 
 type H = AvH;
 
-/// Trading days a 变动/同比 level is lagged (the 次新 ~1-year idiom); its recorded
-/// series only needs this look-back (plus the compaction margin) retained.
+/// Trading days a 变动/同比 level is lagged (the 次新 ~1-year idiom); the
+/// self-recording [`change`] / [`pct_change`] retain exactly this look-back.
 const LAG_YEAR: usize = 244;
 
-/// Resample `data` onto a daily-`Array` clock pulse. Aliased so the two-comma
-/// turbofish does not appear at a `segment!` arrow call site (the macro's
-/// tuple-input arm cannot parse a comma inside the operator's generics).
-type ResampleDaily = ResampleView<1>;
+/// Resample `data` onto a daily-`Array` clock pulse. Aliased to keep the
+/// `segment!` application sites short.
+type ResampleDaily = ResampleView<f64, 1>;
 
 /// A named set of **model-ready feature** handles, in column order — each factor
 /// is already cross-sectionally ranked and its missing values imputed (see
@@ -72,11 +70,9 @@ pub struct FactorSet {
 /// years). Every factor is rank-transformed, so `0.5` is the common neutral fill.
 /// The rank → fill chain is fused into one node via `segment!`.
 pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
-    sc.add_operator(
-        flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
-            let ranked = x => Percentile::<f64, 1>::new();
-            let filled = ranked => Fillna::<f64, 1>::new(0.5);
-            filled
+    sc.push(
+        flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {
+            Fillna::<f64, 1>::new(0.5) @ Percentile::<f64, 1>::new() @ x
         }),
         h,
     )
@@ -84,76 +80,57 @@ pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
 
 /// Total market cap = unadjusted close × total shares.
 pub fn market_cap(sc: &mut Scenario, st: &Stacked) -> H {
-    sc.add_operator(multiply::<f64, 1>(), (st.close, st.total_shares))
+    sc.push(multiply::<f64, 1>(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
 pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> H {
-    sc.add_operator(multiply::<f64, 1>(), (st.close, st.circ_shares))
+    sc.push(multiply::<f64, 1>(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
-/// annualized (effective-date-aligned) series. The record → rolling-mean chain is
-/// fused into one node; the record retains a 365-day (+margin) time window.
+/// annualized (effective-date-aligned) series, via the self-recording
+/// [`ma_time`] (record fused in, retention sized internally).
 fn ttm(sc: &mut Scenario, h: H) -> H {
-    let clk = sc.clock();
-    let ret = Retention::duration(Duration::from_days(380));
-    sc.add_operator(
-        flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
-            let series = x => Record::<f64, 1>::with_retention(clk, ret);
-            let ttm = series => RollingMean::<f64, 1>::time_delta(Duration::from_days(365));
-            ttm
-        }),
-        h,
-    )
+    let clk = sc.time();
+    sc.push(ma_time(&clk, Duration::from_days(365)), h)
 }
 
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.add_operator(divide::<f64, 1>(), (a, b))
+    sc.push(divide::<f64, 1>(), (a, b))
 }
 
 fn log_h(sc: &mut Scenario, h: H) -> H {
-    sc.add_operator(log::<f64, 1>(), h)
+    sc.push(log::<f64, 1>(), h)
 }
 
 fn neg(sc: &mut Scenario, h: H) -> H {
-    sc.add_operator(negate::<f64, 1>(), h)
+    sc.push(negate::<f64, 1>(), h)
 }
 
 /// 变动 (period-over-period delta): `level − level₋₁ᵧ`. The whole chain —
-/// resample the level onto the daily close pulse, `Record` it on the scenario
-/// clock `clk`, `Lag` 244 trading days, subtract — is fused into ONE node via a
-/// `segment!`; `Record::new(clk)` is itself a `Segment`-typed operator. The
-/// shared `level` block is computed once outside, so it is not recomputed here.
+/// resample the level onto the daily close pulse, then the self-recording
+/// 244-day [`change`] — is fused into ONE node via a `segment!`. The shared
+/// `level` block is computed once outside, so it is not recomputed here.
 /// The 次新 listing filter excludes names without a full prior year.
 fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
-    let clk = sc.clock();
-    let ret = Retention::count(LAG_YEAR + RETAIN_MARGIN);
-    sc.add_operator(
-        flowgraph::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
-            let daily = (adj, lvl) => ResampleDaily::new();
-            let series = daily => Record::<f64, 1>::with_retention(clk, ret);
-            let prev = series => Lag::<f64, 1>::new(LAG_YEAR, f64::NAN);
-            let d = (daily, prev) => subtract::<f64, 1>();
-            d
+    let clk = sc.time();
+    sc.push(
+        flowgraph::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| {
+            change(&clk, LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
     )
 }
 
-/// 同比 (YoY growth): the faithful `(cur − prev) / prev`. Same fused
-/// resample→record→lag chain as [`delta`], with the extra `Divide`.
+/// 同比 (YoY growth): the faithful `(cur − prev) / prev`, i.e. the
+/// self-recording [`pct_change`] over the same resampled daily pulse as
+/// [`delta`].
 fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
-    let clk = sc.clock();
-    let ret = Retention::count(LAG_YEAR + RETAIN_MARGIN);
-    sc.add_operator(
-        flowgraph::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
-            let daily = (adj, lvl) => ResampleDaily::new();
-            let series = daily => Record::<f64, 1>::with_retention(clk, ret);
-            let prev = series => Lag::<f64, 1>::new(LAG_YEAR, f64::NAN);
-            let diff = (daily, prev) => subtract::<f64, 1>();
-            let g = (diff, prev) => divide::<f64, 1>();
-            g
+    let clk = sc.time();
+    sc.push(
+        flowgraph::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| {
+            pct_change(&clk, LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -179,16 +156,16 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let cost_ttm = ttm(sc, st.operating_cost); // negative (a deduction)
     // Gross profit = revenue − COGS = revenue + cost_ttm (cost stored negative).
     // (`operators::add` is fully qualified — the local `add` binding shadows it.)
-    let gross_ttm = sc.add_operator(operators::add::<f64, 1>(), (rev_ttm, cost_ttm));
+    let gross_ttm = sc.push(operators::add::<f64, 1>(), (rev_ttm, cost_ttm));
     // Positive-magnitude liabilities (parquet stores them credit-negative).
     let debt = neg(sc, st.total_liab);
     let cur_liab = neg(sc, st.current_liab);
     let eps = div(sc, np_ttm, st.total_shares); // 每股收益 TTM
     let cogs_ttm = neg(sc, cost_ttm); // 营业成本 (positive magnitude)
     // 应计利润 = 净利润 − 经营现金流 (earnings not backed by cash).
-    let accruals_ttm = sc.add_operator(subtract::<f64, 1>(), (np_ttm, ocf_ttm));
+    let accruals_ttm = sc.push(subtract::<f64, 1>(), (np_ttm, ocf_ttm));
     // 投入资本 ≈ 总资产 − 流动负债 (net of non-interest-bearing current liabilities).
-    let invested_capital = sc.add_operator(subtract::<f64, 1>(), (st.total_assets, cur_liab));
+    let invested_capital = sc.push(subtract::<f64, 1>(), (st.total_assets, cur_liab));
 
     // ---- Profitability (盈利能力) ----
     let roe = div(sc, np_ttm, st.parent_equity); // 净利润 TTM / 净资产
@@ -274,9 +251,8 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // IC (short-term reversal); a contemporaneous (non-lagged) wiring bug would
     // instead make this strongly POSITIVE (the factor overlapping the return).
     let log_adj = log_h(sc, st.adjusted_close);
-    let log_adj_series = sc.add_record_retained(log_adj, Retention::count(21 + RETAIN_MARGIN));
-    let lag_1m = sc.add_operator(Lag::<f64, 1>::new(21, f64::NAN), log_adj_series);
-    add("REV_1M", sc.add_operator(subtract::<f64, 1>(), (log_adj, lag_1m)));
+    let clk = sc.time();
+    add("REV_1M", sc.push(change(&clk, 21), log_adj));
 
     drop(add);
     // Each catalog entry is finalized into its model-ready feature: rank + impute.
@@ -290,6 +266,6 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// the factor stored at `t-1` inside `InformationCoefficient`, it is the
 /// next-period return the factor is meant to predict.
 pub fn build_forward_return(sc: &mut Scenario, log_adj: H, rebalance_clock: Handle<RefPort<()>>) -> H {
-    let resampled = sc.add_operator(ResampleClocked::<1>::new(), (rebalance_clock, log_adj));
-    sc.add_operator(Diff::<f64, 1>::new(), resampled)
+    let resampled = sc.push(ResampleClocked::<f64, 1>::new(), (rebalance_clock, log_adj));
+    sc.push(Diff::<f64, 1>::new(), resampled)
 }

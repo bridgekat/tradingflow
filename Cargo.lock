@@ -671,7 +671,7 @@ dependencies = [
 [[package]]
 name = "flowgraph"
 version = "0.1.0"
-source = "git+https://github.com/bridgekat/flowgraph.git?rev=0543e5a3e6fbd99669b4bf10608fc5874e0ea789#0543e5a3e6fbd99669b4bf10608fc5874e0ea789"
+source = "git+https://github.com/bridgekat/flowgraph.git?rev=dcb543e05d8f766aa29bd42f99a60589cc7f3282#dcb543e05d8f766aa29bd42f99a60589cc7f3282"
 dependencies = [
  "crossbeam",
  "flowgraph-macros",
@@ -681,7 +681,7 @@ dependencies = [
 [[package]]
 name = "flowgraph-macros"
 version = "0.1.0"
-source = "git+https://github.com/bridgekat/flowgraph.git?rev=0543e5a3e6fbd99669b4bf10608fc5874e0ea789#0543e5a3e6fbd99669b4bf10608fc5874e0ea789"
+source = "git+https://github.com/bridgekat/flowgraph.git?rev=dcb543e05d8f766aa29bd42f99a60589cc7f3282#dcb543e05d8f766aa29bd42f99a60589cc7f3282"
 dependencies = [
  "proc-macro2",
  "quote",

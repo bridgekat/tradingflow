@@ -53,8 +53,6 @@
 //! [`Clock`] in their own state, so the clock is never a universal dependency.
 
 use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
 
 use flowgraph::typed::{Interface, RefViewPort, RefViewPorts, ValueView, ViewPort};
 
@@ -64,35 +62,12 @@ use crate::{ArrayView, Instant, Scalar};
 // Clock — driver-advanced event time, held only by operators that need it.
 // ===========================================================================
 
-/// A clock the driver advances before each `stabilize`. The operators that stamp
-/// event time ([`Record`](super::Record)) hold a clone in their own state and
-/// read it via [`get`](Self::get). `Arc<AtomicI64>` is `Send + Sync`;
-/// `Release`/`Acquire` make it self-synchronizing so a worker thread always
-/// observes the latest `set`.
-#[derive(Clone)]
-pub struct Clock(Arc<AtomicI64>);
-
-impl Clock {
-    pub fn new() -> Self {
-        Clock(Arc::new(AtomicI64::new(i64::MIN)))
-    }
-
-    /// Advance the clock. MUST be called only on the driver thread while no
-    /// `stabilize` is in flight (i.e. between generations).
-    pub fn set(&self, t: Instant) {
-        self.0.store(t.as_nanos(), Ordering::Release);
-    }
-
-    pub fn get(&self) -> Instant {
-        Instant::from_nanos(self.0.load(Ordering::Acquire))
-    }
-}
-
-impl Default for Clock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// The event-time cell the driver advances before each `stabilize` — the
+/// TAI-[`Instant`] instantiation of [`flowgraph::ingest::SharedTime`]. The
+/// operators that stamp event time ([`Record`](super::Record)) hold a clone in
+/// their own state and read it via `get` (which returns `None` before the
+/// first batch).
+pub type Clock = flowgraph::ingest::SharedTime<Instant>;
 
 // ===========================================================================
 // ArrayValue — the `ArrayView` view kind for flowgraph ports.

@@ -12,11 +12,11 @@
 //! rank-changers carry explicit out-rank generics.
 
 use flowgraph::core::Pool;
-use flowgraph::typed::{Graph, GraphBuilder, Handle, RefSource, RefViewPort, SourceHandle, ViewPort};
+use flowgraph::typed::{Builder, Handle, RefSource, RefViewPort, SourceHandle, ViewPort};
 
 use super::*;
 use crate::operators::op::ArrayValue;
-use crate::{Array, ArrayView, Instant, Retention, Series};
+use crate::{Array, ArrayView, Duration, Instant, Retention, Series};
 
 fn ts(n: i64) -> Instant {
     Instant::from_nanos(n)
@@ -31,7 +31,7 @@ type RVp<const N: usize> = RefViewPort<ArrayValue<f64, N>>;
 /// Push a `RefSource` of a scalar plus an `AsView` bridge; return the source
 /// handle (for `state_mut`) and the view handle (for wiring).
 fn scalar_src(
-    b: &mut GraphBuilder,
+    b: &mut Builder,
     v: f64,
 ) -> (SourceHandle<RefSource<Array<f64, 0>>>, Handle<Vp<0>>) {
     let s = b.push_source(RefSource::new(Array::scalar(v)));
@@ -41,7 +41,7 @@ fn scalar_src(
 
 /// Push a `RefSource` of a rank-1 array plus an `AsView` bridge.
 fn vec_src(
-    b: &mut GraphBuilder,
+    b: &mut Builder,
     v: Vec<f64>,
 ) -> (SourceHandle<RefSource<Array<f64, 1>>>, Handle<Vp<1>>) {
     let s = b.push_source(RefSource::new(Array::from_vec([v.len()], v)));
@@ -56,7 +56,7 @@ fn vec_src(
 /// independently, so the row notifies independently — preserving the per-element
 /// notify semantics the carry tests rely on.
 fn scalar_ref_src(
-    b: &mut GraphBuilder,
+    b: &mut Builder,
     v: f64,
 ) -> (SourceHandle<RefSource<Array<f64, 0>>>, Handle<RVp<0>>) {
     let s = b.push_source(RefSource::new(Array::scalar(v)));
@@ -68,7 +68,7 @@ fn scalar_ref_src(
 /// Like [`scalar_ref_src`] but for a rank-1 value (bridges the `[len]` source
 /// through [`AsView`] then [`RefArrayView`] — feeds `Concat`).
 fn vec_ref_src(
-    b: &mut GraphBuilder,
+    b: &mut Builder,
     v: Vec<f64>,
 ) -> (SourceHandle<RefSource<Array<f64, 1>>>, Handle<RVp<1>>) {
     let s = b.push_source(RefSource::new(Array::from_vec([v.len()], v)));
@@ -84,11 +84,11 @@ fn vec_ref_src(
 /// `scenario_simple_add`: 10 + 3 == 13.
 #[test]
 fn simple_add() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (ha, hav) = scalar_src(&mut b, 0.0);
     let (hb, hbv) = scalar_src(&mut b, 0.0);
     let hc = b.push(add::<f64, 0>(), (hav, hbv));
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(ha) = Array::scalar(10.0);
@@ -102,12 +102,12 @@ fn simple_add() {
 /// is read by two operators (add and multiply both read `a`).
 #[test]
 fn chain_add_then_mul() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (a, av) = scalar_src(&mut b, 0.0);
     let (bb, bv) = scalar_src(&mut b, 0.0);
     let ab = b.push(add::<f64, 0>(), (av, bv));
     let out = b.push(multiply::<f64, 0>(), (ab, av));
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(a) = Array::scalar(2.0);
@@ -121,12 +121,12 @@ fn chain_add_then_mul() {
 #[test]
 fn record_series() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (ha, hav) = scalar_src(&mut b, 0.0);
     let (hb, hbv) = scalar_src(&mut b, 0.0);
     let sum = b.push(add::<f64, 0>(), (hav, hbv));
     let rec = b.push(Record::<f64, 0>::new(clock.clone()), sum);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     clock.set(ts(1));
@@ -150,11 +150,11 @@ fn record_series() {
 #[test]
 fn filter_gates_record() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let flt = b.push(Filter::<_, 0>(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0), srcv);
     let rec = b.push(Record::<f64, 0>::new(clock.clone()), flt);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 1.0), (2, 5.0), (3, 2.0), (4, 10.0)] {
@@ -173,11 +173,11 @@ fn filter_gates_record() {
 #[test]
 fn last_of_record() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
     let lst = b.push(Last::<f64, 0>::new(0.0_f64), rec);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 10.0), (2, 20.0)] {
@@ -197,7 +197,7 @@ fn last_of_record() {
 #[test]
 fn bounded_record_feeds_rolling_and_lag() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     // RollingMean(5) reads back 6 on eviction, Lag(3) back 4 → retain 8 covers both.
     let rec = b.push(
@@ -206,7 +206,7 @@ fn bounded_record_feeds_rolling_and_lag() {
     );
     let lag = b.push(Lag::<f64, 0>::new(3, f64::NAN), rec);
     let rmean = b.push(RollingMean::<f64, 0>::count(5), rec);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     let m = 30_i64;
@@ -244,7 +244,7 @@ fn bounded_record_feeds_rolling_and_lag() {
 #[test]
 fn clocked_periodic() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (data, datav) = scalar_src(&mut b, 0.0);
     let tick = b.push_source(RefSource::new(()));
     let gated = b.push(
@@ -252,7 +252,7 @@ fn clocked_periodic() {
         (*tick, datav),
     );
     let rec = b.push(Record::<f64, 0>::new(clock.clone()), gated);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     let clock_ticks = [2_i64];
@@ -276,12 +276,12 @@ fn clocked_periodic() {
 #[test]
 fn coalesced_two_source_add() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (a, av) = scalar_src(&mut b, 0.0);
     let (bb, bv) = scalar_src(&mut b, 0.0);
     let sum = b.push(add::<f64, 0>(), (av, bv));
     let rec = b.push(Record::<f64, 0>::new(clock.clone()), sum);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, va, vb) in [(1_i64, 10.0, 100.0), (2, 20.0, 200.0)] {
@@ -299,13 +299,13 @@ fn coalesced_two_source_add() {
 /// stack along a new axis into a rank-1 cross-section.
 #[test]
 fn slice_stack_and_sync() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (s0, s0v) = scalar_ref_src(&mut b, 0.0);
     let (s1, s1v) = scalar_ref_src(&mut b, 0.0);
     let (s2, s2v) = scalar_ref_src(&mut b, 0.0);
     let stacked = b.push(Stack::<f64, 0, 1>::new(0), &[s0v, s1v, s2v][..]);
     let synced = b.push(StackSync::<f64, 0, 1>::new(0), &[s0v, s1v, s2v][..]);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(s0) = Array::scalar(1.0);
@@ -330,11 +330,11 @@ fn slice_stack_and_sync() {
 #[test]
 fn rolling_mean_count_warmup_and_value() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
     let rm = b.push(RollingMean::<f64, 0>::count(3), rec);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 1.0), (2, 2.0), (3, 3.0)] {
@@ -355,14 +355,14 @@ fn rolling_mean_count_warmup_and_value() {
 /// Unary `negate` + binary `subtract`/`divide` (values from `arithmetic` tests).
 #[test]
 fn arith_unary_and_binary() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (a, av) = vec_src(&mut b, vec![1.0_f64, -2.0, 3.0]);
     let neg = b.push(negate::<f64, 1>(), av);
     let (x, xv) = scalar_src(&mut b, 20.0);
     let (y, yv) = scalar_src(&mut b, 4.0);
     let sub = b.push(subtract::<f64, 0>(), (xv, yv));
     let div = b.push(divide::<f64, 0>(), (xv, yv));
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(a) = Array::from_vec([3], vec![1.0, -2.0, 3.0]);
@@ -378,13 +378,13 @@ fn arith_unary_and_binary() {
 /// `min`/`max`/`pow` (values from `arithmetic` tests).
 #[test]
 fn arith_min_max_pow() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (a, av) = vec_src(&mut b, vec![1.0_f64, 5.0, 3.0]);
     let (bb, bv) = vec_src(&mut b, vec![2.0_f64, 4.0, 6.0]);
     let mn = b.push(min::<f64, 1>(), (av, bv));
     let mx = b.push(max::<f64, 1>(), (av, bv));
     let p = b.push(pow::<f64, 1>(2.0), av);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(a) = Array::from_vec([3], vec![1.0, 5.0, 3.0]);
@@ -400,12 +400,12 @@ fn arith_min_max_pow() {
 #[test]
 fn rolling_sum_and_variance() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
     let rsum = b.push(RollingSum::<f64, 0>::count(3), rec);
     let rvar = b.push(RollingVariance::<f64, 0>::count(3), rec);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 1.0), (2, 2.0), (3, 3.0)] {
@@ -426,11 +426,11 @@ fn rolling_sum_and_variance() {
 #[test]
 fn rolling_covariance_2d() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = vec_src(&mut b, vec![0.0_f64; 2]);
     let rec = b.push(Record::<f64, 1>::new(clock.clone()), srcv);
     let cov = b.push(RollingCovariance::<f64>::count(3), rec);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, x) in [(1_i64, 1.0), (2, 2.0), (3, 3.0)] {
@@ -449,11 +449,11 @@ fn rolling_covariance_2d() {
 #[test]
 fn ema_two_values() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
     let e = b.push(Ema::<f64, 0>::new(0.5, 2), rec);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 10.0), (2, 20.0)] {
@@ -468,7 +468,7 @@ fn ema_two_values() {
 /// `Where` / `Cast` / `Id` (values from their legacy tests).
 #[test]
 fn structural_where_cast_id() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (a, av) = vec_src(&mut b, vec![1.0_f64, 5.0, 2.0]);
     let w = b.push(Where::<f64, _, 1>::new(|v: f64| v > 3.0, 0.0_f64), av);
     // `Id` is currency-agnostic — exercise it on the owned-array source cell.
@@ -476,7 +476,7 @@ fn structural_where_cast_id() {
     let ci = b.push_source(RefSource::new(Array::from_vec([3], vec![1_i32, 2, 3])));
     let civ = b.push(AsView::<i32, 1>::new(), *ci);
     let c = b.push(Cast::<i32, f64, 1>::new(), civ);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(a) = Array::from_vec([3], vec![1.0, 5.0, 2.0]);
@@ -493,13 +493,13 @@ fn structural_where_cast_id() {
 /// `Clamp`, `Fillna`, `ForwardFill` (single-shot, values from legacy tests).
 #[test]
 fn num_clamp_fillna_ffill() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (a, av) = vec_src(&mut b, vec![1.0_f64, 3.0, 7.0]);
     let clamp = b.push(Clamp::<f64, 1>::new(2.0, 5.0), av);
     let (na, nav) = vec_src(&mut b, vec![1.0_f64, f64::NAN, 3.0]);
     let fill = b.push(Fillna::<f64, 1>::new(0.0), nav);
     let ff = b.push(ForwardFill::<f64, 1>::new(), nav);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(a) = Array::from_vec([3], vec![1.0, 3.0, 7.0]);
@@ -517,11 +517,11 @@ fn num_clamp_fillna_ffill() {
 /// `Diff` / `PctChange` across ticks (NaN on first, then differences/returns).
 #[test]
 fn num_diff_and_pct_change() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let d = b.push(Diff::<f64, 0>::new(), srcv);
     let pc = b.push(PctChange::<f64, 0>::new(), srcv);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(src) = Array::scalar(100.0);
@@ -539,7 +539,7 @@ fn num_diff_and_pct_change() {
 /// (values from their legacy tests).
 #[test]
 fn num_cross_sectional() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (five, fivev) = vec_src(&mut b, vec![30.0_f64, 10.0, 50.0, 20.0, 40.0]);
     let gau = b.push(Gaussianize::<f64, 1>::new(), fivev);
     let pct = b.push(Percentile::<f64, 1>::new(), fivev);
@@ -547,7 +547,7 @@ fn num_cross_sectional() {
     let zsc = b.push(Standardize::<f64, 1>::new(), std_inv);
     let (win_in, win_inv) = vec_src(&mut b, (0..10).map(|i| i as f64).collect());
     let win = b.push(Winsorize::<f64, 1>::new(0.1), win_inv);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(five) = Array::from_vec([5], vec![30.0, 10.0, 50.0, 20.0, 40.0]);
@@ -581,7 +581,7 @@ fn num_cross_sectional() {
 /// `Map` (allocating SI→SO) doubling a scalar.
 #[test]
 fn map_doubles() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let m = b.push(
         Map::new(|a: ArrayView<f64, 0>| {
@@ -591,7 +591,7 @@ fn map_doubles() {
         }),
         srcv,
     );
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(src) = Array::scalar(5.0);
@@ -602,7 +602,7 @@ fn map_doubles() {
 /// `Apply` (two-input add) and `Select` (flat index pick).
 #[test]
 fn apply_add_and_select() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (a, av) = vec_src(&mut b, vec![1.0_f64, 2.0, 3.0]);
     let (bb, bv) = vec_src(&mut b, vec![10.0_f64, 20.0, 30.0]);
     let ap = b.push(
@@ -619,7 +619,7 @@ fn apply_add_and_select() {
     );
     let (five, fivev) = vec_src(&mut b, vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]);
     let sel = b.push(Select::<f64, 1, 1>::flat(vec![1, 3]), fivev);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(a) = Array::from_vec([3], vec![1.0, 2.0, 3.0]);
@@ -634,11 +634,11 @@ fn apply_add_and_select() {
 #[test]
 fn lag_offset_two() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
     let lag = b.push(Lag::<f64, 0>::new(2, f64::NAN), rec);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 10.0), (2, 20.0), (3, 30.0)] {
@@ -652,11 +652,11 @@ fn lag_offset_two() {
 /// `Concat` axis-0 of two `[2]` arrays → `[4]`.
 #[test]
 fn concat_axis0() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (a, av) = vec_ref_src(&mut b, vec![1.0_f64, 2.0]);
     let (bb, bv) = vec_ref_src(&mut b, vec![3.0_f64, 4.0]);
     let cc = b.push(Concat::<f64, 1>::new(0), &[av, bv][..]);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(a) = Array::from_vec([2], vec![1.0, 2.0]);
@@ -671,13 +671,13 @@ fn concat_axis0() {
 /// path, firing the clock each tick (values from the metrics tests).
 #[test]
 fn metrics_clock_gated() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (data, datav) = scalar_src(&mut b, 0.0);
     let tick = b.push_source(RefSource::new(()));
     let cr = b.push(CompoundReturn::<f64, 0>::new(), (datav, *tick));
     let ar = b.push(AverageReturn::<f64, 0>::new(), (datav, *tick));
     let vol = b.push(Volatility::<f64, 0>::new(), (datav, *tick));
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 100.0), (2, 110.0)] {
@@ -700,10 +700,10 @@ fn metrics_clock_gated() {
 /// `Drawdown` (single input, no clock) from the running maximum.
 #[test]
 fn metrics_drawdown() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (data, datav) = scalar_src(&mut b, 0.0);
     let dd = b.push(Drawdown::<f64, 0>::new(), datav);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (v, e) in [(100.0, 0.0), (120.0, 0.0), (90.0, -0.25)] {
@@ -716,10 +716,10 @@ fn metrics_drawdown() {
 /// `Annualize`: YTD [2024, day 91, 100, 20] → annualized × 365/91.
 #[test]
 fn stocks_annualize() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = vec_src(&mut b, vec![2024.0_f64, 91.0, 100.0, 20.0]);
     let ann = b.push(Annualize::new(), srcv);
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(src) = Array::from_vec([4], vec![2024.0, 91.0, 100.0, 20.0]);
@@ -733,11 +733,11 @@ fn stocks_annualize() {
 /// the two inputs). 9.5 with a 0.5 cash dividend forward-adjusts back to 10.0.
 #[test]
 fn stocks_forward_adjust() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (price, pricev) = scalar_src(&mut b, 10.0);
     let (divd, divdv) = vec_src(&mut b, vec![0.0_f64, 0.0]);
     let fa = b.push(ForwardAdjust::<0, 1>::new(), (pricev, divdv));
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     // gen1: price only.
@@ -762,7 +762,7 @@ fn stocks_forward_adjust() {
 fn parallel_fanout_matches_sequential() {
     const K: usize = 16;
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let recs: Vec<_> = (0..K)
         .map(|_| {
@@ -770,7 +770,7 @@ fn parallel_fanout_matches_sequential() {
             b.push(Record::<f64, 0>::new(clock.clone()), f)
         })
         .collect();
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(8);
 
     let seq = [1.0_f64, 5.0, 2.0, 10.0, 4.0, 0.5, 7.0, 3.0, 9.0];
@@ -792,7 +792,7 @@ fn parallel_stress_stateful_counts() {
     const K: usize = 12;
     const GENS: usize = 500;
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let cnts: Vec<_> = (0..K)
         .map(|_| {
@@ -800,7 +800,7 @@ fn parallel_stress_stateful_counts() {
             b.push(Count::<0>, f)
         })
         .collect();
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(8);
 
     let mut passes = 0.0_f64;
@@ -838,7 +838,7 @@ fn parallel_stress_stateful_counts() {
 #[test]
 fn split_rows_notify_with_panel() {
     let clock = Clock::new();
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let panel = b.push_source(RefSource::new(Array::from_vec([3, 2], vec![0.0_f64; 6])));
     let panelv = b.push(AsView::<f64, 2>::new(), *panel);
     let other = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
@@ -850,7 +850,7 @@ fn split_rows_notify_with_panel() {
     let stacked = b.push(Stack::<f64, 1, 2>::new(0), &rows[..]);
     let rec = b.push(Record::<f64, 2>::new(clock.clone()), stacked);
     let _sink = b.push(Count::<0>, otherv); // unrelated cone
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     // Build values: row views hold the initial panel rows; the record is empty.
@@ -878,11 +878,11 @@ fn split_rows_notify_with_panel() {
 #[test]
 #[should_panic(expected = "Split: input axis-0 size")]
 fn split_axis_size_mismatch_panics() {
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let panel = b.push_source(RefSource::new(Array::from_vec([3, 2], vec![0.0_f64; 6])));
     let panelv = b.push(AsView::<f64, 2>::new(), *panel);
     let _ = b.push(Split::<f64, 2, 1>::new(2), panelv);
-    let _g = Graph::from_builder(b);
+    let _g = b.build();
 }
 
 /// The view chain (retaining `Gate` -> view-input `SliceView` / `ForwardAdjust`)
@@ -907,7 +907,7 @@ fn view_chain_matches_owned_chain() {
     }
 
     let nan = f64::NAN;
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     // Stock 0's price/dividend rows as direct `[2]` view sources.
     let (prices, prices_view) = vec_src(&mut b, vec![nan; 2]);
     let (div, div_view) = vec_src(&mut b, vec![nan; 2]);
@@ -936,7 +936,7 @@ fn view_chain_matches_owned_chain() {
     );
     let v_adjusted = b.push(multiply::<f64, 0>(), (v_close, v_adj));
 
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     // (price row, dividend row) for stock 0 per tick; None = source not poked.
@@ -985,7 +985,7 @@ fn view_join_carry_matches_owned_join() {
     }
 
     let n = 3usize;
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let panel = b.push_source(RefSource::new(Array::from_vec([n, 2], vec![0.0; n * 2])));
     let panelv = b.push(AsView::<f64, 2>::new(), *panel);
     let rows = b.push(Split::<f64, 2, 1>::new(n), panelv);
@@ -995,7 +995,7 @@ fn view_join_carry_matches_owned_join() {
     let owned_join = b.push(Stack::<f64, 1, 2>::new(0), &rows[..]);
     let view_join = b.push(Stack::<f64, 1, 2>::new(0), &rows[..]);
 
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     // `None` = idle generation (panel not poked → the join must carry the last
@@ -1038,16 +1038,16 @@ fn fused_segment_matches_unfused_nodes() {
 
     let fused = flowgraph::segment!(|prices_row: Vp<1>, div_row: Vp<1>|
         -> (Vp<0>, Vp<0>) {
-        let prices = prices_row => Filter::<_, 1>(any_finite);
-        let dividends = div_row => Filter::<_, 1>(any_finite);
-        let close = prices => Select::<f64, 1, 0>::new(vec![0], 0, true);
-        let adjusts = (close, dividends) => ForwardAdjust::<0, 1>::new().with_output_prices(false);
-        let adjusted = (close, adjusts) => multiply::<f64, 0>();
+        let prices = Filter::<_, 1>(any_finite) @ prices_row;
+        let dividends = Filter::<_, 1>(any_finite) @ div_row;
+        let close = Select::<f64, 1, 0>::new(vec![0], 0, true) @ prices;
+        let adjusts = ForwardAdjust::<0, 1>::new().with_output_prices(false) @ (close, dividends);
+        let adjusted = multiply::<f64, 0>() @ (close, adjusts);
         (adjusted, adjusts)
     });
 
     let nan = f64::NAN;
-    let mut b = GraphBuilder::new();
+    let mut b = Builder::new();
     let (prices, pricesv) = vec_src(&mut b, vec![nan; 2]);
     let (div, divv) = vec_src(&mut b, vec![nan; 2]);
 
@@ -1059,7 +1059,7 @@ fn fused_segment_matches_unfused_nodes() {
     let adjusted = b.push(multiply::<f64, 0>(), (close, adj));
 
     let (f_adjusted, f_adj) = b.push(fused, (pricesv, divv));
-    let mut g = Graph::from_builder(b);
+    let mut g = b.build();
     let mut pool = Pool::new(0);
 
     // (prices_row, dividend_row) per tick; None = source not poked.
@@ -1082,5 +1082,306 @@ fn fused_segment_matches_unfused_nodes() {
         g.stabilize(&mut pool);
         assert_eq!(bits(g.view(adjusted)), bits(g.view(f_adjusted)), "tick {i}: adjusted");
         assert_eq!(bits(g.view(adj)), bits(g.view(f_adj)), "tick {i}: adjusts");
+    }
+}
+
+// ===========================================================================
+// Comparison / logical operators
+// ===========================================================================
+
+#[test]
+fn comparisons_follow_ieee_nan_semantics() {
+    // Ordering predicates are false for NaN; `!=` is true. `is_finite` is the
+    // explicit missing-data test.
+    let nan = f64::NAN;
+    let mut b = Builder::new();
+    let (_s, x) = vec_src(&mut b, vec![1.0, -1.0, 0.0, nan]);
+    let gt0 = b.push(greater_than::<f64, 1>(0.0), x);
+    let ne0 = b.push(not_equal_to::<f64, 1>(0.0), x);
+    let fin = b.push(is_finite::<f64, 1>(), x);
+    let g = b.build();
+
+    assert_eq!(g.view(gt0).to_vec(), vec![true, false, false, false]);
+    assert_eq!(g.view(ne0).to_vec(), vec![true, true, false, true]); // NaN != 0 is true
+    assert_eq!(g.view(fin).to_vec(), vec![true, true, true, false]);
+}
+
+#[test]
+fn logical_connectives_and_mask_readout() {
+    let mut b = Builder::new();
+    let (_sa, a) = vec_src(&mut b, vec![1.0, 1.0, 0.0, 0.0]);
+    let (_sb, bb) = vec_src(&mut b, vec![1.0, 0.0, 1.0, 0.0]);
+    let am = b.push(greater_than::<f64, 1>(0.5), a);
+    let bm = b.push(greater_than::<f64, 1>(0.5), bb);
+    let both = b.push(and::<1>(), (am, bm));
+    let either = b.push(or::<1>(), (am, bm));
+    let neither = b.push(not::<1>(), either);
+    let onehot = b.push(xor::<1>(), (am, bm));
+    // Mask -> numeric currency, and the three-input selector.
+    let ind = b.push(indicator::<f64, 1>(1.0, f64::NAN), both);
+    let pick = b.push(Choose::<f64, 1>::new(), (onehot, a, bb));
+    let g = b.build();
+
+    assert_eq!(g.view(both).to_vec(), vec![true, false, false, false]);
+    assert_eq!(g.view(either).to_vec(), vec![true, true, true, false]);
+    assert_eq!(g.view(neither).to_vec(), vec![false, false, false, true]);
+    assert_eq!(g.view(onehot).to_vec(), vec![false, true, true, false]);
+    let iv = g.view(ind).to_vec();
+    assert_eq!(iv[0], 1.0);
+    assert!(iv[1..].iter().all(|x| x.is_nan()));
+    // `onehot` selects from `a` where exactly one mask is set, else from `bb`:
+    // [bb[0], a[1], a[2], bb[3]] = [1, 1, 0, 0].
+    assert_eq!(g.view(pick).to_vec(), vec![1.0, 1.0, 0.0, 0.0]);
+}
+
+#[test]
+fn comparison_of_two_arrays_and_strided_inputs() {
+    // `Compare` over a strided (column) view exercises the strided-slow path of
+    // the shared elementwise core at a bool output type.
+    let mut b = Builder::new();
+    let s = b.push_source(RefSource::new(Array::from_vec(
+        [2, 2],
+        vec![1.0, 5.0, 4.0, 2.0], // rows: [1,5], [4,2]
+    )));
+    let m = b.push(AsView::<f64, 2>::new(), *s);
+    let col0 = b.push(SliceView::<f64, 2, 1>::new(vec![0], 1, true), m); // [1, 4]
+    let col1 = b.push(SliceView::<f64, 2, 1>::new(vec![1], 1, true), m); // [5, 2]
+    let lt = b.push(less::<f64, 1>(), (col0, col1));
+    let g = b.build();
+    assert_eq!(g.view(lt).to_vec(), vec![true, false]);
+}
+
+/// The signal from the design brief, as one fused node:
+/// `MA(x,10) - MA(x,5) > 0 AND NOT LAG(MA(x,10) - MA(x,5), 1) > 0`
+/// i.e. the crossover *event* — the spread is positive now and was not before.
+#[test]
+fn ma_crossover_signal_fuses_into_one_node() {
+    let clk = flowgraph::ingest::SharedTime::<Instant>::new();
+    let ret = Retention::count(4);
+    let (fast, slow) = (2usize, 3usize);
+
+    // The result is a single application in tail position, so `segment!` needs
+    // no `-> OutInterface` annotation.
+    let seg = flowgraph::segment!(|xs: flowgraph::typed::RefPort<Series<f64, 0>>| {
+        let d = subtract::<f64, 0>() @ (
+            RollingMean::<f64, 0>::count(fast) @ xs,
+            RollingMean::<f64, 0>::count(slow) @ xs,
+        );
+        let up = greater_than::<f64, 0>(0.0) @ d;
+        let prev = Lag::<f64, 0>::new(1, f64::NAN)
+            @ Record::<f64, 0>::with_retention(clk.clone(), ret)
+            @ d;
+        and::<0>() @ (up, not::<0>() @ (greater_than::<f64, 0>(0.0) @ prev))
+    });
+
+    let mut b = Builder::new();
+    let (src, view) = scalar_src(&mut b, 0.0);
+    let series = b.push(Record::<f64, 0>::new(clk.clone()), view);
+    let signal = b.push(seg, series);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    // A V-shaped path: the fast MA crosses ABOVE the slow MA exactly once.
+    // fast=MA2, slow=MA3; the spread turns positive on the first rising tick.
+    let path = [10.0, 9.0, 8.0, 7.0, 12.0, 14.0, 16.0];
+    let mut fired = Vec::new();
+    for (i, &x) in path.iter().enumerate() {
+        clk.set(ts(i as i64 + 1));
+        *g.state_mut(src) = Array::scalar(x);
+        g.stabilize(&mut pool);
+        fired.push(g.view(signal).to_vec()[0]);
+    }
+    // Warm-up (windows not full) yields no signal; the crossover fires once,
+    // and stays quiet while the spread merely remains positive.
+    assert_eq!(
+        fired,
+        vec![false, false, false, false, true, false, false],
+        "crossover must be an edge, not a level"
+    );
+}
+
+// ===========================================================================
+// Formula constructors (self-recording windowed segments)
+// ===========================================================================
+
+/// Reference model for the crossover signal, mirroring the fused graph's
+/// notify semantics: the spread `d` first computes when the shorter window
+/// fills (the longer MA still reads `NaN`), and its 1-tick lag reads the
+/// previously *computed* spread.
+fn crossover_reference(path: &[f64], fast: usize, slow: usize) -> Vec<bool> {
+    let mean = |t: usize, w: usize| -> f64 {
+        if t >= w { path[t - w..t].iter().sum::<f64>() / w as f64 } else { f64::NAN }
+    };
+    let mut d_hist: Vec<f64> = Vec::new();
+    let mut out = Vec::new();
+    for t in 1..=path.len() {
+        if t < fast.min(slow) {
+            out.push(false); // the spread has never been computed
+            continue;
+        }
+        let d = mean(t, fast) - mean(t, slow);
+        let prev = d_hist.last().copied().unwrap_or(f64::NAN);
+        d_hist.push(d);
+        out.push(d > 0.0 && !(prev > 0.0));
+    }
+    out
+}
+
+/// A deterministic quarter-valued pseudo-random path. Quarters keep every
+/// running sum exactly representable, so the incremental accumulators match a
+/// freshly-summed reference bit-for-bit and `assert_eq!` on floats is sound.
+fn quarter_path(seed: u64, len: usize) -> Vec<f64> {
+    let mut state = seed;
+    (0..len)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 33) % 1000) as f64 / 4.0
+        })
+        .collect()
+}
+
+/// The design-brief signal in **formula style** — self-recording [`ma`] /
+/// [`lag`] over the live array handle, no hoisted record, no retention
+/// arithmetic, no turbofish:
+/// `MA(x,2) − MA(x,3) > 0 AND NOT LAG(MA(x,2) − MA(x,3), 1) > 0`.
+/// Runs 60 ticks on a two-element cross-section so the private records
+/// compact under the windows (retention = window + margin ≪ 60).
+#[test]
+fn formula_ma_crossover_signal() {
+    let clock = Clock::new();
+    let (fast, slow) = (2usize, 3usize);
+
+    let mut path0 = vec![10.0, 9.0, 8.0, 7.0, 12.0, 14.0, 16.0];
+    path0.extend(quarter_path(42, 53));
+    let path1: Vec<f64> = path0.iter().map(|&x| 200.25 - x).collect();
+
+    let mut b = Builder::new();
+    let (src, xv) = vec_src(&mut b, vec![0.0, 0.0]);
+    let clk = clock.clone();
+    let signal = b.push(
+        flowgraph::segment!(|x: Vp<1>| {
+            let d = subtract() @ (ma(&clk, fast) @ x, ma(&clk, slow) @ x);
+            and() @ (
+                greater_than(0.0) @ d,
+                not() @ (greater_than(0.0) @ lag(&clk, 1) @ d),
+            )
+        }),
+        xv,
+    );
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    let expect0 = crossover_reference(&path0, fast, slow);
+    let expect1 = crossover_reference(&path1, fast, slow);
+    let mut fired = 0usize;
+    for t in 0..path0.len() {
+        clock.set(ts(t as i64 + 1));
+        *g.state_mut(src) = Array::from_vec([2], vec![path0[t], path1[t]]);
+        g.stabilize(&mut pool);
+        assert_eq!(
+            g.view(signal).to_vec(),
+            vec![expect0[t], expect1[t]],
+            "tick {t}"
+        );
+        fired += usize::from(expect0[t]) + usize::from(expect1[t]);
+    }
+    // The V-shaped prefix alone fires element 0 exactly once (tick 5); the
+    // random tail keeps both elements crossing, so the assertion above is not
+    // vacuously comparing all-false vectors.
+    assert!(expect0[4] && fired > 5, "path must exercise real crossovers");
+}
+
+/// [`change`] / [`pct_change`] equal `x − x₋ₙ` and `(x − x₋ₙ) / x₋ₙ`, with a
+/// `NaN` warm-up while the lag is unavailable — pushed directly (no
+/// `segment!`), inferring `T`/`N` from the wiring.
+#[test]
+fn formula_change_and_pct_change() {
+    let clock = Clock::new();
+    let mut b = Builder::new();
+    let (src, xv) = scalar_src(&mut b, 0.0);
+    let clk = clock.clone();
+    let chg = b.push(change(&clk, 2), xv);
+    let pct = b.push(pct_change(&clk, 2), xv);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    // 40 ticks over a 10-row private record: crosses front compaction.
+    let path: Vec<f64> = (1..=40).map(|i| (i * i) as f64).collect();
+    for (i, &v) in path.iter().enumerate() {
+        clock.set(ts(i as i64 + 1));
+        *g.state_mut(src) = Array::scalar(v);
+        g.stabilize(&mut pool);
+        let c = g.view(chg).to_vec()[0];
+        let p = g.view(pct).to_vec()[0];
+        if i < 2 {
+            assert!(c.is_nan() && p.is_nan(), "tick {i}: warm-up must be NaN");
+        } else {
+            let base = path[i - 2];
+            assert_eq!(c, path[i] - base, "tick {i}");
+            assert_eq!(p, (path[i] - base) / base, "tick {i}");
+        }
+    }
+}
+
+/// [`ma_time`] means all ticks within the trailing time window (daily ticks,
+/// 2-day window → the last 3 ticks), across 50 days of duration-bounded
+/// compaction.
+#[test]
+fn formula_ma_time_window() {
+    let clock = Clock::new();
+    let mut b = Builder::new();
+    let (src, xv) = scalar_src(&mut b, 0.0);
+    let clk = clock.clone();
+    let m = b.push(ma_time(&clk, Duration::from_days(2)), xv);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    let day = |i: i64| ts(i * 86_400 * 1_000_000_000);
+    let vals = quarter_path(7, 50);
+    for (i, &v) in vals.iter().enumerate() {
+        clock.set(day(i as i64 + 1));
+        *g.state_mut(src) = Array::scalar(v);
+        g.stabilize(&mut pool);
+        let k = (i + 1).min(3); // ticks stamped within 2 days of the latest
+        let want = vals[i + 1 - k..=i].iter().sum::<f64>() / k as f64;
+        assert_eq!(g.view(m).to_vec(), vec![want], "day {i}");
+    }
+}
+
+/// [`mstd`] (self-recording, variance → sqrt fused) matches the hoisted
+/// spelling — a shared bounded [`Record`] feeding [`RollingVariance`] then
+/// [`sqrt`] — tick for tick.
+#[test]
+fn formula_mstd_matches_hoisted() {
+    let clock = Clock::new();
+    let mut b = Builder::new();
+    let (src, xv) = vec_src(&mut b, vec![0.0, 0.0]);
+    let clk = clock.clone();
+    let fused = b.push(mstd(&clk, 4), xv);
+    let series = b.push(
+        Record::<f64, 1>::with_retention(clock.clone(), Retention::count(16)),
+        xv,
+    );
+    let var = b.push(RollingVariance::<f64, 1>::count(4), series);
+    let hoisted = b.push(sqrt::<f64, 1>(), var);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    let (p0, p1) = (quarter_path(1, 40), quarter_path(2, 40));
+    for t in 0..40 {
+        clock.set(ts(t as i64 + 1));
+        *g.state_mut(src) = Array::from_vec([2], vec![p0[t], p1[t]]);
+        g.stabilize(&mut pool);
+        let (f, h) = (g.view(fused).to_vec(), g.view(hoisted).to_vec());
+        for e in 0..2 {
+            assert!(
+                f[e] == h[e] || (f[e].is_nan() && h[e].is_nan()),
+                "tick {t} element {e}: fused {} != hoisted {}",
+                f[e],
+                h[e]
+            );
+        }
     }
 }

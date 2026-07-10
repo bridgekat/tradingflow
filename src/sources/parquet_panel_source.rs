@@ -45,7 +45,12 @@
 use std::collections::HashMap;
 use std::fs::File;
 
+use futures::stream::Stream;
 use tokio::sync::mpsc;
+
+use flowgraph::ingest::{Event, EventSource};
+
+use super::receiver_stream;
 
 use arrow::array::{Array as _, ArrayRef, Date32Array, DictionaryArray, Int32Array, StringArray};
 use arrow::compute::cast;
@@ -56,7 +61,7 @@ use parquet::file::statistics::Statistics;
 
 use hifitime::{Duration as HfDuration, Epoch};
 
-use crate::{Array, Instant, Source};
+use crate::{Array, Instant};
 
 /// Historical-only source that pivots a long-format Parquet table into wide
 /// `[N, K]` cross-sections, one per distinct `date`. See the module docs.
@@ -120,7 +125,7 @@ fn epoch_from_days(days: i32) -> Epoch {
 
 /// `date32` days → event [`Instant`] (UTC midnight → TAI).
 pub(crate) fn instant_from_days(days: i32) -> Instant {
-    Instant::from_hifitime_epoch(epoch_from_days(days))
+    Instant::from_utc_days(days as i64)
 }
 
 /// `(year, day_of_year)` (1-based) for a report date via hifitime
@@ -196,7 +201,7 @@ pub(crate) fn panel_write(
     n
 }
 
-impl Source for ParquetPanelSource {
+impl EventSource<Instant> for ParquetPanelSource {
     type Event = Vec<RowUpdate>;
     type Output = Array<f64, 2>;
     type State = PanelState;
@@ -220,7 +225,9 @@ impl Source for ParquetPanelSource {
         nan_panel(self.out_shape())
     }
 
-    fn init(&self) -> (mpsc::Receiver<(Instant, Vec<RowUpdate>)>, PanelState) {
+    fn init(
+        &self,
+    ) -> (impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static, PanelState) {
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
         let (hist_tx, hist_rx) = mpsc::channel(16);
@@ -232,7 +239,7 @@ impl Source for ParquetPanelSource {
             }
         });
 
-        (hist_rx, PanelState::default())
+        (receiver_stream(hist_rx), PanelState::default())
     }
 
     fn write(state: &mut PanelState, batch: Vec<RowUpdate>, output: &mut Array<f64, 2>, ts: Instant) -> usize {

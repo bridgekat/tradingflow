@@ -456,11 +456,13 @@ fn for_each_offset<const N: usize>(shape: &Shape<N>, mut f: impl FnMut(usize)) {
     }
 }
 
-/// Element-wise unary `out[i] = f(x[i])`, contiguous-fast / strided-slow.
-pub(crate) fn apply_unary<T: Scalar, const N: usize>(
-    out: &mut Array<T, N>,
+/// Element-wise unary `out[i] = f(x[i])`, contiguous-fast / strided-slow. The
+/// output scalar `U` may differ from the input's (a predicate maps `T` to
+/// `bool`); `U == T` for the arithmetic operators.
+pub(crate) fn apply_unary<T: Scalar, U: Scalar, const N: usize>(
+    out: &mut Array<U, N>,
     x: &ArrayView<T, N>,
-    f: &impl Fn(T) -> T,
+    f: &impl Fn(T) -> U,
 ) {
     let o = out.as_mut_slice();
     if let Some(s) = x.contiguous_slice() {
@@ -479,11 +481,12 @@ pub(crate) fn apply_unary<T: Scalar, const N: usize>(
 
 /// Element-wise binary `out[i] = f(a[i], b[i])`, contiguous-fast / strided-slow.
 /// `a` and `b` must share extents (asserted by the caller via output sizing).
-pub(crate) fn apply_binary<T: Scalar, const N: usize>(
-    out: &mut Array<T, N>,
+/// As with [`apply_unary`], the output scalar `U` may differ from the inputs'.
+pub(crate) fn apply_binary<T: Scalar, U: Scalar, const N: usize>(
+    out: &mut Array<U, N>,
     a: &ArrayView<T, N>,
     b: &ArrayView<T, N>,
-    f: &impl Fn(T, T) -> T,
+    f: &impl Fn(T, T) -> U,
 ) {
     let o = out.as_mut_slice();
     if let (Some(sa), Some(sb)) = (a.contiguous_slice(), b.contiguous_slice()) {

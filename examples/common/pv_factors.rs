@@ -17,13 +17,13 @@
 //! `mmt_report_*` (earnings-announcement dates), and the 波动率 / 流动性 /
 //! 量价相关性 categories.
 
-use flowgraph::typed::{Handle, Operator, RefPort};
+use flowgraph::typed::{Handle, Operator, RefPort, ViewPort};
 
 use tradingflow::operators::{
     Apply, ArrayValue, Diff, Lag, Percentile, RollingMean, RollingSum, RollingVariance, Select,
-    divide, log, max, min, multiply, sqrt, subtract,
+    divide, log, max, min, multiply, record_bounded, sqrt, subtract,
 };
-use tradingflow::{Array, ArrayView, Retention, Scenario, Series, ViewPort};
+use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
 
 use super::factors::{rank_impute, FactorSet};
 use super::{AvH, Stacked, RETAIN_MARGIN};
@@ -35,30 +35,31 @@ type Ser2 = Handle<RefPort<Series<f64, 2>>>;
 /// Catalog records feed count-windowed reductions up to `Y` (one trading year)
 /// or the 250-day chip window; retain that deepest look-back plus the margin.
 fn rec(sc: &mut Scenario, h: H) -> Ser {
-    sc.add_record_retained(h, Retention::count(Y + RETAIN_MARGIN))
+    let clk = sc.time();
+    sc.push(record_bounded(&clk, Retention::count(Y + RETAIN_MARGIN)), h)
 }
 
 fn log_h(sc: &mut Scenario, h: H) -> H {
-    sc.add_operator(log::<f64, 1>(), h)
+    sc.push(log::<f64, 1>(), h)
 }
 fn sub(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.add_operator(subtract::<f64, 1>(), (a, b))
+    sc.push(subtract::<f64, 1>(), (a, b))
 }
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.add_operator(divide::<f64, 1>(), (a, b))
+    sc.push(divide::<f64, 1>(), (a, b))
 }
 fn lag(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.add_operator(Lag::<f64, 1>::new(n, f64::NAN), s)
+    sc.push(Lag::<f64, 1>::new(n, f64::NAN), s)
 }
 fn rsum(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.add_operator(RollingSum::<f64, 1>::count(n), s)
+    sc.push(RollingSum::<f64, 1>::count(n), s)
 }
 fn rmean(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.add_operator(RollingMean::<f64, 1>::count(n), s)
+    sc.push(RollingMean::<f64, 1>::count(n), s)
 }
 /// Elementwise map preserving shape and NaN.
 fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
-    sc.add_operator(
+    sc.push(
         tradingflow::operators::Map::new(move |a: ArrayView<f64, 1>| {
             let s = a.to_contiguous();
             Array::from_vec([s.len()], s.iter().map(|&x| f(x)).collect())
@@ -67,15 +68,13 @@ fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
     )
 }
 fn mul(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.add_operator(multiply::<f64, 1>(), (a, b))
+    sc.push(multiply::<f64, 1>(), (a, b))
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.add_operator(
-        flowgraph::segment!(|x: RefPort<Series<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
-            let var = x => RollingVariance::<f64, 1>::count(n);
-            let sd = var => sqrt::<f64, 1>();
-            sd
+    sc.push(
+        flowgraph::segment!(|x: RefPort<Series<f64, 1>>| {
+            sqrt::<f64, 1>() @ RollingVariance::<f64, 1>::count(n) @ x
         }),
         s,
     )
@@ -84,11 +83,12 @@ fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
 /// `cov(x,y) = mean(xy) − mean(x)·mean(y)`, normalized by `σx·σy`. Records each
 /// input internally (some redundancy across factors, but keeps call sites simple).
 fn rcorr(sc: &mut Scenario, x: H, y: H, n: usize) -> H {
+    let clk = sc.time();
     let win = Retention::count(n + RETAIN_MARGIN);
-    let xs = sc.add_record_retained(x, win);
-    let ys = sc.add_record_retained(y, win);
+    let xs = sc.push(record_bounded(&clk, win), x);
+    let ys = sc.push(record_bounded(&clk, win), y);
     let xy = mul(sc, x, y);
-    let xys = sc.add_record_retained(xy, win);
+    let xys = sc.push(record_bounded(&clk, win), xy);
     let mx = rmean(sc, xs, n);
     let my = rmean(sc, ys, n);
     let mxy = rmean(sc, xys, n);
@@ -111,7 +111,7 @@ const Y: usize = 252; // ~1 trading year
 /// `(N, 2)` cross-section the downstream `WindowReduce2`/`ChipDist` expect (their
 /// `series.at(i)` reads `[a_i, b_i]` pairs).
 fn stack2(sc: &mut Scenario, a: H, b: H) -> Handle<ViewPort<ArrayValue<f64, 2>>> {
-    sc.add_operator(
+    sc.push(
         Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 2, _>::new(
             |(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
                 let (av, bv) = (a.to_contiguous(), b.to_contiguous());
@@ -189,7 +189,7 @@ impl Operator for WindowReduce {
     }
 }
 fn window_reduce(sc: &mut Scenario, s: Ser, n: usize, f: fn(&[f64]) -> f64) -> H {
-    sc.add_operator(WindowReduce { window: n, f }, s)
+    sc.push(WindowReduce { window: n, f }, s)
 }
 /// Time-series percentile rank of the latest window value among finite values.
 fn ts_rank(w: &[f64]) -> f64 {
@@ -281,7 +281,7 @@ impl Operator for WindowReduce2 {
     }
 }
 fn window_reduce2(sc: &mut Scenario, s: Ser2, n: usize, f: fn(&[f64], &[f64]) -> f64) -> H {
-    sc.add_operator(WindowReduce2 { window: n, f }, s)
+    sc.push(WindowReduce2 { window: n, f }, s)
 }
 /// 振幅调整动量: Σ(returns on the top-20%-amplitude days) − Σ(bottom-20%-amplitude
 /// days). `amp` = amplitude channel, `ret` = return channel over the window.
@@ -450,7 +450,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let lcr = log_h(sc, st.close); // raw log close
     let lcr_s = rec(sc, lcr);
 
-    let daily_ret = sc.add_operator(Diff::<f64, 1>::new(), lc); // adjusted close-to-close log return
+    let daily_ret = sc.push(Diff::<f64, 1>::new(), lc); // adjusted close-to-close log return
     let dret_s = rec(sc, daily_ret);
     let intraday = sub(sc, lcr, lo); // log(close/open)
     let intra_s = rec(sc, intraday);
@@ -462,7 +462,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let absret_s = rec(sc, abs_ret);
     let sign_ret = emap(sc, daily_ret, |x| if x.is_finite() { x.signum() } else { f64::NAN });
     let sign_s = rec(sc, sign_ret);
-    let xs_rank = sc.add_operator(Percentile::<f64, 1>::new(), daily_ret); // daily cross-sectional rank
+    let xs_rank = sc.push(Percentile::<f64, 1>::new(), daily_ret); // daily cross-sectional rank
     let xsr_s = rec(sc, xs_rank);
 
     // shared rolling sums (reused by the _M / _A pairs)
@@ -555,7 +555,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // ============ 量价相关性 (price-volume correlation, 20-day) — 图表40 ============
     // sync = corr(turn_t, x_t); post (量领先) = corr(turn_t, x_{t+1}) = corr(lag(turn,1), x);
     // prior (价领先) = corr(turn_t, x_{t-1}) = corr(turn, lag(x,1)).
-    let turnover_change = sc.add_operator(Diff::<f64, 1>::new(), turnover);
+    let turnover_change = sc.push(Diff::<f64, 1>::new(), turnover);
     let turnchg_s = rec(sc, turnover_change);
     let lag_turn1 = lag(sc, turnover_s, 1);
     let lag_turnd1 = lag(sc, turnchg_s, 1);
@@ -581,8 +581,8 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let highlow = div(sc, st.high, st.low); // 日内振幅 = 最高/最低
     let highlow_s = rec(sc, highlow);
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
-    let max_oc = sc.add_operator(max::<f64, 1>(), (st.open, st.close));
-    let min_oc = sc.add_operator(min::<f64, 1>(), (st.open, st.close));
+    let max_oc = sc.push(max::<f64, 1>(), (st.open, st.close));
+    let min_oc = sc.push(min::<f64, 1>(), (st.open, st.close));
     let up_num = sub(sc, st.high, max_oc); // 上影线 = 最高 − max(开,收)
     let upshadow = div(sc, up_num, st.low);
     let upshadow_s = rec(sc, upshadow);
@@ -623,7 +623,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // (adjusted close, turnover) -> ChipDist -> (N, 10); column-select each factor.
     let chip_in = stack2(sc, st.adjusted_close, turnover); // (N, 2)
     let chip_in_s = rec_2(sc, chip_in);
-    let chip = sc.add_operator(ChipDist { window: 250 }, chip_in_s); // (N, 10)
+    let chip = sc.push(ChipDist { window: 250 }, chip_in_s); // (N, 10)
     for (c, name) in [
         "distribution_ret_avg",
         "distribution_ret_std",
@@ -639,7 +639,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     .into_iter()
     .enumerate()
     {
-        add(name, sc.add_operator(Select::<f64, 2, 1>::new(vec![c], 1, true), chip));
+        add(name, sc.push(Select::<f64, 2, 1>::new(vec![c], 1, true), chip));
     }
 
     drop(add);
@@ -652,5 +652,6 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// range inputs); retains the deepest count look-back the consumers read (`Y` /
 /// the 250-day chip window) plus the margin.
 fn rec_2(sc: &mut Scenario, h: Handle<ViewPort<ArrayValue<f64, 2>>>) -> Ser2 {
-    sc.add_record_retained(h, Retention::count(Y + RETAIN_MARGIN))
+    let clk = sc.time();
+    sc.push(record_bounded(&clk, Retention::count(Y + RETAIN_MARGIN)), h)
 }

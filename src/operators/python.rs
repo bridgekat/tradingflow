@@ -88,14 +88,15 @@
 //!
 //! # Building graphs
 //!
-//! High level, via [`Scenario`](crate::Scenario):
+//! High level, via [`Scenario`](crate::Scenario) (with
+//! [`ScenarioExt`](crate::ScenarioExt) in scope):
 //! ```ignore
 //! let a = sc.add_source(/* ... */);
 //! let b = sc.add_source(/* ... */);
 //! let sum = sc.add_py_operator("lambda a, b: a + b", &[a, b], n);          // return mode
 //! let dbl = sc.add_py_operator_writing("lambda out, a: np.multiply(a, 2.0, out=out)", &[a], n);
 //! ```
-//! Low level, via [`GraphBuilder`](flowgraph::typed::GraphBuilder) — the inputs
+//! Low level, via [`Builder`](flowgraph::typed::Builder) — the inputs
 //! are a `RefPorts<Array<f64>>` group, wired with a slice of handles:
 //! ```ignore
 //! let out = b.push(PyOperator::new("lambda a, b: a + b", n), &[*a, *bb][..]);
@@ -372,7 +373,7 @@ impl<const NI: usize, const NO: usize> Operator for PyOperator<NI, NO> {
 mod tests {
     use super::PyOperator;
     use flowgraph::core::Pool;
-    use flowgraph::typed::{Graph, GraphBuilder, Operator, RefPort, RefSource};
+    use flowgraph::typed::{Builder, Operator, RefPort, RefSource};
 
     use crate::Array;
 
@@ -409,14 +410,14 @@ mod tests {
     /// Return mode: element-wise NumPy add over two inputs.
     #[test]
     fn numpy_return_mode() {
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let a = b.push_source(RefSource::new(Array::from_vec([3], vec![1.0_f64, 2.0, 3.0])));
         let bb = b.push_source(RefSource::new(Array::from_vec([3], vec![10.0_f64, 20.0, 30.0])));
         let out = b.push(
             PyOperator::<1, 1>::new("lambda a, b: a + b", 3),
             &[*a, *bb][..],
         );
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         *g.state_mut(a) = Array::from_vec([3], vec![1.0, 2.0, 3.0]);
@@ -429,13 +430,13 @@ mod tests {
     /// output buffer (zero-copy output).
     #[test]
     fn numpy_write_mode_zero_copy() {
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let a = b.push_source(RefSource::new(Array::from_vec([3], vec![1.0_f64, 2.0, 3.0])));
         let out = b.push(
             PyOperator::<1, 1>::writing("lambda out, a: np.multiply(a, 2.0, out=out)", 3),
             &[*a][..],
         );
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         *g.state_mut(a) = Array::from_vec([3], vec![1.0, 2.0, 3.0]);
@@ -446,7 +447,7 @@ mod tests {
     /// Inputs arrive as real `float64` ndarrays.
     #[test]
     fn numpy_input_is_ndarray() {
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let a = b.push_source(RefSource::new(Array::from_vec([2], vec![1.0_f64, 2.0])));
         let out = b.push(
             PyOperator::<1, 1>::writing(
@@ -456,7 +457,7 @@ mod tests {
             ),
             &[*a][..],
         );
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         *g.state_mut(a) = Array::from_vec([2], vec![1.0, 2.0]);
@@ -470,7 +471,7 @@ mod tests {
     /// live snapshot (the gen-1 value) on gen 2 — never freed Rust heap.
     #[test]
     fn retained_input_is_snapshot_not_uaf() {
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let src = b.push_source(RefSource::new(Array::from_vec([1], vec![5.0_f64])));
         let mapped = b.push(ReallocOwned, *src);
         let out = b.push(
@@ -480,7 +481,7 @@ mod tests {
             ),
             &[mapped][..],
         );
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         *g.state_mut(src) = Array::from_vec([1], vec![5.0]);
@@ -506,12 +507,12 @@ mod tests {
                       sum(float(np.sin(np.arange(1, 1500000, dtype=np.float64) * 1.0000001).sum()) \
                       for _ in range(6)) * 0 + xs[0])";
 
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let src = b.push_source(RefSource::new(Array::from_vec([1], vec![0.0_f64])));
         let outs: Vec<_> = (0..K)
             .map(|_| b.push(PyOperator::<1, 1>::writing(heavy, 1), &[*src][..]))
             .collect();
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
 
         let mut serial = Pool::new(0);
         let mut parallel = Pool::new(K);

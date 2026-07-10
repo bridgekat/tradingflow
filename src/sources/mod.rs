@@ -1,10 +1,11 @@
 //! Built-in data sources for the computation graph.
 //!
-//! Every source in this module implements [`Source`](crate::Source) and is
-//! registered into a [`Scenario`](crate::Scenario) via
-//! [`Scenario::add_source`](crate::Scenario::add_source). Sources stream events
-//! into the graph through an async channel; the event loop
-//! ([`Session::run`](crate::Session::run)) merges them in timestamp order.
+//! Every source in this module implements [`flowgraph::ingest::EventSource`]
+//! and is registered into a [`Scenario`](crate::Scenario) via
+//! [`Builder::add_source`](flowgraph::ingest::Builder::add_source). Sources
+//! stream events into the graph through an async channel bridged by
+//! [`receiver_stream`]; the event loop ([`Graph::run`](flowgraph::ingest::Graph::run))
+//! merges them in timestamp order.
 //!
 //! # Data sources
 //!
@@ -30,6 +31,13 @@
 //!   `zoneinfo` and passed in as a pre-computed list, keeping the Rust core
 //!   free of timezone data.
 
+use futures::stream::Stream;
+use tokio::sync::mpsc;
+
+use flowgraph::ingest::Event;
+
+use crate::Instant;
+
 pub mod array_source;
 pub mod clock;
 pub mod iter_source;
@@ -41,3 +49,21 @@ pub use clock::clock;
 pub use iter_source::IterSource;
 pub use parquet_panel_source::ParquetPanelSource;
 pub use parquet_financial_report_panel_source::ParquetFinancialReportPanelSource;
+
+/// Adapt a producer channel — `(timestamp, event)` items in non-decreasing
+/// timestamp order, closed when the producer finishes — into the
+/// explicitly-stamped event stream
+/// [`EventSource::init`](flowgraph::ingest::EventSource::init) returns.
+///
+/// The bridge every source in this module uses: `init` spawns a tokio producer
+/// task feeding the channel's sender (bounded, so the producer back-pressures
+/// against the event loop) and returns `receiver_stream(rx)`. Custom sources
+/// built on tokio tasks can reuse it.
+pub fn receiver_stream<E: Send + 'static>(
+    rx: mpsc::Receiver<(Instant, E)>,
+) -> impl Stream<Item = Event<Instant, E>> + Send + 'static {
+    futures::stream::unfold(rx, |mut rx| async move {
+        let (ts, event) = rx.recv().await?;
+        Some((Event::at(ts, event), rx))
+    })
+}

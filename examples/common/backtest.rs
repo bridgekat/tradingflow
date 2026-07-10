@@ -15,10 +15,10 @@
 
 use flowgraph::typed::{Handle, RefPort};
 
-use tradingflow::operators::{Benchmark, Clock, Map, PyClassOperator, PyParams, Turnover};
-use tradingflow::{Array, ArrayView, Scenario, Series};
+use tradingflow::operators::{Benchmark, Clock, Map, PyClassOperator, PyParams, Turnover, record};
+use tradingflow::{Array, ArrayView, Scenario, ScenarioExt, Series};
 
-use super::{own, AvH};
+use super::AvH;
 
 /// Number of layered-backtest groups (deciles).
 pub const NUM_GROUPS: usize = 10;
@@ -51,9 +51,9 @@ fn bucket_nav(
 ) -> (Handle<RefPort<Series<f64, 0>>>, Handle<RefPort<Series<f64, 0>>>) {
     // The Python portfolio consumes whole-array `RefPort` inputs; materialize the
     // two view inputs via `own`.
-    let universe_ref = own(sc, universe);
-    let factor_ref = own(sc, factor);
-    let positions = sc.add_operator(
+    let universe_ref = sc.own::<f64, 1>(universe);
+    let factor_ref = sc.own::<f64, 1>(factor);
+    let positions = sc.push(
         PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 1>::from_module(
             "flowops.portfolios.mean.rank_bucket",
             PyParams::new()
@@ -67,16 +67,16 @@ fn bucket_nav(
     );
     // The trader speaks the view currency; bridge the `RefPort` positions back.
     let positions_v = sc.as_view(positions);
-    let trader = sc.add_operator(
+    let trader = sc.push(
         Benchmark::new(n, 1.0, true),
         (positions_v, close, adjusts, upper, lower),
     );
-    let nav = sc.add_operator(
+    let nav = sc.push(
         Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         trader,
     );
-    let turnover = sc.add_operator(Turnover::<f64, 1>::new(), positions_v);
-    (sc.add_record(nav), sc.add_record(turnover))
+    let turnover = sc.push(Turnover::<f64, 1>::new(), positions_v);
+    (sc.push(record(clk), nav), sc.push(record(clk), turnover))
 }
 
 /// Build the 10-decile layered backtest for `factor` over `universe`.

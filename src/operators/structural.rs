@@ -1,5 +1,6 @@
 //! Structural operators — port of `Id`, `Where`, `Cast`, plus the
-//! [`Resample`] clock-gated identity, implemented directly on
+//! [`Resample`] clock-gated identity and its view-currency counterparts
+//! [`ResampleView`] / [`ResampleClocked`], implemented directly on
 //! [`flowgraph::typed::Operator`] / [`Segment`].
 
 use std::marker::PhantomData;
@@ -259,5 +260,107 @@ where
         init: bool,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         <Clocked<Id<O>, C> as Segment>::compute(inputs, state, init)
+    }
+}
+
+/// State shared by the view-currency resamplers: the last data view
+/// materialized into an owned buffer, so it survives between clock ticks while
+/// the upstream view's storage may change.
+pub struct ResampleViewState<T: Scalar, const N: usize> {
+    out: Option<Array<T, N>>,
+}
+
+/// Clock-gated **view** passthrough whose clock is another data view (only the
+/// clock's notify bit is consulted): re-emits the rank-`N` data view on every
+/// tick of the rank-1 clock view, holding the last value in between. The
+/// view-currency counterpart of [`Resample`] — e.g. resample a feature panel
+/// onto the daily-close pulse. Stays in the [`ArrayView`] currency end-to-end,
+/// so it needs no [`Own`](super::Own) bridge on either side.
+#[derive(Clone)]
+pub struct ResampleView<T: Scalar, const N: usize> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> ResampleView<T, N> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for ResampleView<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// A `Segment`, not an `Operator`: the gate ignores the data input's notify bit
+// (only the clock's fires it), which the `Operator` any-notify gate cannot
+// express.
+impl<T: Scalar, const N: usize> Segment for ResampleView<T, N> {
+    type Inputs = (ViewPort<ArrayValue<T, 1>>, ViewPort<ArrayValue<T, N>>);
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = ResampleViewState<T, N>;
+
+    fn init(self) -> Self::State {
+        ResampleViewState { out: None }
+    }
+
+    fn compute<'a, 'b: 'a>(
+        ((clock_fired, _), (_, x)): ((bool, ArrayView<'a, T, 1>), (bool, ArrayView<'a, T, N>)),
+        state: &'b mut Self::State,
+        init: bool,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        if init || clock_fired {
+            state.out = Some(x.to_array());
+            return (!init, state.out.as_ref().unwrap().view());
+        }
+        (false, state.out.as_ref().unwrap().view())
+    }
+}
+
+/// Clock-gated **view** passthrough whose clock is a unit (`RefPort<()>`) clock
+/// source (e.g. a rebalance [`clock`](crate::sources::clock)): re-emits the
+/// rank-`N` data view on every clock tick. The unit-clock counterpart of
+/// [`ResampleView`].
+#[derive(Clone)]
+pub struct ResampleClocked<T: Scalar, const N: usize> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Scalar, const N: usize> ResampleClocked<T, N> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar, const N: usize> Default for ResampleClocked<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Scalar, const N: usize> Segment for ResampleClocked<T, N> {
+    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
+    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type State = ResampleViewState<T, N>;
+
+    fn init(self) -> Self::State {
+        ResampleViewState { out: None }
+    }
+
+    fn compute<'a, 'b: 'a>(
+        ((clock_fired, _), (_, x)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        state: &'b mut Self::State,
+        init: bool,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        if init || clock_fired {
+            state.out = Some(x.to_array());
+            return (!init, state.out.as_ref().unwrap().view());
+        }
+        (false, state.out.as_ref().unwrap().view())
     }
 }

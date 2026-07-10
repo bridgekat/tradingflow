@@ -570,7 +570,8 @@ fn resolve_operator<'py>(
 /// with [`PyParams`]) or binds `__op__`.
 ///
 /// [array-view-refactor] `NO` is the static output rank, defaulting to `1` to
-/// match the ergonomic [`Scenario::add_py_class_operator`](crate::Scenario)
+/// match the ergonomic
+/// [`ScenarioExt::add_py_class_operator`](crate::ScenarioExt::add_py_class_operator)
 /// convenience (the strategy operators all emit `(N,)` predictions / weights).
 /// The output's element shape comes from `out_shape` (its product must equal the
 /// rank-`NO` extents' product); the NumPy boundary negotiates by element count.
@@ -665,7 +666,10 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
         state: &'b mut PyClassState<NO>,
         init: bool,
     ) -> (bool, &'a Array<f64, NO>) {
-        let ts = state.clock.get().as_nanos();
+        // The build call runs before the driver's first batch, when the clock
+        // is still unset — Python `init` then sees `i64::MIN` (the legacy
+        // "no time yet" sentinel).
+        let ts = state.clock.get().unwrap_or(Instant::MIN).as_nanos();
 
         if init {
             // Build call: instantiate the Python operator and call its `init`
@@ -771,7 +775,7 @@ fn out_extents<const NO: usize>(out_shape: &[usize]) -> [usize; NO] {
 mod tests {
     use super::{PyClassOperator, PyParams};
     use flowgraph::core::Pool;
-    use flowgraph::typed::{Graph, GraphBuilder, RefPort, RefPorts, RefSource};
+    use flowgraph::typed::{Builder, RefPort, RefPorts, RefSource};
 
     use crate::Instant;
     use crate::operators::{AsView, Clock, Record};
@@ -807,7 +811,7 @@ __op__ = Turnover()
     #[test]
     fn py_class_operator_turnover() {
         let clock = Clock::new();
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let src = b.push_source(RefSource::new(Array::from_vec([2], vec![0.5_f64, 0.5])));
         let out = b.push(
             // Output is a scalar (`vec![]`), so NO = 0.
@@ -819,7 +823,7 @@ __op__ = Turnover()
             ),
             &[*src][..],
         );
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         *g.state_mut(src) = Array::from_vec([2], vec![0.5, 0.5]);
@@ -857,7 +861,7 @@ __op__ = HistDot()
     #[test]
     fn py_class_operator_heterogeneous_series() {
         let clock = Clock::new();
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
         let weights = b.push_source(RefSource::new(Array::from_vec([2], vec![1.0_f64, 1.0])));
         let feed = b.push_source(RefSource::new(Array::from_vec([2], vec![0.0_f64, 0.0])));
@@ -874,7 +878,7 @@ __op__ = HistDot()
             ),
             (*weights, series),
         );
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         // Tick 1 @ t=100: feed [1,2]; series=[[1,2]]; dot with [1,1]=3; mean=3.
@@ -920,7 +924,7 @@ def build(scale=1.0):
             .unwrap();
 
         let clock = Clock::new();
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let src = b.push_source(RefSource::new(Array::from_vec([4], vec![1.0_f64, 2.0, 3.0, 4.0])));
         let out = b.push(
             // Scalar output (`vec![]`), so NO = 0.
@@ -932,7 +936,7 @@ def build(scale=1.0):
             ),
             &[*src][..],
         );
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         *g.state_mut(src) = Array::from_vec([4], vec![1.0, 2.0, 3.0, 4.0]);
@@ -952,7 +956,7 @@ def build(scale=1.0):
         const N: usize = 3;
         const F: usize = 2;
         let clock = Clock::new();
-        let mut b = GraphBuilder::new();
+        let mut b = Builder::new();
         let universe = b.push_source(RefSource::new(Array::from_vec([N], vec![1.0; N])));
         let feat_feed = b.push_source(RefSource::new(Array::<f64, 2>::zeros([N, F])));
         let tgt_feed = b.push_source(RefSource::new(Array::<f64, 1>::zeros([N])));
@@ -975,7 +979,7 @@ def build(scale=1.0):
             ),
             (*universe, feat_series, tgt_series),
         );
-        let mut g = Graph::from_builder(b);
+        let mut g = b.build();
         let mut pool = Pool::new(0);
 
         // Feed a few ticks of features/targets with a linear relationship so the

@@ -42,7 +42,7 @@ futures = { version = "0.3", default-features = false, features = ["alloc"] }
 # async timestamp-merge event loop. Pinned by commit for reproducibility
 # (Cargo.lock pins it too); to hack on flowgraph locally, see the `[patch]` at
 # the bottom of this file.
-flowgraph = { git = "https://github.com/bridgekat/flowgraph.git", rev = "0543e5a3e6fbd99669b4bf10608fc5874e0ea789", features = ["ingest"] }
+flowgraph = { git = "https://github.com/bridgekat/flowgraph.git", rev = "dcb543e05d8f766aa29bd42f99a60589cc7f3282", features = ["ingest"] }
 arrow = "58.3.0"
 parquet = { version = "58.3.0", features = ["arrow", "zstd"] }
 

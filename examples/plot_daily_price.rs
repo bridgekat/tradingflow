@@ -22,10 +22,10 @@ mod common;
 use flowgraph::typed::{Handle, ViewPort};
 
 use tradingflow::operators::{
-    ArrayValue, Filter, ForwardAdjust, RollingMean, RollingVariance, Select, add, multiply, sqrt,
-    subtract,
+    ArrayValue, Filter, ForwardAdjust, RollingMean, RollingVariance, Select, add, multiply,
+    record, sqrt, subtract,
 };
-use tradingflow::Scenario;
+use tradingflow::{Scenario, ScenarioExt, WallClock};
 use tradingflow::sources::ParquetPanelSource;
 use tradingflow::{Array, ArrayView, Instant, Series};
 
@@ -52,8 +52,8 @@ fn pick(
     panel: Handle<ViewPort<ArrayValue<f64, 2>>>,
     i: usize,
 ) -> Handle<ViewPort<ArrayValue<f64, 1>>> {
-    let sel = sc.add_operator(Select::<f64, 2, 1>::new(vec![i], 0, true), panel);
-    sc.add_operator(
+    let sel = sc.push(Select::<f64, 2, 1>::new(vec![i], 0, true), panel);
+    sc.push(
         Filter::<_, 1>(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
         sel,
     )
@@ -87,7 +87,8 @@ async fn main() {
         .position(|s| s == &symbol)
         .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
-    let mut sc = Scenario::new();
+    let mut sc = Scenario::new(WallClock);
+    let clk = sc.time();
 
     // Panel sources: close+volume from prices, (share, cash) from dividends.
     let price_src = ParquetPanelSource::new(
@@ -113,30 +114,30 @@ async fn main() {
     // (rank-1 `[K]` → rank-0 scalar via the squeezing `Select`).
     let prices = pick(&mut sc, price_panel, idx);
     let dividends = pick(&mut sc, div_panel, idx);
-    let closes = sc.add_operator(Select::<f64, 1, 0>::new(vec![0], 0, true), prices);
-    let volume = sc.add_operator(Select::<f64, 1, 0>::new(vec![1], 0, true), prices);
+    let closes = sc.push(Select::<f64, 1, 0>::new(vec![0], 0, true), prices);
+    let volume = sc.push(Select::<f64, 1, 0>::new(vec![1], 0, true), prices);
 
     // Forward-adjusted close (scalar close `0`, dividends row `1`), recorded into
     // a Series for the rolling stats.
-    let adj_closes = sc.add_operator(ForwardAdjust::<0, 1>::new(), (closes, dividends));
-    let adj_series = sc.add_record(adj_closes);
+    let adj_closes = sc.push(ForwardAdjust::<0, 1>::new(), (closes, dividends));
+    let adj_series = sc.push(record(&clk), adj_closes);
 
     // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).
-    let ma = sc.add_operator(RollingMean::<f64, 0>::count(WINDOW), adj_series);
-    let var = sc.add_operator(RollingVariance::<f64, 0>::count(WINDOW), adj_series);
-    let std = sc.add_operator(sqrt::<f64, 0>(), var);
+    let ma = sc.push(RollingMean::<f64, 0>::count(WINDOW), adj_series);
+    let var = sc.push(RollingVariance::<f64, 0>::count(WINDOW), adj_series);
+    let std = sc.push(sqrt::<f64, 0>(), var);
     let multiple_src = sc.add_const(Array::scalar(MULTIPLE));
     let multiple = sc.as_view(*multiple_src);
-    let band = sc.add_operator(multiply::<f64, 0>(), (std, multiple));
-    let upper = sc.add_operator(add::<f64, 0>(), (ma, band));
-    let lower = sc.add_operator(subtract::<f64, 0>(), (ma, band));
+    let band = sc.push(multiply::<f64, 0>(), (std, multiple));
+    let upper = sc.push(add::<f64, 0>(), (ma, band));
+    let lower = sc.push(subtract::<f64, 0>(), (ma, band));
 
     // Record the outputs.
-    let h_adj = sc.add_record(adj_closes);
-    let h_ma = sc.add_record(ma);
-    let h_upper = sc.add_record(upper);
-    let h_lower = sc.add_record(lower);
-    let h_vol = sc.add_record(volume);
+    let h_adj = sc.push(record(&clk), adj_closes);
+    let h_ma = sc.push(record(&clk), ma);
+    let h_upper = sc.push(record(&clk), upper);
+    let h_lower = sc.push(record(&clk), lower);
+    let h_vol = sc.push(record(&clk), volume);
 
     // Run the historical replay to completion.
     let mut session = sc.build();
@@ -146,11 +147,11 @@ async fn main() {
 
     // Align the recorded scalar series by timestamp and write a wide CSV.
     let cols: [(&str, &Series<f64, 0>); 5] = [
-        ("adj_close", session.value(h_adj)),
-        ("ma", session.value(h_ma)),
-        ("upper", session.value(h_upper)),
-        ("lower", session.value(h_lower)),
-        ("volume", session.value(h_vol)),
+        ("adj_close", session.ref_view(h_adj)),
+        ("ma", session.ref_view(h_ma)),
+        ("upper", session.ref_view(h_upper)),
+        ("lower", session.ref_view(h_lower)),
+        ("volume", session.ref_view(h_vol)),
     ];
     let mut rows: BTreeMap<i64, [f64; 5]> = BTreeMap::new();
     for (c, (_, series)) in cols.iter().enumerate() {
@@ -159,7 +160,7 @@ async fn main() {
         }
     }
 
-    let n = session.value(h_adj).len();
+    let n = session.ref_view(h_adj).len();
     if n == 0 {
         eprintln!("no data for {symbol}");
         std::process::exit(1);
