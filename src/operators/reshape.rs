@@ -473,3 +473,37 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
         (&*flags, &*views)
     }
 }
+
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// Stack `N` rank-`IN` inputs along a new `axis`, carrying un-notified inputs
+/// forward at their last value.
+pub fn stack<T: Scalar, const IN: usize, const OUT: usize>(axis: usize) -> Stack<T, IN, OUT> {
+    Stack::new(axis)
+}
+
+/// Like [`stack`], but emits `NaN` for inputs that have not notified this tick.
+pub fn stack_sync<T: Scalar + Float, const IN: usize, const OUT: usize>(
+    axis: usize,
+) -> StackSync<T, IN, OUT> {
+    StackSync::new(axis)
+}
+
+/// Concatenate `N` inputs along an existing `axis` (carry semantics).
+pub fn concat<T: Scalar, const N: usize>(axis: usize) -> Concat<T, N> {
+    Concat::new(axis)
+}
+
+/// Like [`concat`], but emits `NaN` for inputs that have not notified.
+pub fn concat_sync<T: Scalar + Float, const N: usize>(axis: usize) -> ConcatSync<T, N> {
+    ConcatSync::new(axis)
+}
+
+/// Split a rank-`IN` array into `axis_size` rank-`OUT` by-reference view rows.
+pub fn split<T: Scalar, const IN: usize, const OUT: usize>(
+    axis_size: usize,
+) -> Split<T, IN, OUT> {
+    Split::new(axis_size)
+}

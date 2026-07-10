@@ -364,3 +364,42 @@ impl<T: Scalar, const N: usize> Segment for ResampleClocked<T, N> {
         (false, state.out.as_ref().unwrap().view())
     }
 }
+
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// The identity operator: forwards its input unchanged.
+pub fn id<T: Clone + Send + Sync + 'static>() -> Id<T> {
+    Id::new()
+}
+
+/// Element-wise scalar cast `S -> T`.
+pub fn cast<S: Scalar, T: Scalar, const N: usize>() -> Cast<S, T, N> {
+    Cast::new()
+}
+
+/// Element-wise conditional: keep the value where `condition` holds, else
+/// replace it with `fill`. (Named `keep_where` because `where` is a keyword.)
+pub fn keep_where<T: Scalar, F: Fn(T) -> bool + Clone, const N: usize>(
+    condition: F,
+    fill: T,
+) -> Where<T, F, N> {
+    Where::new(condition, fill)
+}
+
+/// Re-emit a data input's latest value on every clock tick (the whole-value
+/// `RefPort` currency).
+pub fn resample<O: Clone + Send + Sync + 'static, C: Send + Sync + 'static>() -> Resample<O, C> {
+    Resample::new()
+}
+
+/// Re-emit an array view on every tick of a leading *view* pulse.
+pub fn resample_view<T: Scalar, const N: usize>() -> ResampleView<T, N> {
+    ResampleView::new()
+}
+
+/// Re-emit an array view on every tick of a leading *clock* pulse.
+pub fn resample_clocked<T: Scalar, const N: usize>() -> ResampleClocked<T, N> {
+    ResampleClocked::new()
+}

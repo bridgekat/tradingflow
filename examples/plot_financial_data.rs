@@ -29,9 +29,10 @@ use flowgraph::typed::{Handle, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    Annualize, ArrayValue, Filter, Map, RollingMean, Select, divide, multiply, negate, record,
+    ArrayValue, Window, annualize, as_view, divide, filter, map, multiply, negate, record,
+    rolling_mean, select,
 };
-use tradingflow::{Scenario, ScenarioExt, WallClock};
+use tradingflow::{Scenario, WallClock};
 use tradingflow::sources::{ParquetPanelSource, ParquetFinancialReportPanelSource};
 use tradingflow::{Array, ArrayView, Instant, Series};
 
@@ -59,9 +60,9 @@ fn pick(
     panel: Handle<ViewPort<ArrayValue<f64, 2>>>,
     i: usize,
 ) -> Handle<ViewPort<ArrayValue<f64, 1>>> {
-    let sel = sc.push(Select::<f64, 2, 1>::new(vec![i], 0, true), panel);
+    let sel = sc.push(select(vec![i], 0, true), panel);
     sc.push(
-        Filter::<_, 1>(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
+        filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
         sel,
     )
 }
@@ -100,14 +101,14 @@ async fn main() {
     let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ViewPort<ArrayValue<f64, 1>>> {
         let s = ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
         let panel = sc.add_source(s);
-        let panel = sc.as_view(panel);
+        let panel = sc.push(as_view(), panel);
         pick(sc, panel, idx)
     };
     let report = |sc: &mut Scenario, kind: &str, cols: Vec<String>, with_report_date: bool| -> Handle<ViewPort<ArrayValue<f64, 1>>> {
         let s = ParquetFinancialReportPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone())
             .with_report_date(with_report_date);
         let panel = sc.add_source(s);
-        let panel = sc.as_view(panel);
+        let panel = sc.push(as_view(), panel);
         pick(sc, panel, idx)
     };
 
@@ -138,28 +139,28 @@ async fn main() {
     // ------------------------------------------------------------------
     // Operators (identical to the CSV version).
     // ------------------------------------------------------------------
-    let close = sc.push(Select::<f64, 1, 0>::new(vec![0], 0, true), prices);
-    let total_shares = sc.push(Select::<f64, 1, 0>::new(vec![0], 0, true), equity);
+    let close = sc.push(select(vec![0], 0, true), prices);
+    let total_shares = sc.push(select(vec![0], 0, true), equity);
     let market_cap = sc.push(multiply::<f64, 0>(), (close, total_shares));
 
-    let assets = sc.push(Select::<f64, 1, 0>::new(vec![0], 0, true), balance);
-    let neg_equity = sc.push(Select::<f64, 1, 0>::new(vec![1], 0, true), balance);
+    let assets = sc.push(select(vec![0], 0, true), balance);
+    let neg_equity = sc.push(select(vec![1], 0, true), balance);
     let equity_val = sc.push(negate::<f64, 0>(), neg_equity);
-    let neg_peq = sc.push(Select::<f64, 1, 1>::new(vec![2, 3, 4], 0, false), balance);
+    let neg_peq = sc.push(select(vec![2, 3, 4], 0, false), balance);
     let parent_equity = sc.push(
-        Map::new(|a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous().iter().sum::<f64>())),
+        map(|a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous().iter().sum::<f64>())),
         neg_peq,
     );
 
-    let income_ann = sc.push(Annualize::new(), income); // [op_income, net_profit]
-    let op_income = sc.push(Select::<f64, 1, 0>::new(vec![0], 0, true), income_ann);
-    let net_profit = sc.push(Select::<f64, 1, 0>::new(vec![1], 0, true), income_ann);
-    let cf_ann = sc.push(Annualize::new(), cf); // [change]
-    let cash_flow = sc.push(Select::<f64, 1, 0>::new(vec![0], 0, true), cf_ann);
+    let income_ann = sc.push(annualize(), income); // [op_income, net_profit]
+    let op_income = sc.push(select(vec![0], 0, true), income_ann);
+    let net_profit = sc.push(select(vec![1], 0, true), income_ann);
+    let cf_ann = sc.push(annualize(), cf); // [change]
+    let cash_flow = sc.push(select(vec![0], 0, true), cf_ann);
 
     let net_profit_series = sc.push(record(&clk), net_profit);
     let net_profit_ttm = sc.push(
-        RollingMean::<f64, 0>::time_delta(Duration::from_days(365)),
+        rolling_mean(Window::TimeDelta(Duration::from_days(365))),
         net_profit_series,
     );
 

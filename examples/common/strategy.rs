@@ -9,10 +9,10 @@
 use flowgraph::typed::{Handle, RefPort, ViewPort};
 
 use tradingflow::operators::{
-    ArrayValue, Benchmark, Map, log, multiply, record,
+    ArrayValue, as_view, benchmark, log, map, multiply, own, record,
 };
 use tradingflow::sources::clock;
-use tradingflow::{Array, ArrayView, Retention, Scenario, ScenarioExt, Series, Session};
+use tradingflow::{Array, ArrayView, Retention, Scenario, Series, Session};
 
 use super::args::CommonArgs;
 use super::data::{build_stacked, Stacked};
@@ -42,7 +42,7 @@ pub type PosH = Handle<RefPort<Array<f64, 1>>>;
 /// Map a trader's `(holdings_value, cash)` view to its scalar total value.
 pub fn total_value(sc: &mut Scenario, h: AvH) -> ScH {
     sc.push(
-        Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
+        map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         h,
     )
 }
@@ -99,7 +99,7 @@ impl Market {
             build_cap_weighted_universe(sc, circ_market_cap, rebalance_clock, args.index_size);
         // The Python predictor/portfolio operators consume whole-array
         // `RefPort`s; materialize the universe view once.
-        let universe_ref = sc.own::<f64, 1>(universe);
+        let universe_ref = sc.push(own(), universe);
 
         let dims = Dims {
             num_stocks: n,
@@ -151,7 +151,7 @@ impl Market {
     /// The cap-weighted index's NAV: trade the universe weights frictionlessly.
     pub fn index_nav(&self, sc: &mut Scenario) -> NavH {
         let clk = sc.time();
-        let value = self.simulate(sc, Benchmark::new(self.n, 1.0, true), self.universe);
+        let value = self.simulate(sc, benchmark(self.n, 1.0, true), self.universe);
         sc.push(record(&clk), value)
     }
 
@@ -159,8 +159,8 @@ impl Market {
     /// into the view currency, trade via `Benchmark`, sum, and record.
     pub fn record_nav(&self, sc: &mut Scenario, positions: PosH) -> NavH {
         let clk = sc.time();
-        let positions_v = sc.as_view(positions);
-        let value = self.simulate(sc, Benchmark::new(self.n, 1.0, true), positions_v);
+        let positions_v = sc.push(as_view(), positions);
+        let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions_v);
         sc.push(record(&clk), value)
     }
 }

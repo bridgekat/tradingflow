@@ -585,6 +585,47 @@ impl Operator for RandomTrader {
     }
 }
 
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// Frictionless benchmark executor: replicates target weights exactly.
+pub fn benchmark(num_stocks: usize, initial_cash: f64, use_adjusts: bool) -> Benchmark {
+    Benchmark::new(num_stocks, initial_cash, use_adjusts)
+}
+
+/// Realistic-cost executor: lot rounding plus a base + rate fee model.
+pub fn simple_trader(
+    num_stocks: usize,
+    initial_cash: f64,
+    lot_size: f64,
+    fee_base: f64,
+    fee_rate: f64,
+) -> SimpleTrader {
+    SimpleTrader::new(num_stocks, initial_cash, lot_size, fee_base, fee_rate)
+}
+
+/// Stochastic executor: holds a seeded random `portfolio_size` subset.
+pub fn random_trader(
+    num_stocks: usize,
+    portfolio_size: usize,
+    initial_cash: f64,
+    lot_size: f64,
+    fee_base: f64,
+    fee_rate: f64,
+    seed: u64,
+) -> RandomTrader {
+    RandomTrader::new(
+        num_stocks,
+        portfolio_size,
+        initial_cash,
+        lot_size,
+        fee_base,
+        fee_rate,
+        seed,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

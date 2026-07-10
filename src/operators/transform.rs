@@ -847,3 +847,134 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
         (false, state.out.view())
     }
 }
+
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// Element-wise (well, whole-array) closure `ArrayView -> Array`.
+pub fn map<SI: Scalar, const NI: usize, SO: Scalar, const NO: usize, F>(
+    f: F,
+) -> Map<SI, NI, SO, NO, F>
+where
+    F: for<'a> Fn(ArrayView<'a, SI, NI>) -> Array<SO, NO> + Send + Sync + 'static,
+{
+    Map::new(f)
+}
+
+/// [`map`] writing into a reused output buffer; the closure returns whether to
+/// notify.
+pub fn map_inplace<SI: Scalar, const NI: usize, SO: Scalar, const NO: usize, F>(
+    f: F,
+    initial: Array<SO, NO>,
+) -> MapInplace<SI, NI, SO, NO, F>
+where
+    F: for<'a> Fn(ArrayView<'a, SI, NI>, &mut Array<SO, NO>) -> bool + Send + Sync + 'static,
+{
+    MapInplace::new(f, initial)
+}
+
+/// A closure over a whole input *tree* (the multi-port [`map`]); the input
+/// interface `I` is inferred from the wiring.
+pub fn apply<I, SO: Scalar, const NO: usize, F>(f: F) -> Apply<I, SO, NO, F>
+where
+    I: StripNotify + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>) -> Array<SO, NO> + Send + Sync + 'static,
+{
+    Apply::new(f)
+}
+
+/// [`apply`] writing into a reused output buffer; the closure returns whether
+/// to notify.
+pub fn apply_inplace<I, SO: Scalar, const NO: usize, F>(
+    f: F,
+    initial: Array<SO, NO>,
+) -> ApplyInplace<I, SO, NO, F>
+where
+    I: StripNotify + 'static,
+    F: for<'a> Fn(<I as StripNotify>::Plain<'a>, &mut Array<SO, NO>) -> bool + Send + Sync + 'static,
+{
+    ApplyInplace::new(f, initial)
+}
+
+/// Gather `indices` along `axis` into an owned output, optionally squeezing a
+/// length-1 axis.
+pub fn select<T: Scalar, const IN: usize, const OUT: usize>(
+    indices: Vec<usize>,
+    axis: usize,
+    squeeze: bool,
+) -> Select<T, IN, OUT> {
+    Select::new(indices, axis, squeeze)
+}
+
+/// [`select`] over the flattened input: `select(indices, 0, false)`.
+pub fn select_flat<T: Scalar, const IN: usize, const OUT: usize>(
+    indices: Vec<usize>,
+) -> Select<T, IN, OUT> {
+    Select::flat(indices)
+}
+
+/// [`select`] along `axis`, keeping the axis: `select(indices, axis, false)`.
+pub fn select_along_axis<T: Scalar, const IN: usize, const OUT: usize>(
+    indices: Vec<usize>,
+    axis: usize,
+) -> Select<T, IN, OUT> {
+    Select::along_axis(indices, axis)
+}
+
+/// Zero-copy strided [`select`]: re-derives a view of the input rather than
+/// copying (contiguous `indices` along `axis`).
+pub fn slice_view<T: Scalar, const IN: usize, const OUT: usize>(
+    indices: Vec<usize>,
+    axis: usize,
+    squeeze: bool,
+) -> SliceView<T, IN, OUT> {
+    SliceView::new(indices, axis, squeeze)
+}
+
+/// Bridge a whole-array `RefPort<Array<T, N>>` into the `ViewPort` view
+/// currency the operators speak (zero-copy).
+pub fn as_view<T: Scalar, const N: usize>() -> AsView<T, N> {
+    AsView::new()
+}
+
+/// Bridge a by-value view into the by-reference `RefViewPort` currency the
+/// carry-join combines ([`Stack`](super::Stack) / [`Concat`](super::Concat))
+/// consume.
+pub fn ref_array_view<T: Scalar, const N: usize>() -> RefArrayView<T, N> {
+    RefArrayView::new()
+}
+
+/// The inverse of [`ref_array_view`]: re-derive a by-reference view (e.g. a
+/// [`Split`](super::Split) row) as the by-value currency the elementwise
+/// operators consume.
+pub fn deref_array_view<T: Scalar, const N: usize>() -> DerefArrayView<T, N> {
+    DerefArrayView::new()
+}
+
+/// Materialize a by-value view back into an owned whole-array
+/// `RefPort<Array<T, N>>` cell — the inverse of [`as_view`], e.g. before a
+/// whole-array consumer such as a `PyClassOperator`.
+pub fn own<T: Scalar, const N: usize>() -> Own<T, N> {
+    Own::new()
+}
+
+/// The value from `offset` ticks ago in a recorded [`Series`], `fill` until it
+/// exists — the primitive behind the self-recording [`lag`](super::lag).
+/// (Named `_series` because `lag` is taken by its live-array counterpart.)
+pub fn lag_series<T: Scalar, const N: usize>(offset: usize, fill: T) -> Lag<T, N> {
+    Lag::new(offset, fill)
+}
+
+/// Push one [`ref_array_view`] bridge per handle — the vector form, for the
+/// common `push(stack(axis), &ref_array_views(sc, &columns)[..])` shape. Takes
+/// any builder that derefs to a [`flowgraph::typed::Builder`] (e.g. a
+/// `Scenario`).
+pub fn ref_array_views<T: Scalar, const N: usize>(
+    builder: &mut flowgraph::typed::Builder,
+    data: &[flowgraph::typed::Handle<ViewPort<ArrayValue<T, N>>>],
+) -> Vec<flowgraph::typed::Handle<RefViewPort<ArrayValue<T, N>>>> {
+    data.iter()
+        .map(|&h| builder.push(ref_array_view::<T, N>(), h))
+        .collect()
+}

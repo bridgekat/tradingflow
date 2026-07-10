@@ -387,3 +387,36 @@ impl<O: Operator, C: Sync + 'static> Segment for Clocked<O, C> {
         }
     }
 }
+
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// Pass the input through iff `predicate` holds, else drop the tick (emitting
+/// `notify = false`). The cutoff operator: a dropped tick suppresses every
+/// downstream side effect, including a [`Record`] append.
+pub fn filter<F, const N: usize>(predicate: F) -> Filter<F, N> {
+    Filter(predicate)
+}
+
+/// Like [`filter`], but re-presents the last passed row as a stable
+/// [`ViewPort`] view (the carry-safe view gate).
+pub fn gate<F, const N: usize>(predicate: F) -> Gate<F, N> {
+    Gate(predicate)
+}
+
+/// The most recent element of a [`Series`] as an array view, `fill` when empty.
+pub fn last<T: Scalar, const N: usize>(fill: T) -> Last<T, N> {
+    Last::new(fill)
+}
+
+/// Count the notified ticks seen so far.
+pub fn count<const N: usize>() -> Count<N> {
+    Count
+}
+
+/// Prepend a leading clock port to `inner`, running its compute path only when
+/// the clock notifies.
+pub fn clocked<O, C>(inner: O) -> Clocked<O, C> {
+    Clocked::new(inner)
+}

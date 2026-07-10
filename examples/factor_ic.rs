@@ -25,8 +25,8 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::operators::{Lag, ResampleClocked, record};
-use tradingflow::{Retention, Scenario, ScenarioExt, WallClock};
+use tradingflow::operators::{lag_series, own, record, resample_clocked};
+use tradingflow::{Retention, Scenario, WallClock};
 
 use common::ic::{ic_series, ic_stats};
 use common::strategy::Market;
@@ -69,7 +69,7 @@ async fn main() {
     );
     // `Market` records the target series; the IC metric wants the live view. It
     // is shared across every factor, so bridge it once, before the loop.
-    let target_ref = sc.own::<f64, 1>(m.target);
+    let target_ref = sc.push(own(), m.target);
 
     let names = m.features.names.clone();
     let ic_handles: Vec<_> = m
@@ -80,9 +80,9 @@ async fn main() {
             // Lag one trading day, resample onto the rebalance clock, then NaN out
             // the stocks outside the universe so they don't dilute the correlation.
             let feature_series = sc.push(record(&clk), feature);
-            let lagged = sc.push(Lag::<f64, 1>::new(1, f64::NAN), feature_series);
+            let lagged = sc.push(lag_series(1, f64::NAN), feature_series);
             let aligned = sc.push(
-                ResampleClocked::<f64, 1>::new(),
+                resample_clocked(),
                 (m.rebalance_clock, lagged),
             );
             let masked = mask_to_universe(&mut sc, aligned, m.universe);

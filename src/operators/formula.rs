@@ -33,6 +33,18 @@
 //! series-consuming operators ([`RollingMean`], [`Lag`], …) against the shared
 //! handle.
 //!
+//! # Naming
+//!
+//! Each constructor here consumes a **live array handle** and records
+//! internally. Its `Series`-consuming primitive is reachable under the name of
+//! the underlying operator: [`rolling_mean`](super::rolling_mean) /
+//! [`rolling_sum`](super::rolling_sum) / [`rolling_variance`](super::rolling_variance)
+//! for [`ma`] / [`msum`] / [`mvar`], and — where the names would otherwise
+//! collide — [`ema_series`](super::ema_series) for [`ema`] and
+//! [`lag_series`](super::lag_series) for [`lag`]. Likewise the one-tick
+//! specializations of [`change`] and [`growth`], which need no record at all,
+//! are [`diff`](super::diff) and [`pct_change`](super::pct_change).
+//!
 //! # Time as a parameter
 //!
 //! [`Record`] stamps rows with event time, so every constructor that records
@@ -78,7 +90,7 @@ const TIME_MARGIN: Duration = Duration::from_days(16);
 pub type Windowed<T, const N: usize, O> = Comp<Record<T, N>, O>;
 
 /// Fan-out of the live value and its private [`lag`], chained into a combiner
-/// `O` — the [`change`] / [`pct_change`] shape.
+/// `O` — the [`change`] / [`growth`] shape.
 pub type WithLagged<T, const N: usize, O> =
     Comp<Fork<Id<ViewPort<ArrayValue<T, N>>>, Windowed<T, N, Lag<T, N>>>, O>;
 
@@ -183,7 +195,8 @@ pub fn lag_or<T: Scalar, const N: usize>(
 }
 
 /// `n`-tick change `x − x₋ₙ` (the momentum shape): `change(&clk, n) @ x`.
-/// Self-recording; `NaN` until the lag is available.
+/// Self-recording; `NaN` until the lag is available. The one-tick special
+/// case, without a private record, is [`diff`](super::diff).
 pub fn change<T: Scalar + Float, const N: usize>(
     clock: &Clock,
     n: usize,
@@ -192,11 +205,13 @@ pub fn change<T: Scalar + Float, const N: usize>(
 }
 
 /// `n`-tick relative change `(x − x₋ₙ) / x₋ₙ` (the YoY-growth shape):
-/// `pct_change(&clk, n) @ x`. The subtraction is kept (rather than reduced to
+/// `growth(&clk, n) @ x`. The subtraction is kept (rather than reduced to
 /// `x / x₋ₙ − 1`-style rank equivalents) so a negative base keeps its faithful
-/// sign. Self-recording; `NaN` until the lag is available.
+/// sign. Self-recording; `NaN` until the lag is available. The one-tick
+/// special case, without a private record, is
+/// [`pct_change`](super::pct_change).
 #[allow(clippy::type_complexity)] // the combinator tree is the documentation
-pub fn pct_change<T: Scalar + Float, const N: usize>(
+pub fn growth<T: Scalar + Float, const N: usize>(
     clock: &Clock,
     n: usize,
 ) -> WithLagged<

@@ -23,7 +23,7 @@
 use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::operators::{
-    and, greater_than, indicator, is_finite, multiply, ArrayValue, Clocked, Map,
+    ArrayValue, and, clocked, greater_than, indicator, is_finite, map, multiply,
 };
 use tradingflow::{Array, ArrayView, Scenario};
 
@@ -41,7 +41,7 @@ pub fn build_full_market_universe(
     rebalance_clock: Handle<RefPort<()>>,
 ) -> AvH {
     sc.push(
-        Clocked::new(Map::new(|m: ArrayView<f64, 1>| {
+        clocked(map(|m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             Array::from_vec(
                 [s.len()],
@@ -64,7 +64,7 @@ pub fn build_caprank_universe(
     hi: usize,
 ) -> AvH {
     sc.push(
-        Clocked::new(Map::new(move |m: ArrayView<f64, 1>| {
+        clocked(map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             let n = s.len();
             let mut idx: Vec<usize> =
@@ -154,7 +154,7 @@ pub fn build_cap_weighted_universe(
 ) -> AvH {
     let k = index_size;
     sc.push(
-        Clocked::new(Map::new(move |m: ArrayView<f64, 1>| {
+        clocked(map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             Array::from_vec([s.len()], calculate_index_weights(&s, k))
         })),

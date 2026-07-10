@@ -453,6 +453,52 @@ pub type RollingVariance<T, const NO: usize> = Rolling<VarianceAccumulator<T>, N
 pub type RollingCovariance<T> = Rolling<CovarianceAccumulator<T>, 1, 2>;
 
 // ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// [`Rolling`] over an explicit [`Window`] — the accumulator-generic form.
+pub fn rolling<A: Accumulator, const NI: usize, const NO: usize>(
+    window: Window,
+) -> Rolling<A, NI, NO> {
+    match window {
+        Window::Count(w) => Rolling::count(w),
+        Window::TimeDelta(w) => Rolling::time_delta(w),
+    }
+}
+
+/// Rolling sum over a recorded [`Series`]: `rolling_sum(Window::Count(20)) @ xs`.
+pub fn rolling_sum<T: Scalar + Float, const NO: usize>(window: Window) -> RollingSum<T, NO> {
+    rolling(window)
+}
+
+/// Rolling mean over a recorded [`Series`]. The self-recording counterpart
+/// over a live array handle is [`ma`](super::ma) / [`ma_time`](super::ma_time).
+pub fn rolling_mean<T: Scalar + Float, const NO: usize>(window: Window) -> RollingMean<T, NO> {
+    rolling(window)
+}
+
+/// Rolling population variance over a recorded [`Series`]. Self-recording
+/// counterpart: [`mvar`](super::mvar).
+pub fn rolling_variance<T: Scalar + Float, const NO: usize>(
+    window: Window,
+) -> RollingVariance<T, NO> {
+    rolling(window)
+}
+
+/// Pairwise rolling covariance matrix (`[K] → [K, K]`) over a recorded
+/// [`Series`].
+pub fn rolling_covariance<T: Scalar + Float>(window: Window) -> RollingCovariance<T> {
+    rolling(window)
+}
+
+/// [`Ema`] over a recorded [`Series`] — the primitive behind the
+/// self-recording [`ema`](super::ema). (Named `_series` because `ema` is taken
+/// by its live-array counterpart.)
+pub fn ema_series<T: Scalar + Float, const NO: usize>(alpha: T, window: usize) -> Ema<T, NO> {
+    Ema::new(alpha, window)
+}
+
+// ===========================================================================
 // EMA (standalone — does not use the Accumulator abstraction)
 // ===========================================================================
 

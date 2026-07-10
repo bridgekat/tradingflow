@@ -15,7 +15,7 @@
 
 use flowgraph::typed::RefPort;
 
-use tradingflow::operators::{Clock, PyClassOperator, PyParams};
+use tradingflow::operators::{Clock, PyClassOperator, PyParams, py_class_operator};
 use tradingflow::{Array, Series};
 
 // ===========================================================================
@@ -107,21 +107,21 @@ pub enum Mode {
 /// Pooled Ridge regression on the factor panel. `alpha` is the L2 penalty that
 /// regularises a collinear panel (the 145-factor set leans on it heavily).
 pub fn ridge_mean(d: Dims, min_periods: i64, alpha: f64, clk: &Clock) -> MeanPredictor {
-    PyClassOperator::from_module(
+    py_class_operator(
         "flowops.predictors.mean.incremental_ridge",
         d.params().int("min_periods", min_periods).float("alpha", alpha),
         vec![d.num_stocks],
-        clk.clone(),
+        clk,
     )
 }
 
 /// Unregularised pooled linear regression on the factor panel.
 pub fn linear_regression_mean(d: Dims, min_periods: i64, clk: &Clock) -> MeanPredictor {
-    PyClassOperator::from_module(
+    py_class_operator(
         "flowops.predictors.mean.incremental_linear_regression",
         d.params().int("min_periods", min_periods),
         vec![d.num_stocks],
-        clk.clone(),
+        clk,
     )
 }
 
@@ -181,7 +181,7 @@ impl CovEstimator {
         if let Some(m) = self.mode {
             p = p.str("mode", m);
         }
-        PyClassOperator::from_module(self.module, p, vec![d.num_stocks, d.num_stocks], clk.clone())
+        py_class_operator(self.module, p, vec![d.num_stocks, d.num_stocks], clk)
     }
 }
 
@@ -202,13 +202,13 @@ pub fn shrinkage_cov(
 
 /// Rank-linear weights over the predicted returns: no covariance, no solver.
 pub fn rank_linear(num_stocks: usize, top_fraction: f64, clk: &Clock) -> MeanPortfolio {
-    PyClassOperator::from_module(
+    py_class_operator(
         "flowops.portfolios.mean.rank_linear",
         PyParams::new()
             .int("num_stocks", num_stocks as i64)
             .float("top_fraction", top_fraction),
         vec![num_stocks],
-        clk.clone(),
+        clk,
     )
 }
 
@@ -221,7 +221,7 @@ pub fn markowitz(
     long_only: bool,
     clk: &Clock,
 ) -> MeanVarPortfolio {
-    PyClassOperator::from_module(
+    py_class_operator(
         "flowops.portfolios.mean_variance.markowitz",
         PyParams::new()
             .int("num_stocks", num_stocks as i64)
@@ -230,7 +230,7 @@ pub fn markowitz(
             .float("bound", bound)
             .bool("long_only", long_only),
         vec![num_stocks],
-        clk.clone(),
+        clk,
     )
 }
 
@@ -244,7 +244,7 @@ pub fn benchmark_relative(
     full_position: bool,
     clk: &Clock,
 ) -> MeanVarPortfolio {
-    PyClassOperator::from_module(
+    py_class_operator(
         "flowops.portfolios.mean_variance.benchmark_relative",
         PyParams::new()
             .int("num_stocks", num_stocks as i64)
@@ -253,7 +253,7 @@ pub fn benchmark_relative(
             .bool("long_only", long_only)
             .bool("full_position", full_position),
         vec![num_stocks],
-        clk.clone(),
+        clk,
     )
 }
 
@@ -269,25 +269,25 @@ pub fn regression_coefficients(
     min_periods: i64,
     clk: &Clock,
 ) -> RegressionCoefficients {
-    PyClassOperator::from_module(
+    py_class_operator(
         "flowops.metrics.mean.regression_coefficients",
         PyParams::new()
             .int("num_features", num_features)
             .int("max_periods", max_periods)
             .int("min_periods", min_periods),
         vec![2],
-        clk.clone(),
+        clk,
     )
 }
 
 /// Realized variance of the GMV portfolio implied by a covariance estimate — a
 /// pure diagnostic of covariance quality.
 pub fn minimum_variance(num_stocks: usize, clk: &Clock) -> MinimumVariance {
-    PyClassOperator::from_module(
+    py_class_operator(
         "flowops.metrics.variance.minimum_variance",
         PyParams::new().int("num_stocks", num_stocks as i64),
         vec![],
-        clk.clone(),
+        clk,
     )
 }
 
@@ -295,10 +295,10 @@ pub fn minimum_variance(num_stocks: usize, clk: &Clock) -> MinimumVariance {
 /// Feeding it two *ranked* vectors makes it the Spearman (rank) IC; feeding raw
 /// values makes it the Pearson IC.
 pub fn information_coefficient(num_stocks: usize, clk: &Clock) -> InformationCoefficient {
-    PyClassOperator::from_module(
+    py_class_operator(
         "flowops.metrics.mean.information_coefficient",
         PyParams::new().int("num_stocks", num_stocks as i64),
         vec![],
-        clk.clone(),
+        clk,
     )
 }

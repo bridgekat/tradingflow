@@ -21,7 +21,7 @@
 //! period-over-period **变动 (delta)** and **同比 (YoY growth)** factors need a
 //! ~1-year lag of an irregular-cadence series: the level is resampled onto the
 //! daily close pulse and run through the self-recording 244-day [`change`] /
-//! [`pct_change`] (the 次新 idiom), fused into one node via a nested
+//! [`growth`] (the 次新 idiom), fused into one node via a nested
 //! [`segment!`](flowgraph::segment) — the form recommended for individual
 //! factors. (`(cur − prev)/prev` is NOT rank-equivalent to `cur/prev` once a
 //! year-ago base goes negative, so the subtraction is kept rather than dropped.)
@@ -36,17 +36,17 @@ use flowgraph::typed::{Handle, RefPort, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    self, ArrayValue, Diff, Fillna, Percentile, ResampleClocked, ResampleView, change, divide,
-    log, ma_time, multiply, negate, pct_change, subtract,
+    self, ArrayValue, ResampleView, change, diff, divide, fillna, growth, log, ma_time, multiply,
+    negate, percentile, resample_clocked, subtract,
 };
-use tradingflow::{Scenario, ScenarioExt};
+use tradingflow::Scenario;
 
 use super::{AvH, Stacked};
 
 type H = AvH;
 
 /// Trading days a 变动/同比 level is lagged (the 次新 ~1-year idiom); the
-/// self-recording [`change`] / [`pct_change`] retain exactly this look-back.
+/// self-recording [`change`] / [`growth`] retain exactly this look-back.
 const LAG_YEAR: usize = 244;
 
 /// Resample `data` onto a daily-`Array` clock pulse. Aliased to keep the
@@ -72,7 +72,7 @@ pub struct FactorSet {
 pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
     sc.push(
         flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {
-            Fillna::<f64, 1>::new(0.5) @ Percentile::<f64, 1>::new() @ x
+            fillna(0.5) @ percentile() @ x
         }),
         h,
     )
@@ -124,13 +124,13 @@ fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
 }
 
 /// 同比 (YoY growth): the faithful `(cur − prev) / prev`, i.e. the
-/// self-recording [`pct_change`] over the same resampled daily pulse as
+/// self-recording [`growth`] over the same resampled daily pulse as
 /// [`delta`].
 fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
     let clk = sc.time();
     sc.push(
         flowgraph::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| {
-            pct_change(&clk, LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
+            growth(&clk, LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -266,6 +266,6 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// the factor stored at `t-1` inside `InformationCoefficient`, it is the
 /// next-period return the factor is meant to predict.
 pub fn build_forward_return(sc: &mut Scenario, log_adj: H, rebalance_clock: Handle<RefPort<()>>) -> H {
-    let resampled = sc.push(ResampleClocked::<f64, 1>::new(), (rebalance_clock, log_adj));
-    sc.push(Diff::<f64, 1>::new(), resampled)
+    let resampled = sc.push(resample_clocked(), (rebalance_clock, log_adj));
+    sc.push(diff(), resampled)
 }

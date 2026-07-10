@@ -22,8 +22,8 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::operators::{Diff, record};
-use tradingflow::{Retention, Scenario, ScenarioExt, WallClock};
+use tradingflow::operators::{as_view, diff, own, record};
+use tradingflow::{Retention, Scenario, WallClock};
 
 use common::models::{linear_regression_mean, markowitz, minimum_variance, CovEstimator, Mode};
 use common::strategy::{Market, NavH, NavTable};
@@ -88,8 +88,8 @@ async fn main() {
     );
     // Raw daily log returns for the realized-variance metric, as a whole-array
     // `RefPort` (the metric is a Python operator).
-    let log_returns = sc.push(Diff::<f64, 1>::new(), m.log_adj);
-    let log_returns_ref = sc.own::<f64, 1>(log_returns);
+    let log_returns = sc.push(diff(), m.log_adj);
+    let log_returns_ref = sc.push(own(), log_returns);
 
     let predicted_returns = sc.push(
         linear_regression_mean(m.dims, MIN_PERIODS, &clk),
@@ -111,7 +111,7 @@ async fn main() {
 
             // GMV realized-variance metric (diagnostic; fed cov + raw returns).
             let mv = sc.push(minimum_variance(m.n, &clk), (cov, log_returns_ref));
-            let mv_v = sc.as_view(mv);
+            let mv_v = sc.push(as_view(), mv);
 
             // Long-only and long-short Markowitz portfolios.
             let nav: Vec<NavH> = [true, false]

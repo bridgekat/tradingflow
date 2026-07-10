@@ -15,8 +15,11 @@
 
 use flowgraph::typed::{Handle, RefPort};
 
-use tradingflow::operators::{Benchmark, Clock, Map, PyClassOperator, PyParams, Turnover, record};
-use tradingflow::{Array, ArrayView, Scenario, ScenarioExt, Series};
+use tradingflow::operators::{
+    Clock, PyClassOperator, PyParams, as_view, benchmark, map, own, py_class_operator, record,
+    turnover,
+};
+use tradingflow::{Array, ArrayView, Scenario, Series};
 
 use super::AvH;
 
@@ -51,31 +54,31 @@ fn bucket_nav(
 ) -> (Handle<RefPort<Series<f64, 0>>>, Handle<RefPort<Series<f64, 0>>>) {
     // The Python portfolio consumes whole-array `RefPort` inputs; materialize the
     // two view inputs via `own`.
-    let universe_ref = sc.own::<f64, 1>(universe);
-    let factor_ref = sc.own::<f64, 1>(factor);
+    let universe_ref = sc.push(own(), universe);
+    let factor_ref = sc.push(own(), factor);
     let positions = sc.push(
-        PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 1>::from_module(
+        py_class_operator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 1>(
             "flowops.portfolios.mean.rank_bucket",
             PyParams::new()
                 .int("num_stocks", n as i64)
                 .float("low", low)
                 .float("high", high),
             vec![n],
-            clk.clone(),
+            clk,
         ),
         (universe_ref, factor_ref),
     );
     // The trader speaks the view currency; bridge the `RefPort` positions back.
-    let positions_v = sc.as_view(positions);
+    let positions_v = sc.push(as_view(), positions);
     let trader = sc.push(
-        Benchmark::new(n, 1.0, true),
+        benchmark(n, 1.0, true),
         (positions_v, close, adjusts, upper, lower),
     );
     let nav = sc.push(
-        Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
+        map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         trader,
     );
-    let turnover = sc.push(Turnover::<f64, 1>::new(), positions_v);
+    let turnover = sc.push(turnover(), positions_v);
     (sc.push(record(clk), nav), sc.push(record(clk), turnover))
 }
 

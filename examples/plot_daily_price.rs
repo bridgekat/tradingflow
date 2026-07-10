@@ -19,13 +19,13 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, ViewPort};
+use flowgraph::typed::{Handle, RefSource, ViewPort};
 
 use tradingflow::operators::{
-    ArrayValue, Filter, ForwardAdjust, RollingMean, RollingVariance, Select, add, multiply,
-    record, sqrt, subtract,
+    ArrayValue, Window, add, as_view, filter, forward_adjust, multiply, record, rolling_mean,
+    rolling_variance, select, sqrt, subtract,
 };
-use tradingflow::{Scenario, ScenarioExt, WallClock};
+use tradingflow::{Scenario, WallClock};
 use tradingflow::sources::ParquetPanelSource;
 use tradingflow::{Array, ArrayView, Instant, Series};
 
@@ -52,9 +52,9 @@ fn pick(
     panel: Handle<ViewPort<ArrayValue<f64, 2>>>,
     i: usize,
 ) -> Handle<ViewPort<ArrayValue<f64, 1>>> {
-    let sel = sc.push(Select::<f64, 2, 1>::new(vec![i], 0, true), panel);
+    let sel = sc.push(select(vec![i], 0, true), panel);
     sc.push(
-        Filter::<_, 1>(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
+        filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
         sel,
     )
 }
@@ -98,7 +98,7 @@ async fn main() {
     );
     let price_panel = {
         let h = sc.add_source(price_src);
-        sc.as_view(h)
+        sc.push(as_view(), h)
     };
     let div_src = ParquetPanelSource::new(
         dividends_pq,
@@ -107,27 +107,27 @@ async fn main() {
     );
     let div_panel = {
         let h = sc.add_source(div_src);
-        sc.as_view(h)
+        sc.push(as_view(), h)
     };
 
     // Select the target stock; close (scalar) and volume (scalar) from its row
     // (rank-1 `[K]` → rank-0 scalar via the squeezing `Select`).
     let prices = pick(&mut sc, price_panel, idx);
     let dividends = pick(&mut sc, div_panel, idx);
-    let closes = sc.push(Select::<f64, 1, 0>::new(vec![0], 0, true), prices);
-    let volume = sc.push(Select::<f64, 1, 0>::new(vec![1], 0, true), prices);
+    let closes = sc.push(select(vec![0], 0, true), prices);
+    let volume = sc.push(select(vec![1], 0, true), prices);
 
     // Forward-adjusted close (scalar close `0`, dividends row `1`), recorded into
     // a Series for the rolling stats.
-    let adj_closes = sc.push(ForwardAdjust::<0, 1>::new(), (closes, dividends));
+    let adj_closes = sc.push(forward_adjust(), (closes, dividends));
     let adj_series = sc.push(record(&clk), adj_closes);
 
     // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).
-    let ma = sc.push(RollingMean::<f64, 0>::count(WINDOW), adj_series);
-    let var = sc.push(RollingVariance::<f64, 0>::count(WINDOW), adj_series);
+    let ma = sc.push(rolling_mean(Window::Count(WINDOW)), adj_series);
+    let var = sc.push(rolling_variance(Window::Count(WINDOW)), adj_series);
     let std = sc.push(sqrt::<f64, 0>(), var);
-    let multiple_src = sc.add_const(Array::scalar(MULTIPLE));
-    let multiple = sc.as_view(*multiple_src);
+    let multiple_src = sc.push_source(RefSource::new(Array::scalar(MULTIPLE)));
+    let multiple = sc.push(as_view(), *multiple_src);
     let band = sc.push(multiply::<f64, 0>(), (std, multiple));
     let upper = sc.push(add::<f64, 0>(), (ma, band));
     let lower = sc.push(subtract::<f64, 0>(), (ma, band));

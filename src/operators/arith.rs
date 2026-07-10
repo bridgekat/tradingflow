@@ -430,3 +430,8 @@ impl<T: Scalar, const N: usize> Operator for Choose<T, N> {
         (false, out.view())
     }
 }
+
+/// Element-wise `if cond[i] { a[i] } else { b[i] }` — the three-input selector.
+pub fn choose<T: Scalar, const N: usize>() -> Choose<T, N> {
+    Choose::new()
+}

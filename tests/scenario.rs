@@ -2,9 +2,9 @@
 //! over `flowgraph::ingest`'s [`Builder`]/[`Driver`] (aliased [`Scenario`] /
 //! [`Session`]), ported from the deleted `src/scenario.rs` module tests.
 
-use tradingflow::operators::{Filter, add, record};
+use tradingflow::operators::{add, as_view, filter, record};
 use tradingflow::sources::ArraySource;
-use tradingflow::{Array, ArrayView, Instant, Scenario, ScenarioExt, Series, WallClock};
+use tradingflow::{Array, ArrayView, Instant, Scenario, Series, WallClock};
 
 fn tss(xs: &[i64]) -> Vec<Instant> {
     xs.iter().copied().map(Instant::from_nanos).collect()
@@ -20,7 +20,7 @@ async fn run_single_source_record() {
     let mut sc = Scenario::new(WallClock);
     let clk = sc.time();
     let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let hv = sc.as_view(h);
+    let hv = sc.push(as_view(), h);
     let hrec = sc.push(record(&clk), hv);
 
     let mut session = sc.build();
@@ -39,7 +39,7 @@ async fn run_two_sources_add() {
     let clk = sc.time();
     let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]));
     let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]));
-    let (hav, hbv) = (sc.as_view(ha), sc.as_view(hb));
+    let (hav, hbv) = (sc.push(as_view(), ha), sc.push(as_view(), hb));
     let ho = sc.push(add::<f64, 0>(), (hav, hbv));
     let hrec = sc.push(record(&clk), ho);
 
@@ -59,7 +59,7 @@ async fn run_coalescing() {
     let clk = sc.time();
     let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]));
     let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]));
-    let (hav, hbv) = (sc.as_view(ha), sc.as_view(hb));
+    let (hav, hbv) = (sc.push(as_view(), ha), sc.push(as_view(), hb));
     let ho = sc.push(add::<f64, 0>(), (hav, hbv));
     let hrec = sc.push(record(&clk), ho);
 
@@ -78,8 +78,8 @@ async fn run_filter_cutoff() {
     let mut sc = Scenario::new(WallClock);
     let clk = sc.time();
     let h = sc.add_source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
-    let hv = sc.as_view(h);
-    let hf = sc.push(Filter::<_, 0>(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), hv);
+    let hv = sc.push(as_view(), h);
+    let hf = sc.push(filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), hv);
     let hrec = sc.push(record(&clk), hf);
 
     let mut session = sc.build();
@@ -99,7 +99,7 @@ async fn on_stable_per_batch() {
     let mut sc = Scenario::new(WallClock);
     let clk = sc.time();
     let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let hv = sc.as_view(h);
+    let hv = sc.push(as_view(), h);
     let _ = sc.push(record(&clk), hv);
 
     let mut session = sc.build();

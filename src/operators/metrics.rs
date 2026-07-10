@@ -514,6 +514,40 @@ impl<T: Scalar + Float, const N: usize> Operator for Turnover<T, N> {
     }
 }
 
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// Cumulative compounded return of a per-tick return stream.
+pub fn compound_return<T: Scalar + Float, const N: usize>() -> CompoundReturn<T, N> {
+    CompoundReturn::new()
+}
+
+/// Running mean of a per-tick return stream.
+pub fn average_return<T: Scalar + Float, const N: usize>() -> AverageReturn<T, N> {
+    AverageReturn::new()
+}
+
+/// Running standard deviation of a per-tick return stream.
+pub fn volatility<T: Scalar + Float, const N: usize>() -> Volatility<T, N> {
+    Volatility::new()
+}
+
+/// Running Sharpe ratio (mean / standard deviation) of a return stream.
+pub fn sharpe_ratio<T: Scalar + Float, const N: usize>() -> SharpeRatio<T, N> {
+    SharpeRatio::new()
+}
+
+/// Running drawdown from the running peak.
+pub fn drawdown<T: Scalar + Float, const N: usize>() -> Drawdown<T, N> {
+    Drawdown::new()
+}
+
+/// Per-tick turnover: the L1 change in a weight vector.
+pub fn turnover<T: Scalar + Float, const N: usize>() -> Turnover<T, N> {
+    Turnover::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

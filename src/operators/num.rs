@@ -789,3 +789,54 @@ impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
         (false, state.out.view())
     }
 }
+
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// Element-wise clamp into `[lo, hi]` (`NaN` passes through).
+pub fn clamp<T: Scalar + Float, const N: usize>(lo: T, hi: T) -> Clamp<T, N> {
+    Clamp::new(lo, hi)
+}
+
+/// Replace every non-finite element with `val`.
+pub fn fillna<T: Scalar + Float, const N: usize>(val: T) -> Fillna<T, N> {
+    Fillna::new(val)
+}
+
+/// Carry the last finite value forward across ticks.
+pub fn forward_fill<T: Scalar + Float, const N: usize>() -> ForwardFill<T, N> {
+    ForwardFill::new()
+}
+
+/// Element-wise first difference across ticks: `x − x₋₁`. The `n`-tick
+/// generalization over a live handle is [`change`](super::change).
+pub fn diff<T: Scalar + Float, const N: usize>() -> Diff<T, N> {
+    Diff::new()
+}
+
+/// Element-wise one-step linear return: `x / x₋₁ − 1`. The `n`-tick
+/// generalization over a live handle is [`growth`](super::growth).
+pub fn pct_change<T: Scalar + Float, const N: usize>() -> PctChange<T, N> {
+    PctChange::new()
+}
+
+/// Cross-sectional rank, mapped through the inverse normal CDF.
+pub fn gaussianize<T: Scalar + Float, const N: usize>() -> Gaussianize<T, N> {
+    Gaussianize::new()
+}
+
+/// Cross-sectional percentile rank into `[0, 1]`.
+pub fn percentile<T: Scalar + Float, const N: usize>() -> Percentile<T, N> {
+    Percentile::new()
+}
+
+/// Cross-sectional z-score: `(x − mean) / std`.
+pub fn standardize<T: Scalar + Float, const N: usize>() -> Standardize<T, N> {
+    Standardize::new()
+}
+
+/// Cross-sectionally clip the tails at the `p` / `1 − p` quantiles.
+pub fn winsorize<T: Scalar + Float, const N: usize>(p: T) -> Winsorize<T, N> {
+    Winsorize::new(p)
+}

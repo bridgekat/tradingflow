@@ -20,8 +20,8 @@
 use flowgraph::typed::{Handle, Operator, RefPort, ViewPort};
 
 use tradingflow::operators::{
-    Apply, ArrayValue, Diff, Lag, Percentile, RollingMean, RollingSum, RollingVariance, Select,
-    divide, log, max, min, multiply, record_bounded, sqrt, subtract,
+    ArrayValue, Window, apply, diff, divide, lag_series, log, max, min, multiply, percentile,
+    record_bounded, rolling_mean, rolling_sum, rolling_variance, select, sqrt, subtract,
 };
 use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
 
@@ -49,18 +49,18 @@ fn div(sc: &mut Scenario, a: H, b: H) -> H {
     sc.push(divide::<f64, 1>(), (a, b))
 }
 fn lag(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.push(Lag::<f64, 1>::new(n, f64::NAN), s)
+    sc.push(lag_series(n, f64::NAN), s)
 }
 fn rsum(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.push(RollingSum::<f64, 1>::count(n), s)
+    sc.push(rolling_sum(Window::Count(n)), s)
 }
 fn rmean(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.push(RollingMean::<f64, 1>::count(n), s)
+    sc.push(rolling_mean(Window::Count(n)), s)
 }
 /// Elementwise map preserving shape and NaN.
 fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
     sc.push(
-        tradingflow::operators::Map::new(move |a: ArrayView<f64, 1>| {
+        tradingflow::operators::map(move |a: ArrayView<f64, 1>| {
             let s = a.to_contiguous();
             Array::from_vec([s.len()], s.iter().map(|&x| f(x)).collect())
         }),
@@ -74,7 +74,7 @@ fn mul(sc: &mut Scenario, a: H, b: H) -> H {
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
     sc.push(
         flowgraph::segment!(|x: RefPort<Series<f64, 1>>| {
-            sqrt::<f64, 1>() @ RollingVariance::<f64, 1>::count(n) @ x
+            sqrt::<f64, 1>() @ rolling_variance(Window::Count(n)) @ x
         }),
         s,
     )
@@ -112,7 +112,7 @@ const Y: usize = 252; // ~1 trading year
 /// `series.at(i)` reads `[a_i, b_i]` pairs).
 fn stack2(sc: &mut Scenario, a: H, b: H) -> Handle<ViewPort<ArrayValue<f64, 2>>> {
     sc.push(
-        Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 2, _>::new(
+        apply(
             |(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
                 let (av, bv) = (a.to_contiguous(), b.to_contiguous());
                 let n = av.len();
@@ -450,7 +450,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let lcr = log_h(sc, st.close); // raw log close
     let lcr_s = rec(sc, lcr);
 
-    let daily_ret = sc.push(Diff::<f64, 1>::new(), lc); // adjusted close-to-close log return
+    let daily_ret = sc.push(diff(), lc); // adjusted close-to-close log return
     let dret_s = rec(sc, daily_ret);
     let intraday = sub(sc, lcr, lo); // log(close/open)
     let intra_s = rec(sc, intraday);
@@ -462,7 +462,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let absret_s = rec(sc, abs_ret);
     let sign_ret = emap(sc, daily_ret, |x| if x.is_finite() { x.signum() } else { f64::NAN });
     let sign_s = rec(sc, sign_ret);
-    let xs_rank = sc.push(Percentile::<f64, 1>::new(), daily_ret); // daily cross-sectional rank
+    let xs_rank = sc.push(percentile(), daily_ret); // daily cross-sectional rank
     let xsr_s = rec(sc, xs_rank);
 
     // shared rolling sums (reused by the _M / _A pairs)
@@ -555,7 +555,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // ============ 量价相关性 (price-volume correlation, 20-day) — 图表40 ============
     // sync = corr(turn_t, x_t); post (量领先) = corr(turn_t, x_{t+1}) = corr(lag(turn,1), x);
     // prior (价领先) = corr(turn_t, x_{t-1}) = corr(turn, lag(x,1)).
-    let turnover_change = sc.push(Diff::<f64, 1>::new(), turnover);
+    let turnover_change = sc.push(diff(), turnover);
     let turnchg_s = rec(sc, turnover_change);
     let lag_turn1 = lag(sc, turnover_s, 1);
     let lag_turnd1 = lag(sc, turnchg_s, 1);
@@ -639,7 +639,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     .into_iter()
     .enumerate()
     {
-        add(name, sc.push(Select::<f64, 2, 1>::new(vec![c], 1, true), chip));
+        add(name, sc.push(select(vec![c], 1, true), chip));
     }
 
     drop(add);

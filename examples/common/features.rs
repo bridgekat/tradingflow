@@ -5,10 +5,10 @@ use flowgraph::typed::{Handle, RefPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    Lag, Percentile, ResampleView, RollingVariance, Stack, Winsorize, divide, log, ma, ma_time,
-    multiply, record_bounded, sqrt, subtract,
+    Window, divide, lag_series, log, ma, ma_time, multiply, percentile, record_bounded,
+    ref_array_views, resample_view, rolling_variance, sqrt, stack, subtract, winsorize,
 };
-use tradingflow::{Retention, Scenario, ScenarioExt, Series};
+use tradingflow::{Retention, Scenario, Series};
 
 use super::data::Stacked;
 use super::{factors, pv_factors, AvH, RETAIN_MARGIN};
@@ -32,10 +32,10 @@ fn stack_and_record(
     retention: Retention,
 ) -> Features {
     let clk = sc.time();
-    let refs = sc.ref_array_views::<f64, 1>(&handles);
-    let stacked = sc.push(Stack::<f64, 1, 2>::new(1), &refs[..]);
+    let refs = ref_array_views(sc, &handles);
+    let stacked = sc.push(stack(1), &refs[..]);
     let sampled = sc.push(
-        ResampleView::<f64, 2>::new(),
+        resample_view(),
         (st.adjusted_close, stacked),
     );
     let series = sc.push(record_bounded(&clk, retention), sampled);
@@ -70,11 +70,11 @@ pub fn build_features(
     // Momentum: window-period log return of adjusted close.
     let log_adj = sc.push(log::<f64, 1>(), st.adjusted_close);
     let log_adj_series = sc.push(record_bounded(&clk, win_ret), log_adj);
-    let log_adj_lag = sc.push(Lag::<f64, 1>::new(window, f64::NAN), log_adj_series);
+    let log_adj_lag = sc.push(lag_series(window, f64::NAN), log_adj_series);
     let momentum = sc.push(subtract::<f64, 1>(), (log_adj, log_adj_lag));
 
     // Volatility: rolling std of daily log returns.
-    let log_var = sc.push(RollingVariance::<f64, 1>::count(window), log_adj_series);
+    let log_var = sc.push(rolling_variance(Window::Count(window)), log_adj_series);
     let volatility = sc.push(sqrt::<f64, 1>(), log_var);
 
     // Turnover MA (self-recording).
@@ -96,13 +96,13 @@ pub fn build_features(
         format!("volume_ratio_{window}"),
     ];
     let handles = vec![
-        sc.push(Percentile::<f64, 1>::new(), market_cap),
-        sc.push(Percentile::<f64, 1>::new(), bp),
-        sc.push(Percentile::<f64, 1>::new(), ttm_roe),
-        sc.push(Winsorize::<f64, 1>::new(p), momentum),
-        sc.push(Winsorize::<f64, 1>::new(p), volatility),
-        sc.push(Winsorize::<f64, 1>::new(p), turnover_ma),
-        sc.push(Winsorize::<f64, 1>::new(p), volume_ratio),
+        sc.push(percentile(), market_cap),
+        sc.push(percentile(), bp),
+        sc.push(percentile(), ttm_roe),
+        sc.push(winsorize(p), momentum),
+        sc.push(winsorize(p), volatility),
+        sc.push(winsorize(p), turnover_ma),
+        sc.push(winsorize(p), volume_ratio),
     ];
 
     stack_and_record(sc, st, names, handles, feature_retention)

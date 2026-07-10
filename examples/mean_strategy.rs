@@ -27,9 +27,10 @@ mod common;
 use clap::Parser;
 
 use tradingflow::operators::{
-    Benchmark, CompoundReturn, Diff, Drawdown, RandomTrader, SharpeRatio, Stack, log, record,
+    as_view, benchmark, compound_return, diff, drawdown, log, random_trader, record,
+    ref_array_view, sharpe_ratio, stack,
 };
-use tradingflow::{Retention, Scenario, ScenarioExt, Series, WallClock};
+use tradingflow::{Retention, Scenario, Series, WallClock};
 
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
 use common::strategy::{trim_scale, Market, INITIAL_CASH, TARGET_OFFSET};
@@ -96,40 +97,40 @@ async fn main() {
     );
     // Bridge the Python `RefPort` positions back into the view currency the
     // native traders speak.
-    let soft_positions_v = sc.as_view(soft_positions);
+    let soft_positions_v = sc.push(as_view(), soft_positions);
 
     // ---- Traders (the cost-model swap point) ----------------------------
-    let index_value = m.simulate(&mut sc, Benchmark::new(m.n, 1.0, true), m.universe);
+    let index_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), m.universe);
     let frictionless_value =
-        m.simulate(&mut sc, Benchmark::new(m.n, 1.0, true), soft_positions_v);
+        m.simulate(&mut sc, benchmark(m.n, 1.0, true), soft_positions_v);
     let actual_value = m.simulate(
         &mut sc,
-        RandomTrader::new(m.n, 20, INITIAL_CASH, 100.0, 5.0, 0.001, 0),
+        random_trader(m.n, 20, INITIAL_CASH, 100.0, 5.0, 0.001, 0),
         soft_positions_v,
     );
 
     // ---- Metrics (clock-gated, since inception) -------------------------
     let sharpe = sc.push(
-        SharpeRatio::<f64, 0>::new(),
+        sharpe_ratio(),
         (actual_value, m.rebalance_clock),
     );
     let compound = sc.push(
-        CompoundReturn::<f64, 0>::new(),
+        compound_return(),
         (actual_value, m.rebalance_clock),
     );
-    let drawdown = sc.push(Drawdown::<f64, 0>::new(), actual_value);
+    let drawdown = sc.push(drawdown(), actual_value);
 
     // Rolling market beta / alpha vs the cap-weighted index, on daily log
     // returns of total value (regressor adds the intercept → output [beta, alpha]).
     let log_actual = sc.push(log::<f64, 0>(), actual_value);
-    let strat_logret = sc.push(Diff::<f64, 0>::new(), log_actual);
+    let strat_logret = sc.push(diff(), log_actual);
     let log_index = sc.push(log::<f64, 0>(), index_value);
-    let index_logret = sc.push(Diff::<f64, 0>::new(), log_index);
+    let index_logret = sc.push(diff(), log_index);
     let strat_logret_series = sc.push(record(&clk), strat_logret);
     // scalar -> (1,): bridge the rank-0 view into the `RefViewPort` slice `Stack`
     // consumes, then stack into a 1-vector.
-    let index_logret_ref = sc.ref_array_view::<f64, 0>(index_logret);
-    let index_logret_vec = sc.push(Stack::<f64, 0, 1>::new(0), &[index_logret_ref][..]);
+    let index_logret_ref = sc.push(ref_array_view(), index_logret);
+    let index_logret_vec = sc.push(stack(0), &[index_logret_ref][..]);
     let index_logret_series = sc.push(record(&clk), index_logret_vec);
     let beta_alpha = sc.push(
         regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS, &clk),
@@ -145,7 +146,7 @@ async fn main() {
     let h_drawdown = sc.push(record(&clk), drawdown);
     // `beta_alpha` is a Python `RefPort<Array>` output; bridge into the view
     // currency for recording.
-    let beta_alpha_v = sc.as_view(beta_alpha);
+    let beta_alpha_v = sc.push(as_view(), beta_alpha);
     let h_beta_alpha = sc.push(record(&clk), beta_alpha_v);
 
     let session = common::run(sc, &args).await;

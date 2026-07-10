@@ -233,3 +233,19 @@ impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
         (false, state.out.view())
     }
 }
+
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// Annualize a periodic (report-cadence) flow.
+pub fn annualize() -> Annualize {
+    Annualize::new()
+}
+
+/// Forward price/dividend adjustment. Chain
+/// [`with_output_prices`](ForwardAdjust::with_output_prices) to emit adjust
+/// factors instead of adjusted prices.
+pub fn forward_adjust<const NP: usize, const ND: usize>() -> ForwardAdjust<NP, ND> {
+    ForwardAdjust::new()
+}

@@ -35,7 +35,7 @@ fn scalar_src(
     v: f64,
 ) -> (SourceHandle<RefSource<Array<f64, 0>>>, Handle<Vp<0>>) {
     let s = b.push_source(RefSource::new(Array::scalar(v)));
-    let view = b.push(AsView::<f64, 0>::new(), *s);
+    let view = b.push(as_view(), *s);
     (s, view)
 }
 
@@ -45,7 +45,7 @@ fn vec_src(
     v: Vec<f64>,
 ) -> (SourceHandle<RefSource<Array<f64, 1>>>, Handle<Vp<1>>) {
     let s = b.push_source(RefSource::new(Array::from_vec([v.len()], v)));
-    let view = b.push(AsView::<f64, 1>::new(), *s);
+    let view = b.push(as_view(), *s);
     (s, view)
 }
 
@@ -60,8 +60,8 @@ fn scalar_ref_src(
     v: f64,
 ) -> (SourceHandle<RefSource<Array<f64, 0>>>, Handle<RVp<0>>) {
     let s = b.push_source(RefSource::new(Array::scalar(v)));
-    let view = b.push(AsView::<f64, 0>::new(), *s);
-    let refv = b.push(RefArrayView::<f64, 0>::new(), view);
+    let view = b.push(as_view(), *s);
+    let refv = b.push(ref_array_view(), view);
     (s, refv)
 }
 
@@ -72,8 +72,8 @@ fn vec_ref_src(
     v: Vec<f64>,
 ) -> (SourceHandle<RefSource<Array<f64, 1>>>, Handle<RVp<1>>) {
     let s = b.push_source(RefSource::new(Array::from_vec([v.len()], v)));
-    let view = b.push(AsView::<f64, 1>::new(), *s);
-    let refv = b.push(RefArrayView::<f64, 1>::new(), view);
+    let view = b.push(as_view(), *s);
+    let refv = b.push(ref_array_view(), view);
     (s, refv)
 }
 
@@ -125,7 +125,7 @@ fn record_series() {
     let (ha, hav) = scalar_src(&mut b, 0.0);
     let (hb, hbv) = scalar_src(&mut b, 0.0);
     let sum = b.push(add::<f64, 0>(), (hav, hbv));
-    let rec = b.push(Record::<f64, 0>::new(clock.clone()), sum);
+    let rec = b.push(record(&clock), sum);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -152,8 +152,8 @@ fn filter_gates_record() {
     let clock = Clock::new();
     let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
-    let flt = b.push(Filter::<_, 0>(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0), srcv);
-    let rec = b.push(Record::<f64, 0>::new(clock.clone()), flt);
+    let flt = b.push(filter(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0), srcv);
+    let rec = b.push(record(&clock), flt);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -175,8 +175,8 @@ fn last_of_record() {
     let clock = Clock::new();
     let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
-    let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
-    let lst = b.push(Last::<f64, 0>::new(0.0_f64), rec);
+    let rec = b.push(record(&clock), srcv);
+    let lst = b.push(last(0.0_f64), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -201,11 +201,11 @@ fn bounded_record_feeds_rolling_and_lag() {
     let (src, srcv) = scalar_src(&mut b, 0.0);
     // RollingMean(5) reads back 6 on eviction, Lag(3) back 4 → retain 8 covers both.
     let rec = b.push(
-        Record::<f64, 0>::with_retention(clock.clone(), Retention::count(8)),
+        record_bounded(&clock, Retention::count(8)),
         srcv,
     );
-    let lag = b.push(Lag::<f64, 0>::new(3, f64::NAN), rec);
-    let rmean = b.push(RollingMean::<f64, 0>::count(5), rec);
+    let lag = b.push(lag_series(3, f64::NAN), rec);
+    let rmean = b.push(rolling_mean(Window::Count(5)), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -248,10 +248,10 @@ fn clocked_periodic() {
     let (data, datav) = scalar_src(&mut b, 0.0);
     let tick = b.push_source(RefSource::new(()));
     let gated = b.push(
-        Clocked::<_, ()>::new(Filter::<_, 0>(|_: ArrayView<f64, 0>| true)),
+        Clocked::<_, ()>::new(filter(|_: ArrayView<f64, 0>| true)),
         (*tick, datav),
     );
-    let rec = b.push(Record::<f64, 0>::new(clock.clone()), gated);
+    let rec = b.push(record(&clock), gated);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -280,7 +280,7 @@ fn coalesced_two_source_add() {
     let (a, av) = scalar_src(&mut b, 0.0);
     let (bb, bv) = scalar_src(&mut b, 0.0);
     let sum = b.push(add::<f64, 0>(), (av, bv));
-    let rec = b.push(Record::<f64, 0>::new(clock.clone()), sum);
+    let rec = b.push(record(&clock), sum);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -303,8 +303,8 @@ fn slice_stack_and_sync() {
     let (s0, s0v) = scalar_ref_src(&mut b, 0.0);
     let (s1, s1v) = scalar_ref_src(&mut b, 0.0);
     let (s2, s2v) = scalar_ref_src(&mut b, 0.0);
-    let stacked = b.push(Stack::<f64, 0, 1>::new(0), &[s0v, s1v, s2v][..]);
-    let synced = b.push(StackSync::<f64, 0, 1>::new(0), &[s0v, s1v, s2v][..]);
+    let stacked = b.push(stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
+    let synced = b.push(stack_sync::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -332,8 +332,8 @@ fn rolling_mean_count_warmup_and_value() {
     let clock = Clock::new();
     let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
-    let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
-    let rm = b.push(RollingMean::<f64, 0>::count(3), rec);
+    let rec = b.push(record(&clock), srcv);
+    let rm = b.push(rolling_mean(Window::Count(3)), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -402,9 +402,9 @@ fn rolling_sum_and_variance() {
     let clock = Clock::new();
     let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
-    let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
-    let rsum = b.push(RollingSum::<f64, 0>::count(3), rec);
-    let rvar = b.push(RollingVariance::<f64, 0>::count(3), rec);
+    let rec = b.push(record(&clock), srcv);
+    let rsum = b.push(rolling_sum(Window::Count(3)), rec);
+    let rvar = b.push(rolling_variance(Window::Count(3)), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -428,8 +428,8 @@ fn rolling_covariance_2d() {
     let clock = Clock::new();
     let mut b = Builder::new();
     let (src, srcv) = vec_src(&mut b, vec![0.0_f64; 2]);
-    let rec = b.push(Record::<f64, 1>::new(clock.clone()), srcv);
-    let cov = b.push(RollingCovariance::<f64>::count(3), rec);
+    let rec = b.push(record(&clock), srcv);
+    let cov = b.push(rolling_covariance(Window::Count(3)), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -451,8 +451,8 @@ fn ema_two_values() {
     let clock = Clock::new();
     let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
-    let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
-    let e = b.push(Ema::<f64, 0>::new(0.5, 2), rec);
+    let rec = b.push(record(&clock), srcv);
+    let e = b.push(ema_series(0.5, 2), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -470,12 +470,12 @@ fn ema_two_values() {
 fn structural_where_cast_id() {
     let mut b = Builder::new();
     let (a, av) = vec_src(&mut b, vec![1.0_f64, 5.0, 2.0]);
-    let w = b.push(Where::<f64, _, 1>::new(|v: f64| v > 3.0, 0.0_f64), av);
+    let w = b.push(keep_where(|v: f64| v > 3.0, 0.0_f64), av);
     // `Id` is currency-agnostic — exercise it on the owned-array source cell.
     let i = b.push(Id::<Array<f64, 1>>::new(), *a);
     let ci = b.push_source(RefSource::new(Array::from_vec([3], vec![1_i32, 2, 3])));
-    let civ = b.push(AsView::<i32, 1>::new(), *ci);
-    let c = b.push(Cast::<i32, f64, 1>::new(), civ);
+    let civ = b.push(as_view(), *ci);
+    let c = b.push(cast::<i32, f64, 1>(), civ);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -495,10 +495,10 @@ fn structural_where_cast_id() {
 fn num_clamp_fillna_ffill() {
     let mut b = Builder::new();
     let (a, av) = vec_src(&mut b, vec![1.0_f64, 3.0, 7.0]);
-    let clamp = b.push(Clamp::<f64, 1>::new(2.0, 5.0), av);
+    let clamp = b.push(clamp(2.0, 5.0), av);
     let (na, nav) = vec_src(&mut b, vec![1.0_f64, f64::NAN, 3.0]);
-    let fill = b.push(Fillna::<f64, 1>::new(0.0), nav);
-    let ff = b.push(ForwardFill::<f64, 1>::new(), nav);
+    let fill = b.push(fillna(0.0), nav);
+    let ff = b.push(forward_fill(), nav);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -519,8 +519,8 @@ fn num_clamp_fillna_ffill() {
 fn num_diff_and_pct_change() {
     let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
-    let d = b.push(Diff::<f64, 0>::new(), srcv);
-    let pc = b.push(PctChange::<f64, 0>::new(), srcv);
+    let d = b.push(diff(), srcv);
+    let pc = b.push(pct_change(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -541,12 +541,12 @@ fn num_diff_and_pct_change() {
 fn num_cross_sectional() {
     let mut b = Builder::new();
     let (five, fivev) = vec_src(&mut b, vec![30.0_f64, 10.0, 50.0, 20.0, 40.0]);
-    let gau = b.push(Gaussianize::<f64, 1>::new(), fivev);
-    let pct = b.push(Percentile::<f64, 1>::new(), fivev);
+    let gau = b.push(gaussianize(), fivev);
+    let pct = b.push(percentile(), fivev);
     let (std_in, std_inv) = vec_src(&mut b, vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]);
-    let zsc = b.push(Standardize::<f64, 1>::new(), std_inv);
+    let zsc = b.push(standardize(), std_inv);
     let (win_in, win_inv) = vec_src(&mut b, (0..10).map(|i| i as f64).collect());
-    let win = b.push(Winsorize::<f64, 1>::new(0.1), win_inv);
+    let win = b.push(winsorize(0.1), win_inv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -584,7 +584,7 @@ fn map_doubles() {
     let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let m = b.push(
-        Map::new(|a: ArrayView<f64, 0>| {
+        map(|a: ArrayView<f64, 0>| {
             let mut o = a.to_array();
             o[0] *= 2.0;
             o
@@ -606,7 +606,7 @@ fn apply_add_and_select() {
     let (a, av) = vec_src(&mut b, vec![1.0_f64, 2.0, 3.0]);
     let (bb, bv) = vec_src(&mut b, vec![10.0_f64, 20.0, 30.0]);
     let ap = b.push(
-        Apply::<(Vp<1>, Vp<1>), _, 1, _>::new(
+        apply(
             |(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
                 let mut out = a.to_array();
                 for (o, v) in out.as_mut_slice().iter_mut().zip(b.to_contiguous().iter()) {
@@ -618,7 +618,7 @@ fn apply_add_and_select() {
         (av, bv),
     );
     let (five, fivev) = vec_src(&mut b, vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]);
-    let sel = b.push(Select::<f64, 1, 1>::flat(vec![1, 3]), fivev);
+    let sel = b.push(select_flat::<f64, 1, 1>(vec![1, 3]), fivev);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -636,8 +636,8 @@ fn lag_offset_two() {
     let clock = Clock::new();
     let mut b = Builder::new();
     let (src, srcv) = scalar_src(&mut b, 0.0);
-    let rec = b.push(Record::<f64, 0>::new(clock.clone()), srcv);
-    let lag = b.push(Lag::<f64, 0>::new(2, f64::NAN), rec);
+    let rec = b.push(record(&clock), srcv);
+    let lag = b.push(lag_series(2, f64::NAN), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -655,7 +655,7 @@ fn concat_axis0() {
     let mut b = Builder::new();
     let (a, av) = vec_ref_src(&mut b, vec![1.0_f64, 2.0]);
     let (bb, bv) = vec_ref_src(&mut b, vec![3.0_f64, 4.0]);
-    let cc = b.push(Concat::<f64, 1>::new(0), &[av, bv][..]);
+    let cc = b.push(concat(0), &[av, bv][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -674,9 +674,9 @@ fn metrics_clock_gated() {
     let mut b = Builder::new();
     let (data, datav) = scalar_src(&mut b, 0.0);
     let tick = b.push_source(RefSource::new(()));
-    let cr = b.push(CompoundReturn::<f64, 0>::new(), (datav, *tick));
-    let ar = b.push(AverageReturn::<f64, 0>::new(), (datav, *tick));
-    let vol = b.push(Volatility::<f64, 0>::new(), (datav, *tick));
+    let cr = b.push(compound_return(), (datav, *tick));
+    let ar = b.push(average_return(), (datav, *tick));
+    let vol = b.push(volatility(), (datav, *tick));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -702,7 +702,7 @@ fn metrics_clock_gated() {
 fn metrics_drawdown() {
     let mut b = Builder::new();
     let (data, datav) = scalar_src(&mut b, 0.0);
-    let dd = b.push(Drawdown::<f64, 0>::new(), datav);
+    let dd = b.push(drawdown(), datav);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -718,7 +718,7 @@ fn metrics_drawdown() {
 fn stocks_annualize() {
     let mut b = Builder::new();
     let (src, srcv) = vec_src(&mut b, vec![2024.0_f64, 91.0, 100.0, 20.0]);
-    let ann = b.push(Annualize::new(), srcv);
+    let ann = b.push(annualize(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -736,7 +736,7 @@ fn stocks_forward_adjust() {
     let mut b = Builder::new();
     let (price, pricev) = scalar_src(&mut b, 10.0);
     let (divd, divdv) = vec_src(&mut b, vec![0.0_f64, 0.0]);
-    let fa = b.push(ForwardAdjust::<0, 1>::new(), (pricev, divdv));
+    let fa = b.push(forward_adjust(), (pricev, divdv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -766,8 +766,8 @@ fn parallel_fanout_matches_sequential() {
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let recs: Vec<_> = (0..K)
         .map(|_| {
-            let f = b.push(Filter::<_, 0>(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0), srcv);
-            b.push(Record::<f64, 0>::new(clock.clone()), f)
+            let f = b.push(filter(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0), srcv);
+            b.push(record(&clock), f)
         })
         .collect();
     let mut g = b.build();
@@ -796,7 +796,7 @@ fn parallel_stress_stateful_counts() {
     let (src, srcv) = scalar_src(&mut b, 0.0);
     let cnts: Vec<_> = (0..K)
         .map(|_| {
-            let f = b.push(Filter::<_, 0>(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 0.0), srcv);
+            let f = b.push(filter(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 0.0), srcv);
             b.push(Count::<0>, f)
         })
         .collect();
@@ -840,15 +840,15 @@ fn split_rows_notify_with_panel() {
     let clock = Clock::new();
     let mut b = Builder::new();
     let panel = b.push_source(RefSource::new(Array::from_vec([3, 2], vec![0.0_f64; 6])));
-    let panelv = b.push(AsView::<f64, 2>::new(), *panel);
+    let panelv = b.push(as_view(), *panel);
     let other = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
-    let otherv = b.push(AsView::<f64, 0>::new(), *other);
-    let rows = b.push(Split::<f64, 2, 1>::new(3), panelv);
+    let otherv = b.push(as_view(), *other);
+    let rows = b.push(split(3), panelv);
     assert_eq!(rows.len(), 3);
     // The rows feed a carry `Stack` that rebuilds the `[3, 2]` panel; a `Record`
     // on the stacked output advances exactly once per recompute of the join.
-    let stacked = b.push(Stack::<f64, 1, 2>::new(0), &rows[..]);
-    let rec = b.push(Record::<f64, 2>::new(clock.clone()), stacked);
+    let stacked = b.push(stack::<f64, 1, 2>(0), &rows[..]);
+    let rec = b.push(record(&clock), stacked);
     let _sink = b.push(Count::<0>, otherv); // unrelated cone
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -880,8 +880,8 @@ fn split_rows_notify_with_panel() {
 fn split_axis_size_mismatch_panics() {
     let mut b = Builder::new();
     let panel = b.push_source(RefSource::new(Array::from_vec([3, 2], vec![0.0_f64; 6])));
-    let panelv = b.push(AsView::<f64, 2>::new(), *panel);
-    let _ = b.push(Split::<f64, 2, 1>::new(2), panelv);
+    let panelv = b.push(as_view(), *panel);
+    let _ = b.push(split::<f64, 2, 1>(2), panelv);
     let _g = b.build();
 }
 
@@ -914,22 +914,22 @@ fn view_chain_matches_owned_chain() {
 
     // Owned reference chain (materializes at the row Selects).
     let p_f = {
-        let m = b.push(Select::<f64, 1, 1>::flat(vec![0, 1]), prices_view);
-        b.push(Filter::<_, 1>(any_finite), m)
+        let m = b.push(select_flat(vec![0, 1]), prices_view);
+        b.push(filter(any_finite), m)
     };
     let d_f = {
-        let m = b.push(Select::<f64, 1, 1>::flat(vec![0, 1]), div_view);
-        b.push(Filter::<_, 1>(any_finite), m)
+        let m = b.push(select_flat(vec![0, 1]), div_view);
+        b.push(filter(any_finite), m)
     };
     // Squeeze the single close out to a scalar (rank-0) price.
-    let close = b.push(Select::<f64, 1, 0>::new(vec![0], 0, true), p_f);
-    let adj = b.push(ForwardAdjust::<0, 1>::new().with_output_prices(false), (close, d_f));
+    let close = b.push(select(vec![0], 0, true), p_f);
+    let adj = b.push(forward_adjust().with_output_prices(false), (close, d_f));
     let adjusted = b.push(multiply::<f64, 0>(), (close, adj));
 
     // Zero-copy view chain (materializes at SliceView).
-    let p_g = b.push(Gate::<_, 1>(any_finite), prices_view);
-    let d_g = b.push(Gate::<_, 1>(any_finite), div_view);
-    let v_close = b.push(SliceView::<f64, 1, 0>::new(vec![0], 0, true), p_g);
+    let p_g = b.push(gate(any_finite), prices_view);
+    let d_g = b.push(gate(any_finite), div_view);
+    let v_close = b.push(slice_view(vec![0], 0, true), p_g);
     let v_adj = b.push(
         ForwardAdjust::<0, 1>::default().with_output_prices(false),
         (v_close, d_g),
@@ -987,13 +987,13 @@ fn view_join_carry_matches_owned_join() {
     let n = 3usize;
     let mut b = Builder::new();
     let panel = b.push_source(RefSource::new(Array::from_vec([n, 2], vec![0.0; n * 2])));
-    let panelv = b.push(AsView::<f64, 2>::new(), *panel);
-    let rows = b.push(Split::<f64, 2, 1>::new(n), panelv);
+    let panelv = b.push(as_view(), *panel);
+    let rows = b.push(split::<f64, 2, 1>(n), panelv);
 
     // Two equivalent carry joins over the same `Split` rows (the only buildable
     // carry-join input): `Stack` and its `Stack` alias.
-    let owned_join = b.push(Stack::<f64, 1, 2>::new(0), &rows[..]);
-    let view_join = b.push(Stack::<f64, 1, 2>::new(0), &rows[..]);
+    let owned_join = b.push(stack(0), &rows[..]);
+    let view_join = b.push(stack(0), &rows[..]);
 
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -1038,10 +1038,10 @@ fn fused_segment_matches_unfused_nodes() {
 
     let fused = flowgraph::segment!(|prices_row: Vp<1>, div_row: Vp<1>|
         -> (Vp<0>, Vp<0>) {
-        let prices = Filter::<_, 1>(any_finite) @ prices_row;
-        let dividends = Filter::<_, 1>(any_finite) @ div_row;
-        let close = Select::<f64, 1, 0>::new(vec![0], 0, true) @ prices;
-        let adjusts = ForwardAdjust::<0, 1>::new().with_output_prices(false) @ (close, dividends);
+        let prices = filter(any_finite) @ prices_row;
+        let dividends = filter(any_finite) @ div_row;
+        let close = select(vec![0], 0, true) @ prices;
+        let adjusts = forward_adjust().with_output_prices(false) @ (close, dividends);
         let adjusted = multiply::<f64, 0>() @ (close, adjusts);
         (adjusted, adjusts)
     });
@@ -1052,10 +1052,10 @@ fn fused_segment_matches_unfused_nodes() {
     let (div, divv) = vec_src(&mut b, vec![nan; 2]);
 
     // Reference: the same chain as separate nodes.
-    let p_f = b.push(Filter::<_, 1>(any_finite), pricesv);
-    let d_f = b.push(Filter::<_, 1>(any_finite), divv);
-    let close = b.push(Select::<f64, 1, 0>::new(vec![0], 0, true), p_f);
-    let adj = b.push(ForwardAdjust::<0, 1>::new().with_output_prices(false), (close, d_f));
+    let p_f = b.push(filter(any_finite), pricesv);
+    let d_f = b.push(filter(any_finite), divv);
+    let close = b.push(select(vec![0], 0, true), p_f);
+    let adj = b.push(forward_adjust().with_output_prices(false), (close, d_f));
     let adjusted = b.push(multiply::<f64, 0>(), (close, adj));
 
     let (f_adjusted, f_adj) = b.push(fused, (pricesv, divv));
@@ -1143,9 +1143,9 @@ fn comparison_of_two_arrays_and_strided_inputs() {
         [2, 2],
         vec![1.0, 5.0, 4.0, 2.0], // rows: [1,5], [4,2]
     )));
-    let m = b.push(AsView::<f64, 2>::new(), *s);
-    let col0 = b.push(SliceView::<f64, 2, 1>::new(vec![0], 1, true), m); // [1, 4]
-    let col1 = b.push(SliceView::<f64, 2, 1>::new(vec![1], 1, true), m); // [5, 2]
+    let m = b.push(as_view(), *s);
+    let col0 = b.push(slice_view(vec![0], 1, true), m); // [1, 4]
+    let col1 = b.push(slice_view(vec![1], 1, true), m); // [5, 2]
     let lt = b.push(less::<f64, 1>(), (col0, col1));
     let g = b.build();
     assert_eq!(g.view(lt).to_vec(), vec![true, false]);
@@ -1164,19 +1164,19 @@ fn ma_crossover_signal_fuses_into_one_node() {
     // no `-> OutInterface` annotation.
     let seg = flowgraph::segment!(|xs: flowgraph::typed::RefPort<Series<f64, 0>>| {
         let d = subtract::<f64, 0>() @ (
-            RollingMean::<f64, 0>::count(fast) @ xs,
-            RollingMean::<f64, 0>::count(slow) @ xs,
+            rolling_mean(Window::Count(fast)) @ xs,
+            rolling_mean(Window::Count(slow)) @ xs,
         );
         let up = greater_than::<f64, 0>(0.0) @ d;
-        let prev = Lag::<f64, 0>::new(1, f64::NAN)
-            @ Record::<f64, 0>::with_retention(clk.clone(), ret)
+        let prev = lag_series(1, f64::NAN)
+            @ record_bounded(&clk, ret)
             @ d;
         and::<0>() @ (up, not::<0>() @ (greater_than::<f64, 0>(0.0) @ prev))
     });
 
     let mut b = Builder::new();
     let (src, view) = scalar_src(&mut b, 0.0);
-    let series = b.push(Record::<f64, 0>::new(clk.clone()), view);
+    let series = b.push(record(&clk), view);
     let signal = b.push(seg, series);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -1293,17 +1293,17 @@ fn formula_ma_crossover_signal() {
     assert!(expect0[4] && fired > 5, "path must exercise real crossovers");
 }
 
-/// [`change`] / [`pct_change`] equal `x − x₋ₙ` and `(x − x₋ₙ) / x₋ₙ`, with a
+/// [`change`] / [`growth`] equal `x − x₋ₙ` and `(x − x₋ₙ) / x₋ₙ`, with a
 /// `NaN` warm-up while the lag is unavailable — pushed directly (no
 /// `segment!`), inferring `T`/`N` from the wiring.
 #[test]
-fn formula_change_and_pct_change() {
+fn formula_change_and_growth() {
     let clock = Clock::new();
     let mut b = Builder::new();
     let (src, xv) = scalar_src(&mut b, 0.0);
     let clk = clock.clone();
     let chg = b.push(change(&clk, 2), xv);
-    let pct = b.push(pct_change(&clk, 2), xv);
+    let pct = b.push(growth(&clk, 2), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -1361,10 +1361,10 @@ fn formula_mstd_matches_hoisted() {
     let clk = clock.clone();
     let fused = b.push(mstd(&clk, 4), xv);
     let series = b.push(
-        Record::<f64, 1>::with_retention(clock.clone(), Retention::count(16)),
+        record_bounded(&clock, Retention::count(16)),
         xv,
     );
-    let var = b.push(RollingVariance::<f64, 1>::count(4), series);
+    let var = b.push(rolling_variance(Window::Count(4)), series);
     let hoisted = b.push(sqrt::<f64, 1>(), var);
     let mut g = b.build();
     let mut pool = Pool::new(0);

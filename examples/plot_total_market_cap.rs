@@ -19,13 +19,9 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::operators::{Apply, ArrayValue, Benchmark, Map, multiply, record};
-use tradingflow::{Scenario, WallClock};
+use tradingflow::operators::{apply, benchmark, map, multiply, record, resample_view};
 use tradingflow::sources::clock;
-use flowgraph::typed::ViewPort;
-use tradingflow::{Array, ArrayView};
-
-use tradingflow::operators::ResampleView;
+use tradingflow::{Array, ArrayView, Scenario, WallClock};
 
 use clap::Parser;
 
@@ -55,11 +51,11 @@ async fn main() {
 
     // Hold the rebalance-day universe fixed between rebalances by re-emitting it
     // on the daily close pulse (clock = the close view, data = the universe).
-    let daily_universe = sc.push(ResampleView::<f64, 1>::new(), (st.close, universe));
+    let daily_universe = sc.push(resample_view(), (st.close, universe));
 
     // Summed circulating market cap of the current constituents.
     let index_circ_market_cap = sc.push(
-        Apply::<(ViewPort<ArrayValue<f64, 1>>, ViewPort<ArrayValue<f64, 1>>), f64, 0, _>::new(
+        apply(
             |(u, c): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
                 let (us, cs) = (u.to_contiguous(), c.to_contiguous());
                 let mut s = 0.0;
@@ -77,11 +73,11 @@ async fn main() {
     // Frictionless cap-weighted index NAV via the native Benchmark trader.
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
     let index = sc.push(
-        Benchmark::new(n, 1.0, true),
+        benchmark(n, 1.0, true),
         (universe, st.close, st.adjusts, upper, lower),
     );
     let index_value = sc.push(
-        Map::new(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
+        map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         index,
     );
 

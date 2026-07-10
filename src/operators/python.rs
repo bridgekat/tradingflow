@@ -369,6 +369,30 @@ impl<const NI: usize, const NO: usize> Operator for PyOperator<NI, NO> {
 //   PYTHONPATH=<ft venv site-packages>  cargo test --features python operators::python
 // ===========================================================================
 
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// A Python operator in **return mode**: `source` evaluates to a callable
+/// taking `NI` `float64` ndarrays and returning a 1-D `float64` array of
+/// length `out_len`, e.g. `"lambda a, b: a + b"`.
+pub fn py_operator<const NI: usize, const NO: usize>(
+    source: impl Into<String>,
+    out_len: usize,
+) -> PyOperator<NI, NO> {
+    PyOperator::new(source, out_len)
+}
+
+/// A Python operator in **write mode** (zero-copy output): `source` evaluates
+/// to a callable `f(out, *inputs)` writing its `out_len` results into `out` in
+/// place, e.g. `"lambda out, a, b: np.add(a, b, out=out)"`.
+pub fn py_operator_writing<const NI: usize, const NO: usize>(
+    source: impl Into<String>,
+    out_len: usize,
+) -> PyOperator<NI, NO> {
+    PyOperator::writing(source, out_len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::PyOperator;

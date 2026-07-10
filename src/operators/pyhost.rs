@@ -771,6 +771,42 @@ fn out_extents<const NO: usize>(out_shape: &[usize]) -> [usize; NO] {
 // Tests
 // ===========================================================================
 
+// ===========================================================================
+// Constructors
+// ===========================================================================
+
+/// A class-based Python operator loaded from an importable **module** (on the
+/// embedded interpreter's path). The input port tree `I` is inferred from the
+/// wiring; `out_shape` is the output element shape (`[]` for a scalar).
+pub fn py_class_operator<I: PyArgs, const NO: usize>(
+    module: impl Into<String>,
+    params: PyParams,
+    out_shape: Vec<usize>,
+    clock: &Clock,
+) -> PyClassOperator<I, NO> {
+    PyClassOperator::from_module(module, params, out_shape, clock.clone())
+}
+
+/// [`py_class_operator`] from an inline Python **program** binding `__op__`.
+pub fn py_class_operator_source<I: PyArgs, const NO: usize>(
+    source: impl Into<String>,
+    params: PyParams,
+    out_shape: Vec<usize>,
+    clock: &Clock,
+) -> PyClassOperator<I, NO> {
+    PyClassOperator::from_source(source, params, out_shape, clock.clone())
+}
+
+/// [`py_class_operator`] from a plain `.py` **file** on disk (read now).
+pub fn py_class_operator_file<I: PyArgs, const NO: usize>(
+    path: impl AsRef<std::path::Path>,
+    params: PyParams,
+    out_shape: Vec<usize>,
+    clock: &Clock,
+) -> PyClassOperator<I, NO> {
+    PyClassOperator::from_file(path, params, out_shape, clock.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PyClassOperator, PyParams};

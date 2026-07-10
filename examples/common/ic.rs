@@ -7,8 +7,8 @@
 //! factors against the *ranked forward* return (Spearman / RankIC). The wiring
 //! and the summary statistics are the same, and live here.
 
-use tradingflow::{Scenario, ScenarioExt};
-use tradingflow::operators::{Clock, record};
+use tradingflow::Scenario;
+use tradingflow::operators::{Clock, as_view, own, record};
 
 use super::models::information_coefficient;
 use super::strategy::{NavH, PosH};
@@ -24,9 +24,9 @@ pub fn ic_series(
     clk: &Clock,
 ) -> NavH {
     // The Python metric consumes whole-array `RefPort`s; bridge the factor view.
-    let factor_ref = sc.own::<f64, 1>(factor);
+    let factor_ref = sc.push(own(), factor);
     let ic = sc.push(information_coefficient(num_stocks, clk), (factor_ref, target));
-    let ic_v = sc.as_view(ic);
+    let ic_v = sc.push(as_view(), ic);
     sc.push(record(clk), ic_v)
 }
 

@@ -2,7 +2,7 @@
 
 use flowgraph::typed::{Handle, RefPort};
 
-use tradingflow::operators::{Diff, Map, Winsorize, lag, record_bounded};
+use tradingflow::operators::{diff, lag, map, record_bounded, winsorize};
 use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
 
 use super::AvH;
@@ -44,10 +44,10 @@ pub fn build_log_return_target(
     Handle<RefPort<Series<f64, 1>>>,
 ) {
     let clk = sc.time();
-    let log_returns = sc.push(Diff::<f64, 1>::new(), log_adj);
-    let target = sc.push(Winsorize::<f64, 1>::new(0.01), log_returns);
+    let log_returns = sc.push(diff(), log_adj);
+    let target = sc.push(winsorize(0.01), log_returns);
     let target_series = sc.push(record_bounded(&clk, target_retention), target);
-    let demeaned = sc.push(Map::new(demean), target);
+    let demeaned = sc.push(map(demean), target);
     let demeaned_series = sc.push(record_bounded(&clk, target_retention), demeaned);
     (target, target_series, demeaned_series)
 }
@@ -59,7 +59,7 @@ pub fn build_price_limits(sc: &mut Scenario, close: AvH, limit_pct: f64) -> (AvH
     // Self-recording 1-step lag (a tiny private trailing window).
     let prev_close = sc.push(lag(&clk, 1), close);
     let limit = move |scale: f64| {
-        Map::new(move |c: ArrayView<f64, 1>| {
+        map(move |c: ArrayView<f64, 1>| {
             let s = c.to_contiguous();
             Array::from_vec(
                 [s.len()],

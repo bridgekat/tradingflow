@@ -24,8 +24,8 @@ cargo build --features python  # with Python operators (`flowops` package)
 The three things you do in every program: create a `Scenario`, register sources and operators, then `run()` the event loop. Below is a tiny example that records a synthetic price series, takes a rolling mean, and prints its tail.
 
 ```rust
-use tradingflow::{Array, Scenario, ScenarioExt, Series, WallClock};
-use tradingflow::operators::{ma, record};
+use tradingflow::{Array, Scenario, Series, WallClock};
+use tradingflow::operators::{as_view, ma, record};
 use tradingflow::sources::ArraySource;
 
 #[tokio::main]
@@ -37,14 +37,16 @@ async fn main() {
     let mut sc = Scenario::new(WallClock);
     let clk = sc.time();
 
-    // A source feeds timestamped values into the graph; `ma` is a
+    // A source feeds timestamped values into the graph; `as_view` bridges its
+    // whole-array cell into the view currency the operators speak; `ma` is a
     // self-recording last-N rolling mean; `record` collects a stream into a
-    // time series, stamping rows with the event time read from `clk`.
+    // time series, stamping rows with the event time read from `clk`. Every
+    // operator is a lowercase constructor whose generics come from the wiring.
     let prices = sc.add_source(ArraySource::new(
         Series::from_vec([], timestamps, values),
         Array::scalar(0.0),
     ));
-    let prices = sc.as_view(prices);
+    let prices = sc.push(as_view(), prices);
     let mean = sc.push(ma(&clk, 10), prices);
     let ma_history = sc.push(record(&clk), mean);
 
@@ -83,7 +85,9 @@ flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {
 
 Run `cargo doc --open` for the full API reference.
 
-The engine itself lives in Flowgraph: `Scenario` / `Session` are the TAI-instant instantiations of `flowgraph::ingest`'s `Builder` / `Graph`, and data sources implement `flowgraph::ingest::EventSource`. Both deref to their `flowgraph::typed` counterparts, which is where the inherited `push` (register a segment) and `ref_view` (read a result) above come from. What this crate adds on top is the data model (`Array` / `Series`), the operator library (including the self-recording formula constructors like `ma` / `lag` / `record` above), the concrete sources, and the `ScenarioExt` extension trait supplying the TradingFlow-specific registrars (`add_const`, `as_view`, the Python operators) — hence the `ScenarioExt` import above.
+The engine itself lives in Flowgraph: `Scenario` / `Session` are the TAI-instant instantiations of `flowgraph::ingest`'s `Builder` / `Graph`, and data sources implement `flowgraph::ingest::EventSource`. Both deref to their `flowgraph::typed` counterparts, which is where the inherited `push` (register a segment), `push_source` (a constant cell) and `ref_view` (read a result) above come from. What this crate adds on top is the data model (`Array` / `Series`), the operator library, and the concrete sources.
+
+There is no builder extension trait: **every segment has a lowercase free constructor** — `percentile()`, `winsorize(p)`, `stack(axis)`, `benchmark(n, cash, adj)`, the view-currency bridges `as_view()` / `own()`, the self-recording `ma` / `lag` / `record`, even the Python operators (`py_class_operator(..)`) — each taking the operator's parameters and leaving `T` / `N` to be inferred *from the wiring*. That is what lets a `segment!` formula carry no type annotations beyond its parameters.
 
 TradingFlow deliberately re-exports nothing from Flowgraph: graph-building code that names engine types (`Handle`, `ViewPort`, `Segment`, the `segment!` macro, …) adds `flowgraph` as a direct dependency alongside `tradingflow`.
 
