@@ -19,7 +19,7 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, RefSource, ViewPort};
+use tradingflow::graph::{Handle, RefSource, ViewPort};
 
 use tradingflow::operators::{
     ArrayValue, Window, add, as_view, filter, forward_adjust, multiply, record, rolling_mean,
@@ -92,8 +92,7 @@ async fn main() {
         .position(|s| s == &symbol)
         .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
-    let mut sc = Scenario::new(WallClock);
-    let clk = sc.time();
+    let mut sc = Scenario::new(WallClock, Instant::MIN);
 
     // Panel sources: close+volume from prices, (share, cash) from dividends.
     let price_src = ParquetPanelSource::new(
@@ -125,7 +124,7 @@ async fn main() {
     // Forward-adjusted close (scalar close `0`, dividends row `1`), recorded into
     // a Series for the rolling stats.
     let adj_closes = sc.push(forward_adjust(), (closes, dividends));
-    let adj_series = sc.push(record(&clk), adj_closes);
+    let adj_series = sc.push(record(), adj_closes);
 
     // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).
     let ma = sc.push(rolling_mean(Window::Count(WINDOW)), adj_series);
@@ -138,15 +137,15 @@ async fn main() {
     let lower = sc.push(subtract(), (ma, band));
 
     // Record the outputs.
-    let h_adj = sc.push(record(&clk), adj_closes);
-    let h_ma = sc.push(record(&clk), ma);
-    let h_upper = sc.push(record(&clk), upper);
-    let h_lower = sc.push(record(&clk), lower);
-    let h_vol = sc.push(record(&clk), volume);
+    let h_adj = sc.push(record(), adj_closes);
+    let h_ma = sc.push(record(), ma);
+    let h_upper = sc.push(record(), upper);
+    let h_lower = sc.push(record(), lower);
+    let h_vol = sc.push(record(), volume);
 
     // Run the historical replay to completion.
     let mut session = sc.build();
-    let total = session.estimated_event_count();
+    let total = session.total_num_events();
     session.run(common::progress(total, Instant::MIN)).await;
     eprintln!();
 

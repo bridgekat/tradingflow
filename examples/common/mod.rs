@@ -5,7 +5,7 @@
 //! it builds the data pipeline (columnar parquet panel + financial-report
 //! sources, the stacked cross-sectional panel, the feature sets, the
 //! cap-weighted universe, the log-return target, and price limits) entirely from
-//! native operators. Examples add their `flowops` predictor/portfolio operators
+//! native operators. Examples add their `tradingflow` predictor/portfolio operators
 //! (and any cvxpy ones) on top.
 //!
 //! | Module | Contents |
@@ -36,11 +36,11 @@
 #![allow(dead_code)] // not every example uses every helper
 #![allow(unused_imports)] // the re-exports below serve all examples, not each one
 
-use flowgraph::typed::{Handle, ViewPort};
+use tradingflow::graph::{Handle, ViewPort};
 
 use tradingflow::operators::ArrayValue;
 
-// These modules wrap `flowops` operators (`PyClassOperator`), so they only
+// These modules wrap `tradingflow` operators (`PyClassOperator`), so they only
 // compile with the `python` feature. Their consumers (the strategy examples,
 // `factor_handbook`) are themselves `required-features = ["python"]`; gating
 // keeps the native examples — which pull in this `common` module too —

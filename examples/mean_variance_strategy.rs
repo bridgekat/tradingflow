@@ -25,7 +25,7 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::{Retention, Scenario, WallClock};
+use tradingflow::{Instant, Retention, Scenario, WallClock};
 
 use common::models::{Mode, markowitz, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable};
@@ -69,8 +69,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock);
-    let clk = sc.time();
+    let mut sc = Scenario::new(WallClock, Instant::MIN);
 
     // The shared panel / target feed the shrinkage covariance predictor too,
     // which fits over its last `COV_MAX_PERIODS` pairs — so the records must
@@ -85,11 +84,11 @@ async fn main() {
 
     // Mean predictor (demeaned target) and covariance predictor (raw target).
     let predicted_returns = sc.push(
-        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA, &clk),
+        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
         (m.universe_ref, m.features.series, m.demeaned_series),
     );
     let predicted_cov = sc.push(
-        shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS, &clk),
+        shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS),
         (m.universe_ref, m.features.series, m.target_series),
     );
 
@@ -100,14 +99,7 @@ async fn main() {
         .iter()
         .map(|&delta| {
             let soft = sc.push(
-                markowitz(
-                    m.n,
-                    args.index_size,
-                    Mode::MinMeanVariance,
-                    delta,
-                    true,
-                    &clk,
-                ),
+                markowitz(m.n, args.index_size, Mode::MinMeanVariance, delta, true),
                 (m.universe_ref, predicted_returns, predicted_cov),
             );
             (delta, m.record_nav(&mut sc, soft))

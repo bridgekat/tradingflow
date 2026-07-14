@@ -1,8 +1,10 @@
 # Running the examples
 
 The `.rs` files in this directory are end-to-end A-shares research strategies
-built on the `flowgraph` engine (through the `tradingflow` operator library and
-the `scenario` driver). They are ordinary Cargo examples:
+built on `tradingflow`: its `tradingflow-graph` computation-graph engine, the
+`ingest` event-loop driver (`Scenario` / `Session`), and the operator library.
+They are Cargo examples of the `tradingflow` package, declared with explicit
+paths (they live here, at the repo root, beside the data they read):
 
 ```
 cargo run --example <name> [--features python] -- [args]
@@ -15,10 +17,10 @@ There are two kinds:
   `plot_total_market_cap` is a full cap-weighted index backtest (executor
   included) on the native operator set.
 * **`python` examples** embed a CPython interpreter and call the optional
-  `flowops` operators (predictors / portfolios / a few metrics) from Rust, with
+  `tradingflow` operators (predictors / portfolios / a few metrics) from Rust, with
   real NumPy / SciPy / cvxpy. (The traders and core performance metrics are
   native Rust.) These need a configured Python environment — most of this guide
-  is about that. The "shared library not found" and "`flowops` not found" errors
+  is about that. The "shared library not found" and "`tradingflow` not found" errors
   are environment misconfiguration, not bugs in the examples.
 
 Every example prints its arguments with `--help`. The cross-sectional examples
@@ -73,7 +75,7 @@ profile). The next section explains what they do.
 
 ## How the embedding works (why the environment matters)
 
-The `flowgraph` engine has **no Python-as-host API**: graphs are built and driven
+The engine has **no Python-as-host API**: graphs are built and driven
 from Rust, and Python operators run *inside* an embedded CPython via PyO3
 (`pyo3/auto-initialize`, Cargo feature `python`). Two distinct moments need
 configuration:
@@ -87,7 +89,7 @@ configuration:
    library and (b) *import* the operators' dependencies. PyO3 does **not**
    activate the venv, so:
    * the directory containing `libpython` must be on the OS library search path;
-   * `flowops` and the venv's `site-packages` must be importable.
+   * `tradingflow` and the venv's `site-packages` must be importable.
 
 **Cardinal rule:** `PYO3_PYTHON`, the `libpython` you load, and the
 `site-packages` you import must all belong to the **same** interpreter. Mixing
@@ -99,7 +101,7 @@ configuration:
 |---|---|---|
 | `PYO3_PYTHON` | build | the venv's interpreter (`.venv/bin/python`, or `.venv\Scripts\python.exe` on Windows) |
 | OS library path | run | the directory holding `libpython` (see the per-OS table below) |
-| `PYTHONPATH` | run | the repo's `python/` dir (for `flowops`) plus the venv's `site-packages` — *or* nothing, if you installed the project editable so `flowops` is already in `site-packages` |
+| `PYTHONPATH` | run | the repo's `python/` dir (for `tradingflow`) plus the venv's `site-packages` — *or* nothing, if you installed the project editable so `tradingflow` is already in `site-packages` |
 
 The OS library path is platform-specific:
 
@@ -157,7 +159,7 @@ python3 -m venv .venv                          # Windows: py -3 -m venv .venv
 ```
 
 `".[examples]"` installs the project's runtime dependencies (NumPy, SciPy, cvxpy
-and its solvers, pandas), the `flowops` package (editable, so it's importable),
+and its solvers, pandas), the `tradingflow` package (editable, so it's importable),
 the `a-shares-crawler` (fetched from GitHub), and matplotlib for the plot
 scripts. For just the operator dependencies without the crawler / plotting, use
 `pip install -e .`.
@@ -165,7 +167,7 @@ scripts. For just the operator dependencies without the crawler / plotting, use
 Verify the environment (prints `env OK`):
 
 ```sh
-.venv/bin/python -c "import numpy, scipy, cvxpy, matplotlib; import flowops.portfolios.mean_variance.markowitz; print('env OK')"
+.venv/bin/python -c "import numpy, scipy, cvxpy, matplotlib; import tradingflow.portfolios.mean_variance.markowitz; print('env OK')"
 ```
 
 > The bare `python` / `python3` on your `PATH` may not be the venv's interpreter
@@ -261,7 +263,7 @@ don't see a report before it was published.
 
 ### Parallelism
 
-Most `python` examples take `--threads N` (default `0` = serial). The `flowgraph`
+Most `python` examples take `--threads N` (default `0` = serial). The engine's
 `Pool` overlaps operators whose work **releases the GIL** — NumPy / BLAS and the
 cvxpy solve — so independent per-config solves (e.g. the risk-aversion sweep in
 `mean_variance_strategy`) run truly in parallel even on a GIL interpreter.
@@ -275,7 +277,7 @@ data load, is why end-to-end speedup is well under `N×`.
 > several `Pool` workers drive BLAS / LAPACK at once (e.g. `covariance_gmv`'s
 > covariance estimators + Markowitz solves) the concurrent pool init corrupts
 > OpenBLAS's internal state and **crashes** (a segfault; `0xC0000005` on
-> Windows). Setting `OPENBLAS_NUM_THREADS=1` leaves the `flowgraph` `Pool` as the
+> Windows). Setting `OPENBLAS_NUM_THREADS=1` leaves the engine's `Pool` as the
 > only source of parallelism (one BLAS call per worker), and multi-threaded runs
 > become bit-identical to single-threaded. Only OpenBLAS needs this — other BLAS
 > backends (e.g. MKL) are thread-safe. Symptom if you forget:
@@ -294,8 +296,8 @@ providing at run time (classic case: a binary built against a free-threaded
 interpreter (dot-source `env.ps1` on Windows); if you previously built against a
 different interpreter, rebuild (see below).
 
-**`ModuleNotFoundError: No module named 'flowops'`.** The repo's `python/`
-directory isn't on `PYTHONPATH` and `flowops` isn't installed in the venv. Either
+**`ModuleNotFoundError: No module named 'tradingflow'`.** The repo's `python/`
+directory isn't on `PYTHONPATH` and `tradingflow` isn't installed in the venv. Either
 `pip install -e .` into the venv, or add `python/` to `PYTHONPATH`.
 
 **`ModuleNotFoundError: No module named 'cvxpy'` (or `numpy` / `scipy`).** The

@@ -22,22 +22,23 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      # Pure-Rust core: the default build pulls in NO Python toolchain.
-      - run: cargo build --verbose
-      - run: cargo test --verbose
+      # Pure-Rust core (the whole workspace: the engine crates and
+      # tradingflow itself): the default build pulls in NO Python toolchain.
+      - run: cargo build --workspace --verbose
+      - run: cargo test --workspace --verbose
 
-      # Python operator package (flowops) + the runtime deps (numpy/scipy/cvxpy)
+      # Python operator package (tradingflow) + the runtime deps (numpy/scipy/cvxpy)
       # the embedded interpreter imports under the `python` feature below.
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest
 
       # Embedded-Python feature: PyO3 links the setup-python interpreter (found on
-      # PATH via `pyo3/auto-initialize`); the tests embed it and import flowops +
+      # PATH via `pyo3/auto-initialize`); the tests embed it and import tradingflow +
       # numpy from that interpreter's own site-packages (installed just above). The
       # test binary loads libpython at runtime, so its lib dir must be on the
       # loader path — `$pythonLocation/lib` on Linux (LD_LIBRARY_PATH) and macOS
       # (DYLD_LIBRARY_PATH); on Windows `pythonXY.dll` is already found via PATH.
-      - run: cargo test --features python --verbose
+      - run: cargo test -p tradingflow --features python --verbose
         env:
           LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
           DYLD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib

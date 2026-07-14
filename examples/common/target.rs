@@ -1,6 +1,6 @@
 //! Prediction targets and trading constraints derived from the market panel.
 
-use flowgraph::typed::{Handle, RefPort};
+use tradingflow::graph::{Handle, RefPort};
 
 use tradingflow::operators::{diff, lag, map, record_bounded, winsorize};
 use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
@@ -42,21 +42,19 @@ pub fn build_log_return_target(
     log_adj: AvH,
     target_retention: Retention,
 ) -> (AvH, SerH, SerH) {
-    let clk = sc.time();
     let log_returns = sc.push(diff(), log_adj);
     let target = sc.push(winsorize(0.01), log_returns);
-    let target_series = sc.push(record_bounded(&clk, target_retention), target);
+    let target_series = sc.push(record_bounded(target_retention), target);
     let demeaned = sc.push(map(demean), target);
-    let demeaned_series = sc.push(record_bounded(&clk, target_retention), demeaned);
+    let demeaned_series = sc.push(record_bounded(target_retention), demeaned);
     (target, target_series, demeaned_series)
 }
 
 /// Constant ±`limit_pct` daily price limits from the previous close, rounded to
 /// 0.01 yuan. Returns `(upper, lower)`; first tick is NaN (no prior close).
 pub fn build_price_limits(sc: &mut Scenario, close: AvH, limit_pct: f64) -> (AvH, AvH) {
-    let clk = sc.time();
     // Self-recording 1-step lag (a tiny private trailing window).
-    let prev_close = sc.push(lag(&clk, 1), close);
+    let prev_close = sc.push(lag(1), close);
     let limit = move |scale: f64| {
         map(move |c: ArrayView<f64, 1>| {
             let s = c.to_contiguous();

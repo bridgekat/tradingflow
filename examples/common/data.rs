@@ -1,7 +1,7 @@
 //! The stacked cross-sectional market panel: parquet sources → `[num_stocks]`
 //! per-field panels, via one fused per-stock segment.
 
-use flowgraph::typed::{Handle, RefViewPort, ViewPort};
+use tradingflow::graph::{Handle, RefViewPort, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
@@ -61,7 +61,7 @@ fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
 /// Each panel fans out through a single [`Split`] node (`1 → N` rows), every
 /// stock's whole transform chain (NaN `Gate` + column `Select`s +
 /// `ForwardAdjust` + `Annualize` + ...) is **fused into one segment** via
-/// `flowgraph::segment!` — one scheduling unit per stock instead of ~19 nodes,
+/// `tradingflow::segment!` — one scheduling unit per stock instead of ~19 nodes,
 /// with identical per-operator notify/cutoff semantics (each sub-operator keeps
 /// its own gate inside the fused node) — and `StackSync` (NaN-fill non-trading
 /// slots) / `Stack` (carry last-known) recombine into `[N]` panels. The financial
@@ -216,7 +216,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         // [3]) are rank-1 `[K]` views. Each `Split` row is a by-reference
         // `RefViewPort<ArrayValue<f64, 1>>`; `DerefArrayView` re-derives it as the
         // by-value `ViewPort` the `Gate`/view operators consume.
-        let seg = flowgraph::segment!(|prices_row: RefViewPort<ArrayValue<f64, 1>>,
+        let seg = tradingflow::segment!(|prices_row: RefViewPort<ArrayValue<f64, 1>>,
                                        div_row: RefViewPort<ArrayValue<f64, 1>>,
                                        equity_row: RefViewPort<ArrayValue<f64, 1>>,
                                        balance_row: RefViewPort<ArrayValue<f64, 1>>,

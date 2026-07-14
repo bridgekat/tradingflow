@@ -1,93 +1,11 @@
-[package]
-name = "tradingflow"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-
-[lib]
-crate-type = ["lib"]
 
 [profile.profiling]
 inherits = "release"
 debug = true
-
-[features]
-default = []
-# Python operators (optional): the engine embeds a CPython interpreter to run
-# `flowops` operators (`src/operators/pyhost.rs`). The pure-Rust
-# engine + native operators build WITHOUT a Python toolchain; enabling `python`
-# links libpython, so set PYO3_PYTHON (see examples/env.ps1). A free-threaded
-# interpreter gives pure-Python parallelism; on a GIL build, numpy/scipy/cvxpy
-# still release the GIL across operators.
-python = ["dep:pyo3", "dep:numpy", "pyo3/auto-initialize"]
-
-[dependencies]
-tokio = { version = "1", features = [
-    "rt",
-    "rt-multi-thread",
-    "sync",
-    "macros",
-    "time",
-] }
-hifitime = "4"
-pyo3 = { version = "0.28.2", optional = true }
-numpy = { version = "0.28.0", optional = true }
-num-traits = "0.2.19"
-# Per-generation bump arena for operators that emit by-reference view rows
-# (Split, RefArrayView); flowgraph dropped its bespoke Arena for bumpalo.
-bumpalo = "3"
-# Seeded RNG for the RandomTrader operator (src/operators/traders.rs).
-rand = "0.8"
-futures = { version = "0.3", default-features = false, features = ["alloc"] }
-# The parallel DAG engine that tradingflow wraps; the `ingest` feature is its
-# async timestamp-merge event loop. Pinned by commit for reproducibility
-# (Cargo.lock pins it too); to hack on flowgraph locally, see the `[patch]` at
-# the bottom of this file.
-flowgraph = { git = "https://github.com/bridgekat/flowgraph.git", rev = "dcb543e05d8f766aa29bd42f99a60589cc7f3282", features = ["ingest"] }
-arrow = "58.3.0"
-parquet = { version = "58.3.0", features = ["arrow", "zstd"] }
-
-[dev-dependencies]
-tempfile = "3"
-# tqdm-style progress bars for the examples (see `examples/common::progress`).
-indicatif = "0.17"
-# argparse-style CLI parsing for the examples (see `examples/common::CommonArgs`).
-clap = { version = "4", features = ["derive"] }
-
-[[example]]
-name = "plot_daily_price"
-
-[[example]]
-name = "plot_financial_data"
-
-[[example]]
-name = "plot_total_market_cap"
-
-[[example]]
-name = "mean_strategy"
-required-features = ["python"]
-
-[[example]]
-name = "mean_variance_strategy"
-required-features = ["python"]
-
-[[example]]
-name = "benchmark_relative_strategy"
-required-features = ["python"]
-
-[[example]]
-name = "covariance_gmv"
-required-features = ["python"]
-
-[[example]]
-name = "factor_ic"
-required-features = ["python"]
-
-[[example]]
-name = "factor_handbook"
-required-features = ["python"]
-
-# To develop flowgraph alongside tradingflow, clone it next to this repo and
-# uncomment the override below (the source URL must match the dependency above):
-# [patch."https://github.com/bridgekat/flowgraph.git"]
-# flowgraph = { path = "../flowgraph" }
-

@@ -1,0 +1,323 @@
+use std::any::TypeId;
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
+
+use crate::{
+    core::ErasedCell,
+    typed::{RefViewPort, SourceHandle, ValueView, ViewPort},
+};
+
+use super::{
+    FlatRead, FlatWrite, Handle, HandlesInterface, Interface, InterfaceHandles, OutputHandle,
+    Segment,
+};
+
+/// The erased per-node state: the (immutable) input shape, the engine-stored
+/// output payload tree, and the user state.
+///
+/// The stored tree is what makes fat leaves work: serialization points wire
+/// slots at its fields, which keep stable addresses (the tree is overwritten
+/// in place each run, inside the heap-allocated cell). It is typed at
+/// `'static` purely as storage -- layout is lifetime-invariant, every read
+/// re-types it at the reading call's lifetime, and cross-generation validity
+/// rests on the engine's per-generation contract plus the leaves' covariance.
+type NodeState<T> = (
+    Box<[usize]>,
+    MaybeUninit<<<T as Segment>::Outputs as Interface>::Values<'static>>,
+    <T as Segment>::State,
+);
+
+pub struct Builder<C: Send + Sync + 'static> {
+    inner: crate::core::Builder,
+    _context: PhantomData<C>,
+}
+
+impl<C: Send + Sync + 'static> Builder<C> {
+    pub fn new(context: C) -> Self {
+        Self {
+            inner: crate::core::Builder::new(ErasedCell::new(context)),
+            _context: PhantomData,
+        }
+    }
+
+    pub fn inner(&self) -> &crate::core::Builder {
+        &self.inner
+    }
+
+    pub fn inner_mut(&mut self) -> &mut crate::core::Builder {
+        &mut self.inner
+    }
+
+    pub fn view<V: ValueView>(&self, handle: Handle<ViewPort<V>>) -> V::View<'_>
+    where
+        for<'a> V::View<'a>: Copy,
+    {
+        let index = handle.index();
+        let type_id = self.inner.slot_type_id(index);
+        assert!(type_id == TypeId::of::<ViewPort<V>>(), "slot type mismatch");
+        unsafe { self.inner.slot_ptr(index).cast::<V::View<'_>>().read() }
+    }
+
+    pub fn ref_view<V: ValueView>(&self, handle: Handle<RefViewPort<V>>) -> &V::View<'_> {
+        let index = handle.index();
+        let type_id = self.inner.slot_type_id(index);
+        assert!(
+            type_id == TypeId::of::<RefViewPort<V>>(),
+            "slot type mismatch"
+        );
+        unsafe { &*self.inner.slot_ptr(index).cast::<V::View<'_>>() }
+    }
+
+    pub fn context(&self) -> &C {
+        unsafe { &*self.inner.context().get().cast::<C>() }
+    }
+
+    /// Push an input-less *source* segment ([`RefSource<T>`](super::RefSource) /
+    /// [`Source<T>`](super::Source), or any `Segment<Inputs = ()>`),
+    /// returning a pokeable [`SourceHandle`].
+    pub fn push_source<S>(&mut self, source: S) -> SourceHandle<S>
+    where
+        S: Segment<Inputs = (), Context = C>,
+        S::Outputs: InterfaceHandles,
+        <S::Outputs as InterfaceHandles>::HandlesOwned: OutputHandle,
+    {
+        SourceHandle::new(self.push(source, ()))
+    }
+
+    /// `input_handles` is a free type parameter `H` (the handle tree),
+    /// inferred structurally from the argument; the segment's inputs are then
+    /// pinned by `T: Segment<Inputs = H::Interface>`. This is what lets an
+    /// operator's generic parameters be inferred FROM the wiring (the inverse
+    /// `H -> Interface` of [`HandlesInterface`]), rather than the handle type
+    /// being a non-invertible forward projection of `T`. The segment's
+    /// `Context` is pinned to the builder's `C` the same way.
+    pub fn push<T, H>(
+        &mut self,
+        segment: T,
+        input_handles: H,
+    ) -> <T::Outputs as InterfaceHandles>::HandlesOwned
+    where
+        H: HandlesInterface,
+        T: Segment<Inputs = H::Interface, Context = C>,
+        T::Outputs: InterfaceHandles,
+    {
+        // Get the input cell indices + the input shape (per-`RefViewPorts` element
+        // counts, tree-order) from the input handles.
+        let mut input_indices = Vec::new();
+        let mut input_shape = Vec::new();
+        input_handles.to_vec(&mut input_shape, &mut input_indices);
+
+        // Get the expected input types of the segment, sized to the actual leaf
+        // count and filled in tree-order driven by `input_shape`.
+        let mut input_type_ids = Vec::new();
+        <T::Inputs as Interface>::type_ids_to_vec(
+            &mut FlatRead::new(&input_shape),
+            &mut input_type_ids,
+        );
+
+        // Validate input cell types before init.
+        assert!(
+            input_indices.len() == input_type_ids.len(),
+            "input arity mismatch"
+        );
+        for (&slot, &ty) in input_indices.iter().zip(&input_type_ids) {
+            assert!(self.inner.slot_type_id(slot) == ty, "input type mismatch");
+        }
+
+        // Bundle the (immutable) shape and the output-tree storage with the
+        // user state so `compute` can reconstruct the nested payload trees
+        // from the flat cell slices and home its result.
+        let state: NodeState<T> = (
+            input_shape.into_boxed_slice(),
+            MaybeUninit::uninit(),
+            segment.init(),
+        );
+        let state_cell = ErasedCell::new(state);
+
+        // Run the compute function once to get the output shape and types.
+        let (input_shape, stored, state_mut) =
+            unsafe { state_cell.get().cast::<NodeState<T>>().as_mut_unchecked() };
+
+        let input_flags = input_indices
+            .iter()
+            .map(|&i| self.inner.slot_flag(i))
+            .collect::<Box<_>>();
+        let input_ptrs = input_indices
+            .iter()
+            .map(|&i| self.inner.slot_ptr(i))
+            .collect::<Box<_>>();
+
+        let inputs = unsafe {
+            <T::Inputs as Interface>::values_from_flat(
+                &mut FlatRead::new(input_shape),
+                &mut FlatRead::new(&input_flags),
+                &mut FlatRead::new(&input_ptrs),
+            )
+        };
+        let outputs = T::compute(inputs, self.context(), state_mut, true);
+
+        // Home the output tree: fat leaves' wire pointers target fields of
+        // this stored copy (see `NodeState`).
+        let outputs = unsafe {
+            let p: *mut <T::Outputs as Interface>::Values<'_> = stored.as_mut_ptr().cast();
+            p.write(outputs);
+            &*p
+        };
+
+        let mut output_shape = Vec::new();
+        let mut output_flags = Vec::new();
+        let mut output_ptrs = Vec::new();
+        <T::Outputs as Interface>::values_to_vecs(
+            outputs,
+            &mut output_shape,
+            &mut output_flags,
+            &mut output_ptrs,
+        );
+
+        let mut output_type_ids = Vec::new();
+        <T::Outputs as Interface>::type_ids_to_vec(
+            &mut FlatRead::new(&output_shape),
+            &mut output_type_ids,
+        );
+
+        // Construct the node and push it to the graph.
+        let segment = unsafe {
+            crate::core::Segment::new(
+                input_type_ids.into_boxed_slice(),
+                output_type_ids.into_boxed_slice(),
+                compute_fn_for::<T>,
+                state_cell,
+                output_flags.into_boxed_slice(),
+                output_ptrs.into_boxed_slice(),
+            )
+        };
+        let output_range = self.inner.push(segment, &input_indices).unwrap();
+        let output_indices = output_range.collect::<Box<[_]>>();
+
+        // Get the output handles from the output cell indices + output shape.
+        <T::Outputs as InterfaceHandles>::handles_from_flat(
+            &mut FlatRead::new(&output_shape),
+            &mut FlatRead::new(&output_indices),
+        )
+    }
+
+    /// Finalize into a runnable [`Graph`].
+    pub fn build(self) -> Graph<C> {
+        Graph {
+            inner: self.inner.build(),
+            _context: PhantomData,
+        }
+    }
+}
+
+unsafe fn compute_fn_for<T: Segment>(
+    in_flags: *const [bool],
+    in_ptrs: *const [*const ()],
+    out_flags: *mut [bool],
+    out_ptrs: *mut [*const ()],
+    context: *const (),
+    state: *mut (),
+) {
+    let context = unsafe { &*context.cast::<T::Context>() };
+    let (input_shape, stored, state_mut) =
+        unsafe { state.cast::<NodeState<T>>().as_mut_unchecked() };
+
+    let inputs = unsafe {
+        <T::Inputs as Interface>::values_from_flat(
+            &mut FlatRead::new(input_shape.as_ref()),
+            &mut FlatRead::new(in_flags.as_ref_unchecked()),
+            &mut FlatRead::new(in_ptrs.as_ref_unchecked()),
+        )
+    };
+    let outputs = T::compute(inputs, context, state_mut, false);
+
+    // Home the output tree, overwriting last generation's in place (see
+    // `NodeState`): every output slot is rewritten below before any consumer
+    // runs, and a node that does not run keeps its tree untouched, so
+    // out-of-cone consumers' pointers stay live.
+    let outputs = unsafe {
+        let p: *mut <T::Outputs as Interface>::Values<'_> = stored.as_mut_ptr().cast();
+        p.write(outputs);
+        &*p
+    };
+
+    let mut flags_writer = FlatWrite::new(unsafe { out_flags.as_mut_unchecked() });
+    let mut ptrs_writer = FlatWrite::new(unsafe { out_ptrs.as_mut_unchecked() });
+    <T::Outputs as Interface>::values_to_flat(outputs, &mut flags_writer, &mut ptrs_writer);
+
+    // A changed output shape should panic, instead of leaving old dangling
+    // pointers in the output cells.
+    assert!(
+        flags_writer.remaining() == 0 && ptrs_writer.remaining() == 0,
+        "output shape changed since build (operator wrote fewer leaves than allocated)"
+    );
+}
+
+pub struct Graph<C: Send + Sync + 'static = ()> {
+    inner: crate::core::Graph,
+    _context: PhantomData<C>,
+}
+
+impl<C: Send + Sync + 'static> Graph<C> {
+    pub fn inner(&self) -> &crate::core::Graph {
+        &self.inner
+    }
+
+    pub fn inner_mut(&mut self) -> &mut crate::core::Graph {
+        &mut self.inner
+    }
+
+    pub fn ref_view<V: ValueView>(&self, handle: Handle<RefViewPort<V>>) -> &V::View<'_> {
+        let index = handle.index();
+        let type_id = self.inner.slot_type_id(index);
+        assert!(
+            type_id == TypeId::of::<RefViewPort<V>>(),
+            "slot type mismatch"
+        );
+        unsafe {
+            self.inner
+                .slot_ptr(index)
+                .cast::<V::View<'_>>()
+                .as_ref_unchecked()
+        }
+    }
+
+    pub fn view<V: ValueView>(&self, handle: Handle<ViewPort<V>>) -> V::View<'_>
+    where
+        for<'a> V::View<'a>: Copy,
+    {
+        let index = handle.index();
+        let type_id = self.inner.slot_type_id(index);
+        assert!(type_id == TypeId::of::<ViewPort<V>>(), "slot type mismatch");
+        unsafe { self.inner.slot_ptr(index).cast::<V::View<'_>>().read() }
+    }
+
+    pub fn context(&self) -> &C {
+        unsafe { &*self.inner.context().get().cast::<C>() }
+    }
+
+    pub fn context_mut(&mut self) -> &mut C {
+        unsafe { &mut *self.inner.context_mut().get().cast::<C>() }
+    }
+
+    pub fn state_mut<S>(&mut self, handle: SourceHandle<S>) -> &mut S::State
+    where
+        S: Segment,
+        S::Outputs: InterfaceHandles,
+        <S::Outputs as InterfaceHandles>::HandlesOwned: OutputHandle,
+    {
+        let index = handle.index();
+        let type_id = self.inner.state_mut(index).type_id();
+        assert!(
+            type_id == TypeId::of::<NodeState<S>>(),
+            "cell type mismatch"
+        );
+        let state = self.inner.state_mut(index).get();
+        let (_, _, state_mut) = unsafe { state.cast::<NodeState<S>>().as_mut_unchecked() };
+        state_mut
+    }
+
+    pub fn stabilize(&mut self, pool: &mut crate::core::Pool) {
+        self.inner.stabilize(pool);
+    }
+}

@@ -21,7 +21,7 @@ mod common;
 
 use tradingflow::operators::{apply, benchmark, map, multiply, record, resample_view};
 use tradingflow::sources::pulse;
-use tradingflow::{Array, ArrayView, Scenario, WallClock};
+use tradingflow::{Array, ArrayView, Instant, Scenario, WallClock};
 
 use clap::Parser;
 
@@ -39,8 +39,7 @@ async fn main() {
     let n = symbols.len();
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);
 
-    let mut sc = Scenario::new(WallClock);
-    let clk = sc.time();
+    let mut sc = Scenario::new(WallClock, Instant::MIN);
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.push(multiply(), (st.close, st.circ_shares));
@@ -83,13 +82,13 @@ async fn main() {
         index,
     );
 
-    let h_mc = sc.push(record(&clk), index_circ_market_cap);
-    let h_nav = sc.push(record(&clk), index_value);
+    let h_mc = sc.push(record(), index_circ_market_cap);
+    let h_nav = sc.push(record(), index_value);
 
     let mut session = sc.build_with_threads(args.threads);
     // Trim warmup output before `begin` so only the live index window is shown.
     let begin = args.begin();
-    let total = session.estimated_event_count();
+    let total = session.total_num_events();
     session.run(common::progress(total, begin)).await;
     eprintln!();
 

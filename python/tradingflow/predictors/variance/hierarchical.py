@@ -1,0 +1,218 @@
+r"""Hierarchical-clustering covariance predictors (pyhost).
+
+Three agglomerative hierarchical-clustering estimators of the covariance
+matrix, following Pantaleo et al. (2010).  All three build a dendrogram
+from the sample correlation similarities, read the cophenetic similarity
+into a filtered correlation matrix, and rescale by the sample standard
+deviations.  They differ only in the cluster-cluster linkage rule:
+
+- ``UPGMA`` - size-weighted arithmetic-mean linkage.
+- ``WPGMA`` - unweighted (simple-average) linkage.
+- ``Hausdorff`` - Hausdorff linkage on the original pairwise similarities.
+
+Merge similarities are clamped non-increasing to keep the dendrogram
+monotonic (a prerequisite for a PSD filtered correlation matrix).
+"""
+
+from typing import Literal
+
+import numpy as np
+
+from ._base import VariancePredictor
+from ._common import correlation_from_covariance, sample_covariance
+
+
+class UPGMA(VariancePredictor[np.ndarray]):
+    """UPGMA hierarchical-clustering covariance estimator.
+
+    Size-weighted arithmetic-mean linkage on the sample correlation.
+    Ignores features.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(
+            fit_fn=lambda x, y: _hcluster_fit(y, method="upgma"),
+            predict_fn=lambda state, x, params: params,
+            **kwargs,
+        )
+
+
+class WPGMA(VariancePredictor[np.ndarray]):
+    """WPGMA hierarchical-clustering covariance estimator.
+
+    Unweighted (simple-average) linkage on the sample correlation.
+    Ignores features.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(
+            fit_fn=lambda x, y: _hcluster_fit(y, method="wpgma"),
+            predict_fn=lambda state, x, params: params,
+            **kwargs,
+        )
+
+
+class Hausdorff(VariancePredictor[np.ndarray]):
+    r"""Hausdorff-linkage hierarchical-clustering covariance estimator.
+
+    Uses the Hausdorff-style similarity
+    \(\min\{\min_i \max_j,\ \max_i \min_j\}\) over the original pairwise
+    correlations.  Reversals are removed by clamping each merge similarity
+    to the minimum of the previous merges.  Ignores features.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(
+            fit_fn=lambda x, y: _hcluster_fit(y, method="hausdorff"),
+            predict_fn=lambda state, x, params: params,
+            **kwargs,
+        )
+
+
+def _hcluster_fit(y: np.ndarray, *, method: Literal["upgma", "wpgma", "hausdorff"]) -> np.ndarray:
+    S, _, _ = sample_covariance(y)
+    C, stds = correlation_from_covariance(S)
+
+    coph = _cophenetic_similarity(C, method=method)
+    return coph * np.outer(stds, stds)
+
+
+def _cophenetic_similarity(C: np.ndarray, *, method: str) -> np.ndarray:
+    """Build the cophenetic-similarity matrix of an agglomerative clustering.
+
+    For each method the algorithm iteratively merges the two active
+    clusters with the highest similarity, records the merge similarity
+    between all cross-cluster element pairs, and updates the similarity
+    between the new cluster and every remaining cluster using the
+    method's linkage rule.
+
+    Parameters
+    ----------
+    C
+        `(N, N)` similarity matrix (typically the sample correlation)
+        with `C[i, i] = 1`.
+    method
+        One of `"upgma"`, `"wpgma"`, `"hausdorff"`.
+
+    Returns
+    -------
+    np.ndarray
+        `(N, N)` cophenetic-similarity matrix with unit diagonal.
+    """
+    N = C.shape[0]
+    members: dict[int, list[int]] = {i: [i] for i in range(N)}
+    sizes: dict[int, int] = {i: 1 for i in range(N)}
+
+    # Pairwise similarities keyed by ordered (a, b) with a < b.
+    sim: dict[tuple[int, int], float] = {}
+    for i in range(N):
+        for j in range(i + 1, N):
+            sim[(i, j)] = float(C[i, j])
+
+    active: set[int] = set(range(N))
+    next_id = N
+    coph = np.eye(N, dtype=np.float64)
+    prev_merge_sim = np.inf
+
+    while len(active) > 1:
+        # Most-similar active pair.
+        best_key = max(sim, key=sim.__getitem__)
+        a, b = best_key
+        merge_sim = sim[best_key]
+
+        # Enforce dendrogram monotonicity (reversal removal).
+        merge_sim = min(merge_sim, prev_merge_sim)
+        prev_merge_sim = merge_sim
+
+        # Record cophenetic similarity for every cross-cluster pair.
+        a_members = members[a]
+        b_members = members[b]
+        for i in a_members:
+            for j in b_members:
+                coph[i, j] = merge_sim
+                coph[j, i] = merge_sim
+
+        # Create the merged cluster.
+        new_id = next_id
+        next_id += 1
+        members[new_id] = a_members + b_members
+        sizes[new_id] = sizes[a] + sizes[b]
+
+        # Update similarity with every remaining active cluster.
+        for F in active:
+            if F == a or F == b:
+                continue
+            if method == "upgma":
+                s_aF = sim[(min(a, F), max(a, F))]
+                s_bF = sim[(min(b, F), max(b, F))]
+                new_sim = (sizes[a] * s_aF + sizes[b] * s_bF) / (sizes[a] + sizes[b])
+            elif method == "wpgma":
+                s_aF = sim[(min(a, F), max(a, F))]
+                s_bF = sim[(min(b, F), max(b, F))]
+                new_sim = 0.5 * (s_aF + s_bF)
+            elif method == "hausdorff":
+                # Paper's formula uses the ORIGINAL pairwise similarities
+                # from C - not the running cluster-cluster similarities.
+                sub = C[np.ix_(members[new_id], members[F])]
+                term1 = sub.max(axis=1).min()  # min_i max_j
+                term2 = sub.min(axis=1).max()  # max_i min_j
+                new_sim = float(min(term1, term2))
+            else:
+                raise ValueError(f"unknown method {method!r}")
+
+            sim[(min(new_id, F), max(new_id, F))] = new_sim
+
+        # Retire the merged clusters.
+        active.remove(a)
+        active.remove(b)
+        active.add(new_id)
+        for key in list(sim.keys()):
+            if a in key or b in key:
+                del sim[key]
+
+    return coph
+
+
+def build_upgma(**kwargs) -> UPGMA:
+    """Construct a :class:`UPGMA` covariance predictor."""
+    return UPGMA(**kwargs)
+
+
+def build_wpgma(**kwargs) -> WPGMA:
+    """Construct a :class:`WPGMA` covariance predictor."""
+    return WPGMA(**kwargs)
+
+
+def build_hausdorff(**kwargs) -> Hausdorff:
+    """Construct a :class:`Hausdorff` covariance predictor."""
+    return Hausdorff(**kwargs)
+
+
+_VARIANTS = {
+    "upgma": UPGMA,
+    "UPGMA": UPGMA,
+    "wpgma": WPGMA,
+    "WPGMA": WPGMA,
+    "hausdorff": Hausdorff,
+    "Hausdorff": Hausdorff,
+}
+
+
+def build(**kwargs):
+    """Construct a hierarchical-clustering covariance predictor.
+
+    Build kwargs
+    ------------
+    method : str, optional (default "upgma")
+        ``"upgma"``, ``"wpgma"``, or ``"hausdorff"``.
+    num_stocks : int
+    num_features : int
+    universe_size : int
+    target_offset : int
+    refit_every : int, optional (default 1)
+    max_periods : int | None, optional
+    min_periods : int | None, optional
+    """
+    method = kwargs.pop("method", "upgma")
+    cls = _VARIANTS[method]
+    return cls(**kwargs)

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
-use flowgraph::typed::{Handle, RefPort};
+use tradingflow::graph::{Handle, RefPort};
 
 use tradingflow::data::civil_from_days;
 use tradingflow::{Instant, Series, Session};
@@ -20,14 +20,14 @@ pub fn date_str(ts: Instant) -> String {
 ///
 /// Progress is measured in **long-table rows**: the panel sources emit one event
 /// per narrow row, so the driver's `events()` count *is* the row count (no shared
-/// counter needed). `total` is the session's `estimated_event_count()` in
+/// counter needed). `total` is the session's `total_num_events()` in
 /// the same row unit; `Some(n)` → a bounded bar (percent / rate / ETA), else a
 /// spinner. `{per_sec}` is therefore rows/s. `begin` sets `{prefix}` (warm-up
 /// before it, running after); `{msg}` is the current event date. The bar uses a
 /// terminal-width `{wide_bar}` with Unicode sub-cell fill, and finalises itself
 /// when the callback drops at the end of `run`:
 /// ```ignore
-/// let total = session.estimated_event_count();
+/// let total = session.total_num_events();
 /// session.run(common::progress(total, args.begin())).await;
 /// eprintln!(); // move past the finished bar line before printing results
 /// ```
@@ -83,7 +83,7 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(&Session, In
     let guard = FinishOnDrop(pb);
     move |session: &Session, ts: Instant| {
         let pb = &guard.0;
-        let rows = session.events() as u64;
+        let rows = session.num_events() as u64;
         // Grow the length if the estimate undershot (keeps the percentage sane).
         if let Some(len) = pb.length()
             && rows > len

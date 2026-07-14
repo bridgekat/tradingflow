@@ -6,11 +6,11 @@
 //! → trader → total value → record). What remains in each example is the part
 //! that actually differs: which predictor, which optimizer, which trader.
 
-use flowgraph::typed::{Handle, RefPort, ViewPort};
+use tradingflow::graph::{Handle, RefPort, ViewPort};
 
 use tradingflow::operators::{ArrayValue, as_view, benchmark, log, map, multiply, own, record};
 use tradingflow::sources::pulse;
-use tradingflow::{Array, ArrayView, Retention, Scenario, Series, Session};
+use tradingflow::{Array, ArrayView, Instant, Retention, Scenario, Series, Session};
 
 use super::AvH;
 use super::args::CommonArgs;
@@ -128,7 +128,7 @@ impl Market {
     /// aware) — which is the cost-model swap point.
     pub fn simulate<T>(&self, sc: &mut Scenario, trader: T, positions: AvH) -> ScH
     where
-        T: flowgraph::typed::Segment<
+        T: tradingflow::graph::Segment<
                 Inputs = (
                     ViewPort<ArrayValue<f64, 1>>,
                     ViewPort<ArrayValue<f64, 1>>,
@@ -137,6 +137,7 @@ impl Market {
                     ViewPort<ArrayValue<f64, 1>>,
                 ),
                 Outputs = ViewPort<ArrayValue<f64, 1>>,
+                Context = Instant,
             >,
     {
         let book = sc.push(
@@ -154,25 +155,23 @@ impl Market {
 
     /// The cap-weighted index's NAV: trade the universe weights frictionlessly.
     pub fn index_nav(&self, sc: &mut Scenario) -> NavH {
-        let clk = sc.time();
         let value = self.simulate(sc, benchmark(self.n, 1.0, true), self.universe);
-        sc.push(record(&clk), value)
+        sc.push(record(), value)
     }
 
     /// A Python portfolio's frictionless NAV: bridge its whole-array positions
     /// into the view currency, trade via `Benchmark`, sum, and record.
     pub fn record_nav(&self, sc: &mut Scenario, positions: PosH) -> NavH {
-        let clk = sc.time();
         let positions_v = sc.push(as_view(), positions);
         let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions_v);
-        sc.push(record(&clk), value)
+        sc.push(record(), value)
     }
 }
 
 /// Build, run to exhaustion with a progress bar, and return the finished session.
 pub async fn run(sc: Scenario, args: &CommonArgs) -> Session {
     let mut session = sc.build_with_threads(args.threads);
-    let total = session.estimated_event_count();
+    let total = session.total_num_events();
     session.run(super::progress(total, args.begin())).await;
     eprintln!(); // move past the finished bar line
     session

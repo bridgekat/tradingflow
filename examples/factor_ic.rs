@@ -12,7 +12,7 @@
 //! catalogs instead, and ranks both sides first (RankIC); both share
 //! `common::ic`.
 //!
-//! The IC metric is a Python (`flowops`) operator (no cvxpy), so this needs
+//! The IC metric is a Python (`tradingflow`) operator (no cvxpy), so this needs
 //! `--features python` and a venv with NumPy (a standard GIL venv is fine).
 //!
 //! ```text
@@ -26,7 +26,7 @@ mod common;
 use clap::Parser;
 
 use tradingflow::operators::{lag_series, own, record, resample_clocked};
-use tradingflow::{Retention, Scenario, WallClock};
+use tradingflow::{Instant, Retention, Scenario, WallClock};
 
 use common::FeatureSet;
 use common::ic::{ic_series, ic_stats};
@@ -56,8 +56,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock);
-    let clk = sc.time();
+    let mut sc = Scenario::new(WallClock, Instant::MIN);
 
     let m = Market::build(
         &mut sc,
@@ -79,11 +78,11 @@ async fn main() {
         .map(|&feature| {
             // Lag one trading day, resample onto the rebalance clock, then NaN out
             // the stocks outside the universe so they don't dilute the correlation.
-            let feature_series = sc.push(record(&clk), feature);
+            let feature_series = sc.push(record(), feature);
             let lagged = sc.push(lag_series(1, f64::NAN), feature_series);
             let aligned = sc.push(resample_clocked(), (m.rebalance_clock, lagged));
             let masked = mask_to_universe(&mut sc, aligned, m.universe);
-            ic_series(&mut sc, masked, target_ref, m.n, &clk)
+            ic_series(&mut sc, masked, target_ref, m.n)
         })
         .collect();
 

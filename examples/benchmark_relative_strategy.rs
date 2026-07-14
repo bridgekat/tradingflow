@@ -21,7 +21,7 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::{Retention, Scenario, WallClock};
+use tradingflow::{Instant, Retention, Scenario, WallClock};
 
 use common::FeatureSet;
 use common::models::{benchmark_relative, ridge_mean, shrinkage_cov};
@@ -55,8 +55,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock);
-    let clk = sc.time();
+    let mut sc = Scenario::new(WallClock, Instant::MIN);
 
     let m = Market::build(
         &mut sc,
@@ -68,11 +67,11 @@ async fn main() {
     );
 
     let predicted_returns = sc.push(
-        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA, &clk),
+        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
         (m.universe_ref, m.features.series, m.demeaned_series),
     );
     let predicted_cov = sc.push(
-        shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS, &clk),
+        shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS),
         (m.universe_ref, m.features.series, m.target_series),
     );
 
@@ -84,7 +83,7 @@ async fn main() {
         .map(|&gamma_ann| {
             let gamma_daily = gamma_ann / TRADING_DAYS.sqrt();
             let soft = sc.push(
-                benchmark_relative(m.n, args.index_size, gamma_daily, true, true, &clk),
+                benchmark_relative(m.n, args.index_size, gamma_daily, true, true),
                 (m.universe_ref, predicted_returns, predicted_cov),
             );
             (gamma_ann, m.record_nav(&mut sc, soft))

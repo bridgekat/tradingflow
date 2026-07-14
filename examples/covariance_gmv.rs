@@ -23,7 +23,7 @@ mod common;
 use clap::Parser;
 
 use tradingflow::operators::{as_view, diff, own, record};
-use tradingflow::{Retention, Scenario, WallClock};
+use tradingflow::{Instant, Retention, Scenario, WallClock};
 
 use common::FeatureSet;
 use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};
@@ -75,8 +75,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock);
-    let clk = sc.time();
+    let mut sc = Scenario::new(WallClock, Instant::MIN);
 
     let m = Market::build(
         &mut sc,
@@ -92,7 +91,7 @@ async fn main() {
     let log_returns_ref = sc.push(own(), log_returns);
 
     let predicted_returns = sc.push(
-        linear_regression_mean(m.dims, MIN_PERIODS, &clk),
+        linear_regression_mean(m.dims, MIN_PERIODS),
         (m.universe_ref, m.features.series, m.demeaned_series),
     );
 
@@ -105,12 +104,12 @@ async fn main() {
             // `min_periods` filter on the covariance estimators (the mean
             // `LinearRegression` above keeps its own `min_periods`).
             let cov = sc.push(
-                e.build(m.dims, args.rebalance_days, None, &clk),
+                e.build(m.dims, args.rebalance_days, None),
                 (m.universe_ref, m.features.series, m.target_series),
             );
 
             // GMV realized-variance metric (diagnostic; fed cov + raw returns).
-            let mv = sc.push(minimum_variance(m.n, &clk), (cov, log_returns_ref));
+            let mv = sc.push(minimum_variance(m.n), (cov, log_returns_ref));
             let mv_v = sc.push(as_view(), mv);
 
             // Long-only and long-short Markowitz portfolios.
@@ -124,7 +123,6 @@ async fn main() {
                             Mode::MinMeanVariance,
                             RISK_AVERSION,
                             long_only,
-                            &clk,
                         ),
                         (m.universe_ref, predicted_returns, cov),
                     );
@@ -136,7 +134,7 @@ async fn main() {
                 name: e.name,
                 long: nav[0],
                 ls: nav[1],
-                mv: sc.push(record(&clk), mv_v),
+                mv: sc.push(record(), mv_v),
             }
         })
         .collect();

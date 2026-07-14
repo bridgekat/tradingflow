@@ -22,7 +22,7 @@
 //! ~1-year lag of an irregular-cadence series: the level is resampled onto the
 //! daily close pulse and run through the self-recording 244-day [`change`] /
 //! [`growth`] (the 次新 idiom), fused into one node via a nested
-//! [`segment!`](flowgraph::segment) — the form recommended for individual
+//! [`segment!`](tradingflow::segment) — the form recommended for individual
 //! factors. (`(cur − prev)/prev` is NOT rank-equivalent to `cur/prev` once a
 //! year-ago base goes negative, so the subtraction is kept rather than dropped.)
 //!
@@ -32,7 +32,7 @@
 //! and a cash-tax-paid term), dividend yield/payout (DP/DPR), and the regression
 //! / SUE / composite (Profit/Growth/Safe/QQC) factors.
 
-use flowgraph::typed::{Handle, RefPort, ViewPort};
+use tradingflow::graph::{Handle, RefPort, ViewPort};
 
 use tradingflow::Scenario;
 use tradingflow::data::Duration;
@@ -71,7 +71,7 @@ pub struct FactorSet {
 /// The rank → fill chain is fused into one node via `segment!`.
 pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
     sc.push(
-        flowgraph::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {
+        tradingflow::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {
             fillna(0.5) @ percentile() @ x
         }),
         h,
@@ -92,8 +92,7 @@ pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> H {
 /// annualized (effective-date-aligned) series, via the self-recording
 /// [`ma_time`] (record fused in, retention sized internally).
 fn ttm(sc: &mut Scenario, h: H) -> H {
-    let clk = sc.time();
-    sc.push(ma_time(&clk, Duration::from_days(365)), h)
+    sc.push(ma_time(Duration::from_days(365)), h)
 }
 
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
@@ -114,10 +113,9 @@ fn neg(sc: &mut Scenario, h: H) -> H {
 /// `level` block is computed once outside, so it is not recomputed here.
 /// The 次新 listing filter excludes names without a full prior year.
 fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
-    let clk = sc.time();
     sc.push(
-        flowgraph::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| {
-            change(&clk, LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
+        tradingflow::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| {
+            change(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -127,10 +125,9 @@ fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
 /// self-recording [`growth`] over the same resampled daily pulse as
 /// [`delta`].
 fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
-    let clk = sc.time();
     sc.push(
-        flowgraph::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| {
-            growth(&clk, LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
+        tradingflow::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| {
+            growth(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -251,8 +248,7 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // IC (short-term reversal); a contemporaneous (non-lagged) wiring bug would
     // instead make this strongly POSITIVE (the factor overlapping the return).
     let log_adj = log_h(sc, st.adjusted_close);
-    let clk = sc.time();
-    add("REV_1M", sc.push(change(&clk, 21), log_adj));
+    add("REV_1M", sc.push(change(21), log_adj));
 
     // Each catalog entry is finalized into its model-ready feature: rank + impute.
     let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();

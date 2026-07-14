@@ -32,14 +32,14 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Operator, RefPort, ViewPort};
+use tradingflow::graph::{Operator, RefPort, ViewPort};
 
 use tradingflow::operators::{
     ArrayValue, lag_series, log, multiply, own, percentile, record, ref_array_views,
     resample_clocked, stack,
 };
 use tradingflow::sources::pulse;
-use tradingflow::{Array, ArrayView, Scenario, WallClock};
+use tradingflow::{Array, ArrayView, Instant, Scenario, WallClock};
 
 use clap::Parser;
 
@@ -81,6 +81,7 @@ struct CorrMatrixState {
 impl Operator for CorrMatrix {
     type Inputs = ViewPort<ArrayValue<f64, 2>>;
     type Outputs = ViewPort<ArrayValue<f64, 2>>;
+    type Context = Instant;
     type State = CorrMatrixState;
 
     fn init(self) -> CorrMatrixState {
@@ -93,6 +94,7 @@ impl Operator for CorrMatrix {
 
     fn compute<'a, 'b: 'a>(
         (_, panel): (bool, ArrayView<'a, f64, 2>),
+        _: &Instant,
         state: &'b mut CorrMatrixState,
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 2>) {
@@ -142,6 +144,7 @@ impl Operator for CorrMatrix {
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, f64, 2>),
+        _: &Instant,
         state: &'b CorrMatrixState,
     ) -> (bool, ArrayView<'a, f64, 2>) {
         (false, state.out.view())
@@ -216,7 +219,7 @@ fn monotonicity(anns: &[f64]) -> f64 {
     (sxy / (sxx.sqrt() * syy.sqrt())).abs()
 }
 
-type NavHandle = flowgraph::typed::Handle<RefPort<tradingflow::Series<f64, 0>>>;
+type NavHandle = tradingflow::graph::Handle<RefPort<tradingflow::Series<f64, 0>>>;
 
 #[tokio::main]
 async fn main() {
@@ -230,8 +233,7 @@ async fn main() {
         args.common.index_size
     );
 
-    let mut sc = Scenario::new(WallClock);
-    let clk = sc.time();
+    let mut sc = Scenario::new(WallClock, Instant::MIN);
 
     let st = common::build_stacked(&mut sc, &symbols, &args.common);
     let catalog = match args.catalog.as_str() {
@@ -260,7 +262,7 @@ async fn main() {
 
     // 次新 exclusion: require a finite adjusted price ~1 trading year (244 daily
     // ticks) ago, i.e. the stock was already listed a year before the rebalance.
-    let log_adj_series = sc.push(record(&clk), log_adj);
+    let log_adj_series = sc.push(record(), log_adj);
     let prior_year = sc.push(lag_series(244, f64::NAN), log_adj_series);
     let prior_year_reb = sc.push(resample_clocked(), (rebalance_clock, prior_year));
     let universe = common::universe::with_listing_filter(&mut sc, universe, prior_year_reb);
@@ -305,13 +307,13 @@ async fn main() {
         let rank = sc.push(percentile(), masked);
         ranks.push(rank);
         // RankIC vs the forward return (corrcoef of two rank vectors = Spearman).
-        ic_handles.push(common::ic::ic_series(&mut sc, rank, fwd_rank_ref, n, &clk));
+        ic_handles.push(common::ic::ic_series(&mut sc, rank, fwd_rank_ref, n));
         ic_names.push(name.clone());
 
         // 10-group layered backtest on the feature (RankBucket ranks internally).
         if args.backtest {
             let bt = common::backtest::build_decile_backtest(
-                &mut sc, universe, feat, st.close, st.adjusts, upper, lower, n, &clk,
+                &mut sc, universe, feat, st.close, st.adjusts, upper, lower, n,
             );
             backtests.push((name.clone(), bt));
         }
@@ -325,13 +327,13 @@ async fn main() {
         let rank_refs = ref_array_views(&mut sc, &ranks);
         let panel = sc.push(stack::<f64, 1, 2>(1), &rank_refs[..]); // (N, K)
         let corr = sc.push(CorrMatrix { k: ranks.len() }, panel); // (K, K)
-        Some(sc.push(record(&clk), corr))
+        Some(sc.push(record(), corr))
     } else {
         None
     };
 
     let mut session = sc.build_with_threads(args.common.threads);
-    let total = session.estimated_event_count();
+    let total = session.total_num_events();
     session
         .run(common::progress(total, args.common.begin()))
         .await;

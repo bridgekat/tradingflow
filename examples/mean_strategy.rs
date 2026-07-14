@@ -11,7 +11,7 @@
 //! drawdown, and rolling market beta/alpha via `RegressionCoefficients`) are
 //! computed natively, clock-gated on the rebalance schedule.
 //!
-//! The predictor, portfolio, and beta-alpha operators are Python (`flowops`)
+//! The predictor, portfolio, and beta-alpha operators are Python (`tradingflow`)
 //! operators on the shared interpreter (the two traders are native Rust), so
 //! this needs `--features python` and a venv with NumPy (a standard GIL venv
 //! is fine).
@@ -30,7 +30,7 @@ use tradingflow::operators::{
     as_view, benchmark, compound_return, diff, drawdown, log, random_trader, record,
     ref_array_view, sharpe_ratio, stack,
 };
-use tradingflow::{Retention, Scenario, Series, WallClock};
+use tradingflow::{Instant, Retention, Scenario, Series, WallClock};
 
 use common::FeatureSet;
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
@@ -73,8 +73,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock);
-    let clk = sc.time();
+    let mut sc = Scenario::new(WallClock, Instant::MIN);
 
     // ---- Data + features ------------------------------------------------
     // The incremental mean predictor folds one (feature, target) pair per tick,
@@ -88,13 +87,10 @@ async fn main() {
 
     // ---- Predictor + portfolio ------------------------------------------
     let predicted_returns = sc.push(
-        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA, &clk),
+        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
         (m.universe_ref, m.features.series, m.demeaned_series),
     );
-    let soft_positions = sc.push(
-        rank_linear(m.n, 1.0, &clk),
-        (m.universe_ref, predicted_returns),
-    );
+    let soft_positions = sc.push(rank_linear(m.n, 1.0), (m.universe_ref, predicted_returns));
     // Bridge the Python `RefPort` positions back into the view currency the
     // native traders speak.
     let soft_positions_v = sc.push(as_view(), soft_positions);
@@ -119,28 +115,28 @@ async fn main() {
     let strat_logret = sc.push(diff(), log_actual);
     let log_index = sc.push(log(), index_value);
     let index_logret = sc.push(diff(), log_index);
-    let strat_logret_series = sc.push(record(&clk), strat_logret);
+    let strat_logret_series = sc.push(record(), strat_logret);
     // scalar -> (1,): bridge the rank-0 view into the `RefViewPort` slice `Stack`
     // consumes, then stack into a 1-vector.
     let index_logret_ref = sc.push(ref_array_view(), index_logret);
     let index_logret_vec = sc.push(stack(0), &[index_logret_ref][..]);
-    let index_logret_series = sc.push(record(&clk), index_logret_vec);
+    let index_logret_series = sc.push(record(), index_logret_vec);
     let beta_alpha = sc.push(
-        regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS, &clk),
+        regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS),
         (m.rebalance_clock, strat_logret_series, index_logret_series),
     );
 
     // ---- Records --------------------------------------------------------
-    let h_index = sc.push(record(&clk), index_value);
-    let h_fric = sc.push(record(&clk), frictionless_value);
-    let h_actual = sc.push(record(&clk), actual_value);
-    let h_sharpe = sc.push(record(&clk), sharpe);
-    let h_compound = sc.push(record(&clk), compound);
-    let h_drawdown = sc.push(record(&clk), drawdown);
+    let h_index = sc.push(record(), index_value);
+    let h_fric = sc.push(record(), frictionless_value);
+    let h_actual = sc.push(record(), actual_value);
+    let h_sharpe = sc.push(record(), sharpe);
+    let h_compound = sc.push(record(), compound);
+    let h_drawdown = sc.push(record(), drawdown);
     // `beta_alpha` is a Python `RefPort<Array>` output; bridge into the view
     // currency for recording.
     let beta_alpha_v = sc.push(as_view(), beta_alpha);
-    let h_beta_alpha = sc.push(record(&clk), beta_alpha_v);
+    let h_beta_alpha = sc.push(record(), beta_alpha_v);
 
     let session = common::run(sc, &args).await;
 

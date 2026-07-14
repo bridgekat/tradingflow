@@ -1,0 +1,16 @@
+[package]
+name = "tradingflow-graph"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crossbeam = "0.8.4"
+tradingflow-macros = { path = "../tradingflow-macros" }
+
+[dev-dependencies]
+bumpalo = "3"
+criterion = "0.8.2"
+
+[[bench]]
+name = "core"
+harness = false

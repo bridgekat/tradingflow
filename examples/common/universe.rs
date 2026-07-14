@@ -20,7 +20,7 @@
 //! (limit-locked) screens are derivable and added in [`build_full_market_universe`]
 //! once wired; for now the full-market universe is "any stock with valid cap".
 
-use flowgraph::typed::{Handle, RefPort};
+use tradingflow::graph::{Handle, RefPort};
 
 use tradingflow::operators::{
     ArrayValue, and, clocked, greater_than, indicator, is_finite, map, multiply,
@@ -95,7 +95,7 @@ pub fn build_caprank_universe(
 /// rebalance clock.
 pub fn with_listing_filter(sc: &mut Scenario, universe: AvH, aged: AvH) -> AvH {
     sc.push(
-        flowgraph::segment!(|u: Av1, aged: Av1| {
+        tradingflow::segment!(|u: Av1, aged: Av1| {
             let keep = and() @ (greater_than(0.0) @ u, is_finite() @ aged);
             indicator(1.0, f64::NAN) @ keep
         }),
@@ -109,7 +109,7 @@ pub fn with_listing_filter(sc: &mut Scenario, universe: AvH, aged: AvH) -> AvH {
 /// leaves in-universe values bit-exact (`x * 1.0 == x`, including `±0` and `±∞`).
 pub fn mask_to_universe(sc: &mut Scenario, data: AvH, universe: AvH) -> AvH {
     sc.push(
-        flowgraph::segment!(|data: Av1, u: Av1| {
+        tradingflow::segment!(|data: Av1, u: Av1| {
             let keep = indicator(1.0, f64::NAN) @ (greater_than(0.0) @ u);
             multiply() @ (data, keep)
         }),

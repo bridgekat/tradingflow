@@ -25,7 +25,7 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use flowgraph::typed::{Handle, ViewPort};
+use tradingflow::graph::{Handle, ViewPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
@@ -105,8 +105,7 @@ async fn main() {
         .position(|s| s == &symbol)
         .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
-    let mut sc = Scenario::new(WallClock);
-    let clk = sc.time();
+    let mut sc = Scenario::new(WallClock, Instant::MIN);
 
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
@@ -191,7 +190,7 @@ async fn main() {
     let cf_ann = sc.push(annualize(), cf); // [change]
     let cash_flow = sc.push(select(vec![0], 0, true), cf_ann);
 
-    let net_profit_series = sc.push(record(&clk), net_profit);
+    let net_profit_series = sc.push(record(), net_profit);
     let net_profit_ttm = sc.push(
         rolling_mean(Window::TimeDelta(Duration::from_days(365))),
         net_profit_series,
@@ -202,23 +201,23 @@ async fn main() {
     let roe = sc.push(divide(), (net_profit_ttm, parent_equity));
 
     let records = [
-        sc.push(record(&clk), market_cap),
-        sc.push(record(&clk), assets),
-        sc.push(record(&clk), equity_val),
-        sc.push(record(&clk), parent_equity),
-        sc.push(record(&clk), op_income),
-        sc.push(record(&clk), net_profit),
-        sc.push(record(&clk), cash_flow),
-        sc.push(record(&clk), ep),
-        sc.push(record(&clk), bp),
-        sc.push(record(&clk), roe),
+        sc.push(record(), market_cap),
+        sc.push(record(), assets),
+        sc.push(record(), equity_val),
+        sc.push(record(), parent_equity),
+        sc.push(record(), op_income),
+        sc.push(record(), net_profit),
+        sc.push(record(), cash_flow),
+        sc.push(record(), ep),
+        sc.push(record(), bp),
+        sc.push(record(), roe),
     ];
 
     // ------------------------------------------------------------------
     // Run.
     // ------------------------------------------------------------------
     let mut session = sc.build();
-    let total = session.estimated_event_count();
+    let total = session.total_num_events();
     session.run(common::progress(total, Instant::MIN)).await;
     eprintln!();
 

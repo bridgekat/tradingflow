@@ -41,10 +41,10 @@ if (-not $homeMatch) { throw "Could not read `home` from $venv\pyvenv.cfg" }
 $base = $homeMatch.Matches[0].Groups[1].Value.Trim()
 if ($env:PATH -notlike "*$base*") { $env:PATH = "$base;$env:PATH" }
 
-# (3) RUNTIME - make the `flowops` operator package (in `python/`) and the venv's
+# (3) RUNTIME - make the `tradingflow` operator package (in `python/`) and the venv's
 #     site-packages importable by the embedded interpreter. PyO3 does NOT
 #     auto-activate the venv, so site-packages must be added explicitly here
-#     (otherwise: ModuleNotFoundError for numpy / cvxpy / flowops).
+#     (otherwise: ModuleNotFoundError for numpy / cvxpy / tradingflow).
 $env:PYTHONPATH = (Join-Path $repo 'python') + ';' + (Join-Path $venv 'Lib\site-packages')
 
 # (4) RUNTIME - disable OpenBLAS's INTERNAL threading (`OPENBLAS_NUM_THREADS=1`).

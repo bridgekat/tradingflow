@@ -53,7 +53,7 @@ pub struct CommonArgs {
     #[arg(long = "sample-begin", value_name = "DATE", value_parser = parse_date_days)]
     pub sample_begin: Option<i64>,
 
-    /// Worker threads for the flowgraph `Pool` (0 = serial). `> 0` lets
+    /// Worker threads for the engine's `Pool` (0 = serial). `> 0` lets
     /// independent solve-bound operators (e.g. one cvxpy portfolio per
     /// risk-aversion) overlap via GIL release.
     #[arg(long, default_value_t = 0)]

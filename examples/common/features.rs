@@ -1,7 +1,7 @@
 //! Cross-sectional feature panels: the canonical 7-factor set and the CICC
 //! handbook catalogs, each stacked into `(N, F)` and recorded on the daily pulse.
 
-use flowgraph::typed::{Handle, RefPort};
+use tradingflow::graph::{Handle, RefPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
@@ -31,11 +31,10 @@ fn stack_and_record(
     handles: Vec<AvH>,
     retention: Retention,
 ) -> Features {
-    let clk = sc.time();
     let refs = ref_array_views(sc, &handles);
     let stacked = sc.push(stack(1), &refs[..]);
     let sampled = sc.push(resample_view(), (st.adjusted_close, stacked));
-    let series = sc.push(record_bounded(&clk, retention), sampled);
+    let series = sc.push(record_bounded(retention), sampled);
     Features {
         names,
         handles,
@@ -55,18 +54,17 @@ pub fn build_features(
     feature_retention: Retention,
 ) -> Features {
     let win_ret = Retention::count(window + RETAIN_MARGIN);
-    let clk = sc.time();
 
     // Fundamentals.
     let market_cap = sc.push(multiply(), (st.close, st.total_shares));
     let bp = sc.push(divide(), (st.parent_equity, market_cap));
     // TTM net profit: a self-recording 365-day rolling mean.
-    let net_profit_ttm = sc.push(ma_time(&clk, Duration::from_days(365)), st.net_profit);
+    let net_profit_ttm = sc.push(ma_time(Duration::from_days(365)), st.net_profit);
     let ttm_roe = sc.push(divide(), (net_profit_ttm, st.parent_equity));
 
     // Momentum: window-period log return of adjusted close.
     let log_adj = sc.push(log(), st.adjusted_close);
-    let log_adj_series = sc.push(record_bounded(&clk, win_ret), log_adj);
+    let log_adj_series = sc.push(record_bounded(win_ret), log_adj);
     let log_adj_lag = sc.push(lag_series(window, f64::NAN), log_adj_series);
     let momentum = sc.push(subtract(), (log_adj, log_adj_lag));
 
@@ -76,10 +74,10 @@ pub fn build_features(
 
     // Turnover MA (self-recording).
     let turnover = sc.push(divide(), (st.volume, st.circ_shares));
-    let turnover_ma = sc.push(ma(&clk, window), turnover);
+    let turnover_ma = sc.push(ma(window), turnover);
 
     // Volume ratio (self-recording MA).
-    let volume_ma = sc.push(ma(&clk, window), st.volume);
+    let volume_ma = sc.push(ma(window), st.volume);
     let volume_ratio = sc.push(divide(), (st.volume, volume_ma));
 
     let p = 0.01;
