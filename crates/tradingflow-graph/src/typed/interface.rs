@@ -48,11 +48,13 @@ pub struct ViewPort<V>(PhantomData<V>);
 ///
 /// Wire-compatible with `ViewPort<V>` slot by slot: each element wires against
 /// a plain `ViewPort<V>` producer, and each element of a `ViewPorts` *output*
-/// can feed a single-`ViewPort` consumer. The wire planes hold pointers to N
-/// views scattered across the producers' scratch, so deserialization gathers
-/// them (a per-element `V::View` copy -- a small `Copy` struct, never the data
-/// it views) into the consuming node's input scratch and lends the payload
-/// from there as one contiguous slice.
+/// can feed a single-`ViewPort` consumer. On input, the wire planes hold
+/// pointers to N views scattered across the producers' storage, so
+/// deserialization gathers them (a per-element `V::View` copy -- a small
+/// `Copy` struct, never the data it views) into the consuming node's input
+/// scratch and lends the payload from there as one contiguous slice. On
+/// output, the payload slice is already the views' contiguous home, so the
+/// wire simply carries each element's address (no scratch).
 pub struct ViewPorts<V>(PhantomData<V>);
 
 /// A single by-reference leaf over a [`ValueView`] `V`: passes `&'a V::View<'a>`
@@ -153,10 +155,10 @@ pub unsafe trait Interface {
     /// shape. Called once per node at build.
     fn new_in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch;
 
-    /// Construct the output scratch, initially empty/uninitialized: output
-    /// shapes are only known after the first run, so variadic leaves allocate
-    /// theirs inside [`values_to_vecs`](Self::values_to_vecs). Called once per
-    /// node at build.
+    /// Construct the output scratch (uninitialized storage: it is written
+    /// before every read, by [`values_to_vecs`](Self::values_to_vecs) /
+    /// [`values_to_flat`](Self::values_to_flat)). Called once per node at
+    /// build.
     fn new_out_scratch() -> Self::OutScratch;
 
     /// Construct the nested payload tree by consuming the two parallel wire
@@ -438,19 +440,21 @@ pub type Port<T> = ViewPort<Scalar<T>>;
 // (matching what a single `ViewPort<V>` consumer expects and what a single
 // `ViewPort<V>` producer emits), so a group wires against by-value producers.
 // Deserialization gathers the N pointed-to views into the `InScratch` buffer
-// (sized once from the shape at build, overwritten in place each run) and
-// lends the payload slice from there; serialization homes the N views in the
-// `OutScratch` buffer (sized once by `values_to_vecs`) slot by slot, exactly
-// like N independent `ViewPort`s. The `'static` typing of both buffers is
-// storage-only, per the [`ValueView`] covariance contract; views are `Copy`,
-// so in-place overwrites drop nothing.
+// (sized once from the shape at build, overwritten in place each run; its
+// `'static` typing is storage-only, per the [`ValueView`] covariance contract,
+// and views are `Copy`, so in-place overwrites drop nothing) and lends the
+// payload slice from there. Serialization needs no scratch: the payload slice
+// itself is the contiguous home of the N views — element `i`'s thin pointer
+// is just `&values.1[i]` — and the producer keeps that storage stable for the
+// generation (state / arena / its own `InScratch`), exactly the discipline
+// [`RefViewPorts`] outputs already require.
 unsafe impl<V: ValueView> Interface for ViewPorts<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
     type Values<'a> = (&'a [bool], &'a [V::View<'a>]);
     type InScratch = Box<[MaybeUninit<V::View<'static>>]>;
-    type OutScratch = Box<[MaybeUninit<V::View<'static>>]>;
+    type OutScratch = ();
 
     #[inline]
     fn flat_len(shape: &mut FlatRead<usize>) -> usize {
@@ -469,9 +473,7 @@ where
     }
 
     #[inline]
-    fn new_out_scratch() -> Self::OutScratch {
-        Box::new_uninit_slice(0)
-    }
+    fn new_out_scratch() -> Self::OutScratch {}
 
     #[inline]
     unsafe fn values_from_flat<'a>(
@@ -506,42 +508,32 @@ where
     #[inline]
     fn values_to_flat<'a>(
         values: Self::Values<'a>,
-        scratch: &mut Self::OutScratch,
+        _scratch: &mut Self::OutScratch,
         flags: &mut FlatWrite<bool>,
         ptrs: &mut FlatWrite<*const ()>,
     ) {
         let (f, v) = values;
         debug_assert!(f.len() == v.len(), "ViewPorts planes disagree on length");
-        assert!(
-            v.len() == scratch.len(),
-            "output shape changed since build (ViewPorts length differs from first run)"
-        );
         flags.extend(f);
-        for (slot, &view) in scratch.iter_mut().zip(v) {
-            // SAFETY: as in `ViewPort::values_to_flat`.
-            unsafe { slot.as_mut_ptr().cast::<V::View<'a>>().write(view) };
-            ptrs.push(std::ptr::from_ref(slot).cast());
+        for view in v {
+            ptrs.push(std::ptr::from_ref(view).cast());
         }
     }
 
     #[inline]
     fn values_to_vecs<'a>(
         values: Self::Values<'a>,
-        scratch: &mut Self::OutScratch,
+        _scratch: &mut Self::OutScratch,
         shape: &mut Vec<usize>,
         flags: &mut Vec<bool>,
         ptrs: &mut Vec<*const ()>,
     ) {
         let (f, v) = values;
         debug_assert!(f.len() == v.len(), "ViewPorts planes disagree on length");
-        // The once-per-node build call sizes the output scratch.
-        *scratch = Box::new_uninit_slice(v.len());
         shape.push(v.len());
         flags.extend_from_slice(f);
-        for (slot, &view) in scratch.iter_mut().zip(v) {
-            // SAFETY: as in `ViewPort::values_to_vecs`.
-            unsafe { slot.as_mut_ptr().cast::<V::View<'a>>().write(view) };
-            ptrs.push(std::ptr::from_ref(slot).cast());
+        for view in v {
+            ptrs.push(std::ptr::from_ref(view).cast());
         }
     }
 
