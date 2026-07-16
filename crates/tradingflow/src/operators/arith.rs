@@ -25,7 +25,7 @@
 //! the one parameter annotation):
 //!
 //! ```ignore
-//! tradingflow::segment!(|x: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<bool, 1>> {
+//! tradingflow::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
 //!     let d = subtract() @ (ma(10) @ x, ma(5) @ x);
 //!     and() @ (greater_than(0.0) @ d, not() @ (greater_than(0.0) @ lag(1) @ d))
 //! })
@@ -41,10 +41,10 @@ use std::ops;
 
 use num_traits::{Float, Signed};
 
-use crate::graph::{Operator, ViewPort};
+use crate::graph::Operator;
 
 use crate::data::array::{apply_binary, apply_unary};
-use crate::operators::op::ArrayValue;
+use crate::operators::op::ArrayPort;
 use crate::{Array, ArrayView, Instant, Scalar};
 
 // ===========================================================================
@@ -76,8 +76,8 @@ pub struct UnaryMapState<T: Scalar, U: Scalar, const N: usize, F> {
 impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T) -> U + Send + Sync + 'static> Operator
     for UnaryMap<T, U, N, F>
 {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<U, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<U, N>;
     type Context = Instant;
     type State = UnaryMapState<T, U, N, F>;
 
@@ -145,8 +145,8 @@ pub struct BinaryMapState<T: Scalar, U: Scalar, const N: usize, F> {
 impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T, T) -> U + Send + Sync + 'static> Operator
     for BinaryMap<T, U, N, F>
 {
-    type Inputs = (ViewPort<ArrayValue<T, N>>, ViewPort<ArrayValue<T, N>>);
-    type Outputs = ViewPort<ArrayValue<U, N>>;
+    type Inputs = (ArrayPort<T, N>, ArrayPort<T, N>);
+    type Outputs = ArrayPort<U, N>;
     type Context = Instant;
     type State = BinaryMapState<T, U, N, F>;
 
@@ -391,12 +391,8 @@ impl<T: Scalar, const N: usize> Default for Choose<T, N> {
 }
 
 impl<T: Scalar, const N: usize> Operator for Choose<T, N> {
-    type Inputs = (
-        ViewPort<ArrayValue<bool, N>>,
-        ViewPort<ArrayValue<T, N>>,
-        ViewPort<ArrayValue<T, N>>,
-    );
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = (ArrayPort<bool, N>, ArrayPort<T, N>, ArrayPort<T, N>);
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = Array<T, N>;
 

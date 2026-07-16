@@ -25,15 +25,15 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::graph::{Handle, ViewPort};
+use tradingflow::graph::Handle;
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    ArrayValue, Window, annualize, as_view, divide, filter, map, multiply, negate, record,
+    ArrayPort, Window, annualize, as_view, divide, filter, map, multiply, negate, record,
     rolling_mean, select,
 };
 use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
-use tradingflow::{Array, ArrayView, Instant, Series};
+use tradingflow::{Array, ArrayView, Instant, SeriesView};
 use tradingflow::{Scenario, WallClock};
 
 const COLS: [&str; 10] = [
@@ -68,9 +68,9 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
 /// all-NaN "no data" ticks.
 fn pick(
     sc: &mut Scenario,
-    panel: Handle<ViewPort<ArrayValue<f64, 2>>>,
+    panel: Handle<ArrayPort<f64, 2>>,
     i: usize,
-) -> Handle<ViewPort<ArrayValue<f64, 1>>> {
+) -> Handle<ArrayPort<f64, 1>> {
     let sel = sc.push(select(vec![i], 0, true), panel);
     sc.push(
         filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
@@ -110,10 +110,7 @@ async fn main() {
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
-    let daily = |sc: &mut Scenario,
-                 kind: &str,
-                 cols: Vec<String>|
-     -> Handle<ViewPort<ArrayValue<f64, 1>>> {
+    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ArrayPort<f64, 1>> {
         let s =
             ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
         let panel = sc.add_source(s);
@@ -124,7 +121,7 @@ async fn main() {
                   kind: &str,
                   cols: Vec<String>,
                   with_report_date: bool|
-     -> Handle<ViewPort<ArrayValue<f64, 1>>> {
+     -> Handle<ArrayPort<f64, 1>> {
         let s = ParquetFinancialReportPanelSource::new(
             format!("{data_dir}/{kind}.parquet"),
             cols,
@@ -223,13 +220,13 @@ async fn main() {
 
     let mut rows: BTreeMap<i64, [f64; 10]> = BTreeMap::new();
     for (c, h) in records.iter().enumerate() {
-        let series: &Series<f64, 0> = session.ref_view(*h);
+        let series: SeriesView<f64, 0> = session.view(*h);
         for (ts, v) in series.timestamps().iter().zip(series.values().iter()) {
             rows.entry(ts.as_nanos()).or_insert([f64::NAN; 10])[c] = *v;
         }
     }
 
-    let n_mc = session.ref_view(records[0]).len();
+    let n_mc = session.view(records[0]).len();
     if n_mc == 0 {
         eprintln!("no data for {symbol}");
         std::process::exit(1);

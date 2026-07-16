@@ -7,10 +7,10 @@ use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
-use crate::graph::{Interface, Operator, RefPort, Segment, ViewPort};
+use crate::graph::{Interface, Operator, RefPort, Segment};
 
 use super::gating::Clocked;
-use super::op::ArrayValue;
+use super::op::ArrayPort;
 use crate::{Array, ArrayView, Instant, Scalar};
 
 /// Identity passthrough: clones input to output unchanged. Generic over the
@@ -103,8 +103,8 @@ pub struct WhereState<T: Scalar, F, const N: usize> {
 impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static, const N: usize> Operator
     for Where<T, F, N>
 {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = WhereState<T, F, N>;
 
@@ -175,8 +175,8 @@ where
     S: Scalar + Copy + AsPrimitive<T>,
     T: Scalar + Copy + 'static,
 {
-    type Inputs = ViewPort<ArrayValue<S, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<S, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = Array<T, N>;
 
@@ -313,8 +313,8 @@ impl<T: Scalar, const N: usize> Default for ResampleView<T, N> {
 // (only the clock's fires it), which the `Operator` any-notify gate cannot
 // express.
 impl<T: Scalar, const N: usize> Segment for ResampleView<T, N> {
-    type Inputs = (ViewPort<ArrayValue<T, 1>>, ViewPort<ArrayValue<T, N>>);
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = (ArrayPort<T, 1>, ArrayPort<T, N>);
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = ResampleViewState<T, N>;
 
@@ -360,8 +360,8 @@ impl<T: Scalar, const N: usize> Default for ResampleClocked<T, N> {
 }
 
 impl<T: Scalar, const N: usize> Segment for ResampleClocked<T, N> {
-    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = ResampleViewState<T, N>;
 

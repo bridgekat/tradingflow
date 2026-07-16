@@ -2,20 +2,21 @@
 //! axis, `OUT == IN + 1`), `Concat`/`ConcatSync` (N → 1 along an **existing**
 //! axis, rank-preserving), and [`Split`] (1 → N row fan-out, `OUT == IN - 1`).
 //!
-//! In the view currency every multi-input combine takes
-//! `RefViewPorts<ArrayValue<T, IN>>` (a slice of strided views), so the old
-//! owned/view operator split has collapsed into a single set of operators. The
-//! combine into the output cross-section is
+//! In the view currency every multi-input combine takes `ArrayPorts<T, IN>`
+//! (a contiguous slice of by-value strided views, wired straight from a slice
+//! of independent [`ArrayPort`] handles), so the old owned/view operator split
+//! has collapsed into a single set of operators and no value↔reference
+//! bridging exists anywhere. The combine into the output cross-section is
 //! the irreducible panel→cross-section data movement (each input materialized
 //! via `to_contiguous`); the per-stock selections upstream stay copy-free
 //! ([`SliceView`](super::SliceView)).
 
 use num_traits::Float;
 
-use crate::graph::{Interface, Operator, RefViewPorts, Segment, ViewPort};
+use crate::graph::{Interface, Operator, Segment};
 use bumpalo::Bump;
 
-use super::op::ArrayValue;
+use super::op::{ArrayPort, ArrayPorts};
 use crate::data::array::Shape;
 use crate::{Array, ArrayView, Instant, Scalar};
 
@@ -34,7 +35,7 @@ pub struct ReshapeState<T: Scalar, const OUT: usize> {
 #[inline(always)]
 fn interleaved_copy_views<T: Scalar, const IN: usize>(
     output: &mut [T],
-    inputs: &[&ArrayView<T, IN>],
+    inputs: &[ArrayView<T, IN>],
     n_inputs: usize,
     outer_count: usize,
     chunk_size: usize,
@@ -54,7 +55,7 @@ fn interleaved_copy_views<T: Scalar, const IN: usize>(
 #[inline(always)]
 fn interleaved_copy_views_selective<T: Scalar, const IN: usize>(
     output: &mut [T],
-    inputs: &[&ArrayView<T, IN>],
+    inputs: &[ArrayView<T, IN>],
     positions: impl IntoIterator<Item = usize>,
     n_inputs: usize,
     outer_count: usize,
@@ -110,8 +111,8 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Stack<T, IN, OUT> {
 }
 
 impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Stack<T, IN, OUT> {
-    type Inputs = RefViewPorts<ArrayValue<T, IN>>;
-    type Outputs = ViewPort<ArrayValue<T, OUT>>;
+    type Inputs = ArrayPorts<T, IN>;
+    type Outputs = ArrayPort<T, OUT>;
     type Context = Instant;
     type State = ReshapeState<T, OUT>;
 
@@ -127,7 +128,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Stack<T, IN, OUT
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, views): (&'a [bool], &'a [&'a ArrayView<'a, T, IN>]),
+        (_, views): (&'a [bool], &'a [ArrayView<'a, T, IN>]),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -154,7 +155,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Stack<T, IN, OUT
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (&'a [bool], &'a [&'a ArrayView<'a, T, IN>]),
+        _: (&'a [bool], &'a [ArrayView<'a, T, IN>]),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, OUT>) {
@@ -180,8 +181,8 @@ impl<T: Scalar + Float, const IN: usize, const OUT: usize> StackSync<T, IN, OUT>
 }
 
 impl<T: Scalar + Float, const IN: usize, const OUT: usize> Operator for StackSync<T, IN, OUT> {
-    type Inputs = RefViewPorts<ArrayValue<T, IN>>;
-    type Outputs = ViewPort<ArrayValue<T, OUT>>;
+    type Inputs = ArrayPorts<T, IN>;
+    type Outputs = ArrayPort<T, OUT>;
     type Context = Instant;
     type State = ReshapeState<T, OUT>;
 
@@ -197,7 +198,7 @@ impl<T: Scalar + Float, const IN: usize, const OUT: usize> Operator for StackSyn
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (flags, views): (&'a [bool], &'a [&'a ArrayView<'a, T, IN>]),
+        (flags, views): (&'a [bool], &'a [ArrayView<'a, T, IN>]),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -232,7 +233,7 @@ impl<T: Scalar + Float, const IN: usize, const OUT: usize> Operator for StackSyn
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (&'a [bool], &'a [&'a ArrayView<'a, T, IN>]),
+        _: (&'a [bool], &'a [ArrayView<'a, T, IN>]),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, OUT>) {
@@ -261,8 +262,8 @@ impl<T: Scalar, const N: usize> Concat<T, N> {
 }
 
 impl<T: Scalar, const N: usize> Operator for Concat<T, N> {
-    type Inputs = RefViewPorts<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPorts<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = ReshapeState<T, N>;
 
@@ -278,7 +279,7 @@ impl<T: Scalar, const N: usize> Operator for Concat<T, N> {
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (_, views): (&'a [bool], &'a [&'a ArrayView<'a, T, N>]),
+        (_, views): (&'a [bool], &'a [ArrayView<'a, T, N>]),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -306,7 +307,7 @@ impl<T: Scalar, const N: usize> Operator for Concat<T, N> {
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (&'a [bool], &'a [&'a ArrayView<'a, T, N>]),
+        _: (&'a [bool], &'a [ArrayView<'a, T, N>]),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
@@ -332,8 +333,8 @@ impl<T: Scalar + Float, const N: usize> ConcatSync<T, N> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for ConcatSync<T, N> {
-    type Inputs = RefViewPorts<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPorts<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = ReshapeState<T, N>;
 
@@ -349,7 +350,7 @@ impl<T: Scalar + Float, const N: usize> Operator for ConcatSync<T, N> {
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
-        (flags, views): (&'a [bool], &'a [&'a ArrayView<'a, T, N>]),
+        (flags, views): (&'a [bool], &'a [ArrayView<'a, T, N>]),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -385,7 +386,7 @@ impl<T: Scalar + Float, const N: usize> Operator for ConcatSync<T, N> {
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
-        _: (&'a [bool], &'a [&'a ArrayView<'a, T, N>]),
+        _: (&'a [bool], &'a [ArrayView<'a, T, N>]),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
@@ -412,10 +413,10 @@ fn self_axis_ok(axis: usize, rank: usize, allow_equal: bool) -> bool {
 /// matches.
 ///
 /// **Zero-copy**: each output is a strided [`ArrayView`] of the input's row,
-/// re-derived from the fresh input every invocation and lent through the
-/// per-generation [`Bump`](bumpalo::Bump) arena (the multi-output kind needs
-/// by-reference homing) —
-/// no row data is copied. All rows notify exactly when the input notifies.
+/// re-derived from the fresh input every invocation, by value; only the
+/// per-generation notify/view *planes* live in the [`Bump`](bumpalo::Bump)
+/// arena — no row data is copied. All rows notify exactly when the input
+/// notifies, and each row handle is an ordinary [`ArrayPort`] producer.
 ///
 /// Implements [`Segment`] directly: views cannot be re-lent through `&State`, so
 /// every invocation rebuilds the planes and expresses the gate in the flags.
@@ -443,8 +444,8 @@ pub struct SplitState {
 }
 
 impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT> {
-    type Inputs = ViewPort<ArrayValue<T, IN>>;
-    type Outputs = RefViewPorts<ArrayValue<T, OUT>>;
+    type Inputs = ArrayPort<T, IN>;
+    type Outputs = ArrayPorts<T, OUT>;
     type Context = Instant;
     type State = SplitState;
 
@@ -483,11 +484,9 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
         state.arena.reset();
         let alloc: &'a Bump = &state.arena;
         let flags = alloc.alloc_slice_fill_iter(std::iter::repeat_n(notified && !init, n));
-        let views =
-            alloc
-                .alloc_slice_fill_iter((0..n).map(|i| {
-                    &*alloc.alloc(ArrayView::from_parts(&data[i * strd[0]..], row_shape))
-                }));
+        let views = alloc.alloc_slice_fill_iter(
+            (0..n).map(|i| ArrayView::from_parts(&data[i * strd[0]..], row_shape)),
+        );
         (&*flags, &*views)
     }
 }
@@ -519,7 +518,7 @@ pub fn concat_sync<T: Scalar + Float, const N: usize>(axis: usize) -> ConcatSync
     ConcatSync::new(axis)
 }
 
-/// Split a rank-`IN` array into `axis_size` rank-`OUT` by-reference view rows.
+/// Split a rank-`IN` array into `axis_size` rank-`OUT` by-value view rows.
 pub fn split<T: Scalar, const IN: usize, const OUT: usize>(axis_size: usize) -> Split<T, IN, OUT> {
     Split::new(axis_size)
 }

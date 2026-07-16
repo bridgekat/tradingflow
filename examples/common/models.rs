@@ -15,7 +15,7 @@
 
 use tradingflow::graph::RefPort;
 
-use tradingflow::operators::{PyClassOperator, PyParams, py_class_operator};
+use tradingflow::operators::{PyClassOperator, PyParams, SeriesPort, py_class_operator};
 use tradingflow::{Array, Series};
 
 // ===========================================================================
@@ -25,8 +25,8 @@ use tradingflow::{Array, Series};
 /// A predictor's inputs: `(universe, feature panel history, target history)`.
 pub type PredictorIn = (
     RefPort<Array<f64, 1>>,
-    RefPort<Series<f64, 2>>,
-    RefPort<Series<f64, 1>>,
+    SeriesPort<f64, 2>,
+    SeriesPort<f64, 1>,
 );
 
 /// A mean predictor: `(N,)` expected returns.
@@ -50,14 +50,8 @@ pub type MeanVarPortfolio = PyClassOperator<
 >;
 
 /// The rolling market beta/alpha metric: `(clock, strategy log-returns, index log-returns)`.
-pub type RegressionCoefficients = PyClassOperator<
-    (
-        RefPort<()>,
-        RefPort<Series<f64, 0>>,
-        RefPort<Series<f64, 1>>,
-    ),
-    1,
->;
+pub type RegressionCoefficients =
+    PyClassOperator<(RefPort<()>, SeriesPort<f64, 0>, SeriesPort<f64, 1>), 1>;
 
 /// The GMV realized-variance metric: `(covariance, raw returns)` → scalar.
 pub type MinimumVariance = PyClassOperator<(RefPort<Array<f64, 2>>, RefPort<Array<f64, 1>>), 0>;

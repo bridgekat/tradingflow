@@ -38,7 +38,7 @@
 
 use tradingflow::graph::{Handle, ViewPort};
 
-use tradingflow::operators::ArrayValue;
+use tradingflow::operators::ArrayPort;
 
 // These modules wrap `tradingflow` operators (`PyClassOperator`), so they only
 // compile with the `python` feature. Their consumers (the strategy examples,
@@ -85,6 +85,6 @@ pub use strategy::{
 pub const RETAIN_MARGIN: usize = 8;
 
 /// A rank-1 cross-sectional array view port — the `[num_stocks]` panel currency.
-pub type Av1 = ViewPort<ArrayValue<f64, 1>>;
+pub type Av1 = ArrayPort<f64, 1>;
 /// A rank-1 cross-sectional array view handle (a `[num_stocks]` panel handle).
 pub type AvH = Handle<Av1>;

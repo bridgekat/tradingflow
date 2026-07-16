@@ -1,12 +1,12 @@
 //! The stacked cross-sectional market panel: parquet sources → `[num_stocks]`
 //! per-field panels, via one fused per-stock segment.
 
-use tradingflow::graph::{Handle, RefViewPort, ViewPort};
+use tradingflow::graph::Handle;
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    ArrayValue, annualize, apply, as_view, deref_array_view, forward_adjust, gate, multiply,
-    ref_array_views, select, slice_view, split, stack, stack_sync,
+    ArrayPort, annualize, apply, as_view, forward_adjust, gate, multiply, select, slice_view,
+    split, stack, stack_sync,
 };
 use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
 use tradingflow::{Array, ArrayView, Scenario};
@@ -80,20 +80,19 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     // look-ahead-safe point-in-time a backtest may use them (`use_effective_date`).
     // Panel sources emit a whole-array `RefPort<Array<f64, 2>>`; bridge to the
     // view currency with `as_view` so the rank-2 panel feeds `Split`.
-    let daily_panel = |sc: &mut Scenario,
-                       kind: &str,
-                       cols: Vec<String>|
-     -> Handle<ViewPort<ArrayValue<f64, 2>>> {
-        let s = ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
-            .with_time_range(start, end);
-        let h = sc.add_source(s);
-        sc.push(as_view(), h)
-    };
+    let daily_panel =
+        |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ArrayPort<f64, 2>> {
+            let s =
+                ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
+                    .with_time_range(start, end);
+            let h = sc.add_source(s);
+            sc.push(as_view(), h)
+        };
     let report_panel = |sc: &mut Scenario,
                         kind: &str,
                         cols: Vec<String>,
                         with_report_date: bool|
-     -> Handle<ViewPort<ArrayValue<f64, 2>>> {
+     -> Handle<ArrayPort<f64, 2>> {
         let s = ParquetFinancialReportPanelSource::new(
             format!("{dir}/{kind}.parquet"),
             cols,
@@ -179,17 +178,17 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     let income_rows = sc.push(split(n), income_panel);
     let cashflow_rows = sc.push(split(n), cashflow_panel);
 
-    let mut close_v = Vec::with_capacity(n);
-    let mut volume_v = Vec::with_capacity(n);
-    let mut adj_close_v = Vec::with_capacity(n);
-    let mut adjusts_v = Vec::with_capacity(n);
-    let mut total_v = Vec::with_capacity(n);
-    let mut circ_v = Vec::with_capacity(n);
-    let mut peq_v = Vec::with_capacity(n);
-    let mut income_v = Vec::with_capacity(n); // annualized [profit, operating, revenue, cost]
-    let mut bal_v = Vec::with_capacity(n); // [assets, liab, current_assets, current_liab, cash]
-    let mut cf_v = Vec::with_capacity(n); // annualized [operating, investing, financing]
-    let mut px_v = Vec::with_capacity(n); // daily [open, high, low, amount]
+    let mut closes = Vec::with_capacity(n);
+    let mut volumes = Vec::with_capacity(n);
+    let mut adjusted_closes = Vec::with_capacity(n);
+    let mut adjust_factors = Vec::with_capacity(n);
+    let mut totals = Vec::with_capacity(n);
+    let mut circs = Vec::with_capacity(n);
+    let mut parent_equities = Vec::with_capacity(n);
+    let mut incomes = Vec::with_capacity(n); // annualized [profit, operating, revenue, cost]
+    let mut balances = Vec::with_capacity(n); // [assets, liab, current_assets, current_liab, cash]
+    let mut cashflows = Vec::with_capacity(n); // annualized [operating, investing, financing]
+    let mut price_extras = Vec::with_capacity(n); // daily [open, high, low, amount]
 
     for i in 0..n {
         // The whole per-stock transform chain, fused into ONE graph node via
@@ -213,36 +212,33 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         // a squeezing column `Select` recovers each field as `(N,)`.
         // Per-stock scalar fields are rank-0 `[]` views; grouped fields
         // (`prices_extras` [4], `income_ann` [4], `balance_extras` [7], `cf_ann`
-        // [3]) are rank-1 `[K]` views. Each `Split` row is a by-reference
-        // `RefViewPort<ArrayValue<f64, 1>>`; `DerefArrayView` re-derives it as the
-        // by-value `ViewPort` the `Gate`/view operators consume.
-        let seg = tradingflow::segment!(|prices_row: RefViewPort<ArrayValue<f64, 1>>,
-                                       div_row: RefViewPort<ArrayValue<f64, 1>>,
-                                       equity_row: RefViewPort<ArrayValue<f64, 1>>,
-                                       balance_row: RefViewPort<ArrayValue<f64, 1>>,
-                                       income_row: RefViewPort<ArrayValue<f64, 1>>,
-                                       cashflow_row: RefViewPort<ArrayValue<f64, 1>>|
+        // [3]) are rank-1 `[K]` views. Each `Split` row is an ordinary by-value
+        // `ArrayPort<f64, 1>`, consumed directly by the `Gate`/view operators.
+        let seg = tradingflow::segment!(|prices_row: ArrayPort<f64, 1>,
+                                       div_row: ArrayPort<f64, 1>,
+                                       equity_row: ArrayPort<f64, 1>,
+                                       balance_row: ArrayPort<f64, 1>,
+                                       income_row: ArrayPort<f64, 1>,
+                                       cashflow_row: ArrayPort<f64, 1>|
             -> (
-            ViewPort<ArrayValue<f64, 0>>, // close
-            ViewPort<ArrayValue<f64, 0>>, // volume
-            ViewPort<ArrayValue<f64, 0>>, // adjusted_close
-            ViewPort<ArrayValue<f64, 0>>, // adjusts
-            ViewPort<ArrayValue<f64, 0>>, // total_shares
-            ViewPort<ArrayValue<f64, 0>>, // circ_shares
-            ViewPort<ArrayValue<f64, 0>>, // parent_equity
-            ViewPort<ArrayValue<f64, 1>>, // income_ann [4]
-            ViewPort<ArrayValue<f64, 1>>, // balance_extras [7]
-            ViewPort<ArrayValue<f64, 1>>, // cf_ann [3]
-            ViewPort<ArrayValue<f64, 1>>  // prices_extras [4]
+            ArrayPort<f64, 0>, // close
+            ArrayPort<f64, 0>, // volume
+            ArrayPort<f64, 0>, // adjusted_close
+            ArrayPort<f64, 0>, // adjusts
+            ArrayPort<f64, 0>, // total_shares
+            ArrayPort<f64, 0>, // circ_shares
+            ArrayPort<f64, 0>, // parent_equity
+            ArrayPort<f64, 1>, // income_ann [4]
+            ArrayPort<f64, 1>, // balance_extras [7]
+            ArrayPort<f64, 1>, // cf_ann [3]
+            ArrayPort<f64, 1>  // prices_extras [4]
         ) {
-            // Each `Split` row is a by-reference `RefViewPort`; `DerefArrayView`
-            // re-derives the by-value `ViewPort` the `Gate` consumes.
-            let prices = gate(any_finite) @ deref_array_view() @ prices_row; // [close, volume, open, high, low, amount]
-            let dividends = gate(any_finite) @ deref_array_view() @ div_row; // [share, cash]
-            let equity = gate(any_finite) @ deref_array_view() @ equity_row; // [total, circulating]
-            let balance = gate(any_finite) @ deref_array_view() @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
-            let income = gate(any_finite) @ deref_array_view() @ income_row; // [year, doy, profit, operating, revenue, cost]
-            let cashflow = gate(any_finite) @ deref_array_view() @ cashflow_row; // [year, doy, operating, investing, financing]
+            let prices = gate(any_finite) @ prices_row; // [close, volume, open, high, low, amount]
+            let dividends = gate(any_finite) @ div_row; // [share, cash]
+            let equity = gate(any_finite) @ equity_row; // [total, circulating]
+            let balance = gate(any_finite) @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
+            let income = gate(any_finite) @ income_row; // [year, doy, profit, operating, revenue, cost]
+            let cashflow = gate(any_finite) @ cashflow_row; // [year, doy, operating, investing, financing]
             // Terminal column picks stay zero-copy views (`SliceView`) into the
             // retaining `Gate`'s stable storage; squeezing one index drops the
             // axis (rank-1 row → rank-0 scalar). `close` feeds `ForwardAdjust` /
@@ -257,7 +253,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             let total_shares = slice_view(vec![0], 0, true) @ equity;
             let circ_shares = slice_view(vec![1], 0, true) @ equity;
             // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).
-            let parent_equity = apply::<ViewPort<ArrayValue<f64, 1>>, f64, 0, _>(
+            let parent_equity = apply::<ArrayPort<f64, 1>, f64, 0, _>(
                 |a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous()[..3].iter().sum::<f64>()),
             ) @ balance;
             // Annualized income / cash flows (YTD → Annualize) and the balance
@@ -304,51 +300,38 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             ),
         );
 
-        close_v.push(close);
-        volume_v.push(volume);
-        adj_close_v.push(adjusted_close);
-        adjusts_v.push(adjusts);
-        total_v.push(total_shares);
-        circ_v.push(circ_shares);
-        peq_v.push(parent_equity);
-        income_v.push(income_ann);
-        bal_v.push(balance_extras);
-        cf_v.push(cf_ann);
-        px_v.push(prices_extras);
+        closes.push(close);
+        volumes.push(volume);
+        adjusted_closes.push(adjusted_close);
+        adjust_factors.push(adjusts);
+        totals.push(total_shares);
+        circs.push(circ_shares);
+        parent_equities.push(parent_equity);
+        incomes.push(income_ann);
+        balances.push(balance_extras);
+        cashflows.push(cf_ann);
+        price_extras.push(prices_extras);
     }
 
-    // The per-stock segment outputs are by-value `ViewPort` handles; the carry
-    // joins (`Stack`/`StackSync`) consume by-reference `RefViewPort` rows, so
-    // bridge each vector through `RefArrayView` (the value→reference adapter — the
-    // engine has none inside `segment!`) before stacking.
-    let income_refs = ref_array_views(sc, &income_v);
-    let bal_refs = ref_array_views(sc, &bal_v);
-    let cf_refs = ref_array_views(sc, &cf_v);
-    let px_refs = ref_array_views(sc, &px_v);
-    let close_refs = ref_array_views(sc, &close_v);
-    let volume_refs = ref_array_views(sc, &volume_v);
-    let adj_close_refs = ref_array_views(sc, &adj_close_v);
-    let adjusts_refs = ref_array_views(sc, &adjusts_v);
-    let total_refs = ref_array_views(sc, &total_v);
-    let circ_refs = ref_array_views(sc, &circ_v);
-    let peq_refs = ref_array_views(sc, &peq_v);
+    // The per-stock segment outputs are by-value `ArrayPort` handles; the carry
+    // joins (`Stack`/`StackSync`) take a slice of them directly.
 
     // Cross-sectional grouped panels (rank-1 `[K]` rows → rank-2 `[N, K]`); a
     // squeezing column `Select` (axis 1) recovers each field as rank-1 `[N]`.
-    let income_xs = sc.push(stack::<f64, 1, 2>(0), &income_refs[..]); // (N, 4)
-    let balance_xs = sc.push(stack::<f64, 1, 2>(0), &bal_refs[..]); // (N, 7)
-    let cf_xs = sc.push(stack::<f64, 1, 2>(0), &cf_refs[..]); // (N, 3)
-    let px_xs = sc.push(stack_sync::<f64, 1, 2>(0), &px_refs[..]); // (N, 4) [open, high, low, amount]
+    let income_xs = sc.push(stack::<f64, 1, 2>(0), &incomes[..]); // (N, 4)
+    let balance_xs = sc.push(stack::<f64, 1, 2>(0), &balances[..]); // (N, 7)
+    let cf_xs = sc.push(stack::<f64, 1, 2>(0), &cashflows[..]); // (N, 3)
+    let px_xs = sc.push(stack_sync::<f64, 1, 2>(0), &price_extras[..]); // (N, 4) [open, high, low, amount]
 
     Stacked {
         // Per-stock scalars (rank-0) → rank-1 `[N]` cross-sections.
-        close: sc.push(stack_sync(0), &close_refs[..]),
-        volume: sc.push(stack_sync(0), &volume_refs[..]),
-        adjusted_close: sc.push(stack_sync(0), &adj_close_refs[..]),
-        adjusts: sc.push(stack(0), &adjusts_refs[..]),
-        total_shares: sc.push(stack(0), &total_refs[..]),
-        circ_shares: sc.push(stack(0), &circ_refs[..]),
-        parent_equity: sc.push(stack(0), &peq_refs[..]),
+        close: sc.push(stack_sync(0), &closes[..]),
+        volume: sc.push(stack_sync(0), &volumes[..]),
+        adjusted_close: sc.push(stack_sync(0), &adjusted_closes[..]),
+        adjusts: sc.push(stack(0), &adjust_factors[..]),
+        total_shares: sc.push(stack(0), &totals[..]),
+        circ_shares: sc.push(stack(0), &circs[..]),
+        parent_equity: sc.push(stack(0), &parent_equities[..]),
         net_profit: sc.push(select(vec![0], 1, true), income_xs),
         operating_profit: sc.push(select(vec![1], 1, true), income_xs),
         revenue: sc.push(select(vec![2], 1, true), income_xs),

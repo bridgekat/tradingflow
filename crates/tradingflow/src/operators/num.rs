@@ -15,9 +15,9 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::graph::{Operator, ViewPort};
+use crate::graph::Operator;
 
-use crate::operators::op::ArrayValue;
+use crate::operators::op::ArrayPort;
 use crate::{Array, ArrayView, Instant, Scalar};
 
 // ---------------------------------------------------------------------------
@@ -45,8 +45,8 @@ pub struct ClampState<T: Scalar, const N: usize> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Clamp<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = ClampState<T, N>;
 
@@ -111,8 +111,8 @@ pub struct FillnaState<T: Scalar, const N: usize> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Fillna<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = FillnaState<T, N>;
 
@@ -178,8 +178,8 @@ impl<T: Scalar + Float, const N: usize> Default for ForwardFill<T, N> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for ForwardFill<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     // The output buffer doubles as the fill memory: cells keep their last
     // non-NaN value across ticks because the state persists.
     type Context = Instant;
@@ -248,8 +248,8 @@ pub struct DiffState<T: Scalar + Float, const N: usize> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Diff<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = DiffState<T, N>;
 
@@ -319,8 +319,8 @@ pub struct PctChangeState<T: Scalar + Float, const N: usize> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for PctChange<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = PctChangeState<T, N>;
 
@@ -395,8 +395,8 @@ pub struct GaussianizeState<T: Scalar + Float, const N: usize> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Gaussianize<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = GaussianizeState<T, N>;
 
@@ -540,8 +540,8 @@ pub struct PercentileState<T: Scalar + Float, const N: usize> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Percentile<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = PercentileState<T, N>;
 
@@ -627,8 +627,8 @@ impl<T: Scalar + Float, const N: usize> Default for Standardize<T, N> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Standardize<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = Array<T, N>;
 
@@ -736,8 +736,8 @@ pub struct WinsorizeState<T: Scalar + Float, const N: usize> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = WinsorizeState<T, N>;
 

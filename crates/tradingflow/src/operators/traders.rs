@@ -11,20 +11,20 @@
 //!
 //! Each takes the five `[num_stocks]` array views
 //! `(positions, close, adjusts, upper_limit, lower_limit)` as a 5-tuple of
-//! `ViewPort<ArrayValue<f64, 1>>`, and outputs `[2]` = `[holdings_value, cash]`.
+//! `ArrayPort<f64, 1>`, and outputs `[2]` = `[holdings_value, cash]`.
 //! Only the **positions** notify flag is consulted (one-tick-delayed execution).
 
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use crate::graph::{Operator, ViewPort};
+use crate::graph::Operator;
 
-use super::op::ArrayValue;
+use super::op::ArrayPort;
 use crate::{Array, ArrayView, Instant};
 
 /// A single `[num_stocks]` view port — the per-input edge of every trader.
-type Vp = ViewPort<ArrayValue<f64, 1>>;
+type Vp = ArrayPort<f64, 1>;
 /// The five trader inputs `(positions, close, adjusts, upper, lower)`.
 type TraderInputs = (Vp, Vp, Vp, Vp, Vp);
 /// The five trader input values as `(notify, view)` pairs.

@@ -5,8 +5,8 @@ use tradingflow::graph::{Handle, RefPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    Window, divide, lag_series, log, ma, ma_time, multiply, percentile, record_bounded,
-    ref_array_views, resample_view, rolling_variance, sqrt, stack, subtract, winsorize,
+    SeriesPort, Window, divide, lag_series, log, ma, ma_time, multiply, percentile, record_bounded,
+    resample_view, rolling_variance, sqrt, stack, subtract, winsorize,
 };
 use tradingflow::{Retention, Scenario, Series};
 
@@ -19,7 +19,7 @@ pub struct Features {
     pub names: Vec<String>,
     pub handles: Vec<AvH>,
     /// Trading-day-aligned `Record` of the `(num_stocks, n_features)` panel.
-    pub series: Handle<RefPort<Series<f64, 2>>>,
+    pub series: Handle<SeriesPort<f64, 2>>,
 }
 
 /// Stack feature columns into `(N, F)`, resample onto the daily close pulse, and
@@ -31,8 +31,7 @@ fn stack_and_record(
     handles: Vec<AvH>,
     retention: Retention,
 ) -> Features {
-    let refs = ref_array_views(sc, &handles);
-    let stacked = sc.push(stack(1), &refs[..]);
+    let stacked = sc.push(stack(1), &handles[..]);
     let sampled = sc.push(resample_view(), (st.adjusted_close, stacked));
     let series = sc.push(record_bounded(retention), sampled);
     Features {

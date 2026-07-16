@@ -16,7 +16,8 @@
 use tradingflow::graph::{Handle, RefPort};
 
 use tradingflow::operators::{
-    PyClassOperator, PyParams, as_view, benchmark, map, own, py_class_operator, record, turnover,
+    PyClassOperator, PyParams, SeriesPort, as_view, benchmark, map, own, py_class_operator, record,
+    turnover,
 };
 use tradingflow::{Array, ArrayView, Scenario, Series};
 
@@ -29,11 +30,11 @@ pub const NUM_GROUPS: usize = 10;
 /// Recorded NAV / turnover series for the decile portfolios and the benchmark.
 pub struct DecileBacktest {
     /// Per-decile NAV series (group 0 = lowest factor value … group 9 = highest).
-    pub decile_nav: Vec<Handle<RefPort<Series<f64, 0>>>>,
+    pub decile_nav: Vec<Handle<SeriesPort<f64, 0>>>,
     /// Per-decile turnover series (L1 weight change per rebalance).
-    pub decile_turnover: Vec<Handle<RefPort<Series<f64, 0>>>>,
+    pub decile_turnover: Vec<Handle<SeriesPort<f64, 0>>>,
     /// Equal-weight-universe benchmark NAV series.
-    pub bench_nav: Handle<RefPort<Series<f64, 0>>>,
+    pub bench_nav: Handle<SeriesPort<f64, 0>>,
 }
 
 /// One `RankBucket(low, high)` portfolio → `Benchmark` trader → `(NAV record,

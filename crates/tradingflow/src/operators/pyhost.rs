@@ -11,8 +11,8 @@
 //! ```
 //!
 //! `inputs` is a tuple of **views** — [`NativeArrayView`] for `Array<f64>` cells
-//! and [`NativeSeriesView`] for `Series<f64>` cells (history), `None` for unit
-//! (clock) inputs. `output` is a writable array view, `timestamp` is TAI
+//! and [`NativeSeriesView`] for recorded-history windows (`SeriesPort` edges),
+//! `None` for unit (clock) inputs. `output` is a writable array view, `timestamp` is TAI
 //! nanoseconds (the graph's ambient event time), `produced` is a `tuple[bool, ...]`
 //! parallel to `inputs`, and `state` is a Python object carried across ticks.
 //!
@@ -22,10 +22,11 @@
 //!
 //! # Heterogeneous inputs
 //!
-//! The engine's typed interfaces are trees of `RefPort<T>` leaves, runtime-length
-//! `RefPorts<T>` groups, and tuples, so an operator's input shape is its concrete
+//! The engine's typed interfaces are trees of port leaves (`RefPort<T>` /
+//! `SeriesPort<T>`), runtime-length groups (`RefPorts<T>` / `SeriesPorts<T>`),
+//! and tuples, so an operator's input shape is its concrete
 //! [`Interface`] type, e.g.
-//! `(RefPort<Array<f64>>, RefPort<Series<f64>>, RefPort<Series<f64>>)` for a predictor or
+//! `(RefPort<Array<f64>>, SeriesPort<f64>, SeriesPort<f64>)` for a predictor or
 //! `RefPorts<Array<f64>>` for an all-array operator. The [`PyArgs`] trait walks
 //! that type's refs to build the view tuple + produced bools in one pass. (An
 //! erased enum input would have to clone growing `Series` each tick — `PyArgs`
@@ -106,7 +107,8 @@ use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 
 use crate::graph::{Interface, InterfaceHandles, Operator, RefPort, RefPorts};
 
-use crate::{Array, Instant, Series};
+use crate::operators::op::{SeriesPort, SeriesPorts};
+use crate::{Array, Instant, SeriesView};
 
 // ===========================================================================
 // NativeArrayView — Python-visible view over a cell's `Array<f64, N>`
@@ -225,12 +227,12 @@ impl NativeArrayView {
 // NativeSeriesView — Python-visible view over a cell's `Series<f64>` (history)
 // ===========================================================================
 
-/// Read-only view over a graph cell's `Series<f64, N>`: positional history
-/// access (logical indices) matching the legacy Python `SeriesView`. Valid
-/// only during the call that created it. Rank-erased like
-/// [`NativeArrayView`]: the per-leaf [`PyArgs`] impl knows the concrete rank
-/// `N` at the bind site and captures the retained window's raw parts plus the
-/// logical bookkeeping there, so a single non-generic pyclass serves every
+/// Read-only view over a recorded-history window (a [`SeriesView`] carried by
+/// a `SeriesPort` edge): positional history access with **window-local**
+/// indices (`0` is the oldest retained row). Valid only during the call that
+/// created it. Rank-erased like [`NativeArrayView`]: the per-leaf [`PyArgs`]
+/// impl knows the concrete rank `N` at the bind site and captures the
+/// window's raw parts there, so a single non-generic pyclass serves every
 /// rank.
 #[pyclass]
 pub struct NativeSeriesView {
@@ -374,18 +376,21 @@ impl NativeSeriesView {
 }
 
 impl NativeSeriesView {
-    /// Bind a view over a `Series<f64, N>` cell. The concrete rank `N` is
-    /// known at the call site, so the static extents and the retained window's
-    /// raw parts are read here; the pyclass itself is rank-erased.
+    /// Bind a view over a recorded-history window ([`SeriesView`]). The
+    /// concrete rank `N` is known at the call site, so the static extents and
+    /// the window's raw parts are read here; the pyclass itself is
+    /// rank-erased. A `SeriesView` carries no logical bookkeeping, so indices
+    /// are **window-local** (`base` is always 0: index `0` is the oldest
+    /// retained row).
     fn bind<'py, const N: usize>(
         py: Python<'py>,
-        s: &Series<f64, N>,
+        s: SeriesView<'_, f64, N>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let view = NativeSeriesView {
             values: s.values().as_ptr(),
             timestamps: s.timestamps().as_ptr(),
-            retained: s.retained_len(),
-            base: s.base(),
+            retained: s.len(),
+            base: 0,
             stride: s.stride(),
             extents: s.extents().to_vec(),
         };
@@ -429,7 +434,7 @@ impl<const N: usize> PyArgs for RefPort<Array<f64, N>> {
     }
 }
 
-impl<const N: usize> PyArgs for RefPort<Series<f64, N>> {
+impl<const N: usize> PyArgs for SeriesPort<f64, N> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
@@ -485,7 +490,7 @@ impl<const N: usize> PyArgs for RefPorts<Array<f64, N>> {
     }
 }
 
-impl<const N: usize> PyArgs for RefPorts<Series<f64, N>> {
+impl<const N: usize> PyArgs for SeriesPorts<f64, N> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
@@ -495,15 +500,10 @@ impl<const N: usize> PyArgs for RefPorts<Series<f64, N>> {
         let (flags, values) = refs;
         debug_assert!(
             flags.len() == values.len(),
-            "RefPorts refs planes disagree on length"
+            "SeriesPorts refs planes disagree on length"
         );
         for (i, &value) in values.iter().enumerate() {
-            <RefPort<Series<f64, N>> as PyArgs>::append_views(
-                py,
-                (flags[i], value),
-                views,
-                produced,
-            )?;
+            <SeriesPort<f64, N> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
         }
         Ok(())
     }
@@ -649,7 +649,7 @@ fn resolve_operator<'py>(
 }
 
 /// A class-based Python operator over input ports `I` (e.g. `RefPorts<Array<f64,
-/// 1>>` or `(RefPort<Array<f64, 1>>, RefPort<Series<f64>>, RefPort<Series<f64>>)`)
+/// 1>>` or `(RefPort<Array<f64, 1>>, SeriesPort<f64>, SeriesPort<f64>)`)
 /// producing a rank-`NO` array output. Load its definition from a `.py` file, an
 /// importable module, or an inline source; each defines `build(**kwargs)` (called
 /// with [`PyParams`]) or binds `__op__`.
@@ -881,9 +881,9 @@ mod tests {
     use crate::graph::Pool;
     use crate::graph::{Builder, RefPort, RefPorts, RefSource};
 
+    use crate::Array;
     use crate::Instant;
-    use crate::operators::{AsView, Record};
-    use crate::{Array, Series};
+    use crate::operators::{AsView, Record, SeriesPort};
 
     /// A small stateful operator over one Array input (L1 turnover), used here
     /// purely as a from_source `PyClassOperator` fixture. Raw string at column 0
@@ -971,7 +971,7 @@ __op__ = HistDot()
         let series = b.push(Record::new(), feed_v);
         let out = b.push(
             // Scalar output (`vec![]`), so NO = 0.
-            PyClassOperator::<(RefPort<Array<f64, 1>>, RefPort<Series<f64, 1>>), 0>::from_source(
+            PyClassOperator::<(RefPort<Array<f64, 1>>, SeriesPort<f64, 1>), 0>::from_source(
                 HIST_DOT,
                 PyParams::new(),
                 vec![],
@@ -1069,8 +1069,8 @@ def build(scale=1.0):
             // Output is the (N,) prediction → NO = 1 (the default).
             PyClassOperator::<(
                 RefPort<Array<f64, 1>>,
-                RefPort<Series<f64, 2>>,
-                RefPort<Series<f64, 1>>,
+                SeriesPort<f64, 2>,
+                SeriesPort<f64, 1>,
             )>::from_module(
                 "tradingflow.predictors.mean.linear_regression",
                 PyParams::new()

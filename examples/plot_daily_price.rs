@@ -19,14 +19,14 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::graph::{Handle, RefSource, ViewPort};
+use tradingflow::graph::{Handle, RefSource};
 
 use tradingflow::operators::{
-    ArrayValue, Window, add, as_view, filter, forward_adjust, multiply, record, rolling_mean,
+    ArrayPort, Window, add, as_view, filter, forward_adjust, multiply, record, rolling_mean,
     rolling_variance, select, sqrt, subtract,
 };
 use tradingflow::sources::ParquetPanelSource;
-use tradingflow::{Array, ArrayView, Instant, Series};
+use tradingflow::{Array, ArrayView, Instant, SeriesView};
 use tradingflow::{Scenario, WallClock};
 
 const WINDOW: usize = 252;
@@ -52,9 +52,9 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
 /// all-NaN "no data" ticks.
 fn pick(
     sc: &mut Scenario,
-    panel: Handle<ViewPort<ArrayValue<f64, 2>>>,
+    panel: Handle<ArrayPort<f64, 2>>,
     i: usize,
-) -> Handle<ViewPort<ArrayValue<f64, 1>>> {
+) -> Handle<ArrayPort<f64, 1>> {
     let sel = sc.push(select(vec![i], 0, true), panel);
     sc.push(
         filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
@@ -150,12 +150,12 @@ async fn main() {
     eprintln!();
 
     // Align the recorded scalar series by timestamp and write a wide CSV.
-    let cols: [(&str, &Series<f64, 0>); 5] = [
-        ("adj_close", session.ref_view(h_adj)),
-        ("ma", session.ref_view(h_ma)),
-        ("upper", session.ref_view(h_upper)),
-        ("lower", session.ref_view(h_lower)),
-        ("volume", session.ref_view(h_vol)),
+    let cols: [(&str, SeriesView<f64, 0>); 5] = [
+        ("adj_close", session.view(h_adj)),
+        ("ma", session.view(h_ma)),
+        ("upper", session.view(h_upper)),
+        ("lower", session.view(h_lower)),
+        ("volume", session.view(h_vol)),
     ];
     let mut rows: BTreeMap<i64, [f64; 5]> = BTreeMap::new();
     for (c, (_, series)) in cols.iter().enumerate() {
@@ -164,7 +164,7 @@ async fn main() {
         }
     }
 
-    let n = session.ref_view(h_adj).len();
+    let n = session.view(h_adj).len();
     if n == 0 {
         eprintln!("no data for {symbol}");
         std::process::exit(1);

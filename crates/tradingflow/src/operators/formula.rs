@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! let signal = sc.push(
-//!     tradingflow::segment!(|x: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<bool, 1>> {
+//!     tradingflow::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
 //!         let d = subtract() @ (ma(10) @ x, ma(5) @ x);
 //!         and() @ (greater_than(0.0) @ d, not() @ (greater_than(0.0) @ lag(1) @ d))
 //!     }),
@@ -62,12 +62,12 @@
 //! the examples' long-standing slack). For exotic cadences, fall back to the
 //! hoisted idiom with an explicit [`Retention`].
 
-use crate::graph::{Comp, Fork, Id, Right, ViewPort};
+use crate::graph::{Comp, Fork, Id, Right};
 use num_traits::Float;
 
 use super::arith::{BinaryFn, UnaryFn, divide, sqrt, subtract};
 use super::gating::Record;
-use super::op::ArrayValue;
+use super::op::ArrayPort;
 use super::rolling::{Ema, RollingMean, RollingSum, RollingVariance};
 use super::transform::Lag;
 use crate::{Duration, Instant, Retention, Scalar};
@@ -90,7 +90,7 @@ pub type Windowed<T, const N: usize, O> = Comp<Record<T, N>, O>;
 /// Fan-out of the live value and its private [`lag`], chained into a combiner
 /// `O` — the [`change`] / [`growth`] shape.
 pub type WithLagged<T, const N: usize, O> =
-    Comp<Fork<Id<ViewPort<ArrayValue<T, N>>, Instant>, Windowed<T, N, Lag<T, N>>>, O>;
+    Comp<Fork<Id<ArrayPort<T, N>, Instant>, Windowed<T, N, Lag<T, N>>>, O>;
 
 /// An unbounded [`Record`] of the input stream: `record() @ x` appends
 /// every notified value of `x`, stamped with event time. Prefer
@@ -189,13 +189,7 @@ pub fn growth<T: Scalar + Float, const N: usize>(
 ) -> WithLagged<
     T,
     N,
-    Comp<
-        Fork<
-            BinaryFn<T, N>,
-            Right<ViewPort<ArrayValue<T, N>>, ViewPort<ArrayValue<T, N>>, Instant>,
-        >,
-        BinaryFn<T, N>,
-    >,
+    Comp<Fork<BinaryFn<T, N>, Right<ArrayPort<T, N>, ArrayPort<T, N>, Instant>>, BinaryFn<T, N>>,
 > {
     Comp(
         Fork(Id::default(), lag(n)),

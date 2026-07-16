@@ -10,7 +10,7 @@
 //!   passthrough) or [`Segment`](crate::graph::Segment) (custom gating, e.g.
 //!   [`Clocked`]) **directly** — no TradingFlow-side operator trait or bridge.
 //!   Array-shaped edges carry a strided [`ArrayView`](crate::ArrayView) by value
-//!   through `ViewPort<ArrayValue<T, N>>`; output buffers live in each operator's
+//!   through `ArrayPort<T, N>`; output buffers live in each operator's
 //!   `State` (an owned [`Array<T, N>`](crate::Array)) and `compute` lends a view
 //!   of it. The `init == true` build call sizes/seeds buffers from the build-time
 //!   input values without running per-tick side effects (see [`op`] for the
@@ -59,7 +59,9 @@ mod transform;
 #[cfg(feature = "python")]
 mod pyhost;
 
-pub use op::{ArrayValue, StripNotify};
+pub use op::{
+    ArrayPort, ArrayPorts, ArrayViewMarker, SeriesPort, SeriesPorts, SeriesViewMarker, StripNotify,
+};
 
 pub use arith::{
     Binary, BinaryFn, BinaryMap, Choose, Compare, CompareFn, Predicate, PredicateFn, Unary,
@@ -96,9 +98,9 @@ pub use structural::{
 };
 pub use traders::{Benchmark, RandomTrader, SimpleTrader, benchmark, random_trader, simple_trader};
 pub use transform::{
-    Apply, ApplyInplace, AsView, DerefArrayView, Lag, Map, MapInplace, Own, RefArrayView, Select,
-    SliceView, apply, apply_inplace, as_view, deref_array_view, lag_series, map, map_inplace, own,
-    ref_array_view, ref_array_views, select, select_along_axis, select_flat, slice_view,
+    Apply, ApplyInplace, AsView, Lag, Map, MapInplace, Own, Select, SliceView, apply,
+    apply_inplace, as_view, lag_series, map, map_inplace, own, select, select_along_axis,
+    select_flat, slice_view,
 };
 
 #[cfg(feature = "python")]

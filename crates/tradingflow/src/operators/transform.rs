@@ -10,12 +10,11 @@
 
 use std::marker::PhantomData;
 
-use crate::graph::{Interface, Operator, RefPort, RefViewPort, Segment, ViewPort};
-use bumpalo::Bump;
+use crate::graph::{Interface, Operator, RefPort, Segment};
 
-use super::op::{ArrayValue, StripNotify};
+use super::op::{ArrayPort, SeriesPort, StripNotify};
 use crate::data::array::Shape;
-use crate::{Array, ArrayView, Instant, Scalar, Series};
+use crate::{Array, ArrayView, Instant, Scalar, SeriesView};
 
 // ---------------------------------------------------------------------------
 // Map / MapInplace (single input)
@@ -52,8 +51,8 @@ impl<SI: Scalar, const NI: usize, SO: Scalar, const NO: usize, F> Operator
 where
     F: for<'a> Fn(ArrayView<'a, SI, NI>) -> Array<SO, NO> + Send + Sync + 'static,
 {
-    type Inputs = ViewPort<ArrayValue<SI, NI>>;
-    type Outputs = ViewPort<ArrayValue<SO, NO>>;
+    type Inputs = ArrayPort<SI, NI>;
+    type Outputs = ArrayPort<SO, NO>;
     type Context = Instant;
     type State = MapState<SO, NO, F>;
 
@@ -121,8 +120,8 @@ impl<SI: Scalar, const NI: usize, SO: Scalar, const NO: usize, F> Operator
 where
     F: for<'a> Fn(ArrayView<'a, SI, NI>, &mut Array<SO, NO>) -> bool + Send + Sync + 'static,
 {
-    type Inputs = ViewPort<ArrayValue<SI, NI>>;
-    type Outputs = ViewPort<ArrayValue<SO, NO>>;
+    type Inputs = ArrayPort<SI, NI>;
+    type Outputs = ArrayPort<SO, NO>;
     type Context = Instant;
     type State = MapInplaceState<SO, NO, F>;
 
@@ -203,7 +202,7 @@ where
     F: for<'a> Fn(<I as StripNotify>::Plain<'a>) -> Array<SO, NO> + Send + Sync + 'static,
 {
     type Inputs = I;
-    type Outputs = ViewPort<ArrayValue<SO, NO>>;
+    type Outputs = ArrayPort<SO, NO>;
     type Context = Instant;
     type State = ApplyState<SO, NO, F>;
 
@@ -283,7 +282,7 @@ where
         + 'static,
 {
     type Inputs = I;
-    type Outputs = ViewPort<ArrayValue<SO, NO>>;
+    type Outputs = ArrayPort<SO, NO>;
     type Context = Instant;
     type State = ApplyInplaceState<SO, NO, F>;
 
@@ -390,8 +389,8 @@ pub struct SelectState<T: Scalar, const OUT: usize> {
 }
 
 impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Select<T, IN, OUT> {
-    type Inputs = ViewPort<ArrayValue<T, IN>>;
-    type Outputs = ViewPort<ArrayValue<T, OUT>>;
+    type Inputs = ArrayPort<T, IN>;
+    type Outputs = ArrayPort<T, OUT>;
     type Context = Instant;
     type State = SelectState<T, OUT>;
 
@@ -545,8 +544,8 @@ pub struct SliceViewState {
 }
 
 impl<T: Scalar, const IN: usize, const OUT: usize> Segment for SliceView<T, IN, OUT> {
-    type Inputs = ViewPort<ArrayValue<T, IN>>;
-    type Outputs = ViewPort<ArrayValue<T, OUT>>;
+    type Inputs = ArrayPort<T, IN>;
+    type Outputs = ArrayPort<T, OUT>;
     type Context = Instant;
     type State = SliceViewState;
 
@@ -610,7 +609,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for SliceView<T, IN, 
 // ---------------------------------------------------------------------------
 
 /// Bridge a `RefPort<Array<T, N>>` (a whole-array reference — e.g. a source cell
-/// or a `RefSource`) into the `ViewPort<ArrayValue<T, N>>` view currency by
+/// or a `RefSource`) into the `ArrayPort<T, N>` view currency by
 /// lending a contiguous [`ArrayView`] of it **by value**, zero-copy. Like
 /// [`SliceView`], the view is re-derived from the fresh input each generation,
 /// so it implements [`Segment`] and forwards the input's notify.
@@ -634,7 +633,7 @@ impl<T: Scalar, const N: usize> Default for AsView<T, N> {
 
 impl<T: Scalar, const N: usize> Segment for AsView<T, N> {
     type Inputs = RefPort<Array<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = ();
 
@@ -648,113 +647,6 @@ impl<T: Scalar, const N: usize> Segment for AsView<T, N> {
         init: bool,
     ) -> (bool, ArrayView<'a, T, N>) {
         (notified && !init, arr.view())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// RefArrayView / DerefArrayView (the ViewPort <-> RefViewPort bridges)
-// ---------------------------------------------------------------------------
-
-/// Bridge a by-value `ViewPort<ArrayValue<T, N>>` into a by-reference
-/// `RefViewPort<ArrayValue<T, N>>` — the adapter that lets independently-produced
-/// view handles (e.g. separate feature columns) be collected into the
-/// `&[RefViewPort]` slice the carry-join combines ([`Stack`](super::Stack) /
-/// [`StackSync`](super::StackSync) / [`Concat`](super::Concat)) consume.
-///
-/// There is no value↔reference adapter inside [`segment!`](crate::segment) (it forwards
-/// values positionally), and an `Operator::State: 'static` cannot store an
-/// `ArrayView<'a>` — so the engine's only *intrinsic* producer of by-reference
-/// view rows is [`Split`](super::Split) (via a per-generation [`Bump`](bumpalo::Bump) arena). This is
-/// the rank-preserving, single-handle counterpart: each `compute` homes the input
-/// view — a `Copy` fat pointer already pointing at the upstream's stable storage,
-/// valid for the generation lifetime `'a` — in its own arena and lends back
-/// `&'a ArrayView`. The arena holds only the view struct, so no array data is
-/// copied. It forwards the input's notify, so the no-notify⟹output-unchanged
-/// contract carries: when the input is silent the lent view still points at the
-/// upstream's last (unchanged) value. [`DerefArrayView`] is the exact inverse.
-pub struct RefArrayView<T: Scalar, const N: usize> {
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Scalar, const N: usize> RefArrayView<T, N> {
-    pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<T: Scalar, const N: usize> Default for RefArrayView<T, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Scalar, const N: usize> Segment for RefArrayView<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = RefViewPort<ArrayValue<T, N>>;
-    type Context = Instant;
-    type State = Bump;
-
-    fn init(self) -> Bump {
-        Bump::new()
-    }
-
-    #[inline(always)]
-    fn compute<'a, 'b: 'a>(
-        (notified, x): (bool, ArrayView<'a, T, N>),
-        _: &Instant,
-        arena: &'b mut Bump,
-        init: bool,
-    ) -> (bool, &'a ArrayView<'a, T, N>) {
-        arena.reset();
-        let alloc: &'a Bump = arena;
-        (notified && !init, &*alloc.alloc(x))
-    }
-}
-
-/// Re-derive a by-reference `RefViewPort<ArrayValue<T, N>>` (e.g. a
-/// [`Split`](super::Split) row, whose leaf is a `&ArrayView`) as a by-value
-/// `ViewPort<ArrayValue<T, N>>` — the zero-copy adapter that lets a by-reference
-/// view feed the by-value view operators ([`Gate`](super::Gate), [`SliceView`],
-/// the arithmetic ops, …). The inner `ArrayView` is `Copy`, so this forwards it
-/// by value; like [`SliceView`] / [`AsView`] it is a [`Segment`] re-derived from
-/// the fresh input each generation, forwarding the input's notify. It is the
-/// exact inverse of [`RefArrayView`].
-pub struct DerefArrayView<T: Scalar, const N: usize> {
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Scalar, const N: usize> DerefArrayView<T, N> {
-    pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<T: Scalar, const N: usize> Default for DerefArrayView<T, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Scalar, const N: usize> Segment for DerefArrayView<T, N> {
-    type Inputs = RefViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
-    type Context = Instant;
-    type State = ();
-
-    fn init(self) {}
-
-    #[inline(always)]
-    fn compute<'a, 'b: 'a>(
-        (notified, v): (bool, &'a ArrayView<'a, T, N>),
-        _: &Instant,
-        _state: &'b mut (),
-        init: bool,
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (notified && !init, *v)
     }
 }
 
@@ -788,7 +680,7 @@ impl<T: Scalar, const N: usize> Default for Own<T, N> {
 }
 
 impl<T: Scalar, const N: usize> Operator for Own<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
     type Outputs = RefPort<Array<T, N>>;
     type Context = Instant;
     type State = Option<Array<T, N>>;
@@ -821,8 +713,11 @@ impl<T: Scalar, const N: usize> Operator for Own<T, N> {
 // Lag (value from N steps ago in a Series)
 // ---------------------------------------------------------------------------
 
-/// Emits the `Series<T, N>` element from `offset` steps ago (else `fill`), as
-/// a rank-`N` view of its homed buffer.
+/// Emits the recorded-history element from `offset` steps ago (else `fill`),
+/// as a rank-`N` view of its homed buffer. Consumes a [`SeriesPort`] window;
+/// the look-back is relative to the window's newest row, so a
+/// retention-bounded record works as long as the bound covers `offset + 1`
+/// rows.
 #[derive(Clone)]
 pub struct Lag<T: Scalar, const N: usize> {
     offset: usize,
@@ -844,8 +739,8 @@ pub struct LagState<T: Scalar, const N: usize> {
 }
 
 impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
-    type Inputs = RefPort<Series<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = SeriesPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = LagState<T, N>;
 
@@ -858,7 +753,7 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<T, N>),
+        (_, series): (bool, SeriesView<'a, T, N>),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -878,7 +773,7 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<T, N>),
+        _: (bool, SeriesView<'a, T, N>),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
@@ -979,20 +874,6 @@ pub fn as_view<T: Scalar, const N: usize>() -> AsView<T, N> {
     AsView::new()
 }
 
-/// Bridge a by-value view into the by-reference `RefViewPort` currency the
-/// carry-join combines ([`Stack`](super::Stack) / [`Concat`](super::Concat))
-/// consume.
-pub fn ref_array_view<T: Scalar, const N: usize>() -> RefArrayView<T, N> {
-    RefArrayView::new()
-}
-
-/// The inverse of [`ref_array_view`]: re-derive a by-reference view (e.g. a
-/// [`Split`](super::Split) row) as the by-value currency the elementwise
-/// operators consume.
-pub fn deref_array_view<T: Scalar, const N: usize>() -> DerefArrayView<T, N> {
-    DerefArrayView::new()
-}
-
 /// Materialize a by-value view back into an owned whole-array
 /// `RefPort<Array<T, N>>` cell — the inverse of [`as_view`], e.g. before a
 /// whole-array consumer such as a `PyClassOperator`.
@@ -1005,17 +886,4 @@ pub fn own<T: Scalar, const N: usize>() -> Own<T, N> {
 /// (Named `_series` because `lag` is taken by its live-array counterpart.)
 pub fn lag_series<T: Scalar, const N: usize>(offset: usize, fill: T) -> Lag<T, N> {
     Lag::new(offset, fill)
-}
-
-/// Push one [`ref_array_view`] bridge per handle — the vector form, for the
-/// common `push(stack(axis), &ref_array_views(sc, &columns)[..])` shape. Takes
-/// any builder that derefs to a [`Builder`](crate::graph::Builder) (e.g. a
-/// `Scenario`).
-pub fn ref_array_views<T: Scalar, const N: usize>(
-    builder: &mut crate::graph::Builder<Instant>,
-    data: &[crate::graph::Handle<ViewPort<ArrayValue<T, N>>>],
-) -> Vec<crate::graph::Handle<RefViewPort<ArrayValue<T, N>>>> {
-    data.iter()
-        .map(|&h| builder.push(ref_array_view(), h))
-        .collect()
 }

@@ -23,7 +23,7 @@
 use tradingflow::graph::{Handle, RefPort};
 
 use tradingflow::operators::{
-    ArrayValue, and, clocked, greater_than, indicator, is_finite, map, multiply,
+    ArrayPort, and, clocked, greater_than, indicator, is_finite, map, multiply,
 };
 use tradingflow::{Array, ArrayView, Scenario};
 

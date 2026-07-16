@@ -2,9 +2,9 @@
 //! (corporate-action price adjustment, message-passing on price vs dividend
 //! inputs), over the strided [`ArrayView`] currency.
 
-use crate::graph::{Operator, ViewPort};
+use crate::graph::Operator;
 
-use super::op::ArrayValue;
+use super::op::ArrayPort;
 use crate::{Array, ArrayView, Instant};
 
 // ---------------------------------------------------------------------------
@@ -33,8 +33,8 @@ pub struct AnnualizeState {
 }
 
 impl Operator for Annualize {
-    type Inputs = ViewPort<ArrayValue<f64, 1>>;
-    type Outputs = ViewPort<ArrayValue<f64, 1>>;
+    type Inputs = ArrayPort<f64, 1>;
+    type Outputs = ArrayPort<f64, 1>;
     type Context = Instant;
     type State = AnnualizeState;
 
@@ -164,8 +164,8 @@ pub struct ForwardAdjustState<const NP: usize> {
 }
 
 impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
-    type Inputs = (ViewPort<ArrayValue<f64, NP>>, ViewPort<ArrayValue<f64, ND>>);
-    type Outputs = ViewPort<ArrayValue<f64, NP>>;
+    type Inputs = (ArrayPort<f64, NP>, ArrayPort<f64, ND>);
+    type Outputs = ArrayPort<f64, NP>;
     type Context = Instant;
     type State = ForwardAdjustState<NP>;
 

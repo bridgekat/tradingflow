@@ -4,28 +4,27 @@
 //! gating / clock / concurrent-write paths under real worker threads.
 //!
 //! [array-view-refactor] Migrated to the const-rank strided view currency: every
-//! array-shaped edge is a `ViewPort<ArrayValue<T, N>>` carrying an
+//! array-shaped edge is a `ArrayPort<T, N>` carrying an
 //! `ArrayView<'a, T, N>` by value. Sources stay whole-array `RefSource`s and are
 //! bridged into the view currency with [`AsView`]; outputs are read with
-//! `g.view(h).contiguous_slice()` (view edges) or `g.ref_view(h)` (Series edges).
+//! `g.view(h).contiguous_slice()` (view edges) or `g.view(h)` (`SeriesView` edges).
 //! Arithmetic uses the lowercase free constructors (`add`/`negate`/…); the
 //! rank-changers carry explicit out-rank generics.
 
-use crate::graph::{Builder, Handle, Pool, RefSource, RefViewPort, SourceHandle, ViewPort};
+use crate::graph::{Builder, Handle, Pool, RefSource, SourceHandle};
 
 use super::*;
-use crate::operators::op::ArrayValue;
-use crate::{Array, ArrayView, Duration, Instant, Retention, Series};
+use crate::operators::op::ArrayPort;
+use crate::{Array, ArrayView, Duration, Instant, Retention, SeriesView};
 
 fn ts(n: i64) -> Instant {
     Instant::from_nanos(n)
 }
 
-/// A rank-`N` view port — the array edge currency.
-type Vp<const N: usize> = ViewPort<ArrayValue<f64, N>>;
-/// A rank-`N` by-reference view port — the leaf kind that feeds the carry-join
-/// combine operators ([`Stack`] / [`Concat`], whose inputs are `RefViewPorts`).
-type RVp<const N: usize> = RefViewPort<ArrayValue<f64, N>>;
+/// A rank-`N` view port — the array edge currency. A slice of these handles
+/// feeds the carry-join combine operators ([`Stack`] / [`Concat`], whose
+/// inputs are `ArrayPorts`) directly — no bridging.
+type Vp<const N: usize> = ArrayPort<f64, N>;
 
 /// Push a `RefSource` of a scalar plus an `AsView` bridge; return the source
 /// handle (for `state_mut`) and the view handle (for wiring).
@@ -52,40 +51,6 @@ fn vec_src(
     let s = b.push_source(RefSource::new(Array::from_vec([v.len()], v)));
     let view = b.push(as_view(), *s);
     (s, view)
-}
-
-/// Push an independent rank-0 source whose value is exposed as a **by-reference**
-/// view (`RefViewPort`) — the leaf kind the carry-join combines (`Stack` /
-/// `StackSync` / `Concat`) consume. Bridges the scalar source through [`AsView`]
-/// then [`RefArrayView`] (the value→reference adapter). Each source pokes
-/// independently, so the row notifies independently — preserving the per-element
-/// notify semantics the carry tests rely on.
-fn scalar_ref_src(
-    b: &mut Builder<Instant>,
-    v: f64,
-) -> (
-    SourceHandle<RefSource<Array<f64, 0>, Instant>>,
-    Handle<RVp<0>>,
-) {
-    let s = b.push_source(RefSource::new(Array::scalar(v)));
-    let view = b.push(as_view(), *s);
-    let refv = b.push(ref_array_view(), view);
-    (s, refv)
-}
-
-/// Like [`scalar_ref_src`] but for a rank-1 value (bridges the `[len]` source
-/// through [`AsView`] then [`RefArrayView`] — feeds `Concat`).
-fn vec_ref_src(
-    b: &mut Builder<Instant>,
-    v: Vec<f64>,
-) -> (
-    SourceHandle<RefSource<Array<f64, 1>, Instant>>,
-    Handle<RVp<1>>,
-) {
-    let s = b.push_source(RefSource::new(Array::from_vec([v.len()], v)));
-    let view = b.push(as_view(), *s);
-    let refv = b.push(ref_array_view(), view);
-    (s, refv)
 }
 
 // ===========================================================================
@@ -149,7 +114,7 @@ fn record_series() {
     *g.state_mut(hb) = Array::scalar(7.0);
     g.stabilize(&mut pool);
 
-    let s: &Series<f64, 0> = g.ref_view(rec);
+    let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.timestamps(), &[ts(1), ts(2)]);
     assert_eq!(s.values(), &[13.0, 27.0]);
@@ -175,7 +140,7 @@ fn filter_gates_record() {
         g.stabilize(&mut pool);
     }
 
-    let s: &Series<f64, 0> = g.ref_view(rec);
+    let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.values(), &[5.0, 10.0]);
     assert_eq!(s.timestamps(), &[ts(2), ts(4)]);
@@ -202,8 +167,8 @@ fn last_of_record() {
 
 /// A retention-bounded `Record` feeding `Lag` and `RollingMean` produces the
 /// same outputs as an unbounded one, across front-compaction. Exercises the
-/// engine path for logical indexing: the rolling window's `start` and `Lag`'s
-/// offset address the series by absolute (logical) index while the front is
+/// window-relative addressing: the rolling accumulator and `Lag`'s offset
+/// address the `SeriesView` relative to its newest row while the front is
 /// dropped underneath them.
 #[test]
 fn bounded_record_feeds_rolling_and_lag() {
@@ -239,23 +204,15 @@ fn bounded_record_feeds_rolling_and_lag() {
         }
     }
 
-    let s: &Series<f64, 0> = g.ref_view(rec);
-    assert_eq!(
-        s.len(),
-        m as usize,
-        "logical length preserved across compaction"
-    );
+    let s: SeriesView<f64, 0> = g.view(rec);
     assert!(
-        s.base() > 0,
-        "expected front-compaction (base={})",
-        s.base()
+        (s.len() as i64) < m,
+        "expected front-compaction (window={} of {m})",
+        s.len()
     );
-    assert!(
-        s.retained_len() <= 16,
-        "physical storage unbounded: {}",
-        s.retained_len()
-    );
+    assert!(s.len() <= 16, "physical storage unbounded: {}", s.len());
     assert_eq!(s.last(), Some([m as f64].as_slice()), "latest value intact");
+    assert_eq!(s.last_timestamp(), Some(ts(m)), "latest timestamp intact");
 }
 
 /// `scenario_run_periodic_single_input`: data [10,20,30]@[1,2,3], clock @2 only
@@ -283,7 +240,7 @@ fn clocked_periodic() {
         g.stabilize(&mut pool);
     }
 
-    let s: &Series<f64, 0> = g.ref_view(rec);
+    let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 1);
     assert_eq!(s.values(), &[20.0]);
     assert_eq!(s.timestamps(), &[ts(2)]);
@@ -308,7 +265,7 @@ fn coalesced_two_source_add() {
         g.stabilize(&mut pool);
     }
 
-    assert_eq!(g.ref_view(rec).values(), &[110.0, 220.0]);
+    assert_eq!(g.view(rec).values(), &[110.0, 220.0]);
 }
 
 /// Per-element notify: gen1 all fire → [1,2,3]; gen2 only s1 → Stack keeps stale
@@ -317,9 +274,9 @@ fn coalesced_two_source_add() {
 #[test]
 fn slice_stack_and_sync() {
     let mut b = Builder::new(Instant::MIN);
-    let (s0, s0v) = scalar_ref_src(&mut b, 0.0);
-    let (s1, s1v) = scalar_ref_src(&mut b, 0.0);
-    let (s2, s2v) = scalar_ref_src(&mut b, 0.0);
+    let (s0, s0v) = scalar_src(&mut b, 0.0);
+    let (s1, s1v) = scalar_src(&mut b, 0.0);
+    let (s2, s2v) = scalar_src(&mut b, 0.0);
     let stacked = b.push(stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let synced = b.push(stack_sync::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let mut g = b.build();
@@ -671,8 +628,8 @@ fn lag_offset_two() {
 #[test]
 fn concat_axis0() {
     let mut b = Builder::new(Instant::MIN);
-    let (a, av) = vec_ref_src(&mut b, vec![1.0_f64, 2.0]);
-    let (bb, bv) = vec_ref_src(&mut b, vec![3.0_f64, 4.0]);
+    let (a, av) = vec_src(&mut b, vec![1.0_f64, 2.0]);
+    let (bb, bv) = vec_src(&mut b, vec![3.0_f64, 4.0]);
     let cc = b.push(concat(0), &[av, bv][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -805,7 +762,7 @@ fn parallel_fanout_matches_sequential() {
     }
     for &rec in &recs {
         assert_eq!(
-            g.ref_view(rec).values(),
+            g.view(rec).values(),
             &expected[..],
             "a parallel branch diverged"
         );
@@ -861,13 +818,12 @@ fn parallel_stress_stateful_counts() {
 /// times the carry join recomputed — it advances only on panel pokes, not on an
 /// unrelated generation.
 ///
-/// [array-view-refactor] Reinterpreted: in the const-rank model a `Split` row is
-/// a `RefViewPort` (the by-reference fan-out leaf), which the carry-join combines
-/// (`Stack`) consume directly but the `ViewPort`-input operators (`Gate` /
-/// `Select` / `Count`) cannot. The original downstream `Gate → Select →
-/// Count` per-row chain is therefore not expressible; the notify-tracking intent
-/// (rows recompute with the panel, not on unrelated pokes) is preserved by
-/// counting `Stack` recomputes via a clock-stamped `Record` length instead.
+/// [array-view-refactor] Reinterpreted: a `Split` row is an ordinary by-value
+/// `ArrayPort` (since the by-value group migration it feeds `Gate` / `Select` /
+/// `Count` directly again); this test keeps the notify-tracking formulation —
+/// counting `Stack` recomputes via a clock-stamped `Record` length — which
+/// pins the same intent (rows recompute with the panel, not on unrelated
+/// pokes).
 #[test]
 fn split_rows_notify_with_panel() {
     let mut b = Builder::new(Instant::MIN);
@@ -886,28 +842,28 @@ fn split_rows_notify_with_panel() {
     let mut pool = Pool::new(0);
 
     // Build values: row views hold the initial panel rows; the record is empty.
-    assert_eq!(g.ref_view(rows[0]).to_contiguous().as_ref(), &[0.0, 0.0]);
-    assert_eq!(g.ref_view(rows[0]).extents(), [2]);
-    assert_eq!(g.ref_view(rec).len(), 0);
+    assert_eq!(g.view(rows[0]).to_contiguous().as_ref(), &[0.0, 0.0]);
+    assert_eq!(g.view(rows[0]).extents(), [2]);
+    assert_eq!(g.view(rec).len(), 0);
 
     *g.context_mut() = ts(1);
     *g.state_mut(panel) = Array::from_vec([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     g.stabilize(&mut pool);
-    assert_eq!(g.ref_view(rows[0]).to_contiguous().as_ref(), &[1.0, 2.0]);
-    assert_eq!(g.ref_view(rows[1]).to_contiguous().as_ref(), &[3.0, 4.0]);
-    assert_eq!(g.ref_view(rows[2]).to_contiguous().as_ref(), &[5.0, 6.0]);
+    assert_eq!(g.view(rows[0]).to_contiguous().as_ref(), &[1.0, 2.0]);
+    assert_eq!(g.view(rows[1]).to_contiguous().as_ref(), &[3.0, 4.0]);
+    assert_eq!(g.view(rows[2]).to_contiguous().as_ref(), &[5.0, 6.0]);
     assert_eq!(
         g.view(stacked).contiguous_slice().unwrap(),
         &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
     );
-    assert_eq!(g.ref_view(rec).len(), 1); // join recomputed once (on the panel poke)
+    assert_eq!(g.view(rec).len(), 1); // join recomputed once (on the panel poke)
 
     // Poking an unrelated source must not advance the carry-join record.
     *g.context_mut() = ts(2);
     *g.state_mut(other) = Array::scalar(1.0);
     g.stabilize(&mut pool);
     assert_eq!(
-        g.ref_view(rec).len(),
+        g.view(rec).len(),
         1,
         "unrelated poke must not recompute the join"
     );
@@ -931,11 +887,11 @@ fn split_axis_size_mismatch_panics() {
 /// no-notify⟹unchanged contract by retaining the last passed row, so their
 /// downstream cones must agree bit-for-bit.
 ///
-/// [array-view-refactor] Reinterpreted: a `Split` row is a `RefViewPort`, which
-/// cannot feed the `ViewPort`-input chain (`Gate`/`Filter`/`Select`/`SliceView`),
-/// so the per-stock row is sourced as a direct `ViewPort` (an `AsView` over a
-/// per-stock `[2]` `RefSource`) instead of a panel split. The data stream and
-/// every asserted value are unchanged — only the source boundary differs.
+/// [array-view-refactor] Reinterpreted: the per-stock row is sourced as a
+/// direct view (an `AsView` over a per-stock `[2]` `RefSource`) instead of a
+/// panel split. (A `Split` row is an ordinary by-value `ArrayPort` again, so a
+/// panel-split formulation would also work; this variant keeps the simpler
+/// source boundary.) The data stream and every asserted value are unchanged.
 #[test]
 fn view_chain_matches_owned_chain() {
     fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
@@ -1011,13 +967,8 @@ fn view_chain_matches_owned_chain() {
 /// cross-section byte-identical to the last poked value. Two equivalent joins
 /// (`Stack` and its `Stack` alias) over the same rows agree bit-for-bit.
 ///
-/// [array-view-refactor] Reinterpreted: in the const-rank model the only
-/// `RefViewPort` array producer is `Split`, and the carry-join combines
-/// (`Stack`) take `RefViewPorts` — but the `ViewPort`-input `Gate`/`Select`/
-/// `SliceView` cannot consume a `Split` row, so the original
-/// `Split → Gate → {Select, SliceView} → {Stack, Stack}` topology (per-stock
-/// gated cutoff feeding the join) is not expressible. The retained core — the
-/// carry join re-reads un-notified inputs and freezes its output across idle
+/// [array-view-refactor] Reinterpreted: the retained core — the carry join
+/// re-reads un-notified inputs and freezes its output across idle
 /// generations — is tested by stacking the `Split` rows directly and asserting
 /// the idle-generation carry. (`Stack` is now a type alias of `Stack`, so
 /// the owned-vs-view comparison is the same operator over the same inputs.)
@@ -1218,7 +1169,7 @@ fn ma_crossover_signal_fuses_into_one_node() {
 
     // The result is a single application in tail position; the crossover is a
     // rank-0 boolean edge.
-    let seg = crate::segment!(|xs: crate::graph::RefPort<Series<f64, 0>>| -> ViewPort<ArrayValue<bool, 0>> {
+    let seg = crate::segment!(|xs: crate::operators::SeriesPort<f64, 0>| -> ArrayPort<bool, 0> {
         let d = subtract() @ (
             rolling_mean(Window::Count(fast)) @ xs,
             rolling_mean(Window::Count(slow)) @ xs,
@@ -1324,7 +1275,7 @@ fn formula_ma_crossover_signal() {
     let mut b = Builder::new(Instant::MIN);
     let (src, xv) = vec_src(&mut b, vec![0.0, 0.0]);
     let signal = b.push(
-        crate::segment!(|x: Vp<1>| -> ViewPort<ArrayValue<bool, 1>> {
+        crate::segment!(|x: Vp<1>| -> ArrayPort<bool, 1> {
             let d = subtract() @ (ma(fast) @ x, ma(slow) @ x);
             and() @ (
                 greater_than(0.0) @ d,

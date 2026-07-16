@@ -2,13 +2,13 @@
 
 use tradingflow::graph::{Handle, RefPort};
 
-use tradingflow::operators::{diff, lag, map, record_bounded, winsorize};
+use tradingflow::operators::{SeriesPort, diff, lag, map, record_bounded, winsorize};
 use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
 
 use super::AvH;
 
 /// A recorded rank-1 cross-sectional series (the target / demeaned target).
-pub type SerH = Handle<RefPort<Series<f64, 1>>>;
+pub type SerH = Handle<SeriesPort<f64, 1>>;
 
 /// Cross-sectional demean preserving NaN.
 fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {

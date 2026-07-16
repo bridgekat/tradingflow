@@ -32,11 +32,10 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::graph::{Operator, RefPort, ViewPort};
+use tradingflow::graph::Operator;
 
 use tradingflow::operators::{
-    ArrayValue, lag_series, log, multiply, own, percentile, record, ref_array_views,
-    resample_clocked, stack,
+    ArrayPort, lag_series, log, multiply, own, percentile, record, resample_clocked, stack,
 };
 use tradingflow::sources::pulse;
 use tradingflow::{Array, ArrayView, Instant, Scenario, WallClock};
@@ -79,8 +78,8 @@ struct CorrMatrixState {
     out: Array<f64, 2>,
 }
 impl Operator for CorrMatrix {
-    type Inputs = ViewPort<ArrayValue<f64, 2>>;
-    type Outputs = ViewPort<ArrayValue<f64, 2>>;
+    type Inputs = ArrayPort<f64, 2>;
+    type Outputs = ArrayPort<f64, 2>;
     type Context = Instant;
     type State = CorrMatrixState;
 
@@ -219,7 +218,7 @@ fn monotonicity(anns: &[f64]) -> f64 {
     (sxy / (sxx.sqrt() * syy.sqrt())).abs()
 }
 
-type NavHandle = tradingflow::graph::Handle<RefPort<tradingflow::Series<f64, 0>>>;
+type NavHandle = tradingflow::graph::Handle<tradingflow::operators::SeriesPort<f64, 0>>;
 
 #[tokio::main]
 async fn main() {
@@ -323,9 +322,7 @@ async fn main() {
     // factor vectors into an `(N, K)` panel on the rebalance clock and reduce to a
     // `(K, K)` correlation matrix each rebalance (recorded; time-averaged below).
     let corr_handle = if args.correlations && ranks.len() >= 2 {
-        // `stack` consumes by-reference views; bridge each rank handle first.
-        let rank_refs = ref_array_views(&mut sc, &ranks);
-        let panel = sc.push(stack::<f64, 1, 2>(1), &rank_refs[..]); // (N, K)
+        let panel = sc.push(stack::<f64, 1, 2>(1), &ranks[..]); // (N, K)
         let corr = sc.push(CorrMatrix { k: ranks.len() }, panel); // (K, K)
         Some(sc.push(record(), corr))
     } else {
@@ -363,7 +360,7 @@ async fn main() {
 
     // ---- Time-averaged factor correlation matrix ------------------------
     if let Some(h) = corr_handle {
-        let s: &tradingflow::Series<f64, 2> = session.ref_view(h);
+        let s: tradingflow::SeriesView<f64, 2> = session.view(h);
         let k = ic_names.len();
         let stride = k * k;
         let nt = s.len();

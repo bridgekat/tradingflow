@@ -17,20 +17,21 @@
 //! `mmt_report_*` (earnings-announcement dates), and the 波动率 / 流动性 /
 //! 量价相关性 categories.
 
-use tradingflow::graph::{Handle, Operator, RefPort, ViewPort};
+use tradingflow::graph::{Handle, Operator};
 
 use tradingflow::operators::{
-    ArrayValue, Window, apply, diff, divide, lag_series, log, max, min, multiply, percentile,
-    record_bounded, rolling_mean, rolling_sum, rolling_variance, select, sqrt, subtract,
+    ArrayPort, SeriesPort, Window, apply, diff, divide, lag_series, log, max, min, multiply,
+    percentile, record_bounded, rolling_mean, rolling_sum, rolling_variance, select, sqrt, stack,
+    subtract,
 };
-use tradingflow::{Array, ArrayView, Instant, Retention, Scenario, Series};
+use tradingflow::{Array, ArrayView, Instant, Retention, Scenario, SeriesView};
 
 use super::factors::{FactorSet, rank_impute};
 use super::{AvH, RETAIN_MARGIN, Stacked};
 
 type H = AvH;
-type Ser = Handle<RefPort<Series<f64, 1>>>;
-type Ser2 = Handle<RefPort<Series<f64, 2>>>;
+type Ser = Handle<SeriesPort<f64, 1>>;
+type Ser2 = Handle<SeriesPort<f64, 2>>;
 
 /// Catalog records feed count-windowed reductions up to `Y` (one trading year)
 /// or the 250-day chip window; retain that deepest look-back plus the margin.
@@ -72,7 +73,7 @@ fn mul(sc: &mut Scenario, a: H, b: H) -> H {
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
     sc.push(
-        tradingflow::segment!(|x: RefPort<Series<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
+        tradingflow::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
             sqrt() @ rolling_variance(Window::Count(n)) @ x
         }),
         s,
@@ -101,27 +102,12 @@ fn rcorr(sc: &mut Scenario, x: H, y: H, n: usize) -> H {
 const M: usize = 21; // ~1 trading month
 const Y: usize = 252; // ~1 trading year
 
-/// Interleave two rank-1 `[N]` views into an owned `(N, 2)` rank-2 array (col 0
-/// from `a`, col 1 from `b`). The 2-input stack the old `Stack::new(1)` over two
-/// whole-array handles did — but those inputs are now by-value `ViewPort` views,
-/// and the native `Stack` consumes by-reference `RefViewPorts`, so there is no
-/// `ViewPort -> RefViewPort` adapter to feed it. This `Apply` builds the same
-/// `(N, 2)` cross-section the downstream `WindowReduce2`/`ChipDist` expect (their
-/// `series.at(i)` reads `[a_i, b_i]` pairs).
-fn stack2(sc: &mut Scenario, a: H, b: H) -> Handle<ViewPort<ArrayValue<f64, 2>>> {
-    sc.push(
-        apply(|(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
-            let (av, bv) = (a.to_contiguous(), b.to_contiguous());
-            let n = av.len();
-            let mut out = vec![0.0; n * 2];
-            for i in 0..n {
-                out[i * 2] = av[i];
-                out[i * 2 + 1] = bv[i];
-            }
-            Array::from_vec([n, 2], out)
-        }),
-        (a, b),
-    )
+/// Stack two rank-1 `[N]` views into an `(N, 2)` cross-section (col 0 from `a`,
+/// col 1 from `b`) — the native carry-join `Stack` along axis 1, wired straight
+/// from the two by-value view handles. The downstream `WindowReduce2`/`ChipDist`
+/// read `[a_i, b_i]` pairs per element.
+fn stack2(sc: &mut Scenario, a: H, b: H) -> Handle<ArrayPort<f64, 2>> {
+    sc.push(stack::<f64, 1, 2>(1), &[a, b])
 }
 
 // ---------------------------------------------------------------------------
@@ -140,8 +126,8 @@ struct WindowReduceState {
     out: Array<f64, 1>,
 }
 impl Operator for WindowReduce {
-    type Inputs = RefPort<Series<f64, 1>>;
-    type Outputs = ViewPort<ArrayValue<f64, 1>>;
+    type Inputs = SeriesPort<f64, 1>;
+    type Outputs = ArrayPort<f64, 1>;
     type Context = Instant;
     type State = WindowReduceState;
 
@@ -154,7 +140,7 @@ impl Operator for WindowReduce {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<f64, 1>),
+        (_, series): (bool, SeriesView<'a, f64, 1>),
         _: &Instant,
         state: &'b mut WindowReduceState,
         init: bool,
@@ -184,7 +170,7 @@ impl Operator for WindowReduce {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<f64, 1>),
+        _: (bool, SeriesView<'a, f64, 1>),
         _: &Instant,
         state: &'b WindowReduceState,
     ) -> (bool, ArrayView<'a, f64, 1>) {
@@ -243,8 +229,8 @@ struct WindowReduce2State {
     out: Array<f64, 1>,
 }
 impl Operator for WindowReduce2 {
-    type Inputs = RefPort<Series<f64, 2>>;
-    type Outputs = ViewPort<ArrayValue<f64, 1>>;
+    type Inputs = SeriesPort<f64, 2>;
+    type Outputs = ArrayPort<f64, 1>;
     type Context = Instant;
     type State = WindowReduce2State;
 
@@ -257,7 +243,7 @@ impl Operator for WindowReduce2 {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<f64, 2>),
+        (_, series): (bool, SeriesView<'a, f64, 2>),
         _: &Instant,
         state: &'b mut WindowReduce2State,
         init: bool,
@@ -287,7 +273,7 @@ impl Operator for WindowReduce2 {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<f64, 2>),
+        _: (bool, SeriesView<'a, f64, 2>),
         _: &Instant,
         state: &'b WindowReduce2State,
     ) -> (bool, ArrayView<'a, f64, 1>) {
@@ -335,8 +321,8 @@ struct ChipDistState {
     out: Array<f64, 2>,
 }
 impl Operator for ChipDist {
-    type Inputs = RefPort<Series<f64, 2>>;
-    type Outputs = ViewPort<ArrayValue<f64, 2>>;
+    type Inputs = SeriesPort<f64, 2>;
+    type Outputs = ArrayPort<f64, 2>;
     type Context = Instant;
     type State = ChipDistState;
 
@@ -348,7 +334,7 @@ impl Operator for ChipDist {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<f64, 2>),
+        (_, series): (bool, SeriesView<'a, f64, 2>),
         _: &Instant,
         state: &'b mut ChipDistState,
         init: bool,
@@ -471,7 +457,7 @@ impl Operator for ChipDist {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<f64, 2>),
+        _: (bool, SeriesView<'a, f64, 2>),
         _: &Instant,
         state: &'b ChipDistState,
     ) -> (bool, ArrayView<'a, f64, 2>) {
@@ -741,6 +727,6 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// Record a rank-2 `(N, 2)` cross-section into a `Series` (the two-channel chip /
 /// range inputs); retains the deepest count look-back the consumers read (`Y` /
 /// the 250-day chip window) plus the margin.
-fn rec_2(sc: &mut Scenario, h: Handle<ViewPort<ArrayValue<f64, 2>>>) -> Ser2 {
+fn rec_2(sc: &mut Scenario, h: Handle<ArrayPort<f64, 2>>) -> Ser2 {
     sc.push(record_bounded(Retention::count(Y + RETAIN_MARGIN)), h)
 }

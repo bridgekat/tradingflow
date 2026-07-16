@@ -27,10 +27,10 @@ mod common;
 use clap::Parser;
 
 use tradingflow::operators::{
-    as_view, benchmark, compound_return, diff, drawdown, log, random_trader, record,
-    ref_array_view, sharpe_ratio, stack,
+    as_view, benchmark, compound_return, diff, drawdown, log, random_trader, record, sharpe_ratio,
+    stack,
 };
-use tradingflow::{Retention, Scenario, Series, WallClock};
+use tradingflow::{Retention, Scenario, SeriesView, WallClock};
 
 use common::FeatureSet;
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
@@ -116,10 +116,8 @@ async fn main() {
     let log_index = sc.push(log(), index_value);
     let index_logret = sc.push(diff(), log_index);
     let strat_logret_series = sc.push(record(), strat_logret);
-    // scalar -> (1,): bridge the rank-0 view into the `RefViewPort` slice `Stack`
-    // consumes, then stack into a 1-vector.
-    let index_logret_ref = sc.push(ref_array_view(), index_logret);
-    let index_logret_vec = sc.push(stack(0), &[index_logret_ref][..]);
+    // scalar -> (1,): stack the rank-0 view handle into a 1-vector.
+    let index_logret_vec = sc.push(stack(0), &[index_logret][..]);
     let index_logret_series = sc.push(record(), index_logret_vec);
     let beta_alpha = sc.push(
         regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS),
@@ -172,7 +170,7 @@ async fn main() {
         .into_iter()
         .filter(|x| x.is_finite())
         .fold(0.0_f64, f64::min);
-    let ba = session.ref_view(h_beta_alpha) as &Series<f64, 1>;
+    let ba: SeriesView<f64, 1> = session.view(h_beta_alpha);
     let (beta, alpha) = ba
         .values()
         .rchunks(2)

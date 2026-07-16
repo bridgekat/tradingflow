@@ -8,7 +8,9 @@
 
 use tradingflow::graph::{Handle, RefPort, ViewPort};
 
-use tradingflow::operators::{ArrayValue, as_view, benchmark, log, map, multiply, own, record};
+use tradingflow::operators::{
+    ArrayPort, SeriesPort, as_view, benchmark, log, map, multiply, own, record,
+};
 use tradingflow::sources::pulse;
 use tradingflow::{Array, ArrayView, Instant, Retention, Scenario, Series, Session};
 
@@ -31,9 +33,9 @@ pub const PRICE_LIMIT: f64 = 0.10;
 pub const TARGET_OFFSET: i64 = 1;
 
 /// A scalar view handle (a rank-0 `ArrayView` port).
-pub type ScH = Handle<ViewPort<ArrayValue<f64, 0>>>;
+pub type ScH = Handle<ArrayPort<f64, 0>>;
 /// A recorded scalar series handle — a NAV curve.
-pub type NavH = Handle<RefPort<Series<f64, 0>>>;
+pub type NavH = Handle<SeriesPort<f64, 0>>;
 /// A whole-array positions handle, as the Python portfolios emit them.
 pub type PosH = Handle<RefPort<Array<f64, 1>>>;
 
@@ -63,9 +65,9 @@ pub struct Market {
     /// Raw winsorized log returns, as a live view (the IC evaluators' target).
     pub target: AvH,
     /// Raw winsorized log returns (the covariance predictor's target).
-    pub target_series: Handle<RefPort<Series<f64, 1>>>,
+    pub target_series: Handle<SeriesPort<f64, 1>>,
     /// Cross-sectionally demeaned log returns (the mean predictor's target).
-    pub demeaned_series: Handle<RefPort<Series<f64, 1>>>,
+    pub demeaned_series: Handle<SeriesPort<f64, 1>>,
     /// Panel dimensions for the predictors.
     pub dims: Dims,
     /// Number of loaded symbols.
@@ -130,13 +132,13 @@ impl Market {
     where
         T: tradingflow::graph::Segment<
                 Inputs = (
-                    ViewPort<ArrayValue<f64, 1>>,
-                    ViewPort<ArrayValue<f64, 1>>,
-                    ViewPort<ArrayValue<f64, 1>>,
-                    ViewPort<ArrayValue<f64, 1>>,
-                    ViewPort<ArrayValue<f64, 1>>,
+                    ArrayPort<f64, 1>,
+                    ArrayPort<f64, 1>,
+                    ArrayPort<f64, 1>,
+                    ArrayPort<f64, 1>,
+                    ArrayPort<f64, 1>,
                 ),
-                Outputs = ViewPort<ArrayValue<f64, 1>>,
+                Outputs = ArrayPort<f64, 1>,
                 Context = Instant,
             >,
     {

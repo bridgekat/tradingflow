@@ -5,9 +5,10 @@ use std::fmt::Write as _;
 use std::fs;
 
 use tradingflow::graph::{Handle, RefPort};
+use tradingflow::operators::SeriesPort;
 
 use tradingflow::data::civil_from_days;
-use tradingflow::{Instant, Series, Session};
+use tradingflow::{Instant, SeriesView, Session};
 
 /// `YYYY-MM-DD` for an event [`Instant`].
 pub fn date_str(ts: Instant) -> String {
@@ -98,9 +99,9 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(&Session, In
 /// Read a recorded **scalar** series into `(timestamps_ns, values)`.
 pub fn read_scalar_series(
     session: &Session,
-    h: Handle<RefPort<Series<f64, 0>>>,
+    h: Handle<SeriesPort<f64, 0>>,
 ) -> (Vec<i64>, Vec<f64>) {
-    let s: &Series<f64, 0> = session.ref_view(h);
+    let s: SeriesView<f64, 0> = session.view(h);
     let ts = s.timestamps().iter().map(|t| t.as_nanos()).collect();
     let vals = s.values().to_vec();
     (ts, vals)

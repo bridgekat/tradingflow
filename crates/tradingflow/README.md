@@ -11,7 +11,7 @@ A trading strategy is a static computation graph: feature extraction, model pred
 The three things you do in every program: create a `Scenario`, register sources and operators, then `run()` the event loop. Below is a tiny example that records a synthetic price series, takes a rolling mean, and prints its tail.
 
 ```rust
-use tradingflow::{Array, Instant, Scenario, Series, WallClock};
+use tradingflow::{Array, Instant, Scenario, Series, SeriesView, WallClock};
 use tradingflow::operators::{as_view, ma, record};
 use tradingflow::sources::ArraySource;
 
@@ -34,7 +34,7 @@ async fn main() {
     // Run the event loop until all sources are exhausted, then inspect results.
     let mut session = sc.build();
     session.run(|_, _| {}).await;
-    let series: &Series<f64, 0> = session.ref_view(ma_history);
+    let series = session.view(ma_history);
     println!("{:?}", series.values());
 }
 ```

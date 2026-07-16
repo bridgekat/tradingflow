@@ -5,10 +5,10 @@
 
 use std::marker::PhantomData;
 
-use crate::graph::{Interface, Operator, RefPort, Segment, ViewPort};
+use crate::graph::{Interface, Operator, RefPort, Segment};
 
-use super::op::ArrayValue;
-use crate::{Array, ArrayView, Instant, Retention, Scalar, Series};
+use super::op::{ArrayPort, SeriesPort};
+use crate::{Array, ArrayView, Instant, Retention, Scalar, Series, SeriesView};
 
 // ---------------------------------------------------------------------------
 // Filter — whole-array gate by predicate (the cutoff operator).
@@ -28,8 +28,8 @@ impl<T: Scalar, F, const N: usize> Operator for Filter<T, F, N>
 where
     F: for<'x> Fn(ArrayView<'x, T, N>) -> bool + Send + Sync + 'static,
 {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = FilterState<T, F, N>;
 
@@ -100,8 +100,8 @@ impl<T: Scalar, F, const N: usize> Operator for Gate<T, F, N>
 where
     F: for<'x> Fn(ArrayView<'x, T, N>) -> bool + Send + Sync + 'static,
 {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = GateState<T, F, N>;
 
@@ -193,8 +193,8 @@ pub struct RecordState<T: Scalar, const N: usize> {
 }
 
 impl<T: Scalar, const N: usize> Operator for Record<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = RefPort<Series<T, N>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = SeriesPort<T, N>;
     type Context = Instant;
     type State = RecordState<T, N>;
 
@@ -210,23 +210,23 @@ impl<T: Scalar, const N: usize> Operator for Record<T, N> {
         time: &Instant,
         state: &'b mut Self::State,
         init: bool,
-    ) -> (bool, &'a Series<T, N>) {
+    ) -> (bool, SeriesView<'a, T, N>) {
         if init {
             // The build call only sizes the series — no row is appended, so the
             // pre-first-batch context value is never stamped into it.
             state.out = Series::with_retention(x.extents(), state.retention);
-            return (false, &state.out);
+            return (false, state.out.view());
         }
         state.out.push_view(*time, &x);
-        (true, &state.out)
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, T, N>),
         _: &Instant,
         state: &'b Self::State,
-    ) -> (bool, &'a Series<T, N>) {
-        (false, &state.out)
+    ) -> (bool, SeriesView<'a, T, N>) {
+        (false, state.out.view())
     }
 }
 
@@ -253,8 +253,8 @@ pub struct LastState<T: Scalar, const N: usize> {
 }
 
 impl<T: Scalar, const N: usize> Operator for Last<T, N> {
-    type Inputs = RefPort<Series<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, N>>;
+    type Inputs = SeriesPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = LastState<T, N>;
 
@@ -266,7 +266,7 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<T, N>),
+        (_, series): (bool, SeriesView<'a, T, N>),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -291,7 +291,7 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<T, N>),
+        _: (bool, SeriesView<'a, T, N>),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
@@ -315,8 +315,8 @@ pub struct CountState {
 }
 
 impl<const N: usize> Operator for Count<N> {
-    type Inputs = ViewPort<ArrayValue<f64, N>>;
-    type Outputs = ViewPort<ArrayValue<f64, 0>>;
+    type Inputs = ArrayPort<f64, N>;
+    type Outputs = ArrayPort<f64, 0>;
     type Context = Instant;
     type State = CountState;
 

@@ -5,20 +5,21 @@
 //! `Accumulator: Send + Sync` bound holds because the accumulator lives in the
 //! operator State, which is a `Send + Sync` cell.
 //!
-//! Note: rolling reads event time from the series (`timestamp_at`), NOT the
-//! threaded `Instant`, so the time-delta window needs no clock wiring. It
-//! addresses the series by logical index (`at` / `timestamp_at`), so a
-//! retention-bounded record works unchanged as long as the bound covers the
-//! window (the sliding `start` never drops below the series `base`).
+//! Note: rolling reads event time from the series window (`timestamp_at`), NOT
+//! the threaded `Instant`, so the time-delta window needs no clock wiring. A
+//! [`SeriesView`] window is view-local, so all addressing is relative to the
+//! window's newest row (the accumulated span is always the window's tail);
+//! a retention-bounded record works as long as the bound covers the rolling
+//! window — the rows the accumulator still holds are never trimmed away.
 
 use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::graph::{Operator, RefPort, ViewPort};
+use crate::graph::Operator;
 
-use crate::operators::op::ArrayValue;
-use crate::{Array, ArrayView, Duration, Instant, Scalar, Series};
+use crate::operators::op::{ArrayPort, SeriesPort};
+use crate::{Array, ArrayView, Duration, Instant, Scalar, SeriesView};
 
 /// Convert an accumulator's dynamic output shape into a static `[usize; NO]`.
 #[inline]
@@ -94,26 +95,25 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Rolling<A, NI, NO> {
     }
 }
 
-/// Runtime state for [`Rolling`]: the window config, accumulator bookkeeping,
-/// plus the output buffer.
+/// Runtime state for [`Rolling`]: the window config, accumulator bookkeeping
+/// (`count` rows accumulated — always the newest `count` rows of the series
+/// window), plus the output buffer.
 pub struct RollingState<A: Accumulator, const NO: usize> {
     window: Window,
-    start: usize,
     count: usize,
     accumulator: A,
     out: Array<A::Scalar, NO>,
 }
 
 impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, NI, NO> {
-    type Inputs = RefPort<Series<A::Scalar, NI>>;
-    type Outputs = ViewPort<ArrayValue<A::Scalar, NO>>;
+    type Inputs = SeriesPort<A::Scalar, NI>;
+    type Outputs = ArrayPort<A::Scalar, NO>;
     type Context = Instant;
     type State = RollingState<A, NO>;
 
     fn init(self) -> Self::State {
         RollingState {
             window: self.window,
-            start: 0,
             count: 0,
             // Placeholder; replaced with a properly-shaped accumulator on the
             // build call, where the input shape is known.
@@ -123,7 +123,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<A::Scalar, NI>),
+        (_, series): (bool, SeriesView<'a, A::Scalar, NI>),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -132,7 +132,6 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
             let input_shape = series.extents();
             let output_shape = A::output_shape(&input_shape);
             let output_stride: usize = output_shape.iter().product();
-            state.start = 0;
             state.count = 0;
             state.accumulator = A::new(&input_shape);
             state.out = Array::from_vec(
@@ -142,6 +141,9 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
             return (false, state.out.view());
         }
 
+        // The accumulated rows are always the newest `count` rows of the
+        // window, so the oldest accumulated row sits at view-local index
+        // `len - count` — stable under retention trims of older rows.
         let len = series.len();
 
         state.accumulator.add(series.at(len - 1));
@@ -150,8 +152,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
         match state.window {
             Window::Count(w) => {
                 while state.count > w {
-                    state.accumulator.remove(series.at(state.start));
-                    state.start += 1;
+                    state.accumulator.remove(series.at(len - state.count));
                     state.count -= 1;
                 }
                 if state.count < w {
@@ -161,9 +162,8 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
             Window::TimeDelta(w) => {
                 let current_ts = series.timestamp_at(len - 1);
                 let cutoff = current_ts - w;
-                while state.start < len && series.timestamp_at(state.start) < cutoff {
-                    state.accumulator.remove(series.at(state.start));
-                    state.start += 1;
+                while state.count > 0 && series.timestamp_at(len - state.count) < cutoff {
+                    state.accumulator.remove(series.at(len - state.count));
                     state.count -= 1;
                 }
                 if state.count == 0 {
@@ -179,7 +179,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<A::Scalar, NI>),
+        _: (bool, SeriesView<'a, A::Scalar, NI>),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, A::Scalar, NO>) {
@@ -563,8 +563,8 @@ pub struct EmaState<T: Scalar + Float, const NO: usize> {
 }
 
 impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
-    type Inputs = RefPort<Series<T, NO>>;
-    type Outputs = ViewPort<ArrayValue<T, NO>>;
+    type Inputs = SeriesPort<T, NO>;
+    type Outputs = ArrayPort<T, NO>;
     type Context = Instant;
     type State = EmaState<T, NO>;
 
@@ -593,7 +593,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
         reason = "i walks several parallel per-column arrays plus `series.at(..)[i]`"
     )]
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, &'a Series<T, NO>),
+        (_, series): (bool, SeriesView<'a, T, NO>),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -656,7 +656,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a Series<T, NO>),
+        _: (bool, SeriesView<'a, T, NO>),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, NO>) {

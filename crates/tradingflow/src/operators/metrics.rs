@@ -14,9 +14,9 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::graph::{Operator, RefPort, ViewPort};
+use crate::graph::{Operator, RefPort};
 
-use crate::operators::op::ArrayValue;
+use crate::operators::op::ArrayPort;
 use crate::{Array, ArrayView, Instant, Scalar};
 
 // ---------------------------------------------------------------------------
@@ -52,8 +52,8 @@ pub struct CompoundReturnState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for CompoundReturn<T, N> {
-    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
-    type Outputs = ViewPort<ArrayValue<T, 0>>;
+    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = CompoundReturnState<T>;
 
@@ -144,8 +144,8 @@ pub struct AverageReturnState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for AverageReturn<T, N> {
-    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
-    type Outputs = ViewPort<ArrayValue<T, 0>>;
+    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = AverageReturnState<T>;
 
@@ -226,8 +226,8 @@ pub struct VolatilityState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
-    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
-    type Outputs = ViewPort<ArrayValue<T, 0>>;
+    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = VolatilityState<T>;
 
@@ -317,8 +317,8 @@ pub struct SharpeRatioState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for SharpeRatio<T, N> {
-    type Inputs = (RefPort<()>, ViewPort<ArrayValue<T, N>>);
-    type Outputs = ViewPort<ArrayValue<T, 0>>;
+    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = SharpeRatioState<T>;
 
@@ -407,8 +407,8 @@ pub struct DrawdownState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Drawdown<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, 0>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = DrawdownState<T>;
 
@@ -490,8 +490,8 @@ pub struct TurnoverState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Turnover<T, N> {
-    type Inputs = ViewPort<ArrayValue<T, N>>;
-    type Outputs = ViewPort<ArrayValue<T, 0>>;
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = TurnoverState<T>;
 

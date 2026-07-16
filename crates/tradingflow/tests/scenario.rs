@@ -6,7 +6,7 @@
 
 use tradingflow::operators::{add, as_view, filter, record};
 use tradingflow::sources::ArraySource;
-use tradingflow::{Array, ArrayView, Instant, Scenario, Series, WallClock};
+use tradingflow::{Array, ArrayView, Instant, Scenario, Series, SeriesView, WallClock};
 
 fn tss(xs: &[i64]) -> Vec<Instant> {
     xs.iter().copied().map(Instant::from_nanos).collect()
@@ -30,7 +30,7 @@ async fn run_single_source_record() {
     let mut session = sc.build();
     session.run(|_, _| {}).await;
 
-    let s: &Series<f64, 0> = session.ref_view(hrec);
+    let s: SeriesView<f64, 0> = session.view(hrec);
     assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
     assert_eq!(s.values(), &[10.0, 20.0, 30.0]);
 }
@@ -49,7 +49,7 @@ async fn run_two_sources_add() {
     let mut session = sc.build();
     session.run(|_, _| {}).await;
 
-    let s: &Series<f64, 0> = session.ref_view(hrec);
+    let s: SeriesView<f64, 0> = session.view(hrec);
     assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
     assert_eq!(s.values(), &[10.0, 30.0, 70.0]);
 }
@@ -68,7 +68,7 @@ async fn run_coalescing() {
     let mut session = sc.build();
     session.run(|_, _| {}).await;
 
-    let s: &Series<f64, 0> = session.ref_view(hrec);
+    let s: SeriesView<f64, 0> = session.view(hrec);
     assert_eq!(s.timestamps(), tss(&[1, 2]).as_slice());
     assert_eq!(s.values(), &[110.0, 220.0]);
 }
@@ -89,7 +89,7 @@ async fn run_filter_cutoff() {
     let mut session = sc.build();
     session.run(|_, _| {}).await;
 
-    let s: &Series<f64, 0> = session.ref_view(hrec);
+    let s: SeriesView<f64, 0> = session.view(hrec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.timestamps(), tss(&[2, 4]).as_slice());
     assert_eq!(s.values(), &[5.0, 10.0]);
