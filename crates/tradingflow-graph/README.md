@@ -80,9 +80,7 @@ assert_eq!(g.view(a), 6);
 assert_eq!(g.view(d), 11);
 ```
 
-## Concepts
-
-### Segments
+## Segments
 
 Each unit of scheduling is a `Segment`: it has typed inputs and outputs, a mutable state, and a compute function.
 
@@ -110,7 +108,7 @@ The `init` method will be called once during graph construction to create the no
 
 On each subsequent `graph.stabilize` call, the `compute` method will be run again with new inputs and `is_first_run == false`.
 
-### Interfaces
+## Interfaces
 
 The associated types `Inputs` and `Outputs` define the interface of a segment. They can be constructed from the following building blocks:
 
@@ -126,7 +124,7 @@ Producing a `RefPorts` output requires creating a slice of references with lifet
 
 > Interface values are constrained to `Copy` because they are required to have trivial `Drop` implementations. Data ownership is always inside node states and never passed through an interface; only simple scalar values, references and views do. This encourages pass-by-reference for complex data types and simplifies the internal implementation, but may be less ergonomic in some cases.
 
-### Notification flags
+## Notification flags
 
 Each port carries a `bool` flag alongside the value or reference, indicating whether the value is a *notification*. At each generation, an unmodified output value can have its flag set to `false` (no notify), so a downstream node can choose to skip heavy computation.
 
@@ -177,7 +175,7 @@ The two interpretations are compatible: a new event *is* a change in the event p
 
 The notification flags also help in scheduling. Each generation, the graph executor sets the flags of modified source nodes, and skips a node completely if none of its upstream source nodes were modified. This makes stabilization after a sparse update touches only a fraction of the graph.
 
-### Graph-level context
+## Graph-level context
 
 Besides its inputs and state, every `compute` receives a shared reference to a single graph-owned **context** value — the `Context` associated type. The context is seeded by `typed::Builder::new(context)` and overwritten between generations through `graph.context_mut()`. Writing it dirties nothing: the context is ambient data, not a graph dependency, so a segment that reads it still recomputes only when its own inputs notify. Segments that ignore the context declare `type Context = ()`; combinators and `segment!` formulas are generic over it.
 

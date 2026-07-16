@@ -746,12 +746,30 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
     pub fn to_array<const M: usize>(&self) -> Array<T, M> {
         self.as_array_view::<M>().to_array()
     }
+
+    /// Copy the window into an owned [`Series`] of the same element rank `N`
+    /// (unbounded retention) — the [`Series`] analogue of
+    /// [`ArrayView::to_array`].
+    pub fn to_series(&self) -> Series<T, N> {
+        Series::from_vec(
+            self.shape.extents(),
+            self.timestamps.to_vec(),
+            self.data.to_vec(),
+        )
+    }
 }
 
 impl<'a, T: Scalar, const N: usize> From<&'a Series<T, N>> for SeriesView<'a, T, N> {
     #[inline(always)]
     fn from(s: &'a Series<T, N>) -> Self {
         s.view()
+    }
+}
+
+impl<T: Scalar, const N: usize> From<SeriesView<'_, T, N>> for Series<T, N> {
+    #[inline(always)]
+    fn from(v: SeriesView<'_, T, N>) -> Self {
+        v.to_series()
     }
 }
 
@@ -976,6 +994,24 @@ mod tests {
         let v = SeriesView::<f64, 1>::from_parts(&tss, &vals, Shape::row_major([2]));
         assert_eq!(v.len(), 2);
         assert_eq!(v.at(1), &[3.0, 4.0]);
+    }
+
+    #[test]
+    fn view_to_series() {
+        let mut s = Series::<f64, 1>::new([2]);
+        s.push(ts(100), &[1.0, 2.0]);
+        s.push(ts(200), &[3.0, 4.0]);
+        s.push(ts(300), &[5.0, 6.0]);
+
+        // Whole-window copy of an unbounded series equals the original.
+        let owned = s.view().to_series();
+        assert_eq!(owned, s);
+
+        // A sub-window copies just its rows into a fresh, same-rank series.
+        let sub = s.window(1, 3).to_series();
+        assert_eq!(sub.extents(), [2]);
+        assert_eq!(sub.timestamps(), &[ts(200), ts(300)]);
+        assert_eq!(sub.values(), &[3.0, 4.0, 5.0, 6.0]);
     }
 
     // -- Retention -----------------------------------------------------------

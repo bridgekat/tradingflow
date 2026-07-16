@@ -409,6 +409,13 @@ impl<'a, T: Scalar, const N: usize> From<&'a Array<T, N>> for ArrayView<'a, T, N
     }
 }
 
+impl<T: Scalar, const N: usize> From<ArrayView<'_, T, N>> for Array<T, N> {
+    #[inline(always)]
+    fn from(v: ArrayView<'_, T, N>) -> Self {
+        v.to_array()
+    }
+}
+
 // ===========================================================================
 // Strided traversal + elementwise core
 //
