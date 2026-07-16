@@ -65,7 +65,7 @@
 
 use std::marker::PhantomData;
 
-use crate::graph::{Interface, RefViewPort, RefViewPorts, ValueView, ViewPort};
+use crate::graph::{Interface, RefViewPort, RefViewPorts, ValueView, ViewPort, ViewPorts};
 
 use crate::{ArrayView, Scalar};
 
@@ -109,6 +109,18 @@ where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
     type Plain<'a> = V::View<'a>;
+
+    #[inline(always)]
+    fn plain<'a>(values: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {
+        values.1
+    }
+}
+
+impl<V: ValueView> StripNotify for ViewPorts<V>
+where
+    for<'a> V::View<'a>: Copy + Send + Sync,
+{
+    type Plain<'a> = &'a [V::View<'a>];
 
     #[inline(always)]
     fn plain<'a>(values: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {

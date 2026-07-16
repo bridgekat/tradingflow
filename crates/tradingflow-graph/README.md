@@ -113,14 +113,15 @@ On each subsequent `graph.stabilize` call, the `compute` method will be run agai
 The associated types `Inputs` and `Outputs` define the interface of a segment. They can be constructed from the following building blocks:
 
 - `Port<T>` — a single pass-by-value port. It carries `(bool, T)` where `T: Copy + Send + Sync`.
+- `Ports<T>` — a dynamic-length group of pass-by-value ports. It carries `(&[bool], &[T])` where `T: Copy + Send + Sync`, and is compatible with a group of `Port<T>`s.
 - `RefPort<T>` — a single pass-by-reference port. It carries `(bool, &T)` where `T: Sync`.
 - `RefPorts<T>` — a dynamic-length group of pass-by-reference ports. It carries `(&[bool], &[&T])` where `T: Sync`, and is compatible with a group of `RefPort<T>`s.
-- Generalizations of the above: `ViewPort<V>`, `RefViewPort<V>` and `RefViewPorts<V>`, which allow passing custom lifetime-carrying `Copy` views (like slices or custom array views) to some underlying data.
+- Generalizations of the above: `ViewPort<V>`, `ViewPorts<V>`, `RefViewPort<V>` and `RefViewPorts<V>`, which allow passing custom lifetime-carrying `Copy` views (like slices or custom array views) to some underlying data.
 - Arbitrarily nested tuples of the above (each branch up to arity 12).
 
 For dynamic-length groups, the length must remain fixed after the first run, so that we have a well-defined static computation graph. Violations will be caught and panic at runtime.
 
-Producing a `RefPorts` output requires creating a slice of references with lifetime `'a` matching the inputs. This allows for simple forwarding of input references, but it also creates difficulty for a node that computes its own values: we have to put the array of references somewhere, but the node state must have static lifetime. To address this difficulty, use a lifetime-erased bump arena (such as [`bumpalo`](https://crates.io/crates/bumpalo)) in the node state as a scratch buffer storing the reference arrays on each recompute. The arena can be cleared at the beginning of each recompute, so that buffer size is kept bounded.
+Producing a `RefPorts` output requires creating slices with lifetime `'a` matching the inputs. This allows for simple forwarding of input references, but it also creates difficulty for a node that computes its own values: we have to put the arrays somewhere, but the node state must have static lifetime. To address this difficulty, use a lifetime-erased bump arena (such as [`bumpalo`](https://crates.io/crates/bumpalo)) in the node state as a scratch buffer storing the arrays on each recompute. The arena can be cleared at the beginning of each recompute, so that buffer size is kept bounded.
 
 > Interface values are constrained to `Copy` because they are required to have trivial `Drop` implementations. Data ownership is always inside node states and never passed through an interface; only simple scalar values, references and views do. This encourages pass-by-reference for complex data types and simplifies the internal implementation, but may be less ergonomic in some cases.
 
@@ -246,7 +247,7 @@ let (e, c) = b.push(seg, (*s, *t));
 The library uses `unsafe` internally, but the typed API should be safe to use. For more details, the following runtime invariants are maintained internally:
 
 - **Single writer per slot.** Each state and output slot has exactly one producing node; each input slot is scattered into by exactly that one producer. Concurrent `compute`s write disjoint slots.
-- **Per-generation lifetime.** Output pointers stay valid as long as inputs and state are unchanged; `passthrough`'s `&State` forbids reallocation, keeping out-of-cone consumers' pointers live across generations.
+- **Per-generation lifetime.** Output pointers stay valid as long as inputs and state are unchanged; `passthrough`'s `&State` forbids reallocation, and the per-node scratch buffers are only ever overwritten in place by the node's own run, keeping out-of-cone consumers' pointers live across generations.
 - **Read guard.** Reading a slot after poking a source but before `stabilize` panics rather than dereferencing a possibly-stale forwarded pointer.
 - **Poison on panic.** If a `compute` panics, downstream slots may hold dangling forwarded pointers, so the graph is **poisoned**: the pool catches the panic, settles the batch (no hang), re-raises out of `stabilize`, and every later `stabilize` or slot read panics. There is no recovery — treat the graph as dead. For *recoverable* failures, make the failure a value (e.g. a `Result<T, E>` cell) instead of panicking.
 

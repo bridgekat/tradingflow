@@ -1,6 +1,5 @@
 use std::any::TypeId;
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
 
 use crate::{
     core::ErasedCell,
@@ -12,18 +11,23 @@ use super::{
     Segment,
 };
 
-/// The erased per-node state: the (immutable) input shape, the engine-stored
-/// output payload tree, and the user state.
+/// The erased per-node state: the (immutable) input shape, the input/output
+/// scratch buffers, and the user state.
 ///
-/// The stored tree is what makes fat leaves work: serialization points wire
-/// slots at its fields, which keep stable addresses (the tree is overwritten
-/// in place each run, inside the heap-allocated cell). It is typed at
-/// `'static` purely as storage -- layout is lifetime-invariant, every read
-/// re-types it at the reading call's lifetime, and cross-generation validity
-/// rests on the engine's per-generation contract plus the leaves' covariance.
+/// The scratch buffers are what make by-value (fat) leaves work across node
+/// boundaries: deserialization gathers scattered wire views into the input
+/// scratch and lends the payload from there, and serialization homes output
+/// views in the output scratch and points wire slots at its fields, which
+/// keep stable addresses (both are overwritten in place each run, inside the
+/// heap-allocated cell). Scratch is typed at `'static` purely as storage --
+/// layout is lifetime-invariant, every access re-types it at the calling
+/// generation's lifetime, and cross-generation validity rests on the engine's
+/// per-generation contract plus the leaves' covariance. Pass-by-reference
+/// leaves declare `()` scratch on both sides and pay nothing.
 type NodeState<T> = (
     Box<[usize]>,
-    MaybeUninit<<<T as Segment>::Outputs as Interface>::Values<'static>>,
+    <<T as Segment>::Inputs as Interface>::InScratch,
+    <<T as Segment>::Outputs as Interface>::OutScratch,
     <T as Segment>::State,
 );
 
@@ -124,18 +128,20 @@ impl<C: Send + Sync + 'static> Builder<C> {
             assert!(self.inner.slot_type_id(slot) == ty, "input type mismatch");
         }
 
-        // Bundle the (immutable) shape and the output-tree storage with the
-        // user state so `compute` can reconstruct the nested payload trees
-        // from the flat cell slices and home its result.
+        // Bundle the (immutable) shape and the scratch buffers with the user
+        // state so `compute` can reconstruct the nested payload trees from
+        // the flat cell slices and home its result (see `NodeState`).
+        let in_scratch = <T::Inputs as Interface>::new_in_scratch(&mut FlatRead::new(&input_shape));
         let state: NodeState<T> = (
             input_shape.into_boxed_slice(),
-            MaybeUninit::uninit(),
+            in_scratch,
+            <T::Outputs as Interface>::new_out_scratch(),
             segment.init(),
         );
         let state_cell = ErasedCell::new(state);
 
         // Run the compute function once to get the output shape and types.
-        let (input_shape, stored, state_mut) =
+        let (input_shape, in_scratch, out_scratch, state_mut) =
             unsafe { state_cell.get().cast::<NodeState<T>>().as_mut_unchecked() };
 
         let input_flags = input_indices
@@ -152,23 +158,19 @@ impl<C: Send + Sync + 'static> Builder<C> {
                 &mut FlatRead::new(input_shape),
                 &mut FlatRead::new(&input_flags),
                 &mut FlatRead::new(&input_ptrs),
+                in_scratch,
             )
         };
         let outputs = T::compute(inputs, self.context(), state_mut, true);
 
-        // Home the output tree: fat leaves' wire pointers target fields of
-        // this stored copy (see `NodeState`).
-        let outputs = unsafe {
-            let p: *mut <T::Outputs as Interface>::Values<'_> = stored.as_mut_ptr().cast();
-            p.write(outputs);
-            &*p
-        };
-
+        // Serialize the outputs, homing by-value views into the output
+        // scratch (this build call also sizes variadic leaves' scratch).
         let mut output_shape = Vec::new();
         let mut output_flags = Vec::new();
         let mut output_ptrs = Vec::new();
         <T::Outputs as Interface>::values_to_vecs(
             outputs,
+            out_scratch,
             &mut output_shape,
             &mut output_flags,
             &mut output_ptrs,
@@ -219,7 +221,7 @@ unsafe fn compute_fn_for<T: Segment>(
     state: *mut (),
 ) {
     let context = unsafe { &*context.cast::<T::Context>() };
-    let (input_shape, stored, state_mut) =
+    let (input_shape, in_scratch, out_scratch, state_mut) =
         unsafe { state.cast::<NodeState<T>>().as_mut_unchecked() };
 
     let inputs = unsafe {
@@ -227,23 +229,24 @@ unsafe fn compute_fn_for<T: Segment>(
             &mut FlatRead::new(input_shape.as_ref()),
             &mut FlatRead::new(in_flags.as_ref_unchecked()),
             &mut FlatRead::new(in_ptrs.as_ref_unchecked()),
+            in_scratch,
         )
     };
     let outputs = T::compute(inputs, context, state_mut, false);
 
-    // Home the output tree, overwriting last generation's in place (see
-    // `NodeState`): every output slot is rewritten below before any consumer
-    // runs, and a node that does not run keeps its tree untouched, so
-    // out-of-cone consumers' pointers stay live.
-    let outputs = unsafe {
-        let p: *mut <T::Outputs as Interface>::Values<'_> = stored.as_mut_ptr().cast();
-        p.write(outputs);
-        &*p
-    };
-
+    // Serialize the outputs, homing by-value views into the output scratch,
+    // overwriting last generation's in place (see `NodeState`): every output
+    // slot is rewritten before any consumer runs, and a node that does not
+    // run keeps its scratch untouched, so out-of-cone consumers' pointers
+    // stay live.
     let mut flags_writer = FlatWrite::new(unsafe { out_flags.as_mut_unchecked() });
     let mut ptrs_writer = FlatWrite::new(unsafe { out_ptrs.as_mut_unchecked() });
-    <T::Outputs as Interface>::values_to_flat(outputs, &mut flags_writer, &mut ptrs_writer);
+    <T::Outputs as Interface>::values_to_flat(
+        outputs,
+        out_scratch,
+        &mut flags_writer,
+        &mut ptrs_writer,
+    );
 
     // A changed output shape should panic, instead of leaving old dangling
     // pointers in the output cells.
@@ -313,7 +316,7 @@ impl<C: Send + Sync + 'static> Graph<C> {
             "cell type mismatch"
         );
         let state = self.inner.state_mut(index).get();
-        let (_, _, state_mut) = unsafe { state.cast::<NodeState<S>>().as_mut_unchecked() };
+        let (_, _, _, state_mut) = unsafe { state.cast::<NodeState<S>>().as_mut_unchecked() };
         state_mut
     }
 

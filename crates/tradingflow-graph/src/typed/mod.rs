@@ -10,8 +10,8 @@ pub use flat::{FlatRead, FlatWrite};
 pub use graph::{Builder, Graph};
 pub use handles::{Handle, HandlesInterface, InterfaceHandles, OutputHandle, SourceHandle};
 pub use interface::{
-    Interface, Port, RefPort, RefPorts, RefViewPort, RefViewPorts, Scalar, Slice, ValueView,
-    ViewPort,
+    Interface, Port, Ports, RefPort, RefPorts, RefViewPort, RefViewPorts, Scalar, Slice, ValueView,
+    ViewPort, ViewPorts,
 };
 pub use operator::Operator;
 pub use segment::{Arr, Comp, Fork, Id, Left, Par, Right, Segment, SegmentExt};

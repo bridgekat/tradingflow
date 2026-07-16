@@ -18,8 +18,8 @@ use std::thread;
 use bumpalo::Bump;
 use tradingflow_graph::core::Pool;
 use tradingflow_graph::typed::{
-    Arr, Builder, Graph, Handle, Id, Operator, Port, RefPort, RefPorts, RefSource, Segment,
-    SegmentExt, Slice, Source, SourceHandle, ValueView, ViewPort,
+    Arr, Builder, Graph, Handle, Id, Operator, Port, Ports, RefPort, RefPorts, RefSource, Segment,
+    SegmentExt, Slice, Source, SourceHandle, ValueView, ViewPort, ViewPorts,
 };
 
 fn pool() -> Pool {
@@ -1526,8 +1526,8 @@ fn shrinking_ports_output_poisons_instead_of_dangling() {
 
 /// Emits a window of its input as ONE contiguous `&[i64]` view -- what `RefPorts`
 /// cannot express: per-generation position AND length, zero per-element cost.
-/// Views travel BY VALUE: the engine homes them in its stored output tree, so
-/// this producer is completely stateless.
+/// Views travel BY VALUE: the engine homes them in the node's output scratch,
+/// so this producer is completely stateless.
 struct WindowView;
 impl Segment for WindowView {
     type Inputs = (RefPort<Vec<i64>>, RefPort<(usize, usize)>);
@@ -1574,7 +1574,7 @@ fn view_window_moves_and_resizes_per_generation() {
     let range = b.push_source(RefSource::new((0usize, 3usize)));
     let win = b.push(WindowView, (*data, *range));
     // Forward the view through an extra node: the forwarder re-homes the fat
-    // reference in its OWN stored tree (a copy, not an alias). `Id`'s type
+    // reference in its OWN output scratch (a copy, not an alias). `Id`'s type
     // parameter is inferred from `win`'s handle -- no turbofish.
     let fwd = b.push(Id::default(), win);
     let (sum, len) = b.push(ViewStats, fwd);
@@ -1676,7 +1676,7 @@ fn custom_view_struct_through_the_wire() {
 }
 
 /// Stateless arithmetic on by-value wires: `Port<T>` carries the value
-/// itself (homed in the engine-stored output tree), so producers keep NO
+/// itself (homed in the node's output scratch), so producers keep NO
 /// output storage in state.
 struct ScalarAdd;
 impl Segment for ScalarAdd {
@@ -2024,4 +2024,257 @@ fn complex_mesh_with_fused_nodes() {
         g.stabilize(&mut pool);
         check(&g, &srcs, gn);
     }
+}
+
+// ===== ViewPorts leaf: by-value fan-in groups ================================
+
+/// Sum over a runtime-sized list of BY-VALUE inputs (`Ports<T>` =
+/// `ViewPorts<Scalar<T>>`): the group wires against plain `Port` producers
+/// with no bridging adapters, and deserialization gathers the scattered wire
+/// values into the node's input scratch, so the payload arrives as ONE
+/// contiguous `&[i64]`. Both sides by value: completely stateless.
+struct SumAllPorts;
+impl Segment for SumAllPorts {
+    type Inputs = Ports<i64>;
+    type Outputs = Port<i64>;
+    type Context = ();
+    type State = ();
+    fn init(self) {}
+    fn compute<'a, 'b: 'a>(
+        (notifies, xs): (&'a [bool], &'a [i64]),
+        _: &(),
+        _: &'b mut (),
+        _: bool,
+    ) -> (bool, i64) {
+        (notifies.iter().any(|&n| n), xs.iter().sum())
+    }
+}
+
+#[test]
+fn ports_group_input_sums() {
+    let mut b = Builder::new(());
+    let s0 = b.push_source(Source::new(1i64));
+    let s1 = b.push_source(Source::new(2i64));
+    let s2 = b.push_source(Source::new(3i64));
+    let total = b.push(SumAllPorts, &[*s0, *s1, *s2]);
+    let mut g = b.build();
+    let mut pool = pool();
+
+    assert_eq!(g.view(total), 6);
+
+    *g.state_mut(s0) = 10;
+    g.stabilize(&mut pool);
+    assert_eq!(g.view(total), 15);
+
+    *g.state_mut(s1) = -2;
+    *g.state_mut(s2) = 30;
+    g.stabilize(&mut pool);
+    assert_eq!(g.view(total), 38);
+}
+
+#[test]
+fn empty_ports_group_builds_and_sums_zero() {
+    let mut b = Builder::new(());
+    let total = b.push(SumAllPorts, &[] as &[Handle<Port<i64>>]);
+    let g = b.build();
+    assert_eq!(g.view(total), 0);
+}
+
+/// A runtime-sized BY-VALUE output list: `x -> [x, x+1, x+2]`. The payload
+/// slices are borrowed from the node's arena only until serialization homes
+/// each element in the node's output scratch, slot by slot -- so each slot
+/// then feeds single-`Port` consumers and `Ports` groups alike.
+struct FanoutPorts3;
+impl Segment for FanoutPorts3 {
+    type Inputs = Port<i64>;
+    type Outputs = Ports<i64>;
+    type Context = ();
+    type State = Bump;
+    fn init(self) -> Bump {
+        Bump::new()
+    }
+    fn compute<'a, 'b: 'a>(
+        (_, x): (bool, i64),
+        _: &(),
+        arena: &'b mut Bump,
+        _: bool,
+    ) -> (&'a [bool], &'a [i64]) {
+        let a = fresh(arena);
+        (
+            a.alloc_slice_fill_iter((0..3).map(|_| true)),
+            a.alloc_slice_fill_iter((0..3).map(|i| x + i as i64)),
+        )
+    }
+}
+
+#[test]
+fn ports_group_output_dynamic_arity() {
+    let mut b = Builder::new(());
+    let s = b.push_source(Source::new(10i64));
+    let outs = b.push(FanoutPorts3, *s);
+    assert_eq!(outs.len(), 3);
+    // Each group slot is an ordinary `Port` producer: read it directly, and
+    // fan the whole group back into a `Ports` consumer.
+    let total = b.push(SumAllPorts, &outs[..]);
+    let mut g = b.build();
+    let mut pool = pool();
+
+    assert_eq!(g.view(outs[0]), 10);
+    assert_eq!(g.view(outs[1]), 11);
+    assert_eq!(g.view(outs[2]), 12);
+    assert_eq!(g.view(total), 33);
+
+    *g.state_mut(s) = 100;
+    g.stabilize(&mut pool);
+    assert_eq!(g.view(outs[0]), 100);
+    assert_eq!(g.view(outs[2]), 102);
+    assert_eq!(g.view(total), 303);
+}
+
+/// Forward a `Ports` group through `Id`: the forwarder's output payload
+/// borrows its OWN input scratch (the gathered views), and serialization
+/// re-homes each element in its output scratch. Exercises the
+/// input-scratch-to-output-scratch aliasing path under Miri.
+#[test]
+fn ports_group_forwarded_through_id() {
+    let mut b = Builder::new(());
+    let s0 = b.push_source(Source::new(4i64));
+    let s1 = b.push_source(Source::new(5i64));
+    let fwd = b.push(Id::<Ports<i64>, ()>::default(), &[*s0, *s1]);
+    let total = b.push(SumAllPorts, &fwd[..]);
+    let mut g = b.build();
+    let mut pool = pool();
+
+    assert_eq!(g.view(total), 9);
+
+    *g.state_mut(s1) = 50;
+    g.stabilize(&mut pool);
+    assert_eq!(g.view(fwd[1]), 50);
+    assert_eq!(g.view(total), 54);
+}
+
+/// Mixed variadic tree: a by-value group, a fixed by-ref leaf, and a by-ref
+/// group in one input tuple. Checks the shape cursor stays aligned across
+/// value/ref variadic leaves: `sum(ports) * k + sum(refports)`.
+struct MixedGroups;
+impl Segment for MixedGroups {
+    type Inputs = (Ports<i64>, RefPort<i64>, RefPorts<i64>);
+    type Outputs = Port<i64>;
+    type Context = ();
+    type State = ();
+    fn init(self) {}
+    fn compute<'a, 'b: 'a>(
+        ((_, xs), (_, k), (_, ys)): (
+            (&'a [bool], &'a [i64]),
+            (bool, &'a i64),
+            (&'a [bool], &'a [&'a i64]),
+        ),
+        _: &(),
+        _: &'b mut (),
+        _: bool,
+    ) -> (bool, i64) {
+        (
+            true,
+            xs.iter().sum::<i64>() * k + ys.iter().map(|&v| *v).sum::<i64>(),
+        )
+    }
+}
+
+#[test]
+fn mixed_value_and_ref_variadic_groups() {
+    let mut b = Builder::new(());
+    let p0 = b.push_source(Source::new(1i64));
+    let p1 = b.push_source(Source::new(2i64));
+    let k = b.push_source(RefSource::new(10i64));
+    let r0 = b.push_source(RefSource::new(100i64));
+    let r1 = b.push_source(RefSource::new(200i64));
+    let r2 = b.push_source(RefSource::new(300i64));
+    let out = b.push(MixedGroups, (&[*p0, *p1], *k, &[*r0, *r1, *r2]));
+    let mut g = b.build();
+    let mut pool = pool();
+
+    assert_eq!(g.view(out), (1 + 2) * 10 + 600);
+
+    *g.state_mut(p1) = 5;
+    *g.state_mut(r0) = 111;
+    g.stabilize(&mut pool);
+    assert_eq!(g.view(out), (1 + 5) * 10 + 611);
+}
+
+/// A `Ports` producer whose output SHRINKS after the build call: build emits
+/// 2 leaves, later calls 1. The scratch was sized to 2 at build, so the
+/// serializer must poison rather than leave a stale tail slot.
+struct ShrinkValuePorts;
+impl Segment for ShrinkValuePorts {
+    type Inputs = Port<i64>;
+    type Outputs = Ports<i64>;
+    type Context = ();
+    type State = (Vec<i64>, Vec<bool>);
+    fn init(self) -> Self::State {
+        (Vec::new(), Vec::new())
+    }
+    fn compute<'a, 'b: 'a>(
+        (_, x): (bool, i64),
+        _: &(),
+        (vals, flags): &'b mut Self::State,
+        is_first_run: bool,
+    ) -> (&'a [bool], &'a [i64]) {
+        *vals = if is_first_run { vec![x, x] } else { vec![x] }; // 2 -> 1
+        *flags = vec![true; vals.len()];
+        (flags, vals)
+    }
+}
+
+#[test]
+#[should_panic(expected = "output shape changed since build")]
+fn shrinking_ports_group_output_poisons_instead_of_dangling() {
+    let mut b = Builder::new(());
+    let s = b.push_source(Source::new(1i64));
+    let out = b.push(ShrinkValuePorts, *s);
+    assert_eq!(out.len(), 2); // sized to 2 at build
+    let mut g = b.build();
+    let mut pool = pool();
+
+    *g.state_mut(s) = 5; // ShrinkValuePorts now writes 1 leaf -> must poison
+    g.stabilize(&mut pool);
+}
+
+/// `ViewPorts` over a non-scalar view (`Slice<i64>`): each element is a fat
+/// `&[i64]` window into a different source's data, gathered into one
+/// contiguous slice-of-windows payload (views by value).
+struct ConcatLens;
+impl Segment for ConcatLens {
+    type Inputs = ViewPorts<Slice<i64>>;
+    type Outputs = Port<i64>;
+    type Context = ();
+    type State = ();
+    fn init(self) {}
+    fn compute<'a, 'b: 'a>(
+        (_, windows): (&'a [bool], &'a [&'a [i64]]),
+        _: &(),
+        _: &'b mut (),
+        _: bool,
+    ) -> (bool, i64) {
+        (true, windows.iter().map(|w| w.iter().sum::<i64>()).sum())
+    }
+}
+
+#[test]
+fn view_ports_group_of_slice_views() {
+    let mut b = Builder::new(());
+    let d0 = b.push_source(RefSource::new(vec![1i64, 2, 3, 4]));
+    let d1 = b.push_source(RefSource::new(vec![10i64, 20]));
+    let r0 = b.push_source(RefSource::new((0usize, 2usize)));
+    let r1 = b.push_source(RefSource::new((0usize, 2usize)));
+    let w0 = b.push(WindowView, (*d0, *r0));
+    let w1 = b.push(WindowView, (*d1, *r1));
+    let total = b.push(ConcatLens, &[w0, w1]);
+    let mut g = b.build();
+    let mut pool = pool();
+
+    assert_eq!(g.view(total), (1 + 2) + (10 + 20));
+
+    *g.state_mut(r0) = (1, 3); // window slides and grows
+    g.stabilize(&mut pool);
+    assert_eq!(g.view(total), (2 + 3 + 4) + (10 + 20));
 }
