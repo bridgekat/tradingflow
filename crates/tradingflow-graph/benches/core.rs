@@ -584,7 +584,7 @@ fn bench_mesh_fusion(c: &mut Criterion) {
         let mut gb = Builder::new(());
         let (src, aggs) = mesh::build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
             let it = mesh::iters_of(l, j);
-            let seg = tradingflow_graph::segment!(|x: RefPort<i64>, y: RefPort<i64>, z: RefPort<i64>| {
+            let seg = tradingflow_graph::segment!(|x: RefPort<i64>, y: RefPort<i64>, z: RefPort<i64>| -> RefPort<i64> {
                 let ww = mesh::Work { iters: it } @ (x, y, z);
                 let p = mesh::Inc @ ww;
                 let q = mesh::Double @ ww;

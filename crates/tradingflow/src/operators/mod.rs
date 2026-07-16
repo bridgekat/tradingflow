@@ -32,7 +32,8 @@
 //!   wiring* at [`push`](crate::graph::Builder::push). Prefer them to the
 //!   inherent `Op::<T, N>::new(..)` forms, which need a turbofish at every call
 //!   site. Constructors are what `segment!` applies with `@`, so a formula
-//!   needs no type annotations beyond its parameters.
+//!   annotates only the segment's parameters and output interface — every
+//!   operator in between infers `T` / `N` from the wiring.
 //! * The **formula constructors** ([`ma`], [`lag`], [`change`], …) curry a
 //!   private, bounded [`Record`] into the windowed operators, so a `segment!`
 //!   formula over live array handles reads like the formula itself — retention

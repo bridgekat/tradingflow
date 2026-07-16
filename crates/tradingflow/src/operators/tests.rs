@@ -1216,9 +1216,9 @@ fn ma_crossover_signal_fuses_into_one_node() {
     let ret = Retention::count(4);
     let (fast, slow) = (2usize, 3usize);
 
-    // The result is a single application in tail position, so `segment!` needs
-    // no `-> OutInterface` annotation.
-    let seg = crate::segment!(|xs: crate::graph::RefPort<Series<f64, 0>>| {
+    // The result is a single application in tail position; the crossover is a
+    // rank-0 boolean edge.
+    let seg = crate::segment!(|xs: crate::graph::RefPort<Series<f64, 0>>| -> ViewPort<ArrayValue<bool, 0>> {
         let d = subtract() @ (
             rolling_mean(Window::Count(fast)) @ xs,
             rolling_mean(Window::Count(slow)) @ xs,
@@ -1324,7 +1324,7 @@ fn formula_ma_crossover_signal() {
     let mut b = Builder::new(Instant::MIN);
     let (src, xv) = vec_src(&mut b, vec![0.0, 0.0]);
     let signal = b.push(
-        crate::segment!(|x: Vp<1>| {
+        crate::segment!(|x: Vp<1>| -> ViewPort<ArrayValue<bool, 1>> {
             let d = subtract() @ (ma(fast) @ x, ma(slow) @ x);
             and() @ (
                 greater_than(0.0) @ d,

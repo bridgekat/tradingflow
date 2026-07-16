@@ -13,9 +13,8 @@
 //! fresh `__flowN` statement (post-order, so nested applications come first),
 //! and the surrounding expression keeps its tree shape over the fresh wires.
 //! After this pass the body is the flat statement list the translation above
-//! consumes; a lone application in result position lands as the last statement
-//! and takes the closure-free tail projection, so it needs no `-> OutInterface`
-//! annotation.
+//! consumes, followed by a result wire tree that the closing `route` projects
+//! out of the environment under the mandatory `-> OutInterface` annotation.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,16 +29,6 @@ impl Tree {
         match self {
             Tree::Var(v) => f(v),
             Tree::Tuple(ts) => ts.iter().for_each(|t| t.leaves(f)),
-        }
-    }
-
-    fn eq(&self, other: &Tree) -> bool {
-        match (self, other) {
-            (Tree::Var(a), Tree::Var(b)) => a == b,
-            (Tree::Tuple(a), Tree::Tuple(b)) => {
-                a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.eq(y))
-            }
-            _ => false,
         }
     }
 }
@@ -195,32 +184,14 @@ pub fn lower(flow: Flow, rt: TokenStream) -> syn::Result<TokenStream> {
     // context-pinned segment in the body, or ultimately with the builder's
     // context at the push site.
     let mut cur = quote!(#rt::Id::<#in_ty, _>::default());
-    for (i, s) in stmts.iter().enumerate() {
+    for s in &stmts {
         let (seg, f) = (&s.seg, closure(&env, &s.args)?);
-        // Tail position: the result is exactly this binding, so project it out
-        // of the extended environment (`Right` is closure-free and fully
-        // inferred) instead of emitting a final `route`, whose output type
-        // would need the `-> OutInterface` annotation.
-        if i + 1 == stmts.len() && s.pat.eq(&result) {
-            return Ok(quote!(#rt::SegmentExt::then(
-                #rt::SegmentExt::bind(#cur, #seg, #f),
-                #rt::Right::default(),
-            )));
-        }
         cur = quote!(#rt::SegmentExt::bind(#cur, #seg, #f));
         env.push(s.pat.clone());
     }
-    if stmts.is_empty() && env[0].eq(&result) {
-        return Ok(cur); // the identity flow
-    }
-    let Some(out) = &flow.output else {
-        return Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "output annotation required (`|wires...| -> OutInterface { ... }`) \
-             unless the result is exactly the last `let` binding or a single \
-             application",
-        ));
-    };
+    // The result is a pure projection of the accumulated environment; the
+    // required `-> OutInterface` annotation pins the routed output type.
+    let out = &flow.output;
     let f = closure(&env, &result)?;
     Ok(quote!(#rt::SegmentExt::route::<#out, _>(#cur, #f)))
 }

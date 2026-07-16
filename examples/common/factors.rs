@@ -71,7 +71,7 @@ pub struct FactorSet {
 /// The rank → fill chain is fused into one node via `segment!`.
 pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
     sc.push(
-        tradingflow::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {
+        tradingflow::segment!(|x: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
             fillna(0.5) @ percentile() @ x
         }),
         h,
@@ -114,7 +114,7 @@ fn neg(sc: &mut Scenario, h: H) -> H {
 /// The 次新 listing filter excludes names without a full prior year.
 fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
     sc.push(
-        tradingflow::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| {
+        tradingflow::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
             change(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
@@ -126,7 +126,7 @@ fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
 /// [`delta`].
 fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
     sc.push(
-        tradingflow::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| {
+        tradingflow::segment!(|adj: ViewPort<ArrayValue<f64, 1>>, lvl: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
             growth(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
         (st.adjusted_close, level),

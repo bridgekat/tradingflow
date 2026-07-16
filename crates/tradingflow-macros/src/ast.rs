@@ -1,7 +1,7 @@
 //! Surface AST for the `segment!` notation.
 //!
 //! ```text
-//! flow   := | param,* | ( -> Type )? { stmt* result }
+//! flow   := | param,* | -> Type { stmt* result }
 //! param  := tree : Type
 //! stmt   := let tree = apply ;
 //! apply  := Expr @ wires                 // the Expr is the segment
@@ -43,7 +43,7 @@ pub struct Stmt {
 
 pub struct Flow {
     pub params: Vec<Param>,
-    pub output: Option<Type>,
+    pub output: Type,
     pub stmts: Vec<Stmt>,
     pub result: WireExpr,
 }
@@ -113,12 +113,13 @@ impl Parse for Flow {
             }
         }
         input.parse::<Token![|]>()?;
-        let output = if input.peek(Token![->]) {
-            input.parse::<Token![->]>()?;
-            Some(input.parse()?)
-        } else {
-            None
-        };
+        if !input.peek(Token![->]) {
+            return Err(input.error(
+                "segment! requires an output annotation `-> OutInterface` after the parameter list",
+            ));
+        }
+        input.parse::<Token![->]>()?;
+        let output = input.parse()?;
         let body;
         syn::braced!(body in input);
         let mut stmts = Vec::new();

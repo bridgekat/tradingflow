@@ -25,7 +25,7 @@
 //! the one parameter annotation):
 //!
 //! ```ignore
-//! tradingflow::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {
+//! tradingflow::segment!(|x: ViewPort<ArrayValue<f64, 1>>| -> ViewPort<ArrayValue<bool, 1>> {
 //!     let d = subtract() @ (ma(10) @ x, ma(5) @ x);
 //!     and() @ (greater_than(0.0) @ d, not() @ (greater_than(0.0) @ lag(1) @ d))
 //! })

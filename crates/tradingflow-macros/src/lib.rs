@@ -1,4 +1,4 @@
-//! Proc-macro crate backing `tradingflow_graph::segment!`.
+#![doc = include_str!("../README.md")]
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use quote::quote;

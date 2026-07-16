@@ -72,7 +72,7 @@ fn mul(sc: &mut Scenario, a: H, b: H) -> H {
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
     sc.push(
-        tradingflow::segment!(|x: RefPort<Series<f64, 1>>| {
+        tradingflow::segment!(|x: RefPort<Series<f64, 1>>| -> ViewPort<ArrayValue<f64, 1>> {
             sqrt() @ rolling_variance(Window::Count(n)) @ x
         }),
         s,

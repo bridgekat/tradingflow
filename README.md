@@ -10,7 +10,7 @@ This framework is structured into sub-packages in the `crates/` directory:
 
 - The [`tradingflow-data`](crates/tradingflow-data/README.md) package, which provides generic N-dimensional arrays and time series;
 - The [`tradingflow-graph`](crates/tradingflow-graph/README.md) package, which provides abstractions and scheduling for generic computation graphs;
-- The `tradingflow-macros` package, which provides procedural macros for composing sub-graphs;
+- The [`tradingflow-macros`](crates/tradingflow-macros/README.md) package, which provides procedural macros for composing sub-graphs;
 - The [`tradingflow`](crates/tradingflow/README.md) package itself contains operator implementations for quantitative investment research. Operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
 
 ## Get started

@@ -1222,10 +1222,10 @@ fn segment_notation_diamond() {
 }
 
 #[test]
-fn segment_notation_tail_needs_no_annotation() {
-    // Result == last binding => lowers to `bind` + `Right` projection,
-    // no `-> OutInterface` needed.
-    let seg = tradingflow_graph::segment!(|a: RefPort<i64>, b: RefPort<i64>| {
+fn segment_notation_result_is_last_binding() {
+    // The result is exactly the last binding: the closing `route` projects it
+    // straight out of the environment.
+    let seg = tradingflow_graph::segment!(|a: RefPort<i64>, b: RefPort<i64>| -> RefPort<i64> {
         let c = Add @ (a, b);
         let d = Inc @ c;
         d
@@ -1246,7 +1246,7 @@ fn segment_notation_runtime_path_override() {
     // `@[$crate::...]`) so its users need no direct `tradingflow_graph` dependency.
     // Here the override is an alias of the same module.
     use tradingflow_graph::typed as retyped;
-    let seg = tradingflow_graph::segment!(@[retyped] |a: RefPort<i64>, b: RefPort<i64>| {
+    let seg = tradingflow_graph::segment!(@[retyped] |a: RefPort<i64>, b: RefPort<i64>| -> RefPort<i64> {
         let c = Add @ (a, b);
         c
     });
@@ -1280,7 +1280,7 @@ fn segment_notation_duplicates_reorders_and_drops() {
 #[test]
 fn segment_notation_destructures_and_shadows() {
     // Destructure a two-output segment; shadow `p` to rebind it.
-    let seg = tradingflow_graph::segment!(|a: RefPort<i64>, b: RefPort<i64>| {
+    let seg = tradingflow_graph::segment!(|a: RefPort<i64>, b: RefPort<i64>| -> RefPort<i64> {
         let (p, q) = AddSub @ (a, b);
         let p = Inc @ p;
         let r = Add @ (p, q);
@@ -1298,7 +1298,7 @@ fn segment_notation_destructures_and_shadows() {
 #[test]
 fn segment_notation_ports_wire() {
     // A `RefPorts` wire rides the environment like any other.
-    let seg = tradingflow_graph::segment!(|xs: RefPorts<i64>| {
+    let seg = tradingflow_graph::segment!(|xs: RefPorts<i64>| -> RefPort<i64> {
         let s = SumAll @ xs;
         let t = Inc @ s;
         t
@@ -1403,7 +1403,7 @@ fn segment_notation_pure_permutation() {
 fn segment_notation_apply_nests() {
     // Prefix application `Seg @ wires` nests inside wire expressions; each
     // nesting desugars to a fresh intermediate wire: d = a + (a + b).
-    let seg = tradingflow_graph::segment!(|a: RefPort<i64>, b: RefPort<i64>| {
+    let seg = tradingflow_graph::segment!(|a: RefPort<i64>, b: RefPort<i64>| -> RefPort<i64> {
         let d = Add @ (a, Add @ (a, b));
         d
     });
@@ -1423,11 +1423,11 @@ fn segment_notation_apply_nests() {
 }
 
 #[test]
-fn segment_notation_apply_result_needs_no_annotation() {
-    // A result-position application chain lands as the last desugared
-    // statement, taking the tail projection: no `-> OutInterface`, no `let`.
+fn segment_notation_apply_in_result_position() {
+    // A result-position application chain (no `let`) desugars to a final
+    // statement, which the closing `route` projects out.
     // `@` chains right-associatively: Inc @ Add @ (a, b) is Inc(Add(a, b)).
-    let seg = tradingflow_graph::segment!(|a: RefPort<i64>, b: RefPort<i64>| {
+    let seg = tradingflow_graph::segment!(|a: RefPort<i64>, b: RefPort<i64>| -> RefPort<i64> {
         Inc @ Add @ (a, b)
     });
 
@@ -1978,7 +1978,7 @@ fn complex_mesh_with_fused_nodes() {
     let (src, nodes, aggs) = build_mesh(&mut b, &srcs, |b, layer, j, [a, b2, c]| {
         let it = iters_of(layer, j);
         if (layer + j) % 2 == 0 {
-            let seg = tradingflow_graph::segment!(|x: RefPort<i64>, y: RefPort<i64>, z: RefPort<i64>| {
+            let seg = tradingflow_graph::segment!(|x: RefPort<i64>, y: RefPort<i64>, z: RefPort<i64>| -> RefPort<i64> {
                 let w = Work { iters: it } @ (x, y, z);
                 let p = Inc @ w;
                 let q = Double @ w;
