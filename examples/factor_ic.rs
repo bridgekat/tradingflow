@@ -26,7 +26,7 @@ mod common;
 use clap::Parser;
 
 use tradingflow::operators::{lag_series, own, record, resample_clocked};
-use tradingflow::{Instant, Retention, Scenario, WallClock};
+use tradingflow::{Retention, Scenario, WallClock};
 
 use common::FeatureSet;
 use common::ic::{ic_series, ic_stats};
@@ -56,7 +56,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
 
     let m = Market::build(
         &mut sc,

@@ -105,7 +105,7 @@ async fn main() {
         .position(|s| s == &symbol)
         .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
 
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.

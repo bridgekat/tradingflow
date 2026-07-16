@@ -17,10 +17,9 @@ use crate::Instant;
 /// that writes it register in one call ([`add_source`](Self::add_source)); it
 /// also owns the event counter the finished [`Session`] inherits.
 ///
-/// Construct it as `Scenario::new(WallClock, Instant::MIN)` — the second
-/// argument is the event time before the first batch (a floor; see the
-/// [module docs](super)). The clock is generic only for tests; the default is
-/// the real [`WallClock`].
+/// Construct it as `Scenario::new(WallClock)`; the event time before the first
+/// batch is [`Instant::MIN`] (a floor; see the [module docs](super)). The clock
+/// is generic only for tests; the default is the real [`WallClock`].
 ///
 /// The builder derefs to the inner [`Builder`]: every segment
 /// registers through the inherited [`push`](Builder::push) applied to
@@ -38,17 +37,15 @@ pub struct Scenario<C: Clock = WallClock> {
 }
 
 impl<C: Clock> Scenario<C> {
-    /// An empty builder over an explicit wall clock, with `initial` as the
-    /// event time until the first batch arrives.
+    /// An empty builder over an explicit wall clock.
     ///
-    /// `initial` is a *floor*, not a reading: pass a value at or below every
-    /// event the run can produce (typically [`Instant::MIN`], or the replay's
-    /// start), so the event-time context is non-decreasing across the run. It
-    /// is only ever observed by an operator that reads time on the build call
-    /// — which the `init` flag already identifies.
-    pub fn new(clock: C, initial: Instant) -> Self {
+    /// The event-time context starts at [`Instant::MIN`] — the floor at or
+    /// below every event the run can produce, so the context is non-decreasing
+    /// across the run. It is only ever observed by an operator that reads time
+    /// on the build call — which the `init` flag already identifies.
+    pub fn new(clock: C) -> Self {
         Self {
-            graph: Builder::new(initial),
+            graph: Builder::new(Instant::MIN),
             queue: Queue::new(clock),
             num_events: Arc::new(AtomicUsize::new(0)),
             total_num_events: Some(0),
@@ -83,14 +80,6 @@ impl<C: Clock> Scenario<C> {
             feed
         }));
         *handle
-    }
-
-    /// Register a raw [`Feed`] — for feeds that write into several nodes (or
-    /// none). Wrap a stream + write closure with [`StreamFeed::new`], or defer
-    /// construction with [`LazyFeed::new`]. Raw feeds bypass the event counter
-    /// and the progress estimate.
-    pub fn add_feed(&mut self, feed: impl Feed<Graph<Instant>> + 'static) {
-        self.queue.add_feed(feed);
     }
 }
 

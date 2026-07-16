@@ -58,10 +58,10 @@
 //!
 //! Operators remain **pure** with respect to time: nearly all ignore the
 //! argument, and only the few that genuinely stamp it read it (e.g.
-//! [`Record`](super::Record)). Before the first batch the context holds the
-//! floor passed to `Scenario::new` ([`Instant::MIN`](crate::Instant::MIN)); an
-//! operator that must
-//! tell that build call apart uses the `init` flag, not the timestamp.
+//! [`Record`](super::Record)). Before the first batch the context holds
+//! [`Instant::MIN`](crate::Instant::MIN), the floor set by `Scenario::new`; an
+//! operator that must tell that build call apart uses the `init` flag, not the
+//! timestamp.
 
 use std::marker::PhantomData;
 

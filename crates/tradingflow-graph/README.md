@@ -1,6 +1,6 @@
-# tradingflow-graph
+# `tradingflow-graph`
 
-A multithreaded executor for static computation graphs — the engine behind [TradingFlow](https://github.com/bridgekat/tradingflow/), developed in-tree as a workspace member (formerly the standalone `flowgraph` crate). It is kept a separate crate so it builds, tests, and runs Miri against its own minimal dependency set; it knows nothing about TradingFlow (or about time — see the graph-level context below). TradingFlow re-exports the graph-building vocabulary here as `tradingflow::graph`, which is where strategy code should import it from.
+A multithreaded executor for static computation graphs.
 
 Each compute node can hold a mutable state, read inputs and produce outputs *that may contain references into the node's state or into its inputs*: it is guaranteed that no dangling references can be read.
 
@@ -124,7 +124,7 @@ For dynamic-length groups, the length must remain fixed after the first run, so 
 
 Producing a `RefPorts` output requires creating a slice of references with lifetime `'a` matching the inputs. This allows for simple forwarding of input references, but it also creates difficulty for a node that computes its own values: we have to put the array of references somewhere, but the node state must have static lifetime. To address this difficulty, use a lifetime-erased bump arena (such as [`bumpalo`](https://crates.io/crates/bumpalo)) in the node state as a scratch buffer storing the reference arrays on each recompute. The arena can be cleared at the beginning of each recompute, so that buffer size is kept bounded.
 
-> In this engine, interface values are constrained to `Copy` because they are required to have trivial `Drop` implementations. Data ownership is always inside node states and never passed through an interface; only simple scalar values, references and views do. This encourages pass-by-reference for complex data types and simplifies the engine's internal implementation, but may be less ergonomic in some cases.
+> Interface values are constrained to `Copy` because they are required to have trivial `Drop` implementations. Data ownership is always inside node states and never passed through an interface; only simple scalar values, references and views do. This encourages pass-by-reference for complex data types and simplifies the internal implementation, but may be less ergonomic in some cases.
 
 ### Notification flags
 

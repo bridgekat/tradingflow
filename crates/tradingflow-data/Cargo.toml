@@ -1,0 +1,12 @@
+[package]
+name = "tradingflow-data"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# The only external dependency: `Instant`/`Duration` (src/time.rs) delegate to
+# hifitime's IERS leap-second table for the UTC ↔ TAI conversions. `Array` and
+# `Series` are std-only. Kept a separate crate so the data model builds and
+# tests against this minimal dependency set, independent of the engine and the
+# operator library that layer on top.
+hifitime = "4"

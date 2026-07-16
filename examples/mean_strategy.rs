@@ -30,7 +30,7 @@ use tradingflow::operators::{
     as_view, benchmark, compound_return, diff, drawdown, log, random_trader, record,
     ref_array_view, sharpe_ratio, stack,
 };
-use tradingflow::{Instant, Retention, Scenario, Series, WallClock};
+use tradingflow::{Retention, Scenario, Series, WallClock};
 
 use common::FeatureSet;
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
@@ -73,7 +73,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
 
     // ---- Data + features ------------------------------------------------
     // The incremental mean predictor folds one (feature, target) pair per tick,

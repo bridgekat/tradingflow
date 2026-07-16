@@ -233,7 +233,7 @@ async fn main() {
         args.common.index_size
     );
 
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
 
     let st = common::build_stacked(&mut sc, &symbols, &args.common);
     let catalog = match args.catalog.as_str() {

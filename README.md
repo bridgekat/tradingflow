@@ -2,11 +2,16 @@
 
 [![Test](https://github.com/bridgekat/tradingflow/actions/workflows/test.yml/badge.svg)](https://github.com/bridgekat/tradingflow/actions/workflows/test.yml)
 
-A computation-graph framework for quantitative investment research: the `tradingflow-graph` engine (a multithreaded executor for static computation graphs, developed in-tree) plus an operator library on top.
+A lightweight framework for quantitative investment research.
 
-A trading strategy is a static computation graph: feature extraction, model prediction, portfolio optimization, trading simulation and performance evaluation are all operator nodes in this graph. This library provides common reusable nodes as basic building blocks, and handles data loading from various types of sources.
+A trading strategy is a static computation graph: feature extraction, model prediction, portfolio optimization, trading simulation and performance evaluation are all operator nodes in this graph. Writing a strategy backtest amounts to wiring together reusable operators, and new operators can be readily implemented.
 
-Operator nodes can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
+This framework is structured into sub-packages in the `crates/` directory:
+
+- The `tradingflow-data` package, which provides generic N-dimensional arrays and time series;
+- The `tradingflow-graph` package, which provides abstractions and scheduling for generic computation graphs;
+- The `tradingflow-macros` package, which provides procedural macros for composing sub-graphs;
+- The `tradingflow` package itself contains operator implementations for quantitiative investment research. Operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
 
 ## Get started
 
@@ -15,38 +20,10 @@ Prerequisites: a stable Rust toolchain ([rustup.rs](https://rustup.rs)), and Pyt
 ```bash
 git clone https://github.com/bridgekat/tradingflow.git
 cd tradingflow
-cargo build                              # the Rust library and engine
-cargo build -p tradingflow --features python  # + the Python operator package
+cargo build -p tradingflow --features python
 ```
 
-To use it, `tradingflow` is the **only dependency** a strategy crate adds — the engine's vocabulary is re-exported through it (see below).
-
-## Repository layout
-
-A Cargo workspace of three crates, plus the Python operator package and the examples:
-
-```text
-crates/tradingflow/         the library: data model, operators, sources,
-                            the `ingest` event-loop driver (Scenario/Session),
-                            and `graph` — the engine's API, re-exported
-crates/tradingflow-graph/   the computation-graph engine (parallel, time-free)
-crates/tradingflow-macros/  the `segment!` fusion macro
-python/tradingflow/         Python operators (predictors, portfolios, metrics)
-                            run on the embedded interpreter
-examples/                   end-to-end strategies + their market data
-```
-
-The engine is a separate crate so it builds, tests, and runs Miri against its own minimal dependency set — but it is not a separate dependency: strategy code reaches it through `tradingflow::graph` and `tradingflow::segment!`. Its concepts (segments, interfaces, notification flags, the graph-level context) are documented in [`crates/tradingflow-graph/README.md`](crates/tradingflow-graph/README.md) — read that before writing a custom operator.
-
-Development:
-
-```bash
-cargo test --workspace                        # engine + library + driver tests
-cargo test -p tradingflow --features python   # + the embedded-interpreter tests
-pytest                                        # the Python operator package
-```
-
-The `python` feature links libpython, so it needs `PYO3_PYTHON` and the interpreter's DLL/`site-packages` on the right paths — [`examples/env.ps1`](examples/env.ps1) sets all of it up (`. .\examples\env.ps1`), and [`examples/README.md`](examples/README.md) explains why each variable is needed.
+The `python` feature links `libpython`, so it needs the environment variables `PYO3_PYTHON` and `PATH` to be set correctly. Moreover, the `PYTHONPATH` environment variable must point to `python/` in this repository, so that operator implementations can be imported.
 
 ## Examples
 
@@ -63,9 +40,9 @@ async fn main() {
     let timestamps: Vec<_> = (0..90).map(Instant::from_nanos).collect();
     let values: Vec<f64> = /* ... */ vec![100.0; 90];
 
-    // `Instant::MIN` is the event time before the first batch arrives — a
+    // The event time before the first batch arrives is `Instant::MIN` — a
     // floor, at or below every event the run can produce.
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
 
     // A source feeds timestamped values into the graph; `as_view` bridges its
     // whole-array cell into the view currency the operators speak; `ma` is a
@@ -105,7 +82,7 @@ flowchart LR
     classDef series fill:#f5f5f5,stroke:#6b7280,color:#111827
 ```
 
-This is the whole pattern. An actual strategy can contain many more operators — `ForwardAdjust`, `LinearRegression`, `Shrinkage`, `MeanVariancePortfolio`, `RandomTrader`, `SharpeRatio` — but the structure stays the same. Formula-shaped signals compose with the `tradingflow::segment!` macro and the self-recording formula constructors, so `MA(x, 10) − MA(x, 5) > 0 AND NOT LAG(…, 1) > 0` is a two-line fused node — capturing nothing from its environment:
+This is the whole pattern. An actual strategy can contain many more operators — `ForwardAdjust`, `LinearRegression`, `Shrinkage`, `MeanVariancePortfolio`, `RandomTrader`, `SharpeRatio` — but the structure stays the same. Formula-shaped signals compose with the `tradingflow::segment!` macro and the self-recording formula constructors, so `MA(x, 10) − MA(x, 5) > 0 AND NOT LAG(…, 1) > 0` is a two-line fused node:
 
 ```rust,ignore
 tradingflow::segment!(|x: ViewPort<ArrayValue<f64, 1>>| {

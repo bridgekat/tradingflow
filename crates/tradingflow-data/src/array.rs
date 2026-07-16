@@ -459,7 +459,10 @@ fn for_each_offset<const N: usize>(shape: &Shape<N>, mut f: impl FnMut(usize)) {
 /// Element-wise unary `out[i] = f(x[i])`, contiguous-fast / strided-slow. The
 /// output scalar `U` may differ from the input's (a predicate maps `T` to
 /// `bool`); `U == T` for the arithmetic operators.
-pub(crate) fn apply_unary<T: Scalar, U: Scalar, const N: usize>(
+///
+/// `pub` because the operator library (`tradingflow`'s `arith` module) is the
+/// caller: the elementwise kernels live with the array they iterate.
+pub fn apply_unary<T: Scalar, U: Scalar, const N: usize>(
     out: &mut Array<U, N>,
     x: &ArrayView<T, N>,
     f: &impl Fn(T) -> U,
@@ -482,7 +485,8 @@ pub(crate) fn apply_unary<T: Scalar, U: Scalar, const N: usize>(
 /// Element-wise binary `out[i] = f(a[i], b[i])`, contiguous-fast / strided-slow.
 /// `a` and `b` must share extents (asserted by the caller via output sizing).
 /// As with [`apply_unary`], the output scalar `U` may differ from the inputs'.
-pub(crate) fn apply_binary<T: Scalar, U: Scalar, const N: usize>(
+/// `pub` for the same reason: the `arith` operators call it across the crate.
+pub fn apply_binary<T: Scalar, U: Scalar, const N: usize>(
     out: &mut Array<U, N>,
     a: &ArrayView<T, N>,
     b: &ArrayView<T, N>,

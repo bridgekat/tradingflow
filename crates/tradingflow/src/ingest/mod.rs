@@ -52,11 +52,11 @@
 //! No lock and no `Option` wrapper: context writes go through the graph's
 //! `context_mut` (`&mut`, strictly between generations) and reads are the
 //! shared `&Instant` during stabilize, so the borrow checker enforces the
-//! phase separation. Before the first batch the context holds the floor
-//! passed to [`Scenario::new`] — pass a value at or below every event the run
-//! can produce (typically [`Instant::MIN`](crate::Instant::MIN)), so the
-//! context is non-decreasing across the whole run. An operator that must tell
-//! the build call apart has its `is_first_run` flag (`init` in the operator
+//! phase separation. Before the first batch the context holds
+//! [`Instant::MIN`](crate::Instant::MIN) — the floor at or below every event
+//! the run can produce, set by [`Scenario::new`], so the context is
+//! non-decreasing across the whole run. An operator that must tell the build
+//! call apart has its `is_first_run` flag (`init` in the operator
 //! conventions).
 
 mod clock;

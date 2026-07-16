@@ -12,8 +12,10 @@ use crate::Instant;
 /// single source node, consumed by [`Scenario::add_source`](super::Scenario::add_source):
 /// the builder allocates a `RefSource<Output>` node holding
 /// [`initial`](Self::initial), and the driver applies each merged event to the
-/// node's cell via [`write`](Self::write). For feeds that write into several
-/// nodes (or none), register a raw [`Feed`](super::Feed) instead.
+/// node's cell via [`write`](Self::write). It is the one packaged entry point
+/// on the [`Scenario`](super::Scenario); a feed that writes into several nodes
+/// (or none) is a raw [`Feed`](super::Feed) driven through a
+/// [`Queue`](super::Queue) directly.
 ///
 /// # Lifecycle
 ///

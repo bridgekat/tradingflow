@@ -22,7 +22,7 @@ fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
 /// Replay [10,20,30] @ [1,2,3] into a Record.
 #[tokio::test]
 async fn run_single_source_record() {
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
     let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
     let hv = sc.push(as_view(), h);
     let hrec = sc.push(record(), hv);
@@ -39,7 +39,7 @@ async fn run_single_source_record() {
 /// ts1:10+0, ts2:10+20, ts3:30+40 → [10,30,70].
 #[tokio::test]
 async fn run_two_sources_add() {
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
     let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]));
     let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]));
     let (hav, hbv) = (sc.push(as_view(), ha), sc.push(as_view(), hb));
@@ -58,7 +58,7 @@ async fn run_two_sources_add() {
 /// ts1:10+100, ts2:20+200 → [110,220].
 #[tokio::test]
 async fn run_coalescing() {
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
     let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]));
     let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]));
     let (hav, hbv) = (sc.push(as_view(), ha), sc.push(as_view(), hb));
@@ -77,7 +77,7 @@ async fn run_coalescing() {
 /// [1,5,2,10] keep >3 → (2,5),(4,10).
 #[tokio::test]
 async fn run_filter_cutoff() {
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
     let h = sc.add_source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
     let hv = sc.push(as_view(), h);
     let hf = sc.push(
@@ -100,7 +100,7 @@ async fn run_filter_cutoff() {
 /// runs on the session's own task, so it can borrow locals.
 #[tokio::test]
 async fn on_stable_per_batch() {
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
     let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
     let hv = sc.push(as_view(), h);
     let _ = sc.push(record(), hv);

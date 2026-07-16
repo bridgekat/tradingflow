@@ -1823,7 +1823,15 @@ dependencies = [
  "rand",
  "tempfile",
  "tokio",
+ "tradingflow-data",
  "tradingflow-graph",
+]
+
+[[package]]
+name = "tradingflow-data"
+version = "0.1.0"
+dependencies = [
+ "hifitime",
 ]
 
 [[package]]

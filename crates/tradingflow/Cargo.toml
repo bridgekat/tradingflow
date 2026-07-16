@@ -47,6 +47,11 @@ futures = { version = "0.3", default-features = false, features = ["alloc"] }
 # minimal dependency set). Its user-facing vocabulary is re-exported as
 # `tradingflow::graph`, so strategy crates depend on `tradingflow` alone.
 tradingflow-graph = { path = "../tradingflow-graph" }
+# The data model (`Array`/`Series`/`Instant`), likewise a sibling workspace
+# member kept separate so it builds and tests against std + hifitime alone.
+# Re-exported as `tradingflow::data`, so strategy crates depend on `tradingflow`
+# alone.
+tradingflow-data = { path = "../tradingflow-data" }
 arrow = "58.3.0"
 parquet = { version = "58.3.0", features = ["arrow", "zstd"] }
 

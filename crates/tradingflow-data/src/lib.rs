@@ -1,22 +1,28 @@
-//! Core data types and trait machinery.
+//! Generic N-dimensional arrays and time series — the primitive data
+//! containers that flow through the TradingFlow operator engine.
 //!
-//! This module groups the project's primitive data containers that flow
-//! through the [`operators`](crate::operators) engine.
+//! This crate is the data model, factored out so it builds and tests against
+//! its own minimal dependency set (std, plus `hifitime` for the calendar
+//! arithmetic), independent of the graph engine and the operator library that
+//! layer on top. The `tradingflow` crate re-exports everything here through its
+//! `data` module, so strategy code still reaches these types through
+//! `tradingflow` alone.
 //!
 //! # Sub-modules
 //!
-//! * [`array`](mod@array) - [`Array`] / [`ArrayView`]:
+//! * [`array`] — [`Array`] / [`ArrayView`]:
 //!   dense rank-`N` array with row-major contiguous layout, and its borrowed
 //!   strided view.
-//! * [`series`] - [`Series`] / [`SeriesView`]:
+//! * [`series`] — [`Series`] / [`SeriesView`]:
 //!   append-only time series of uniformly-shaped rank-`N` elements, and its
-//!   borrowed window.
-//! * [`time`] - [`Instant`] and [`Duration`]:
+//!   borrowed window. A series is stamped with [`Instant`] timestamps, which is
+//!   why the time types live in this crate too.
+//! * [`time`] — [`Instant`] and [`Duration`]:
 //!   SI-nanosecond timestamps anchored at the PTP epoch (1970-01-01 TAI).
 //!
-//! # This-module items
+//! # This-crate items
 //!
-//! * [`Scalar`] - marker trait for permitted array element types.
+//! * [`Scalar`] — marker trait for permitted array element types.
 
 pub mod array;
 pub mod series;

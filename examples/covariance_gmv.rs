@@ -23,7 +23,7 @@ mod common;
 use clap::Parser;
 
 use tradingflow::operators::{as_view, diff, own, record};
-use tradingflow::{Instant, Retention, Scenario, WallClock};
+use tradingflow::{Retention, Scenario, WallClock};
 
 use common::FeatureSet;
 use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};
@@ -75,7 +75,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
 
     let m = Market::build(
         &mut sc,

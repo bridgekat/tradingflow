@@ -25,7 +25,7 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::{Instant, Retention, Scenario, WallClock};
+use tradingflow::{Retention, Scenario, WallClock};
 
 use common::models::{Mode, markowitz, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable};
@@ -69,7 +69,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
 
     // The shared panel / target feed the shrinkage covariance predictor too,
     // which fits over its last `COV_MAX_PERIODS` pairs — so the records must

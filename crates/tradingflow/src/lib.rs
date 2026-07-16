@@ -56,9 +56,9 @@
 //! dependency either — writing the context dirties no cone, so a time-reading
 //! operator still recomputes only when its own inputs notify.
 //!
-//! Before the first batch the context holds the floor passed to
-//! `Scenario::new(WallClock, Instant::MIN)`; an operator that must tell that
-//! build call apart uses its `init` flag, not the timestamp.
+//! Before the first batch the context holds `Instant::MIN`, the floor set by
+//! `Scenario::new(WallClock)`; an operator that must tell that build call apart
+//! uses its `init` flag, not the timestamp.
 //!
 //! Two distinct notions carry a clock-like name, and they are not the same
 //! thing: [`WallClock`] is the wall clock that *drives* the event loop (an

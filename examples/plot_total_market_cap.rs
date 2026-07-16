@@ -21,7 +21,7 @@ mod common;
 
 use tradingflow::operators::{apply, benchmark, map, multiply, record, resample_view};
 use tradingflow::sources::pulse;
-use tradingflow::{Array, ArrayView, Instant, Scenario, WallClock};
+use tradingflow::{Array, ArrayView, Scenario, WallClock};
 
 use clap::Parser;
 
@@ -39,7 +39,7 @@ async fn main() {
     let n = symbols.len();
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);
 
-    let mut sc = Scenario::new(WallClock, Instant::MIN);
+    let mut sc = Scenario::new(WallClock);
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.push(multiply(), (st.close, st.circ_shares));

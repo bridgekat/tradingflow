@@ -14,7 +14,7 @@ use std::task::{Context, Poll};
 use std::thread;
 
 use futures::stream::{self, Stream};
-use tradingflow::graph::{Graph, Port, RefPort, RefSource, Segment};
+use tradingflow::graph::{Port, RefPort, RefSource, Segment};
 use tradingflow::ingest::{Clock, Event, EventSource, LazyFeed, Queue, Scenario, StreamFeed};
 use tradingflow::{Duration, Instant};
 
@@ -23,17 +23,13 @@ fn t(n: i64) -> Instant {
     Instant::from_nanos(n)
 }
 
-/// The typed graph a scenario builds: its graph-level context is the
-/// driver-advanced event time.
-type TimedGraph = Graph<Instant>;
-
 fn threads() -> usize {
     thread::available_parallelism().unwrap().get()
 }
 
 /// A fresh scenario over `clock` (finish with `build_with_threads(threads())`).
 fn builder(clock: SimClock) -> Scenario<SimClock> {
-    Scenario::new(clock, t(0))
+    Scenario::new(clock)
 }
 
 /// Deterministic wall clock. `wait_until` jumps simulated time just past the
@@ -150,6 +146,68 @@ impl EventSource for Replay {
     }
 }
 
+/// A test [`EventSource`] driving a `Batch` cell from an explicit event stream —
+/// the `add_source` form of the raw feeds these tests used before
+/// `Scenario::add_feed` was removed. Each stream item replaces the cell; when a
+/// `log` is supplied, `(event time, item)` is also appended, capturing the
+/// per-event write order that a downstream sink can't see (same-stamp events
+/// fold into one generation, so only the last survives in the cell).
+///
+/// `init` moves the stream out by `take` — a test source drives a single
+/// session, and this also lets it carry a move-only stream such as an mpsc
+/// receiver.
+struct VecFeed<S> {
+    stream: Mutex<Option<S>>,
+    log: Option<FeedLog>,
+}
+
+/// A shared write-side log of `(event time, item)` rows for a [`VecFeed`].
+type FeedLog = Arc<Mutex<Vec<(Instant, Batch)>>>;
+
+impl<S: Stream<Item = Event<Batch>> + Send + 'static> EventSource for VecFeed<S> {
+    type Event = Batch;
+    type Output = Batch;
+    type State = Option<FeedLog>;
+
+    fn initial(&self) -> Batch {
+        Batch::new()
+    }
+
+    fn init(&self) -> (impl Stream<Item = Event<Batch>> + Send + 'static, Self::State) {
+        let stream = self
+            .stream
+            .lock()
+            .unwrap()
+            .take()
+            .expect("VecFeed drives a single session");
+        (stream, self.log.clone())
+    }
+
+    fn write(log: &mut Self::State, event: Batch, output: &mut Batch, ts: Instant) -> usize {
+        if let Some(log) = log {
+            log.lock().unwrap().push((ts, event.clone()));
+        }
+        *output = event;
+        1
+    }
+}
+
+/// A [`VecFeed`] that only writes its cell.
+fn feed<S>(stream: S) -> VecFeed<S> {
+    VecFeed {
+        stream: Mutex::new(Some(stream)),
+        log: None,
+    }
+}
+
+/// A [`VecFeed`] that also records `(event time, item)` into `log`.
+fn feed_logged<S>(stream: S, log: FeedLog) -> VecFeed<S> {
+    VecFeed {
+        stream: Mutex::new(Some(stream)),
+        log: Some(log),
+    }
+}
+
 /// A time-stamping sink segment: on each notified input, appends
 /// `(event time, value)` to a shared log. The batch timestamp is the
 /// graph-level context — no clock handle is threaded in, and no unwrapping:
@@ -181,12 +239,8 @@ impl Segment for Recorder {
 #[test]
 fn single_feed_orders_and_accumulates() {
     let mut b = builder(SimClock::at(t(0)));
-    let data = b.push_source(RefSource::new(Batch::new()));
-    let sum = b.push(Sum, *data);
-    b.add_feed(StreamFeed::new(
-        hist([(1, vec![10]), (2, vec![20]), (3, vec![30])]),
-        move |g: &mut TimedGraph, _t, x| *g.state_mut(data) = x,
-    ));
+    let data = b.add_source(feed(hist([(1, vec![10]), (2, vec![20]), (3, vec![30])])));
+    let sum = b.push(Sum, data);
     let mut d = b.build_with_threads(threads());
 
     let mut log = Vec::new();
@@ -198,47 +252,23 @@ fn single_feed_orders_and_accumulates() {
 #[test]
 fn merges_feeds_in_timestamp_order() {
     let mut b = builder(SimClock::at(t(0)));
-    let a = b.push_source(RefSource::new(Batch::new()));
-    let c = b.push_source(RefSource::new(Batch::new()));
-
-    let ts = Arc::new(Mutex::new(Vec::new()));
-    let (t1, t2) = (ts.clone(), ts.clone());
-    b.add_feed(StreamFeed::new(
-        hist([(1, vec![10]), (3, vec![30])]),
-        move |g: &mut TimedGraph, t, x| {
-            t1.lock().unwrap().push(t);
-            *g.state_mut(a) = x;
-        },
-    ));
-    b.add_feed(StreamFeed::new(
-        hist([(2, vec![20])]),
-        move |g: &mut TimedGraph, t, x| {
-            t2.lock().unwrap().push(t);
-            *g.state_mut(c) = x;
-        },
-    ));
+    b.add_source(feed(hist([(1, vec![10]), (3, vec![30])])));
+    b.add_source(feed(hist([(2, vec![20])])));
     let mut d = b.build_with_threads(threads());
 
-    pollster::block_on(d.run(|_, _| {}));
-    assert_eq!(*ts.lock().unwrap(), vec![t(1), t(2), t(3)]);
+    let mut ts = Vec::new();
+    pollster::block_on(d.run(|_, t| ts.push(t)));
+    assert_eq!(ts, vec![t(1), t(2), t(3)]);
 }
 
 /// Same-timestamp events across feeds collapse into one stabilize.
 #[test]
 fn batches_equal_timestamps_across_feeds() {
     let mut b = builder(SimClock::at(t(0)));
-    let a = b.push_source(RefSource::new(Batch::new()));
-    let c = b.push_source(RefSource::new(Batch::new()));
-    let sa = b.push(Sum, *a);
-    let sc = b.push(Sum, *c);
-    b.add_feed(StreamFeed::new(
-        hist([(5, vec![1, 2])]),
-        move |g: &mut TimedGraph, _t, x| *g.state_mut(a) = x,
-    ));
-    b.add_feed(StreamFeed::new(
-        hist([(5, vec![4])]),
-        move |g: &mut TimedGraph, _t, x| *g.state_mut(c) = x,
-    ));
+    let a = b.add_source(feed(hist([(5, vec![1, 2])])));
+    let c = b.add_source(feed(hist([(5, vec![4])])));
+    let sa = b.push(Sum, a);
+    let sc = b.push(Sum, c);
     let mut d = b.build_with_threads(threads());
 
     let mut gens = 0;
@@ -254,11 +284,7 @@ fn batches_equal_timestamps_across_feeds() {
 fn future_events_gated_by_wall_clock() {
     let clock = SimClock::at(t(0));
     let mut b = builder(clock.clone());
-    let a = b.push_source(RefSource::new(Batch::new()));
-    b.add_feed(StreamFeed::new(
-        hist([(5, vec![50]), (10, vec![100])]),
-        move |g: &mut TimedGraph, _t, x| *g.state_mut(a) = x,
-    ));
+    b.add_source(feed(hist([(5, vec![50]), (10, vec![100])])));
     let mut d = b.build_with_threads(threads());
 
     let mut nows = Vec::new();
@@ -271,30 +297,14 @@ fn future_events_gated_by_wall_clock() {
 #[test]
 fn implicit_events_stamped_with_wall_clock() {
     let mut b = builder(SimClock::at(t(7)));
-    let h = b.push_source(RefSource::new(Batch::new()));
-    let l = b.push_source(RefSource::new(Batch::new()));
-
-    let ts = Arc::new(Mutex::new(Vec::new()));
-    let (th, tl) = (ts.clone(), ts.clone());
-    b.add_feed(StreamFeed::new(
-        hist([(3, vec![30])]),
-        move |g: &mut TimedGraph, t, x| {
-            th.lock().unwrap().push(t);
-            *g.state_mut(h) = x;
-        },
-    ));
-    b.add_feed(StreamFeed::new(
-        live([vec![70]]),
-        move |g: &mut TimedGraph, t, x| {
-            tl.lock().unwrap().push(t);
-            *g.state_mut(l) = x;
-        },
-    ));
+    b.add_source(feed(hist([(3, vec![30])])));
+    b.add_source(feed(live([vec![70]])));
     let mut d = b.build_with_threads(threads());
 
-    pollster::block_on(d.run(|_, _| {}));
+    let mut ts = Vec::new();
+    pollster::block_on(d.run(|_, t| ts.push(t)));
     // Explicit t=3 first, then the implicit event stamped now=7.
-    assert_eq!(*ts.lock().unwrap(), vec![t(3), t(7)]);
+    assert_eq!(ts, vec![t(3), t(7)]);
 }
 
 /// One feed may emit several events at the same stamp (only non-decreasing is
@@ -302,23 +312,20 @@ fn implicit_events_stamped_with_wall_clock() {
 #[test]
 fn same_stamp_run_within_one_feed() {
     let mut b = builder(SimClock::at(t(0)));
-    let a = b.push_source(RefSource::new(Batch::new()));
-
     let log = Arc::new(Mutex::new(Vec::new()));
-    let l = log.clone();
-    b.add_feed(StreamFeed::new(
+    b.add_source(feed_logged(
         hist([(5, vec![1]), (5, vec![2]), (6, vec![3])]),
-        move |g: &mut TimedGraph, t, x: Batch| {
-            l.lock().unwrap().push((t, x[0]));
-            *g.state_mut(a) = x;
-        },
+        log.clone(),
     ));
     let mut d = b.build_with_threads(threads());
 
     let mut gens = 0;
     pollster::block_on(d.run(|_, _| gens += 1));
     assert_eq!(gens, 2);
-    assert_eq!(*log.lock().unwrap(), vec![(t(5), 1), (t(5), 2), (t(6), 3)]);
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec![(t(5), vec![1]), (t(5), vec![2]), (t(6), vec![3])]
+    );
 }
 
 /// Implicit events across feeds stamped within the same clock reading fold into
@@ -327,18 +334,10 @@ fn same_stamp_run_within_one_feed() {
 #[test]
 fn same_stamp_implicit_events_batch() {
     let mut b = builder(SimClock::at(t(7)));
-    let a = b.push_source(RefSource::new(Batch::new()));
-    let c = b.push_source(RefSource::new(Batch::new()));
-    let sa = b.push(Sum, *a);
-    let sc = b.push(Sum, *c);
-    b.add_feed(StreamFeed::new(
-        live([vec![1, 2]]),
-        move |g: &mut TimedGraph, _t, x| *g.state_mut(a) = x,
-    ));
-    b.add_feed(StreamFeed::new(
-        live([vec![4]]),
-        move |g: &mut TimedGraph, _t, x| *g.state_mut(c) = x,
-    ));
+    let a = b.add_source(feed(live([vec![1, 2]])));
+    let c = b.add_source(feed(live([vec![4]])));
+    let sa = b.push(Sum, a);
+    let sc = b.push(Sum, c);
     let mut d = b.build_with_threads(threads());
 
     let mut gens = 0;
@@ -353,29 +352,16 @@ fn same_stamp_implicit_events_batch() {
 #[test]
 fn frontier_message_advances_without_data() {
     let mut b = builder(SimClock::at(t(100)));
-    let a = b.push_source(RefSource::new(Batch::new()));
-    let c = b.push_source(RefSource::new(Batch::new()));
-
-    let ts = Arc::new(Mutex::new(Vec::new()));
-    let (t1, t2) = (ts.clone(), ts.clone());
-    b.add_feed(StreamFeed::new(
-        stream::iter([Event::frontier(t(4)), Event::at(t(5), vec![50])]),
-        move |g: &mut TimedGraph, t, x| {
-            t1.lock().unwrap().push(t);
-            *g.state_mut(a) = x;
-        },
-    ));
-    b.add_feed(StreamFeed::new(
-        hist([(2, vec![20])]),
-        move |g: &mut TimedGraph, t, x| {
-            t2.lock().unwrap().push(t);
-            *g.state_mut(c) = x;
-        },
-    ));
+    b.add_source(feed(stream::iter([
+        Event::frontier(t(4)),
+        Event::at(t(5), vec![50]),
+    ])));
+    b.add_source(feed(hist([(2, vec![20])])));
     let mut d = b.build_with_threads(threads());
 
-    pollster::block_on(d.run(|_, _| {}));
-    assert_eq!(*ts.lock().unwrap(), vec![t(2), t(5)]);
+    let mut ts = Vec::new();
+    pollster::block_on(d.run(|_, t| ts.push(t)));
+    assert_eq!(ts, vec![t(2), t(5)]);
 }
 
 /// The heap-based merge keeps global order across many feeds. Feed `i` emits one
@@ -384,23 +370,15 @@ fn frontier_message_advances_without_data() {
 fn many_feeds_merge_in_order() {
     const N: i64 = 200;
     let mut b = builder(SimClock::at(t(N + 1)));
-    let srcs: Vec<_> = (0..N)
-        .map(|_| b.push_source(RefSource::new(Batch::new())))
-        .collect();
 
-    // Add some feeds twice (same timestamp) to exercise cross-feed batching: each
-    // duplicated pair folds into that timestamp's single generation.
+    // Register some feeds at duplicated timestamps to exercise cross-feed
+    // batching: each duplicated pair folds into that timestamp's single
+    // generation.
     for &i in [7i64, 3, 199, 42, 0]
         .iter()
         .chain((0..N).collect::<Vec<_>>().iter())
     {
-        let s = srcs[i as usize];
-        b.add_feed(StreamFeed::new(
-            hist([(i + 1, vec![i])]),
-            move |g: &mut TimedGraph, _t, x| {
-                *g.state_mut(s) = x;
-            },
-        ));
+        b.add_source(feed(hist([(i + 1, vec![i])])));
     }
     let mut d = b.build_with_threads(threads());
 
@@ -464,7 +442,7 @@ fn lazy_feed_materializes_on_first_poll() {
 /// A session with no feeds is immediately done.
 #[test]
 fn empty_graph_is_done() {
-    let mut d = Scenario::new(SimClock::at(t(0)), t(0)).build();
+    let mut d = Scenario::new(SimClock::at(t(0))).build();
     assert_eq!(pollster::block_on(d.step()), None);
 }
 
@@ -492,25 +470,15 @@ fn async_channel_feeds_merge_in_order() {
     });
 
     let mut b = builder(SimClock::at(Instant::MAX));
-    let a = b.push_source(RefSource::new(Batch::new()));
-    let c = b.push_source(RefSource::new(Batch::new()));
-
-    let ts = Arc::new(Mutex::new(Vec::new()));
-    let (t1, t2) = (ts.clone(), ts.clone());
-    b.add_feed(StreamFeed::new(rx_a, move |g: &mut TimedGraph, t, x| {
-        t1.lock().unwrap().push(t);
-        *g.state_mut(a) = x;
-    }));
-    b.add_feed(StreamFeed::new(rx_c, move |g: &mut TimedGraph, t, x| {
-        t2.lock().unwrap().push(t);
-        *g.state_mut(c) = x;
-    }));
+    b.add_source(feed(rx_a));
+    b.add_source(feed(rx_c));
     let mut d = b.build_with_threads(threads());
 
-    pollster::block_on(d.run(|_, _| {}));
+    let mut ts = Vec::new();
+    pollster::block_on(d.run(|_, t| ts.push(t)));
     pa.join().unwrap();
     pc.join().unwrap();
-    assert_eq!(*ts.lock().unwrap(), vec![t(1), t(2), t(3), t(4)]);
+    assert_eq!(ts, vec![t(1), t(2), t(3), t(4)]);
 }
 
 /// `Scenario` wires sources and operators in one place: events merge in
@@ -545,17 +513,6 @@ fn event_time_context_stamps_batches() {
     pollster::block_on(d.run(|_, _| {}));
     assert_eq!(*rows.lock().unwrap(), vec![(t(5), 50), (t(9), 90)]);
     assert_eq!(*d.context(), t(9));
-}
-
-/// Before the first batch the context is the floor passed to `Scenario::new`,
-/// so a segment reading time on the build call sees it (and tells that call
-/// apart via `is_first_run`) rather than an absent value.
-#[test]
-fn context_starts_at_the_initial_floor() {
-    let b = Scenario::new(SimClock::at(t(100)), t(7));
-    assert_eq!(*b.context(), t(7));
-    let d = b.build();
-    assert_eq!(*d.context(), t(7));
 }
 
 /// Manual stepping: poke a source cell via the deref'd `state_mut`, stamp the
