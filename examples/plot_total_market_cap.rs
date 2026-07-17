@@ -19,9 +19,10 @@
 #[path = "common/mod.rs"]
 mod common;
 
+use tradingflow::data::{Array, ArrayView};
 use tradingflow::operators::{apply, benchmark, map, multiply, record, resample_view};
 use tradingflow::sources::pulse;
-use tradingflow::{Array, ArrayView, Scenario, WallClock};
+use tradingflow::{Scenario, WallClock};
 
 use clap::Parser;
 
@@ -44,7 +45,7 @@ async fn main() {
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));
 
-    let rebalance_clock = sc.add_source(pulse(args.rebalance_instants()));
+    let rebalance_clock = sc.source(pulse(args.rebalance_instants()));
     let universe = common::build_cap_weighted_universe(
         &mut sc,
         circ_market_cap,

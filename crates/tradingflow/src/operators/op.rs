@@ -2,8 +2,8 @@
 //! / [`SeriesValue`] [`Value`] kinds (with the [`array_cell`] / [`series_cell`]
 //! hand-poked cells over them), and the [`StripNotify`] payload helper.
 //!
-//! TradingFlow operators implement [`Operator`](crate::graph::Operator)
-//! (notify-gated; the common case) or [`Segment`](crate::graph::Segment) (custom
+//! TradingFlow operators implement [`Operator`](tradingflow_graph::typed::Operator)
+//! (notify-gated; the common case) or [`Segment`](tradingflow_graph::typed::Segment) (custom
 //! gating, e.g. [`Clocked`](super::Clocked)) **directly** — there is no
 //! TradingFlow-side operator trait or bridge, so operators compose with
 //! the engine's combinators and the `segment!` fusion macro as-is.
@@ -20,17 +20,17 @@
 //! Python host) accept views.
 //!
 //! Concretely, array-shaped edges all carry a borrowed, strided
-//! [`ArrayView<'a, T, N>`](crate::ArrayView) by value through an
+//! [`ArrayView<'a, T, N>`](tradingflow_data::ArrayView) by value through an
 //! [`ArrayPort<T, N>`] leaf — one currency for owned-buffer outputs and
 //! zero-copy slices alike. A compute operator homes its output buffer in `State`
-//! (an owned [`Array<T, N>`](crate::Array)) and returns a view of it;
+//! (an owned [`Array<T, N>`](tradingflow_data::Array)) and returns a view of it;
 //! a slicing operator ([`SliceView`](super::SliceView)) re-derives a strided view
 //! of its input by value, needing neither in-state shape nor an arena. Edges that
 //! fan a single buffer into / out of `N` views ([`Split`](super::Split) outputs,
 //! [`Stack`](super::Stack) inputs) use the [`ArrayPorts<T, N>`] group — the same
 //! by-value views, N per wire, wired straight from/to plain [`ArrayPort`]
 //! handles. Recorded-history edges carry a
-//! [`SeriesView<'a, T, N>`](crate::SeriesView) window through [`SeriesPort`] /
+//! [`SeriesView<'a, T, N>`](tradingflow_data::SeriesView) window through [`SeriesPort`] /
 //! [`SeriesPorts`] the same way.
 //!
 //! Owned values **enter** the currency at source cells — the engine's own
@@ -38,18 +38,18 @@
 //! nominates the view's owned form (`ArrayValue` is owned by an
 //! [`Array`], `SeriesValue` by a [`Series`]), so a [`ViewSource`] cell
 //! owns the value in node state (poke it via
-//! [`state_mut`](crate::graph::Graph::state_mut), which dirties the node) and
+//! [`state_mut`](tradingflow_graph::typed::Graph::state_mut), which dirties the node) and
 //! borrows its view per generation, while whole-value payloads (a pulse's
 //! `()`, a test's `i64`, an event batch `Vec<E>`) are
-//! [`Ref<T>`](crate::graph::Ref) cells
-//! ([`RefSource`](crate::graph::RefSource)). An
+//! [`Ref<T>`](tradingflow_graph::typed::Ref) cells
+//! ([`RefSource`](tradingflow_graph::typed::RefSource)). An
 //! [`EventSource`](crate::ingest::EventSource) simply names its cell's kind
 //! (`type Value`), and
-//! [`Scenario::add_source`](crate::Scenario::add_source) allocates the
+//! [`Scenario::source`](crate::Scenario::source) allocates the
 //! `ViewSource<S::Value>` directly — a source handle wires into the
 //! operator library with no adapter and no owned-type dispatch trait;
 //! hand-poked cells use [`array_cell`] / [`series_cell`] or the engine's
-//! [`RefSource`](crate::graph::RefSource).
+//! [`RefSource`](tradingflow_graph::typed::RefSource).
 //!
 //! Conventions shared by every operator in this module tree:
 //!
@@ -89,21 +89,20 @@
 //! Operators remain **pure** with respect to time: nearly all ignore the
 //! argument, and only the few that genuinely stamp it read it (e.g.
 //! [`Record`](super::Record)). Before the first batch the context holds
-//! [`Instant::MIN`](crate::Instant::MIN), the floor set by `Scenario::new`; an
+//! [`Instant::MIN`](tradingflow_data::Instant::MIN), the floor set by `Scenario::new`; an
 //! operator that must tell that build call apart uses the `init` flag, not the
 //! timestamp.
 
 use std::marker::PhantomData;
 
-use crate::graph::{Interface, Value, ViewPort, ViewPorts, ViewSource};
-
-use crate::{Array, ArrayView, Scalar, Series, SeriesView};
+use crate::data::{Array, ArrayView, Scalar, Series, SeriesView};
+use crate::graph::typed::{Interface, Value, ViewPort, ViewPorts, ViewSource};
 
 // ===========================================================================
 // View markers + port aliases — the engine-facing spelling of the currencies.
 // ===========================================================================
 
-/// [`Value`] kind passing a borrowed [`ArrayView<'a, T, N>`](crate::ArrayView)
+/// [`Value`] kind passing a borrowed [`ArrayView<'a, T, N>`](tradingflow_data::ArrayView)
 /// across interfaces with the engine's per-generation lifetime — fully
 /// borrow-checked zero-copy edges. Never spelled directly in operator
 /// signatures: use the port aliases [`ArrayPort`] / [`ArrayPorts`]. The rank
@@ -124,7 +123,7 @@ unsafe impl<T: Scalar, const N: usize> Value for ArrayValue<T, N> {
 }
 
 /// [`Value`] kind passing a borrowed
-/// [`SeriesView<'a, T, N>`](crate::SeriesView) (a recorded-history window)
+/// [`SeriesView<'a, T, N>`](tradingflow_data::SeriesView) (a recorded-history window)
 /// across interfaces — the [`ArrayValue`] analogue for [`Series`]
 /// edges. Never spelled directly: use [`SeriesPort`] / [`SeriesPorts`].
 ///
@@ -147,7 +146,7 @@ unsafe impl<T: Scalar, const N: usize> Value for SeriesValue<T, N> {
     }
 }
 
-/// A single port carrying a strided [`ArrayView<T, N>`](crate::ArrayView) by
+/// A single port carrying a strided [`ArrayView<T, N>`](tradingflow_data::ArrayView) by
 /// value — the array-shaped edge currency.
 pub type ArrayPort<T, const N: usize> = ViewPort<ArrayValue<T, N>>;
 
@@ -156,7 +155,7 @@ pub type ArrayPort<T, const N: usize> = ViewPort<ArrayValue<T, N>>;
 /// producer handles (`&[PortHandle<ArrayPort<T, N>>]`), no bridging adapters.
 pub type ArrayPorts<T, const N: usize> = ViewPorts<ArrayValue<T, N>>;
 
-/// A single port carrying a [`SeriesView<T, N>`](crate::SeriesView) (recorded
+/// A single port carrying a [`SeriesView<T, N>`](tradingflow_data::SeriesView) (recorded
 /// history window) by value — the [`Series`] edge currency.
 pub type SeriesPort<T, const N: usize> = ViewPort<SeriesValue<T, N>>;
 
@@ -170,11 +169,11 @@ pub type SeriesPorts<T, const N: usize> = ViewPorts<SeriesValue<T, N>>;
 
 /// A hand-poked [`Array`] cell: a [`ViewSource`] owning `initial` in node
 /// state and lending its [`ArrayPort`] view (write it via
-/// [`state_mut`](crate::graph::Graph::state_mut), which dirties the node).
-/// This is what [`Scenario::add_source`](crate::Scenario::add_source)
+/// [`state_mut`](tradingflow_graph::typed::Graph::state_mut), which dirties the node).
+/// This is what [`Scenario::source`](crate::Scenario::source)
 /// allocates for an [`ArrayValue`] source; push one directly for a constant
 /// or test cell. Whole-value cells use the engine's
-/// [`RefSource`](crate::graph::RefSource) / [`Source`](crate::graph::Source).
+/// [`RefSource`](tradingflow_graph::typed::RefSource) / [`Source`](tradingflow_graph::typed::Source).
 pub fn array_cell<T: Scalar, const N: usize, C: Send + Sync + 'static>(
     initial: Array<T, N>,
 ) -> ViewSource<ArrayValue<T, N>, C> {

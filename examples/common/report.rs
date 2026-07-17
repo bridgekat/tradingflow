@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
-use tradingflow::graph::{PortHandle, RefPort};
-use tradingflow::operators::SeriesPort;
-
+use tradingflow::Session;
 use tradingflow::data::civil_from_days;
-use tradingflow::{Instant, SeriesView, Session};
+use tradingflow::data::{Instant, SeriesView};
+use tradingflow::graph::typed::{PortHandle, RefPort};
+use tradingflow::operators::SeriesPort;
 
 /// `YYYY-MM-DD` for an event [`Instant`].
 pub fn date_str(ts: Instant) -> String {

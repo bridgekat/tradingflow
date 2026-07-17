@@ -1,15 +1,14 @@
 //! The stacked cross-sectional market panel: parquet sources → `[num_stocks]`
 //! per-field panels, via one fused per-stock segment.
 
-use tradingflow::graph::PortHandle;
-
-use tradingflow::data::Duration;
+use tradingflow::Scenario;
+use tradingflow::data::{Array, ArrayView, Duration};
+use tradingflow::graph::typed::PortHandle;
 use tradingflow::operators::{
     ArrayPort, annualize, apply, forward_adjust, gate, multiply, select, slice_view, split, stack,
     stack_sync,
 };
 use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
-use tradingflow::{Array, ArrayView, Scenario};
 
 use super::AvH;
 use super::args::CommonArgs;
@@ -61,7 +60,7 @@ fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
 /// Each panel fans out through a single [`Split`] node (`1 → N` rows), every
 /// stock's whole transform chain (NaN `Gate` + column `Select`s +
 /// `ForwardAdjust` + `Annualize` + ...) is **fused into one segment** via
-/// `tradingflow::segment!` — one scheduling unit per stock instead of ~19 nodes,
+/// `tradingflow_graph::segment!` — one scheduling unit per stock instead of ~19 nodes,
 /// with identical per-operator notify/cutoff semantics (each sub-operator keeps
 /// its own gate inside the fused node) — and `StackSync` (NaN-fill non-trading
 /// slots) / `Stack` (carry last-known) recombine into `[N]` panels. The financial
@@ -85,7 +84,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             let s =
                 ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
                     .with_time_range(start, end);
-            sc.add_source(s)
+            sc.source(s)
         };
     let report_panel = |sc: &mut Scenario,
                         kind: &str,
@@ -100,7 +99,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         .with_report_date(with_report_date)
         .use_effective_date(Duration::ZERO)
         .with_time_range(start, end);
-        sc.add_source(s)
+        sc.source(s)
     };
 
     let prices_panel = daily_panel(
@@ -212,7 +211,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         // (`prices_extras` [4], `income_ann` [4], `balance_extras` [7], `cf_ann`
         // [3]) are rank-1 `[K]` views. Each `Split` row is an ordinary by-value
         // `ArrayPort<f64, 1>`, consumed directly by the `Gate`/view operators.
-        let seg = tradingflow::segment!(|prices_row: ArrayPort<f64, 1>,
+        let seg = tradingflow_graph::segment!(|prices_row: ArrayPort<f64, 1>,
                                        div_row: ArrayPort<f64, 1>,
                                        equity_row: ArrayPort<f64, 1>,
                                        balance_row: ArrayPort<f64, 1>,

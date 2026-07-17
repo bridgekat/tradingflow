@@ -10,11 +10,10 @@
 
 use std::marker::PhantomData;
 
-use crate::graph::{Interface, Operator, Segment};
-
 use super::op::{ArrayPort, SeriesPort, StripNotify};
 use crate::data::Shape;
-use crate::{Array, ArrayView, Instant, Scalar, SeriesView};
+use crate::data::{Array, ArrayView, Instant, Scalar, SeriesView};
+use crate::graph::typed::{Interface, Operator, Segment};
 
 // ---------------------------------------------------------------------------
 // Map / MapInplace (single input)
@@ -763,7 +762,7 @@ pub fn slice_view<T: Scalar, const IN: usize, const OUT: usize>(
     SliceView::new(indices, axis, squeeze)
 }
 
-/// The value from `offset` ticks ago in a recorded [`Series`](crate::Series), `fill` until it
+/// The value from `offset` ticks ago in a recorded [`Series`](tradingflow_data::Series), `fill` until it
 /// exists — the primitive behind the self-recording [`lag`](super::lag).
 /// (Named `_series` because `lag` is taken by its live-array counterpart.)
 pub fn lag_series<T: Scalar, const N: usize>(offset: usize, fill: T) -> Lag<T, N> {

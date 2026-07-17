@@ -21,7 +21,8 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::{Retention, Scenario, WallClock};
+use tradingflow::data::Retention;
+use tradingflow::{Scenario, WallClock};
 
 use common::FeatureSet;
 use common::models::{benchmark_relative, ridge_mean, shrinkage_cov};

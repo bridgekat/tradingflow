@@ -1,14 +1,13 @@
 //! Cross-sectional feature panels: the canonical 7-factor set and the CICC
 //! handbook catalogs, each stacked into `(N, F)` and recorded on the daily pulse.
 
-use tradingflow::graph::{PortHandle, RefPort};
-
-use tradingflow::data::Duration;
+use tradingflow::Scenario;
+use tradingflow::data::{Duration, Retention, Series};
+use tradingflow::graph::typed::{PortHandle, RefPort};
 use tradingflow::operators::{
     SeriesPort, Window, divide, lag_series, log, ma, ma_time, multiply, percentile, record_bounded,
     resample_view, rolling_variance, sqrt, stack, subtract, winsorize,
 };
-use tradingflow::{Retention, Scenario, Series};
 
 use super::data::Stacked;
 use super::{AvH, RETAIN_MARGIN, factors, pv_factors};

@@ -32,13 +32,13 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::graph::Operator;
-
+use tradingflow::data::{Array, ArrayView, Instant};
+use tradingflow::graph::typed::Operator;
 use tradingflow::operators::{
     ArrayPort, lag_series, log, multiply, percentile, record, resample_clocked, stack,
 };
 use tradingflow::sources::pulse;
-use tradingflow::{Array, ArrayView, Instant, Scenario, WallClock};
+use tradingflow::{Scenario, WallClock};
 
 use clap::Parser;
 
@@ -218,7 +218,7 @@ fn monotonicity(anns: &[f64]) -> f64 {
     (sxy / (sxx.sqrt() * syy.sqrt())).abs()
 }
 
-type NavHandle = tradingflow::graph::PortHandle<tradingflow::operators::SeriesPort<f64, 0>>;
+type NavHandle = tradingflow_graph::typed::PortHandle<tradingflow::operators::SeriesPort<f64, 0>>;
 
 #[tokio::main]
 async fn main() {
@@ -244,7 +244,7 @@ async fn main() {
     let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));
     let log_adj = sc.segment(log(), st.adjusted_close);
 
-    let rebalance_clock = sc.add_source(pulse(args.common.rebalance_instants()));
+    let rebalance_clock = sc.source(pulse(args.common.rebalance_instants()));
 
     // Universe = the top-`index_size` stocks by circulating market cap, recomputed
     // each rebalance — a synthetic cap-ranked index, uniform with the other

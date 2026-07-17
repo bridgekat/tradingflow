@@ -17,14 +17,14 @@
 //! `mmt_report_*` (earnings-announcement dates), and the 波动率 / 流动性 /
 //! 量价相关性 categories.
 
-use tradingflow::graph::{Operator, PortHandle};
-
+use tradingflow::Scenario;
+use tradingflow::data::{Array, ArrayView, Instant, Retention, SeriesView};
+use tradingflow::graph::typed::{Operator, PortHandle};
 use tradingflow::operators::{
     ArrayPort, SeriesPort, Window, apply, diff, divide, lag_series, log, max, min, multiply,
     percentile, record_bounded, rolling_mean, rolling_sum, rolling_variance, select, sqrt, stack,
     subtract,
 };
-use tradingflow::{Array, ArrayView, Instant, Retention, Scenario, SeriesView};
 
 use super::factors::{FactorSet, rank_impute};
 use super::{AvH, RETAIN_MARGIN, Stacked};
@@ -73,7 +73,7 @@ fn mul(sc: &mut Scenario, a: H, b: H) -> H {
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
     sc.segment(
-        tradingflow::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
+        tradingflow_graph::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
             sqrt() @ rolling_variance(Window::Count(n)) @ x
         }),
         s,

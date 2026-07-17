@@ -1,15 +1,14 @@
 //! Structural operators — port of `Id`, `Where`, `Cast`, plus the clock-gated
 //! view resamplers [`ResampleView`] / [`ResampleClocked`], implemented
-//! directly on [`Operator`](crate::graph::Operator) / [`Segment`].
+//! directly on [`Operator`](tradingflow_graph::typed::Operator) / [`Segment`].
 
 use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
-use crate::graph::{Operator, RefPort, Segment};
-
 use super::op::ArrayPort;
-use crate::{Array, ArrayView, Instant, Scalar};
+use crate::data::{Array, ArrayView, Instant, Scalar};
+use crate::graph::typed::{Operator, RefPort, Segment};
 
 /// Identity passthrough: clones input to output unchanged. Generic over the
 /// payload `T` (an owned **non-array** value carried by `RefPort<T>` — a

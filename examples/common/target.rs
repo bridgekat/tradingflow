@@ -1,9 +1,9 @@
 //! Prediction targets and trading constraints derived from the market panel.
 
-use tradingflow::graph::{PortHandle, RefPort};
-
+use tradingflow::Scenario;
+use tradingflow::data::{Array, ArrayView, Retention, Series};
+use tradingflow::graph::typed::{PortHandle, RefPort};
 use tradingflow::operators::{SeriesPort, diff, lag, map, record_bounded, winsorize};
-use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
 
 use super::AvH;
 

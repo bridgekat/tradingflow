@@ -4,10 +4,10 @@ use futures::stream::Stream;
 use tokio::sync::mpsc;
 
 use super::receiver_stream;
-use crate::Instant;
+use crate::data::Instant;
+use crate::data::{Array, Scalar, Series};
 use crate::ingest::{Event, EventSource};
 use crate::operators::ArrayValue;
-use crate::{Array, Scalar, Series};
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
 ///

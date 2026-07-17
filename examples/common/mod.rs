@@ -36,8 +36,7 @@
 #![allow(dead_code)] // not every example uses every helper
 #![allow(unused_imports)] // the re-exports below serve all examples, not each one
 
-use tradingflow::graph::{PortHandle, ViewPort};
-
+use tradingflow::graph::typed::{PortHandle, ViewPort};
 use tradingflow::operators::ArrayPort;
 
 // These modules wrap `tradingflow` operators (`PyClassOperator`), so they only

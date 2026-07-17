@@ -3,17 +3,17 @@
 use futures::stream::Stream;
 
 use super::feed::Event;
-use crate::Instant;
-use crate::graph::Value;
+use crate::data::Instant;
+use crate::graph::typed::Value;
 
 /// An event source feeding one graph source cell: an initial cell value, a
 /// stamped event stream, and a write function applying each event to the cell.
 ///
 /// This is the packaged form of a [`Feed`](super::Feed) that writes into a
 /// single source node, consumed by
-/// [`Scenario::add_source`](super::Scenario::add_source): the source names its
+/// [`Scenario::source`](super::Scenario::source): the source names its
 /// cell's [`Value`] kind ([`Value`](Self::Value)), the builder allocates a
-/// [`ViewSource<Self::Value>`](crate::graph::ViewSource) node holding
+/// [`ViewSource<Self::Value>`](tradingflow_graph::typed::ViewSource) node holding
 /// [`initial`](Self::initial), and the driver applies each merged event to the
 /// node's owned cell via the writer [`init`](Self::init) returns. The
 /// returned handle is the
@@ -54,7 +54,7 @@ where
     /// [`Value::Owned`] and the handle speaks `ViewPort<Self::Value>`. An
     /// array source names [`ArrayValue`](crate::operators::ArrayValue); a
     /// whole-value payload (a pulse's `()`, an event batch `Vec<E>`) names
-    /// [`Ref<T>`](crate::graph::Ref).
+    /// [`Ref<T>`](tradingflow_graph::typed::Ref).
     type Value: Value;
 
     /// The value the source cell holds before any event arrives.

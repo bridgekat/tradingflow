@@ -13,8 +13,7 @@
 //! shape is fixed by the return type, and the module path appears exactly once.
 //! Swapping an optimizer is swapping a call.
 
-use tradingflow::graph::RefPort;
-
+use tradingflow::graph::typed::RefPort;
 use tradingflow::operators::{ArrayPort, PyClassOperator, PyParams, SeriesPort, py_class_operator};
 
 // ===========================================================================

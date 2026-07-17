@@ -25,7 +25,8 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::{Retention, Scenario, WallClock};
+use tradingflow::data::Retention;
+use tradingflow::{Scenario, WallClock};
 
 use common::models::{Mode, markowitz, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable};

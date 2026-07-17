@@ -25,15 +25,13 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::graph::PortHandle;
-
-use tradingflow::data::Duration;
+use tradingflow::data::{Array, ArrayView, Duration, Instant, SeriesView};
+use tradingflow::graph::typed::PortHandle;
 use tradingflow::operators::{
     ArrayPort, Window, annualize, divide, filter, map, multiply, negate, record, rolling_mean,
     select,
 };
 use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
-use tradingflow::{Array, ArrayView, Instant, SeriesView};
 use tradingflow::{Scenario, WallClock};
 
 const COLS: [&str; 10] = [
@@ -116,7 +114,7 @@ async fn main() {
      -> PortHandle<ArrayPort<f64, 1>> {
         let s =
             ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
-        let panel = sc.add_source(s);
+        let panel = sc.source(s);
         pick(sc, panel, idx)
     };
     let report = |sc: &mut Scenario,
@@ -130,7 +128,7 @@ async fn main() {
             symbols.clone(),
         )
         .with_report_date(with_report_date);
-        let panel = sc.add_source(s);
+        let panel = sc.source(s);
         pick(sc, panel, idx)
     };
 

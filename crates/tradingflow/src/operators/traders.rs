@@ -1,5 +1,5 @@
 //! Trader (execution) operators, implemented directly on
-//! [`Operator`](crate::graph::Operator).
+//! [`Operator`](tradingflow_graph::typed::Operator).
 //!
 //! A trader turns a strategy's target weights into a simulated portfolio NAV: it
 //! reinvests dividends, executes rebalances against close prices, marks the book
@@ -18,9 +18,8 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use crate::graph::Operator;
-
 use super::op::ArrayPort;
+use crate::graph::typed::Operator;
 use crate::{Array, ArrayView, Instant};
 
 /// A single `[num_stocks]` view port — the per-input edge of every trader.
@@ -685,7 +684,8 @@ pub fn random_trader(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Builder, NodeHandle, Pool, PortHandle, ViewSource};
+    use crate::graph::core::Pool;
+    use crate::graph::typed::{Builder, NodeHandle, PortHandle, ViewSource};
     use crate::operators::op::{ArrayValue, array_cell};
 
     fn arr(v: &[f64]) -> Array<f64, 1> {

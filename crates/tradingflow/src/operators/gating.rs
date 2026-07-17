@@ -1,14 +1,13 @@
 //! Core gating / recording operators, implemented directly on
-//! [`Operator`](crate::graph::Operator) / [`Segment`]. (The legacy `Const` cell is
+//! [`Operator`](tradingflow_graph::typed::Operator) / [`Segment`]. (The legacy `Const` cell is
 //! gone — source cells are
-//! [`source`](crate::graph::Builder::source) nodes now.)
+//! [`source`](tradingflow_graph::typed::Builder::source) nodes now.)
 
 use std::marker::PhantomData;
 
-use crate::graph::{Interface, Operator, RefPort, Segment};
-
 use super::op::{ArrayPort, SeriesPort};
-use crate::{Array, ArrayView, Instant, Retention, Scalar, Series, SeriesView};
+use crate::data::{Array, ArrayView, Instant, Retention, Scalar, Series, SeriesView};
+use crate::graph::typed::{Interface, Operator, RefPort, Segment};
 
 // ---------------------------------------------------------------------------
 // Filter — whole-array gate by predicate (the cutoff operator).

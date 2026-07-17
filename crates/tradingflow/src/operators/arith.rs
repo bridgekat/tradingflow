@@ -4,7 +4,7 @@
 //! [`UnaryMap<T, U, N, F>`] (`Fn(T) -> U`) and [`BinaryMap<T, U, N, F>`]
 //! (`Fn(T, T) -> U`) — over the strided [`ArrayView`] currency, sharing the one
 //! contiguous-fast / strided-slow elementwise core
-//! ([`apply_unary`](crate::data::array::apply_unary) / `apply_binary`).
+//! ([`apply_unary`](tradingflow_data::array::apply_unary) / `apply_binary`).
 //!
 //! Fixing the output scalar `U` names the three sub-families:
 //!
@@ -41,11 +41,10 @@ use std::ops;
 
 use num_traits::{Float, Signed};
 
-use crate::graph::Operator;
-
 use crate::data::array::{apply_binary, apply_unary};
+use crate::data::{Array, ArrayView, Instant, Scalar};
+use crate::graph::typed::Operator;
 use crate::operators::op::ArrayPort;
-use crate::{Array, ArrayView, Instant, Scalar};
 
 // ===========================================================================
 // UnaryMap — one elementwise operator, parameterized by a callable.

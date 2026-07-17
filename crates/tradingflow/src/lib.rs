@@ -37,7 +37,7 @@
 //!
 //!     // Build the computation graph.
 //!     let mut sc = Scenario::new(WallClock);
-//!     let prices = sc.add_source(ArraySource::new(
+//!     let prices = sc.source(ArraySource::new(
 //!         Series::from_vec([], timestamps, values),
 //!         Array::scalar(0.0),
 //!     ));
@@ -92,8 +92,9 @@
 //! interpreter, giving strategies direct access to the Python data-science
 //! ecosystem.
 
-pub mod data;
-pub mod graph;
+pub use tradingflow_data as data;
+pub use tradingflow_graph as graph;
+
 pub mod ingest;
 pub mod operators;
 pub mod sources;

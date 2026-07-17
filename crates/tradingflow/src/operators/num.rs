@@ -15,10 +15,9 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::graph::Operator;
-
+use crate::data::{Array, ArrayView, Instant, Scalar};
+use crate::graph::typed::Operator;
 use crate::operators::op::ArrayPort;
-use crate::{Array, ArrayView, Instant, Scalar};
 
 // ---------------------------------------------------------------------------
 // Clamp

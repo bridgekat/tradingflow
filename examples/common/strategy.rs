@@ -6,11 +6,11 @@
 //! → trader → total value → record). What remains in each example is the part
 //! that actually differs: which predictor, which optimizer, which trader.
 
-use tradingflow::graph::{PortHandle, RefPort};
-
+use tradingflow::data::{Array, ArrayView, Instant, Retention};
+use tradingflow::graph::typed::{PortHandle, RefPort};
 use tradingflow::operators::{ArrayPort, SeriesPort, benchmark, log, map, multiply, record};
 use tradingflow::sources::pulse;
-use tradingflow::{Array, ArrayView, Instant, Retention, Scenario, Session};
+use tradingflow::{Scenario, Session};
 
 use super::AvH;
 use super::args::CommonArgs;
@@ -92,7 +92,7 @@ impl Market {
             build_log_return_target(sc, log_adj, retention);
         let (upper, lower) = build_price_limits(sc, st.close, PRICE_LIMIT);
 
-        let rebalance_clock = sc.add_source(pulse(args.rebalance_instants()));
+        let rebalance_clock = sc.source(pulse(args.rebalance_instants()));
         let universe =
             build_cap_weighted_universe(sc, circ_market_cap, rebalance_clock, args.index_size);
 
@@ -124,7 +124,7 @@ impl Market {
     /// aware) — which is the cost-model swap point.
     pub fn simulate<T>(&self, sc: &mut Scenario, trader: T, positions: AvH) -> ScH
     where
-        T: tradingflow::graph::Segment<
+        T: tradingflow_graph::typed::Segment<
                 Inputs = (
                     ArrayPort<f64, 1>,
                     ArrayPort<f64, 1>,

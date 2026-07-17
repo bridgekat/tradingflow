@@ -22,7 +22,7 @@
 //! ~1-year lag of an irregular-cadence series: the level is resampled onto the
 //! daily close pulse and run through the self-recording 244-day [`change`] /
 //! [`growth`] (the 次新 idiom), fused into one node via a nested
-//! [`segment!`](tradingflow::segment) — the form recommended for individual
+//! [`segment!`](tradingflow_graph::segment) — the form recommended for individual
 //! factors. (`(cur − prev)/prev` is NOT rank-equivalent to `cur/prev` once a
 //! year-ago base goes negative, so the subtraction is kept rather than dropped.)
 //!
@@ -32,10 +32,9 @@
 //! and a cash-tax-paid term), dividend yield/payout (DP/DPR), and the regression
 //! / SUE / composite (Profit/Growth/Safe/QQC) factors.
 
-use tradingflow::graph::{PortHandle, RefPort, ViewPort};
-
 use tradingflow::Scenario;
 use tradingflow::data::Duration;
+use tradingflow::graph::typed::{PortHandle, RefPort, ViewPort};
 use tradingflow::operators::{
     self, ArrayPort, ResampleView, change, diff, divide, fillna, growth, log, ma_time, multiply,
     negate, percentile, resample_clocked, subtract,
@@ -71,7 +70,7 @@ pub struct FactorSet {
 /// The rank → fill chain is fused into one node via `segment!`.
 pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
     sc.segment(
-        tradingflow::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+        tradingflow_graph::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             fillna(0.5) @ percentile() @ x
         }),
         h,
@@ -114,7 +113,7 @@ fn neg(sc: &mut Scenario, h: H) -> H {
 /// The 次新 listing filter excludes names without a full prior year.
 fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
     sc.segment(
-        tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+        tradingflow_graph::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             change(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
@@ -126,7 +125,7 @@ fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
 /// [`delta`].
 fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
     sc.segment(
-        tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+        tradingflow_graph::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             growth(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
         (st.adjusted_close, level),

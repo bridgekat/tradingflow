@@ -19,14 +19,14 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::graph::PortHandle;
+use tradingflow::graph::typed::PortHandle;
 
+use tradingflow::data::{Array, ArrayView, Instant, SeriesView};
 use tradingflow::operators::{
     ArrayPort, Window, add, array_cell, filter, forward_adjust, multiply, record, rolling_mean,
     rolling_variance, select, sqrt, subtract,
 };
 use tradingflow::sources::ParquetPanelSource;
-use tradingflow::{Array, ArrayView, Instant, SeriesView};
 use tradingflow::{Scenario, WallClock};
 
 const WINDOW: usize = 252;
@@ -100,13 +100,13 @@ async fn main() {
         vec!["prices.close".into(), "prices.volume".into()],
         symbols.clone(),
     );
-    let price_panel = sc.add_source(price_src);
+    let price_panel = sc.source(price_src);
     let div_src = ParquetPanelSource::new(
         dividends_pq,
         vec!["dividends.share".into(), "dividends.cash".into()],
         symbols.clone(),
     );
-    let div_panel = sc.add_source(div_src);
+    let div_panel = sc.source(div_src);
 
     // Select the target stock; close (scalar) and volume (scalar) from its row
     // (rank-1 `[K]` → rank-0 scalar via the squeezing `Select`).
@@ -124,8 +124,8 @@ async fn main() {
     let ma = sc.segment(rolling_mean(Window::Count(WINDOW)), adj_series);
     let var = sc.segment(rolling_variance(Window::Count(WINDOW)), adj_series);
     let std = sc.segment(sqrt(), var);
-    let (_, multiple_src) = sc.source(array_cell(Array::scalar(MULTIPLE)));
-    let band = sc.segment(multiply(), (std, multiple_src));
+    let multiple = sc.segment(array_cell(Array::scalar(MULTIPLE)), ());
+    let band = sc.segment(multiply(), (std, multiple));
     let upper = sc.segment(add(), (ma, band));
     let lower = sc.segment(subtract(), (ma, band));
 

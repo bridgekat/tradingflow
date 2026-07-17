@@ -14,9 +14,9 @@ use std::task::{Context, Poll};
 use std::thread;
 
 use futures::stream::{self, Stream};
-use tradingflow::graph::{Port, Ref, RefPort, RefSource, Segment};
+use tradingflow::data::{Duration, Instant};
+use tradingflow::graph::typed::{Port, Ref, RefPort, Segment};
 use tradingflow::ingest::{Clock, Event, EventSource, LazyFeed, Queue, Scenario, StreamFeed};
-use tradingflow::{Duration, Instant};
 
 /// Nanosecond-count shorthand for the TAI [`Instant`].
 fn t(n: i64) -> Instant {
@@ -244,7 +244,7 @@ impl Segment for Recorder {
 #[test]
 fn single_feed_orders_and_accumulates() {
     let mut b = builder(SimClock::at(t(0)));
-    let data = b.add_source(feed(hist([(1, vec![10]), (2, vec![20]), (3, vec![30])])));
+    let data = b.source(feed(hist([(1, vec![10]), (2, vec![20]), (3, vec![30])])));
     let sum = b.segment(Sum, data);
     let mut d = b.build_with_threads(threads());
 
@@ -257,8 +257,8 @@ fn single_feed_orders_and_accumulates() {
 #[test]
 fn merges_feeds_in_timestamp_order() {
     let mut b = builder(SimClock::at(t(0)));
-    b.add_source(feed(hist([(1, vec![10]), (3, vec![30])])));
-    b.add_source(feed(hist([(2, vec![20])])));
+    b.source(feed(hist([(1, vec![10]), (3, vec![30])])));
+    b.source(feed(hist([(2, vec![20])])));
     let mut d = b.build_with_threads(threads());
 
     let mut ts = Vec::new();
@@ -270,8 +270,8 @@ fn merges_feeds_in_timestamp_order() {
 #[test]
 fn batches_equal_timestamps_across_feeds() {
     let mut b = builder(SimClock::at(t(0)));
-    let a = b.add_source(feed(hist([(5, vec![1, 2])])));
-    let c = b.add_source(feed(hist([(5, vec![4])])));
+    let a = b.source(feed(hist([(5, vec![1, 2])])));
+    let c = b.source(feed(hist([(5, vec![4])])));
     let sa = b.segment(Sum, a);
     let sc = b.segment(Sum, c);
     let mut d = b.build_with_threads(threads());
@@ -289,7 +289,7 @@ fn batches_equal_timestamps_across_feeds() {
 fn future_events_gated_by_wall_clock() {
     let clock = SimClock::at(t(0));
     let mut b = builder(clock.clone());
-    b.add_source(feed(hist([(5, vec![50]), (10, vec![100])])));
+    b.source(feed(hist([(5, vec![50]), (10, vec![100])])));
     let mut d = b.build_with_threads(threads());
 
     let mut nows = Vec::new();
@@ -302,8 +302,8 @@ fn future_events_gated_by_wall_clock() {
 #[test]
 fn implicit_events_stamped_with_wall_clock() {
     let mut b = builder(SimClock::at(t(7)));
-    b.add_source(feed(hist([(3, vec![30])])));
-    b.add_source(feed(live([vec![70]])));
+    b.source(feed(hist([(3, vec![30])])));
+    b.source(feed(live([vec![70]])));
     let mut d = b.build_with_threads(threads());
 
     let mut ts = Vec::new();
@@ -318,7 +318,7 @@ fn implicit_events_stamped_with_wall_clock() {
 fn same_stamp_run_within_one_feed() {
     let mut b = builder(SimClock::at(t(0)));
     let log = Arc::new(Mutex::new(Vec::new()));
-    b.add_source(feed_logged(
+    b.source(feed_logged(
         hist([(5, vec![1]), (5, vec![2]), (6, vec![3])]),
         log.clone(),
     ));
@@ -339,8 +339,8 @@ fn same_stamp_run_within_one_feed() {
 #[test]
 fn same_stamp_implicit_events_batch() {
     let mut b = builder(SimClock::at(t(7)));
-    let a = b.add_source(feed(live([vec![1, 2]])));
-    let c = b.add_source(feed(live([vec![4]])));
+    let a = b.source(feed(live([vec![1, 2]])));
+    let c = b.source(feed(live([vec![4]])));
     let sa = b.segment(Sum, a);
     let sc = b.segment(Sum, c);
     let mut d = b.build_with_threads(threads());
@@ -357,11 +357,11 @@ fn same_stamp_implicit_events_batch() {
 #[test]
 fn frontier_message_advances_without_data() {
     let mut b = builder(SimClock::at(t(100)));
-    b.add_source(feed(stream::iter([
+    b.source(feed(stream::iter([
         Event::frontier(t(4)),
         Event::at(t(5), vec![50]),
     ])));
-    b.add_source(feed(hist([(2, vec![20])])));
+    b.source(feed(hist([(2, vec![20])])));
     let mut d = b.build_with_threads(threads());
 
     let mut ts = Vec::new();
@@ -383,7 +383,7 @@ fn many_feeds_merge_in_order() {
         .iter()
         .chain((0..N).collect::<Vec<_>>().iter())
     {
-        b.add_source(feed(hist([(i + 1, vec![i])])));
+        b.source(feed(hist([(i + 1, vec![i])])));
     }
     let mut d = b.build_with_threads(threads());
 
@@ -475,8 +475,8 @@ fn async_channel_feeds_merge_in_order() {
     });
 
     let mut b = builder(SimClock::at(Instant::MAX));
-    b.add_source(feed(rx_a));
-    b.add_source(feed(rx_c));
+    b.source(feed(rx_a));
+    b.source(feed(rx_c));
     let mut d = b.build_with_threads(threads());
 
     let mut ts = Vec::new();
@@ -492,8 +492,8 @@ fn async_channel_feeds_merge_in_order() {
 #[test]
 fn builder_add_source_merges_and_counts() {
     let mut b = builder(SimClock::at(t(0)));
-    let x = b.add_source(Replay(vec![(1, 10), (3, 30)]));
-    let y = b.add_source(Replay(vec![(2, 20), (3, 40)]));
+    let x = b.source(Replay(vec![(1, 10), (3, 30)]));
+    let y = b.source(Replay(vec![(2, 20), (3, 40)]));
     let sum = b.segment(Add, (x, y));
     let mut d = b.build();
 
@@ -510,7 +510,7 @@ fn builder_add_source_merges_and_counts() {
 #[test]
 fn event_time_context_stamps_batches() {
     let mut b = builder(SimClock::at(t(0)));
-    let x = b.add_source(Replay(vec![(5, 50), (9, 90)]));
+    let x = b.source(Replay(vec![(5, 50), (9, 90)]));
     let rows = Arc::new(Mutex::new(Vec::new()));
     b.segment(Recorder(rows.clone()), x);
     let mut d = b.build();
@@ -518,20 +518,4 @@ fn event_time_context_stamps_batches() {
     pollster::block_on(d.run(|_, _| {}));
     assert_eq!(*rows.lock().unwrap(), vec![(t(5), 50), (t(9), 90)]);
     assert_eq!(*d.context(), t(9));
-}
-
-/// Manual stepping: poke a source cell via the deref'd `state_mut`, stamp the
-/// generation by setting the event-time context, then `stabilize`.
-#[test]
-fn state_mut_and_manual_stabilize() {
-    let mut b = builder(SimClock::at(t(0)));
-    let (k_cell, k) = b.source(RefSource::new(7i64));
-    let rows = Arc::new(Mutex::new(Vec::new()));
-    b.segment(Recorder(rows.clone()), k);
-    let mut d = b.build();
-
-    *d.state_mut(k_cell) = 8;
-    *d.context_mut() = t(42);
-    d.stabilize();
-    assert_eq!(*rows.lock().unwrap(), vec![(t(42), 8)]);
 }

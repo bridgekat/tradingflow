@@ -12,11 +12,11 @@
 //! edges). Arithmetic uses the lowercase free constructors (`add`/`negate`/…);
 //! the rank-changers carry explicit out-rank generics.
 
-use crate::graph::{Builder, NodeHandle, Pool, PortHandle, RefSource, ViewSource};
-
 use super::*;
+use crate::data::{Array, ArrayView, Duration, Instant, Retention, SeriesView};
+use crate::graph::core::Pool;
+use crate::graph::typed::{Builder, NodeHandle, PortHandle, RefSource, ViewSource};
 use crate::operators::op::ArrayPort;
-use crate::{Array, ArrayView, Duration, Instant, Retention, SeriesView};
 
 fn ts(n: i64) -> Instant {
     Instant::from_nanos(n)
@@ -1025,7 +1025,7 @@ fn fused_segment_matches_unfused_nodes() {
         a.to_contiguous().iter().map(|x| x.to_bits()).collect()
     }
 
-    let fused = crate::segment!(|prices_row: Vp<1>, div_row: Vp<1>|
+    let fused = tradingflow_graph::segment!(|prices_row: Vp<1>, div_row: Vp<1>|
         -> (Vp<0>, Vp<0>) {
         let prices = filter(any_finite) @ prices_row;
         let dividends = filter(any_finite) @ div_row;
@@ -1156,7 +1156,7 @@ fn ma_crossover_signal_fuses_into_one_node() {
 
     // The result is a single application in tail position; the crossover is a
     // rank-0 boolean edge.
-    let seg = crate::segment!(|xs: crate::operators::SeriesPort<f64, 0>| -> ArrayPort<bool, 0> {
+    let seg = tradingflow_graph::segment!(|xs: crate::operators::SeriesPort<f64, 0>| -> ArrayPort<bool, 0> {
         let d = subtract() @ (
             rolling_mean(Window::Count(fast)) @ xs,
             rolling_mean(Window::Count(slow)) @ xs,
@@ -1262,7 +1262,7 @@ fn formula_ma_crossover_signal() {
     let mut b = Builder::new(Instant::MIN);
     let (src, xv) = vec_src(&mut b, vec![0.0, 0.0]);
     let signal = b.segment(
-        crate::segment!(|x: Vp<1>| -> ArrayPort<bool, 1> {
+        tradingflow_graph::segment!(|x: Vp<1>| -> ArrayPort<bool, 1> {
             let d = subtract() @ (ma(fast) @ x, ma(slow) @ x);
             and() @ (
                 greater_than(0.0) @ d,

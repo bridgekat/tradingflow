@@ -11,14 +11,13 @@
 //! via `to_contiguous`); the per-stock selections upstream stay copy-free
 //! ([`SliceView`](super::SliceView)).
 
-use num_traits::Float;
-
-use crate::graph::{Interface, Operator, Segment};
 use bumpalo::Bump;
+use num_traits::Float;
 
 use super::op::{ArrayPort, ArrayPorts};
 use crate::data::Shape;
-use crate::{Array, ArrayView, Instant, Scalar};
+use crate::data::{Array, ArrayView, Instant, Scalar};
+use crate::graph::typed::{Interface, Operator, Segment};
 
 /// Shared runtime state: the axis config, the outer × chunk layout (sized on the
 /// build call), and the output buffer.

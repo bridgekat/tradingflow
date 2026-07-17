@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::Instant;
+use crate::data::Instant;
 
 /// A wall clock source: gates the release of future-dated and implicitly
 /// (["now"](super::Stamp::Now)) stamped events in the ingest merge.

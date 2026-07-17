@@ -1,14 +1,14 @@
 //! Formula constructors — curried, self-recording segments that make
-//! [`segment!`](crate::segment) formulas read like the formulas themselves.
+//! [`segment!`](tradingflow_graph::segment) formulas read like the formulas themselves.
 //!
 //! Every windowed operator ([`RollingMean`], [`Lag`], [`Ema`], …) consumes a
-//! recorded [`Series`](crate::Series), so writing `MA(x, 10)` over a live
+//! recorded [`Series`](tradingflow_data::Series), so writing `MA(x, 10)` over a live
 //! array handle normally takes three steps:
 //! register a [`Record`], size its [`Retention`] to the consumer's look-back,
 //! and wire the rolling operator. The constructors here fuse that chain into
 //! one segment expression, so a signal like
 //! `MA(x, 10) − MA(x, 5) > 0 AND NOT LAG(…, 1) > 0` is a two-line
-//! [`segment!`](crate::segment) body:
+//! [`segment!`](tradingflow_graph::segment) body:
 //!
 //! ```ignore
 //! let signal = sc.segment(
@@ -62,7 +62,7 @@
 //! the examples' long-standing slack). For exotic cadences, fall back to the
 //! hoisted idiom with an explicit [`Retention`].
 
-use crate::graph::{Comp, Fork, Id, Right};
+use crate::graph::typed::{Comp, Fork, Id, Right};
 use num_traits::Float;
 
 use super::arith::{BinaryFn, UnaryFn, divide, sqrt, subtract};
@@ -70,7 +70,7 @@ use super::gating::Record;
 use super::op::ArrayPort;
 use super::rolling::{Ema, RollingMean, RollingSum, RollingVariance};
 use super::transform::Lag;
-use crate::{Duration, Instant, Retention, Scalar};
+use crate::data::{Duration, Instant, Retention, Scalar};
 
 /// Extra rows a private record retains beyond its consumer's exact count
 /// look-back — absorbs the amortized-compaction slack plus the one-row

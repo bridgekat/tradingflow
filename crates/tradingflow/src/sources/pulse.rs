@@ -17,7 +17,7 @@
 //! [`Clocked`]: crate::operators::Clocked
 //! [`ResampleClocked`]: crate::operators::ResampleClocked
 
-use crate::Instant;
+use crate::data::Instant;
 
 use super::iter_source::IterSource;
 

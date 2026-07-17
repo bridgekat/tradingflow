@@ -22,8 +22,9 @@ mod common;
 
 use clap::Parser;
 
+use tradingflow::data::Retention;
 use tradingflow::operators::{diff, record};
-use tradingflow::{Retention, Scenario, WallClock};
+use tradingflow::{Scenario, WallClock};
 
 use common::FeatureSet;
 use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};

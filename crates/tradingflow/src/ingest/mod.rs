@@ -1,14 +1,14 @@
 //! The event-ingestion driver: an async, timestamp-ordered event loop around
-//! a [`Graph`](crate::graph::Graph).
+//! a [`Graph`](tradingflow_graph::typed::Graph).
 //!
-//! [`Scenario`] couples a [`Builder`](crate::graph::Builder) with a [`Queue`] of
+//! [`Scenario`] couples a [`Builder`](tradingflow_graph::typed::Builder) with a [`Queue`] of
 //! event feeds; [`Session`] is the built, self-driving graph. Feeds are
 //! `futures::Stream`s of [`Event`]s; the queue merges every feed's events in
 //! global timestamp order, writes payloads into graph source cells, coalesces
 //! events at equal timestamps into one batch, and stabilizes the graph **at
 //! most once per timestamp** (batch timestamps are strictly increasing).
 //!
-//! Timestamps are the TAI [`Instant`](crate::Instant) — the driver is not
+//! Timestamps are the TAI [`Instant`](tradingflow_data::Instant) — the driver is not
 //! generic over time. The one generic left is the [`Clock`] gating the merge,
 //! defaulted to the real [`WallClock`]; tests substitute simulated clocks for
 //! deterministic replays. (the engine crate itself is time-free: it supplies the
@@ -33,8 +33,8 @@
 //!
 //! # Event time is the graph context
 //!
-//! The typed graph's context ([`Segment::Context`](crate::graph::Segment::Context)) is the
-//! event time [`Instant`](crate::Instant) itself: [`Session::step`] sets it to
+//! The typed graph's context ([`Segment::Context`](tradingflow_graph::typed::Segment::Context)) is the
+//! event time [`Instant`](tradingflow_data::Instant) itself: [`Session::step`] sets it to
 //! the batch timestamp after the batch's event writes and before its
 //! stabilize, so an
 //! operator declaring `type Context = Instant` observes the current event
@@ -53,7 +53,7 @@
 //! `context_mut` (`&mut`, strictly between generations) and reads are the
 //! shared `&Instant` during stabilize, so the borrow checker enforces the
 //! phase separation. Before the first batch the context holds
-//! [`Instant::MIN`](crate::Instant::MIN) — the floor at or below every event
+//! [`Instant::MIN`](tradingflow_data::Instant::MIN) — the floor at or below every event
 //! the run can produce, set by [`Scenario::new`], so the context is
 //! non-decreasing across the whole run. An operator that must tell the build
 //! call apart has its `is_first_run` flag (`init` in the operator
@@ -61,12 +61,12 @@
 
 mod clock;
 mod feed;
-mod graph;
 mod queue;
+mod scenario;
 mod source;
 
 pub use clock::{Clock, WallClock};
 pub use feed::{Event, Feed, LazyFeed, Stamp, StreamFeed};
-pub use graph::{Scenario, Session};
 pub use queue::Queue;
+pub use scenario::{Scenario, Session};
 pub use source::EventSource;

@@ -6,8 +6,8 @@ use futures::stream::Stream;
 use tokio::sync::mpsc;
 
 use super::receiver_stream;
-use crate::Instant;
-use crate::graph::Ref;
+use crate::data::Instant;
+use crate::graph::typed::Ref;
 use crate::ingest::{Event, EventSource};
 
 /// Boxed iterator type produced by an [`IterSource`] factory.

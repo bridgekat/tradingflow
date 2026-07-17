@@ -2,7 +2,7 @@
 //!
 //! Every source in this module implements [`EventSource`](crate::ingest::EventSource)
 //! and is registered into a [`Scenario`](crate::Scenario) via
-//! [`Scenario::add_source`](crate::Scenario::add_source). Sources stream
+//! [`Scenario::source`](crate::Scenario::source). Sources stream
 //! events into the graph through an async channel bridged by
 //! [`receiver_stream`]; the event loop ([`Session::run`](crate::Session::run))
 //! merges them in timestamp order.
@@ -34,7 +34,7 @@
 use futures::stream::Stream;
 use tokio::sync::mpsc;
 
-use crate::Instant;
+use crate::data::Instant;
 use crate::ingest::Event;
 
 pub mod array_source;

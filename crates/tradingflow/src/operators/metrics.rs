@@ -14,10 +14,10 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::graph::{Operator, RefPort};
+use crate::graph::typed::{Operator, RefPort};
 
+use crate::data::{Array, ArrayView, Instant, Scalar};
 use crate::operators::op::ArrayPort;
-use crate::{Array, ArrayView, Instant, Scalar};
 
 // ---------------------------------------------------------------------------
 // CompoundReturn
@@ -578,7 +578,8 @@ pub fn turnover<T: Scalar + Float, const N: usize>() -> Turnover<T, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Builder, Pool};
+    use crate::graph::core::Pool;
+    use crate::graph::typed::Builder;
     use crate::operators::op::array_cell;
 
     /// Turnover: warmup emits nothing; later updates emit the L1 change, with

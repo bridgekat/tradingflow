@@ -62,7 +62,7 @@ use parquet::file::statistics::Statistics;
 
 use hifitime::{Duration as HfDuration, Epoch};
 
-use crate::{Array, Instant};
+use crate::data::{Array, Instant};
 
 /// Historical-only source that pivots a long-format Parquet table into wide
 /// `[N, K]` cross-sections, one per distinct `date`. See the module docs.

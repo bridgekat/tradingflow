@@ -12,7 +12,7 @@ use futures::stream::FuturesUnordered;
 
 use super::clock::{Clock, WallClock};
 use super::feed::{Feed, Stamp};
-use crate::Instant;
+use crate::data::Instant;
 
 /// The currently known frontier of a feed.
 ///

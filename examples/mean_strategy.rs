@@ -26,10 +26,11 @@ mod common;
 
 use clap::Parser;
 
+use tradingflow::data::{Retention, SeriesView};
 use tradingflow::operators::{
     benchmark, compound_return, diff, drawdown, log, random_trader, record, sharpe_ratio, stack,
 };
-use tradingflow::{Retention, Scenario, SeriesView, WallClock};
+use tradingflow::{Scenario, WallClock};
 
 use common::FeatureSet;
 use common::models::{rank_linear, regression_coefficients, ridge_mean};

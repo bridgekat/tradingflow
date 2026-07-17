@@ -4,13 +4,15 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::graph::{Builder, Graph, Pool, PortHandle, ViewPort, ViewSource};
-
 use super::clock::{Clock, WallClock};
 use super::feed::{Feed, LazyFeed, StreamFeed};
 use super::queue::Queue;
 use super::source::EventSource;
-use crate::Instant;
+use crate::data::Instant;
+use crate::graph::core::Pool;
+use crate::graph::typed::{
+    Builder, Graph, HandlesInterface, InterfaceHandles, PortHandle, Segment, ViewPort, ViewSource,
+};
 
 /// The strategy graph builder: a [`Builder`] over the TAI [`Instant`]
 /// context, coupled with an ingest [`Queue`] so a source cell and the feed
@@ -30,7 +32,7 @@ use crate::Instant;
 /// [`context_mut`](Graph::context_mut) if it must carry an event
 /// time). `build()` produces a [`Session`].
 pub struct Scenario<C: Clock = WallClock> {
-    graph: Builder<Instant>,
+    builder: Builder<Instant>,
     queue: Queue<Graph<Instant>, C>,
     num_events: Arc<AtomicUsize>,
     total_num_events: Option<usize>,
@@ -45,7 +47,7 @@ impl<C: Clock> Scenario<C> {
     /// on the build call — which the `init` flag already identifies.
     pub fn new(clock: C) -> Self {
         Self {
-            graph: Builder::new(Instant::MIN),
+            builder: Builder::new(Instant::MIN),
             queue: Queue::new(clock),
             num_events: Arc::new(AtomicUsize::new(0)),
             total_num_events: Some(0),
@@ -66,9 +68,9 @@ impl<C: Clock> Scenario<C> {
     /// edge) with no bridging adapter, while whole-value payloads (e.g. a
     /// [`pulse()`](crate::sources::pulse())'s `()`) are `Ref<T>` cells wiring
     /// as `RefPort<T>`.
-    pub fn add_source<S: EventSource>(&mut self, source: S) -> PortHandle<ViewPort<S::Value>> {
+    pub fn source<S: EventSource>(&mut self, source: S) -> PortHandle<ViewPort<S::Value>> {
         let (cell, handle) = self
-            .graph
+            .builder
             .source(ViewSource::<S::Value, Instant>::new(source.initial()));
         // Accumulate the progress estimate before the source is moved into the
         // feed; a single un-estimable source makes the whole total unknown.
@@ -93,19 +95,52 @@ impl<C: Clock> Scenario<C> {
         }));
         handle
     }
-}
 
-impl<C: Clock> Deref for Scenario<C> {
-    type Target = Builder<Instant>;
-
-    fn deref(&self) -> &Builder<Instant> {
-        &self.graph
+    /// Push a segment wired to `input_handles`, returning its output wire
+    /// handles.
+    ///
+    /// `input_handles` is a free type parameter `H` (the handle tree),
+    /// inferred structurally from the argument; the segment's inputs are then
+    /// pinned by `T: Segment<Inputs = H::Interface>`. This is what lets an
+    /// operator's generic parameters be inferred FROM the wiring (the inverse
+    /// `H -> Interface` of [`HandlesInterface`]), rather than the handle type
+    /// being a non-invertible forward projection of `T`. The segment's
+    /// `Context` is pinned to the builder's `C` the same way.
+    pub fn segment<T, H>(
+        &mut self,
+        segment: T,
+        input_handles: H,
+    ) -> <T::Outputs as InterfaceHandles>::HandlesOwned
+    where
+        H: HandlesInterface,
+        T: Segment<Inputs = H::Interface, Context = Instant>,
+        T::Outputs: InterfaceHandles,
+    {
+        self.builder.segment(segment, input_handles)
     }
-}
 
-impl<C: Clock> DerefMut for Scenario<C> {
-    fn deref_mut(&mut self) -> &mut Builder<Instant> {
-        &mut self.graph
+    /// Finalize into a runnable [`Session`] with a single-threaded pool.
+    pub fn build(self) -> Session<C> {
+        self.build_with_threads(0)
+    }
+
+    /// Like [`build`](Self::build) but with `n` extra worker threads in the
+    /// pool.
+    pub fn build_with_threads(self, n: usize) -> Session<C> {
+        let Scenario {
+            builder: graph,
+            queue,
+            num_events,
+            total_num_events,
+        } = self;
+
+        Session {
+            graph: graph.build(),
+            pool: Pool::new(n),
+            queue,
+            num_events,
+            total_num_events,
+        }
     }
 }
 
@@ -140,32 +175,6 @@ pub struct Session<C: Clock = WallClock> {
     queue: Queue<Graph<Instant>, C>,
     num_events: Arc<AtomicUsize>,
     total_num_events: Option<usize>,
-}
-
-impl<C: Clock> Scenario<C> {
-    /// Finalize into a runnable [`Session`] with a single-threaded pool.
-    pub fn build(self) -> Session<C> {
-        self.build_with_threads(0)
-    }
-
-    /// Like [`build`](Self::build) but with `n` extra worker threads in the
-    /// pool.
-    pub fn build_with_threads(self, n: usize) -> Session<C> {
-        let Scenario {
-            graph,
-            queue,
-            num_events,
-            total_num_events,
-        } = self;
-
-        Session {
-            graph: graph.build(),
-            pool: Pool::new(n),
-            queue,
-            num_events,
-            total_num_events,
-        }
-    }
 }
 
 impl<C: Clock> Session<C> {

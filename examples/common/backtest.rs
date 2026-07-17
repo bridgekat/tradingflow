@@ -13,13 +13,13 @@
 //! benchmark), and execution is the native [`Benchmark`] trader (one-tick-delay
 //! mark-on-close, dividend reinvest, 涨跌停 limit blocking). No new operators.
 
-use tradingflow::graph::PortHandle;
-
+use tradingflow::Scenario;
+use tradingflow::data::{Array, ArrayView, Series};
+use tradingflow::graph::typed::PortHandle;
 use tradingflow::operators::{
     ArrayPort, PyClassOperator, PyParams, SeriesPort, benchmark, map, py_class_operator, record,
     turnover,
 };
-use tradingflow::{Array, ArrayView, Scenario, Series};
 
 use super::AvH;
 use super::strategy::NavH;

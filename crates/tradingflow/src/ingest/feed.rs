@@ -5,7 +5,7 @@ use std::task::{Context, Poll, ready};
 
 use futures::stream::Stream;
 
-use crate::Instant;
+use crate::data::Instant;
 
 /// An explicit timestamp, or an implicit wall-clock time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

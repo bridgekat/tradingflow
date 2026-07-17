@@ -25,8 +25,9 @@ mod common;
 
 use clap::Parser;
 
+use tradingflow::data::Retention;
 use tradingflow::operators::{lag_series, record, resample_clocked};
-use tradingflow::{Retention, Scenario, WallClock};
+use tradingflow::{Scenario, WallClock};
 
 use common::FeatureSet;
 use common::ic::{ic_series, ic_stats};

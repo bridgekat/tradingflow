@@ -6,35 +6,35 @@
 //!
 //! # Design
 //!
-//! * Operators implement [`Operator`](crate::graph::Operator) (notify-gated compute /
-//!   passthrough) or [`Segment`](crate::graph::Segment) (custom gating, e.g.
+//! * Operators implement [`Operator`](tradingflow_graph::typed::Operator) (notify-gated compute /
+//!   passthrough) or [`Segment`](tradingflow_graph::typed::Segment) (custom gating, e.g.
 //!   [`Clocked`]) **directly** — no TradingFlow-side operator trait or bridge.
-//!   **Every** `Array`-shaped edge carries a strided [`ArrayView`](crate::ArrayView)
+//!   **Every** `Array`-shaped edge carries a strided [`ArrayView`](tradingflow_data::ArrayView)
 //!   by value through `ArrayPort<T, N>` (and every `Series`-shaped edge a
-//!   [`SeriesView`](crate::SeriesView) through `SeriesPort<T, N>`) — including
-//!   source cells (an engine [`ViewSource`](crate::graph::ViewSource) lends its
+//!   [`SeriesView`](tradingflow_data::SeriesView) through `SeriesPort<T, N>`) — including
+//!   source cells (an engine [`ViewSource`](tradingflow_graph::typed::ViewSource) lends its
 //!   owned cell; see [`array_cell`]) and the Python host — so there are no
 //!   owned↔view bridge operators. Output buffers live in each
-//!   operator's `State` (an owned [`Array<T, N>`](crate::Array)) and `compute`
+//!   operator's `State` (an owned [`Array<T, N>`](tradingflow_data::Array)) and `compute`
 //!   lends a view of it. The `init == true` build call sizes/seeds buffers from
 //!   the build-time input values without running per-tick side effects (see
 //!   [`op`] for the conventions). Because operators are plain segments, they
 //!   compose with the engine's combinators (`then`/`fork`/`par`) and the
 //!   `segment!` macro.
 //! * The engine's input-notification gating prunes the recompute cone: an
-//!   [`Operator`](crate::graph::Operator)'s compute path fires iff ≥1 input
+//!   [`Operator`](tradingflow_graph::typed::Operator)'s compute path fires iff ≥1 input
 //!   notified (else its `passthrough` re-emits the previous output, un-notified).
 //! * **The contract that makes this sound: *no-notify ⟹ output unchanged*.** See
 //!   the [`op`] module conventions; it is a producer-side duty obeyed by every
 //!   operator here.
-//! * Time is ambient: every operator's `Context` is the [`Instant`](crate::Instant)
+//! * Time is ambient: every operator's `Context` is the [`Instant`](tradingflow_data::Instant)
 //!   the driver sets to the batch's event time before each `stabilize`, so
 //!   `compute` is handed the timestamp (only operators that stamp event time
 //!   read it, and it is never a graph dependency).
 //! * **Every segment has a lowercase free constructor** — `percentile()`,
 //!   `winsorize(p)`, `stack(axis)`, `benchmark(n, cash, adj)`, … — taking the
 //!   operator's parameters and leaving `T` / `N` to be inferred *from the
-//!   wiring* at [`segment`](crate::graph::Builder::segment). Prefer them to the
+//!   wiring* at [`segment`](tradingflow_graph::typed::Builder::segment). Prefer them to the
 //!   inherent `Op::<T, N>::new(..)` forms, which need a turbofish at every call
 //!   site. Constructors are what `segment!` applies with `@`, so a formula
 //!   annotates only the segment's parameters and output interface — every

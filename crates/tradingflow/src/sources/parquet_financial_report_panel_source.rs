@@ -46,7 +46,7 @@ use super::parquet_panel_source::{
     report_year_and_doy, resolve_symbols,
 };
 use super::receiver_stream;
-use crate::{Array, Duration, Instant};
+use crate::data::{Array, Duration, Instant};
 
 /// Historical-only panel source for financial-report long tables. See module docs.
 #[derive(Clone)]
