@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::graph::{Builder, Graph, Handle, Pool, ViewPort, ViewSource};
+use crate::graph::{Builder, Graph, PortHandle, Pool, ViewPort, ViewSource};
 
 use super::clock::{Clock, WallClock};
 use super::feed::{Feed, LazyFeed, StreamFeed};
@@ -22,9 +22,9 @@ use crate::Instant;
 /// is generic only for tests; the default is the real [`WallClock`].
 ///
 /// The builder derefs to the inner [`Builder`]: every segment
-/// registers through the inherited [`push`](Builder::push) applied to
+/// registers through the inherited [`segment`](Builder::segment) applied to
 /// an [`operators`](crate::operators) constructor, and externally-poked
-/// constant cells through [`push_source`](Builder::push_source)
+/// constant cells through [`source`](Builder::source)
 /// (mutate via [`state_mut`](Graph::state_mut), then
 /// [`stabilize`](Session::stabilize) — stamping the generation first with
 /// [`context_mut`](Graph::context_mut) if it must carry an event
@@ -66,10 +66,10 @@ impl<C: Clock> Scenario<C> {
     /// edge) with no bridging adapter, while whole-value payloads (e.g. a
     /// [`pulse()`](crate::sources::pulse())'s `()`) are `Ref<T>` cells wiring
     /// as `RefPort<T>`.
-    pub fn add_source<S: EventSource>(&mut self, source: S) -> Handle<ViewPort<S::Value>> {
-        let handle = self
+    pub fn add_source<S: EventSource>(&mut self, source: S) -> PortHandle<ViewPort<S::Value>> {
+        let (cell, handle) = self
             .graph
-            .push_source(ViewSource::<S::Value, Instant>::new(source.initial()));
+            .source(ViewSource::<S::Value, Instant>::new(source.initial()));
         // Accumulate the progress estimate before the source is moved into the
         // feed; a single un-estimable source makes the whole total unknown.
         let est = source.total_num_events();
@@ -85,13 +85,13 @@ impl<C: Clock> Scenario<C> {
             let feed: Box<dyn Feed<Graph<Instant>>> = Box::new(StreamFeed::new(
                 stream,
                 move |graph: &mut Graph<Instant>, ts, event| {
-                    let n = write(event, graph.state_mut(handle), ts);
+                    let n = write(event, graph.state_mut(cell), ts);
                     counter.fetch_add(n, Ordering::Relaxed);
                 },
             ));
             feed
         }));
-        *handle
+        handle
     }
 }
 

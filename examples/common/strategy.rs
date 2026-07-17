@@ -6,7 +6,7 @@
 //! → trader → total value → record). What remains in each example is the part
 //! that actually differs: which predictor, which optimizer, which trader.
 
-use tradingflow::graph::{Handle, RefPort};
+use tradingflow::graph::{PortHandle, RefPort};
 
 use tradingflow::operators::{ArrayPort, SeriesPort, benchmark, log, map, multiply, record};
 use tradingflow::sources::pulse;
@@ -31,16 +31,16 @@ pub const PRICE_LIMIT: f64 = 0.10;
 pub const TARGET_OFFSET: i64 = 1;
 
 /// A scalar view handle (a rank-0 `ArrayView` port).
-pub type ScH = Handle<ArrayPort<f64, 0>>;
+pub type ScH = PortHandle<ArrayPort<f64, 0>>;
 /// A recorded scalar series handle — a NAV curve.
-pub type NavH = Handle<SeriesPort<f64, 0>>;
+pub type NavH = PortHandle<SeriesPort<f64, 0>>;
 /// A positions handle — the Python portfolios emit the same `ArrayPort` view
 /// currency as every other array edge.
-pub type PosH = Handle<ArrayPort<f64, 1>>;
+pub type PosH = PortHandle<ArrayPort<f64, 1>>;
 
 /// Map a trader's `(holdings_value, cash)` view to its scalar total value.
 pub fn total_value(sc: &mut Scenario, h: AvH) -> ScH {
-    sc.push(
+    sc.segment(
         map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         h,
     )
@@ -55,7 +55,7 @@ pub struct Market {
     /// The cap-weighted universe as a view (also the benchmark weights, and
     /// what the Python operators consume directly).
     pub universe: AvH,
-    pub rebalance_clock: Handle<RefPort<()>>,
+    pub rebalance_clock: PortHandle<RefPort<()>>,
     pub upper: AvH,
     pub lower: AvH,
     /// Log adjusted close — the source of returns.
@@ -63,9 +63,9 @@ pub struct Market {
     /// Raw winsorized log returns, as a live view (the IC evaluators' target).
     pub target: AvH,
     /// Raw winsorized log returns (the covariance predictor's target).
-    pub target_series: Handle<SeriesPort<f64, 1>>,
+    pub target_series: PortHandle<SeriesPort<f64, 1>>,
     /// Cross-sectionally demeaned log returns (the mean predictor's target).
-    pub demeaned_series: Handle<SeriesPort<f64, 1>>,
+    pub demeaned_series: PortHandle<SeriesPort<f64, 1>>,
     /// Panel dimensions for the predictors.
     pub dims: Dims,
     /// Number of loaded symbols.
@@ -86,8 +86,8 @@ impl Market {
         let n = symbols.len();
         let st = build_stacked(sc, symbols, args);
         let features = build_strategy_features(sc, &st, window, set, retention);
-        let circ_market_cap = sc.push(multiply(), (st.close, st.circ_shares));
-        let log_adj = sc.push(log(), st.adjusted_close);
+        let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));
+        let log_adj = sc.segment(log(), st.adjusted_close);
         let (target, target_series, demeaned_series) =
             build_log_return_target(sc, log_adj, retention);
         let (upper, lower) = build_price_limits(sc, st.close, PRICE_LIMIT);
@@ -136,7 +136,7 @@ impl Market {
                 Context = Instant,
             >,
     {
-        let book = sc.push(
+        let book = sc.segment(
             trader,
             (
                 positions,
@@ -152,14 +152,14 @@ impl Market {
     /// The cap-weighted index's NAV: trade the universe weights frictionlessly.
     pub fn index_nav(&self, sc: &mut Scenario) -> NavH {
         let value = self.simulate(sc, benchmark(self.n, 1.0, true), self.universe);
-        sc.push(record(), value)
+        sc.segment(record(), value)
     }
 
     /// A Python portfolio's frictionless NAV: trade its position views via
     /// `Benchmark`, sum, and record.
     pub fn record_nav(&self, sc: &mut Scenario, positions: PosH) -> NavH {
         let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions);
-        sc.push(record(), value)
+        sc.segment(record(), value)
     }
 }
 

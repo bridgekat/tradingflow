@@ -74,9 +74,9 @@ async fn main() {
         .map(|&feature| {
             // Lag one trading day, resample onto the rebalance clock, then NaN out
             // the stocks outside the universe so they don't dilute the correlation.
-            let feature_series = sc.push(record(), feature);
-            let lagged = sc.push(lag_series(1, f64::NAN), feature_series);
-            let aligned = sc.push(resample_clocked(), (m.rebalance_clock, lagged));
+            let feature_series = sc.segment(record(), feature);
+            let lagged = sc.segment(lag_series(1, f64::NAN), feature_series);
+            let aligned = sc.segment(resample_clocked(), (m.rebalance_clock, lagged));
             let masked = mask_to_universe(&mut sc, aligned, m.universe);
             ic_series(&mut sc, masked, m.target, m.n)
         })

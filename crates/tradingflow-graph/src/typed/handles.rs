@@ -1,17 +1,66 @@
 use std::marker::PhantomData;
 
-use super::{FlatRead, Interface, Segment, Value, ViewPort, ViewPorts};
+use super::{FlatRead, Interface, Value, ViewPort, ViewPorts};
+
+/// Pokeable handle to a source node: the first element of the
+/// `(node handle, port handles)` pair returned by
+/// [`source`](super::Builder::source). It identifies the node whose state
+/// cell [`state_mut`](super::Graph::state_mut) pokes (`S` tags the segment
+/// type so the state comes back as `&mut S::State`); the pair's second
+/// element carries the ordinary output [`PortHandle`]s used for wiring.
+///
+/// Only [`source`](super::Builder::source) mints these, so the type system
+/// keeps mid-graph nodes unpokeable: a poked node reruns without any input
+/// notifying, which a non-source segment's notification contract (*no-notify
+/// ⟹ output unchanged*) cannot survive.
+///
+/// The phantom is `fn() -> S` so a handle is unconditionally `Send + Sync`
+/// (it is just a node index; `S` only tags the segment type).
+pub struct NodeHandle<S> {
+    node: usize,
+    _phantom: PhantomData<fn() -> S>,
+}
+
+impl<S> NodeHandle<S> {
+    pub(crate) fn new(node: usize) -> Self {
+        Self {
+            node,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// The engine node index of the source.
+    pub fn index(&self) -> usize {
+        self.node
+    }
+}
+
+// Manual (not derived) so it never requires `S: Debug` -- a `NodeHandle` is
+// just a node index, and `S` is only a phantom tag.
+impl<S> std::fmt::Debug for NodeHandle<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NodeHandle({})", self.node)
+    }
+}
+
+impl<S> Clone for NodeHandle<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for NodeHandle<S> {}
 
 /// Typed handle to a slot in the graph.
 ///
 /// The phantom is `fn() -> T` so a handle is unconditionally `Send + Sync`
 /// (it is just an index; `T` only tags the slot's port type).
-pub struct Handle<T> {
+pub struct PortHandle<T> {
     index: usize,
     _phantom: PhantomData<fn() -> T>,
 }
 
-impl<T> Handle<T> {
+impl<T> PortHandle<T> {
     pub(crate) fn new(index: usize) -> Self {
         Self {
             index,
@@ -24,90 +73,21 @@ impl<T> Handle<T> {
     }
 }
 
-// Manual (not derived) so it never requires `T: Debug` -- a `Handle` is just an
-// index, and `T` is only a phantom tag.
-impl<T> std::fmt::Debug for Handle<T> {
+// Manual (not derived) so it never requires `T: Debug` -- a `PortHandle` is
+// just an index, and `T` is only a phantom tag.
+impl<T> std::fmt::Debug for PortHandle<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Handle({})", self.index)
+        write!(f, "PortHandle({})", self.index)
     }
 }
 
-impl<T> Clone for Handle<T> {
+impl<T> Clone for PortHandle<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T> Copy for Handle<T> {}
-
-/// The output handle of a single-output segment (a [`Handle`]); lets a
-/// [`SourceHandle`] recover its slot index for `state_mut`.
-pub trait OutputHandle: Copy {
-    fn slot(&self) -> usize;
-}
-
-impl<M> OutputHandle for Handle<M> {
-    fn slot(&self) -> usize {
-        self.index
-    }
-}
-
-/// Pokeable handle to a source node, produced by
-/// [`push_source`](super::Builder::push_source). Carries the source
-/// segment type `S` (so `state_mut` can reach the state) and derefs to `S`'s
-/// output handle for wiring -- `Handle<RefPort<T>>` for a
-/// [`RefSource<T>`](super::RefSource), `Handle<Port<T>>` for a
-/// [`Source<T>`](super::Source).
-pub struct SourceHandle<S: Segment>
-where
-    S::Outputs: InterfaceHandles,
-    <S::Outputs as InterfaceHandles>::HandlesOwned: OutputHandle,
-{
-    output: <S::Outputs as InterfaceHandles>::HandlesOwned,
-}
-
-impl<S: Segment> SourceHandle<S>
-where
-    S::Outputs: InterfaceHandles,
-    <S::Outputs as InterfaceHandles>::HandlesOwned: OutputHandle,
-{
-    pub(crate) fn new(output: <S::Outputs as InterfaceHandles>::HandlesOwned) -> Self {
-        Self { output }
-    }
-
-    pub fn index(&self) -> usize {
-        self.output.slot()
-    }
-}
-
-impl<S: Segment> Clone for SourceHandle<S>
-where
-    S::Outputs: InterfaceHandles,
-    <S::Outputs as InterfaceHandles>::HandlesOwned: OutputHandle,
-{
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<S: Segment> Copy for SourceHandle<S>
-where
-    S::Outputs: InterfaceHandles,
-    <S::Outputs as InterfaceHandles>::HandlesOwned: OutputHandle,
-{
-}
-
-impl<S: Segment> std::ops::Deref for SourceHandle<S>
-where
-    S::Outputs: InterfaceHandles,
-    <S::Outputs as InterfaceHandles>::HandlesOwned: OutputHandle,
-{
-    type Target = <S::Outputs as InterfaceHandles>::HandlesOwned;
-
-    fn deref(&self) -> &Self::Target {
-        &self.output
-    }
-}
+impl<T> Copy for PortHandle<T> {}
 
 /// Maps an [`Interface`] to its handle trees — the *forward* half of the
 /// [`Interface`] ⇆ handle-tree bijection. The *backward* half is the inverse
@@ -179,15 +159,15 @@ impl<V: Value> InterfaceHandles for ViewPort<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
-    type Handles<'a> = Handle<ViewPort<V>>;
-    type HandlesOwned = Handle<ViewPort<V>>;
+    type Handles<'a> = PortHandle<ViewPort<V>>;
+    type HandlesOwned = PortHandle<ViewPort<V>>;
 
     #[inline(always)]
     fn handles_from_flat(
         _shape: &mut FlatRead<usize>,
         indices: &mut FlatRead<usize>,
-    ) -> Handle<ViewPort<V>> {
-        Handle::new(*indices.pop())
+    ) -> PortHandle<ViewPort<V>> {
+        PortHandle::new(*indices.pop())
     }
 }
 
@@ -197,8 +177,8 @@ impl<V: Value> InterfaceHandles for ViewPorts<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
-    type Handles<'a> = &'a [Handle<ViewPort<V>>];
-    type HandlesOwned = Box<[Handle<ViewPort<V>>]>;
+    type Handles<'a> = &'a [PortHandle<ViewPort<V>>];
+    type HandlesOwned = Box<[PortHandle<ViewPort<V>>]>;
 
     #[inline]
     fn handles_from_flat(
@@ -206,7 +186,7 @@ where
         indices: &mut FlatRead<usize>,
     ) -> Self::HandlesOwned {
         let n = *shape.pop();
-        (0..n).map(|_| Handle::new(*indices.pop())).collect()
+        (0..n).map(|_| PortHandle::new(*indices.pop())).collect()
     }
 }
 
@@ -222,12 +202,12 @@ where
 /// cannot run backwards: a builder method whose handle parameter is spelled
 /// `<O::Inputs as InterfaceHandles>::Handles<'_>` leaves `O` (and thus any of
 /// `O`'s generic parameters) unconstrained by the handle argument. This trait
-/// goes the other way — a [`Handle`] is structural in its port type, so the
+/// goes the other way — a [`PortHandle`] is structural in its port type, so the
 /// handle *argument* determines `Self` and `Self::Interface` normalizes forward.
-/// Spelling [`Builder::push`](super::Builder::push)'s input as a free
+/// Spelling [`Builder::segment`](super::Builder::segment)'s input as a free
 /// `H: HandlesInterface` with `O: Segment<Inputs = H::Interface>` therefore lets
 /// an operator's generics be **inferred from the wiring** — e.g.
-/// `push(Op::new(..), handle)` with no turbofish.
+/// `segment(Op::new(..), handle)` with no turbofish.
 pub trait HandlesInterface {
     /// The interface these handles wire; its inverse [`InterfaceHandles::Handles`]
     /// reconstitutes `Self`.
@@ -277,9 +257,9 @@ impl_handles_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H
 impl_handles_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K);
 impl_handles_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);
 
-// -- Leaf: Handle<ViewPort<V>> ----------------------------------------------
+// -- Leaf: PortHandle<ViewPort<V>> -------------------------------------------
 
-impl<V: Value> HandlesInterface for Handle<ViewPort<V>>
+impl<V: Value> HandlesInterface for PortHandle<ViewPort<V>>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -291,9 +271,9 @@ where
     }
 }
 
-// -- Variadic leaf: &[Handle<ViewPort<V>>] -----------------------------------
+// -- Variadic leaf: &[PortHandle<ViewPort<V>>] --------------------------------
 
-impl<V: Value> HandlesInterface for &[Handle<ViewPort<V>>]
+impl<V: Value> HandlesInterface for &[PortHandle<ViewPort<V>>]
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -309,7 +289,7 @@ where
 // A reference to a fixed-size array of handles, e.g. `&[a, b, c]`. With a free
 // handle type parameter there is no slice-typed parameter to unsize-coerce into,
 // so the array case is supported explicitly (delegating to the slice logic).
-impl<V: Value, const M: usize> HandlesInterface for &[Handle<ViewPort<V>>; M]
+impl<V: Value, const M: usize> HandlesInterface for &[PortHandle<ViewPort<V>>; M]
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {

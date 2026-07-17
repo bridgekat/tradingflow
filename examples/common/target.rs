@@ -1,6 +1,6 @@
 //! Prediction targets and trading constraints derived from the market panel.
 
-use tradingflow::graph::{Handle, RefPort};
+use tradingflow::graph::{PortHandle, RefPort};
 
 use tradingflow::operators::{SeriesPort, diff, lag, map, record_bounded, winsorize};
 use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
@@ -8,7 +8,7 @@ use tradingflow::{Array, ArrayView, Retention, Scenario, Series};
 use super::AvH;
 
 /// A recorded rank-1 cross-sectional series (the target / demeaned target).
-pub type SerH = Handle<SeriesPort<f64, 1>>;
+pub type SerH = PortHandle<SeriesPort<f64, 1>>;
 
 /// Cross-sectional demean preserving NaN.
 fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
@@ -42,11 +42,11 @@ pub fn build_log_return_target(
     log_adj: AvH,
     target_retention: Retention,
 ) -> (AvH, SerH, SerH) {
-    let log_returns = sc.push(diff(), log_adj);
-    let target = sc.push(winsorize(0.01), log_returns);
-    let target_series = sc.push(record_bounded(target_retention), target);
-    let demeaned = sc.push(map(demean), target);
-    let demeaned_series = sc.push(record_bounded(target_retention), demeaned);
+    let log_returns = sc.segment(diff(), log_adj);
+    let target = sc.segment(winsorize(0.01), log_returns);
+    let target_series = sc.segment(record_bounded(target_retention), target);
+    let demeaned = sc.segment(map(demean), target);
+    let demeaned_series = sc.segment(record_bounded(target_retention), demeaned);
     (target, target_series, demeaned_series)
 }
 
@@ -54,7 +54,7 @@ pub fn build_log_return_target(
 /// 0.01 yuan. Returns `(upper, lower)`; first tick is NaN (no prior close).
 pub fn build_price_limits(sc: &mut Scenario, close: AvH, limit_pct: f64) -> (AvH, AvH) {
     // Self-recording 1-step lag (a tiny private trailing window).
-    let prev_close = sc.push(lag(1), close);
+    let prev_close = sc.segment(lag(1), close);
     let limit = move |scale: f64| {
         map(move |c: ArrayView<f64, 1>| {
             let s = c.to_contiguous();
@@ -66,7 +66,7 @@ pub fn build_price_limits(sc: &mut Scenario, close: AvH, limit_pct: f64) -> (AvH
             )
         })
     };
-    let upper = sc.push(limit(1.0 + limit_pct), prev_close);
-    let lower = sc.push(limit(1.0 - limit_pct), prev_close);
+    let upper = sc.segment(limit(1.0 + limit_pct), prev_close);
+    let lower = sc.segment(limit(1.0 - limit_pct), prev_close);
     (upper, lower)
 }

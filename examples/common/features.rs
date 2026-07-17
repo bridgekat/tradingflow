@@ -1,7 +1,7 @@
 //! Cross-sectional feature panels: the canonical 7-factor set and the CICC
 //! handbook catalogs, each stacked into `(N, F)` and recorded on the daily pulse.
 
-use tradingflow::graph::{Handle, RefPort};
+use tradingflow::graph::{PortHandle, RefPort};
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
@@ -19,7 +19,7 @@ pub struct Features {
     pub names: Vec<String>,
     pub handles: Vec<AvH>,
     /// Trading-day-aligned `Record` of the `(num_stocks, n_features)` panel.
-    pub series: Handle<SeriesPort<f64, 2>>,
+    pub series: PortHandle<SeriesPort<f64, 2>>,
 }
 
 /// Stack feature columns into `(N, F)`, resample onto the daily close pulse, and
@@ -31,9 +31,9 @@ fn stack_and_record(
     handles: Vec<AvH>,
     retention: Retention,
 ) -> Features {
-    let stacked = sc.push(stack(1), &handles[..]);
-    let sampled = sc.push(resample_view(), (st.adjusted_close, stacked));
-    let series = sc.push(record_bounded(retention), sampled);
+    let stacked = sc.segment(stack(1), &handles[..]);
+    let sampled = sc.segment(resample_view(), (st.adjusted_close, stacked));
+    let series = sc.segment(record_bounded(retention), sampled);
     Features {
         names,
         handles,
@@ -55,29 +55,29 @@ pub fn build_features(
     let win_ret = Retention::count(window + RETAIN_MARGIN);
 
     // Fundamentals.
-    let market_cap = sc.push(multiply(), (st.close, st.total_shares));
-    let bp = sc.push(divide(), (st.parent_equity, market_cap));
+    let market_cap = sc.segment(multiply(), (st.close, st.total_shares));
+    let bp = sc.segment(divide(), (st.parent_equity, market_cap));
     // TTM net profit: a self-recording 365-day rolling mean.
-    let net_profit_ttm = sc.push(ma_time(Duration::from_days(365)), st.net_profit);
-    let ttm_roe = sc.push(divide(), (net_profit_ttm, st.parent_equity));
+    let net_profit_ttm = sc.segment(ma_time(Duration::from_days(365)), st.net_profit);
+    let ttm_roe = sc.segment(divide(), (net_profit_ttm, st.parent_equity));
 
     // Momentum: window-period log return of adjusted close.
-    let log_adj = sc.push(log(), st.adjusted_close);
-    let log_adj_series = sc.push(record_bounded(win_ret), log_adj);
-    let log_adj_lag = sc.push(lag_series(window, f64::NAN), log_adj_series);
-    let momentum = sc.push(subtract(), (log_adj, log_adj_lag));
+    let log_adj = sc.segment(log(), st.adjusted_close);
+    let log_adj_series = sc.segment(record_bounded(win_ret), log_adj);
+    let log_adj_lag = sc.segment(lag_series(window, f64::NAN), log_adj_series);
+    let momentum = sc.segment(subtract(), (log_adj, log_adj_lag));
 
     // Volatility: rolling std of daily log returns.
-    let log_var = sc.push(rolling_variance(Window::Count(window)), log_adj_series);
-    let volatility = sc.push(sqrt(), log_var);
+    let log_var = sc.segment(rolling_variance(Window::Count(window)), log_adj_series);
+    let volatility = sc.segment(sqrt(), log_var);
 
     // Turnover MA (self-recording).
-    let turnover = sc.push(divide(), (st.volume, st.circ_shares));
-    let turnover_ma = sc.push(ma(window), turnover);
+    let turnover = sc.segment(divide(), (st.volume, st.circ_shares));
+    let turnover_ma = sc.segment(ma(window), turnover);
 
     // Volume ratio (self-recording MA).
-    let volume_ma = sc.push(ma(window), st.volume);
-    let volume_ratio = sc.push(divide(), (st.volume, volume_ma));
+    let volume_ma = sc.segment(ma(window), st.volume);
+    let volume_ratio = sc.segment(divide(), (st.volume, volume_ma));
 
     let p = 0.01;
     let names = vec![
@@ -90,13 +90,13 @@ pub fn build_features(
         format!("volume_ratio_{window}"),
     ];
     let handles = vec![
-        sc.push(percentile(), market_cap),
-        sc.push(percentile(), bp),
-        sc.push(percentile(), ttm_roe),
-        sc.push(winsorize(p), momentum),
-        sc.push(winsorize(p), volatility),
-        sc.push(winsorize(p), turnover_ma),
-        sc.push(winsorize(p), volume_ratio),
+        sc.segment(percentile(), market_cap),
+        sc.segment(percentile(), bp),
+        sc.segment(percentile(), ttm_roe),
+        sc.segment(winsorize(p), momentum),
+        sc.segment(winsorize(p), volatility),
+        sc.segment(winsorize(p), turnover_ma),
+        sc.segment(winsorize(p), volume_ratio),
     ];
 
     stack_and_record(sc, st, names, handles, feature_retention)

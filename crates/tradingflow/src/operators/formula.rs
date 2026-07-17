@@ -11,7 +11,7 @@
 //! [`segment!`](crate::segment) body:
 //!
 //! ```ignore
-//! let signal = sc.push(
+//! let signal = sc.segment(
 //!     tradingflow::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
 //!         let d = subtract() @ (ma(10) @ x, ma(5) @ x);
 //!         and() @ (greater_than(0.0) @ d, not() @ (greater_than(0.0) @ lag(1) @ d))

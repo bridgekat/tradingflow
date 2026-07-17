@@ -944,28 +944,28 @@ __op__ = Turnover()
     #[test]
     fn py_class_operator_turnover() {
         let mut b = Builder::new(Instant::MIN);
-        let src = b.push_source(array_cell(Array::from_vec([2], vec![0.5_f64, 0.5])));
-        let out = b.push(
+        let (src_cell, src) = b.source(array_cell(Array::from_vec([2], vec![0.5_f64, 0.5])));
+        let out = b.segment(
             // Output is a scalar (`vec![]`), so NO = 0.
             PyClassOperator::<ArrayPorts<f64, 1>, 0>::from_source(
                 TURNOVER,
                 PyParams::new(),
                 vec![],
             ),
-            &[*src][..],
+            &[src][..],
         );
         let mut g = b.build();
         let mut pool = Pool::new(0);
 
-        *g.state_mut(src) = Array::from_vec([2], vec![0.5, 0.5]);
+        *g.state_mut(src_cell) = Array::from_vec([2], vec![0.5, 0.5]);
         g.stabilize(&mut pool);
         assert_eq!(g.view(out).contiguous_slice().unwrap(), &[0.0]); // warmup
 
-        *g.state_mut(src) = Array::from_vec([2], vec![0.3, 0.7]);
+        *g.state_mut(src_cell) = Array::from_vec([2], vec![0.3, 0.7]);
         g.stabilize(&mut pool);
         assert!((g.view(out).contiguous_slice().unwrap()[0] - 0.4).abs() < 1e-12);
 
-        *g.state_mut(src) = Array::from_vec([2], vec![1.0, 0.0]);
+        *g.state_mut(src_cell) = Array::from_vec([2], vec![1.0, 0.0]);
         g.stabilize(&mut pool);
         assert!((g.view(out).contiguous_slice().unwrap()[0] - 1.4).abs() < 1e-12);
     }
@@ -994,31 +994,31 @@ __op__ = HistDot()
         let mut b = Builder::new(Instant::MIN);
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
         // Sources lend the view currency directly — `Record` wires straight on.
-        let weights = b.push_source(array_cell(Array::from_vec([2], vec![1.0_f64, 1.0])));
-        let feed = b.push_source(array_cell(Array::from_vec([2], vec![0.0_f64, 0.0])));
-        let series = b.push(Record::new(), *feed);
-        let out = b.push(
+        let (weights_cell, weights) = b.source(array_cell(Array::from_vec([2], vec![1.0_f64, 1.0])));
+        let (feed_cell, feed) = b.source(array_cell(Array::from_vec([2], vec![0.0_f64, 0.0])));
+        let series = b.segment(Record::new(), feed);
+        let out = b.segment(
             // Scalar output (`vec![]`), so NO = 0.
             PyClassOperator::<(ArrayPort<f64, 1>, SeriesPort<f64, 1>), 0>::from_source(
                 HIST_DOT,
                 PyParams::new(),
                 vec![],
             ),
-            (*weights, series),
+            (weights, series),
         );
         let mut g = b.build();
         let mut pool = Pool::new(0);
 
         // Tick 1 @ t=100: feed [1,2]; series=[[1,2]]; dot with [1,1]=3; mean=3.
         *g.context_mut() = Instant::from_nanos(100);
-        *g.state_mut(weights) = Array::from_vec([2], vec![1.0, 1.0]);
-        *g.state_mut(feed) = Array::from_vec([2], vec![1.0, 2.0]);
+        *g.state_mut(weights_cell) = Array::from_vec([2], vec![1.0, 1.0]);
+        *g.state_mut(feed_cell) = Array::from_vec([2], vec![1.0, 2.0]);
         g.stabilize(&mut pool);
         assert!((g.view(out).contiguous_slice().unwrap()[0] - 3.0).abs() < 1e-12);
 
         // Tick 2 @ t=200: feed [3,4]; series=[[1,2],[3,4]]; dots=3,7; mean=5.
         *g.context_mut() = Instant::from_nanos(200);
-        *g.state_mut(feed) = Array::from_vec([2], vec![3.0, 4.0]);
+        *g.state_mut(feed_cell) = Array::from_vec([2], vec![3.0, 4.0]);
         g.stabilize(&mut pool);
         assert!((g.view(out).contiguous_slice().unwrap()[0] - 5.0).abs() < 1e-12);
     }
@@ -1052,23 +1052,23 @@ def build(scale=1.0):
             .unwrap();
 
         let mut b = Builder::new(Instant::MIN);
-        let src = b.push_source(array_cell(Array::from_vec(
+        let (src_cell, src) = b.source(array_cell(Array::from_vec(
             [4],
             vec![1.0_f64, 2.0, 3.0, 4.0],
         )));
-        let out = b.push(
+        let out = b.segment(
             // Scalar output (`vec![]`), so NO = 0.
             PyClassOperator::<ArrayPorts<f64, 1>, 0>::from_file(
                 &path,
                 PyParams::new().float("scale", 3.0),
                 vec![],
             ),
-            &[*src][..],
+            &[src][..],
         );
         let mut g = b.build();
         let mut pool = Pool::new(0);
 
-        *g.state_mut(src) = Array::from_vec([4], vec![1.0, 2.0, 3.0, 4.0]);
+        *g.state_mut(src_cell) = Array::from_vec([4], vec![1.0, 2.0, 3.0, 4.0]);
         g.stabilize(&mut pool);
         // sum(1..4)=10 * 3
         assert!((g.view(out).contiguous_slice().unwrap()[0] - 30.0).abs() < 1e-12);
@@ -1086,13 +1086,13 @@ def build(scale=1.0):
         const N: usize = 3;
         const F: usize = 2;
         let mut b = Builder::new(Instant::MIN);
-        let universe = b.push_source(array_cell(Array::from_vec([N], vec![1.0; N])));
-        let feat_feed = b.push_source(array_cell(Array::<f64, 2>::zeros([N, F])));
-        let tgt_feed = b.push_source(array_cell(Array::<f64, 1>::zeros([N])));
+        let (universe_cell, universe) = b.source(array_cell(Array::from_vec([N], vec![1.0; N])));
+        let (feat_feed_cell, feat_feed) = b.source(array_cell(Array::<f64, 2>::zeros([N, F])));
+        let (tgt_feed_cell, tgt_feed) = b.source(array_cell(Array::<f64, 1>::zeros([N])));
         // Sources lend the view currency directly — `Record` wires straight on.
-        let feat_series = b.push(Record::new(), *feat_feed);
-        let tgt_series = b.push(Record::new(), *tgt_feed);
-        let pred = b.push(
+        let feat_series = b.segment(Record::new(), feat_feed);
+        let tgt_series = b.segment(Record::new(), tgt_feed);
+        let pred = b.segment(
             // Output is the (N,) prediction → NO = 1 (the default).
             PyClassOperator::<(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)>::from_module(
                 "tradingflow.predictors.mean.linear_regression",
@@ -1103,7 +1103,7 @@ def build(scale=1.0):
                     .int("target_offset", 1),
                 vec![N],
             ),
-            (*universe, feat_series, tgt_series),
+            (universe, feat_series, tgt_series),
         );
         let mut g = b.build();
         let mut pool = Pool::new(0);
@@ -1114,9 +1114,9 @@ def build(scale=1.0):
             let x: Vec<f64> = (0..N * F).map(|k| (t as f64) + 0.1 * k as f64).collect();
             let y: Vec<f64> = (0..N).map(|i| 0.5 * (t as f64) + i as f64).collect();
             *g.context_mut() = Instant::from_nanos(t * 100);
-            *g.state_mut(feat_feed) = Array::from_vec([N, F], x);
-            *g.state_mut(tgt_feed) = Array::from_vec([N], y);
-            *g.state_mut(universe) = Array::from_vec([N], vec![1.0; N]);
+            *g.state_mut(feat_feed_cell) = Array::from_vec([N, F], x);
+            *g.state_mut(tgt_feed_cell) = Array::from_vec([N], y);
+            *g.state_mut(universe_cell) = Array::from_vec([N], vec![1.0; N]);
             g.stabilize(&mut pool);
         }
 

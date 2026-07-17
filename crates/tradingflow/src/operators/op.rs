@@ -153,7 +153,7 @@ pub type ArrayPort<T, const N: usize> = ViewPort<ArrayValue<T, N>>;
 
 /// A runtime-length group of [`ArrayPort`]s, payload `(&[bool],
 /// &[ArrayView<T, N>])` — wires against a slice of independent [`ArrayPort`]
-/// producer handles (`&[Handle<ArrayPort<T, N>>]`), no bridging adapters.
+/// producer handles (`&[PortHandle<ArrayPort<T, N>>]`), no bridging adapters.
 pub type ArrayPorts<T, const N: usize> = ViewPorts<ArrayValue<T, N>>;
 
 /// A single port carrying a [`SeriesView<T, N>`](crate::SeriesView) (recorded

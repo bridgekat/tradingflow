@@ -19,7 +19,7 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::graph::Handle;
+use tradingflow::graph::PortHandle;
 
 use tradingflow::operators::{
     ArrayPort, Window, add, array_cell, filter, forward_adjust, multiply, record, rolling_mean,
@@ -52,11 +52,11 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
 /// all-NaN "no data" ticks.
 fn pick(
     sc: &mut Scenario,
-    panel: Handle<ArrayPort<f64, 2>>,
+    panel: PortHandle<ArrayPort<f64, 2>>,
     i: usize,
-) -> Handle<ArrayPort<f64, 1>> {
-    let sel = sc.push(select(vec![i], 0, true), panel);
-    sc.push(
+) -> PortHandle<ArrayPort<f64, 1>> {
+    let sel = sc.segment(select(vec![i], 0, true), panel);
+    sc.segment(
         filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
         sel,
     )
@@ -112,29 +112,29 @@ async fn main() {
     // (rank-1 `[K]` → rank-0 scalar via the squeezing `Select`).
     let prices = pick(&mut sc, price_panel, idx);
     let dividends = pick(&mut sc, div_panel, idx);
-    let closes = sc.push(select(vec![0], 0, true), prices);
-    let volume = sc.push(select(vec![1], 0, true), prices);
+    let closes = sc.segment(select(vec![0], 0, true), prices);
+    let volume = sc.segment(select(vec![1], 0, true), prices);
 
     // Forward-adjusted close (scalar close `0`, dividends row `1`), recorded into
     // a Series for the rolling stats.
-    let adj_closes = sc.push(forward_adjust(), (closes, dividends));
-    let adj_series = sc.push(record(), adj_closes);
+    let adj_closes = sc.segment(forward_adjust(), (closes, dividends));
+    let adj_series = sc.segment(record(), adj_closes);
 
     // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).
-    let ma = sc.push(rolling_mean(Window::Count(WINDOW)), adj_series);
-    let var = sc.push(rolling_variance(Window::Count(WINDOW)), adj_series);
-    let std = sc.push(sqrt(), var);
-    let multiple_src = sc.push_source(array_cell(Array::scalar(MULTIPLE)));
-    let band = sc.push(multiply(), (std, *multiple_src));
-    let upper = sc.push(add(), (ma, band));
-    let lower = sc.push(subtract(), (ma, band));
+    let ma = sc.segment(rolling_mean(Window::Count(WINDOW)), adj_series);
+    let var = sc.segment(rolling_variance(Window::Count(WINDOW)), adj_series);
+    let std = sc.segment(sqrt(), var);
+    let (_, multiple_src) = sc.source(array_cell(Array::scalar(MULTIPLE)));
+    let band = sc.segment(multiply(), (std, multiple_src));
+    let upper = sc.segment(add(), (ma, band));
+    let lower = sc.segment(subtract(), (ma, band));
 
     // Record the outputs.
-    let h_adj = sc.push(record(), adj_closes);
-    let h_ma = sc.push(record(), ma);
-    let h_upper = sc.push(record(), upper);
-    let h_lower = sc.push(record(), lower);
-    let h_vol = sc.push(record(), volume);
+    let h_adj = sc.segment(record(), adj_closes);
+    let h_ma = sc.segment(record(), ma);
+    let h_upper = sc.segment(record(), upper);
+    let h_lower = sc.segment(record(), lower);
+    let h_vol = sc.segment(record(), volume);
 
     // Run the historical replay to completion.
     let mut session = sc.build();

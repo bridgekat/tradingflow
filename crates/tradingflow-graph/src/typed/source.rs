@@ -12,8 +12,8 @@ use super::{Ref, Scalar, Segment, Value, ViewPort};
 /// `T`-by-value source (a `Scalar` view is its own owned form).
 ///
 /// `C` is the graph-level context type — a source never reads it, so it stays
-/// generic and is pinned by [`push_source`](super::Builder::push_source) to
-/// the builder's (the `()` default only matters for spelled-out types).
+/// generic and is pinned by [`source`](super::Builder::source) to the
+/// builder's (the `()` default only matters for spelled-out types).
 pub struct ViewSource<V: Value, C>(V::Owned, PhantomData<C>);
 
 impl<V: Value, C> ViewSource<V, C> {

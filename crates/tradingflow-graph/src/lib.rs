@@ -60,20 +60,21 @@
 //! // Create the thread pool.
 //! let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
 //!
-//! // Create the graph, which runs each segment for the first time.
+//! // Create the graph, which runs each segment for the first time. A source
+//! // returns a pokeable handle to its state cell plus its output wire.
 //! let mut b = Builder::new(());
-//! let s = b.push_source(Source::new(1));
-//! let a = b.push(Inc, *s);
-//! let d = b.push(Add, (*s, a));
+//! let (s_cell, s) = b.source(Source::new(1));
+//! let a = b.segment(Inc, s);
+//! let d = b.segment(Add, (s, a));
 //! let mut g = b.build();
 //!
 //! // Check initial values.
-//! assert_eq!(g.view(*s), 1);
+//! assert_eq!(g.view(s), 1);
 //! assert_eq!(g.view(a), 2);
 //! assert_eq!(g.view(d), 3);
 //!
 //! // Update the source value and recompute in parallel.
-//! *g.state_mut(s) = 5;
+//! *g.state_mut(s_cell) = 5;
 //! g.stabilize(&mut pool);
 //!
 //! // Check updated values.
@@ -302,8 +303,8 @@
 //! }
 //!
 //! let mut b = Builder::new(());
-//! let s = b.push_source(Source::new(1));
-//! let t = b.push_source(Source::new(2));
+//! let (_, s) = b.source(Source::new(1));
+//! let (_, t) = b.source(Source::new(2));
 //!
 //! // One fused node computing: c = b + a; d = c + a; e = d + a; result (e, c).
 //! // Type annotation is needed on inputs and outputs.
@@ -313,7 +314,7 @@
 //!     (e, c)
 //! });
 //!
-//! let (e, c) = b.push(seg, (*s, *t));
+//! let (e, c) = b.segment(seg, (s, t));
 //! ```
 //!
 //! `Seg @ wires` applies a segment (any [`Segment`](typed::Segment)-typed Rust

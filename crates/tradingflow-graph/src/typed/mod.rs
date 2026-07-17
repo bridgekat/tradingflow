@@ -8,7 +8,7 @@ mod source;
 
 pub use flat::{FlatRead, FlatWrite};
 pub use graph::{Builder, Graph};
-pub use handles::{Handle, HandlesInterface, InterfaceHandles, OutputHandle, SourceHandle};
+pub use handles::{PortHandle, HandlesInterface, InterfaceHandles, NodeHandle};
 pub use interface::{
     Interface, Port, Ports, Ref, RefPort, RefPorts, Scalar, Slice, Value, ViewPort, ViewPorts,
 };

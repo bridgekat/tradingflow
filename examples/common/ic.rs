@@ -17,8 +17,8 @@ use super::strategy::NavH;
 /// Record the per-rebalance IC of `factor` against `target` — both ordinary
 /// `ArrayPort` views, wired straight into the Python metric.
 pub fn ic_series(sc: &mut Scenario, factor: AvH, target: AvH, num_stocks: usize) -> NavH {
-    let ic = sc.push(information_coefficient(num_stocks), (factor, target));
-    sc.push(record(), ic)
+    let ic = sc.segment(information_coefficient(num_stocks), (factor, target));
+    sc.segment(record(), ic)
 }
 
 /// Summary of an IC series: its mean, dispersion, information ratio

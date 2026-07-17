@@ -85,13 +85,13 @@ async fn main() {
     );
 
     // ---- Predictor + portfolio ------------------------------------------
-    let predicted_returns = sc.push(
+    let predicted_returns = sc.segment(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
         (m.universe, m.features.series, m.demeaned_series),
     );
     // The Python portfolio emits ordinary `ArrayPort` position views — the
     // native traders consume them directly.
-    let soft_positions = sc.push(rank_linear(m.n, 1.0), (m.universe, predicted_returns));
+    let soft_positions = sc.segment(rank_linear(m.n, 1.0), (m.universe, predicted_returns));
 
     // ---- Traders (the cost-model swap point) ----------------------------
     let index_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), m.universe);
@@ -103,33 +103,33 @@ async fn main() {
     );
 
     // ---- Metrics (clock-gated, since inception) -------------------------
-    let sharpe = sc.push(sharpe_ratio(), (m.rebalance_clock, actual_value));
-    let compound = sc.push(compound_return(), (m.rebalance_clock, actual_value));
-    let drawdown = sc.push(drawdown(), actual_value);
+    let sharpe = sc.segment(sharpe_ratio(), (m.rebalance_clock, actual_value));
+    let compound = sc.segment(compound_return(), (m.rebalance_clock, actual_value));
+    let drawdown = sc.segment(drawdown(), actual_value);
 
     // Rolling market beta / alpha vs the cap-weighted index, on daily log
     // returns of total value (regressor adds the intercept → output [beta, alpha]).
-    let log_actual = sc.push(log(), actual_value);
-    let strat_logret = sc.push(diff(), log_actual);
-    let log_index = sc.push(log(), index_value);
-    let index_logret = sc.push(diff(), log_index);
-    let strat_logret_series = sc.push(record(), strat_logret);
+    let log_actual = sc.segment(log(), actual_value);
+    let strat_logret = sc.segment(diff(), log_actual);
+    let log_index = sc.segment(log(), index_value);
+    let index_logret = sc.segment(diff(), log_index);
+    let strat_logret_series = sc.segment(record(), strat_logret);
     // scalar -> (1,): stack the rank-0 view handle into a 1-vector.
-    let index_logret_vec = sc.push(stack(0), &[index_logret][..]);
-    let index_logret_series = sc.push(record(), index_logret_vec);
-    let beta_alpha = sc.push(
+    let index_logret_vec = sc.segment(stack(0), &[index_logret][..]);
+    let index_logret_series = sc.segment(record(), index_logret_vec);
+    let beta_alpha = sc.segment(
         regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS),
         (m.rebalance_clock, strat_logret_series, index_logret_series),
     );
 
     // ---- Records --------------------------------------------------------
-    let h_index = sc.push(record(), index_value);
-    let h_fric = sc.push(record(), frictionless_value);
-    let h_actual = sc.push(record(), actual_value);
-    let h_sharpe = sc.push(record(), sharpe);
-    let h_compound = sc.push(record(), compound);
-    let h_drawdown = sc.push(record(), drawdown);
-    let h_beta_alpha = sc.push(record(), beta_alpha);
+    let h_index = sc.segment(record(), index_value);
+    let h_fric = sc.segment(record(), frictionless_value);
+    let h_actual = sc.segment(record(), actual_value);
+    let h_sharpe = sc.segment(record(), sharpe);
+    let h_compound = sc.segment(record(), compound);
+    let h_drawdown = sc.segment(record(), drawdown);
+    let h_beta_alpha = sc.segment(record(), beta_alpha);
 
     let session = common::run(sc, &args).await;
 

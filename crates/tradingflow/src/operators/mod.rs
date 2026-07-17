@@ -34,7 +34,7 @@
 //! * **Every segment has a lowercase free constructor** — `percentile()`,
 //!   `winsorize(p)`, `stack(axis)`, `benchmark(n, cash, adj)`, … — taking the
 //!   operator's parameters and leaving `T` / `N` to be inferred *from the
-//!   wiring* at [`push`](crate::graph::Builder::push). Prefer them to the
+//!   wiring* at [`segment`](crate::graph::Builder::segment). Prefer them to the
 //!   inherent `Op::<T, N>::new(..)` forms, which need a turbofish at every call
 //!   site. Constructors are what `segment!` applies with `@`, so a formula
 //!   annotates only the segment's parameters and output interface — every

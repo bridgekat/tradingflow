@@ -17,7 +17,7 @@
 //! `mmt_report_*` (earnings-announcement dates), and the 波动率 / 流动性 /
 //! 量价相关性 categories.
 
-use tradingflow::graph::{Handle, Operator};
+use tradingflow::graph::{PortHandle, Operator};
 
 use tradingflow::operators::{
     ArrayPort, SeriesPort, Window, apply, diff, divide, lag_series, log, max, min, multiply,
@@ -30,36 +30,36 @@ use super::factors::{FactorSet, rank_impute};
 use super::{AvH, RETAIN_MARGIN, Stacked};
 
 type H = AvH;
-type Ser = Handle<SeriesPort<f64, 1>>;
-type Ser2 = Handle<SeriesPort<f64, 2>>;
+type Ser = PortHandle<SeriesPort<f64, 1>>;
+type Ser2 = PortHandle<SeriesPort<f64, 2>>;
 
 /// Catalog records feed count-windowed reductions up to `Y` (one trading year)
 /// or the 250-day chip window; retain that deepest look-back plus the margin.
 fn rec(sc: &mut Scenario, h: H) -> Ser {
-    sc.push(record_bounded(Retention::count(Y + RETAIN_MARGIN)), h)
+    sc.segment(record_bounded(Retention::count(Y + RETAIN_MARGIN)), h)
 }
 
 fn log_h(sc: &mut Scenario, h: H) -> H {
-    sc.push(log(), h)
+    sc.segment(log(), h)
 }
 fn sub(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.push(subtract(), (a, b))
+    sc.segment(subtract(), (a, b))
 }
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.push(divide(), (a, b))
+    sc.segment(divide(), (a, b))
 }
 fn lag(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.push(lag_series(n, f64::NAN), s)
+    sc.segment(lag_series(n, f64::NAN), s)
 }
 fn rsum(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.push(rolling_sum(Window::Count(n)), s)
+    sc.segment(rolling_sum(Window::Count(n)), s)
 }
 fn rmean(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.push(rolling_mean(Window::Count(n)), s)
+    sc.segment(rolling_mean(Window::Count(n)), s)
 }
 /// Elementwise map preserving shape and NaN.
 fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
-    sc.push(
+    sc.segment(
         tradingflow::operators::map(move |a: ArrayView<f64, 1>| {
             let s = a.to_contiguous();
             Array::from_vec([s.len()], s.iter().map(|&x| f(x)).collect())
@@ -68,11 +68,11 @@ fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
     )
 }
 fn mul(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.push(multiply(), (a, b))
+    sc.segment(multiply(), (a, b))
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.push(
+    sc.segment(
         tradingflow::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
             sqrt() @ rolling_variance(Window::Count(n)) @ x
         }),
@@ -84,10 +84,10 @@ fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
 /// input internally (some redundancy across factors, but keeps call sites simple).
 fn rcorr(sc: &mut Scenario, x: H, y: H, n: usize) -> H {
     let win = Retention::count(n + RETAIN_MARGIN);
-    let xs = sc.push(record_bounded(win), x);
-    let ys = sc.push(record_bounded(win), y);
+    let xs = sc.segment(record_bounded(win), x);
+    let ys = sc.segment(record_bounded(win), y);
     let xy = mul(sc, x, y);
-    let xys = sc.push(record_bounded(win), xy);
+    let xys = sc.segment(record_bounded(win), xy);
     let mx = rmean(sc, xs, n);
     let my = rmean(sc, ys, n);
     let mxy = rmean(sc, xys, n);
@@ -106,8 +106,8 @@ const Y: usize = 252; // ~1 trading year
 /// col 1 from `b`) — the native carry-join `Stack` along axis 1, wired straight
 /// from the two by-value view handles. The downstream `WindowReduce2`/`ChipDist`
 /// read `[a_i, b_i]` pairs per element.
-fn stack2(sc: &mut Scenario, a: H, b: H) -> Handle<ArrayPort<f64, 2>> {
-    sc.push(stack::<f64, 1, 2>(1), &[a, b])
+fn stack2(sc: &mut Scenario, a: H, b: H) -> PortHandle<ArrayPort<f64, 2>> {
+    sc.segment(stack::<f64, 1, 2>(1), &[a, b])
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ impl Operator for WindowReduce {
     }
 }
 fn window_reduce(sc: &mut Scenario, s: Ser, n: usize, f: fn(&[f64]) -> f64) -> H {
-    sc.push(WindowReduce { window: n, f }, s)
+    sc.segment(WindowReduce { window: n, f }, s)
 }
 /// Time-series percentile rank of the latest window value among finite values.
 fn ts_rank(w: &[f64]) -> f64 {
@@ -281,7 +281,7 @@ impl Operator for WindowReduce2 {
     }
 }
 fn window_reduce2(sc: &mut Scenario, s: Ser2, n: usize, f: fn(&[f64], &[f64]) -> f64) -> H {
-    sc.push(WindowReduce2 { window: n, f }, s)
+    sc.segment(WindowReduce2 { window: n, f }, s)
 }
 /// 振幅调整动量: Σ(returns on the top-20%-amplitude days) − Σ(bottom-20%-amplitude
 /// days). `amp` = amplitude channel, `ret` = return channel over the window.
@@ -482,7 +482,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let lcr = log_h(sc, st.close); // raw log close
     let lcr_s = rec(sc, lcr);
 
-    let daily_ret = sc.push(diff(), lc); // adjusted close-to-close log return
+    let daily_ret = sc.segment(diff(), lc); // adjusted close-to-close log return
     let dret_s = rec(sc, daily_ret);
     let intraday = sub(sc, lcr, lo); // log(close/open)
     let intra_s = rec(sc, intraday);
@@ -496,7 +496,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
         if x.is_finite() { x.signum() } else { f64::NAN }
     });
     let sign_s = rec(sc, sign_ret);
-    let xs_rank = sc.push(percentile(), daily_ret); // daily cross-sectional rank
+    let xs_rank = sc.segment(percentile(), daily_ret); // daily cross-sectional rank
     let xsr_s = rec(sc, xs_rank);
 
     // shared rolling sums (reused by the _M / _A pairs)
@@ -592,7 +592,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // ============ 量价相关性 (price-volume correlation, 20-day) — 图表40 ============
     // sync = corr(turn_t, x_t); post (量领先) = corr(turn_t, x_{t+1}) = corr(lag(turn,1), x);
     // prior (价领先) = corr(turn_t, x_{t-1}) = corr(turn, lag(x,1)).
-    let turnover_change = sc.push(diff(), turnover);
+    let turnover_change = sc.segment(diff(), turnover);
     let turnchg_s = rec(sc, turnover_change);
     let lag_turn1 = lag(sc, turnover_s, 1);
     let lag_turnd1 = lag(sc, turnchg_s, 1);
@@ -640,8 +640,8 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let highlow = div(sc, st.high, st.low); // 日内振幅 = 最高/最低
     let highlow_s = rec(sc, highlow);
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
-    let max_oc = sc.push(max(), (st.open, st.close));
-    let min_oc = sc.push(min(), (st.open, st.close));
+    let max_oc = sc.segment(max(), (st.open, st.close));
+    let min_oc = sc.segment(min(), (st.open, st.close));
     let up_num = sub(sc, st.high, max_oc); // 上影线 = 最高 − max(开,收)
     let upshadow = div(sc, up_num, st.low);
     let upshadow_s = rec(sc, upshadow);
@@ -700,7 +700,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // (adjusted close, turnover) -> ChipDist -> (N, 10); column-select each factor.
     let chip_in = stack2(sc, st.adjusted_close, turnover); // (N, 2)
     let chip_in_s = rec_2(sc, chip_in);
-    let chip = sc.push(ChipDist { window: 250 }, chip_in_s); // (N, 10)
+    let chip = sc.segment(ChipDist { window: 250 }, chip_in_s); // (N, 10)
     for (c, name) in [
         "distribution_ret_avg",
         "distribution_ret_std",
@@ -716,7 +716,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     .into_iter()
     .enumerate()
     {
-        add(name, sc.push(select(vec![c], 1, true), chip));
+        add(name, sc.segment(select(vec![c], 1, true), chip));
     }
 
     // Finalize each entry into its model-ready feature: rank + impute.
@@ -727,6 +727,6 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// Record a rank-2 `(N, 2)` cross-section into a `Series` (the two-channel chip /
 /// range inputs); retains the deepest count look-back the consumers read (`Y` /
 /// the 250-day chip window) plus the margin.
-fn rec_2(sc: &mut Scenario, h: Handle<ArrayPort<f64, 2>>) -> Ser2 {
-    sc.push(record_bounded(Retention::count(Y + RETAIN_MARGIN)), h)
+fn rec_2(sc: &mut Scenario, h: PortHandle<ArrayPort<f64, 2>>) -> Ser2 {
+    sc.segment(record_bounded(Retention::count(Y + RETAIN_MARGIN)), h)
 }

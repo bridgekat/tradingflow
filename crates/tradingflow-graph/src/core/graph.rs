@@ -153,6 +153,12 @@ impl Builder {
         &self.context
     }
 
+    /// Number of nodes pushed so far. The next [`push`](Self::push) creates
+    /// node `num_nodes()`; the node just pushed is `num_nodes() - 1`.
+    pub fn num_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub fn push(
         &mut self,
         segment: Segment,
@@ -246,15 +252,10 @@ impl Builder {
         }
 
         let mut input_owners = vec![usize::MAX; input_ptrs.len()].into_boxed_slice();
-        let mut output_owners = vec![usize::MAX; output_ptrs.len()].into_boxed_slice();
         for (i, node) in nodes.iter().enumerate() {
             for s in node.input_range.clone() {
                 assert!(input_owners[s] == usize::MAX);
                 input_owners[s] = i;
-            }
-            for s in node.output_range.clone() {
-                assert!(output_owners[s] == usize::MAX);
-                output_owners[s] = i;
             }
         }
 
@@ -283,7 +284,6 @@ impl Builder {
             input_ptrs,
             output_flags,
             output_ptrs,
-            output_owners,
             output_type_ids,
             output_to_inputs,
             node_to_nodes,
@@ -303,7 +303,6 @@ pub struct Graph {
     input_ptrs: Box<[SyncCell<*const ()>]>,
     output_flags: Box<[SyncCell<bool>]>,
     output_ptrs: Box<[SyncCell<*const ()>]>,
-    output_owners: Box<[usize]>,
     output_type_ids: Box<[TypeId]>,
     output_to_inputs: Adjacency,
     node_to_nodes: Adjacency,
@@ -341,14 +340,16 @@ impl Graph {
         &mut self.context
     }
 
+    /// Mutable access to node `index`'s state cell, dirtying the node: it (and
+    /// its cone) will recompute on the next [`stabilize`](Self::stabilize).
+    /// `index` is the *node* index (push order), not an output slot index.
     pub fn state_mut(&mut self, index: usize) -> &mut ErasedCell {
         assert!(!self.poisoned, "cannot access poisoned graph.");
-        let i = self.output_owners[index];
-        if !self.is_dirty[i] {
-            self.is_dirty[i] = true;
-            self.dirty.push(i);
+        if !self.is_dirty[index] {
+            self.is_dirty[index] = true;
+            self.dirty.push(index);
         }
-        &mut self.nodes[i].state
+        &mut self.nodes[index].state
     }
 
     pub fn stabilize(&mut self, pool: &mut Pool) {

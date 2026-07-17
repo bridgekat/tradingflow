@@ -245,7 +245,7 @@ impl Segment for Recorder {
 fn single_feed_orders_and_accumulates() {
     let mut b = builder(SimClock::at(t(0)));
     let data = b.add_source(feed(hist([(1, vec![10]), (2, vec![20]), (3, vec![30])])));
-    let sum = b.push(Sum, data);
+    let sum = b.segment(Sum, data);
     let mut d = b.build_with_threads(threads());
 
     let mut log = Vec::new();
@@ -272,8 +272,8 @@ fn batches_equal_timestamps_across_feeds() {
     let mut b = builder(SimClock::at(t(0)));
     let a = b.add_source(feed(hist([(5, vec![1, 2])])));
     let c = b.add_source(feed(hist([(5, vec![4])])));
-    let sa = b.push(Sum, a);
-    let sc = b.push(Sum, c);
+    let sa = b.segment(Sum, a);
+    let sc = b.segment(Sum, c);
     let mut d = b.build_with_threads(threads());
 
     let mut gens = 0;
@@ -341,8 +341,8 @@ fn same_stamp_implicit_events_batch() {
     let mut b = builder(SimClock::at(t(7)));
     let a = b.add_source(feed(live([vec![1, 2]])));
     let c = b.add_source(feed(live([vec![4]])));
-    let sa = b.push(Sum, a);
-    let sc = b.push(Sum, c);
+    let sa = b.segment(Sum, a);
+    let sc = b.segment(Sum, c);
     let mut d = b.build_with_threads(threads());
 
     let mut gens = 0;
@@ -494,7 +494,7 @@ fn builder_add_source_merges_and_counts() {
     let mut b = builder(SimClock::at(t(0)));
     let x = b.add_source(Replay(vec![(1, 10), (3, 30)]));
     let y = b.add_source(Replay(vec![(2, 20), (3, 40)]));
-    let sum = b.push(Add, (x, y));
+    let sum = b.segment(Add, (x, y));
     let mut d = b.build();
 
     assert_eq!(d.total_num_events(), Some(4));
@@ -512,7 +512,7 @@ fn event_time_context_stamps_batches() {
     let mut b = builder(SimClock::at(t(0)));
     let x = b.add_source(Replay(vec![(5, 50), (9, 90)]));
     let rows = Arc::new(Mutex::new(Vec::new()));
-    b.push(Recorder(rows.clone()), x);
+    b.segment(Recorder(rows.clone()), x);
     let mut d = b.build();
 
     pollster::block_on(d.run(|_, _| {}));
@@ -525,12 +525,12 @@ fn event_time_context_stamps_batches() {
 #[test]
 fn state_mut_and_manual_stabilize() {
     let mut b = builder(SimClock::at(t(0)));
-    let k = b.push_source(RefSource::new(7i64));
+    let (k_cell, k) = b.source(RefSource::new(7i64));
     let rows = Arc::new(Mutex::new(Vec::new()));
-    b.push(Recorder(rows.clone()), *k);
+    b.segment(Recorder(rows.clone()), k);
     let mut d = b.build();
 
-    *d.state_mut(k) = 8;
+    *d.state_mut(k_cell) = 8;
     *d.context_mut() = t(42);
     d.stabilize();
     assert_eq!(*rows.lock().unwrap(), vec![(t(42), 8)]);

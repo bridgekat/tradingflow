@@ -25,7 +25,7 @@ fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
 async fn run_single_source_record() {
     let mut sc = Scenario::new(WallClock);
     let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let hrec = sc.push(record(), h);
+    let hrec = sc.segment(record(), h);
 
     let mut session = sc.build();
     session.run(|_, _| {}).await;
@@ -42,8 +42,8 @@ async fn run_two_sources_add() {
     let mut sc = Scenario::new(WallClock);
     let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]));
     let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]));
-    let ho = sc.push(add(), (ha, hb));
-    let hrec = sc.push(record(), ho);
+    let ho = sc.segment(add(), (ha, hb));
+    let hrec = sc.segment(record(), ho);
 
     let mut session = sc.build();
     session.run(|_, _| {}).await;
@@ -60,8 +60,8 @@ async fn run_coalescing() {
     let mut sc = Scenario::new(WallClock);
     let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]));
     let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]));
-    let ho = sc.push(add(), (ha, hb));
-    let hrec = sc.push(record(), ho);
+    let ho = sc.segment(add(), (ha, hb));
+    let hrec = sc.segment(record(), ho);
 
     let mut session = sc.build();
     session.run(|_, _| {}).await;
@@ -77,8 +77,8 @@ async fn run_coalescing() {
 async fn run_filter_cutoff() {
     let mut sc = Scenario::new(WallClock);
     let h = sc.add_source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
-    let hf = sc.push(filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), h);
-    let hrec = sc.push(record(), hf);
+    let hf = sc.segment(filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), h);
+    let hrec = sc.segment(record(), hf);
 
     let mut session = sc.build();
     session.run(|_, _| {}).await;
@@ -96,7 +96,7 @@ async fn run_filter_cutoff() {
 async fn on_stable_per_batch() {
     let mut sc = Scenario::new(WallClock);
     let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let _ = sc.push(record(), h);
+    let _ = sc.segment(record(), h);
 
     let mut session = sc.build();
     assert_eq!(session.total_num_events(), Some(3));

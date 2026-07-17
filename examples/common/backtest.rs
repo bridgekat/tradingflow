@@ -13,7 +13,7 @@
 //! benchmark), and execution is the native [`Benchmark`] trader (one-tick-delay
 //! mark-on-close, dividend reinvest, 涨跌停 limit blocking). No new operators.
 
-use tradingflow::graph::Handle;
+use tradingflow::graph::PortHandle;
 
 use tradingflow::operators::{
     ArrayPort, PyClassOperator, PyParams, SeriesPort, benchmark, map, py_class_operator, record,
@@ -30,11 +30,11 @@ pub const NUM_GROUPS: usize = 10;
 /// Recorded NAV / turnover series for the decile portfolios and the benchmark.
 pub struct DecileBacktest {
     /// Per-decile NAV series (group 0 = lowest factor value … group 9 = highest).
-    pub decile_nav: Vec<Handle<SeriesPort<f64, 0>>>,
+    pub decile_nav: Vec<PortHandle<SeriesPort<f64, 0>>>,
     /// Per-decile turnover series (L1 weight change per rebalance).
-    pub decile_turnover: Vec<Handle<SeriesPort<f64, 0>>>,
+    pub decile_turnover: Vec<PortHandle<SeriesPort<f64, 0>>>,
     /// Equal-weight-universe benchmark NAV series.
-    pub bench_nav: Handle<SeriesPort<f64, 0>>,
+    pub bench_nav: PortHandle<SeriesPort<f64, 0>>,
 }
 
 /// One `RankBucket(low, high)` portfolio → `Benchmark` trader → `(NAV record,
@@ -54,7 +54,7 @@ fn bucket_nav(
 ) -> (NavH, NavH) {
     // The Python portfolio speaks the view currency too — wire the universe
     // and factor views straight in.
-    let positions = sc.push(
+    let positions = sc.segment(
         py_class_operator::<(ArrayPort<f64, 1>, ArrayPort<f64, 1>), 1>(
             "tradingflow.portfolios.mean.rank_bucket",
             PyParams::new()
@@ -65,16 +65,16 @@ fn bucket_nav(
         ),
         (universe, factor),
     );
-    let trader = sc.push(
+    let trader = sc.segment(
         benchmark(n, 1.0, true),
         (positions, close, adjusts, upper, lower),
     );
-    let nav = sc.push(
+    let nav = sc.segment(
         map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         trader,
     );
-    let turnover = sc.push(turnover(), positions);
-    (sc.push(record(), nav), sc.push(record(), turnover))
+    let turnover = sc.segment(turnover(), positions);
+    (sc.segment(record(), nav), sc.segment(record(), turnover))
 }
 
 /// Build the 10-decile layered backtest for `factor` over `universe`.

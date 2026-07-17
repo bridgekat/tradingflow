@@ -36,7 +36,7 @@
 #![allow(dead_code)] // not every example uses every helper
 #![allow(unused_imports)] // the re-exports below serve all examples, not each one
 
-use tradingflow::graph::{Handle, ViewPort};
+use tradingflow::graph::{PortHandle, ViewPort};
 
 use tradingflow::operators::ArrayPort;
 
@@ -87,4 +87,4 @@ pub const RETAIN_MARGIN: usize = 8;
 /// A rank-1 cross-sectional array view port — the `[num_stocks]` panel currency.
 pub type Av1 = ArrayPort<f64, 1>;
 /// A rank-1 cross-sectional array view handle (a `[num_stocks]` panel handle).
-pub type AvH = Handle<Av1>;
+pub type AvH = PortHandle<Av1>;

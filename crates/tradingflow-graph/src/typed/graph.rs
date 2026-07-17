@@ -3,12 +3,11 @@ use std::marker::PhantomData;
 
 use crate::{
     core::ErasedCell,
-    typed::{SourceHandle, Value, ViewPort},
+    typed::{NodeHandle, Value, ViewPort},
 };
 
 use super::{
-    FlatRead, FlatWrite, Handle, HandlesInterface, Interface, InterfaceHandles, OutputHandle,
-    Segment,
+    FlatRead, FlatWrite, HandlesInterface, Interface, InterfaceHandles, PortHandle, Segment,
 };
 
 /// The erased per-node state: the (immutable) input shape, the input/output
@@ -51,7 +50,7 @@ impl<C: Send + Sync + 'static> Builder<C> {
         &mut self.inner
     }
 
-    pub fn view<V: Value>(&self, handle: Handle<ViewPort<V>>) -> V::View<'_>
+    pub fn view<V: Value>(&self, handle: PortHandle<ViewPort<V>>) -> V::View<'_>
     where
         for<'a> V::View<'a>: Copy,
     {
@@ -67,16 +66,27 @@ impl<C: Send + Sync + 'static> Builder<C> {
 
     /// Push an input-less *source* segment ([`RefSource<T>`](super::RefSource) /
     /// [`Source<T>`](super::Source), or any `Segment<Inputs = ()>`),
-    /// returning a pokeable [`SourceHandle`].
-    pub fn push_source<S>(&mut self, source: S) -> SourceHandle<S>
+    /// returning the pokeable [`NodeHandle`] paired with the source's output
+    /// port handles: poke through the former
+    /// ([`state_mut`](Graph::state_mut)), wire consumers with the latter.
+    pub fn source<S>(
+        &mut self,
+        source: S,
+    ) -> (
+        NodeHandle<S>,
+        <S::Outputs as InterfaceHandles>::HandlesOwned,
+    )
     where
         S: Segment<Inputs = (), Context = C>,
         S::Outputs: InterfaceHandles,
-        <S::Outputs as InterfaceHandles>::HandlesOwned: OutputHandle,
     {
-        SourceHandle::new(self.push(source, ()))
+        let handles = self.segment(source, ());
+        (NodeHandle::new(self.inner.num_nodes() - 1), handles)
     }
 
+    /// Push a segment wired to `input_handles`, returning its output wire
+    /// handles.
+    ///
     /// `input_handles` is a free type parameter `H` (the handle tree),
     /// inferred structurally from the argument; the segment's inputs are then
     /// pinned by `T: Segment<Inputs = H::Interface>`. This is what lets an
@@ -84,7 +94,7 @@ impl<C: Send + Sync + 'static> Builder<C> {
     /// `H -> Interface` of [`HandlesInterface`]), rather than the handle type
     /// being a non-invertible forward projection of `T`. The segment's
     /// `Context` is pinned to the builder's `C` the same way.
-    pub fn push<T, H>(
+    pub fn segment<T, H>(
         &mut self,
         segment: T,
         input_handles: H,
@@ -259,7 +269,7 @@ impl<C: Send + Sync + 'static> Graph<C> {
         &mut self.inner
     }
 
-    pub fn view<V: Value>(&self, handle: Handle<ViewPort<V>>) -> V::View<'_>
+    pub fn view<V: Value>(&self, handle: PortHandle<ViewPort<V>>) -> V::View<'_>
     where
         for<'a> V::View<'a>: Copy,
     {
@@ -277,11 +287,12 @@ impl<C: Send + Sync + 'static> Graph<C> {
         unsafe { &mut *self.inner.context_mut().get().cast::<C>() }
     }
 
-    pub fn state_mut<S>(&mut self, handle: SourceHandle<S>) -> &mut S::State
+    /// Mutable access to a source's state cell ([`V::Owned`](super::Value::Owned)
+    /// for a [`ViewSource`](super::ViewSource)), dirtying the source so its
+    /// cone recomputes on the next [`stabilize`](Self::stabilize).
+    pub fn state_mut<S>(&mut self, handle: NodeHandle<S>) -> &mut S::State
     where
         S: Segment,
-        S::Outputs: InterfaceHandles,
-        <S::Outputs as InterfaceHandles>::HandlesOwned: OutputHandle,
     {
         let index = handle.index();
         let type_id = self.inner.state_mut(index).type_id();

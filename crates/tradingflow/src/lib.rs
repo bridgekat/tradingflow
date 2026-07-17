@@ -11,7 +11,7 @@
 //! data model.
 //!
 //! **`tradingflow` is the only dependency a strategy crate needs.** The engine's
-//! graph-building vocabulary ([`Handle`](graph::Handle),
+//! graph-building vocabulary ([`PortHandle`](graph::PortHandle),
 //! [`ViewPort`](graph::ViewPort), [`Segment`](graph::Segment), the combinators,
 //! …) is re-exported as [`tradingflow::graph`](graph) and the fusion macro as
 //! [`tradingflow::segment!`](segment); the data model ([`Array`] / [`Series`] /
@@ -41,8 +41,8 @@
 //!         Series::from_vec([], timestamps, values),
 //!         Array::scalar(0.0),
 //!     ));
-//!     let mean = sc.push(ma(10), prices);
-//!     let ma_history = sc.push(record(), mean);
+//!     let mean = sc.segment(ma(10), prices);
+//!     let ma_history = sc.segment(record(), mean);
 //!
 //!     // Run the event loop until all sources are exhausted, then inspect results.
 //!     let mut session = sc.build();

@@ -685,7 +685,7 @@ pub fn random_trader(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Builder, Handle, Pool, SourceHandle, ViewSource};
+    use crate::graph::{Builder, PortHandle, Pool, NodeHandle, ViewSource};
     use crate::operators::op::{ArrayValue, array_cell};
 
     fn arr(v: &[f64]) -> Array<f64, 1> {
@@ -698,11 +698,10 @@ mod tests {
         b: &mut Builder<Instant>,
         v: &[f64],
     ) -> (
-        SourceHandle<ViewSource<ArrayValue<f64, 1>, Instant>>,
-        Handle<Vp>,
+        NodeHandle<ViewSource<ArrayValue<f64, 1>, Instant>>,
+        PortHandle<Vp>,
     ) {
-        let s = b.push_source(array_cell(arr(v)));
-        (s, *s)
+        b.source(array_cell(arr(v)))
     }
 
     #[test]
@@ -714,7 +713,7 @@ mod tests {
         let (_adj, adjv) = src(&mut b, &[1.0, 1.0]);
         let (_up, upv) = src(&mut b, &[nan, nan]);
         let (_lo, lov) = src(&mut b, &[nan, nan]);
-        let out = b.push(Benchmark::new(2, 1.0, true), (posv, closev, adjv, upv, lov));
+        let out = b.segment(Benchmark::new(2, 1.0, true), (posv, closev, adjv, upv, lov));
         let mut g = b.build();
         let mut pool = Pool::new(0);
 
@@ -751,7 +750,7 @@ mod tests {
         let (adj, adjv) = src(&mut b, &[1.0]);
         let (_up, upv) = src(&mut b, &[nan]);
         let (_lo, lov) = src(&mut b, &[nan]);
-        let out = b.push(Benchmark::new(1, 1.0, true), (posv, closev, adjv, upv, lov));
+        let out = b.segment(Benchmark::new(1, 1.0, true), (posv, closev, adjv, upv, lov));
         let mut g = b.build();
         let mut pool = Pool::new(0);
 
@@ -786,7 +785,7 @@ mod tests {
         let (_adj, adjv) = src(&mut b, &[1.0]);
         let (_up, upv) = src(&mut b, &[nan]);
         let (_lo, lov) = src(&mut b, &[nan]);
-        let out = b.push(
+        let out = b.segment(
             SimpleTrader::new(1, 1_000_000.0, 100.0, 5.0, 0.001),
             (posv, closev, adjv, upv, lov),
         );
@@ -816,7 +815,7 @@ mod tests {
             let (_adj, adjv) = src(&mut b, &[1.0; 5]);
             let (_up, upv) = src(&mut b, &[nan; 5]);
             let (_lo, lov) = src(&mut b, &[nan; 5]);
-            let out = b.push(
+            let out = b.segment(
                 RandomTrader::new(5, 2, 1000.0, 1.0, 0.0, 0.0, 0),
                 (posv, closev, adjv, upv, lov),
             );

@@ -32,7 +32,7 @@
 //! and a cash-tax-paid term), dividend yield/payout (DP/DPR), and the regression
 //! / SUE / composite (Profit/Growth/Safe/QQC) factors.
 
-use tradingflow::graph::{Handle, RefPort, ViewPort};
+use tradingflow::graph::{PortHandle, RefPort, ViewPort};
 
 use tradingflow::Scenario;
 use tradingflow::data::Duration;
@@ -70,7 +70,7 @@ pub struct FactorSet {
 /// years). Every factor is rank-transformed, so `0.5` is the common neutral fill.
 /// The rank → fill chain is fused into one node via `segment!`.
 pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
-    sc.push(
+    sc.segment(
         tradingflow::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             fillna(0.5) @ percentile() @ x
         }),
@@ -80,31 +80,31 @@ pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
 
 /// Total market cap = unadjusted close × total shares.
 pub fn market_cap(sc: &mut Scenario, st: &Stacked) -> H {
-    sc.push(multiply(), (st.close, st.total_shares))
+    sc.segment(multiply(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
 pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> H {
-    sc.push(multiply(), (st.close, st.circ_shares))
+    sc.segment(multiply(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
 /// annualized (effective-date-aligned) series, via the self-recording
 /// [`ma_time`] (record fused in, retention sized internally).
 fn ttm(sc: &mut Scenario, h: H) -> H {
-    sc.push(ma_time(Duration::from_days(365)), h)
+    sc.segment(ma_time(Duration::from_days(365)), h)
 }
 
 fn div(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.push(divide(), (a, b))
+    sc.segment(divide(), (a, b))
 }
 
 fn log_h(sc: &mut Scenario, h: H) -> H {
-    sc.push(log(), h)
+    sc.segment(log(), h)
 }
 
 fn neg(sc: &mut Scenario, h: H) -> H {
-    sc.push(negate(), h)
+    sc.segment(negate(), h)
 }
 
 /// 变动 (period-over-period delta): `level − level₋₁ᵧ`. The whole chain —
@@ -113,7 +113,7 @@ fn neg(sc: &mut Scenario, h: H) -> H {
 /// `level` block is computed once outside, so it is not recomputed here.
 /// The 次新 listing filter excludes names without a full prior year.
 fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
-    sc.push(
+    sc.segment(
         tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             change(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
@@ -125,7 +125,7 @@ fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
 /// self-recording [`growth`] over the same resampled daily pulse as
 /// [`delta`].
 fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
-    sc.push(
+    sc.segment(
         tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             growth(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
         }),
@@ -153,16 +153,16 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let cost_ttm = ttm(sc, st.operating_cost); // negative (a deduction)
     // Gross profit = revenue − COGS = revenue + cost_ttm (cost stored negative).
     // (`operators::add` is fully qualified — the local `add` binding shadows it.)
-    let gross_ttm = sc.push(operators::add(), (rev_ttm, cost_ttm));
+    let gross_ttm = sc.segment(operators::add(), (rev_ttm, cost_ttm));
     // Positive-magnitude liabilities (parquet stores them credit-negative).
     let debt = neg(sc, st.total_liab);
     let cur_liab = neg(sc, st.current_liab);
     let eps = div(sc, np_ttm, st.total_shares); // 每股收益 TTM
     let cogs_ttm = neg(sc, cost_ttm); // 营业成本 (positive magnitude)
     // 应计利润 = 净利润 − 经营现金流 (earnings not backed by cash).
-    let accruals_ttm = sc.push(subtract(), (np_ttm, ocf_ttm));
+    let accruals_ttm = sc.segment(subtract(), (np_ttm, ocf_ttm));
     // 投入资本 ≈ 总资产 − 流动负债 (net of non-interest-bearing current liabilities).
-    let invested_capital = sc.push(subtract(), (st.total_assets, cur_liab));
+    let invested_capital = sc.segment(subtract(), (st.total_assets, cur_liab));
 
     // ---- Profitability (盈利能力) ----
     let roe = div(sc, np_ttm, st.parent_equity); // 净利润 TTM / 净资产
@@ -248,7 +248,7 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // IC (short-term reversal); a contemporaneous (non-lagged) wiring bug would
     // instead make this strongly POSITIVE (the factor overlapping the return).
     let log_adj = log_h(sc, st.adjusted_close);
-    add("REV_1M", sc.push(change(21), log_adj));
+    add("REV_1M", sc.segment(change(21), log_adj));
 
     // Each catalog entry is finalized into its model-ready feature: rank + impute.
     let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();
@@ -263,8 +263,8 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 pub fn build_forward_return(
     sc: &mut Scenario,
     log_adj: H,
-    rebalance_clock: Handle<RefPort<()>>,
+    rebalance_clock: PortHandle<RefPort<()>>,
 ) -> H {
-    let resampled = sc.push(resample_clocked(), (rebalance_clock, log_adj));
-    sc.push(diff(), resampled)
+    let resampled = sc.segment(resample_clocked(), (rebalance_clock, log_adj));
+    sc.segment(diff(), resampled)
 }

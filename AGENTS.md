@@ -15,7 +15,7 @@ This file is kept short and concise. It provides initial context for all agentic
 
 ## Conventions
 
-- **`tradingflow` is the only dependency of user code.** The engine's graph-building vocabulary (`Segment`, `Operator`, `Handle`, ports, combinators) is re-exported as [`tradingflow::graph`](crates/tradingflow/src/graph.rs), and the fusion macro as `tradingflow::segment!`. Import from there — inside the library too. Only `graph.rs` names the `tradingflow-graph` crate directly.
+- **`tradingflow` is the only dependency of user code.** The engine's graph-building vocabulary (`Segment`, `Operator`, `PortHandle`/`NodeHandle`, ports, combinators) is re-exported as [`tradingflow::graph`](crates/tradingflow/src/graph.rs), and the fusion macro as `tradingflow::segment!`. Import from there — inside the library too. Only `graph.rs` names the `tradingflow-graph` crate directly.
 - **Every segment has a lowercase free constructor** (`ma(10)`, `winsorize(p)`, `record()`); `T`/`N` are inferred from the wiring. Prefer them to the `Op::<T, N>::new(..)` forms.
 - **The notification contract: *no-notify ⟹ output unchanged*.** It is a producer-side duty of every operator; see the [`operators::op`](crates/tradingflow/src/operators/op.rs) module docs.
 - **Event time is ambient**, not a parameter: it is the graph-level context (`Context = Instant`), which the driver sets before each `stabilize`. No operator or constructor takes a clock.

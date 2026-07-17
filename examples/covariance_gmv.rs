@@ -87,9 +87,9 @@ async fn main() {
     );
     // Raw daily log returns for the realized-variance metric (an ordinary
     // `ArrayPort` view — the Python metric consumes it directly).
-    let log_returns = sc.push(diff(), m.log_adj);
+    let log_returns = sc.segment(diff(), m.log_adj);
 
-    let predicted_returns = sc.push(
+    let predicted_returns = sc.segment(
         linear_regression_mean(m.dims, MIN_PERIODS),
         (m.universe, m.features.series, m.demeaned_series),
     );
@@ -102,19 +102,19 @@ async fn main() {
             // Covariance window = rebalance period, and there is no per-stock
             // `min_periods` filter on the covariance estimators (the mean
             // `LinearRegression` above keeps its own `min_periods`).
-            let cov = sc.push(
+            let cov = sc.segment(
                 e.build(m.dims, args.rebalance_days, None),
                 (m.universe, m.features.series, m.target_series),
             );
 
             // GMV realized-variance metric (diagnostic; fed cov + raw returns).
-            let mv = sc.push(minimum_variance(m.n), (cov, log_returns));
+            let mv = sc.segment(minimum_variance(m.n), (cov, log_returns));
 
             // Long-only and long-short Markowitz portfolios.
             let nav: Vec<NavH> = [true, false]
                 .into_iter()
                 .map(|long_only| {
-                    let soft = sc.push(
+                    let soft = sc.segment(
                         markowitz(
                             m.n,
                             args.index_size,
@@ -132,7 +132,7 @@ async fn main() {
                 name: e.name,
                 long: nav[0],
                 ls: nav[1],
-                mv: sc.push(record(), mv),
+                mv: sc.segment(record(), mv),
             }
         })
         .collect();

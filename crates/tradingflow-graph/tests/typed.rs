@@ -18,8 +18,8 @@ use std::thread;
 use bumpalo::Bump;
 use tradingflow_graph::core::Pool;
 use tradingflow_graph::typed::{
-    Arr, Builder, Graph, Handle, Id, Operator, Port, Ports, RefPort, RefPorts, RefSource, Segment,
-    SegmentExt, Slice, Source, SourceHandle, Value, ViewPort, ViewPorts, ViewSource,
+    Arr, Builder, Graph, PortHandle, Id, Operator, Port, Ports, RefPort, RefPorts, RefSource, Segment,
+    SegmentExt, Slice, Source, NodeHandle, Value, ViewPort, ViewPorts, ViewSource,
 };
 
 fn pool() -> Pool {
@@ -548,17 +548,17 @@ impl Segment for MapScale {
 fn diamond_recomputes_on_source_change() {
     // S -> A=S+1, (S,A) -> D=S+A.
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(1));
-    let a = b.push(Inc, *s);
-    let d = b.push(Add, (*s, a));
+    let (s_cell, s) = b.source(RefSource::new(1));
+    let a = b.segment(Inc, s);
+    let d = b.segment(Add, (s, a));
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.view(*s), 1);
+    assert_eq!(*g.view(s), 1);
     assert_eq!(*g.view(a), 2);
     assert_eq!(*g.view(d), 3);
 
-    *g.state_mut(s) = 5;
+    *g.state_mut(s_cell) = 5;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(a), 6);
     assert_eq!(*g.view(d), 11);
@@ -567,16 +567,16 @@ fn diamond_recomputes_on_source_change() {
 #[test]
 fn slice_input_sums() {
     let mut b = Builder::new(());
-    let s0 = b.push_source(RefSource::new(1));
-    let s1 = b.push_source(RefSource::new(2));
-    let s2 = b.push_source(RefSource::new(3));
-    let total = b.push(SumAll, &[*s0, *s1, *s2]);
+    let (s0_cell, s0) = b.source(RefSource::new(1));
+    let (_, s1) = b.source(RefSource::new(2));
+    let (_, s2) = b.source(RefSource::new(3));
+    let total = b.segment(SumAll, &[s0, s1, s2]);
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(total), 6);
 
-    *g.state_mut(s0) = 10;
+    *g.state_mut(s0_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(total), 15);
 }
@@ -584,17 +584,17 @@ fn slice_input_sums() {
 #[test]
 fn notify_flag_is_per_generation() {
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(0));
-    let s2 = b.push_source(RefSource::new(0));
-    let a = b.push(DidFirstNotify, (*s, *s2));
+    let (s_cell, s) = b.source(RefSource::new(0));
+    let (s2_cell, s2) = b.source(RefSource::new(0));
+    let a = b.segment(DidFirstNotify, (s, s2));
     let mut g = b.build();
     let mut pool = pool();
 
-    *g.state_mut(s) = 1;
+    *g.state_mut(s_cell) = 1;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(a), 1);
 
-    *g.state_mut(s2) = 1;
+    *g.state_mut(s2_cell) = 1;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(a), 0);
 }
@@ -602,16 +602,16 @@ fn notify_flag_is_per_generation() {
 #[test]
 fn multi_output_tuple() {
     let mut b = Builder::new(());
-    let s1 = b.push_source(RefSource::new(7));
-    let s2 = b.push_source(RefSource::new(3));
-    let (sum, diff) = b.push(AddSub, (*s1, *s2));
+    let (s1_cell, s1) = b.source(RefSource::new(7));
+    let (_, s2) = b.source(RefSource::new(3));
+    let (sum, diff) = b.segment(AddSub, (s1, s2));
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(sum), 10);
     assert_eq!(*g.view(diff), 4);
 
-    *g.state_mut(s1) = 20;
+    *g.state_mut(s1_cell) = 20;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(sum), 23);
     assert_eq!(*g.view(diff), 17);
@@ -620,8 +620,8 @@ fn multi_output_tuple() {
 #[test]
 fn slice_output_dynamic_arity() {
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(10));
-    let outs = b.push(Fanout3, *s);
+    let (s_cell, s) = b.source(RefSource::new(10));
+    let outs = b.segment(Fanout3, s);
     assert_eq!(outs.len(), 3);
     let mut g = b.build();
     let mut pool = pool();
@@ -630,7 +630,7 @@ fn slice_output_dynamic_arity() {
     assert_eq!(*g.view(outs[1]), 11);
     assert_eq!(*g.view(outs[2]), 12);
 
-    *g.state_mut(s) = 100;
+    *g.state_mut(s_cell) = 100;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(outs[0]), 100);
     assert_eq!(*g.view(outs[1]), 101);
@@ -640,14 +640,14 @@ fn slice_output_dynamic_arity() {
 #[test]
 fn independent_branch_not_recomputed() {
     let mut b = Builder::new(());
-    let s1 = b.push_source(RefSource::new(0i64));
-    let s2 = b.push_source(RefSource::new(0i64));
-    let a = b.push(CountInc, *s1);
-    let c = b.push(CountInc, *s2);
+    let (s1_cell, s1) = b.source(RefSource::new(0i64));
+    let (_, s2) = b.source(RefSource::new(0i64));
+    let a = b.segment(CountInc, s1);
+    let c = b.segment(CountInc, s2);
     let mut g = b.build();
     let mut pool = pool();
 
-    *g.state_mut(s1) = 9;
+    *g.state_mut(s1_cell) = 9;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(a), 1); // branch 1 ran once
     assert_eq!(*g.view(c), 0); // branch 2 never recomputed (outside the cone)
@@ -656,21 +656,21 @@ fn independent_branch_not_recomputed() {
 #[test]
 fn value_cutoff_via_notify() {
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(0i64));
-    let abs = b.push(Abs, *s);
-    let c = b.push(CountIfNotified, abs);
+    let (s_cell, s) = b.source(RefSource::new(0i64));
+    let abs = b.segment(Abs, s);
+    let c = b.segment(CountIfNotified, abs);
     let mut g = b.build();
     let mut pool = pool();
 
-    *g.state_mut(s) = 3;
+    *g.state_mut(s_cell) = 3;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(c), 1); // 0 -> 3: changed
 
-    *g.state_mut(s) = -3;
+    *g.state_mut(s_cell) = -3;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(c), 1); // |−3| == |3|: no notify, c gated out
 
-    *g.state_mut(s) = 5;
+    *g.state_mut(s_cell) = 5;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(c), 2); // 3 -> 5: changed
 }
@@ -678,16 +678,16 @@ fn value_cutoff_via_notify() {
 #[test]
 fn in_place_buffer_is_stable() {
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(0.0f64));
-    let buf = b.push(BufWrite, *s);
+    let (s_cell, s) = b.source(RefSource::new(0.0f64));
+    let buf = b.segment(BufWrite, s);
     let mut g = b.build();
     let mut pool = pool();
 
     let p0 = g.view(buf).as_ptr();
-    *g.state_mut(s) = 1.0;
+    *g.state_mut(s_cell) = 1.0;
     g.stabilize(&mut pool);
     let p1 = g.view(buf).as_ptr();
-    *g.state_mut(s) = 2.0;
+    *g.state_mut(s_cell) = 2.0;
     g.stabilize(&mut pool);
     let p2 = g.view(buf).as_ptr();
 
@@ -699,15 +699,15 @@ fn in_place_buffer_is_stable() {
 #[test]
 fn stateful_fold_accumulates() {
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(0i64));
-    let acc = b.push(Fold, *s);
+    let (s_cell, s) = b.source(RefSource::new(0i64));
+    let acc = b.segment(Fold, s);
     let mut g = b.build();
     let mut pool = pool();
 
-    *g.state_mut(s) = 5;
+    *g.state_mut(s_cell) = 5;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(acc), 5);
-    *g.state_mut(s) = 3;
+    *g.state_mut(s_cell) = 3;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(acc), 8);
 }
@@ -715,15 +715,15 @@ fn stateful_fold_accumulates() {
 #[test]
 fn fused_subgraph_in_one_segment() {
     let mut b = Builder::new(());
-    let a = b.push_source(RefSource::new(2.0f64));
-    let bb = b.push_source(RefSource::new(3.0f64));
-    let c = b.push_source(RefSource::new(5.0f64));
-    let out = b.push(FusedDag, (*a, *bb, *c));
+    let (a_cell, a) = b.source(RefSource::new(2.0f64));
+    let (_, bb) = b.source(RefSource::new(3.0f64));
+    let (_, c) = b.source(RefSource::new(5.0f64));
+    let out = b.segment(FusedDag, (a, bb, c));
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(out), 175.0); // x=5, y=25, z=7
-    *g.state_mut(a) = 1.0;
+    *g.state_mut(a_cell) = 1.0;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(out), 100.0); // x=4, y=20, z=5
 }
@@ -731,15 +731,15 @@ fn fused_subgraph_in_one_segment() {
 #[test]
 fn both_outputs_feed_one_consumer() {
     let mut b = Builder::new(());
-    let s1 = b.push_source(RefSource::new(7i64));
-    let s2 = b.push_source(RefSource::new(3i64));
-    let (sum, diff) = b.push(AddSub, (*s1, *s2));
-    let out = b.push(Add, (sum, diff)); // (a+b) + (a-b) = 2a
+    let (s1_cell, s1) = b.source(RefSource::new(7i64));
+    let (_, s2) = b.source(RefSource::new(3i64));
+    let (sum, diff) = b.segment(AddSub, (s1, s2));
+    let out = b.segment(Add, (sum, diff)); // (a+b) + (a-b) = 2a
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(out), 14);
-    *g.state_mut(s1) = 10;
+    *g.state_mut(s1_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(out), 20);
 }
@@ -747,11 +747,11 @@ fn both_outputs_feed_one_consumer() {
 #[test]
 fn multi_output_cross_port_ordering() {
     let mut b = Builder::new(());
-    let s1 = b.push_source(RefSource::new(10i64));
-    let s2 = b.push_source(RefSource::new(4i64));
-    let (sum, diff) = b.push(AddSub, (*s1, *s2)); // sum=14, diff=6
-    let doubled = b.push(Double, sum); // 28
-    let out = b.push(Add, (doubled, diff)); // 28 + 6 = 34
+    let (_, s1) = b.source(RefSource::new(10i64));
+    let (_, s2) = b.source(RefSource::new(4i64));
+    let (sum, diff) = b.segment(AddSub, (s1, s2)); // sum=14, diff=6
+    let doubled = b.segment(Double, sum); // 28
+    let out = b.segment(Add, (doubled, diff)); // 28 + 6 = 34
     let g = b.build();
     assert_eq!(*g.view(out), 34);
 }
@@ -759,14 +759,14 @@ fn multi_output_cross_port_ordering() {
 #[test]
 fn heterogeneous_inputs_multi_output_with_state() {
     let mut b = Builder::new(());
-    let a = b.push_source(RefSource::new(10.0f64));
-    let bb = b.push_source(RefSource::new(3i32));
-    let (sum, calls) = b.push(HeteroState, (*a, *bb));
+    let (a_cell, a) = b.source(RefSource::new(10.0f64));
+    let (_, bb) = b.source(RefSource::new(3i32));
+    let (sum, calls) = b.segment(HeteroState, (a, bb));
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(sum), 13.0);
-    *g.state_mut(a) = 20.0;
+    *g.state_mut(a_cell) = 20.0;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(sum), 23.0);
     assert_eq!(*g.view(calls), 1); // state carried across gens
@@ -775,12 +775,11 @@ fn heterogeneous_inputs_multi_output_with_state() {
 #[test]
 fn slice_input_multi_output_sum_max() {
     let mut b = Builder::new(());
-    let srcs: Vec<_> = [1.0, 5.0, 3.0, 2.0]
+    let handles: Vec<PortHandle<RefPort<f64>>> = [1.0, 5.0, 3.0, 2.0]
         .into_iter()
-        .map(|v| b.push_source(RefSource::new(v)))
+        .map(|v| b.source(RefSource::new(v)).1)
         .collect();
-    let handles: Vec<Handle<RefPort<f64>>> = srcs.iter().map(|s| **s).collect();
-    let (sum, max) = b.push(SumMax, &handles[..]);
+    let (sum, max) = b.segment(SumMax, &handles[..]);
     let g = b.build();
 
     assert_eq!(*g.view(sum), 11.0);
@@ -790,17 +789,17 @@ fn slice_input_multi_output_sum_max() {
 #[test]
 fn zipped_manys_dot_product() {
     let mut b = Builder::new(());
-    let a0 = b.push_source(RefSource::new(2));
-    let b0 = b.push_source(RefSource::new(3));
-    let a1 = b.push_source(RefSource::new(4));
-    let b1 = b.push_source(RefSource::new(5));
-    let out = b.push(DotPairs, (&[*a0, *a1][..], &[*b0, *b1][..]));
+    let (_, a0) = b.source(RefSource::new(2));
+    let (_, b0) = b.source(RefSource::new(3));
+    let (a1_cell, a1) = b.source(RefSource::new(4));
+    let (_, b1) = b.source(RefSource::new(5));
+    let out = b.segment(DotPairs, (&[a0, a1][..], &[b0, b1][..]));
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(out), 26); // 2*3 + 4*5
 
-    *g.state_mut(a1) = 10;
+    *g.state_mut(a1_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(out), 56); // 6 + 10*5
 }
@@ -808,7 +807,7 @@ fn zipped_manys_dot_product() {
 #[test]
 fn empty_slice_input_builds_and_sums_zero() {
     let mut b = Builder::new(());
-    let total = b.push(SumAll, &[] as &[Handle<RefPort<i64>>]);
+    let total = b.segment(SumAll, &[] as &[PortHandle<RefPort<i64>>]);
     let g = b.build();
     assert_eq!(*g.view(total), 0);
 }
@@ -816,18 +815,16 @@ fn empty_slice_input_builds_and_sums_zero() {
 #[test]
 fn two_variadic_input_groups() {
     let mut b = Builder::new(());
-    let a: Vec<_> = [1, 2, 3]
+    let (a, ah): (Vec<_>, Vec<PortHandle<RefPort<i64>>>) = [1, 2, 3]
         .into_iter()
-        .map(|v| b.push_source(RefSource::new(v)))
-        .collect();
-    let k = b.push_source(RefSource::new(10));
-    let c: Vec<_> = [4, 5]
+        .map(|v| b.source(RefSource::new(v)))
+        .unzip();
+    let (_, k) = b.source(RefSource::new(10));
+    let ch: Vec<PortHandle<RefPort<i64>>> = [4, 5]
         .into_iter()
-        .map(|v| b.push_source(RefSource::new(v)))
+        .map(|v| b.source(RefSource::new(v)).1)
         .collect();
-    let ah: Vec<Handle<RefPort<i64>>> = a.iter().map(|s| **s).collect();
-    let ch: Vec<Handle<RefPort<i64>>> = c.iter().map(|s| **s).collect();
-    let out = b.push(TwoArrays, (&ah[..], *k, &ch[..]));
+    let out = b.segment(TwoArrays, (&ah[..], k, &ch[..]));
     let mut g = b.build();
     let mut pool = pool();
 
@@ -841,8 +838,8 @@ fn two_variadic_input_groups() {
 #[test]
 fn two_variadic_output_groups() {
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(7));
-    let (pos, neg) = b.push(SplitTwo(3), *s);
+    let (s_cell, s) = b.source(RefSource::new(7));
+    let (pos, neg) = b.segment(SplitTwo(3), s);
     assert_eq!(pos.len(), 3);
     assert_eq!(neg.len(), 3);
     let mut g = b.build();
@@ -851,7 +848,7 @@ fn two_variadic_output_groups() {
     assert_eq!(*g.view(pos[0]), 7);
     assert_eq!(*g.view(neg[0]), -7);
 
-    *g.state_mut(s) = 4;
+    *g.state_mut(s_cell) = 4;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(pos[2]), 4);
     assert_eq!(*g.view(neg[1]), -4);
@@ -864,13 +861,12 @@ fn window_forwards_input_refs() {
     // The window's outputs are references INTO the input array (no copy), and
     // their addresses move as `start` changes -- the dynamic-address case.
     let mut b = Builder::new(());
-    let arr: Vec<_> = [10, 20, 30, 40, 50]
+    let (arr, arrh): (Vec<_>, Vec<PortHandle<RefPort<i64>>>) = [10, 20, 30, 40, 50]
         .into_iter()
-        .map(|v| b.push_source(RefSource::new(v)))
-        .collect();
-    let arrh: Vec<Handle<RefPort<i64>>> = arr.iter().map(|s| **s).collect();
-    let start = b.push_source(RefSource::new(0usize));
-    let win = b.push(Window(2), (&arrh[..], *start));
+        .map(|v| b.source(RefSource::new(v)))
+        .unzip();
+    let (start_cell, start) = b.source(RefSource::new(0usize));
+    let win = b.segment(Window(2), (&arrh[..], start));
     assert_eq!(win.len(), 2);
     let mut g = b.build();
     let mut pool = pool();
@@ -881,7 +877,7 @@ fn window_forwards_input_refs() {
 
     // move the window: start=2 -> [30, 40] (the output pointers now target
     // different source cells)
-    *g.state_mut(start) = 2;
+    *g.state_mut(start_cell) = 2;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(win[0]), 30);
     assert_eq!(*g.view(win[1]), 40);
@@ -898,12 +894,11 @@ fn two_stage_init_allocates_from_input() {
     // The output buffer's size is not known until the inputs arrive, so it is
     // allocated on the build `compute` call and filled in place thereafter.
     let mut b = Builder::new(());
-    let arr: Vec<_> = [1, 2, 3, 4]
+    let (arr, arrh): (Vec<_>, Vec<PortHandle<RefPort<i64>>>) = [1, 2, 3, 4]
         .into_iter()
-        .map(|v| b.push_source(RefSource::new(v)))
-        .collect();
-    let arrh: Vec<Handle<RefPort<i64>>> = arr.iter().map(|s| **s).collect();
-    let out = b.push(MapScale(10), &arrh[..]);
+        .map(|v| b.source(RefSource::new(v)))
+        .unzip();
+    let out = b.segment(MapScale(10), &arrh[..]);
     assert_eq!(out.len(), 4); // sized from the 4-element input at build
     let mut g = b.build();
     let mut pool = pool();
@@ -945,15 +940,15 @@ impl Segment for Spread {
 #[should_panic(expected = "stabilize")]
 fn read_before_stabilize_after_poke_is_rejected() {
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(vec![10i64, 20, 30]));
-    let out = b.push(Spread, *s);
+    let (s_cell, s) = b.source(RefSource::new(vec![10i64, 20, 30]));
+    let out = b.segment(Spread, s);
     let mut g = b.build();
     assert_eq!(*g.view(out[0]), 10); // stabilized read is fine
 
     // Poke to a fresh, same-length buffer: the old buffer (which `out` points
     // into, from the build call) is freed. Reading `out` now -- before stabilize
     // -- would dereference the dangling pointer, so it must panic, not read UB.
-    *g.state_mut(s) = vec![11, 21, 31];
+    *g.state_mut(s_cell) = vec![11, 21, 31];
     let _ = g.view(out[0]); // <-- rejected: graph is unstabilized
 }
 
@@ -988,13 +983,13 @@ fn realloc_then_panic_does_not_dangle() {
     // point into) and then panics, leaving `out` dangling into freed memory.
     // Poisoning must make the subsequent read panic, not dereference it.
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(1i64));
-    let out = b.push(ReallocPanic, *s);
+    let (s_cell, s) = b.source(RefSource::new(1i64));
+    let out = b.segment(ReallocPanic, s);
     let mut g = b.build();
     let mut pool = pool();
     assert_eq!(*g.view(out[0]), 1); // build buffer = [1, 1]
 
-    *g.state_mut(s) = -1;
+    *g.state_mut(s_cell) = -1;
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.stabilize(&mut pool)));
     assert!(r.is_err());
 
@@ -1010,19 +1005,19 @@ fn realloc_then_panic_does_not_dangle() {
 #[test]
 fn composed_series_then() {
     let mut gb = Builder::new(());
-    let s = gb.push_source(RefSource::new(5));
-    let inc = gb.push(Inc, *s);
-    let sep = gb.push(Double, inc); // separate nodes
-    let s2 = gb.push_source(RefSource::new(5));
-    let comp = gb.push(Inc.then(Double), *s2); // composed into ONE segment
+    let (s_cell, s) = gb.source(RefSource::new(5));
+    let inc = gb.segment(Inc, s);
+    let sep = gb.segment(Double, inc); // separate nodes
+    let (s2_cell, s2) = gb.source(RefSource::new(5));
+    let comp = gb.segment(Inc.then(Double), s2); // composed into ONE segment
     let mut g = gb.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(sep), 12); // (5+1)*2
     assert_eq!(*g.view(comp), 12);
 
-    *g.state_mut(s) = 10;
-    *g.state_mut(s2) = 10;
+    *g.state_mut(s_cell) = 10;
+    *g.state_mut(s2_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(sep), 22);
     assert_eq!(*g.view(comp), 22);
@@ -1031,9 +1026,9 @@ fn composed_series_then() {
 #[test]
 fn composed_par() {
     let mut gb = Builder::new(());
-    let a = gb.push_source(RefSource::new(3));
-    let bh = gb.push_source(RefSource::new(4));
-    let (oa, ob) = gb.push(Inc.par(Double), (*a, *bh));
+    let (a_cell, a) = gb.source(RefSource::new(3));
+    let (_, bh) = gb.source(RefSource::new(4));
+    let (oa, ob) = gb.segment(Inc.par(Double), (a, bh));
     let mut g = gb.build();
     let mut pool = pool();
 
@@ -1042,7 +1037,7 @@ fn composed_par() {
 
     // Change only `a`: Inc's branch reruns; Double recomputes the same 8 (b
     // unchanged), so ob is retained.
-    *g.state_mut(a) = 10;
+    *g.state_mut(a_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(oa), 11);
     assert_eq!(*g.view(ob), 8);
@@ -1052,14 +1047,14 @@ fn composed_par() {
 fn composed_fanout_diamond() {
     // `Inc &&& Double` then `Add`: a -> (a+1, 2a) -> (a+1)+(2a) = 3a+1.
     let mut gb = Builder::new(());
-    let s = gb.push_source(RefSource::new(5));
-    let comp = gb.push(Inc.fork(Double).then(Add), *s);
+    let (s_cell, s) = gb.source(RefSource::new(5));
+    let comp = gb.segment(Inc.fork(Double).then(Add), s);
     let mut g = gb.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(comp), 16); // 3*5 + 1
 
-    *g.state_mut(s) = 10;
+    *g.state_mut(s_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(comp), 31); // 3*10 + 1
 }
@@ -1069,12 +1064,11 @@ fn composed_variadic_intermediate() {
     // `SumAll >>> Fanout3 >>> SumAll`: xs -> total; [total, total+1, total+2];
     // sum = 3*total + 3.
     let mut gb = Builder::new(());
-    let xs: Vec<_> = [1, 2, 3]
+    let (xs, xh): (Vec<_>, Vec<PortHandle<RefPort<i64>>>) = [1, 2, 3]
         .into_iter()
-        .map(|v| gb.push_source(RefSource::new(v)))
-        .collect();
-    let xh: Vec<Handle<RefPort<i64>>> = xs.iter().map(|s| **s).collect();
-    let comp = gb.push(SumAll.then(Fanout3).then(SumAll), &xh[..]);
+        .map(|v| gb.source(RefSource::new(v)))
+        .unzip();
+    let comp = gb.segment(SumAll.then(Fanout3).then(SumAll), &xh[..]);
     let mut g = gb.build();
     let mut pool = pool();
 
@@ -1088,17 +1082,17 @@ fn composed_variadic_intermediate() {
 #[test]
 fn composed_stateful_then() {
     let mut gb = Builder::new(());
-    let s = gb.push_source(RefSource::new(5));
-    let fold = gb.push(Fold, *s);
-    let sep = gb.push(Double, fold); // separate nodes
-    let s2 = gb.push_source(RefSource::new(5));
-    let comp = gb.push(Fold.then(Double), *s2); // composed into ONE segment
+    let (s_cell, s) = gb.source(RefSource::new(5));
+    let fold = gb.segment(Fold, s);
+    let sep = gb.segment(Double, fold); // separate nodes
+    let (s2_cell, s2) = gb.source(RefSource::new(5));
+    let comp = gb.segment(Fold.then(Double), s2); // composed into ONE segment
     let mut g = gb.build();
     let mut pool = pool();
 
     for v in [3, 2, 7] {
-        *g.state_mut(s) = v;
-        *g.state_mut(s2) = v;
+        *g.state_mut(s_cell) = v;
+        *g.state_mut(s2_cell) = v;
         g.stabilize(&mut pool);
         assert_eq!(
             *g.view(comp),
@@ -1111,14 +1105,14 @@ fn composed_stateful_then() {
 #[test]
 fn composed_with_id() {
     let mut gb = Builder::new(());
-    let s = gb.push_source(RefSource::new(5));
-    let comp = gb.push(Inc.then(Id::default()).then(Double), *s);
+    let (s_cell, s) = gb.source(RefSource::new(5));
+    let comp = gb.segment(Inc.then(Id::default()).then(Double), s);
     let mut g = gb.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(comp), 12); // (5+1)*2
 
-    *g.state_mut(s) = 10;
+    *g.state_mut(s_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(comp), 22); // (10+1)*2
 }
@@ -1128,18 +1122,18 @@ fn operator_gate_blocks_unnotified_branch() {
     // `GatedCounter *** Inc`. Change only the second input: Inc reruns, but
     // GatedCounter's input did not notify, so its gate skips the increment.
     let mut gb = Builder::new(());
-    let a = gb.push_source(RefSource::new(0));
-    let bh = gb.push_source(RefSource::new(0));
-    let (count, inc) = gb.push(GatedCounter.par(Inc), (*a, *bh));
+    let (a_cell, a) = gb.source(RefSource::new(0));
+    let (bh_cell, bh) = gb.source(RefSource::new(0));
+    let (count, inc) = gb.segment(GatedCounter.par(Inc), (a, bh));
     let mut g = gb.build();
     let mut pool = pool();
 
-    *g.state_mut(bh) = 5; // change only b
+    *g.state_mut(bh_cell) = 5; // change only b
     g.stabilize(&mut pool);
     assert_eq!(*g.view(inc), 6); // Inc ran: 5 + 1
     assert_eq!(*g.view(count), 0); // GatedCounter gated out: counter unchanged
 
-    *g.state_mut(a) = 1; // now change a
+    *g.state_mut(a_cell) = 1; // now change a
     g.stabilize(&mut pool);
     assert_eq!(*g.view(count), 1); // GatedCounter ran once
 }
@@ -1150,19 +1144,19 @@ fn route_reorders_by_forwarding_refs() {
     // INTO the inputs, reordered -- no state, no copy. Standalone construction
     // needs the turbofish: nothing else pins T/U (`Values` is non-injective).
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(20));
+    let (s0_cell, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(20));
     let swap = Arr::<(RefPort<i64>, RefPort<i64>), (RefPort<i64>, RefPort<i64>), (), _>::new(
         |(a, b), _| (b, a),
     );
-    let (o0, o1) = gb.push(swap, (*s0, *s1));
+    let (o0, o1) = gb.segment(swap, (s0, s1));
     let mut g = gb.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(o0), 20); // forwards s1
     assert_eq!(*g.view(o1), 10); // forwards s0
 
-    *g.state_mut(s0) = 99;
+    *g.state_mut(s0_cell) = 99;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(o1), 99); // o1 still forwards s0
 }
@@ -1179,16 +1173,16 @@ fn hand_lowered_segment_chain_infers() {
         .route::<(RefPort<i64>, RefPort<i64>), _>(|((_, c), d), _| (d, c));
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(20));
-    let (od, oc) = gb.push(seg, (*s0, *s1));
+    let (s0_cell, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(20));
+    let (od, oc) = gb.segment(seg, (s0, s1));
     let mut g = gb.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(oc), 30);
     assert_eq!(*g.view(od), 31);
 
-    *g.state_mut(s0) = 11;
+    *g.state_mut(s0_cell) = 11;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(oc), 31);
     assert_eq!(*g.view(od), 32);
@@ -1206,16 +1200,16 @@ fn segment_notation_diamond() {
     });
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(20));
-    let (od, oc) = gb.push(seg, (*s0, *s1));
+    let (s0_cell, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(20));
+    let (od, oc) = gb.segment(seg, (s0, s1));
     let mut g = gb.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(oc), 30);
     assert_eq!(*g.view(od), 31);
 
-    *g.state_mut(s0) = 11;
+    *g.state_mut(s0_cell) = 11;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(oc), 31);
     assert_eq!(*g.view(od), 32);
@@ -1232,9 +1226,9 @@ fn segment_notation_result_is_last_binding() {
     });
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(20));
-    let od = gb.push(seg, (*s0, *s1));
+    let (_, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(20));
+    let od = gb.segment(seg, (s0, s1));
     let g = gb.build();
     assert_eq!(*g.view(od), 31);
 }
@@ -1252,9 +1246,9 @@ fn segment_notation_runtime_path_override() {
     });
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(20));
-    let oc = gb.push(seg, (*s0, *s1));
+    let (_, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(20));
+    let oc = gb.segment(seg, (s0, s1));
     let g = gb.build();
     assert_eq!(*g.view(oc), 30);
 }
@@ -1269,9 +1263,9 @@ fn segment_notation_duplicates_reorders_and_drops() {
     });
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(20));
-    let (ot, os) = gb.push(seg, (*s0, *s1));
+    let (_, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(20));
+    let (ot, os) = gb.segment(seg, (s0, s1));
     let g = gb.build();
     assert_eq!(*g.view(os), 20); // a + a
     assert_eq!(*g.view(ot), 30); // s + a
@@ -1288,9 +1282,9 @@ fn segment_notation_destructures_and_shadows() {
     });
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(4));
-    let or = gb.push(seg, (*s0, *s1));
+    let (_, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(4));
+    let or = gb.segment(seg, (s0, s1));
     let g = gb.build();
     assert_eq!(*g.view(or), 21); // (10+4)+1 + (10-4)
 }
@@ -1305,16 +1299,16 @@ fn segment_notation_ports_wire() {
     });
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(1));
-    let s1 = gb.push_source(RefSource::new(2));
-    let s2 = gb.push_source(RefSource::new(3));
-    let ot = gb.push(seg, &[*s0, *s1, *s2][..]);
+    let (s0_cell, s0) = gb.source(RefSource::new(1));
+    let (_, s1) = gb.source(RefSource::new(2));
+    let (_, s2) = gb.source(RefSource::new(3));
+    let ot = gb.segment(seg, &[s0, s1, s2][..]);
     let mut g = gb.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(ot), 7);
 
-    *g.state_mut(s0) = 10;
+    *g.state_mut(s0_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(ot), 16);
 }
@@ -1357,10 +1351,10 @@ impl Segment for GatedFanout {
 fn gated_ports_producer_rederives_each_generation() {
     // Src -> Abs (value cutoff) -> GatedFanout (manual gate, RefPorts out) -> counter.
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(5i64));
-    let a = b.push(Abs, *s);
-    let out = b.push(GatedFanout, a);
-    let notified = b.push(CountIfNotified, out[1]);
+    let (s_cell, s) = b.source(RefSource::new(5i64));
+    let a = b.segment(Abs, s);
+    let out = b.segment(GatedFanout, a);
+    let notified = b.segment(CountIfNotified, out[1]);
     let mut g = b.build();
     let mut pool = pool();
 
@@ -1368,12 +1362,12 @@ fn gated_ports_producer_rederives_each_generation() {
     assert_eq!(*g.view(out[1]), 0); // build call: count = 0
     assert_eq!(*g.view(notified), 0);
 
-    *g.state_mut(s) = -5; // |x| unchanged: Abs does not notify
+    *g.state_mut(s_cell) = -5; // |x| unchanged: Abs does not notify
     g.stabilize(&mut pool);
     assert_eq!(*g.view(out[1]), 0); // gated: no recount
     assert_eq!(*g.view(notified), 0); // and the re-derived flags were off
 
-    *g.state_mut(s) = 7; // |x| changes: notifies
+    *g.state_mut(s_cell) = 7; // |x| changes: notifies
     g.stabilize(&mut pool);
     assert_eq!(*g.view(out[0]), 7);
     assert_eq!(*g.view(out[1]), 1);
@@ -1390,9 +1384,9 @@ fn segment_notation_pure_permutation() {
     });
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(20));
-    let (ob, (oa0, oa1)) = gb.push(seg, (*s0, *s1));
+    let (_, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(20));
+    let (ob, (oa0, oa1)) = gb.segment(seg, (s0, s1));
     let g = gb.build();
     assert_eq!(*g.view(ob), 20);
     assert_eq!(*g.view(oa0), 10);
@@ -1409,15 +1403,15 @@ fn segment_notation_apply_nests() {
     });
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(20));
-    let od = gb.push(seg, (*s0, *s1));
+    let (s0_cell, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(20));
+    let od = gb.segment(seg, (s0, s1));
     let mut g = gb.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(od), 40); // 10 + (10 + 20)
 
-    *g.state_mut(s0) = 11;
+    *g.state_mut(s0_cell) = 11;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(od), 42); // 11 + (11 + 20)
 }
@@ -1432,9 +1426,9 @@ fn segment_notation_apply_in_result_position() {
     });
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(20));
-    let o = gb.push(seg, (*s0, *s1));
+    let (_, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(20));
+    let o = gb.segment(seg, (s0, s1));
     let g = gb.build();
     assert_eq!(*g.view(o), 31);
 }
@@ -1452,9 +1446,9 @@ fn segment_notation_apply_in_statement_args() {
     );
 
     let mut gb = Builder::new(());
-    let s0 = gb.push_source(RefSource::new(10));
-    let s1 = gb.push_source(RefSource::new(4));
-    let (or, op) = gb.push(seg, (*s0, *s1));
+    let (_, s0) = gb.source(RefSource::new(10));
+    let (_, s1) = gb.source(RefSource::new(4));
+    let (or, op) = gb.segment(seg, (s0, s1));
     let g = gb.build();
     assert_eq!(*g.view(op), 15); // (10+1) + 4
     assert_eq!(*g.view(or), 23); // 15 + ((11-4) + 1)
@@ -1471,14 +1465,14 @@ fn out_of_cone_producer_does_not_spuriously_notify() {
     // leaves notify=true), so on D's first participating generation it read
     // input 0 as notified and returned 1.
     let mut b = Builder::new(());
-    let s0 = b.push_source(RefSource::new(0));
-    let p = b.push(Inc, *s0);
-    let s1 = b.push_source(RefSource::new(0));
-    let d = b.push(DidFirstNotify, (p, *s1));
+    let (_, s0) = b.source(RefSource::new(0));
+    let p = b.segment(Inc, s0);
+    let (s1_cell, s1) = b.source(RefSource::new(0));
+    let d = b.segment(DidFirstNotify, (p, s1));
     let mut g = b.build();
     let mut pool = pool();
 
-    *g.state_mut(s1) = 1;
+    *g.state_mut(s1_cell) = 1;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(d), 0); // P did not notify this generation
 }
@@ -1512,13 +1506,13 @@ impl Segment for ShrinkPorts {
 #[should_panic(expected = "output shape changed since build")]
 fn shrinking_ports_output_poisons_instead_of_dangling() {
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(1i64));
-    let out = b.push(ShrinkPorts, *s);
+    let (s_cell, s) = b.source(RefSource::new(1i64));
+    let out = b.segment(ShrinkPorts, s);
     assert_eq!(out.len(), 2); // sized to 2 at build
     let mut g = b.build();
     let mut pool = pool();
 
-    *g.state_mut(s) = 5; // ShrinkPorts now writes 1 leaf -> must poison
+    *g.state_mut(s_cell) = 5; // ShrinkPorts now writes 1 leaf -> must poison
     g.stabilize(&mut pool);
 }
 
@@ -1570,26 +1564,26 @@ impl Segment for ViewStats {
 #[test]
 fn view_window_moves_and_resizes_per_generation() {
     let mut b = Builder::new(());
-    let data = b.push_source(RefSource::new(vec![1i64, 2, 3, 4, 5, 6, 7, 8]));
-    let range = b.push_source(RefSource::new((0usize, 3usize)));
-    let win = b.push(WindowView, (*data, *range));
+    let (data_cell, data) = b.source(RefSource::new(vec![1i64, 2, 3, 4, 5, 6, 7, 8]));
+    let (range_cell, range) = b.source(RefSource::new((0usize, 3usize)));
+    let win = b.segment(WindowView, (data, range));
     // Forward the view through an extra node: the forwarder re-homes the fat
     // reference in its OWN output scratch (a copy, not an alias). `Id`'s type
     // parameter is inferred from `win`'s handle -- no turbofish.
-    let fwd = b.push(Id::default(), win);
-    let (sum, len) = b.push(ViewStats, fwd);
+    let fwd = b.segment(Id::default(), win);
+    let (sum, len) = b.segment(ViewStats, fwd);
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(sum), 6); // [1, 2, 3]
     assert_eq!(*g.view(len), 3);
 
-    *g.state_mut(range) = (2, 5); // the window MOVES and RESIZES
+    *g.state_mut(range_cell) = (2, 5); // the window MOVES and RESIZES
     g.stabilize(&mut pool);
     assert_eq!(*g.view(sum), 3 + 4 + 5 + 6 + 7);
     assert_eq!(*g.view(len), 5);
 
-    *g.state_mut(data) = vec![10; 8]; // fresh buffer; the view is re-derived
+    *g.state_mut(data_cell) = vec![10; 8]; // fresh buffer; the view is re-derived
     g.stabilize(&mut pool);
     assert_eq!(*g.view(sum), 50);
     assert_eq!(*g.view(len), 5);
@@ -1666,16 +1660,16 @@ impl Segment for StridedSum {
 #[test]
 fn custom_view_struct_through_the_wire() {
     let mut b = Builder::new(());
-    let v = b.push_source(RefSource::new(vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0]));
-    let k = b.push_source(RefSource::new(2usize));
-    let view = b.push(MakeStrided, (*v, *k));
-    let out = b.push(StridedSum, view);
+    let (_, v) = b.source(RefSource::new(vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0]));
+    let (k_cell, k) = b.source(RefSource::new(2usize));
+    let view = b.segment(MakeStrided, (v, k));
+    let out = b.segment(StridedSum, view);
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(out), 1.0 + 3.0 + 5.0);
 
-    *g.state_mut(k) = 3;
+    *g.state_mut(k_cell) = 3;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(out), 1.0 + 4.0);
 }
@@ -1729,17 +1723,17 @@ fn by_value_scalar_wires() {
     // `g.view` reads a `Port` slot by value; `ScalarSink` lowers back to a
     // `RefPort` (reference into the sink's state).
     let mut b = Builder::new(());
-    let s = b.push_source(Source::new(3i64));
-    let t = b.push_source(Source::new(4i64));
-    let sum = b.push(ScalarAdd, (*s, *t));
-    let out = b.push(ScalarSink, sum);
+    let (s_cell, s) = b.source(Source::new(3i64));
+    let (_, t) = b.source(Source::new(4i64));
+    let sum = b.segment(ScalarAdd, (s, t));
+    let out = b.segment(ScalarSink, sum);
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(g.view(sum), 7);
     assert_eq!(*g.view(out), 7);
 
-    *g.state_mut(s) = 10;
+    *g.state_mut(s_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(g.view(sum), 14);
     assert_eq!(*g.view(out), 14);
@@ -1773,26 +1767,26 @@ fn view_source_lends_borrowing_view_from_owned_cell() {
     // through `state_mut`, which dirties the node, so the view is re-derived
     // and re-homed before any consumer in the cone reads it.
     let mut b = Builder::new(());
-    let xs = b.push_source(ViewSource::<Slice<i64>, ()>::new(vec![1, 2, 3]));
-    let k = b.push_source(RefSource::new(100i64));
-    let out = b.push(SliceTotal, (*xs, *k));
+    let (xs_cell, xs) = b.source(ViewSource::<Slice<i64>, ()>::new(vec![1, 2, 3]));
+    let (k_cell, k) = b.source(RefSource::new(100i64));
+    let out = b.segment(SliceTotal, (xs, k));
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(g.view(*xs), &[1, 2, 3][..]);
+    assert_eq!(g.view(xs), &[1, 2, 3][..]);
     assert_eq!(*g.view(out), 106);
 
     // Poke only the scalar: the consumer re-runs and re-reads the slice wire
     // (un-notified, unchanged) alongside the fresh scalar.
-    *g.state_mut(k) = 1000;
+    *g.state_mut(k_cell) = 1000;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(out), 1006);
 
     // Poke the owned cell with a write that reallocates its buffer: the node
     // is dirtied, so the lent view tracks the moved storage.
-    g.state_mut(xs).extend(4..=64);
+    g.state_mut(xs_cell).extend(4..=64);
     g.stabilize(&mut pool);
-    assert_eq!(g.view(*xs).len(), 64);
+    assert_eq!(g.view(xs).len(), 64);
     assert_eq!(*g.view(out), (1..=64).sum::<i64>() + 1000);
 }
 
@@ -1830,13 +1824,13 @@ impl Segment for CellCounter {
 #[test]
 fn send_only_state_is_accepted() {
     let mut b = Builder::new(());
-    let s = b.push_source(RefSource::new(10i64));
-    let out = b.push(CellCounter, *s);
+    let (s_cell, s) = b.source(RefSource::new(10i64));
+    let out = b.segment(CellCounter, s);
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(*g.view(out), 10); // build call: 10 + 0
-    *g.state_mut(s) = 20;
+    *g.state_mut(s_cell) = 20;
     g.stabilize(&mut pool);
     assert_eq!(*g.view(out), 21); // 20 + 1
 }
@@ -1955,18 +1949,18 @@ fn build_mesh(
         &mut Builder<()>,
         usize,
         usize,
-        [Handle<RefPort<i64>>; 3],
-    ) -> Handle<RefPort<i64>>,
+        [PortHandle<RefPort<i64>>; 3],
+    ) -> PortHandle<RefPort<i64>>,
 ) -> (
-    Vec<SourceHandle<RefSource<i64, ()>>>,
-    Vec<Vec<Handle<RefPort<i64>>>>,
-    Vec<Handle<RefPort<i64>>>,
+    Vec<NodeHandle<RefSource<i64, ()>>>,
+    Vec<Vec<PortHandle<RefPort<i64>>>>,
+    Vec<PortHandle<RefPort<i64>>>,
 ) {
-    let src: Vec<SourceHandle<RefSource<i64, ()>>> = srcs
+    let (src, wires): (Vec<NodeHandle<RefSource<i64, ()>>>, Vec<_>) = srcs
         .iter()
-        .map(|&v| b.push_source(RefSource::new(v)))
-        .collect();
-    let mut layers: Vec<Vec<Handle<RefPort<i64>>>> = vec![src.iter().map(|s| **s).collect()];
+        .map(|&v| b.source(RefSource::new(v)))
+        .unzip();
+    let mut layers: Vec<Vec<PortHandle<RefPort<i64>>>> = vec![wires];
     for layer in 1..=LM {
         let prev = layers[layer - 1].clone();
         let mut cur = Vec::with_capacity(NM);
@@ -1976,7 +1970,7 @@ fn build_mesh(
         }
         layers.push(cur);
     }
-    let aggs: Vec<Handle<RefPort<i64>>> = layers.iter().map(|l| b.push(SumAll, &l[..])).collect();
+    let aggs: Vec<PortHandle<RefPort<i64>>> = layers.iter().map(|l| b.segment(SumAll, &l[..])).collect();
     (src, layers, aggs)
 }
 
@@ -1986,7 +1980,7 @@ fn complex_mesh_multi_generation() {
     let mut srcs: Vec<i64> = (0..NM).map(|j| src_val(0, j)).collect();
     let mut b = Builder::new(());
     let (src, nodes, aggs) = build_mesh(&mut b, &srcs, |b, layer, j, [a, b2, c]| {
-        b.push(
+        b.segment(
             Work {
                 iters: iters_of(layer, j),
             },
@@ -2042,9 +2036,9 @@ fn complex_mesh_with_fused_nodes() {
                 let r = Add @ (p, q);
                 r
             });
-            b.push(seg, (a, b2, c))
+            b.segment(seg, (a, b2, c))
         } else {
-            b.push(Work { iters: it }.then(Inc).then(Double), (a, b2, c))
+            b.segment(Work { iters: it }.then(Inc).then(Double), (a, b2, c))
         }
     });
     let mut g = b.build();
@@ -2110,21 +2104,21 @@ impl Segment for SumAllPorts {
 #[test]
 fn ports_group_input_sums() {
     let mut b = Builder::new(());
-    let s0 = b.push_source(Source::new(1i64));
-    let s1 = b.push_source(Source::new(2i64));
-    let s2 = b.push_source(Source::new(3i64));
-    let total = b.push(SumAllPorts, &[*s0, *s1, *s2]);
+    let (s0_cell, s0) = b.source(Source::new(1i64));
+    let (s1_cell, s1) = b.source(Source::new(2i64));
+    let (s2_cell, s2) = b.source(Source::new(3i64));
+    let total = b.segment(SumAllPorts, &[s0, s1, s2]);
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(g.view(total), 6);
 
-    *g.state_mut(s0) = 10;
+    *g.state_mut(s0_cell) = 10;
     g.stabilize(&mut pool);
     assert_eq!(g.view(total), 15);
 
-    *g.state_mut(s1) = -2;
-    *g.state_mut(s2) = 30;
+    *g.state_mut(s1_cell) = -2;
+    *g.state_mut(s2_cell) = 30;
     g.stabilize(&mut pool);
     assert_eq!(g.view(total), 38);
 }
@@ -2132,7 +2126,7 @@ fn ports_group_input_sums() {
 #[test]
 fn empty_ports_group_builds_and_sums_zero() {
     let mut b = Builder::new(());
-    let total = b.push(SumAllPorts, &[] as &[Handle<Port<i64>>]);
+    let total = b.segment(SumAllPorts, &[] as &[PortHandle<Port<i64>>]);
     let g = b.build();
     assert_eq!(g.view(total), 0);
 }
@@ -2167,12 +2161,12 @@ impl Segment for FanoutPorts3 {
 #[test]
 fn ports_group_output_dynamic_arity() {
     let mut b = Builder::new(());
-    let s = b.push_source(Source::new(10i64));
-    let outs = b.push(FanoutPorts3, *s);
+    let (s_cell, s) = b.source(Source::new(10i64));
+    let outs = b.segment(FanoutPorts3, s);
     assert_eq!(outs.len(), 3);
     // Each group slot is an ordinary `Port` producer: read it directly, and
     // fan the whole group back into a `Ports` consumer.
-    let total = b.push(SumAllPorts, &outs[..]);
+    let total = b.segment(SumAllPorts, &outs[..]);
     let mut g = b.build();
     let mut pool = pool();
 
@@ -2181,7 +2175,7 @@ fn ports_group_output_dynamic_arity() {
     assert_eq!(g.view(outs[2]), 12);
     assert_eq!(g.view(total), 33);
 
-    *g.state_mut(s) = 100;
+    *g.state_mut(s_cell) = 100;
     g.stabilize(&mut pool);
     assert_eq!(g.view(outs[0]), 100);
     assert_eq!(g.view(outs[2]), 102);
@@ -2195,16 +2189,16 @@ fn ports_group_output_dynamic_arity() {
 #[test]
 fn ports_group_forwarded_through_id() {
     let mut b = Builder::new(());
-    let s0 = b.push_source(Source::new(4i64));
-    let s1 = b.push_source(Source::new(5i64));
-    let fwd = b.push(Id::<Ports<i64>, ()>::default(), &[*s0, *s1]);
-    let total = b.push(SumAllPorts, &fwd[..]);
+    let (_, s0) = b.source(Source::new(4i64));
+    let (s1_cell, s1) = b.source(Source::new(5i64));
+    let fwd = b.segment(Id::<Ports<i64>, ()>::default(), &[s0, s1]);
+    let total = b.segment(SumAllPorts, &fwd[..]);
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(g.view(total), 9);
 
-    *g.state_mut(s1) = 50;
+    *g.state_mut(s1_cell) = 50;
     g.stabilize(&mut pool);
     assert_eq!(g.view(fwd[1]), 50);
     assert_eq!(g.view(total), 54);
@@ -2240,20 +2234,20 @@ impl Segment for MixedGroups {
 #[test]
 fn mixed_value_and_ref_variadic_groups() {
     let mut b = Builder::new(());
-    let p0 = b.push_source(Source::new(1i64));
-    let p1 = b.push_source(Source::new(2i64));
-    let k = b.push_source(RefSource::new(10i64));
-    let r0 = b.push_source(RefSource::new(100i64));
-    let r1 = b.push_source(RefSource::new(200i64));
-    let r2 = b.push_source(RefSource::new(300i64));
-    let out = b.push(MixedGroups, (&[*p0, *p1], *k, &[*r0, *r1, *r2]));
+    let (_, p0) = b.source(Source::new(1i64));
+    let (p1_cell, p1) = b.source(Source::new(2i64));
+    let (_, k) = b.source(RefSource::new(10i64));
+    let (r0_cell, r0) = b.source(RefSource::new(100i64));
+    let (_, r1) = b.source(RefSource::new(200i64));
+    let (_, r2) = b.source(RefSource::new(300i64));
+    let out = b.segment(MixedGroups, (&[p0, p1], k, &[r0, r1, r2]));
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(g.view(out), (1 + 2) * 10 + 600);
 
-    *g.state_mut(p1) = 5;
-    *g.state_mut(r0) = 111;
+    *g.state_mut(p1_cell) = 5;
+    *g.state_mut(r0_cell) = 111;
     g.stabilize(&mut pool);
     assert_eq!(g.view(out), (1 + 5) * 10 + 611);
 }
@@ -2286,13 +2280,13 @@ impl Segment for ShrinkValuePorts {
 #[should_panic(expected = "output shape changed since build")]
 fn shrinking_ports_group_output_poisons_instead_of_dangling() {
     let mut b = Builder::new(());
-    let s = b.push_source(Source::new(1i64));
-    let out = b.push(ShrinkValuePorts, *s);
+    let (s_cell, s) = b.source(Source::new(1i64));
+    let out = b.segment(ShrinkValuePorts, s);
     assert_eq!(out.len(), 2); // sized to 2 at build
     let mut g = b.build();
     let mut pool = pool();
 
-    *g.state_mut(s) = 5; // ShrinkValuePorts now writes 1 leaf -> must poison
+    *g.state_mut(s_cell) = 5; // ShrinkValuePorts now writes 1 leaf -> must poison
     g.stabilize(&mut pool);
 }
 
@@ -2319,19 +2313,19 @@ impl Segment for ConcatLens {
 #[test]
 fn view_ports_group_of_slice_views() {
     let mut b = Builder::new(());
-    let d0 = b.push_source(RefSource::new(vec![1i64, 2, 3, 4]));
-    let d1 = b.push_source(RefSource::new(vec![10i64, 20]));
-    let r0 = b.push_source(RefSource::new((0usize, 2usize)));
-    let r1 = b.push_source(RefSource::new((0usize, 2usize)));
-    let w0 = b.push(WindowView, (*d0, *r0));
-    let w1 = b.push(WindowView, (*d1, *r1));
-    let total = b.push(ConcatLens, &[w0, w1]);
+    let (_, d0) = b.source(RefSource::new(vec![1i64, 2, 3, 4]));
+    let (_, d1) = b.source(RefSource::new(vec![10i64, 20]));
+    let (r0_cell, r0) = b.source(RefSource::new((0usize, 2usize)));
+    let (_, r1) = b.source(RefSource::new((0usize, 2usize)));
+    let w0 = b.segment(WindowView, (d0, r0));
+    let w1 = b.segment(WindowView, (d1, r1));
+    let total = b.segment(ConcatLens, &[w0, w1]);
     let mut g = b.build();
     let mut pool = pool();
 
     assert_eq!(g.view(total), (1 + 2) + (10 + 20));
 
-    *g.state_mut(r0) = (1, 3); // window slides and grows
+    *g.state_mut(r0_cell) = (1, 3); // window slides and grows
     g.stabilize(&mut pool);
     assert_eq!(g.view(total), (2 + 3 + 4) + (10 + 20));
 }

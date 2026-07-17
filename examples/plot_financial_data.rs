@@ -25,7 +25,7 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::graph::Handle;
+use tradingflow::graph::PortHandle;
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
@@ -68,11 +68,11 @@ fn load_symbols(data_dir: &str) -> Vec<String> {
 /// all-NaN "no data" ticks.
 fn pick(
     sc: &mut Scenario,
-    panel: Handle<ArrayPort<f64, 2>>,
+    panel: PortHandle<ArrayPort<f64, 2>>,
     i: usize,
-) -> Handle<ArrayPort<f64, 1>> {
-    let sel = sc.push(select(vec![i], 0, true), panel);
-    sc.push(
+) -> PortHandle<ArrayPort<f64, 1>> {
+    let sel = sc.segment(select(vec![i], 0, true), panel);
+    sc.segment(
         filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
         sel,
     )
@@ -110,7 +110,7 @@ async fn main() {
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
-    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ArrayPort<f64, 1>> {
+    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> PortHandle<ArrayPort<f64, 1>> {
         let s =
             ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
         let panel = sc.add_source(s);
@@ -120,7 +120,7 @@ async fn main() {
                   kind: &str,
                   cols: Vec<String>,
                   with_report_date: bool|
-     -> Handle<ArrayPort<f64, 1>> {
+     -> PortHandle<ArrayPort<f64, 1>> {
         let s = ParquetFinancialReportPanelSource::new(
             format!("{data_dir}/{kind}.parquet"),
             cols,
@@ -166,46 +166,46 @@ async fn main() {
     // ------------------------------------------------------------------
     // Operators (identical to the CSV version).
     // ------------------------------------------------------------------
-    let close = sc.push(select(vec![0], 0, true), prices);
-    let total_shares = sc.push(select(vec![0], 0, true), equity);
-    let market_cap = sc.push(multiply(), (close, total_shares));
+    let close = sc.segment(select(vec![0], 0, true), prices);
+    let total_shares = sc.segment(select(vec![0], 0, true), equity);
+    let market_cap = sc.segment(multiply(), (close, total_shares));
 
-    let assets = sc.push(select(vec![0], 0, true), balance);
-    let neg_equity = sc.push(select(vec![1], 0, true), balance);
-    let equity_val = sc.push(negate(), neg_equity);
-    let neg_peq = sc.push(select(vec![2, 3, 4], 0, false), balance);
-    let parent_equity = sc.push(
+    let assets = sc.segment(select(vec![0], 0, true), balance);
+    let neg_equity = sc.segment(select(vec![1], 0, true), balance);
+    let equity_val = sc.segment(negate(), neg_equity);
+    let neg_peq = sc.segment(select(vec![2, 3, 4], 0, false), balance);
+    let parent_equity = sc.segment(
         map(|a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous().iter().sum::<f64>())),
         neg_peq,
     );
 
-    let income_ann = sc.push(annualize(), income); // [op_income, net_profit]
-    let op_income = sc.push(select(vec![0], 0, true), income_ann);
-    let net_profit = sc.push(select(vec![1], 0, true), income_ann);
-    let cf_ann = sc.push(annualize(), cf); // [change]
-    let cash_flow = sc.push(select(vec![0], 0, true), cf_ann);
+    let income_ann = sc.segment(annualize(), income); // [op_income, net_profit]
+    let op_income = sc.segment(select(vec![0], 0, true), income_ann);
+    let net_profit = sc.segment(select(vec![1], 0, true), income_ann);
+    let cf_ann = sc.segment(annualize(), cf); // [change]
+    let cash_flow = sc.segment(select(vec![0], 0, true), cf_ann);
 
-    let net_profit_series = sc.push(record(), net_profit);
-    let net_profit_ttm = sc.push(
+    let net_profit_series = sc.segment(record(), net_profit);
+    let net_profit_ttm = sc.segment(
         rolling_mean(Window::TimeDelta(Duration::from_days(365))),
         net_profit_series,
     );
 
-    let ep = sc.push(divide(), (net_profit_ttm, market_cap));
-    let bp = sc.push(divide(), (parent_equity, market_cap));
-    let roe = sc.push(divide(), (net_profit_ttm, parent_equity));
+    let ep = sc.segment(divide(), (net_profit_ttm, market_cap));
+    let bp = sc.segment(divide(), (parent_equity, market_cap));
+    let roe = sc.segment(divide(), (net_profit_ttm, parent_equity));
 
     let records = [
-        sc.push(record(), market_cap),
-        sc.push(record(), assets),
-        sc.push(record(), equity_val),
-        sc.push(record(), parent_equity),
-        sc.push(record(), op_income),
-        sc.push(record(), net_profit),
-        sc.push(record(), cash_flow),
-        sc.push(record(), ep),
-        sc.push(record(), bp),
-        sc.push(record(), roe),
+        sc.segment(record(), market_cap),
+        sc.segment(record(), assets),
+        sc.segment(record(), equity_val),
+        sc.segment(record(), parent_equity),
+        sc.segment(record(), op_income),
+        sc.segment(record(), net_profit),
+        sc.segment(record(), cash_flow),
+        sc.segment(record(), ep),
+        sc.segment(record(), bp),
+        sc.segment(record(), roe),
     ];
 
     // ------------------------------------------------------------------

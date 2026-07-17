@@ -1,7 +1,7 @@
 //! Core gating / recording operators, implemented directly on
 //! [`Operator`](crate::graph::Operator) / [`Segment`]. (The legacy `Const` cell is
 //! gone — source cells are
-//! [`push_source`](crate::graph::Builder::push_source) nodes now.)
+//! [`source`](crate::graph::Builder::source) nodes now.)
 
 use std::marker::PhantomData;
 

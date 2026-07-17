@@ -66,11 +66,11 @@ async fn main() {
         Retention::UNBOUNDED,
     );
 
-    let predicted_returns = sc.push(
+    let predicted_returns = sc.segment(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
         (m.universe, m.features.series, m.demeaned_series),
     );
-    let predicted_cov = sc.push(
+    let predicted_cov = sc.segment(
         shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS),
         (m.universe, m.features.series, m.target_series),
     );
@@ -82,7 +82,7 @@ async fn main() {
         .iter()
         .map(|&gamma_ann| {
             let gamma_daily = gamma_ann / TRADING_DAYS.sqrt();
-            let soft = sc.push(
+            let soft = sc.segment(
                 benchmark_relative(m.n, args.index_size, gamma_daily, true, true),
                 (m.universe, predicted_returns, predicted_cov),
             );

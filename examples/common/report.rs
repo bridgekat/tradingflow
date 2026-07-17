@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
-use tradingflow::graph::{Handle, RefPort};
+use tradingflow::graph::{PortHandle, RefPort};
 use tradingflow::operators::SeriesPort;
 
 use tradingflow::data::civil_from_days;
@@ -99,7 +99,7 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(&Session, In
 /// Read a recorded **scalar** series into `(timestamps_ns, values)`.
 pub fn read_scalar_series(
     session: &Session,
-    h: Handle<SeriesPort<f64, 0>>,
+    h: PortHandle<SeriesPort<f64, 0>>,
 ) -> (Vec<i64>, Vec<f64>) {
     let s: SeriesView<f64, 0> = session.view(h);
     let ts = s.timestamps().iter().map(|t| t.as_nanos()).collect();

@@ -16,7 +16,7 @@ use std::thread;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 use tradingflow_graph::core::Pool;
-use tradingflow_graph::typed::{Builder, Graph, Handle, Operator, Port, RefPort, Source};
+use tradingflow_graph::typed::{Builder, Graph, PortHandle, Operator, Port, RefPort, Source};
 
 const DATA_LEN: usize = 1 << 16;
 const DATA_MASK: usize = DATA_LEN - 1;
@@ -212,16 +212,16 @@ fn bench_engine_segment(c: &mut Criterion) {
     let (a, b) = make_data();
     let mut i = 0;
     let mut gb = Builder::new(());
-    let ha = gb.push_source(Source::new(0.0));
-    let hb = gb.push_source(Source::new(0.0));
-    let _ = gb.push(Add, (*ha, *hb));
+    let (ha_cell, ha) = gb.source(Source::new(0.0));
+    let (hb_cell, hb) = gb.source(Source::new(0.0));
+    let _ = gb.segment(Add, (ha, hb));
     let mut g = gb.build();
     let mut pool = pool();
 
     c.bench_function("engine_segment", |bencher| {
         bencher.iter(|| {
-            *g.state_mut(ha) = a[i];
-            *g.state_mut(hb) = b[i];
+            *g.state_mut(ha_cell) = a[i];
+            *g.state_mut(hb_cell) = b[i];
             g.stabilize(&mut pool);
             i = (i + 1) & DATA_MASK;
         });
@@ -232,17 +232,17 @@ fn bench_engine_segment_series(c: &mut Criterion) {
     let (a, b) = make_data();
     let mut i = 0;
     let mut gb = Builder::new(());
-    let ha = gb.push_source(Source::new(0.0));
-    let hb = gb.push_source(Source::new(0.0));
-    let sum = gb.push(Add, (*ha, *hb));
-    let _ = gb.push(Record, sum);
+    let (ha_cell, ha) = gb.source(Source::new(0.0));
+    let (hb_cell, hb) = gb.source(Source::new(0.0));
+    let sum = gb.segment(Add, (ha, hb));
+    let _ = gb.segment(Record, sum);
     let mut g = gb.build();
     let mut pool = pool();
 
     c.bench_function("engine_segment_series", |bencher| {
         bencher.iter(|| {
-            *g.state_mut(ha) = a[i];
-            *g.state_mut(hb) = b[i];
+            *g.state_mut(ha_cell) = a[i];
+            *g.state_mut(hb_cell) = b[i];
             g.stabilize(&mut pool);
             i = (i + 1) & DATA_MASK;
         });
@@ -254,19 +254,19 @@ fn bench_engine_chain(c: &mut Criterion) {
         let (a, b) = make_data();
         let mut i = 0;
         let mut gb = Builder::new(());
-        let ha = gb.push_source(Source::new(0.0));
-        let hb = gb.push_source(Source::new(0.0));
-        let mut last = gb.push(Add, (*ha, *hb));
+        let (ha_cell, ha) = gb.source(Source::new(0.0));
+        let (hb_cell, hb) = gb.source(Source::new(0.0));
+        let mut last = gb.segment(Add, (ha, hb));
         for _ in 1..depth {
-            last = gb.push(Add, (last, *ha));
+            last = gb.segment(Add, (last, ha));
         }
         let mut g = gb.build();
         let mut pool = pool();
 
         c.bench_function(&format!("engine_chain_depth{depth}"), |bencher| {
             bencher.iter(|| {
-                *g.state_mut(ha) = a[i];
-                *g.state_mut(hb) = b[i];
+                *g.state_mut(ha_cell) = a[i];
+                *g.state_mut(hb_cell) = b[i];
                 g.stabilize(&mut pool);
                 i = (i + 1) & DATA_MASK;
             });
@@ -279,23 +279,23 @@ fn bench_engine_sparse(c: &mut Criterion) {
         let (a, b) = make_data();
         let mut i = 0;
         let mut gb = Builder::new(());
-        let ha = gb.push_source(Source::new(0.0));
-        let hb = gb.push_source(Source::new(0.0));
-        let hc = gb.push_source(Source::new(0.0));
-        let hd = gb.push_source(Source::new(0.0));
+        let (ha_cell, ha) = gb.source(Source::new(0.0));
+        let (hb_cell, hb) = gb.source(Source::new(0.0));
+        let (_, hc) = gb.source(Source::new(0.0));
+        let (_, hd) = gb.source(Source::new(0.0));
 
         // Active chain, fed (transitively) by a, b.
-        let mut last = gb.push(Add, (*ha, *hb));
+        let mut last = gb.segment(Add, (ha, hb));
         for _ in 1..active {
-            last = gb.push(Add, (last, *ha));
+            last = gb.segment(Add, (last, ha));
         }
 
         // Inactive chain, fed by c, d (never set) -> never in the dirty cone.
         let inactive = total - active;
         if inactive > 0 {
-            let mut prev = gb.push(Add, (*hc, *hd));
+            let mut prev = gb.segment(Add, (hc, hd));
             for _ in 1..inactive {
-                prev = gb.push(Add, (prev, *hc));
+                prev = gb.segment(Add, (prev, hc));
             }
         }
 
@@ -306,8 +306,8 @@ fn bench_engine_sparse(c: &mut Criterion) {
             &format!("engine_sparse_{total}total_{active}active"),
             |bencher| {
                 bencher.iter(|| {
-                    *g.state_mut(ha) = a[i];
-                    *g.state_mut(hb) = b[i];
+                    *g.state_mut(ha_cell) = a[i];
+                    *g.state_mut(hb_cell) = b[i];
                     g.stabilize(&mut pool);
                     i = (i + 1) & DATA_MASK;
                 });
@@ -321,8 +321,8 @@ fn bench_few_heavy(c: &mut Criterion) {
     const ITERS: usize = 1_000_000;
 
     let mut gb = Builder::new(());
-    let src = gb.push_source(Source::new(1.0));
-    let _: Vec<Handle<Port<()>>> = (0..K).map(|_| gb.push(Heavy(ITERS), *src)).collect();
+    let (src_cell, src) = gb.source(Source::new(1.0));
+    let _: Vec<PortHandle<Port<()>>> = (0..K).map(|_| gb.segment(Heavy(ITERS), src)).collect();
     let mut g = gb.build();
     let mut pool = pool();
     let mut group = c.benchmark_group("few_heavy");
@@ -331,7 +331,7 @@ fn bench_few_heavy(c: &mut Criterion) {
         let mut x = 0.0f64;
         bencher.iter(|| {
             x += 1.0;
-            *g.state_mut(src) = x;
+            *g.state_mut(src_cell) = x;
             g.stabilize(&mut pool);
         });
     });
@@ -360,12 +360,12 @@ fn bench_few_heavy(c: &mut Criterion) {
 // fusion removes.
 mod mesh {
     use tradingflow_graph::typed::{
-        Builder, Handle, RefPort, RefPorts, RefSource, Segment, SourceHandle,
+        Builder, PortHandle, NodeHandle, RefPort, RefPorts, RefSource, Segment,
     };
 
     /// A pokeable handle to one mesh source (a by-reference `i64`, since sources
     /// feed the per-layer `SumAll`'s `RefPorts`).
-    pub type Src = SourceHandle<RefSource<i64, ()>>;
+    pub type Src = NodeHandle<RefSource<i64, ()>>;
 
     pub const MODULUS: i64 = 1_000_000_007;
 
@@ -516,13 +516,13 @@ mod mesh {
             &mut Builder<()>,
             usize,
             usize,
-            [Handle<RefPort<i64>>; 3],
-        ) -> Handle<RefPort<i64>>,
-    ) -> (Vec<Src>, Vec<Handle<RefPort<i64>>>) {
-        let src: Vec<Src> = (0..n)
-            .map(|j| gb.push_source(RefSource::new(j as i64 + 1)))
-            .collect();
-        let mut layers: Vec<Vec<Handle<RefPort<i64>>>> = vec![src.iter().map(|s| **s).collect()];
+            [PortHandle<RefPort<i64>>; 3],
+        ) -> PortHandle<RefPort<i64>>,
+    ) -> (Vec<Src>, Vec<PortHandle<RefPort<i64>>>) {
+        let (src, wires): (Vec<Src>, Vec<_>) = (0..n)
+            .map(|j| gb.source(RefSource::new(j as i64 + 1)))
+            .unzip();
+        let mut layers: Vec<Vec<PortHandle<RefPort<i64>>>> = vec![wires];
         for layer in 1..=depth {
             let prev = layers[layer - 1].clone();
             let mut cur = Vec::with_capacity(n);
@@ -532,7 +532,7 @@ mod mesh {
             }
             layers.push(cur);
         }
-        let aggs = layers.iter().map(|l| gb.push(SumAll, &l[..])).collect();
+        let aggs = layers.iter().map(|l| gb.segment(SumAll, &l[..])).collect();
         (src, aggs)
     }
 }
@@ -541,7 +541,7 @@ fn drive_mesh<'a>(
     src: &'a [mesh::Src],
     g: &'a mut Graph<()>,
     pool: &'a mut Pool,
-    _: Handle<RefPort<i64>>,
+    _: PortHandle<RefPort<i64>>,
 ) -> impl FnMut() + 'a {
     let mut base = 0i64;
     move || {
@@ -558,7 +558,7 @@ fn bench_mesh(c: &mut Criterion) {
     for (w, d) in [(16usize, 16usize), (32, 32)] {
         let mut gb = Builder::new(());
         let (src, aggs) = mesh::build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
-            gb.push(
+            gb.segment(
                 mesh::Work {
                     iters: mesh::iters_of(l, j),
                 },
@@ -591,7 +591,7 @@ fn bench_mesh_fusion(c: &mut Criterion) {
                 let r = mesh::Add @ (p, q);
                 r
             });
-            gb.push(seg, (a, b, c))
+            gb.segment(seg, (a, b, c))
         });
         let mut g = gb.build();
         let mut pool = pool();
@@ -605,15 +605,15 @@ fn bench_mesh_fusion(c: &mut Criterion) {
     {
         let mut gb = Builder::new(());
         let (src, aggs) = mesh::build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
-            let w_h = gb.push(
+            let w_h = gb.segment(
                 mesh::Work {
                     iters: mesh::iters_of(l, j),
                 },
                 (a, b, c),
             );
-            let p = gb.push(mesh::Inc, w_h);
-            let q = gb.push(mesh::Double, w_h);
-            gb.push(mesh::Add, (p, q))
+            let p = gb.segment(mesh::Inc, w_h);
+            let q = gb.segment(mesh::Double, w_h);
+            gb.segment(mesh::Add, (p, q))
         });
         let mut g = gb.build();
         let mut pool = pool();

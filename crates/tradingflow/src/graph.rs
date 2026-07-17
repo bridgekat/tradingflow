@@ -2,7 +2,7 @@
 //!
 //! TradingFlow strategies are computation graphs: a
 //! [`Scenario`](crate::Scenario) derefs to the typed [`Builder`], results come
-//! back through [`Handle`]s and view ports, and custom operators implement
+//! back through [`PortHandle`]s and view ports, and custom operators implement
 //! [`Segment`] / [`Operator`] directly. This module makes `tradingflow` the
 //! only dependency a strategy crate needs: everything the engine exports for
 //! graph building is available (and documented) here, and
@@ -35,7 +35,7 @@ pub use tradingflow_graph::segment as __segment;
 /// zero-copy ref routing.
 ///
 /// ```ignore
-/// let signal = sc.push(
+/// let signal = sc.segment(
 ///     tradingflow::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
 ///         let d = subtract() @ (ma(10) @ x, ma(5) @ x);
 ///         and() @ (greater_than(0.0) @ d, not() @ (greater_than(0.0) @ lag(1) @ d))

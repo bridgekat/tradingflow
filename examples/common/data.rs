@@ -1,7 +1,7 @@
 //! The stacked cross-sectional market panel: parquet sources → `[num_stocks]`
 //! per-field panels, via one fused per-stock segment.
 
-use tradingflow::graph::Handle;
+use tradingflow::graph::PortHandle;
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
@@ -81,7 +81,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     // A panel source cell lends its `[N, K]` panel as an `ArrayPort<f64, 2>`
     // view edge, which feeds `Split` directly.
     let daily_panel =
-        |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ArrayPort<f64, 2>> {
+        |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> PortHandle<ArrayPort<f64, 2>> {
             let s =
                 ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
                     .with_time_range(start, end);
@@ -91,7 +91,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
                         kind: &str,
                         cols: Vec<String>,
                         with_report_date: bool|
-     -> Handle<ArrayPort<f64, 2>> {
+     -> PortHandle<ArrayPort<f64, 2>> {
         let s = ParquetFinancialReportPanelSource::new(
             format!("{dir}/{kind}.parquet"),
             cols,
@@ -169,12 +169,12 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
 
     // One `Split` per panel: the `1 → N` row fan-out as a single node each. The
     // rank-2 `[N, K]` panel splits along axis 0 into `N` rank-1 `[K]` row views.
-    let prices_rows = sc.push(split(n), prices_panel);
-    let div_rows = sc.push(split(n), div_panel);
-    let equity_rows = sc.push(split(n), equity_panel);
-    let balance_rows = sc.push(split(n), balance_panel);
-    let income_rows = sc.push(split(n), income_panel);
-    let cashflow_rows = sc.push(split(n), cashflow_panel);
+    let prices_rows = sc.segment(split(n), prices_panel);
+    let div_rows = sc.segment(split(n), div_panel);
+    let equity_rows = sc.segment(split(n), equity_panel);
+    let balance_rows = sc.segment(split(n), balance_panel);
+    let income_rows = sc.segment(split(n), income_panel);
+    let cashflow_rows = sc.segment(split(n), cashflow_panel);
 
     let mut closes = Vec::with_capacity(n);
     let mut volumes = Vec::with_capacity(n);
@@ -286,7 +286,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             balance_extras,
             cf_ann,
             prices_extras,
-        ) = sc.push(
+        ) = sc.segment(
             seg,
             (
                 prices_rows[i],
@@ -316,35 +316,35 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
 
     // Cross-sectional grouped panels (rank-1 `[K]` rows → rank-2 `[N, K]`); a
     // squeezing column `Select` (axis 1) recovers each field as rank-1 `[N]`.
-    let income_xs = sc.push(stack::<f64, 1, 2>(0), &incomes[..]); // (N, 4)
-    let balance_xs = sc.push(stack::<f64, 1, 2>(0), &balances[..]); // (N, 7)
-    let cf_xs = sc.push(stack::<f64, 1, 2>(0), &cashflows[..]); // (N, 3)
-    let px_xs = sc.push(stack_sync::<f64, 1, 2>(0), &price_extras[..]); // (N, 4) [open, high, low, amount]
+    let income_xs = sc.segment(stack::<f64, 1, 2>(0), &incomes[..]); // (N, 4)
+    let balance_xs = sc.segment(stack::<f64, 1, 2>(0), &balances[..]); // (N, 7)
+    let cf_xs = sc.segment(stack::<f64, 1, 2>(0), &cashflows[..]); // (N, 3)
+    let px_xs = sc.segment(stack_sync::<f64, 1, 2>(0), &price_extras[..]); // (N, 4) [open, high, low, amount]
 
     Stacked {
         // Per-stock scalars (rank-0) → rank-1 `[N]` cross-sections.
-        close: sc.push(stack_sync(0), &closes[..]),
-        volume: sc.push(stack_sync(0), &volumes[..]),
-        adjusted_close: sc.push(stack_sync(0), &adjusted_closes[..]),
-        adjusts: sc.push(stack(0), &adjust_factors[..]),
-        total_shares: sc.push(stack(0), &totals[..]),
-        circ_shares: sc.push(stack(0), &circs[..]),
-        parent_equity: sc.push(stack(0), &parent_equities[..]),
-        net_profit: sc.push(select(vec![0], 1, true), income_xs),
-        operating_profit: sc.push(select(vec![1], 1, true), income_xs),
-        revenue: sc.push(select(vec![2], 1, true), income_xs),
-        operating_cost: sc.push(select(vec![3], 1, true), income_xs),
-        total_assets: sc.push(select(vec![0], 1, true), balance_xs),
-        total_liab: sc.push(select(vec![1], 1, true), balance_xs),
-        current_assets: sc.push(select(vec![2], 1, true), balance_xs),
-        current_liab: sc.push(select(vec![3], 1, true), balance_xs),
-        cash: sc.push(select(vec![4], 1, true), balance_xs),
-        inventories: sc.push(select(vec![5], 1, true), balance_xs),
-        receivables: sc.push(select(vec![6], 1, true), balance_xs),
-        net_operating_cashflow: sc.push(select(vec![0], 1, true), cf_xs),
-        open: sc.push(select(vec![0], 1, true), px_xs),
-        high: sc.push(select(vec![1], 1, true), px_xs),
-        low: sc.push(select(vec![2], 1, true), px_xs),
-        amount: sc.push(select(vec![3], 1, true), px_xs),
+        close: sc.segment(stack_sync(0), &closes[..]),
+        volume: sc.segment(stack_sync(0), &volumes[..]),
+        adjusted_close: sc.segment(stack_sync(0), &adjusted_closes[..]),
+        adjusts: sc.segment(stack(0), &adjust_factors[..]),
+        total_shares: sc.segment(stack(0), &totals[..]),
+        circ_shares: sc.segment(stack(0), &circs[..]),
+        parent_equity: sc.segment(stack(0), &parent_equities[..]),
+        net_profit: sc.segment(select(vec![0], 1, true), income_xs),
+        operating_profit: sc.segment(select(vec![1], 1, true), income_xs),
+        revenue: sc.segment(select(vec![2], 1, true), income_xs),
+        operating_cost: sc.segment(select(vec![3], 1, true), income_xs),
+        total_assets: sc.segment(select(vec![0], 1, true), balance_xs),
+        total_liab: sc.segment(select(vec![1], 1, true), balance_xs),
+        current_assets: sc.segment(select(vec![2], 1, true), balance_xs),
+        current_liab: sc.segment(select(vec![3], 1, true), balance_xs),
+        cash: sc.segment(select(vec![4], 1, true), balance_xs),
+        inventories: sc.segment(select(vec![5], 1, true), balance_xs),
+        receivables: sc.segment(select(vec![6], 1, true), balance_xs),
+        net_operating_cashflow: sc.segment(select(vec![0], 1, true), cf_xs),
+        open: sc.segment(select(vec![0], 1, true), px_xs),
+        high: sc.segment(select(vec![1], 1, true), px_xs),
+        low: sc.segment(select(vec![2], 1, true), px_xs),
+        amount: sc.segment(select(vec![3], 1, true), px_xs),
     }
 }

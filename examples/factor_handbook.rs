@@ -218,7 +218,7 @@ fn monotonicity(anns: &[f64]) -> f64 {
     (sxy / (sxx.sqrt() * syy.sqrt())).abs()
 }
 
-type NavHandle = tradingflow::graph::Handle<tradingflow::operators::SeriesPort<f64, 0>>;
+type NavHandle = tradingflow::graph::PortHandle<tradingflow::operators::SeriesPort<f64, 0>>;
 
 #[tokio::main]
 async fn main() {
@@ -241,8 +241,8 @@ async fn main() {
         other => panic!("unknown catalog {other:?} (expected fundamental|pv)"),
     };
 
-    let circ_market_cap = sc.push(multiply(), (st.close, st.circ_shares));
-    let log_adj = sc.push(log(), st.adjusted_close);
+    let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));
+    let log_adj = sc.segment(log(), st.adjusted_close);
 
     let rebalance_clock = sc.add_source(pulse(args.common.rebalance_instants()));
 
@@ -261,15 +261,15 @@ async fn main() {
 
     // 次新 exclusion: require a finite adjusted price ~1 trading year (244 daily
     // ticks) ago, i.e. the stock was already listed a year before the rebalance.
-    let log_adj_series = sc.push(record(), log_adj);
-    let prior_year = sc.push(lag_series(244, f64::NAN), log_adj_series);
-    let prior_year_reb = sc.push(resample_clocked(), (rebalance_clock, prior_year));
+    let log_adj_series = sc.segment(record(), log_adj);
+    let prior_year = sc.segment(lag_series(244, f64::NAN), log_adj_series);
+    let prior_year_reb = sc.segment(resample_clocked(), (rebalance_clock, prior_year));
     let universe = common::universe::with_listing_filter(&mut sc, universe, prior_year_reb);
 
     // Forward (next-period) return, masked to the universe and cross-sectionally ranked.
     let fwd = common::factors::build_forward_return(&mut sc, log_adj, rebalance_clock);
     let fwd_masked = common::universe::mask_to_universe(&mut sc, fwd, universe);
-    let fwd_rank = sc.push(percentile(), fwd_masked);
+    let fwd_rank = sc.segment(percentile(), fwd_masked);
 
     // Daily ±10% price limits (涨跌停) for the trader's limit-blocking.
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
@@ -298,9 +298,9 @@ async fn main() {
         // Resample the (catalog-ranked+imputed) feature onto the rebalance clock,
         // mask to universe, and re-rank within it (monotonic for stocks that have
         // the factor; imputed stocks enter the RankIC at the median rank).
-        let reb = sc.push(resample_clocked(), (rebalance_clock, feat));
+        let reb = sc.segment(resample_clocked(), (rebalance_clock, feat));
         let masked = common::universe::mask_to_universe(&mut sc, reb, universe);
-        let rank = sc.push(percentile(), masked);
+        let rank = sc.segment(percentile(), masked);
         ranks.push(rank);
         // RankIC vs the forward return (corrcoef of two rank vectors = Spearman).
         ic_handles.push(common::ic::ic_series(&mut sc, rank, fwd_rank, n));
@@ -319,9 +319,9 @@ async fn main() {
     // factor vectors into an `(N, K)` panel on the rebalance clock and reduce to a
     // `(K, K)` correlation matrix each rebalance (recorded; time-averaged below).
     let corr_handle = if args.correlations && ranks.len() >= 2 {
-        let panel = sc.push(stack::<f64, 1, 2>(1), &ranks[..]); // (N, K)
-        let corr = sc.push(CorrMatrix { k: ranks.len() }, panel); // (K, K)
-        Some(sc.push(record(), corr))
+        let panel = sc.segment(stack::<f64, 1, 2>(1), &ranks[..]); // (N, K)
+        let corr = sc.segment(CorrMatrix { k: ranks.len() }, panel); // (K, K)
+        Some(sc.segment(record(), corr))
     } else {
         None
     };

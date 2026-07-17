@@ -586,13 +586,13 @@ mod tests {
     #[test]
     fn turnover_l1_change_with_nan_as_zero() {
         let mut b = Builder::new(Instant::MIN);
-        let w = b.push_source(array_cell(Array::from_vec([5], vec![0.0_f64; 5])));
-        let out = b.push(Turnover::<f64, 1>::new(), *w);
+        let (w_cell, w) = b.source(array_cell(Array::from_vec([5], vec![0.0_f64; 5])));
+        let out = b.segment(Turnover::<f64, 1>::new(), w);
         let mut g = b.build();
         let mut pool = Pool::new(0);
 
         // Warmup: caches the weights, does not notify → output stays NaN.
-        *g.state_mut(w) = Array::from_vec([5], vec![0.2, 0.2, 0.2, 0.2, 0.2]);
+        *g.state_mut(w_cell) = Array::from_vec([5], vec![0.2, 0.2, 0.2, 0.2, 0.2]);
         g.stabilize(&mut pool);
         assert!(
             g.view(out).contiguous_slice().unwrap()[0].is_nan(),
@@ -600,13 +600,13 @@ mod tests {
         );
 
         // L1 change: |0.4-0.2|+|0.1-0.2|+0+0+|0.1-0.2| = 0.2+0.1+0.1 = 0.4.
-        *g.state_mut(w) = Array::from_vec([5], vec![0.4, 0.1, 0.2, 0.2, 0.1]);
+        *g.state_mut(w_cell) = Array::from_vec([5], vec![0.4, 0.1, 0.2, 0.2, 0.1]);
         g.stabilize(&mut pool);
         assert!((g.view(out).contiguous_slice().unwrap()[0] - 0.4).abs() < 1e-12);
 
         // NaN treated as 0: stock 1 leaves (0.1 → 0), contributing its full 0.1;
         // |0.4-0.4|+|0-0.1|+0+0+|0.2-0.1| = 0.1 + 0.1 = 0.2.
-        *g.state_mut(w) = Array::from_vec([5], vec![0.4, f64::NAN, 0.2, 0.2, 0.2]);
+        *g.state_mut(w_cell) = Array::from_vec([5], vec![0.4, f64::NAN, 0.2, 0.2, 0.2]);
         g.stabilize(&mut pool);
         assert!((g.view(out).contiguous_slice().unwrap()[0] - 0.2).abs() < 1e-12);
     }

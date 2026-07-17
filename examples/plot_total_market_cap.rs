@@ -42,7 +42,7 @@ async fn main() {
     let mut sc = Scenario::new(WallClock);
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let circ_market_cap = sc.push(multiply(), (st.close, st.circ_shares));
+    let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));
 
     let rebalance_clock = sc.add_source(pulse(args.rebalance_instants()));
     let universe = common::build_cap_weighted_universe(
@@ -54,10 +54,10 @@ async fn main() {
 
     // Hold the rebalance-day universe fixed between rebalances by re-emitting it
     // on the daily close pulse (clock = the close view, data = the universe).
-    let daily_universe = sc.push(resample_view(), (st.close, universe));
+    let daily_universe = sc.segment(resample_view(), (st.close, universe));
 
     // Summed circulating market cap of the current constituents.
-    let index_circ_market_cap = sc.push(
+    let index_circ_market_cap = sc.segment(
         apply(|(u, c): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
             let (us, cs) = (u.to_contiguous(), c.to_contiguous());
             let mut s = 0.0;
@@ -73,17 +73,17 @@ async fn main() {
 
     // Frictionless cap-weighted index NAV via the native Benchmark trader.
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
-    let index = sc.push(
+    let index = sc.segment(
         benchmark(n, 1.0, true),
         (universe, st.close, st.adjusts, upper, lower),
     );
-    let index_value = sc.push(
+    let index_value = sc.segment(
         map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         index,
     );
 
-    let h_mc = sc.push(record(), index_circ_market_cap);
-    let h_nav = sc.push(record(), index_value);
+    let h_mc = sc.segment(record(), index_circ_market_cap);
+    let h_nav = sc.segment(record(), index_value);
 
     let mut session = sc.build_with_threads(args.threads);
     // Trim warmup output before `begin` so only the live index window is shown.
