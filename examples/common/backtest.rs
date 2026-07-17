@@ -14,7 +14,6 @@
 //! mark-on-close, dividend reinvest, 涨跌停 limit blocking). No new operators.
 
 use tradingflow::Scenario;
-use tradingflow::data::{Array, ArrayView, Series};
 use tradingflow::graph::typed::PortHandle;
 use tradingflow::operators::{
     PyClassOperator, PyParams, metrics::*, py_class_operator, structural::*, traders::*,
@@ -23,7 +22,7 @@ use tradingflow::operators::{
 use tradingflow::ports::{ArrayPort, SeriesPort};
 
 use super::AvH;
-use super::strategy::NavH;
+use super::strategy::{NavH, total_value};
 
 /// Number of layered-backtest groups (deciles).
 pub const NUM_GROUPS: usize = 10;
@@ -70,10 +69,7 @@ fn bucket_nav(
         benchmark(n, 1.0, true),
         (positions, close, adjusts, upper, lower),
     );
-    let nav = sc.segment(
-        map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
-        trader,
-    );
+    let nav = total_value(sc, trader);
     let turnover = sc.segment(turnover(), positions);
     (sc.segment(record(), nav), sc.segment(record(), turnover))
 }

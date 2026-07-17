@@ -290,14 +290,6 @@ impl Segment for Fold {
 
 /// A typed DAG fused into one operator body: `x=a+b; y=x*c; z=x+a; out=y*z`.
 struct FusedDag;
-impl FusedDag {
-    fn eval(a: &f64, b: &f64, c: &f64) -> f64 {
-        let x = a + b;
-        let y = x * c;
-        let z = x + a;
-        y * z
-    }
-}
 impl Segment for FusedDag {
     type Inputs = (RefPort<f64>, RefPort<f64>, RefPort<f64>);
     type Outputs = RefPort<f64>;
@@ -312,7 +304,10 @@ impl Segment for FusedDag {
         state: &'b mut f64,
         _: bool,
     ) -> (bool, &'a f64) {
-        *state = Self::eval(a, b, c);
+        let x = a + b;
+        let y = x * c;
+        let z = x + a;
+        *state = y * z;
         (true, &*state)
     }
 }
@@ -407,11 +402,6 @@ impl Segment for DotPairs {
 
 /// Two variadic input groups around a scalar: `sum(a)*k + sum(c)`.
 struct TwoArrays;
-impl TwoArrays {
-    fn eval(a: &[&i64], k: &i64, c: &[&i64]) -> i64 {
-        a.iter().map(|&v| *v).sum::<i64>() * *k + c.iter().map(|&v| *v).sum::<i64>()
-    }
-}
 impl Segment for TwoArrays {
     type Inputs = (RefPorts<i64>, RefPort<i64>, RefPorts<i64>);
     type Outputs = RefPort<i64>;
@@ -430,7 +420,7 @@ impl Segment for TwoArrays {
         state: &'b mut i64,
         _: bool,
     ) -> (bool, &'a i64) {
-        *state = Self::eval(a.1, k, c.1);
+        *state = a.1.iter().map(|&v| *v).sum::<i64>() * *k + c.1.iter().map(|&v| *v).sum::<i64>();
         (true, &*state)
     }
 }

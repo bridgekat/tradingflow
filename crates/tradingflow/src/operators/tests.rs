@@ -17,39 +17,11 @@ use super::{
 };
 use crate::data::{Array, ArrayView, Duration, Instant, Retention, SeriesView};
 use crate::graph::core::Pool;
-use crate::graph::typed::{Builder, NodeHandle, PortHandle, RefSource, ViewSource};
-use crate::ports::{ArrayPort, ArrayValue, SeriesPort};
+use crate::graph::typed::{Builder, RefSource};
+use crate::ports::{ArrayPort, SeriesPort};
 
 fn ts(n: i64) -> Instant {
     Instant::from_nanos(n)
-}
-
-/// A rank-`N` view port — the array edge currency. A slice of these handles
-/// feeds the carry-join combine operators ([`Stack`] / [`Concat`], whose
-/// inputs are `ArrayPorts`) directly — no bridging.
-type Vp<const N: usize> = ArrayPort<f64, N>;
-
-/// Push a scalar-array [`array_cell`]; return the source handle (for
-/// `state_mut`) and its `ArrayPort` view handle (for wiring).
-fn scalar_src(
-    b: &mut Builder<Instant>,
-    v: f64,
-) -> (
-    NodeHandle<ViewSource<ArrayValue<f64, 0>, Instant>>,
-    PortHandle<Vp<0>>,
-) {
-    b.source(array_cell(Array::scalar(v)))
-}
-
-/// Push a rank-1 array [`array_cell`]; handles as in [`scalar_src`].
-fn vec_src(
-    b: &mut Builder<Instant>,
-    v: Vec<f64>,
-) -> (
-    NodeHandle<ViewSource<ArrayValue<f64, 1>, Instant>>,
-    PortHandle<Vp<1>>,
-) {
-    b.source(array_cell(Array::from_vec([v.len()], v)))
 }
 
 // ===========================================================================
@@ -60,8 +32,8 @@ fn vec_src(
 #[test]
 fn simple_add() {
     let mut b = Builder::new(Instant::MIN);
-    let (ha, hav) = scalar_src(&mut b, 0.0);
-    let (hb, hbv) = scalar_src(&mut b, 0.0);
+    let (ha, hav) = b.source(array_cell(Array::scalar(0.0_f64)));
+    let (hb, hbv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let hc = b.segment(add(), (hav, hbv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -78,8 +50,8 @@ fn simple_add() {
 #[test]
 fn chain_add_then_mul() {
     let mut b = Builder::new(Instant::MIN);
-    let (a, av) = scalar_src(&mut b, 0.0);
-    let (bb, bv) = scalar_src(&mut b, 0.0);
+    let (a, av) = b.source(array_cell(Array::scalar(0.0_f64)));
+    let (bb, bv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let ab = b.segment(add(), (av, bv));
     let out = b.segment(multiply(), (ab, av));
     let mut g = b.build();
@@ -96,8 +68,8 @@ fn chain_add_then_mul() {
 #[test]
 fn record_series() {
     let mut b = Builder::new(Instant::MIN);
-    let (ha, hav) = scalar_src(&mut b, 0.0);
-    let (hb, hbv) = scalar_src(&mut b, 0.0);
+    let (ha, hav) = b.source(array_cell(Array::scalar(0.0_f64)));
+    let (hb, hbv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let sum = b.segment(add(), (hav, hbv));
     let rec = b.segment(record(), sum);
     let mut g = b.build();
@@ -124,7 +96,7 @@ fn record_series() {
 #[test]
 fn filter_gates_record() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let flt = b.segment(
         filter(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0),
         srcv,
@@ -149,7 +121,7 @@ fn filter_gates_record() {
 #[test]
 fn last_of_record() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let rec = b.segment(record(), srcv);
     let lst = b.segment(last(0.0_f64), rec);
     let mut g = b.build();
@@ -172,7 +144,7 @@ fn last_of_record() {
 #[test]
 fn bounded_record_feeds_rolling_and_lag() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     // RollingMean(5) reads back 6 on eviction, Lag(3) back 4 → retain 8 covers both.
     let rec = b.segment(record_bounded(Retention::count(8)), srcv);
     let lag = b.segment(lag_series(3, f64::NAN), rec);
@@ -219,7 +191,7 @@ fn bounded_record_feeds_rolling_and_lag() {
 #[test]
 fn clocked_periodic() {
     let mut b = Builder::new(Instant::MIN);
-    let (data, datav) = scalar_src(&mut b, 0.0);
+    let (data, datav) = b.source(array_cell(Array::scalar(0.0_f64)));
     let (tick_cell, tick) = b.source(RefSource::new(()));
     let gated = b.segment(
         Clocked::<_, ()>::new(filter(|_: ArrayView<f64, 0>| true)),
@@ -250,8 +222,8 @@ fn clocked_periodic() {
 #[test]
 fn coalesced_two_source_add() {
     let mut b = Builder::new(Instant::MIN);
-    let (a, av) = scalar_src(&mut b, 0.0);
-    let (bb, bv) = scalar_src(&mut b, 0.0);
+    let (a, av) = b.source(array_cell(Array::scalar(0.0_f64)));
+    let (bb, bv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let sum = b.segment(add(), (av, bv));
     let rec = b.segment(record(), sum);
     let mut g = b.build();
@@ -273,9 +245,9 @@ fn coalesced_two_source_add() {
 #[test]
 fn slice_stack_and_sync() {
     let mut b = Builder::new(Instant::MIN);
-    let (s0, s0v) = scalar_src(&mut b, 0.0);
-    let (s1, s1v) = scalar_src(&mut b, 0.0);
-    let (s2, s2v) = scalar_src(&mut b, 0.0);
+    let (s0, s0v) = b.source(array_cell(Array::scalar(0.0_f64)));
+    let (s1, s1v) = b.source(array_cell(Array::scalar(0.0_f64)));
+    let (s2, s2v) = b.source(array_cell(Array::scalar(0.0_f64)));
     let stacked = b.segment(stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let synced = b.segment(stack_sync::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let mut g = b.build();
@@ -303,7 +275,7 @@ fn slice_stack_and_sync() {
 #[test]
 fn rolling_mean_count_warmup_and_value() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let rec = b.segment(record(), srcv);
     let rm = b.segment(rolling_mean(Window::Count(3)), rec);
     let mut g = b.build();
@@ -328,10 +300,10 @@ fn rolling_mean_count_warmup_and_value() {
 #[test]
 fn arith_unary_and_binary() {
     let mut b = Builder::new(Instant::MIN);
-    let (a, av) = vec_src(&mut b, vec![1.0_f64, -2.0, 3.0]);
+    let (a, av) = b.source(array_cell(Array::from_vec([3], vec![1.0_f64, -2.0, 3.0])));
     let neg = b.segment(negate(), av);
-    let (x, xv) = scalar_src(&mut b, 20.0);
-    let (y, yv) = scalar_src(&mut b, 4.0);
+    let (x, xv) = b.source(array_cell(Array::scalar(20.0_f64)));
+    let (y, yv) = b.source(array_cell(Array::scalar(4.0_f64)));
     let sub = b.segment(subtract(), (xv, yv));
     let div = b.segment(divide(), (xv, yv));
     let mut g = b.build();
@@ -351,8 +323,8 @@ fn arith_unary_and_binary() {
 #[test]
 fn arith_min_max_pow() {
     let mut b = Builder::new(Instant::MIN);
-    let (a, av) = vec_src(&mut b, vec![1.0_f64, 5.0, 3.0]);
-    let (bb, bv) = vec_src(&mut b, vec![2.0_f64, 4.0, 6.0]);
+    let (a, av) = b.source(array_cell(Array::from_vec([3], vec![1.0_f64, 5.0, 3.0])));
+    let (bb, bv) = b.source(array_cell(Array::from_vec([3], vec![2.0_f64, 4.0, 6.0])));
     let mn = b.segment(min(), (av, bv));
     let mx = b.segment(max(), (av, bv));
     let p = b.segment(pow(2.0), av);
@@ -372,7 +344,7 @@ fn arith_min_max_pow() {
 #[test]
 fn rolling_sum_and_variance() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let rec = b.segment(record(), srcv);
     let rsum = b.segment(rolling_sum(Window::Count(3)), rec);
     let rvar = b.segment(rolling_variance(Window::Count(3)), rec);
@@ -397,7 +369,7 @@ fn rolling_sum_and_variance() {
 #[test]
 fn rolling_covariance_2d() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = vec_src(&mut b, vec![0.0_f64; 2]);
+    let (src, srcv) = b.source(array_cell(Array::from_vec([2], vec![0.0_f64; 2])));
     let rec = b.segment(record(), srcv);
     let cov = b.segment(rolling_covariance(Window::Count(3)), rec);
     let mut g = b.build();
@@ -419,7 +391,7 @@ fn rolling_covariance_2d() {
 #[test]
 fn ema_two_values() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let rec = b.segment(record(), srcv);
     let e = b.segment(ema_series(0.5, 2), rec);
     let mut g = b.build();
@@ -438,7 +410,7 @@ fn ema_two_values() {
 #[test]
 fn structural_where_cast_id() {
     let mut b = Builder::new(Instant::MIN);
-    let (a, av) = vec_src(&mut b, vec![1.0_f64, 5.0, 2.0]);
+    let (a, av) = b.source(array_cell(Array::from_vec([3], vec![1.0_f64, 5.0, 2.0])));
     let w = b.segment(keep_where(|v: f64| v > 3.0, 0.0_f64), av);
     // `Id` is the whole-value `RefPort` identity — exercise it on a scalar
     // cell (array edges are always `ArrayPort` views, never `RefPort`).
@@ -465,9 +437,12 @@ fn structural_where_cast_id() {
 #[test]
 fn num_clamp_fillna_ffill() {
     let mut b = Builder::new(Instant::MIN);
-    let (a, av) = vec_src(&mut b, vec![1.0_f64, 3.0, 7.0]);
+    let (a, av) = b.source(array_cell(Array::from_vec([3], vec![1.0_f64, 3.0, 7.0])));
     let clamp = b.segment(clamp(2.0, 5.0), av);
-    let (na, nav) = vec_src(&mut b, vec![1.0_f64, f64::NAN, 3.0]);
+    let (na, nav) = b.source(array_cell(Array::from_vec(
+        [3],
+        vec![1.0_f64, f64::NAN, 3.0],
+    )));
     let fill = b.segment(fillna(0.0), nav);
     let ff = b.segment(forward_fill(), nav);
     let mut g = b.build();
@@ -489,7 +464,7 @@ fn num_clamp_fillna_ffill() {
 #[test]
 fn num_diff_and_pct_change() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let d = b.segment(diff(), srcv);
     let pc = b.segment(pct_change(), srcv);
     let mut g = b.build();
@@ -511,12 +486,21 @@ fn num_diff_and_pct_change() {
 #[test]
 fn num_cross_sectional() {
     let mut b = Builder::new(Instant::MIN);
-    let (five, fivev) = vec_src(&mut b, vec![30.0_f64, 10.0, 50.0, 20.0, 40.0]);
+    let (five, fivev) = b.source(array_cell(Array::from_vec(
+        [5],
+        vec![30.0_f64, 10.0, 50.0, 20.0, 40.0],
+    )));
     let gau = b.segment(gaussianize(), fivev);
     let pct = b.segment(percentile(), fivev);
-    let (std_in, std_inv) = vec_src(&mut b, vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]);
+    let (std_in, std_inv) = b.source(array_cell(Array::from_vec(
+        [5],
+        vec![10.0_f64, 20.0, 30.0, 40.0, 50.0],
+    )));
     let zsc = b.segment(standardize(), std_inv);
-    let (win_in, win_inv) = vec_src(&mut b, (0..10).map(|i| i as f64).collect());
+    let (win_in, win_inv) = b.source(array_cell(Array::from_vec(
+        [10],
+        (0..10).map(|i| i as f64).collect(),
+    )));
     let win = b.segment(winsorize(0.1), win_inv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -555,7 +539,7 @@ fn num_cross_sectional() {
 #[test]
 fn map_doubles() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let m = b.segment(
         map(|a: ArrayView<f64, 0>| {
             let mut o = a.to_array();
@@ -576,8 +560,8 @@ fn map_doubles() {
 #[test]
 fn apply_add_and_select() {
     let mut b = Builder::new(Instant::MIN);
-    let (a, av) = vec_src(&mut b, vec![1.0_f64, 2.0, 3.0]);
-    let (bb, bv) = vec_src(&mut b, vec![10.0_f64, 20.0, 30.0]);
+    let (a, av) = b.source(array_cell(Array::from_vec([3], vec![1.0_f64, 2.0, 3.0])));
+    let (bb, bv) = b.source(array_cell(Array::from_vec([3], vec![10.0_f64, 20.0, 30.0])));
     let ap = b.segment(
         apply(|(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
             let mut out = a.to_array();
@@ -588,7 +572,10 @@ fn apply_add_and_select() {
         }),
         (av, bv),
     );
-    let (five, fivev) = vec_src(&mut b, vec![10.0_f64, 20.0, 30.0, 40.0, 50.0]);
+    let (five, fivev) = b.source(array_cell(Array::from_vec(
+        [5],
+        vec![10.0_f64, 20.0, 30.0, 40.0, 50.0],
+    )));
     let sel = b.segment(select_flat::<f64, 1, 1>(vec![1, 3]), fivev);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -605,7 +592,7 @@ fn apply_add_and_select() {
 #[test]
 fn lag_offset_two() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let rec = b.segment(record(), srcv);
     let lag = b.segment(lag_series(2, f64::NAN), rec);
     let mut g = b.build();
@@ -623,8 +610,8 @@ fn lag_offset_two() {
 #[test]
 fn concat_axis0() {
     let mut b = Builder::new(Instant::MIN);
-    let (a, av) = vec_src(&mut b, vec![1.0_f64, 2.0]);
-    let (bb, bv) = vec_src(&mut b, vec![3.0_f64, 4.0]);
+    let (a, av) = b.source(array_cell(Array::from_vec([2], vec![1.0_f64, 2.0])));
+    let (bb, bv) = b.source(array_cell(Array::from_vec([2], vec![3.0_f64, 4.0])));
     let cc = b.segment(concat(0), &[av, bv][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -642,7 +629,7 @@ fn concat_axis0() {
 #[test]
 fn metrics_clock_gated() {
     let mut b = Builder::new(Instant::MIN);
-    let (data, datav) = scalar_src(&mut b, 0.0);
+    let (data, datav) = b.source(array_cell(Array::scalar(0.0_f64)));
     let (tick_cell, tick) = b.source(RefSource::new(()));
     let cr = b.segment(compound_return(), (tick, datav));
     let ar = b.segment(average_return(), (tick, datav));
@@ -671,7 +658,7 @@ fn metrics_clock_gated() {
 #[test]
 fn metrics_drawdown() {
     let mut b = Builder::new(Instant::MIN);
-    let (data, datav) = scalar_src(&mut b, 0.0);
+    let (data, datav) = b.source(array_cell(Array::scalar(0.0_f64)));
     let dd = b.segment(drawdown(), datav);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -687,7 +674,10 @@ fn metrics_drawdown() {
 #[test]
 fn stocks_annualize() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = vec_src(&mut b, vec![2024.0_f64, 91.0, 100.0, 20.0]);
+    let (src, srcv) = b.source(array_cell(Array::from_vec(
+        [4],
+        vec![2024.0_f64, 91.0, 100.0, 20.0],
+    )));
     let ann = b.segment(annualize(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -704,8 +694,8 @@ fn stocks_annualize() {
 #[test]
 fn stocks_forward_adjust() {
     let mut b = Builder::new(Instant::MIN);
-    let (price, pricev) = scalar_src(&mut b, 10.0);
-    let (divd, divdv) = vec_src(&mut b, vec![0.0_f64, 0.0]);
+    let (price, pricev) = b.source(array_cell(Array::scalar(10.0_f64)));
+    let (divd, divdv) = b.source(array_cell(Array::from_vec([2], vec![0.0_f64, 0.0])));
     let fa = b.segment(forward_adjust(), (pricev, divdv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -732,7 +722,7 @@ fn stocks_forward_adjust() {
 fn parallel_fanout_matches_sequential() {
     const K: usize = 16;
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let recs: Vec<_> = (0..K)
         .map(|_| {
             let f = b.segment(
@@ -768,7 +758,7 @@ fn parallel_stress_stateful_counts() {
     const K: usize = 12;
     const GENS: usize = 500;
     let mut b = Builder::new(Instant::MIN);
-    let (src, srcv) = scalar_src(&mut b, 0.0);
+    let (src, srcv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let cnts: Vec<_> = (0..K)
         .map(|_| {
             let f = b.segment(
@@ -894,8 +884,8 @@ fn view_chain_matches_owned_chain() {
     let nan = f64::NAN;
     let mut b = Builder::new(Instant::MIN);
     // Stock 0's price/dividend rows as direct `[2]` view sources.
-    let (prices, prices_view) = vec_src(&mut b, vec![nan; 2]);
-    let (div, div_view) = vec_src(&mut b, vec![nan; 2]);
+    let (prices, prices_view) = b.source(array_cell(Array::from_vec([2], vec![nan; 2])));
+    let (div, div_view) = b.source(array_cell(Array::from_vec([2], vec![nan; 2])));
 
     // Owned reference chain (materializes at the row Selects).
     let p_f = {
@@ -1027,8 +1017,9 @@ fn fused_segment_matches_unfused_nodes() {
         a.to_contiguous().iter().map(|x| x.to_bits()).collect()
     }
 
-    let fused = tradingflow_graph::segment!(|prices_row: Vp<1>, div_row: Vp<1>|
-        -> (Vp<0>, Vp<0>) {
+    let fused = tradingflow_graph::segment!(
+        |prices_row: ArrayPort<f64, 1>, div_row: ArrayPort<f64, 1>|
+        -> (ArrayPort<f64, 0>, ArrayPort<f64, 0>) {
         let prices = filter(any_finite) @ prices_row;
         let dividends = filter(any_finite) @ div_row;
         let close = select(vec![0], 0, true) @ prices;
@@ -1039,8 +1030,8 @@ fn fused_segment_matches_unfused_nodes() {
 
     let nan = f64::NAN;
     let mut b = Builder::new(Instant::MIN);
-    let (prices, pricesv) = vec_src(&mut b, vec![nan; 2]);
-    let (div, divv) = vec_src(&mut b, vec![nan; 2]);
+    let (prices, pricesv) = b.source(array_cell(Array::from_vec([2], vec![nan; 2])));
+    let (div, divv) = b.source(array_cell(Array::from_vec([2], vec![nan; 2])));
 
     // Reference: the same chain as separate nodes.
     let p_f = b.segment(filter(any_finite), pricesv);
@@ -1090,7 +1081,7 @@ fn comparisons_follow_ieee_nan_semantics() {
     // explicit missing-data test.
     let nan = f64::NAN;
     let mut b = Builder::new(Instant::MIN);
-    let (_s, x) = vec_src(&mut b, vec![1.0, -1.0, 0.0, nan]);
+    let (_s, x) = b.source(array_cell(Array::from_vec([4], vec![1.0, -1.0, 0.0, nan])));
     let gt0 = b.segment(greater_than(0.0), x);
     let ne0 = b.segment(not_equal_to(0.0), x);
     let fin = b.segment(is_finite(), x);
@@ -1104,8 +1095,8 @@ fn comparisons_follow_ieee_nan_semantics() {
 #[test]
 fn logical_connectives_and_mask_readout() {
     let mut b = Builder::new(Instant::MIN);
-    let (_sa, a) = vec_src(&mut b, vec![1.0, 1.0, 0.0, 0.0]);
-    let (_sb, bb) = vec_src(&mut b, vec![1.0, 0.0, 1.0, 0.0]);
+    let (_sa, a) = b.source(array_cell(Array::from_vec([4], vec![1.0, 1.0, 0.0, 0.0])));
+    let (_sb, bb) = b.source(array_cell(Array::from_vec([4], vec![1.0, 0.0, 1.0, 0.0])));
     let am = b.segment(greater_than(0.5), a);
     let bm = b.segment(greater_than(0.5), bb);
     let both = b.segment(and(), (am, bm));
@@ -1138,11 +1129,10 @@ fn comparison_of_two_arrays_and_strided_inputs() {
         [2, 2],
         vec![1.0, 5.0, 4.0, 2.0], // rows: [1,5], [4,2]
     )));
-    let m = s;
     // `SliceView`'s output rank is not determined by its input rank (`squeeze`
     // drops the sliced axis), so it is the one operator here that must be told.
-    let col0 = b.segment(slice_view::<f64, 2, 1>(vec![0], 1, true), m); // [1, 4]
-    let col1 = b.segment(slice_view::<f64, 2, 1>(vec![1], 1, true), m); // [5, 2]
+    let col0 = b.segment(slice_view::<f64, 2, 1>(vec![0], 1, true), s); // [1, 4]
+    let col1 = b.segment(slice_view::<f64, 2, 1>(vec![1], 1, true), s); // [5, 2]
     let lt = b.segment(less(), (col0, col1));
     let g = b.build();
     assert_eq!(g.view(lt).to_vec(), vec![true, false]);
@@ -1171,7 +1161,7 @@ fn ma_crossover_signal_fuses_into_one_node() {
     });
 
     let mut b = Builder::new(Instant::MIN);
-    let (src, view) = scalar_src(&mut b, 0.0);
+    let (src, view) = b.source(array_cell(Array::scalar(0.0_f64)));
     let series = b.segment(record(), view);
     let signal = b.segment(seg, series);
     let mut g = b.build();
@@ -1262,9 +1252,9 @@ fn formula_ma_crossover_signal() {
     let path1: Vec<f64> = path0.iter().map(|&x| 200.25 - x).collect();
 
     let mut b = Builder::new(Instant::MIN);
-    let (src, xv) = vec_src(&mut b, vec![0.0, 0.0]);
+    let (src, xv) = b.source(array_cell(Array::from_vec([2], vec![0.0, 0.0])));
     let signal = b.segment(
-        tradingflow_graph::segment!(|x: Vp<1>| -> ArrayPort<bool, 1> {
+        tradingflow_graph::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
             let d = subtract() @ (ma(fast) @ x, ma(slow) @ x);
             and() @ (
                 greater_than(0.0) @ d,
@@ -1305,7 +1295,7 @@ fn formula_ma_crossover_signal() {
 #[test]
 fn formula_change_and_growth() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, xv) = scalar_src(&mut b, 0.0);
+    let (src, xv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let chg = b.segment(change(2), xv);
     let pct = b.segment(growth(2), xv);
     let mut g = b.build();
@@ -1335,15 +1325,15 @@ fn formula_change_and_growth() {
 #[test]
 fn formula_ma_time_window() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, xv) = scalar_src(&mut b, 0.0);
+    let (src, xv) = b.source(array_cell(Array::scalar(0.0_f64)));
     let m = b.segment(ma_time(Duration::from_days(2)), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    let day = |i: i64| ts(i * 86_400 * 1_000_000_000);
     let vals = quarter_path(7, 50);
     for (i, &v) in vals.iter().enumerate() {
-        *g.context_mut() = day(i as i64 + 1);
+        // Daily ticks: day index → nanos.
+        *g.context_mut() = ts((i as i64 + 1) * 86_400 * 1_000_000_000);
         *g.state_mut(src) = Array::scalar(v);
         g.stabilize(&mut pool);
         let k = (i + 1).min(3); // ticks stamped within 2 days of the latest
@@ -1358,7 +1348,7 @@ fn formula_ma_time_window() {
 #[test]
 fn formula_mstd_matches_hoisted() {
     let mut b = Builder::new(Instant::MIN);
-    let (src, xv) = vec_src(&mut b, vec![0.0, 0.0]);
+    let (src, xv) = b.source(array_cell(Array::from_vec([2], vec![0.0, 0.0])));
     let fused = b.segment(mstd(4), xv);
     let series = b.segment(record_bounded(Retention::count(16)), xv);
     let var = b.segment(rolling_variance(Window::Count(4)), series);

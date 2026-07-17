@@ -150,8 +150,7 @@ impl Market {
 
     /// The cap-weighted index's NAV: trade the universe weights frictionlessly.
     pub fn index_nav(&self, sc: &mut Scenario) -> NavH {
-        let value = self.simulate(sc, benchmark(self.n, 1.0, true), self.universe);
-        sc.segment(record(), value)
+        self.record_nav(sc, self.universe)
     }
 
     /// A Python portfolio's frictionless NAV: trade its position views via

@@ -35,22 +35,6 @@ use tradingflow::{Scenario, WallClock};
 const WINDOW: usize = 252;
 const MULTIPLE: f64 = 2.0;
 
-/// All symbols from `<data_dir>/symbol_list.csv` (the `symbol` column), in order.
-fn load_symbols(data_dir: &str) -> Vec<String> {
-    let path = format!("{data_dir}/symbol_list.csv");
-    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    let mut lines = text.lines();
-    let header = lines.next().expect("symbol_list header");
-    let col = header
-        .split(',')
-        .position(|h| h.trim() == "symbol")
-        .expect("`symbol` column");
-    lines
-        .filter_map(|l| l.split(',').nth(col).map(|s| s.trim().to_string()))
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
 /// `Select` stock `i`'s row out of a `[N, K]` panel (→ rank-1 `[K]`) and drop the
 /// all-NaN "no data" ticks.
 fn pick(
@@ -89,7 +73,7 @@ async fn main() {
         }
     }
 
-    let symbols = load_symbols(data_dir);
+    let symbols = common::load_symbols(data_dir);
     let idx = symbols
         .iter()
         .position(|s| s == &symbol)

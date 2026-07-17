@@ -28,11 +28,10 @@ use tradingflow::operators::structural::record;
 use tradingflow::{Scenario, WallClock};
 
 use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};
-use common::strategy::{Market, NavH, NavTable};
+use common::strategy::{Market, NavH, NavTable, TRADING_DAYS};
 
 const RISK_AVERSION: f64 = 1.0;
 const MIN_PERIODS: i64 = 100;
-const TRADING_DAYS: f64 = 252.0;
 
 /// The estimators under comparison, in report order.
 const ESTIMATORS: [CovEstimator; 7] = [

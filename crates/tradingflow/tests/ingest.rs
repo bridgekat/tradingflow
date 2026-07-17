@@ -27,11 +27,6 @@ fn threads() -> usize {
     thread::available_parallelism().unwrap().get()
 }
 
-/// A fresh scenario over `clock` (finish with `build_with_threads(threads())`).
-fn builder(clock: SimClock) -> Scenario<SimClock> {
-    Scenario::new(clock)
-}
-
 /// Deterministic wall clock. `wait_until` jumps simulated time just past the
 /// target on poll (so an as-fast-as-possible replay), and only if no feed was
 /// ready first.
@@ -243,7 +238,7 @@ impl Segment for Recorder {
 /// One feed replays in order, one generation per timestamp; the sum accumulates.
 #[test]
 fn single_feed_orders_and_accumulates() {
-    let mut b = builder(SimClock::at(t(0)));
+    let mut b = Scenario::new(SimClock::at(t(0)));
     let data = b.source(feed(hist([(1, vec![10]), (2, vec![20]), (3, vec![30])])));
     let sum = b.segment(Sum, data);
     let mut d = b.build_with_threads(threads());
@@ -256,7 +251,7 @@ fn single_feed_orders_and_accumulates() {
 /// Events from several feeds interleave in global timestamp order.
 #[test]
 fn merges_feeds_in_timestamp_order() {
-    let mut b = builder(SimClock::at(t(0)));
+    let mut b = Scenario::new(SimClock::at(t(0)));
     b.source(feed(hist([(1, vec![10]), (3, vec![30])])));
     b.source(feed(hist([(2, vec![20])])));
     let mut d = b.build_with_threads(threads());
@@ -269,7 +264,7 @@ fn merges_feeds_in_timestamp_order() {
 /// Same-timestamp events across feeds collapse into one stabilize.
 #[test]
 fn batches_equal_timestamps_across_feeds() {
-    let mut b = builder(SimClock::at(t(0)));
+    let mut b = Scenario::new(SimClock::at(t(0)));
     let a = b.source(feed(hist([(5, vec![1, 2])])));
     let c = b.source(feed(hist([(5, vec![4])])));
     let sa = b.segment(Sum, a);
@@ -288,7 +283,7 @@ fn batches_equal_timestamps_across_feeds() {
 #[test]
 fn future_events_gated_by_wall_clock() {
     let clock = SimClock::at(t(0));
-    let mut b = builder(clock.clone());
+    let mut b = Scenario::new(clock.clone());
     b.source(feed(hist([(5, vec![50]), (10, vec![100])])));
     let mut d = b.build_with_threads(threads());
 
@@ -301,7 +296,7 @@ fn future_events_gated_by_wall_clock() {
 /// stamp against an explicit feed's earlier event.
 #[test]
 fn implicit_events_stamped_with_wall_clock() {
-    let mut b = builder(SimClock::at(t(7)));
+    let mut b = Scenario::new(SimClock::at(t(7)));
     b.source(feed(hist([(3, vec![30])])));
     b.source(feed(live([vec![70]])));
     let mut d = b.build_with_threads(threads());
@@ -316,7 +311,7 @@ fn implicit_events_stamped_with_wall_clock() {
 /// required); they land in one generation, applied in arrival order.
 #[test]
 fn same_stamp_run_within_one_feed() {
-    let mut b = builder(SimClock::at(t(0)));
+    let mut b = Scenario::new(SimClock::at(t(0)));
     let log = Arc::new(Mutex::new(Vec::new()));
     b.source(feed_logged(
         hist([(5, vec![1]), (5, vec![2]), (6, vec![3])]),
@@ -338,7 +333,7 @@ fn same_stamp_run_within_one_feed() {
 /// so a same-stamp straggler still joins.
 #[test]
 fn same_stamp_implicit_events_batch() {
-    let mut b = builder(SimClock::at(t(7)));
+    let mut b = Scenario::new(SimClock::at(t(7)));
     let a = b.source(feed(live([vec![1, 2]])));
     let c = b.source(feed(live([vec![4]])));
     let sa = b.segment(Sum, a);
@@ -356,7 +351,7 @@ fn same_stamp_implicit_events_batch() {
 /// strictly above 2 closes B's t=2 batch) before ever producing its t=5 event.
 #[test]
 fn frontier_message_advances_without_data() {
-    let mut b = builder(SimClock::at(t(100)));
+    let mut b = Scenario::new(SimClock::at(t(100)));
     b.source(feed(stream::iter([
         Event::frontier(t(4)),
         Event::at(t(5), vec![50]),
@@ -374,7 +369,7 @@ fn frontier_message_advances_without_data() {
 #[test]
 fn many_feeds_merge_in_order() {
     const N: i64 = 200;
-    let mut b = builder(SimClock::at(t(N + 1)));
+    let mut b = Scenario::new(SimClock::at(t(N + 1)));
 
     // Register some feeds at duplicated timestamps to exercise cross-feed
     // batching: each duplicated pair folds into that timestamp's single
@@ -474,7 +469,7 @@ fn async_channel_feeds_merge_in_order() {
         }
     });
 
-    let mut b = builder(SimClock::at(Instant::MAX));
+    let mut b = Scenario::new(SimClock::at(Instant::MAX));
     b.source(feed(rx_a));
     b.source(feed(rx_c));
     let mut d = b.build_with_threads(threads());
@@ -491,7 +486,7 @@ fn async_channel_feeds_merge_in_order() {
 /// counts logical events, and per-source estimates accumulate.
 #[test]
 fn builder_add_source_merges_and_counts() {
-    let mut b = builder(SimClock::at(t(0)));
+    let mut b = Scenario::new(SimClock::at(t(0)));
     let x = b.source(Replay(vec![(1, 10), (3, 30)]));
     let y = b.source(Replay(vec![(2, 20), (3, 40)]));
     let sum = b.segment(Add, (x, y));
@@ -509,7 +504,7 @@ fn builder_add_source_merges_and_counts() {
 /// timestamp — with no clock handle threaded through the builder.
 #[test]
 fn event_time_context_stamps_batches() {
-    let mut b = builder(SimClock::at(t(0)));
+    let mut b = Scenario::new(SimClock::at(t(0)));
     let x = b.source(Replay(vec![(5, 50), (9, 90)]));
     let rows = Arc::new(Mutex::new(Vec::new()));
     b.segment(Recorder(rows.clone()), x);

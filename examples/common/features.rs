@@ -66,22 +66,16 @@ use tradingflow::ports::{ArrayPort, SeriesPort};
 use super::data::Stacked;
 use super::{AvH, RETAIN_MARGIN};
 
-type H = AvH;
-
 /// Trading days a 变动/同比 level is lagged (the 次新 ~1-year idiom); the
 /// self-recording [`change`] / [`growth`] retain exactly this look-back.
 const LAG_YEAR: usize = 244;
-
-/// Resample `data` onto a daily-`Array` clock pulse. Aliased to keep the
-/// `segment!` application sites short.
-type ResampleDaily = ResampleView<f64, 1>;
 
 /// A named set of **model-ready feature** handles, in column order — each factor
 /// is already cross-sectionally ranked and its missing values imputed (see
 /// [`rank_impute`]), so a consumer reads the value the model actually uses.
 pub struct FactorSet {
     pub names: Vec<String>,
-    pub feature: Vec<H>,
+    pub feature: Vec<AvH>,
 }
 
 /// Turn a raw factor into its model-ready feature: cross-sectionally percentile-
@@ -92,7 +86,7 @@ pub struct FactorSet {
 /// fundamental data, would otherwise leave the book in cash / a flat NAV for
 /// years). Every factor is rank-transformed, so `0.5` is the common neutral fill.
 /// The rank → fill chain is fused into one node via `segment!`.
-pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
+pub(super) fn rank_impute(sc: &mut Scenario, h: AvH) -> AvH {
     sc.segment(
         tradingflow_graph::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             fillna(0.5) @ percentile() @ x
@@ -102,32 +96,20 @@ pub(super) fn rank_impute(sc: &mut Scenario, h: H) -> H {
 }
 
 /// Total market cap = unadjusted close × total shares.
-pub fn market_cap(sc: &mut Scenario, st: &Stacked) -> H {
+pub fn market_cap(sc: &mut Scenario, st: &Stacked) -> AvH {
     sc.segment(multiply(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
-pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> H {
+pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> AvH {
     sc.segment(multiply(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
 /// annualized (effective-date-aligned) series, via the self-recording
 /// [`ma_time`] (record fused in, retention sized internally).
-fn ttm(sc: &mut Scenario, h: H) -> H {
+fn ttm(sc: &mut Scenario, h: AvH) -> AvH {
     sc.segment(ma_time(Duration::from_days(365)), h)
-}
-
-fn div(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.segment(divide(), (a, b))
-}
-
-fn log_h(sc: &mut Scenario, h: H) -> H {
-    sc.segment(log(), h)
-}
-
-fn neg(sc: &mut Scenario, h: H) -> H {
-    sc.segment(negate(), h)
 }
 
 /// 变动 (period-over-period delta): `level − level₋₁ᵧ`. The whole chain —
@@ -135,10 +117,10 @@ fn neg(sc: &mut Scenario, h: H) -> H {
 /// 244-day [`change`] — is fused into ONE node via a `segment!`. The shared
 /// `level` block is computed once outside, so it is not recomputed here.
 /// The 次新 listing filter excludes names without a full prior year.
-fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
+fn delta(sc: &mut Scenario, st: &Stacked, level: AvH) -> AvH {
     sc.segment(
         tradingflow_graph::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            change(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
+            change(LAG_YEAR) @ resample_view() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -147,10 +129,10 @@ fn delta(sc: &mut Scenario, st: &Stacked, level: H) -> H {
 /// 同比 (YoY growth): the faithful `(cur − prev) / prev`, i.e. the
 /// self-recording [`growth`] over the same resampled daily pulse as
 /// [`delta`].
-fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
+fn yoy(sc: &mut Scenario, st: &Stacked, level: AvH) -> AvH {
     sc.segment(
         tradingflow_graph::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            growth(LAG_YEAR) @ ResampleDaily::new() @ (adj, lvl)
+            growth(LAG_YEAR) @ resample_view() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -161,7 +143,7 @@ fn yoy(sc: &mut Scenario, st: &Stacked, level: H) -> H {
 pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
-    let mut add = |name: &str, h: H| {
+    let mut add = |name: &str, h: AvH| {
         names.push(name.to_string());
         raw.push(h);
     };
@@ -178,66 +160,66 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // (`operators::add` is fully qualified — the local `add` binding shadows it.)
     let gross_ttm = sc.segment(tradingflow::operators::num::add(), (rev_ttm, cost_ttm));
     // Positive-magnitude liabilities (parquet stores them credit-negative).
-    let debt = neg(sc, st.total_liab);
-    let cur_liab = neg(sc, st.current_liab);
-    let eps = div(sc, np_ttm, st.total_shares); // 每股收益 TTM
-    let cogs_ttm = neg(sc, cost_ttm); // 营业成本 (positive magnitude)
+    let debt = sc.segment(negate(), st.total_liab);
+    let cur_liab = sc.segment(negate(), st.current_liab);
+    let eps = sc.segment(divide(), (np_ttm, st.total_shares)); // 每股收益 TTM
+    let cogs_ttm = sc.segment(negate(), cost_ttm); // 营业成本 (positive magnitude)
     // 应计利润 = 净利润 − 经营现金流 (earnings not backed by cash).
     let accruals_ttm = sc.segment(subtract(), (np_ttm, ocf_ttm));
     // 投入资本 ≈ 总资产 − 流动负债 (net of non-interest-bearing current liabilities).
     let invested_capital = sc.segment(subtract(), (st.total_assets, cur_liab));
 
     // ---- Profitability (盈利能力) ----
-    let roe = div(sc, np_ttm, st.parent_equity); // 净利润 TTM / 净资产
-    let roa = div(sc, np_ttm, st.total_assets); // 净利润 TTM / 总资产
-    let cfoa = div(sc, ocf_ttm, st.total_assets); // 经营现金流净额 TTM / 总资产
+    let roe = sc.segment(divide(), (np_ttm, st.parent_equity)); // 净利润 TTM / 净资产
+    let roa = sc.segment(divide(), (np_ttm, st.total_assets)); // 净利润 TTM / 总资产
+    let cfoa = sc.segment(divide(), (ocf_ttm, st.total_assets)); // 经营现金流净额 TTM / 总资产
     // 资本回报率 ≈ 营业利润 TTM / 投入资本 (constant-tax proxy for 息前税后经营利润).
-    let roic = div(sc, op_ttm, invested_capital);
+    let roic = sc.segment(divide(), (op_ttm, invested_capital));
     add("ROE_TTM", roe);
     add("ROA_TTM", roa);
     add("CFOA", cfoa);
     add("ROIC_TTM", roic);
 
     // ---- Valuation (估值) ----
-    add("BP_LR", div(sc, st.parent_equity, mc)); // 净资产 / 总市值
-    add("EP_TTM", div(sc, np_ttm, mc)); // 净利润 TTM / 总市值
-    add("SP_TTM", div(sc, rev_ttm, mc)); // 营业收入 TTM / 总市值
-    add("OCFP_TTM", div(sc, ocf_ttm, mc)); // 经营现金流 TTM / 总市值
+    add("BP_LR", sc.segment(divide(), (st.parent_equity, mc))); // 净资产 / 总市值
+    add("EP_TTM", sc.segment(divide(), (np_ttm, mc))); // 净利润 TTM / 总市值
+    add("SP_TTM", sc.segment(divide(), (rev_ttm, mc))); // 营业收入 TTM / 总市值
+    add("OCFP_TTM", sc.segment(divide(), (ocf_ttm, mc))); // 经营现金流 TTM / 总市值
 
     // ---- Size (规模) ----
-    add("Ln_MC", log_h(sc, mc)); // 总市值对数
-    add("Ln_FC", log_h(sc, fc)); // 流通市值对数
-    add("FC_MC", div(sc, fc, mc)); // 流通市值 / 总市值
+    add("Ln_MC", sc.segment(log(), mc)); // 总市值对数
+    add("Ln_FC", sc.segment(log(), fc)); // 流通市值对数
+    add("FC_MC", sc.segment(divide(), (fc, mc))); // 流通市值 / 总市值
 
     // ---- Operating efficiency (营运效率) ----
-    let at = div(sc, rev_ttm, st.total_assets); // 营业收入 TTM / 总资产
-    let opm = div(sc, op_ttm, rev_ttm); // 营业利润率
-    let gpm = div(sc, gross_ttm, rev_ttm); // 毛利率
-    let invt = div(sc, cogs_ttm, st.inventories); // 存货周转率 = 营业成本 TTM / 存货
-    let rat = div(sc, rev_ttm, st.receivables); // 应收周转率 = 营业收入 TTM / 应收款
+    let at = sc.segment(divide(), (rev_ttm, st.total_assets)); // 营业收入 TTM / 总资产
+    let opm = sc.segment(divide(), (op_ttm, rev_ttm)); // 营业利润率
+    let gpm = sc.segment(divide(), (gross_ttm, rev_ttm)); // 毛利率
+    let invt = sc.segment(divide(), (cogs_ttm, st.inventories)); // 存货周转率 = 营业成本 TTM / 存货
+    let rat = sc.segment(divide(), (rev_ttm, st.receivables)); // 应收周转率 = 营业收入 TTM / 应收款
     add("AT", at);
-    add("NPM_TTM", div(sc, np_ttm, rev_ttm)); // 净利率
+    add("NPM_TTM", sc.segment(divide(), (np_ttm, rev_ttm))); // 净利率
     add("OPM_TTM", opm);
     add("GPM_TTM", gpm);
-    add("OPtoGR_TTM", div(sc, op_ttm, gross_ttm)); // 营业利润 / 毛利润
+    add("OPtoGR_TTM", sc.segment(divide(), (op_ttm, gross_ttm))); // 营业利润 / 毛利润
     add("INVT", invt);
     add("RAT", rat);
 
     // ---- Safety (安全性) ----
-    let debt_asset = div(sc, debt, st.total_assets); // 资产负债比
-    let cur = div(sc, st.current_assets, cur_liab); // 流动比率
-    let dte = div(sc, debt, st.parent_equity); // 产权比率
-    let ccr = div(sc, ocf_ttm, cur_liab); // 现金流动负债比率
+    let debt_asset = sc.segment(divide(), (debt, st.total_assets)); // 资产负债比
+    let cur = sc.segment(divide(), (st.current_assets, cur_liab)); // 流动比率
+    let dte = sc.segment(divide(), (debt, st.parent_equity)); // 产权比率
+    let ccr = sc.segment(divide(), (ocf_ttm, cur_liab)); // 现金流动负债比率
     add("Debt_Asset", debt_asset);
     add("CUR", cur);
     add("DTE", dte);
     add("CCR", ccr);
 
     // ---- Earnings quality (盈余质量) ----
-    let csr = div(sc, st.cash, cur_liab); // 现金比率
+    let csr = sc.segment(divide(), (st.cash, cur_liab)); // 现金比率
     // 应计利润占比 = 应计利润 / 总资产 (Sloan accruals; expect a NEGATIVE forward
     // IC — the accruals anomaly). Handbook may scale by operating profit instead.
-    let apr = div(sc, accruals_ttm, st.total_assets);
+    let apr = sc.segment(divide(), (accruals_ttm, st.total_assets));
     add("CSR", csr);
     add("APR_TTM", apr);
 
@@ -270,7 +252,7 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // Trailing ~1-month log return of adjusted close. Expect a NEGATIVE forward
     // IC (short-term reversal); a contemporaneous (non-lagged) wiring bug would
     // instead make this strongly POSITIVE (the factor overlapping the return).
-    let log_adj = log_h(sc, st.adjusted_close);
+    let log_adj = sc.segment(log(), st.adjusted_close);
     add("REV_1M", sc.segment(change(21), log_adj));
 
     // Each catalog entry is finalized into its model-ready feature: rank + impute.
@@ -285,9 +267,9 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// next-period return the factor is meant to predict.
 pub fn build_forward_return(
     sc: &mut Scenario,
-    log_adj: H,
+    log_adj: AvH,
     rebalance_clock: PortHandle<RefPort<()>>,
-) -> H {
+) -> AvH {
     let resampled = sc.segment(resample_clocked(), (rebalance_clock, log_adj));
     sc.segment(diff(), resampled)
 }
@@ -309,24 +291,18 @@ type Ser2 = PortHandle<SeriesPort<f64, 2>>;
 
 /// Catalog records feed count-windowed reductions up to `Y` (one trading year)
 /// or the 250-day chip window; retain that deepest look-back plus the margin.
-fn rec(sc: &mut Scenario, h: H) -> Ser {
+fn rec(sc: &mut Scenario, h: AvH) -> Ser {
     sc.segment(record_bounded(Retention::count(Y + RETAIN_MARGIN)), h)
 }
 
-fn sub(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.segment(subtract(), (a, b))
-}
-fn lag(sc: &mut Scenario, s: Ser, n: usize) -> H {
-    sc.segment(lag_series(n, f64::NAN), s)
-}
-fn rsum(sc: &mut Scenario, s: Ser, n: usize) -> H {
+fn rsum(sc: &mut Scenario, s: Ser, n: usize) -> AvH {
     sc.segment(rolling_sum(Window::Count(n)), s)
 }
-fn rmean(sc: &mut Scenario, s: Ser, n: usize) -> H {
+fn rmean(sc: &mut Scenario, s: Ser, n: usize) -> AvH {
     sc.segment(rolling_mean(Window::Count(n)), s)
 }
 /// Elementwise map preserving shape and NaN.
-fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
+fn emap(sc: &mut Scenario, h: AvH, f: fn(f64) -> f64) -> AvH {
     sc.segment(
         map(move |a: ArrayView<f64, 1>| {
             let s = a.to_contiguous();
@@ -335,11 +311,8 @@ fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
         h,
     )
 }
-fn mul(sc: &mut Scenario, a: H, b: H) -> H {
-    sc.segment(multiply(), (a, b))
-}
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
-fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
+fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> AvH {
     sc.segment(
         tradingflow_graph::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
             sqrt() @ rolling_variance(Window::Count(n)) @ x
@@ -350,33 +323,25 @@ fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> H {
 /// Per-stock rolling Pearson correlation of two daily handles over `n` ticks:
 /// `cov(x,y) = mean(xy) − mean(x)·mean(y)`, normalized by `σx·σy`. Records each
 /// input internally (some redundancy across factors, but keeps call sites simple).
-fn rcorr(sc: &mut Scenario, x: H, y: H, n: usize) -> H {
+fn rcorr(sc: &mut Scenario, x: AvH, y: AvH, n: usize) -> AvH {
     let win = Retention::count(n + RETAIN_MARGIN);
     let xs = sc.segment(record_bounded(win), x);
     let ys = sc.segment(record_bounded(win), y);
-    let xy = mul(sc, x, y);
+    let xy = sc.segment(multiply(), (x, y));
     let xys = sc.segment(record_bounded(win), xy);
     let mx = rmean(sc, xs, n);
     let my = rmean(sc, ys, n);
     let mxy = rmean(sc, xys, n);
-    let mxmy = mul(sc, mx, my);
-    let cov = sub(sc, mxy, mxmy);
+    let mxmy = sc.segment(multiply(), (mx, my));
+    let cov = sc.segment(subtract(), (mxy, mxmy));
     let sx = rstd(sc, xs, n);
     let sy = rstd(sc, ys, n);
-    let sxsy = mul(sc, sx, sy);
-    div(sc, cov, sxsy)
+    let sxsy = sc.segment(multiply(), (sx, sy));
+    sc.segment(divide(), (cov, sxsy))
 }
 
 const M: usize = 21; // ~1 trading month
 const Y: usize = 252; // ~1 trading year
-
-/// Stack two rank-1 `[N]` views into an `(N, 2)` cross-section (col 0 from `a`,
-/// col 1 from `b`) — the native carry-join `Stack` along axis 1, wired straight
-/// from the two by-value view handles. The downstream `WindowReduce2`/`ChipDist`
-/// read `[a_i, b_i]` pairs per element.
-fn stack2(sc: &mut Scenario, a: H, b: H) -> PortHandle<ArrayPort<f64, 2>> {
-    sc.segment(stack::<f64, 1, 2>(1), &[a, b])
-}
 
 // ---------------------------------------------------------------------------
 // WindowReduce: a per-element rolling-window reduction that needs the full
@@ -445,7 +410,7 @@ impl Operator for WindowReduce {
         (false, state.out.view())
     }
 }
-fn window_reduce(sc: &mut Scenario, s: Ser, n: usize, f: fn(&[f64]) -> f64) -> H {
+fn window_reduce(sc: &mut Scenario, s: Ser, n: usize, f: fn(&[f64]) -> f64) -> AvH {
     sc.segment(WindowReduce { window: n, f }, s)
 }
 /// Time-series percentile rank of the latest window value among finite values.
@@ -548,7 +513,7 @@ impl Operator for WindowReduce2 {
         (false, state.out.view())
     }
 }
-fn window_reduce2(sc: &mut Scenario, s: Ser2, n: usize, f: fn(&[f64], &[f64]) -> f64) -> H {
+fn window_reduce2(sc: &mut Scenario, s: Ser2, n: usize, f: fn(&[f64], &[f64]) -> f64) -> AvH {
     sc.segment(WindowReduce2 { window: n, f }, s)
 }
 /// 振幅调整动量: Σ(returns on the top-20%-amplitude days) − Σ(bottom-20%-amplitude
@@ -737,25 +702,25 @@ impl Operator for ChipDist {
 pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
-    let mut add = |name: &str, h: H| {
+    let mut add = |name: &str, h: AvH| {
         names.push(name.to_string());
         raw.push(h);
     };
 
     // --- daily building blocks (recorded on the price pulse) ---
-    let lc = log_h(sc, st.adjusted_close); // adjusted log close
+    let lc = sc.segment(log(), st.adjusted_close); // adjusted log close
     let lc_s = rec(sc, lc);
     let adjclose_s = rec(sc, st.adjusted_close);
-    let lo = log_h(sc, st.open); // raw log open
-    let lcr = log_h(sc, st.close); // raw log close
+    let lo = sc.segment(log(), st.open); // raw log open
+    let lcr = sc.segment(log(), st.close); // raw log close
     let lcr_s = rec(sc, lcr);
 
     let daily_ret = sc.segment(diff(), lc); // adjusted close-to-close log return
     let dret_s = rec(sc, daily_ret);
-    let intraday = sub(sc, lcr, lo); // log(close/open)
+    let intraday = sc.segment(subtract(), (lcr, lo)); // log(close/open)
     let intra_s = rec(sc, intraday);
-    let prev_lcr = lag(sc, lcr_s, 1);
-    let overnight = sub(sc, lo, prev_lcr); // log(open / prev close)
+    let prev_lcr = sc.segment(lag_series(1, f64::NAN), lcr_s);
+    let overnight = sc.segment(subtract(), (lo, prev_lcr)); // log(open / prev close)
     let over_s = rec(sc, overnight);
 
     let abs_ret = emap(sc, daily_ret, f64::abs);
@@ -774,29 +739,35 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let rs_over_y = rsum(sc, over_s, Y);
 
     // ---- 月度反转 / 年度动量 (close-return based) ----
-    let lc_lag_m = lag(sc, lc_s, M);
-    let lc_lag_y = lag(sc, lc_s, Y);
-    let ret_1m = sub(sc, lc, lc_lag_m); // past 1-month return
-    let ret_1y = sub(sc, lc, lc_lag_y); // past 1-year return
+    let lc_lag_m = sc.segment(lag_series(M, f64::NAN), lc_s);
+    let lc_lag_y = sc.segment(lag_series(Y, f64::NAN), lc_s);
+    let ret_1m = sc.segment(subtract(), (lc, lc_lag_m)); // past 1-month return
+    let ret_1y = sc.segment(subtract(), (lc, lc_lag_y)); // past 1-year return
     add("mmt_normal_M", ret_1m); // 1个月收益率
-    add("mmt_normal_A", sub(sc, lc_lag_m, lc_lag_y)); // 12个月收益率 − 1个月收益率
+    add("mmt_normal_A", sc.segment(subtract(), (lc_lag_m, lc_lag_y))); // 12个月收益率 − 1个月收益率
     let ma20 = rmean(sc, adjclose_s, 20);
-    add("mmt_avg_M", div(sc, st.adjusted_close, ma20)); // 收盘价 / 20日均价
-    let prev_close_m = lag(sc, adjclose_s, M);
+    add("mmt_avg_M", sc.segment(divide(), (st.adjusted_close, ma20))); // 收盘价 / 20日均价
+    let prev_close_m = sc.segment(lag_series(M, f64::NAN), adjclose_s);
     let ma_year = rmean(sc, adjclose_s, Y);
-    add("mmt_avg_A", div(sc, prev_close_m, ma_year)); // 1月前收盘 / 1年均价
+    add("mmt_avg_A", sc.segment(divide(), (prev_close_m, ma_year))); // 1月前收盘 / 1年均价
 
     // ---- 日内 / 隔夜动量 ----
     add("mmt_intraday_M", rs_intra_m); // 过去1月日内涨跌幅之和
-    add("mmt_intraday_A", sub(sc, rs_intra_y, rs_intra_m));
+    add(
+        "mmt_intraday_A",
+        sc.segment(subtract(), (rs_intra_y, rs_intra_m)),
+    );
     add("mmt_overnight_M", rs_over_m); // 过去1月隔夜涨跌幅之和
-    add("mmt_overnight_A", sub(sc, rs_over_y, rs_over_m));
+    add(
+        "mmt_overnight_A",
+        sc.segment(subtract(), (rs_over_y, rs_over_m)),
+    );
 
     // ---- 路径调整动量 (return / Σ|daily return|) ----
     let sum_abs_m = rsum(sc, absret_s, M);
-    add("mmt_route_M", div(sc, ret_1m, sum_abs_m));
+    add("mmt_route_M", sc.segment(divide(), (ret_1m, sum_abs_m)));
     let sum_abs_y = rsum(sc, absret_s, Y);
-    add("mmt_route_A", div(sc, ret_1y, sum_abs_y));
+    add("mmt_route_A", sc.segment(divide(), (ret_1y, sum_abs_y)));
 
     // ---- 信息离散度 (up% − down% = mean of sign) ----
     add("mmt_discrete_M", rmean(sc, sign_s, M));
@@ -831,18 +802,18 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     );
 
     // ============ 流动性 (liquidity) — 图表28 ============
-    let turnover = div(sc, st.volume, st.circ_shares); // daily turnover 换手率
+    let turnover = sc.segment(divide(), (st.volume, st.circ_shares)); // daily turnover 换手率
     let turnover_s = rec(sc, turnover);
     let amount_s = rec(sc, st.amount);
-    let amihud = div(sc, abs_ret, st.amount); // |日收益率| / 成交额
+    let amihud = sc.segment(divide(), (abs_ret, st.amount)); // |日收益率| / 成交额
     let amihud_s = rec(sc, amihud);
     // 日K线最短路径 = 2*(最高-最低) − |开盘−收盘|; shortcut 非流动 = 路径 / 成交额.
-    let hl = sub(sc, st.high, st.low);
+    let hl = sc.segment(subtract(), (st.high, st.low));
     let two_hl = emap(sc, hl, |x| 2.0 * x);
-    let oc = sub(sc, st.open, st.close);
+    let oc = sc.segment(subtract(), (st.open, st.close));
     let abs_oc = emap(sc, oc, f64::abs);
-    let path = sub(sc, two_hl, abs_oc);
-    let shortcut = div(sc, path, st.amount);
+    let path = sc.segment(subtract(), (two_hl, abs_oc));
+    let shortcut = sc.segment(divide(), (path, st.amount));
     let shortcut_s = rec(sc, shortcut);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
@@ -850,7 +821,10 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
         add(&format!("liq_turn_std_{tag}"), rstd(sc, turnover_s, w)); // 换手率标准差
         let sum_amt = rsum(sc, amount_s, w);
         let ret_std = rstd(sc, dret_s, w);
-        add(&format!("liq_vstd_{tag}"), div(sc, sum_amt, ret_std)); // 成交波动比 = Σ成交额 / σ(ret)
+        add(
+            &format!("liq_vstd_{tag}"),
+            sc.segment(divide(), (sum_amt, ret_std)),
+        ); // 成交波动比 = Σ成交额 / σ(ret)
         add(&format!("liq_amihud_avg_{tag}"), rmean(sc, amihud_s, w));
         add(&format!("liq_amihud_std_{tag}"), rstd(sc, amihud_s, w));
         add(&format!("liq_shortcut_avg_{tag}"), rmean(sc, shortcut_s, w));
@@ -862,10 +836,10 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // prior (价领先) = corr(turn_t, x_{t-1}) = corr(turn, lag(x,1)).
     let turnover_change = sc.segment(diff(), turnover);
     let turnchg_s = rec(sc, turnover_change);
-    let lag_turn1 = lag(sc, turnover_s, 1);
-    let lag_turnd1 = lag(sc, turnchg_s, 1);
-    let lag_price1 = lag(sc, adjclose_s, 1);
-    let lag_ret1 = lag(sc, dret_s, 1);
+    let lag_turn1 = sc.segment(lag_series(1, f64::NAN), turnover_s);
+    let lag_turnd1 = sc.segment(lag_series(1, f64::NAN), turnchg_s);
+    let lag_price1 = sc.segment(lag_series(1, f64::NAN), adjclose_s);
+    let lag_ret1 = sc.segment(lag_series(1, f64::NAN), dret_s);
     const WC: usize = 20;
     add(
         "corr_price_turn_1M",
@@ -905,22 +879,22 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
         if x.is_finite() { x.max(0.0) } else { f64::NAN }
     });
     let upside_s = rec(sc, upside);
-    let highlow = div(sc, st.high, st.low); // 日内振幅 = 最高/最低
+    let highlow = sc.segment(divide(), (st.high, st.low)); // 日内振幅 = 最高/最低
     let highlow_s = rec(sc, highlow);
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
     let max_oc = sc.segment(max(), (st.open, st.close));
     let min_oc = sc.segment(min(), (st.open, st.close));
-    let up_num = sub(sc, st.high, max_oc); // 上影线 = 最高 − max(开,收)
-    let upshadow = div(sc, up_num, st.low);
+    let up_num = sc.segment(subtract(), (st.high, max_oc)); // 上影线 = 最高 − max(开,收)
+    let upshadow = sc.segment(divide(), (up_num, st.low));
     let upshadow_s = rec(sc, upshadow);
-    let down_num = sub(sc, min_oc, st.low); // 下影线 = min(开,收) − 最低
-    let downshadow = div(sc, down_num, st.low);
+    let down_num = sc.segment(subtract(), (min_oc, st.low)); // 下影线 = min(开,收) − 最低
+    let downshadow = sc.segment(divide(), (down_num, st.low));
     let downshadow_s = rec(sc, downshadow);
-    let wup_num = sub(sc, st.high, st.close); // 威廉上影线 = 最高 − 收
-    let w_upshadow = div(sc, wup_num, st.low);
+    let wup_num = sc.segment(subtract(), (st.high, st.close)); // 威廉上影线 = 最高 − 收
+    let w_upshadow = sc.segment(divide(), (wup_num, st.low));
     let w_upshadow_s = rec(sc, w_upshadow);
-    let wdown_num = sub(sc, st.close, st.low); // 威廉下影线 = 收 − 最低
-    let w_downshadow = div(sc, wdown_num, st.low);
+    let wdown_num = sc.segment(subtract(), (st.close, st.low)); // 威廉下影线 = 收 − 最低
+    let w_downshadow = sc.segment(divide(), (wdown_num, st.low));
     let w_downshadow_s = rec(sc, w_downshadow);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
@@ -958,15 +932,17 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     }
 
     // 振幅调整动量 (mmt_range): pair amplitude (high/low) with the daily return as a
-    // (N,2) series and reduce each window via `range_mom`.
-    let amp_ret = stack2(sc, highlow, daily_ret); // (N, 2)
+    // (N,2) series and reduce each window via `range_mom`. The native carry-join
+    // `Stack` along axis 1 wires the two by-value view handles into an (N, 2)
+    // cross-section, so `WindowReduce2` reads `[amp_i, ret_i]` pairs per element.
+    let amp_ret = sc.segment(stack::<f64, 1, 2>(1), &[highlow, daily_ret]); // (N, 2)
     let amp_ret_s = rec_2(sc, amp_ret);
     add("mmt_range_M", window_reduce2(sc, amp_ret_s, M, range_mom));
     add("mmt_range_A", window_reduce2(sc, amp_ret_s, Y, range_mom));
 
     // ============ 筹码分布 (chip distribution) — 图表52 ============
     // (adjusted close, turnover) -> ChipDist -> (N, 10); column-select each factor.
-    let chip_in = stack2(sc, st.adjusted_close, turnover); // (N, 2)
+    let chip_in = sc.segment(stack::<f64, 1, 2>(1), &[st.adjusted_close, turnover]); // (N, 2)
     let chip_in_s = rec_2(sc, chip_in);
     let chip = sc.segment(ChipDist { window: 250 }, chip_in_s); // (N, 10)
     for (c, name) in [
