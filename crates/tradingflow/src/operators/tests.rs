@@ -576,7 +576,7 @@ fn apply_add_and_select() {
         [5],
         vec![10.0_f64, 20.0, 30.0, 40.0, 50.0],
     )));
-    let sel = b.segment(select_flat::<f64, 1, 1>(vec![1, 3]), fivev);
+    let sel = b.segment(select_many::<f64, 1, 1>(vec![1, 3], 0), fivev);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -859,7 +859,7 @@ fn split_axis_size_mismatch_panics() {
     let _g = b.build();
 }
 
-/// The view chain (retaining `Gate` -> view-input `SliceView` / `ForwardAdjust`)
+/// The view chain (retaining `Gate` -> view-input `Select` / `ForwardAdjust`)
 /// is tick-for-tick bit-identical to the owned chain (`Filter` -> owned `Select`
 /// / `ForwardAdjust`) over the same source pokes, including the NaN cutoff and
 /// the price/dividend message-passing. `Gate` and `Filter` honour the
@@ -889,11 +889,11 @@ fn view_chain_matches_owned_chain() {
 
     // Owned reference chain (materializes at the row Selects).
     let p_f = {
-        let m = b.segment(select_flat(vec![0, 1]), prices_view);
+        let m = b.segment(select_many(vec![0, 1], 0), prices_view);
         b.segment(filter(any_finite), m)
     };
     let d_f = {
-        let m = b.segment(select_flat(vec![0, 1]), div_view);
+        let m = b.segment(select_many(vec![0, 1], 0), div_view);
         b.segment(filter(any_finite), m)
     };
     // Squeeze the single close out to a scalar (rank-0) price.
@@ -901,10 +901,10 @@ fn view_chain_matches_owned_chain() {
     let adj = b.segment(forward_adjust().with_output_prices(false), (close, d_f));
     let adjusted = b.segment(multiply(), (close, adj));
 
-    // Zero-copy view chain (materializes at SliceView).
+    // View chain (materializes at `Select`).
     let p_g = b.segment(gate(any_finite), prices_view);
     let d_g = b.segment(gate(any_finite), div_view);
-    let v_close = b.segment(slice_view(vec![0], 0, true), p_g);
+    let v_close = b.segment(select(vec![0], 0, true), p_g);
     let v_adj = b.segment(
         ForwardAdjust::<0, 1>::default().with_output_prices(false),
         (v_close, d_g),
@@ -1129,10 +1129,10 @@ fn comparison_of_two_arrays_and_strided_inputs() {
         [2, 2],
         vec![1.0, 5.0, 4.0, 2.0], // rows: [1,5], [4,2]
     )));
-    // `SliceView`'s output rank is not determined by its input rank (`squeeze`
+    // `Select`'s output rank is not determined by its input rank (`squeeze`
     // drops the sliced axis), so it is the one operator here that must be told.
-    let col0 = b.segment(slice_view::<f64, 2, 1>(vec![0], 1, true), s); // [1, 4]
-    let col1 = b.segment(slice_view::<f64, 2, 1>(vec![1], 1, true), s); // [5, 2]
+    let col0 = b.segment(select::<f64, 2, 1>(vec![0], 1, true), s); // [1, 4]
+    let col1 = b.segment(select::<f64, 2, 1>(vec![1], 1, true), s); // [5, 2]
     let lt = b.segment(less(), (col0, col1));
     let g = b.build();
     assert_eq!(g.view(lt).to_vec(), vec![true, false]);

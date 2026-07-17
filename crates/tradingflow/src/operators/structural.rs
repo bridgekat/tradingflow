@@ -19,8 +19,8 @@
 //! has collapsed into a single set of operators and no value↔reference
 //! bridging exists anywhere. The combine into the output cross-section is
 //! the irreducible panel→cross-section data movement (each input materialized
-//! via `to_contiguous`); the per-stock selections upstream stay copy-free
-//! ([`SliceView`](super::transform::SliceView)).
+//! via `to_contiguous`); the per-stock selections upstream are
+//! [`select`](super::transform::select)s.
 
 use std::marker::PhantomData;
 

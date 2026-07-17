@@ -1,7 +1,7 @@
 //! Function / selection / lag operators over the strided [`ArrayView`]
 //! currency — `Map`/`MapInplace`, `Apply`/`ApplyInplace` (closure compute),
-//! `Select` (materializing selection), [`SliceView`] (zero-copy strided
-//! squeeze), and `Lag` (a `Series` element from N steps ago).
+//! `Select` (materializing selection), and `Lag` (a `Series` element from N
+//! steps ago).
 //!
 //! The closure operators receive the values-only views tree (notify flags
 //! stripped via [`StripNotify`]) and return an owned [`Array`], which is homed
@@ -10,9 +10,8 @@
 
 use std::marker::PhantomData;
 
-use crate::data::Shape;
 use crate::data::{Array, ArrayView, Instant, Scalar, SeriesView};
-use crate::graph::typed::{Interface, Operator, Segment};
+use crate::graph::typed::{Interface, Operator};
 use crate::ports::{ArrayPort, SeriesPort, StripNotify};
 
 // ---------------------------------------------------------------------------
@@ -328,7 +327,7 @@ where
 /// index). Accepts a strided input view; the selection is the **materialization
 /// point** of a view chain — it retains the last computed selection in owned
 /// state, preserving the carry semantics downstream `Stack`-style readers rely
-/// on. For a zero-copy alternative see [`SliceView`].
+/// on.
 pub struct Select<T: Scalar, const IN: usize, const OUT: usize> {
     indices: Vec<usize>,
     axis: usize,
@@ -365,14 +364,6 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Select<T, IN, OUT> {
             squeeze,
             _phantom: PhantomData,
         }
-    }
-
-    pub fn flat(indices: Vec<usize>) -> Self {
-        Self::new(indices, 0, false)
-    }
-
-    pub fn along_axis(indices: Vec<usize>, axis: usize) -> Self {
-        Self::new(indices, axis, false)
     }
 }
 
@@ -485,122 +476,6 @@ fn select_out_extents<const OUT: usize>(
     }
     <[usize; OUT]>::try_from(v.as_slice())
         .unwrap_or_else(|_| panic!("Select: output rank {} != OUT {OUT}", v.len()))
-}
-
-// ---------------------------------------------------------------------------
-// SliceView (zero-copy strided selection → borrowed view, no arena/no copy)
-// ---------------------------------------------------------------------------
-
-/// Zero-copy selection: re-derives a **strided** [`ArrayView`] of a contiguous
-/// run along one axis (a range, or a single index with `squeeze`) **by value**,
-/// over the input's own buffer — no copy, no owned storage, no per-generation
-/// arena. The view-chain counterpart of [`Select`]: where `Select` materializes
-/// (the retention point for a carry-style [`Stack`](super::structural::Stack)), `SliceView`
-/// keeps the data as a view into its input's storage.
-///
-/// It is correct precisely because every operator honours the no-notify⟹
-/// unchanged contract: the lent view reads the input's stable storage (a
-/// retaining [`Gate`](super::structural::Gate) or an owned compute output), which only
-/// changes when the input notifies, so a carry-style
-/// [`Stack`](super::structural::Stack) reader sees the last notified value for an
-/// un-notified stock. Implements [`Segment`] directly (the by-value view is
-/// derived from the fresh input, not from state).
-pub struct SliceView<T: Scalar, const IN: usize, const OUT: usize> {
-    indices: Vec<usize>,
-    axis: usize,
-    squeeze: bool,
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Scalar, const IN: usize, const OUT: usize> SliceView<T, IN, OUT> {
-    pub fn new(indices: Vec<usize>, axis: usize, squeeze: bool) -> Self {
-        assert!(
-            !squeeze || indices.len() == 1,
-            "squeeze requires exactly one index, got {}",
-            indices.len(),
-        );
-        assert!(
-            OUT == IN - squeeze as usize,
-            "SliceView: OUT ({OUT}) must be IN ({IN}) minus {} (squeeze={squeeze})",
-            squeeze as usize,
-        );
-        Self {
-            indices,
-            axis,
-            squeeze,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-/// Runtime state for [`SliceView`]: just the config plus the resolved
-/// `(axis, start, count)` — **no** owned shape, **no** arena.
-pub struct SliceViewState {
-    axis: usize,
-    squeeze: bool,
-    start: usize,
-    count: usize,
-}
-
-impl<T: Scalar, const IN: usize, const OUT: usize> Segment for SliceView<T, IN, OUT> {
-    type Inputs = ArrayPort<T, IN>;
-    type Outputs = ArrayPort<T, OUT>;
-    type Context = Instant;
-    type State = SliceViewState;
-
-    fn init(self) -> Self::State {
-        // Resolve the contiguous run `[start, start+count)` from the index list.
-        assert!(self.axis < IN, "SliceView: axis {} out of range", self.axis);
-        assert!(!self.indices.is_empty(), "SliceView requires >= 1 index");
-        assert!(
-            self.indices.windows(2).all(|w| w[1] == w[0] + 1),
-            "SliceView requires a contiguous index range along the axis; got {:?}",
-            self.indices,
-        );
-        SliceViewState {
-            axis: self.axis,
-            squeeze: self.squeeze,
-            start: self.indices[0],
-            count: self.indices.len(),
-        }
-    }
-
-    #[inline(always)]
-    fn compute<'a, 'b: 'a>(
-        (notified, v): (bool, ArrayView<'a, T, IN>),
-        _: &Instant,
-        state: &'b mut Self::State,
-        init: bool,
-    ) -> (bool, ArrayView<'a, T, OUT>) {
-        let data = v.data();
-        let shape = v.shape();
-        let (ext, strd) = (shape.extents(), shape.strides());
-        let offset = state.start * strd[state.axis];
-
-        // Build the output (extents, strides) by dropping (squeeze) or shrinking
-        // (range) the sliced axis — purely strided, no copy.
-        let mut oe = [0usize; OUT];
-        let mut os = [0usize; OUT];
-        if state.squeeze {
-            let mut j = 0;
-            for d in 0..IN {
-                if d == state.axis {
-                    continue;
-                }
-                oe[j] = ext[d];
-                os[j] = strd[d];
-                j += 1;
-            }
-        } else {
-            // OUT == IN here; copy axes, shrink the sliced one to `count`.
-            for d in 0..IN {
-                oe[d] = if d == state.axis { state.count } else { ext[d] };
-                os[d] = strd[d];
-            }
-        }
-        let out = ArrayView::from_parts(Shape::strided(oe, os), &data[offset..]);
-        (notified && !init, out)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -737,29 +612,20 @@ pub fn select<T: Scalar, const IN: usize, const OUT: usize>(
     Select::new(indices, axis, squeeze)
 }
 
-/// [`select`] over the flattened input: `select(indices, 0, false)`.
-pub fn select_flat<T: Scalar, const IN: usize, const OUT: usize>(
-    indices: Vec<usize>,
+/// [`select`] at a single index along `axis`, squeezing that axis.
+pub fn select_at<T: Scalar, const IN: usize, const OUT: usize>(
+    index: usize,
+    axis: usize,
 ) -> Select<T, IN, OUT> {
-    Select::flat(indices)
+    Select::new(vec![index], axis, true)
 }
 
 /// [`select`] along `axis`, keeping the axis: `select(indices, axis, false)`.
-pub fn select_along_axis<T: Scalar, const IN: usize, const OUT: usize>(
+pub fn select_many<T: Scalar, const IN: usize, const OUT: usize>(
     indices: Vec<usize>,
     axis: usize,
 ) -> Select<T, IN, OUT> {
-    Select::along_axis(indices, axis)
-}
-
-/// Zero-copy strided [`select`]: re-derives a view of the input rather than
-/// copying (contiguous `indices` along `axis`).
-pub fn slice_view<T: Scalar, const IN: usize, const OUT: usize>(
-    indices: Vec<usize>,
-    axis: usize,
-    squeeze: bool,
-) -> SliceView<T, IN, OUT> {
-    SliceView::new(indices, axis, squeeze)
+    Select::new(indices, axis, false)
 }
 
 /// The value from `offset` ticks ago in a recorded [`Series`](tradingflow_data::Series), `fill` until it

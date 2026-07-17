@@ -2,11 +2,6 @@
 name = "tradingflow"
 version.workspace = true
 edition.workspace = true
-# The examples live at the repo root (`/examples`), beside the market data they
-# read (`/examples/data`) and the plotting scripts they hand off to — they are
-# the project's examples, not this crate's implementation detail. Cargo only
-# auto-discovers `examples/` inside the package, so each is declared with an
-# explicit path below (and auto-discovery is off, there being nothing to find).
 autoexamples = false
 
 [lib]
@@ -14,12 +9,6 @@ crate-type = ["lib"]
 
 [features]
 default = []
-# Python operators (optional): the engine embeds a CPython interpreter to run
-# `tradingflow` operators (`src/operators/pyhost.rs`). The pure-Rust
-# engine + native operators build WITHOUT a Python toolchain; enabling `python`
-# links libpython, so set PYO3_PYTHON (see examples/env.ps1). A free-threaded
-# interpreter gives pure-Python parallelism; on a GIL build, numpy/scipy/cvxpy
-# still release the GIL across operators.
 python = ["dep:pyo3", "dep:numpy", "pyo3/auto-initialize"]
 
 [dependencies]
@@ -34,38 +23,19 @@ hifitime = "4"
 pyo3 = { version = "0.28.2", optional = true }
 numpy = { version = "0.28.0", optional = true }
 num-traits = "0.2.19"
-# Per-generation bump arena for operators that emit by-reference view rows
-# (Split, RefArrayView); the engine dropped its bespoke Arena for bumpalo.
 bumpalo = "3"
-# Seeded RNG for the RandomTrader operator (src/operators/traders.rs).
-rand = "0.8"
-# Async plumbing for the ingest driver (src/ingest): streams, FuturesUnordered,
-# select. The driver itself (timestamp-ordered event merge) lives in this crate.
+rand = { version = "0.10", features = ["thread_rng"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
-# The parallel DAG engine this crate wraps — a sibling workspace member (kept a
-# separate crate so the engine builds, tests, and runs Miri against its own
-# minimal dependency set). Its user-facing vocabulary is re-exported as
-# `tradingflow::graph`, so strategy crates depend on `tradingflow` alone.
 tradingflow-graph = { path = "../tradingflow-graph" }
-# The data model (`Array`/`Series`/`Instant`), likewise a sibling workspace
-# member kept separate so it builds and tests against std + hifitime alone.
-# Re-exported as `tradingflow::data`, so strategy crates depend on `tradingflow`
-# alone.
 tradingflow-data = { path = "../tradingflow-data" }
 arrow = "58.3.0"
 parquet = { version = "58.3.0", features = ["arrow", "zstd"] }
 
 [dev-dependencies]
 tempfile = "3"
-# Minimal block_on executor for the ingest merge tests (tests/ingest.rs): a
-# simulated clock replays whole scenarios without a real timer or runtime.
 pollster = "0.4"
-# The same tests drive feeds over `futures::channel::mpsc`, which is std-gated;
-# the library dependency above stays `alloc`-only.
 futures = { version = "0.3", default-features = false, features = ["std"] }
-# tqdm-style progress bars for the examples (see `examples/common::progress`).
 indicatif = "0.17"
-# argparse-style CLI parsing for the examples (see `examples/common::CommonArgs`).
 clap = { version = "4", features = ["derive"] }
 
 [[example]]

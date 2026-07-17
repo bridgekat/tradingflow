@@ -14,7 +14,7 @@
 //! `ArrayPort<f64, 1>`, and outputs `[2]` = `[holdings_value, cash]`.
 //! Only the **positions** notify flag is consulted (one-tick-delayed execution).
 
-use rand::Rng;
+use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -464,7 +464,7 @@ fn random_lots(
     let mut keyed: Vec<(f64, usize)> = (0..n)
         .filter(|&i| weights[i] > 0.0)
         .map(|i| {
-            let u: f64 = rng.gen_range(0.0..1.0);
+            let u: f64 = rng.random_range(0.0..1.0);
             let u = if u <= 0.0 { f64::MIN_POSITIVE } else { u };
             (u.powf(1.0 / weights[i]), i)
         })
