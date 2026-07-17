@@ -31,7 +31,6 @@ use tradingflow::operators::structural::resample_clocked;
 use tradingflow::operators::transform::lag_series;
 use tradingflow::{Scenario, WallClock};
 
-use common::FeatureSet;
 use common::ic::{ic_series, ic_stats};
 use common::strategy::Market;
 use common::universe::mask_to_universe;
@@ -41,17 +40,11 @@ use common::universe::mask_to_universe;
 struct Args {
     #[command(flatten)]
     common: common::CommonArgs,
-    /// Rolling feature window in trading days (momentum / volatility / turnover MAs).
-    #[arg(long)]
-    window: usize,
 }
 
 #[tokio::main]
 async fn main() {
-    let Args {
-        common: args,
-        window,
-    } = Args::parse();
+    let Args { common: args } = Args::parse();
     let symbols = common::load_symbols(&args.data_dir);
     eprintln!(
         "loaded {} symbols; index_size={}",
@@ -61,14 +54,7 @@ async fn main() {
 
     let mut sc = Scenario::new(WallClock);
 
-    let m = Market::build(
-        &mut sc,
-        &symbols,
-        &args,
-        window,
-        FeatureSet::Canonical,
-        Retention::UNBOUNDED,
-    );
+    let m = Market::build(&mut sc, &symbols, &args, Retention::UNBOUNDED);
     let names = m.features.names.clone();
     let ic_handles: Vec<_> = m
         .features

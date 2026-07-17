@@ -20,9 +20,8 @@ pub fn parse_date_days(s: &str) -> Result<i64, String> {
 
 /// CLI args shared by every cross-sectional A-shares example. Embed it in an
 /// example's own `#[derive(Parser)]` with `#[command(flatten)]`, so each example
-/// declares exactly the extra args it needs (e.g. `--window` for the
-/// feature-based ones, a `SYMBOL` positional for the single-stock plots) and
-/// gets its own `--help`. All of these are **required** except `--sample-begin`
+/// declares exactly the extra args it needs (e.g. a `SYMBOL` positional for the
+/// single-stock plots) and gets its own `--help`. All of these are **required** except `--sample-begin`
 /// and `--threads` — there are no hidden "magic" defaults for the universe size,
 /// rebalance cadence, or backtest window.
 #[derive(clap::Args)]

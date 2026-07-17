@@ -1,13 +1,12 @@
 //! Mean-only strategy: periodic linear regression + rank-linear portfolio.
 //!
 //! A cross-sectional linear-regression strategy on a bounded A-shares
-//! universe: a pooled **Ridge** mean predictor on a configurable factor panel
-//! (`--feature-set`, default `all` = the 145 CICC handbook factors; the pooled
-//! Ridge regularises their collinearity), a **RankLinear** portfolio, and two
-//! traders — a frictionless `Benchmark` and a lot/fee-aware `RandomTrader` —
-//! versus the cap-weighted index. On the whole-market top-800 universe the
-//! 145-factor panel lifts the actual Sharpe from 0.38 (canonical 7-factor) to
-//! 0.41. Performance metrics (Sharpe / compound return /
+//! universe: a pooled **Ridge** mean predictor on the 145-factor CICC handbook
+//! panel (the pooled Ridge regularises their collinearity), a **RankLinear**
+//! portfolio, and two traders — a frictionless `Benchmark` and a lot/fee-aware
+//! `RandomTrader` — versus the cap-weighted index. On the whole-market top-800
+//! universe the 145-factor panel yields an actual Sharpe of 0.41.
+//! Performance metrics (Sharpe / compound return /
 //! drawdown, and rolling market beta/alpha via `RegressionCoefficients`) are
 //! computed natively, clock-gated on the rebalance schedule.
 //!
@@ -35,7 +34,6 @@ use tradingflow::operators::structural::stack;
 use tradingflow::operators::traders::{benchmark, random_trader};
 use tradingflow::{Scenario, WallClock};
 
-use common::FeatureSet;
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
 use common::strategy::{INITIAL_CASH, Market, TARGET_OFFSET, trim_scale};
 
@@ -50,25 +48,11 @@ const BETA_MIN_PERIODS: i64 = 20;
 struct Args {
     #[command(flatten)]
     common: common::CommonArgs,
-    /// Rolling feature window in trading days (momentum / volatility / turnover MAs).
-    /// Only used by `--feature-set canonical`.
-    #[arg(long)]
-    window: usize,
-    /// Feature panel: `all` (145 CICC handbook factors, default — the pooled
-    /// Ridge regularises the heavy collinearity), `cicc` (curated ~24), or
-    /// `canonical` (the legacy 7-factor panel, uses `--window`).
-    #[arg(long = "feature-set", default_value = "all")]
-    feature_set: String,
 }
 
 #[tokio::main]
 async fn main() {
-    let Args {
-        common: args,
-        window,
-        feature_set,
-    } = Args::parse();
-    let fset = FeatureSet::parse(&feature_set);
+    let Args { common: args } = Args::parse();
     let symbols = common::load_symbols(&args.data_dir);
     eprintln!(
         "loaded {} symbols; index_size={}",
@@ -82,11 +66,8 @@ async fn main() {
     // The incremental mean predictor folds one (feature, target) pair per tick,
     // so the recorded panel / target only need the last `TARGET_OFFSET + 1` rows.
     let feat_ret = Retention::count(TARGET_OFFSET as usize + common::RETAIN_MARGIN);
-    let m = Market::build(&mut sc, &symbols, &args, window, fset, feat_ret);
-    eprintln!(
-        "feature set `{feature_set}`: {} features",
-        m.dims.num_features
-    );
+    let m = Market::build(&mut sc, &symbols, &args, feat_ret);
+    eprintln!("{} features", m.dims.num_features);
 
     // ---- Predictor + portfolio ------------------------------------------
     let predicted_returns = sc.segment(

@@ -24,7 +24,6 @@ use clap::Parser;
 use tradingflow::data::Retention;
 use tradingflow::{Scenario, WallClock};
 
-use common::FeatureSet;
 use common::models::{benchmark_relative, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable, TRADING_DAYS};
 
@@ -38,17 +37,11 @@ const RIDGE_ALPHA: f64 = 1.0;
 struct Args {
     #[command(flatten)]
     common: common::CommonArgs,
-    /// Rolling feature window in trading days (momentum / volatility / turnover MAs).
-    #[arg(long)]
-    window: usize,
 }
 
 #[tokio::main]
 async fn main() {
-    let Args {
-        common: args,
-        window,
-    } = Args::parse();
+    let Args { common: args } = Args::parse();
     let symbols = common::load_symbols(&args.data_dir);
     eprintln!(
         "loaded {} symbols; index_size={}; gammas_ann={TRACKING_ERRORS_ANN:?}",
@@ -58,14 +51,7 @@ async fn main() {
 
     let mut sc = Scenario::new(WallClock);
 
-    let m = Market::build(
-        &mut sc,
-        &symbols,
-        &args,
-        window,
-        FeatureSet::Canonical,
-        Retention::UNBOUNDED,
-    );
+    let m = Market::build(&mut sc, &symbols, &args, Retention::UNBOUNDED);
 
     let predicted_returns = sc.segment(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),

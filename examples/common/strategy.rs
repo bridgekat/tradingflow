@@ -16,7 +16,7 @@ use tradingflow::{Scenario, Session};
 use super::AvH;
 use super::args::CommonArgs;
 use super::data::{Stacked, build_stacked};
-use super::features::{FeatureSet, Features, build_strategy_features};
+use super::features::{Features, build_features};
 use super::models::Dims;
 use super::target::{build_log_return_target, build_price_limits};
 use super::universe::build_cap_weighted_universe;
@@ -80,13 +80,11 @@ impl Market {
         sc: &mut Scenario,
         symbols: &[String],
         args: &CommonArgs,
-        window: usize,
-        set: FeatureSet,
         retention: Retention,
     ) -> Self {
         let n = symbols.len();
         let st = build_stacked(sc, symbols, args);
-        let features = build_strategy_features(sc, &st, window, set, retention);
+        let features = build_features(sc, &st, retention);
         let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));
         let log_adj = sc.segment(log(), st.adjusted_close);
         let (target, target_series, demeaned_series) =

@@ -2,12 +2,12 @@
 //!
 //! Markowitz mean-variance strategies over a sweep of risk-aversion deltas,
 //! sharing one **Ridge** mean predictor and one **Shrinkage** covariance
-//! predictor over a configurable factor panel (`--feature-set`, default `all` =
-//! the 145 CICC handbook factors, feeding both predictors). Each delta drives a
-//! cvxpy **Markowitz** portfolio (`Mode.MIN_MEAN_VARIANCE`, long-only), traded
-//! frictionlessly via `Benchmark`, versus the cap-weighted index. On the
-//! whole-market top-800 universe the 145-factor panel lifts the best variant's
-//! Sharpe from 0.19 (canonical) to 0.35 while cutting max drawdown below the
+//! predictor over the 145-factor CICC handbook panel (feeding both predictors).
+//! Each delta drives a cvxpy **Markowitz** portfolio
+//! (`Mode.MIN_MEAN_VARIANCE`, long-only), traded frictionlessly via
+//! `Benchmark`, versus the cap-weighted index. On the whole-market top-800
+//! universe the 145-factor panel gives the best variant a Sharpe of 0.35,
+//! while cutting max drawdown below the
 //! index's (−39% vs −48%).
 //!
 //! This is the first example that solves a **cvxpy** optimizer *inside the
@@ -28,9 +28,9 @@ use clap::Parser;
 use tradingflow::data::Retention;
 use tradingflow::{Scenario, WallClock};
 
+use common::TARGET_OFFSET;
 use common::models::{Mode, markowitz, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable};
-use common::{FeatureSet, TARGET_OFFSET};
 
 const DELTAS: [f64; 8] = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0];
 /// Shrinkage covariance training window (most-recent pairs fed to the fit).
@@ -43,26 +43,11 @@ const RIDGE_ALPHA: f64 = 0.01;
 struct Args {
     #[command(flatten)]
     common: common::CommonArgs,
-    /// Rolling feature window in trading days (momentum / volatility / turnover MAs).
-    /// Only used by `--feature-set canonical`.
-    #[arg(long)]
-    window: usize,
-    /// Feature panel: `all` (145 CICC handbook factors, default — feeds both the
-    /// Ridge mean predictor and the shrinkage covariance factor model, with Ridge
-    /// regularising the collinearity), `cicc` (curated ~24), or `canonical` (the
-    /// legacy 7-factor panel, uses `--window`).
-    #[arg(long = "feature-set", default_value = "all")]
-    feature_set: String,
 }
 
 #[tokio::main]
 async fn main() {
-    let Args {
-        common: args,
-        window,
-        feature_set,
-    } = Args::parse();
-    let fset = FeatureSet::parse(&feature_set);
+    let Args { common: args } = Args::parse();
     let symbols = common::load_symbols(&args.data_dir);
     eprintln!(
         "loaded {} symbols; index_size={}; deltas={DELTAS:?}",
@@ -77,11 +62,8 @@ async fn main() {
     // retain that window (the mean predictor's single-pair need is subsumed).
     let panel_ret =
         Retention::count((COV_MAX_PERIODS + TARGET_OFFSET) as usize + common::RETAIN_MARGIN);
-    let m = Market::build(&mut sc, &symbols, &args, window, fset, panel_ret);
-    eprintln!(
-        "feature set `{feature_set}`: {} features",
-        m.dims.num_features
-    );
+    let m = Market::build(&mut sc, &symbols, &args, panel_ret);
+    eprintln!("{} features", m.dims.num_features);
 
     // Mean predictor (demeaned target) and covariance predictor (raw target).
     let predicted_returns = sc.segment(

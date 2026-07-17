@@ -27,7 +27,6 @@ use tradingflow::operators::num::diff;
 use tradingflow::operators::structural::record;
 use tradingflow::{Scenario, WallClock};
 
-use common::FeatureSet;
 use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};
 use common::strategy::{Market, NavH, NavTable};
 
@@ -51,9 +50,6 @@ const ESTIMATORS: [CovEstimator; 7] = [
 struct Args {
     #[command(flatten)]
     common: common::CommonArgs,
-    /// Rolling feature window in trading days (momentum / volatility / turnover MAs).
-    #[arg(long)]
-    window: usize,
 }
 
 /// Per-estimator records: long / long-short NAV and the GMV realized variance.
@@ -66,10 +62,7 @@ struct Rec {
 
 #[tokio::main]
 async fn main() {
-    let Args {
-        common: args,
-        window,
-    } = Args::parse();
+    let Args { common: args } = Args::parse();
     let symbols = common::load_symbols(&args.data_dir);
     eprintln!(
         "loaded {} symbols; index_size={}",
@@ -79,14 +72,7 @@ async fn main() {
 
     let mut sc = Scenario::new(WallClock);
 
-    let m = Market::build(
-        &mut sc,
-        &symbols,
-        &args,
-        window,
-        FeatureSet::Canonical,
-        Retention::UNBOUNDED,
-    );
+    let m = Market::build(&mut sc, &symbols, &args, Retention::UNBOUNDED);
     // Raw daily log returns for the realized-variance metric (an ordinary
     // `ArrayPort` view — the Python metric consumes it directly).
     let log_returns = sc.segment(diff(), m.log_adj);

@@ -12,7 +12,7 @@
 //! | --- | --- |
 //! | [`args`] | CLI args (`CommonArgs`), date parsing, the symbol list |
 //! | [`data`] | parquet sources → the stacked `[num_stocks]` panel (`Stacked`) |
-//! | [`features`] / [`pv_factors`] | the CICC fundamental / price-volume factor catalogs, and the feature panels over them |
+//! | [`features`] | the CICC factor catalogs (fundamental + price-volume) and the feature panel over them |
 //! | [`universe`] | universe masks and the cap-weighted index |
 //! | [`target`] | the log-return prediction target and price limits |
 //! | [`backtest`] | the decile-backtest harness (needs the `python` feature) |
@@ -55,16 +55,13 @@ pub mod strategy;
 pub mod args;
 pub mod data;
 pub mod features;
-pub mod pv_factors;
 pub mod report;
 pub mod target;
 pub mod universe;
 
 pub use args::{CommonArgs, load_symbols, parse_date_days};
 pub use data::{Stacked, build_stacked};
-pub use features::{
-    FeatureSet, Features, build_factor_features, build_features, build_strategy_features,
-};
+pub use features::{Features, build_features};
 pub use report::{date_str, progress, read_scalar_series, write_long_csv, write_wide_csv};
 pub use target::{build_log_return_target, build_price_limits};
 pub use universe::{build_cap_weighted_universe, calculate_index_weights};

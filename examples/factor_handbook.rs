@@ -241,7 +241,7 @@ async fn main() {
     let st = common::build_stacked(&mut sc, &symbols, &args.common);
     let catalog = match args.catalog.as_str() {
         "fundamental" => common::features::build_factor_catalog(&mut sc, &st),
-        "pv" => common::pv_factors::build_pv_catalog(&mut sc, &st),
+        "pv" => common::features::build_pv_catalog(&mut sc, &st),
         other => panic!("unknown catalog {other:?} (expected fundamental|pv)"),
     };
 
