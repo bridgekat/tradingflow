@@ -114,9 +114,9 @@ The associated types `Inputs` and `Outputs` define the interface of a segment. T
 
 - `Port<T>` — a single pass-by-value port. It carries `(bool, T)` where `T: Copy + Send + Sync`.
 - `Ports<T>` — a dynamic-length group of pass-by-value ports. It carries `(&[bool], &[T])` where `T: Copy + Send + Sync`, and is compatible with a group of `Port<T>`s.
-- `RefPort<T>` — a single pass-by-reference port. It carries `(bool, &T)` where `T: Sync`.
-- `RefPorts<T>` — a dynamic-length group of pass-by-reference ports. It carries `(&[bool], &[&T])` where `T: Sync`, and is compatible with a group of `RefPort<T>`s.
-- Generalizations of the above: `ViewPort<V>`, `ViewPorts<V>`, `RefViewPort<V>` and `RefViewPorts<V>`, which allow passing custom lifetime-carrying `Copy` views (like slices or custom array views) to some underlying data.
+- `RefPort<T>` — a single pass-by-reference port. It carries `(bool, &T)` where `T: Send + Sync`.
+- `RefPorts<T>` — a dynamic-length group of pass-by-reference ports. It carries `(&[bool], &[&T])` where `T: Send + Sync`, and is compatible with a group of `RefPort<T>`s.
+- Generalizations of the above: `ViewPort<V>` and `ViewPorts<V>` over any `Value` kind `V`, which allow passing custom lifetime-carrying `Copy` views (like slices or custom array views) to some underlying data. The four aliases above are `ViewPort[s]` over the built-in kinds `Scalar<T>` (the value itself) and `Ref<T>` (a plain `&T` into producer state).
 - Arbitrarily nested tuples of the above (each branch up to arity 12).
 
 For dynamic-length groups, the length must remain fixed after the first run, so that we have a well-defined static computation graph. Violations will be caught and panic at runtime.

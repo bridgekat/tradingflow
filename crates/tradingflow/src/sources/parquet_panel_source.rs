@@ -49,6 +49,7 @@ use futures::stream::Stream;
 use tokio::sync::mpsc;
 
 use crate::ingest::{Event, EventSource};
+use crate::operators::ArrayValue;
 
 use super::receiver_stream;
 
@@ -152,17 +153,17 @@ pub struct RowUpdate {
     pub vals: Box<[f64]>,
 }
 
-/// Per-source write state for the panel sources: the timestamp of the tick
-/// being assembled and the rows it dirtied. When the timestamp **strictly
+/// The panel writer's captured state: the timestamp of the tick being
+/// assembled and the rows it dirtied. When the timestamp **strictly
 /// advances**, `panel_write` NaN-clears those rows first — reproducing the
 /// per-tick "only this date's rows" cross-section (pure StackSync, no carry).
 #[derive(Default)]
-pub struct PanelState {
+pub(crate) struct PanelState {
     last_ts: Option<Instant>,
     dirty: Vec<usize>,
 }
 
-/// Shared `Source::write` body for both panel sources: apply one tick's batch.
+/// Shared writer body for both panel sources: apply one tick's batch.
 /// On a new tick (the batch's `ts` strictly past the last) clear the previous
 /// tick's rows first, then write each row's `K` values **per event**. Every row
 /// in a batch shares the tick's `ts` and the source's `K` (taken from the first
@@ -202,8 +203,7 @@ pub(crate) fn panel_write(
 
 impl EventSource for ParquetPanelSource {
     type Event = Vec<RowUpdate>;
-    type Output = Array<f64, 2>;
-    type State = PanelState;
+    type Value = ArrayValue<f64, 2>;
 
     fn total_num_events(&self) -> Option<usize> {
         // Progress is measured in **emitted long-table rows** (one event per
@@ -228,7 +228,7 @@ impl EventSource for ParquetPanelSource {
         &self,
     ) -> (
         impl Stream<Item = Event<Vec<RowUpdate>>> + Send + 'static,
-        PanelState,
+        impl FnMut(Vec<RowUpdate>, &mut Array<f64, 2>, Instant) -> usize + Send + 'static,
     ) {
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
@@ -241,16 +241,11 @@ impl EventSource for ParquetPanelSource {
             }
         });
 
-        (receiver_stream(hist_rx), PanelState::default())
-    }
-
-    fn write(
-        state: &mut PanelState,
-        batch: Vec<RowUpdate>,
-        output: &mut Array<f64, 2>,
-        ts: Instant,
-    ) -> usize {
-        panel_write(state, batch, output, ts)
+        let mut state = PanelState::default();
+        (
+            receiver_stream(hist_rx),
+            move |batch, output: &mut Array<f64, 2>, ts| panel_write(&mut state, batch, output, ts),
+        )
     }
 }
 

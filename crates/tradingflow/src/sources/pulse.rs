@@ -1,9 +1,9 @@
 //! Pulse source — emits bare `()` triggers at supplied timestamps.
 //!
 //! The output node holds `()` (zero-sized, purely a trigger signal); pulse
-//! handles carry no data. Clock-gated operators ([`Clocked`], [`Resample`],
-//! and the since-inception metrics) take such a pulse as their leading input
-//! port and fire only on its notify bit.
+//! handles carry no data. Clock-gated operators ([`Clocked`],
+//! [`ResampleClocked`], and the since-inception metrics) take such a pulse as
+//! their leading input port and fire only on its notify bit.
 //!
 //! Not to be confused with [`WallClock`](crate::WallClock), which drives the
 //! event loop, or with the ambient event time (the graph-level context every
@@ -15,7 +15,7 @@
 //! Rust core stay free of `chrono` / `chrono-tz`.
 //!
 //! [`Clocked`]: crate::operators::Clocked
-//! [`Resample`]: crate::operators::Resample
+//! [`ResampleClocked`]: crate::operators::ResampleClocked
 
 use crate::Instant;
 

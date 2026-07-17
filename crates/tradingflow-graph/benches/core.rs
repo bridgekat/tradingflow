@@ -365,7 +365,7 @@ mod mesh {
 
     /// A pokeable handle to one mesh source (a by-reference `i64`, since sources
     /// feed the per-layer `SumAll`'s `RefPorts`).
-    pub type Src = SourceHandle<RefSource<i64>>;
+    pub type Src = SourceHandle<RefSource<i64, ()>>;
 
     pub const MODULUS: i64 = 1_000_000_007;
 
@@ -539,7 +539,7 @@ mod mesh {
 
 fn drive_mesh<'a>(
     src: &'a [mesh::Src],
-    g: &'a mut Graph,
+    g: &'a mut Graph<()>,
     pool: &'a mut Pool,
     _: Handle<RefPort<i64>>,
 ) -> impl FnMut() + 'a {

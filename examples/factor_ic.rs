@@ -25,7 +25,7 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::operators::{lag_series, own, record, resample_clocked};
+use tradingflow::operators::{lag_series, record, resample_clocked};
 use tradingflow::{Retention, Scenario, WallClock};
 
 use common::FeatureSet;
@@ -66,10 +66,6 @@ async fn main() {
         FeatureSet::Canonical,
         Retention::UNBOUNDED,
     );
-    // `Market` records the target series; the IC metric wants the live view. It
-    // is shared across every factor, so bridge it once, before the loop.
-    let target_ref = sc.push(own(), m.target);
-
     let names = m.features.names.clone();
     let ic_handles: Vec<_> = m
         .features
@@ -82,7 +78,7 @@ async fn main() {
             let lagged = sc.push(lag_series(1, f64::NAN), feature_series);
             let aligned = sc.push(resample_clocked(), (m.rebalance_clock, lagged));
             let masked = mask_to_universe(&mut sc, aligned, m.universe);
-            ic_series(&mut sc, masked, target_ref, m.n)
+            ic_series(&mut sc, masked, m.target, m.n)
         })
         .collect();
 

@@ -5,13 +5,14 @@
 //!
 //! [array-view-refactor] Migrated to the const-rank strided view currency: every
 //! array-shaped edge is a `ArrayPort<T, N>` carrying an
-//! `ArrayView<'a, T, N>` by value. Sources stay whole-array `RefSource`s and are
-//! bridged into the view currency with [`AsView`]; outputs are read with
-//! `g.view(h).contiguous_slice()` (view edges) or `g.view(h)` (`SeriesView` edges).
-//! Arithmetic uses the lowercase free constructors (`add`/`negate`/…); the
-//! rank-changers carry explicit out-rank generics.
+//! `ArrayView<'a, T, N>` by value. Sources are owned [`array_cell`]s
+//! lending that currency directly (poke via `state_mut`, wire via the deref'd
+//! `ArrayPort` handle); outputs are read with `g.view(h).contiguous_slice()`
+//! (view edges) or `g.view(h)` (`SeriesView` edges). Arithmetic uses the
+//! lowercase free constructors (`add`/`negate`/…); the rank-changers carry
+//! explicit out-rank generics.
 
-use crate::graph::{Builder, Handle, Pool, RefSource, SourceHandle};
+use crate::graph::{Builder, Handle, Pool, RefSource, SourceHandle, ViewSource};
 
 use super::*;
 use crate::operators::op::ArrayPort;
@@ -26,31 +27,29 @@ fn ts(n: i64) -> Instant {
 /// inputs are `ArrayPorts`) directly — no bridging.
 type Vp<const N: usize> = ArrayPort<f64, N>;
 
-/// Push a `RefSource` of a scalar plus an `AsView` bridge; return the source
-/// handle (for `state_mut`) and the view handle (for wiring).
+/// Push a scalar-array [`array_cell`]; return the source handle (for
+/// `state_mut`) and its `ArrayPort` view handle (for wiring).
 fn scalar_src(
     b: &mut Builder<Instant>,
     v: f64,
 ) -> (
-    SourceHandle<RefSource<Array<f64, 0>, Instant>>,
+    SourceHandle<ViewSource<ArrayValue<f64, 0>, Instant>>,
     Handle<Vp<0>>,
 ) {
-    let s = b.push_source(RefSource::new(Array::scalar(v)));
-    let view = b.push(as_view(), *s);
-    (s, view)
+    let s = b.push_source(array_cell(Array::scalar(v)));
+    (s, *s)
 }
 
-/// Push a `RefSource` of a rank-1 array plus an `AsView` bridge.
+/// Push a rank-1 array [`array_cell`]; handles as in [`scalar_src`].
 fn vec_src(
     b: &mut Builder<Instant>,
     v: Vec<f64>,
 ) -> (
-    SourceHandle<RefSource<Array<f64, 1>, Instant>>,
+    SourceHandle<ViewSource<ArrayValue<f64, 1>, Instant>>,
     Handle<Vp<1>>,
 ) {
-    let s = b.push_source(RefSource::new(Array::from_vec([v.len()], v)));
-    let view = b.push(as_view(), *s);
-    (s, view)
+    let s = b.push_source(array_cell(Array::from_vec([v.len()], v)));
+    (s, *s)
 }
 
 // ===========================================================================
@@ -447,20 +446,22 @@ fn structural_where_cast_id() {
     let mut b = Builder::new(Instant::MIN);
     let (a, av) = vec_src(&mut b, vec![1.0_f64, 5.0, 2.0]);
     let w = b.push(keep_where(|v: f64| v > 3.0, 0.0_f64), av);
-    // `Id` is currency-agnostic — exercise it on the owned-array source cell.
-    let i = b.push(Id::<Array<f64, 1>>::new(), *a);
-    let ci = b.push_source(RefSource::new(Array::from_vec([3], vec![1_i32, 2, 3])));
-    let civ = b.push(as_view(), *ci);
-    let c = b.push(cast::<i32, f64, 1>(), civ);
+    // `Id` is the whole-value `RefPort` identity — exercise it on a scalar
+    // cell (array edges are always `ArrayPort` views, never `RefPort`).
+    let k = b.push_source(RefSource::new(7_i64));
+    let i = b.push(Id::<i64>::new(), *k);
+    let ci = b.push_source(array_cell(Array::from_vec([3], vec![1_i32, 2, 3])));
+    let c = b.push(cast::<i32, f64, 1>(), *ci);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(a) = Array::from_vec([3], vec![1.0, 5.0, 2.0]);
+    *g.state_mut(k) = 9;
     *g.state_mut(ci) = Array::from_vec([3], vec![1_i32, 2, 3]);
     g.stabilize(&mut pool);
 
     assert_eq!(g.view(w).contiguous_slice().unwrap(), &[0.0, 5.0, 0.0]);
-    assert_eq!(g.ref_view(i).as_slice(), &[1.0, 5.0, 2.0]);
+    assert_eq!(*g.view(i), 9);
     assert_eq!(g.view(c).contiguous_slice().unwrap(), &[1.0, 2.0, 3.0]);
 }
 
@@ -827,17 +828,15 @@ fn parallel_stress_stateful_counts() {
 #[test]
 fn split_rows_notify_with_panel() {
     let mut b = Builder::new(Instant::MIN);
-    let panel = b.push_source(RefSource::new(Array::from_vec([3, 2], vec![0.0_f64; 6])));
-    let panelv = b.push(as_view(), *panel);
-    let other = b.push_source(RefSource::new(Array::scalar(0.0_f64)));
-    let otherv = b.push(as_view(), *other);
-    let rows = b.push(split(3), panelv);
+    let panel = b.push_source(array_cell(Array::from_vec([3, 2], vec![0.0_f64; 6])));
+    let other = b.push_source(array_cell(Array::scalar(0.0_f64)));
+    let rows = b.push(split(3), *panel);
     assert_eq!(rows.len(), 3);
     // The rows feed a carry `Stack` that rebuilds the `[3, 2]` panel; a `Record`
     // on the stacked output advances exactly once per recompute of the join.
     let stacked = b.push(stack::<f64, 1, 2>(0), &rows[..]);
     let rec = b.push(record(), stacked);
-    let _sink = b.push(Count::<0>, otherv); // unrelated cone
+    let _sink = b.push(Count::<0>, *other); // unrelated cone
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -874,9 +873,8 @@ fn split_rows_notify_with_panel() {
 #[should_panic(expected = "Split: input axis-0 size")]
 fn split_axis_size_mismatch_panics() {
     let mut b = Builder::new(Instant::MIN);
-    let panel = b.push_source(RefSource::new(Array::from_vec([3, 2], vec![0.0_f64; 6])));
-    let panelv = b.push(as_view(), *panel);
-    let _ = b.push(split::<f64, 2, 1>(2), panelv);
+    let panel = b.push_source(array_cell(Array::from_vec([3, 2], vec![0.0_f64; 6])));
+    let _ = b.push(split::<f64, 2, 1>(2), *panel);
     let _g = b.build();
 }
 
@@ -888,10 +886,11 @@ fn split_axis_size_mismatch_panics() {
 /// downstream cones must agree bit-for-bit.
 ///
 /// [array-view-refactor] Reinterpreted: the per-stock row is sourced as a
-/// direct view (an `AsView` over a per-stock `[2]` `RefSource`) instead of a
-/// panel split. (A `Split` row is an ordinary by-value `ArrayPort` again, so a
-/// panel-split formulation would also work; this variant keeps the simpler
-/// source boundary.) The data stream and every asserted value are unchanged.
+/// direct view (a per-stock `[2]` `array_cell` lending its `ArrayPort`)
+/// instead of a panel split. (A `Split` row is an ordinary by-value
+/// `ArrayPort` again, so a panel-split formulation would also work; this
+/// variant keeps the simpler source boundary.) The data stream and every
+/// asserted value are unchanged.
 #[test]
 fn view_chain_matches_owned_chain() {
     fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
@@ -980,9 +979,8 @@ fn view_join_carry_matches_owned_join() {
 
     let n = 3usize;
     let mut b = Builder::new(Instant::MIN);
-    let panel = b.push_source(RefSource::new(Array::from_vec([n, 2], vec![0.0; n * 2])));
-    let panelv = b.push(as_view(), *panel);
-    let rows = b.push(split::<f64, 2, 1>(n), panelv);
+    let panel = b.push_source(array_cell(Array::from_vec([n, 2], vec![0.0; n * 2])));
+    let rows = b.push(split::<f64, 2, 1>(n), *panel);
 
     // Two equivalent carry joins over the same `Split` rows (the only buildable
     // carry-join input): `Stack` and its `Stack` alias.
@@ -1145,11 +1143,11 @@ fn comparison_of_two_arrays_and_strided_inputs() {
     // `Compare` over a strided (column) view exercises the strided-slow path of
     // the shared elementwise core at a bool output type.
     let mut b = Builder::new(Instant::MIN);
-    let s = b.push_source(RefSource::new(Array::from_vec(
+    let s = b.push_source(array_cell(Array::from_vec(
         [2, 2],
         vec![1.0, 5.0, 4.0, 2.0], // rows: [1,5], [4,2]
     )));
-    let m = b.push(as_view(), *s);
+    let m = *s;
     // `SliceView`'s output rank is not determined by its input rank (`squeeze`
     // drops the sliced axis), so it is the one operator here that must be told.
     let col0 = b.push(slice_view::<f64, 2, 1>(vec![0], 1, true), m); // [1, 4]

@@ -19,7 +19,7 @@ use bumpalo::Bump;
 use tradingflow_graph::core::Pool;
 use tradingflow_graph::typed::{
     Arr, Builder, Graph, Handle, Id, Operator, Port, Ports, RefPort, RefPorts, RefSource, Segment,
-    SegmentExt, Slice, Source, SourceHandle, ValueView, ViewPort, ViewPorts,
+    SegmentExt, Slice, Source, SourceHandle, Value, ViewPort, ViewPorts, ViewSource,
 };
 
 fn pool() -> Pool {
@@ -554,14 +554,14 @@ fn diamond_recomputes_on_source_change() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(*s), 1);
-    assert_eq!(*g.ref_view(a), 2);
-    assert_eq!(*g.ref_view(d), 3);
+    assert_eq!(*g.view(*s), 1);
+    assert_eq!(*g.view(a), 2);
+    assert_eq!(*g.view(d), 3);
 
     *g.state_mut(s) = 5;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(a), 6);
-    assert_eq!(*g.ref_view(d), 11);
+    assert_eq!(*g.view(a), 6);
+    assert_eq!(*g.view(d), 11);
 }
 
 #[test]
@@ -574,11 +574,11 @@ fn slice_input_sums() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(total), 6);
+    assert_eq!(*g.view(total), 6);
 
     *g.state_mut(s0) = 10;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(total), 15);
+    assert_eq!(*g.view(total), 15);
 }
 
 #[test]
@@ -592,11 +592,11 @@ fn notify_flag_is_per_generation() {
 
     *g.state_mut(s) = 1;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(a), 1);
+    assert_eq!(*g.view(a), 1);
 
     *g.state_mut(s2) = 1;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(a), 0);
+    assert_eq!(*g.view(a), 0);
 }
 
 #[test]
@@ -608,13 +608,13 @@ fn multi_output_tuple() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(sum), 10);
-    assert_eq!(*g.ref_view(diff), 4);
+    assert_eq!(*g.view(sum), 10);
+    assert_eq!(*g.view(diff), 4);
 
     *g.state_mut(s1) = 20;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(sum), 23);
-    assert_eq!(*g.ref_view(diff), 17);
+    assert_eq!(*g.view(sum), 23);
+    assert_eq!(*g.view(diff), 17);
 }
 
 #[test]
@@ -626,15 +626,15 @@ fn slice_output_dynamic_arity() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(outs[0]), 10);
-    assert_eq!(*g.ref_view(outs[1]), 11);
-    assert_eq!(*g.ref_view(outs[2]), 12);
+    assert_eq!(*g.view(outs[0]), 10);
+    assert_eq!(*g.view(outs[1]), 11);
+    assert_eq!(*g.view(outs[2]), 12);
 
     *g.state_mut(s) = 100;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(outs[0]), 100);
-    assert_eq!(*g.ref_view(outs[1]), 101);
-    assert_eq!(*g.ref_view(outs[2]), 102);
+    assert_eq!(*g.view(outs[0]), 100);
+    assert_eq!(*g.view(outs[1]), 101);
+    assert_eq!(*g.view(outs[2]), 102);
 }
 
 #[test]
@@ -649,8 +649,8 @@ fn independent_branch_not_recomputed() {
 
     *g.state_mut(s1) = 9;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(a), 1); // branch 1 ran once
-    assert_eq!(*g.ref_view(c), 0); // branch 2 never recomputed (outside the cone)
+    assert_eq!(*g.view(a), 1); // branch 1 ran once
+    assert_eq!(*g.view(c), 0); // branch 2 never recomputed (outside the cone)
 }
 
 #[test]
@@ -664,15 +664,15 @@ fn value_cutoff_via_notify() {
 
     *g.state_mut(s) = 3;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(c), 1); // 0 -> 3: changed
+    assert_eq!(*g.view(c), 1); // 0 -> 3: changed
 
     *g.state_mut(s) = -3;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(c), 1); // |−3| == |3|: no notify, c gated out
+    assert_eq!(*g.view(c), 1); // |−3| == |3|: no notify, c gated out
 
     *g.state_mut(s) = 5;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(c), 2); // 3 -> 5: changed
+    assert_eq!(*g.view(c), 2); // 3 -> 5: changed
 }
 
 #[test]
@@ -683,17 +683,17 @@ fn in_place_buffer_is_stable() {
     let mut g = b.build();
     let mut pool = pool();
 
-    let p0 = g.ref_view(buf).as_ptr();
+    let p0 = g.view(buf).as_ptr();
     *g.state_mut(s) = 1.0;
     g.stabilize(&mut pool);
-    let p1 = g.ref_view(buf).as_ptr();
+    let p1 = g.view(buf).as_ptr();
     *g.state_mut(s) = 2.0;
     g.stabilize(&mut pool);
-    let p2 = g.ref_view(buf).as_ptr();
+    let p2 = g.view(buf).as_ptr();
 
     assert_eq!(p0, p1, "buffer reused in place");
     assert_eq!(p1, p2, "buffer reused in place");
-    assert_eq!(g.ref_view(buf)[0], 2.0);
+    assert_eq!(g.view(buf)[0], 2.0);
 }
 
 #[test]
@@ -706,10 +706,10 @@ fn stateful_fold_accumulates() {
 
     *g.state_mut(s) = 5;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(acc), 5);
+    assert_eq!(*g.view(acc), 5);
     *g.state_mut(s) = 3;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(acc), 8);
+    assert_eq!(*g.view(acc), 8);
 }
 
 #[test]
@@ -722,10 +722,10 @@ fn fused_subgraph_in_one_segment() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(out), 175.0); // x=5, y=25, z=7
+    assert_eq!(*g.view(out), 175.0); // x=5, y=25, z=7
     *g.state_mut(a) = 1.0;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(out), 100.0); // x=4, y=20, z=5
+    assert_eq!(*g.view(out), 100.0); // x=4, y=20, z=5
 }
 
 #[test]
@@ -738,10 +738,10 @@ fn both_outputs_feed_one_consumer() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(out), 14);
+    assert_eq!(*g.view(out), 14);
     *g.state_mut(s1) = 10;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(out), 20);
+    assert_eq!(*g.view(out), 20);
 }
 
 #[test]
@@ -753,7 +753,7 @@ fn multi_output_cross_port_ordering() {
     let doubled = b.push(Double, sum); // 28
     let out = b.push(Add, (doubled, diff)); // 28 + 6 = 34
     let g = b.build();
-    assert_eq!(*g.ref_view(out), 34);
+    assert_eq!(*g.view(out), 34);
 }
 
 #[test]
@@ -765,11 +765,11 @@ fn heterogeneous_inputs_multi_output_with_state() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(sum), 13.0);
+    assert_eq!(*g.view(sum), 13.0);
     *g.state_mut(a) = 20.0;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(sum), 23.0);
-    assert_eq!(*g.ref_view(calls), 1); // state carried across gens
+    assert_eq!(*g.view(sum), 23.0);
+    assert_eq!(*g.view(calls), 1); // state carried across gens
 }
 
 #[test]
@@ -783,8 +783,8 @@ fn slice_input_multi_output_sum_max() {
     let (sum, max) = b.push(SumMax, &handles[..]);
     let g = b.build();
 
-    assert_eq!(*g.ref_view(sum), 11.0);
-    assert_eq!(*g.ref_view(max), 5.0);
+    assert_eq!(*g.view(sum), 11.0);
+    assert_eq!(*g.view(max), 5.0);
 }
 
 #[test]
@@ -798,11 +798,11 @@ fn zipped_manys_dot_product() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(out), 26); // 2*3 + 4*5
+    assert_eq!(*g.view(out), 26); // 2*3 + 4*5
 
     *g.state_mut(a1) = 10;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(out), 56); // 6 + 10*5
+    assert_eq!(*g.view(out), 56); // 6 + 10*5
 }
 
 #[test]
@@ -810,7 +810,7 @@ fn empty_slice_input_builds_and_sums_zero() {
     let mut b = Builder::new(());
     let total = b.push(SumAll, &[] as &[Handle<RefPort<i64>>]);
     let g = b.build();
-    assert_eq!(*g.ref_view(total), 0);
+    assert_eq!(*g.view(total), 0);
 }
 
 #[test]
@@ -831,11 +831,11 @@ fn two_variadic_input_groups() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(out), (1 + 2 + 3) * 10 + (4 + 5)); // 69
+    assert_eq!(*g.view(out), (1 + 2 + 3) * 10 + (4 + 5)); // 69
 
     *g.state_mut(a[0]) = 11;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(out), (11 + 2 + 3) * 10 + (4 + 5)); // 169
+    assert_eq!(*g.view(out), (11 + 2 + 3) * 10 + (4 + 5)); // 169
 }
 
 #[test]
@@ -848,13 +848,13 @@ fn two_variadic_output_groups() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(pos[0]), 7);
-    assert_eq!(*g.ref_view(neg[0]), -7);
+    assert_eq!(*g.view(pos[0]), 7);
+    assert_eq!(*g.view(neg[0]), -7);
 
     *g.state_mut(s) = 4;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(pos[2]), 4);
-    assert_eq!(*g.ref_view(neg[1]), -4);
+    assert_eq!(*g.view(pos[2]), 4);
+    assert_eq!(*g.view(neg[1]), -4);
 }
 
 // ===== new-design capability tests =====
@@ -876,21 +876,21 @@ fn window_forwards_input_refs() {
     let mut pool = pool();
 
     // window [0, 2) = [10, 20]
-    assert_eq!(*g.ref_view(win[0]), 10);
-    assert_eq!(*g.ref_view(win[1]), 20);
+    assert_eq!(*g.view(win[0]), 10);
+    assert_eq!(*g.view(win[1]), 20);
 
     // move the window: start=2 -> [30, 40] (the output pointers now target
     // different source cells)
     *g.state_mut(start) = 2;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(win[0]), 30);
-    assert_eq!(*g.ref_view(win[1]), 40);
+    assert_eq!(*g.view(win[0]), 30);
+    assert_eq!(*g.view(win[1]), 40);
 
     // change a source the window currently points at: arr[3]=99 -> [30, 99]
     *g.state_mut(arr[3]) = 99;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(win[0]), 30);
-    assert_eq!(*g.ref_view(win[1]), 99);
+    assert_eq!(*g.view(win[0]), 30);
+    assert_eq!(*g.view(win[1]), 99);
 }
 
 #[test]
@@ -908,12 +908,12 @@ fn two_stage_init_allocates_from_input() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(out[0]), 10);
-    assert_eq!(*g.ref_view(out[2]), 30);
+    assert_eq!(*g.view(out[0]), 10);
+    assert_eq!(*g.view(out[2]), 30);
 
     *g.state_mut(arr[1]) = 5;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(out[1]), 50); // 5 * 10, written into the buffer in place
+    assert_eq!(*g.view(out[1]), 50); // 5 * 10, written into the buffer in place
 }
 
 /// Exposes refs INTO its input `Vec`'s heap buffer as a `RefPorts` (the
@@ -948,13 +948,13 @@ fn read_before_stabilize_after_poke_is_rejected() {
     let s = b.push_source(RefSource::new(vec![10i64, 20, 30]));
     let out = b.push(Spread, *s);
     let mut g = b.build();
-    assert_eq!(*g.ref_view(out[0]), 10); // stabilized read is fine
+    assert_eq!(*g.view(out[0]), 10); // stabilized read is fine
 
     // Poke to a fresh, same-length buffer: the old buffer (which `out` points
     // into, from the build call) is freed. Reading `out` now -- before stabilize
     // -- would dereference the dangling pointer, so it must panic, not read UB.
     *g.state_mut(s) = vec![11, 21, 31];
-    let _ = g.ref_view(out[0]); // <-- rejected: graph is unstabilized
+    let _ = g.view(out[0]); // <-- rejected: graph is unstabilized
 }
 
 /// A node that reallocates its output buffer and *then* panics at runtime; the
@@ -992,7 +992,7 @@ fn realloc_then_panic_does_not_dangle() {
     let out = b.push(ReallocPanic, *s);
     let mut g = b.build();
     let mut pool = pool();
-    assert_eq!(*g.ref_view(out[0]), 1); // build buffer = [1, 1]
+    assert_eq!(*g.view(out[0]), 1); // build buffer = [1, 1]
 
     *g.state_mut(s) = -1;
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.stabilize(&mut pool)));
@@ -1000,7 +1000,7 @@ fn realloc_then_panic_does_not_dangle() {
 
     // Poisoned: reading the now-dangling forwarded slot panics rather than UB.
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = g.ref_view(out[0]);
+        let _ = g.view(out[0]);
     }));
     assert!(r.is_err());
 }
@@ -1018,14 +1018,14 @@ fn composed_series_then() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(sep), 12); // (5+1)*2
-    assert_eq!(*g.ref_view(comp), 12);
+    assert_eq!(*g.view(sep), 12); // (5+1)*2
+    assert_eq!(*g.view(comp), 12);
 
     *g.state_mut(s) = 10;
     *g.state_mut(s2) = 10;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(sep), 22);
-    assert_eq!(*g.ref_view(comp), 22);
+    assert_eq!(*g.view(sep), 22);
+    assert_eq!(*g.view(comp), 22);
 }
 
 #[test]
@@ -1037,15 +1037,15 @@ fn composed_par() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(oa), 4); // 3+1
-    assert_eq!(*g.ref_view(ob), 8); // 4*2
+    assert_eq!(*g.view(oa), 4); // 3+1
+    assert_eq!(*g.view(ob), 8); // 4*2
 
     // Change only `a`: Inc's branch reruns; Double recomputes the same 8 (b
     // unchanged), so ob is retained.
     *g.state_mut(a) = 10;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(oa), 11);
-    assert_eq!(*g.ref_view(ob), 8);
+    assert_eq!(*g.view(oa), 11);
+    assert_eq!(*g.view(ob), 8);
 }
 
 #[test]
@@ -1057,11 +1057,11 @@ fn composed_fanout_diamond() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(comp), 16); // 3*5 + 1
+    assert_eq!(*g.view(comp), 16); // 3*5 + 1
 
     *g.state_mut(s) = 10;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(comp), 31); // 3*10 + 1
+    assert_eq!(*g.view(comp), 31); // 3*10 + 1
 }
 
 #[test]
@@ -1078,11 +1078,11 @@ fn composed_variadic_intermediate() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(comp), 21); // total=6 -> [6,7,8] -> 21
+    assert_eq!(*g.view(comp), 21); // total=6 -> [6,7,8] -> 21
 
     *g.state_mut(xs[0]) = 10;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(comp), 48); // total=15 -> [15,16,17] -> 48
+    assert_eq!(*g.view(comp), 48); // total=15 -> [15,16,17] -> 48
 }
 
 #[test]
@@ -1101,8 +1101,8 @@ fn composed_stateful_then() {
         *g.state_mut(s2) = v;
         g.stabilize(&mut pool);
         assert_eq!(
-            *g.ref_view(comp),
-            *g.ref_view(sep),
+            *g.view(comp),
+            *g.view(sep),
             "stateful compose diverged at {v}"
         );
     }
@@ -1116,11 +1116,11 @@ fn composed_with_id() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(comp), 12); // (5+1)*2
+    assert_eq!(*g.view(comp), 12); // (5+1)*2
 
     *g.state_mut(s) = 10;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(comp), 22); // (10+1)*2
+    assert_eq!(*g.view(comp), 22); // (10+1)*2
 }
 
 #[test]
@@ -1136,12 +1136,12 @@ fn operator_gate_blocks_unnotified_branch() {
 
     *g.state_mut(bh) = 5; // change only b
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(inc), 6); // Inc ran: 5 + 1
-    assert_eq!(*g.ref_view(count), 0); // GatedCounter gated out: counter unchanged
+    assert_eq!(*g.view(inc), 6); // Inc ran: 5 + 1
+    assert_eq!(*g.view(count), 0); // GatedCounter gated out: counter unchanged
 
     *g.state_mut(a) = 1; // now change a
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(count), 1); // GatedCounter ran once
+    assert_eq!(*g.view(count), 1); // GatedCounter ran once
 }
 
 #[test]
@@ -1159,12 +1159,12 @@ fn route_reorders_by_forwarding_refs() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(o0), 20); // forwards s1
-    assert_eq!(*g.ref_view(o1), 10); // forwards s0
+    assert_eq!(*g.view(o0), 20); // forwards s1
+    assert_eq!(*g.view(o1), 10); // forwards s0
 
     *g.state_mut(s0) = 99;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(o1), 99); // o1 still forwards s0
+    assert_eq!(*g.view(o1), 99); // o1 still forwards s0
 }
 
 #[test]
@@ -1185,13 +1185,13 @@ fn hand_lowered_segment_chain_infers() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(oc), 30);
-    assert_eq!(*g.ref_view(od), 31);
+    assert_eq!(*g.view(oc), 30);
+    assert_eq!(*g.view(od), 31);
 
     *g.state_mut(s0) = 11;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(oc), 31);
-    assert_eq!(*g.ref_view(od), 32);
+    assert_eq!(*g.view(oc), 31);
+    assert_eq!(*g.view(od), 32);
 }
 
 // ===== segment! notation =====
@@ -1212,13 +1212,13 @@ fn segment_notation_diamond() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(oc), 30);
-    assert_eq!(*g.ref_view(od), 31);
+    assert_eq!(*g.view(oc), 30);
+    assert_eq!(*g.view(od), 31);
 
     *g.state_mut(s0) = 11;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(oc), 31);
-    assert_eq!(*g.ref_view(od), 32);
+    assert_eq!(*g.view(oc), 31);
+    assert_eq!(*g.view(od), 32);
 }
 
 #[test]
@@ -1236,7 +1236,7 @@ fn segment_notation_result_is_last_binding() {
     let s1 = gb.push_source(RefSource::new(20));
     let od = gb.push(seg, (*s0, *s1));
     let g = gb.build();
-    assert_eq!(*g.ref_view(od), 31);
+    assert_eq!(*g.view(od), 31);
 }
 
 #[test]
@@ -1256,7 +1256,7 @@ fn segment_notation_runtime_path_override() {
     let s1 = gb.push_source(RefSource::new(20));
     let oc = gb.push(seg, (*s0, *s1));
     let g = gb.build();
-    assert_eq!(*g.ref_view(oc), 30);
+    assert_eq!(*g.view(oc), 30);
 }
 
 #[test]
@@ -1273,8 +1273,8 @@ fn segment_notation_duplicates_reorders_and_drops() {
     let s1 = gb.push_source(RefSource::new(20));
     let (ot, os) = gb.push(seg, (*s0, *s1));
     let g = gb.build();
-    assert_eq!(*g.ref_view(os), 20); // a + a
-    assert_eq!(*g.ref_view(ot), 30); // s + a
+    assert_eq!(*g.view(os), 20); // a + a
+    assert_eq!(*g.view(ot), 30); // s + a
 }
 
 #[test]
@@ -1292,7 +1292,7 @@ fn segment_notation_destructures_and_shadows() {
     let s1 = gb.push_source(RefSource::new(4));
     let or = gb.push(seg, (*s0, *s1));
     let g = gb.build();
-    assert_eq!(*g.ref_view(or), 21); // (10+4)+1 + (10-4)
+    assert_eq!(*g.view(or), 21); // (10+4)+1 + (10-4)
 }
 
 #[test]
@@ -1312,11 +1312,11 @@ fn segment_notation_ports_wire() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(ot), 7);
+    assert_eq!(*g.view(ot), 7);
 
     *g.state_mut(s0) = 10;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(ot), 16);
+    assert_eq!(*g.view(ot), 16);
 }
 
 /// A gated `RefPorts` producer: a view cannot be rebuilt through `&State`, so
@@ -1364,20 +1364,20 @@ fn gated_ports_producer_rederives_each_generation() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(out[0]), 5);
-    assert_eq!(*g.ref_view(out[1]), 0); // build call: count = 0
-    assert_eq!(*g.ref_view(notified), 0);
+    assert_eq!(*g.view(out[0]), 5);
+    assert_eq!(*g.view(out[1]), 0); // build call: count = 0
+    assert_eq!(*g.view(notified), 0);
 
     *g.state_mut(s) = -5; // |x| unchanged: Abs does not notify
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(out[1]), 0); // gated: no recount
-    assert_eq!(*g.ref_view(notified), 0); // and the re-derived flags were off
+    assert_eq!(*g.view(out[1]), 0); // gated: no recount
+    assert_eq!(*g.view(notified), 0); // and the re-derived flags were off
 
     *g.state_mut(s) = 7; // |x| changes: notifies
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(out[0]), 7);
-    assert_eq!(*g.ref_view(out[1]), 1);
-    assert_eq!(*g.ref_view(notified), 1);
+    assert_eq!(*g.view(out[0]), 7);
+    assert_eq!(*g.view(out[1]), 1);
+    assert_eq!(*g.view(notified), 1);
 }
 
 #[test]
@@ -1394,9 +1394,9 @@ fn segment_notation_pure_permutation() {
     let s1 = gb.push_source(RefSource::new(20));
     let (ob, (oa0, oa1)) = gb.push(seg, (*s0, *s1));
     let g = gb.build();
-    assert_eq!(*g.ref_view(ob), 20);
-    assert_eq!(*g.ref_view(oa0), 10);
-    assert_eq!(*g.ref_view(oa1), 10);
+    assert_eq!(*g.view(ob), 20);
+    assert_eq!(*g.view(oa0), 10);
+    assert_eq!(*g.view(oa1), 10);
 }
 
 #[test]
@@ -1415,11 +1415,11 @@ fn segment_notation_apply_nests() {
     let mut g = gb.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(od), 40); // 10 + (10 + 20)
+    assert_eq!(*g.view(od), 40); // 10 + (10 + 20)
 
     *g.state_mut(s0) = 11;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(od), 42); // 11 + (11 + 20)
+    assert_eq!(*g.view(od), 42); // 11 + (11 + 20)
 }
 
 #[test]
@@ -1436,7 +1436,7 @@ fn segment_notation_apply_in_result_position() {
     let s1 = gb.push_source(RefSource::new(20));
     let o = gb.push(seg, (*s0, *s1));
     let g = gb.build();
-    assert_eq!(*g.ref_view(o), 31);
+    assert_eq!(*g.view(o), 31);
 }
 
 #[test]
@@ -1456,8 +1456,8 @@ fn segment_notation_apply_in_statement_args() {
     let s1 = gb.push_source(RefSource::new(4));
     let (or, op) = gb.push(seg, (*s0, *s1));
     let g = gb.build();
-    assert_eq!(*g.ref_view(op), 15); // (10+1) + 4
-    assert_eq!(*g.ref_view(or), 23); // 15 + ((11-4) + 1)
+    assert_eq!(*g.view(op), 15); // (10+1) + 4
+    assert_eq!(*g.view(or), 23); // 15 + ((11-4) + 1)
 }
 
 // ===== regression tests =====
@@ -1480,7 +1480,7 @@ fn out_of_cone_producer_does_not_spuriously_notify() {
 
     *g.state_mut(s1) = 1;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(d), 0); // P did not notify this generation
+    assert_eq!(*g.view(d), 0); // P did not notify this generation
 }
 
 /// A `RefPorts` producer whose output SHRINKS (and reallocates) after the build
@@ -1581,18 +1581,18 @@ fn view_window_moves_and_resizes_per_generation() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(sum), 6); // [1, 2, 3]
-    assert_eq!(*g.ref_view(len), 3);
+    assert_eq!(*g.view(sum), 6); // [1, 2, 3]
+    assert_eq!(*g.view(len), 3);
 
     *g.state_mut(range) = (2, 5); // the window MOVES and RESIZES
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(sum), 3 + 4 + 5 + 6 + 7);
-    assert_eq!(*g.ref_view(len), 5);
+    assert_eq!(*g.view(sum), 3 + 4 + 5 + 6 + 7);
+    assert_eq!(*g.view(len), 5);
 
     *g.state_mut(data) = vec![10; 8]; // fresh buffer; the view is re-derived
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(sum), 50);
-    assert_eq!(*g.ref_view(len), 5);
+    assert_eq!(*g.view(sum), 50);
+    assert_eq!(*g.view(len), 5);
 }
 
 /// A custom user view struct with embedded references (the n-d `ArrayView`
@@ -1608,8 +1608,13 @@ struct Strided<'a> {
 struct StridedF64;
 // SAFETY: `Strided` is a plain read-only view (covariant, no interior
 // mutability).
-unsafe impl ValueView for StridedF64 {
+unsafe impl Value for StridedF64 {
     type View<'a> = Strided<'a>;
+    type Owned = (Vec<f64>, Vec<usize>);
+
+    fn borrow((data, shape): &Self::Owned) -> Strided<'_> {
+        Strided { data, shape }
+    }
 }
 
 /// Wraps its input buffer in a `Strided` view chosen by the stride input. The
@@ -1668,11 +1673,11 @@ fn custom_view_struct_through_the_wire() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(out), 1.0 + 3.0 + 5.0);
+    assert_eq!(*g.view(out), 1.0 + 3.0 + 5.0);
 
     *g.state_mut(k) = 3;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(out), 1.0 + 4.0);
+    assert_eq!(*g.view(out), 1.0 + 4.0);
 }
 
 /// Stateless arithmetic on by-value wires: `Port<T>` carries the value
@@ -1695,7 +1700,8 @@ impl Segment for ScalarAdd {
     }
 }
 
-/// Lowers a by-value wire back to a `RefPort` (for `g.ref_view` reads).
+/// Lowers a by-value wire back to a `RefPort` (a stateful producer the
+/// whole-value reference can point into).
 struct ScalarSink;
 impl Segment for ScalarSink {
     type Inputs = Port<i64>;
@@ -1721,7 +1727,7 @@ fn by_value_scalar_wires() {
     // `Source` feeds the by-value adder directly -- no lift needed. The
     // whole chain carries values, not references; only the sink owns storage.
     // `g.view` reads a `Port` slot by value; `ScalarSink` lowers back to a
-    // `RefPort` for `g.ref_view`.
+    // `RefPort` (reference into the sink's state).
     let mut b = Builder::new(());
     let s = b.push_source(Source::new(3i64));
     let t = b.push_source(Source::new(4i64));
@@ -1731,17 +1737,68 @@ fn by_value_scalar_wires() {
     let mut pool = pool();
 
     assert_eq!(g.view(sum), 7);
-    assert_eq!(*g.ref_view(out), 7);
+    assert_eq!(*g.view(out), 7);
 
     *g.state_mut(s) = 10;
     g.stabilize(&mut pool);
     assert_eq!(g.view(sum), 14);
-    assert_eq!(*g.ref_view(out), 14);
+    assert_eq!(*g.view(out), 14);
+}
+
+/// Sums a borrowed slice view plus a scalar into owned state.
+struct SliceTotal;
+impl Segment for SliceTotal {
+    type Inputs = (ViewPort<Slice<i64>>, RefPort<i64>);
+    type Outputs = RefPort<i64>;
+    type Context = ();
+    type State = i64;
+    fn init(self) -> i64 {
+        0
+    }
+    fn compute<'a, 'b: 'a>(
+        ((_, xs), (_, k)): ((bool, &'a [i64]), (bool, &'a i64)),
+        _: &(),
+        state: &'b mut i64,
+        _: bool,
+    ) -> (bool, &'a i64) {
+        *state = xs.iter().sum::<i64>() + k;
+        (true, &*state)
+    }
+}
+
+#[test]
+fn view_source_lends_borrowing_view_from_owned_cell() {
+    // A borrowing-view source cell: `ViewSource<Slice<i64>>` owns a `Vec<i64>`
+    // in node state (`Value::Owned`) and lends `&[i64]` by value. Pokes go
+    // through `state_mut`, which dirties the node, so the view is re-derived
+    // and re-homed before any consumer in the cone reads it.
+    let mut b = Builder::new(());
+    let xs = b.push_source(ViewSource::<Slice<i64>, ()>::new(vec![1, 2, 3]));
+    let k = b.push_source(RefSource::new(100i64));
+    let out = b.push(SliceTotal, (*xs, *k));
+    let mut g = b.build();
+    let mut pool = pool();
+
+    assert_eq!(g.view(*xs), &[1, 2, 3][..]);
+    assert_eq!(*g.view(out), 106);
+
+    // Poke only the scalar: the consumer re-runs and re-reads the slice wire
+    // (un-notified, unchanged) alongside the fresh scalar.
+    *g.state_mut(k) = 1000;
+    g.stabilize(&mut pool);
+    assert_eq!(*g.view(out), 1006);
+
+    // Poke the owned cell with a write that reallocates its buffer: the node
+    // is dirtied, so the lent view tracks the moved storage.
+    g.state_mut(xs).extend(4..=64);
+    g.stabilize(&mut pool);
+    assert_eq!(g.view(*xs).len(), 64);
+    assert_eq!(*g.view(out), (1..=64).sum::<i64>() + 1000);
 }
 
 // (The former `view_slot_cannot_feed_port_of_view` test is gone: generalizing
-// `RefPort` over `ValueView` makes `RefPort<Port<V>>` unnameable -- `Port<V>`
-// is a leaf, not a `ValueView` -- so the kind confusion it guarded is now a
+// `RefPort` over `Value` makes `RefPort<Port<V>>` unnameable -- `Port<V>`
+// is a leaf, not a `Value` -- so the kind confusion it guarded is now a
 // compile error rather than a runtime tag mismatch.)
 
 /// State containing a `Cell` -- `Send` but `!Sync`. Legal: the engine hands a
@@ -1778,10 +1835,10 @@ fn send_only_state_is_accepted() {
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(*g.ref_view(out), 10); // build call: 10 + 0
+    assert_eq!(*g.view(out), 10); // build call: 10 + 0
     *g.state_mut(s) = 20;
     g.stabilize(&mut pool);
-    assert_eq!(*g.ref_view(out), 21); // 20 + 1
+    assert_eq!(*g.view(out), 21); // 20 + 1
 }
 
 // ===== large complex-graph stress tests (multi-generation) ==================
@@ -1901,11 +1958,11 @@ fn build_mesh(
         [Handle<RefPort<i64>>; 3],
     ) -> Handle<RefPort<i64>>,
 ) -> (
-    Vec<SourceHandle<RefSource<i64>>>,
+    Vec<SourceHandle<RefSource<i64, ()>>>,
     Vec<Vec<Handle<RefPort<i64>>>>,
     Vec<Handle<RefPort<i64>>>,
 ) {
-    let src: Vec<SourceHandle<RefSource<i64>>> = srcs
+    let src: Vec<SourceHandle<RefSource<i64, ()>>> = srcs
         .iter()
         .map(|&v| b.push_source(RefSource::new(v)))
         .collect();
@@ -1939,17 +1996,17 @@ fn complex_mesh_multi_generation() {
     let mut g = b.build();
     let mut pool = pool();
 
-    let check = |g: &Graph, srcs: &[i64], gn: usize| {
+    let check = |g: &Graph<()>, srcs: &[i64], gn: usize| {
         let (sl, sa) = simulate(srcs, |_, _, w| w);
         for layer in 0..=LM {
             for j in 0..NM {
                 assert_eq!(
-                    *g.ref_view(nodes[layer][j]),
+                    *g.view(nodes[layer][j]),
                     sl[layer][j],
                     "node ({layer},{j}) gen {gn}"
                 );
             }
-            assert_eq!(*g.ref_view(aggs[layer]), sa[layer], "agg {layer} gen {gn}");
+            assert_eq!(*g.view(aggs[layer]), sa[layer], "agg {layer} gen {gn}");
         }
     };
     check(&g, &srcs, 0);
@@ -1993,7 +2050,7 @@ fn complex_mesh_with_fused_nodes() {
     let mut g = b.build();
     let mut pool = pool();
 
-    let check = |g: &Graph, srcs: &[i64], gn: usize| {
+    let check = |g: &Graph<()>, srcs: &[i64], gn: usize| {
         let (sl, sa) = simulate(srcs, |layer, j, w| {
             if (layer + j) % 2 == 0 {
                 3 * w + 1
@@ -2004,12 +2061,12 @@ fn complex_mesh_with_fused_nodes() {
         for layer in 0..=LM {
             for j in 0..NM {
                 assert_eq!(
-                    *g.ref_view(nodes[layer][j]),
+                    *g.view(nodes[layer][j]),
                     sl[layer][j],
                     "node ({layer},{j}) gen {gn}"
                 );
             }
-            assert_eq!(*g.ref_view(aggs[layer]), sa[layer], "agg {layer} gen {gn}");
+            assert_eq!(*g.view(aggs[layer]), sa[layer], "agg {layer} gen {gn}");
         }
     };
     check(&g, &srcs, 0);

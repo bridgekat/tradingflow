@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use super::receiver_stream;
 use crate::Instant;
+use crate::graph::Ref;
 use crate::ingest::{Event, EventSource};
 
 /// Boxed iterator type produced by an [`IterSource`] factory.
@@ -108,8 +109,7 @@ impl<T: Clone + Send + 'static> IterSource<T> {
 
 impl<T: Clone + Send + Sync + 'static> EventSource for IterSource<T> {
     type Event = T;
-    type Output = T;
-    type State = ();
+    type Value = Ref<T>;
 
     fn total_num_events(&self) -> Option<usize> {
         self.total_num_events
@@ -119,7 +119,12 @@ impl<T: Clone + Send + Sync + 'static> EventSource for IterSource<T> {
         self.default.clone()
     }
 
-    fn init(&self) -> (impl Stream<Item = Event<T>> + Send + 'static, ()) {
+    fn init(
+        &self,
+    ) -> (
+        impl Stream<Item = Event<T>> + Send + 'static,
+        impl FnMut(T, &mut T, Instant) -> usize + Send + 'static,
+    ) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
         let iter = (self.factory)();
@@ -131,11 +136,9 @@ impl<T: Clone + Send + Sync + 'static> EventSource for IterSource<T> {
             }
         });
 
-        (receiver_stream(hist_rx), ())
-    }
-
-    fn write(_state: &mut (), payload: T, output: &mut T, _timestamp: Instant) -> usize {
-        *output = payload;
-        1
+        (receiver_stream(hist_rx), |payload, output: &mut T, _| {
+            *output = payload;
+            1
+        })
     }
 }

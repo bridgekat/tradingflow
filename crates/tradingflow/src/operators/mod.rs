@@ -9,13 +9,18 @@
 //! * Operators implement [`Operator`](crate::graph::Operator) (notify-gated compute /
 //!   passthrough) or [`Segment`](crate::graph::Segment) (custom gating, e.g.
 //!   [`Clocked`]) **directly** — no TradingFlow-side operator trait or bridge.
-//!   Array-shaped edges carry a strided [`ArrayView`](crate::ArrayView) by value
-//!   through `ArrayPort<T, N>`; output buffers live in each operator's
-//!   `State` (an owned [`Array<T, N>`](crate::Array)) and `compute` lends a view
-//!   of it. The `init == true` build call sizes/seeds buffers from the build-time
-//!   input values without running per-tick side effects (see [`op`] for the
-//!   conventions). Because operators are plain segments, they compose with
-//!   the engine's combinators (`then`/`fork`/`par`) and the `segment!` macro.
+//!   **Every** `Array`-shaped edge carries a strided [`ArrayView`](crate::ArrayView)
+//!   by value through `ArrayPort<T, N>` (and every `Series`-shaped edge a
+//!   [`SeriesView`](crate::SeriesView) through `SeriesPort<T, N>`) — including
+//!   source cells (an engine [`ViewSource`](crate::graph::ViewSource) lends its
+//!   owned cell; see [`array_cell`]) and the Python host — so there are no
+//!   owned↔view bridge operators. Output buffers live in each
+//!   operator's `State` (an owned [`Array<T, N>`](crate::Array)) and `compute`
+//!   lends a view of it. The `init == true` build call sizes/seeds buffers from
+//!   the build-time input values without running per-tick side effects (see
+//!   [`op`] for the conventions). Because operators are plain segments, they
+//!   compose with the engine's combinators (`then`/`fork`/`par`) and the
+//!   `segment!` macro.
 //! * The engine's input-notification gating prunes the recompute cone: an
 //!   [`Operator`](crate::graph::Operator)'s compute path fires iff ≥1 input
 //!   notified (else its `passthrough` re-emits the previous output, un-notified).
@@ -60,7 +65,8 @@ mod transform;
 mod pyhost;
 
 pub use op::{
-    ArrayPort, ArrayPorts, ArrayViewMarker, SeriesPort, SeriesPorts, SeriesViewMarker, StripNotify,
+    ArrayPort, ArrayPorts, ArrayValue, SeriesPort, SeriesPorts, SeriesValue, StripNotify,
+    array_cell, series_cell,
 };
 
 pub use arith::{
@@ -93,14 +99,13 @@ pub use rolling::{
 };
 pub use stocks::{Annualize, ForwardAdjust, annualize, forward_adjust};
 pub use structural::{
-    Cast, Id, Resample, ResampleClocked, ResampleView, Where, cast, id, keep_where, resample,
-    resample_clocked, resample_view,
+    Cast, Id, ResampleClocked, ResampleView, Where, cast, id, keep_where, resample_clocked,
+    resample_view,
 };
 pub use traders::{Benchmark, RandomTrader, SimpleTrader, benchmark, random_trader, simple_trader};
 pub use transform::{
-    Apply, ApplyInplace, AsView, Lag, Map, MapInplace, Own, Select, SliceView, apply,
-    apply_inplace, as_view, lag_series, map, map_inplace, own, select, select_along_axis,
-    select_flat, slice_view,
+    Apply, ApplyInplace, Lag, Map, MapInplace, Select, SliceView, apply, apply_inplace, lag_series,
+    map, map_inplace, select, select_along_axis, select_flat, slice_view,
 };
 
 #[cfg(feature = "python")]

@@ -6,13 +6,11 @@
 //! → trader → total value → record). What remains in each example is the part
 //! that actually differs: which predictor, which optimizer, which trader.
 
-use tradingflow::graph::{Handle, RefPort, ViewPort};
+use tradingflow::graph::{Handle, RefPort};
 
-use tradingflow::operators::{
-    ArrayPort, SeriesPort, as_view, benchmark, log, map, multiply, own, record,
-};
+use tradingflow::operators::{ArrayPort, SeriesPort, benchmark, log, map, multiply, record};
 use tradingflow::sources::pulse;
-use tradingflow::{Array, ArrayView, Instant, Retention, Scenario, Series, Session};
+use tradingflow::{Array, ArrayView, Instant, Retention, Scenario, Session};
 
 use super::AvH;
 use super::args::CommonArgs;
@@ -36,8 +34,9 @@ pub const TARGET_OFFSET: i64 = 1;
 pub type ScH = Handle<ArrayPort<f64, 0>>;
 /// A recorded scalar series handle — a NAV curve.
 pub type NavH = Handle<SeriesPort<f64, 0>>;
-/// A whole-array positions handle, as the Python portfolios emit them.
-pub type PosH = Handle<RefPort<Array<f64, 1>>>;
+/// A positions handle — the Python portfolios emit the same `ArrayPort` view
+/// currency as every other array edge.
+pub type PosH = Handle<ArrayPort<f64, 1>>;
 
 /// Map a trader's `(holdings_value, cash)` view to its scalar total value.
 pub fn total_value(sc: &mut Scenario, h: AvH) -> ScH {
@@ -53,10 +52,9 @@ pub fn total_value(sc: &mut Scenario, h: AvH) -> ScH {
 pub struct Market {
     pub st: Stacked,
     pub features: Features,
-    /// The cap-weighted universe as a view (also the benchmark weights).
+    /// The cap-weighted universe as a view (also the benchmark weights, and
+    /// what the Python operators consume directly).
     pub universe: AvH,
-    /// The universe materialized once for the Python operators.
-    pub universe_ref: PosH,
     pub rebalance_clock: Handle<RefPort<()>>,
     pub upper: AvH,
     pub lower: AvH,
@@ -97,9 +95,6 @@ impl Market {
         let rebalance_clock = sc.add_source(pulse(args.rebalance_instants()));
         let universe =
             build_cap_weighted_universe(sc, circ_market_cap, rebalance_clock, args.index_size);
-        // The Python predictor/portfolio operators consume whole-array
-        // `RefPort`s; materialize the universe view once.
-        let universe_ref = sc.push(own(), universe);
 
         let dims = Dims {
             num_stocks: n,
@@ -111,7 +106,6 @@ impl Market {
             st,
             features,
             universe,
-            universe_ref,
             rebalance_clock,
             upper,
             lower,
@@ -161,11 +155,10 @@ impl Market {
         sc.push(record(), value)
     }
 
-    /// A Python portfolio's frictionless NAV: bridge its whole-array positions
-    /// into the view currency, trade via `Benchmark`, sum, and record.
+    /// A Python portfolio's frictionless NAV: trade its position views via
+    /// `Benchmark`, sum, and record.
     pub fn record_nav(&self, sc: &mut Scenario, positions: PosH) -> NavH {
-        let positions_v = sc.push(as_view(), positions);
-        let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions_v);
+        let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions);
         sc.push(record(), value)
     }
 }

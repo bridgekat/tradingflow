@@ -33,6 +33,7 @@ use futures::stream::Stream;
 use tokio::sync::mpsc;
 
 use crate::ingest::{Event, EventSource};
+use crate::operators::ArrayValue;
 
 use arrow::array::{Array as _, Date32Array};
 use arrow::compute::cast;
@@ -141,8 +142,7 @@ struct ReportRow {
 
 impl EventSource for ParquetFinancialReportPanelSource {
     type Event = Vec<RowUpdate>;
-    type Output = Array<f64, 2>;
-    type State = PanelState;
+    type Value = ArrayValue<f64, 2>;
 
     fn total_num_events(&self) -> Option<usize> {
         // Progress is in emitted long-table rows. The effective-date emits (after
@@ -163,7 +163,7 @@ impl EventSource for ParquetFinancialReportPanelSource {
         &self,
     ) -> (
         impl Stream<Item = Event<Vec<RowUpdate>>> + Send + 'static,
-        PanelState,
+        impl FnMut(Vec<RowUpdate>, &mut Array<f64, 2>, Instant) -> usize + Send + 'static,
     ) {
         // One item per tick (a batch of that date's reports); small buffer.
         let (hist_tx, hist_rx) = mpsc::channel(16);
@@ -178,16 +178,11 @@ impl EventSource for ParquetFinancialReportPanelSource {
             }
         });
 
-        (receiver_stream(hist_rx), PanelState::default())
-    }
-
-    fn write(
-        state: &mut PanelState,
-        batch: Vec<RowUpdate>,
-        output: &mut Array<f64, 2>,
-        ts: Instant,
-    ) -> usize {
-        panel_write(state, batch, output, ts)
+        let mut state = PanelState::default();
+        (
+            receiver_stream(hist_rx),
+            move |batch, output: &mut Array<f64, 2>, ts| panel_write(&mut state, batch, output, ts),
+        )
     }
 }
 

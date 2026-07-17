@@ -15,19 +15,14 @@
 
 use tradingflow::graph::RefPort;
 
-use tradingflow::operators::{PyClassOperator, PyParams, SeriesPort, py_class_operator};
-use tradingflow::{Array, Series};
+use tradingflow::operators::{ArrayPort, PyClassOperator, PyParams, SeriesPort, py_class_operator};
 
 // ===========================================================================
-// Port shapes
+// Port shapes (all array edges are `ArrayPort` views — the one currency)
 // ===========================================================================
 
 /// A predictor's inputs: `(universe, feature panel history, target history)`.
-pub type PredictorIn = (
-    RefPort<Array<f64, 1>>,
-    SeriesPort<f64, 2>,
-    SeriesPort<f64, 1>,
-);
+pub type PredictorIn = (ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>);
 
 /// A mean predictor: `(N,)` expected returns.
 pub type MeanPredictor = PyClassOperator<PredictorIn, 1>;
@@ -37,28 +32,21 @@ pub type MeanPredictor = PyClassOperator<PredictorIn, 1>;
 pub type CovPredictor = PyClassOperator<PredictorIn, 2>;
 
 /// A mean-only portfolio's inputs: `(universe, predicted returns)`.
-pub type MeanPortfolio = PyClassOperator<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 1>;
+pub type MeanPortfolio = PyClassOperator<(ArrayPort<f64, 1>, ArrayPort<f64, 1>), 1>;
 
 /// A mean-variance portfolio's inputs: `(universe, predicted returns, covariance)`.
-pub type MeanVarPortfolio = PyClassOperator<
-    (
-        RefPort<Array<f64, 1>>,
-        RefPort<Array<f64, 1>>,
-        RefPort<Array<f64, 2>>,
-    ),
-    1,
->;
+pub type MeanVarPortfolio =
+    PyClassOperator<(ArrayPort<f64, 1>, ArrayPort<f64, 1>, ArrayPort<f64, 2>), 1>;
 
 /// The rolling market beta/alpha metric: `(clock, strategy log-returns, index log-returns)`.
 pub type RegressionCoefficients =
     PyClassOperator<(RefPort<()>, SeriesPort<f64, 0>, SeriesPort<f64, 1>), 1>;
 
 /// The GMV realized-variance metric: `(covariance, raw returns)` → scalar.
-pub type MinimumVariance = PyClassOperator<(RefPort<Array<f64, 2>>, RefPort<Array<f64, 1>>), 0>;
+pub type MinimumVariance = PyClassOperator<(ArrayPort<f64, 2>, ArrayPort<f64, 1>), 0>;
 
 /// The information-coefficient metric: `(factor, target)` → scalar correlation.
-pub type InformationCoefficient =
-    PyClassOperator<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 0>;
+pub type InformationCoefficient = PyClassOperator<(ArrayPort<f64, 1>, ArrayPort<f64, 1>), 0>;
 
 // ===========================================================================
 // Shared shape

@@ -29,8 +29,8 @@ use tradingflow::graph::Handle;
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    ArrayPort, Window, annualize, as_view, divide, filter, map, multiply, negate, record,
-    rolling_mean, select,
+    ArrayPort, Window, annualize, divide, filter, map, multiply, negate, record, rolling_mean,
+    select,
 };
 use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
 use tradingflow::{Array, ArrayView, Instant, SeriesView};
@@ -114,7 +114,6 @@ async fn main() {
         let s =
             ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
         let panel = sc.add_source(s);
-        let panel = sc.push(as_view(), panel);
         pick(sc, panel, idx)
     };
     let report = |sc: &mut Scenario,
@@ -129,7 +128,6 @@ async fn main() {
         )
         .with_report_date(with_report_date);
         let panel = sc.add_source(s);
-        let panel = sc.push(as_view(), panel);
         pick(sc, panel, idx)
     };
 

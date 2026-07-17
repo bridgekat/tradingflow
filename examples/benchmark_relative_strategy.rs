@@ -68,11 +68,11 @@ async fn main() {
 
     let predicted_returns = sc.push(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
-        (m.universe_ref, m.features.series, m.demeaned_series),
+        (m.universe, m.features.series, m.demeaned_series),
     );
     let predicted_cov = sc.push(
         shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS),
-        (m.universe_ref, m.features.series, m.target_series),
+        (m.universe, m.features.series, m.target_series),
     );
 
     let h_index = m.index_nav(&mut sc);
@@ -84,7 +84,7 @@ async fn main() {
             let gamma_daily = gamma_ann / TRADING_DAYS.sqrt();
             let soft = sc.push(
                 benchmark_relative(m.n, args.index_size, gamma_daily, true, true),
-                (m.universe_ref, predicted_returns, predicted_cov),
+                (m.universe, predicted_returns, predicted_cov),
             );
             (gamma_ann, m.record_nav(&mut sc, soft))
         })

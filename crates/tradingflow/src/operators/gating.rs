@@ -357,7 +357,7 @@ impl<const N: usize> Operator for Count<N> {
 /// Prepends a leading `RefPort<C>` clock input; runs the inner operator's compute
 /// path only when the clock notifies, else the inner passthrough. Implements
 /// [`Segment`] directly because its gate ignores the data inputs' notify bits.
-pub struct Clocked<O, C = ()> {
+pub struct Clocked<O, C> {
     inner: O,
     _c: PhantomData<fn() -> C>,
 }
@@ -381,7 +381,7 @@ impl<O: Clone, C> Clone for Clocked<O, C> {
     }
 }
 
-impl<O: Operator, C: Sync + 'static> Segment for Clocked<O, C> {
+impl<O: Operator, C: Send + Sync + 'static> Segment for Clocked<O, C> {
     type Inputs = (RefPort<C>, O::Inputs);
     type Outputs = O::Outputs;
     // Forwarded, not pinned: `Clocked` is a gate, so it stays as

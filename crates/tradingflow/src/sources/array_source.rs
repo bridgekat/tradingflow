@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use super::receiver_stream;
 use crate::Instant;
 use crate::ingest::{Event, EventSource};
+use crate::operators::ArrayValue;
 use crate::{Array, Scalar, Series};
 
 /// Historical-only source backed by pre-loaded timestamp and value arrays.
@@ -31,8 +32,7 @@ impl<T: Scalar, const N: usize> ArraySource<T, N> {
 
 impl<T: Scalar, const N: usize> EventSource for ArraySource<T, N> {
     type Event = Array<T, N>;
-    type Output = Array<T, N>;
-    type State = ();
+    type Value = ArrayValue<T, N>;
 
     fn total_num_events(&self) -> Option<usize> {
         Some(self.series.len())
@@ -42,7 +42,12 @@ impl<T: Scalar, const N: usize> EventSource for ArraySource<T, N> {
         self.default.clone()
     }
 
-    fn init(&self) -> (impl Stream<Item = Event<Array<T, N>>> + Send + 'static, ()) {
+    fn init(
+        &self,
+    ) -> (
+        impl Stream<Item = Event<Array<T, N>>> + Send + 'static,
+        impl FnMut(Array<T, N>, &mut Array<T, N>, Instant) -> usize + Send + 'static,
+    ) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
         // Clone the series for the spawned driver; the spec stays
@@ -58,16 +63,12 @@ impl<T: Scalar, const N: usize> EventSource for ArraySource<T, N> {
             }
         });
 
-        (receiver_stream(hist_rx), ())
-    }
-
-    fn write(
-        _state: &mut (),
-        payload: Array<T, N>,
-        output: &mut Array<T, N>,
-        _timestamp: Instant,
-    ) -> usize {
-        output.assign(payload.as_slice());
-        1
+        (
+            receiver_stream(hist_rx),
+            |payload, output: &mut Array<T, N>, _| {
+                output.assign(payload.as_slice());
+                1
+            },
+        )
     }
 }

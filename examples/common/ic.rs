@@ -8,20 +8,17 @@
 //! and the summary statistics are the same, and live here.
 
 use tradingflow::Scenario;
-use tradingflow::operators::{as_view, own, record};
+use tradingflow::operators::record;
 
 use super::AvH;
 use super::models::information_coefficient;
-use super::strategy::{NavH, PosH};
+use super::strategy::NavH;
 
-/// Record the per-rebalance IC of `factor` against an already-bridged `target`.
-/// Bridge the target once outside the loop — it is shared across factors.
-pub fn ic_series(sc: &mut Scenario, factor: AvH, target: PosH, num_stocks: usize) -> NavH {
-    // The Python metric consumes whole-array `RefPort`s; bridge the factor view.
-    let factor_ref = sc.push(own(), factor);
-    let ic = sc.push(information_coefficient(num_stocks), (factor_ref, target));
-    let ic_v = sc.push(as_view(), ic);
-    sc.push(record(), ic_v)
+/// Record the per-rebalance IC of `factor` against `target` — both ordinary
+/// `ArrayPort` views, wired straight into the Python metric.
+pub fn ic_series(sc: &mut Scenario, factor: AvH, target: AvH, num_stocks: usize) -> NavH {
+    let ic = sc.push(information_coefficient(num_stocks), (factor, target));
+    sc.push(record(), ic)
 }
 
 /// Summary of an IC series: its mean, dispersion, information ratio

@@ -685,23 +685,24 @@ pub fn random_trader(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::Pool;
-    use crate::graph::{Builder, Handle, RefSource, SourceHandle};
-    use crate::operators::transform::AsView;
+    use crate::graph::{Builder, Handle, Pool, SourceHandle, ViewSource};
+    use crate::operators::op::{ArrayValue, array_cell};
 
     fn arr(v: &[f64]) -> Array<f64, 1> {
         Array::from_vec([v.len()], v.to_vec())
     }
 
-    /// Push a `RefSource` of `v` plus an `AsView` bridge; return the source
-    /// handle (for `state_mut`) and the view handle (for wiring).
+    /// Push a rank-1 array [`array_cell`] of `v`; return the source handle
+    /// (for `state_mut`) and its `ArrayPort` view handle (for wiring).
     fn src(
         b: &mut Builder<Instant>,
         v: &[f64],
-    ) -> (SourceHandle<RefSource<Array<f64, 1>, Instant>>, Handle<Vp>) {
-        let s = b.push_source(RefSource::new(arr(v)));
-        let view = b.push(AsView::<f64, 1>::new(), *s);
-        (s, view)
+    ) -> (
+        SourceHandle<ViewSource<ArrayValue<f64, 1>, Instant>>,
+        Handle<Vp>,
+    ) {
+        let s = b.push_source(array_cell(arr(v)));
+        (s, *s)
     }
 
     #[test]

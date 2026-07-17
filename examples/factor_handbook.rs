@@ -35,7 +35,7 @@ mod common;
 use tradingflow::graph::Operator;
 
 use tradingflow::operators::{
-    ArrayPort, lag_series, log, multiply, own, percentile, record, resample_clocked, stack,
+    ArrayPort, lag_series, log, multiply, percentile, record, resample_clocked, stack,
 };
 use tradingflow::sources::pulse;
 use tradingflow::{Array, ArrayView, Instant, Scenario, WallClock};
@@ -270,9 +270,6 @@ async fn main() {
     let fwd = common::factors::build_forward_return(&mut sc, log_adj, rebalance_clock);
     let fwd_masked = common::universe::mask_to_universe(&mut sc, fwd, universe);
     let fwd_rank = sc.push(percentile(), fwd_masked);
-    // The Python IC metric consumes a whole-array `RefPort`; the forward rank is
-    // shared across every factor, so bridge it once before the loop.
-    let fwd_rank_ref = sc.push(own(), fwd_rank);
 
     // Daily ±10% price limits (涨跌停) for the trader's limit-blocking.
     let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
@@ -306,7 +303,7 @@ async fn main() {
         let rank = sc.push(percentile(), masked);
         ranks.push(rank);
         // RankIC vs the forward return (corrcoef of two rank vectors = Spearman).
-        ic_handles.push(common::ic::ic_series(&mut sc, rank, fwd_rank_ref, n));
+        ic_handles.push(common::ic::ic_series(&mut sc, rank, fwd_rank, n));
         ic_names.push(name.clone());
 
         // 10-group layered backtest on the feature (RankBucket ranks internally).

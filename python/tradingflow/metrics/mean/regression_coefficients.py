@@ -35,7 +35,7 @@ class RegressionCoefficients:
     The two recorded series must be in lock-step at every clock tick:
     the operator asserts ``len(target) == len(baseline)`` on each fire,
     matching the alignment contract of the `MeanPredictor`.
-    Use `Resample` upstream to fold heterogeneous cadences down onto a
+    Use `ResampleClocked` upstream to fold heterogeneous cadences down onto a
     single recording pulse.
 
     Non-finite samples (any NaN in the target or in any baseline column)

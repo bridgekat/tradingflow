@@ -5,8 +5,8 @@ use tradingflow::graph::Handle;
 
 use tradingflow::data::Duration;
 use tradingflow::operators::{
-    ArrayPort, annualize, apply, as_view, forward_adjust, gate, multiply, select, slice_view,
-    split, stack, stack_sync,
+    ArrayPort, annualize, apply, forward_adjust, gate, multiply, select, slice_view, split, stack,
+    stack_sync,
 };
 use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
 use tradingflow::{Array, ArrayView, Scenario};
@@ -78,15 +78,14 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     // the carry-forward / NaN-fill is the downstream `Stack` / `StackSync`'s job).
     // Reports align on the **effective date** `max(report, notice)` — the
     // look-ahead-safe point-in-time a backtest may use them (`use_effective_date`).
-    // Panel sources emit a whole-array `RefPort<Array<f64, 2>>`; bridge to the
-    // view currency with `as_view` so the rank-2 panel feeds `Split`.
+    // A panel source cell lends its `[N, K]` panel as an `ArrayPort<f64, 2>`
+    // view edge, which feeds `Split` directly.
     let daily_panel =
         |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> Handle<ArrayPort<f64, 2>> {
             let s =
                 ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
                     .with_time_range(start, end);
-            let h = sc.add_source(s);
-            sc.push(as_view(), h)
+            sc.add_source(s)
         };
     let report_panel = |sc: &mut Scenario,
                         kind: &str,
@@ -101,8 +100,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         .with_report_date(with_report_date)
         .use_effective_date(Duration::ZERO)
         .with_time_range(start, end);
-        let h = sc.add_source(s);
-        sc.push(as_view(), h)
+        sc.add_source(s)
     };
 
     let prices_panel = daily_panel(

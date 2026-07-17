@@ -12,7 +12,7 @@ The three things you do in every program: create a `Scenario`, register sources 
 
 ```rust
 use tradingflow::{Array, Instant, Scenario, Series, SeriesView, WallClock};
-use tradingflow::operators::{as_view, ma, record};
+use tradingflow::operators::{ma, record};
 use tradingflow::sources::ArraySource;
 
 #[tokio::main]
@@ -27,7 +27,6 @@ async fn main() {
         Series::from_vec([], timestamps, values),
         Array::scalar(0.0),
     ));
-    let prices = sc.push(as_view(), prices);
     let mean = sc.push(ma(10), prices);
     let ma_history = sc.push(record(), mean);
 
@@ -57,7 +56,7 @@ flowchart LR
 
 This is the whole pattern. An actual strategy can contain many more operators — `ForwardAdjust`, `LinearRegression`, `Shrinkage`, `MeanVariancePortfolio`, `RandomTrader`, `SharpeRatio` — but the structure stays the same.
 
-Every segment has a lowercase free constructor — `ma(10)`, `winsorize(p)`, `record()`, the view-currency bridges `as_view()` / `own()` — whose `T` / `N` generics are inferred from the wiring; formula-shaped signals compose with the `tradingflow::segment!` macro, so a fused node carries no type annotations beyond its parameters. Windowed operators (`ma` / `lag` / `record`) never take a clock: **event time is ambient**, carried as the engine's graph-level context and advanced by the driver before each step. Behind the `python` feature, operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the Python data-science ecosystem.
+Every `Array`- or `Series`-shaped edge is a **view edge**: it carries a borrowed view by value (`ArrayPort` / `SeriesPort`), sources included — a source cell lends a view of the value it owns, so there are no owned↔view bridge operators to wire. Every segment has a lowercase free constructor — `ma(10)`, `winsorize(p)`, `record()` — whose `T` / `N` generics are inferred from the wiring; formula-shaped signals compose with the `tradingflow::segment!` macro, so a fused node carries no type annotations beyond its parameters. Windowed operators (`ma` / `lag` / `record`) never take a clock: **event time is ambient**, carried as the engine's graph-level context and advanced by the driver before each step. Behind the `python` feature, operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the Python data-science ecosystem.
 
 ## Learn more
 

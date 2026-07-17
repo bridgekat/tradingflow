@@ -14,7 +14,7 @@ use std::task::{Context, Poll};
 use std::thread;
 
 use futures::stream::{self, Stream};
-use tradingflow::graph::{Port, RefPort, RefSource, Segment};
+use tradingflow::graph::{Port, Ref, RefPort, RefSource, Segment};
 use tradingflow::ingest::{Clock, Event, EventSource, LazyFeed, Queue, Scenario, StreamFeed};
 use tradingflow::{Duration, Instant};
 
@@ -124,21 +124,23 @@ impl Segment for Add {
 struct Replay(Vec<(i64, i64)>);
 impl EventSource for Replay {
     type Event = i64;
-    type Output = i64;
-    type State = ();
+    type Value = Ref<i64>;
 
     fn initial(&self) -> i64 {
         0
     }
 
-    fn init(&self) -> (impl Stream<Item = Event<i64>> + Send + 'static, ()) {
+    fn init(
+        &self,
+    ) -> (
+        impl Stream<Item = Event<i64>> + Send + 'static,
+        impl FnMut(i64, &mut i64, Instant) -> usize + Send + 'static,
+    ) {
         let events = self.0.clone().into_iter().map(|(n, v)| Event::at(t(n), v));
-        (stream::iter(events), ())
-    }
-
-    fn write(_: &mut (), event: i64, output: &mut i64, _: Instant) -> usize {
-        *output = event;
-        1
+        (stream::iter(events), |event, output: &mut i64, _| {
+            *output = event;
+            1
+        })
     }
 
     fn total_num_events(&self) -> Option<usize> {
@@ -166,29 +168,32 @@ type FeedLog = Arc<Mutex<Vec<(Instant, Batch)>>>;
 
 impl<S: Stream<Item = Event<Batch>> + Send + 'static> EventSource for VecFeed<S> {
     type Event = Batch;
-    type Output = Batch;
-    type State = Option<FeedLog>;
+    type Value = Ref<Batch>;
 
     fn initial(&self) -> Batch {
         Batch::new()
     }
 
-    fn init(&self) -> (impl Stream<Item = Event<Batch>> + Send + 'static, Self::State) {
+    fn init(
+        &self,
+    ) -> (
+        impl Stream<Item = Event<Batch>> + Send + 'static,
+        impl FnMut(Batch, &mut Batch, Instant) -> usize + Send + 'static,
+    ) {
         let stream = self
             .stream
             .lock()
             .unwrap()
             .take()
             .expect("VecFeed drives a single session");
-        (stream, self.log.clone())
-    }
-
-    fn write(log: &mut Self::State, event: Batch, output: &mut Batch, ts: Instant) -> usize {
-        if let Some(log) = log {
-            log.lock().unwrap().push((ts, event.clone()));
-        }
-        *output = event;
-        1
+        let log = self.log.clone();
+        (stream, move |event: Batch, output: &mut Batch, ts| {
+            if let Some(log) = &log {
+                log.lock().unwrap().push((ts, event.clone()));
+            }
+            *output = event;
+            1
+        })
     }
 }
 
@@ -496,7 +501,7 @@ fn builder_add_source_merges_and_counts() {
     let mut log = Vec::new();
     pollster::block_on(d.run(|d, t| log.push((t, d.view(sum), d.num_events()))));
     assert_eq!(log, vec![(t(1), 10, 1), (t(2), 30, 2), (t(3), 70, 4)]);
-    assert_eq!(*d.ref_view(x), 30);
+    assert_eq!(*d.view(x), 30);
 }
 
 /// The running session advances the event-time context between a batch's

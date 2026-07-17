@@ -6,7 +6,7 @@
 //! output is a rank-0 scalar view.
 //!
 //! The clock is the **leading** port, matching every other clock-gated operator
-//! in the library ([`Clocked`](super::Clocked), [`Resample`](super::Resample),
+//! in the library ([`Clocked`](super::Clocked),
 //! [`ResampleClocked`](super::ResampleClocked)), so the gated shapes stay
 //! interchangeable.
 
@@ -578,18 +578,16 @@ pub fn turnover<T: Scalar + Float, const N: usize>() -> Turnover<T, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::Pool;
-    use crate::graph::{Builder, RefSource};
-    use crate::operators::transform::AsView;
+    use crate::graph::{Builder, Pool};
+    use crate::operators::op::array_cell;
 
     /// Turnover: warmup emits nothing; later updates emit the L1 change, with
     /// non-finite weights treated as zero.
     #[test]
     fn turnover_l1_change_with_nan_as_zero() {
         let mut b = Builder::new(Instant::MIN);
-        let w = b.push_source(RefSource::new(Array::from_vec([5], vec![0.0_f64; 5])));
-        let wv = b.push(AsView::<f64, 1>::new(), *w);
-        let out = b.push(Turnover::<f64, 1>::new(), wv);
+        let w = b.push_source(array_cell(Array::from_vec([5], vec![0.0_f64; 5])));
+        let out = b.push(Turnover::<f64, 1>::new(), *w);
         let mut g = b.build();
         let mut pool = Pool::new(0);
 

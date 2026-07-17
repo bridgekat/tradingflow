@@ -1,13 +1,14 @@
 use std::marker::PhantomData;
 
-use super::{
-    FlatRead, Interface, RefViewPort, RefViewPorts, Segment, ValueView, ViewPort, ViewPorts,
-};
+use super::{FlatRead, Interface, Segment, Value, ViewPort, ViewPorts};
 
 /// Typed handle to a slot in the graph.
+///
+/// The phantom is `fn() -> T` so a handle is unconditionally `Send + Sync`
+/// (it is just an index; `T` only tags the slot's port type).
 pub struct Handle<T> {
     index: usize,
-    _phantom: PhantomData<T>,
+    _phantom: PhantomData<fn() -> T>,
 }
 
 impl<T> Handle<T> {
@@ -54,8 +55,8 @@ impl<M> OutputHandle for Handle<M> {
 /// Pokeable handle to a source node, produced by
 /// [`push_source`](super::Builder::push_source). Carries the source
 /// segment type `S` (so `state_mut` can reach the state) and derefs to `S`'s
-/// output handle for wiring -- `Handle<RefViewPort<Scalar<T>>>` for a
-/// [`RefSource<T>`](super::RefSource), `Handle<ViewPort<Scalar<T>>>` for a
+/// output handle for wiring -- `Handle<RefPort<T>>` for a
+/// [`RefSource<T>`](super::RefSource), `Handle<Port<T>>` for a
 /// [`Source<T>`](super::Source).
 pub struct SourceHandle<S: Segment>
 where
@@ -174,7 +175,7 @@ impl_handles_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9:
 
 // -- Leaf: ViewPort<V> ------------------------------------------------------
 
-impl<V: ValueView> InterfaceHandles for ViewPort<V>
+impl<V: Value> InterfaceHandles for ViewPort<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -190,46 +191,9 @@ where
     }
 }
 
-// -- Leaf: RefViewPort<V> ---------------------------------------------------
-
-impl<V: ValueView> InterfaceHandles for RefViewPort<V>
-where
-    for<'a> V::View<'a>: Sync,
-{
-    type Handles<'a> = Handle<RefViewPort<V>>;
-    type HandlesOwned = Handle<RefViewPort<V>>;
-
-    #[inline(always)]
-    fn handles_from_flat(
-        _shape: &mut FlatRead<usize>,
-        indices: &mut FlatRead<usize>,
-    ) -> Handle<RefViewPort<V>> {
-        Handle::new(*indices.pop())
-    }
-}
-
-// -- Variadic leaf: RefViewPorts<V> -----------------------------------------
-
-impl<V: ValueView> InterfaceHandles for RefViewPorts<V>
-where
-    for<'a> V::View<'a>: Sync,
-{
-    type Handles<'a> = &'a [Handle<RefViewPort<V>>];
-    type HandlesOwned = Box<[Handle<RefViewPort<V>>]>;
-
-    #[inline]
-    fn handles_from_flat(
-        shape: &mut FlatRead<usize>,
-        indices: &mut FlatRead<usize>,
-    ) -> Self::HandlesOwned {
-        let n = *shape.pop();
-        (0..n).map(|_| Handle::new(*indices.pop())).collect()
-    }
-}
-
 // -- Variadic leaf: ViewPorts<V> ---------------------------------------------
 
-impl<V: ValueView> InterfaceHandles for ViewPorts<V>
+impl<V: Value> InterfaceHandles for ViewPorts<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -270,7 +234,7 @@ pub trait HandlesInterface {
     type Interface: Interface;
 
     /// Write every leaf's node index into `indices` in tree-order, pushing each
-    /// variadic group's ([`RefViewPorts`] / [`ViewPorts`]) element count into
+    /// variadic group's ([`ViewPorts`]) element count into
     /// `shape`. The walk-to-flat direction, owned wholly by this (handle-keyed)
     /// side.
     fn to_vec(self, shape: &mut Vec<usize>, indices: &mut Vec<usize>);
@@ -315,7 +279,7 @@ impl_handles_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H
 
 // -- Leaf: Handle<ViewPort<V>> ----------------------------------------------
 
-impl<V: ValueView> HandlesInterface for Handle<ViewPort<V>>
+impl<V: Value> HandlesInterface for Handle<ViewPort<V>>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -327,54 +291,9 @@ where
     }
 }
 
-// -- Leaf: Handle<RefViewPort<V>> -------------------------------------------
-
-impl<V: ValueView> HandlesInterface for Handle<RefViewPort<V>>
-where
-    for<'a> V::View<'a>: Sync,
-{
-    type Interface = RefViewPort<V>;
-
-    #[inline(always)]
-    fn to_vec(self, _shape: &mut Vec<usize>, indices: &mut Vec<usize>) {
-        indices.push(self.index);
-    }
-}
-
-// -- Variadic leaf: &[Handle<RefViewPort<V>>] -------------------------------
-
-impl<V: ValueView> HandlesInterface for &[Handle<RefViewPort<V>>]
-where
-    for<'a> V::View<'a>: Sync,
-{
-    type Interface = RefViewPorts<V>;
-
-    #[inline]
-    fn to_vec(self, shape: &mut Vec<usize>, indices: &mut Vec<usize>) {
-        shape.push(self.len());
-        indices.extend(self.iter().map(|h| h.index));
-    }
-}
-
-// A reference to a fixed-size array of handles, e.g. `&[a, b, c]`. With a free
-// handle type parameter there is no slice-typed parameter to unsize-coerce into,
-// so the array case is supported explicitly (delegating to the slice logic).
-impl<V: ValueView, const M: usize> HandlesInterface for &[Handle<RefViewPort<V>>; M]
-where
-    for<'a> V::View<'a>: Sync,
-{
-    type Interface = RefViewPorts<V>;
-
-    #[inline]
-    fn to_vec(self, shape: &mut Vec<usize>, indices: &mut Vec<usize>) {
-        shape.push(M);
-        indices.extend(self.iter().map(|h| h.index));
-    }
-}
-
 // -- Variadic leaf: &[Handle<ViewPort<V>>] -----------------------------------
 
-impl<V: ValueView> HandlesInterface for &[Handle<ViewPort<V>>]
+impl<V: Value> HandlesInterface for &[Handle<ViewPort<V>>]
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -387,8 +306,10 @@ where
     }
 }
 
-// The fixed-size array form, as for `RefViewPort` above.
-impl<V: ValueView, const M: usize> HandlesInterface for &[Handle<ViewPort<V>>; M]
+// A reference to a fixed-size array of handles, e.g. `&[a, b, c]`. With a free
+// handle type parameter there is no slice-typed parameter to unsize-coerce into,
+// so the array case is supported explicitly (delegating to the slice logic).
+impl<V: Value, const M: usize> HandlesInterface for &[Handle<ViewPort<V>>; M]
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {

@@ -27,8 +27,7 @@ mod common;
 use clap::Parser;
 
 use tradingflow::operators::{
-    as_view, benchmark, compound_return, diff, drawdown, log, random_trader, record, sharpe_ratio,
-    stack,
+    benchmark, compound_return, diff, drawdown, log, random_trader, record, sharpe_ratio, stack,
 };
 use tradingflow::{Retention, Scenario, SeriesView, WallClock};
 
@@ -88,20 +87,19 @@ async fn main() {
     // ---- Predictor + portfolio ------------------------------------------
     let predicted_returns = sc.push(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
-        (m.universe_ref, m.features.series, m.demeaned_series),
+        (m.universe, m.features.series, m.demeaned_series),
     );
-    let soft_positions = sc.push(rank_linear(m.n, 1.0), (m.universe_ref, predicted_returns));
-    // Bridge the Python `RefPort` positions back into the view currency the
-    // native traders speak.
-    let soft_positions_v = sc.push(as_view(), soft_positions);
+    // The Python portfolio emits ordinary `ArrayPort` position views — the
+    // native traders consume them directly.
+    let soft_positions = sc.push(rank_linear(m.n, 1.0), (m.universe, predicted_returns));
 
     // ---- Traders (the cost-model swap point) ----------------------------
     let index_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), m.universe);
-    let frictionless_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), soft_positions_v);
+    let frictionless_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), soft_positions);
     let actual_value = m.simulate(
         &mut sc,
         random_trader(m.n, 20, INITIAL_CASH, 100.0, 5.0, 0.001, 0),
-        soft_positions_v,
+        soft_positions,
     );
 
     // ---- Metrics (clock-gated, since inception) -------------------------
@@ -131,10 +129,7 @@ async fn main() {
     let h_sharpe = sc.push(record(), sharpe);
     let h_compound = sc.push(record(), compound);
     let h_drawdown = sc.push(record(), drawdown);
-    // `beta_alpha` is a Python `RefPort<Array>` output; bridge into the view
-    // currency for recording.
-    let beta_alpha_v = sc.push(as_view(), beta_alpha);
-    let h_beta_alpha = sc.push(record(), beta_alpha_v);
+    let h_beta_alpha = sc.push(record(), beta_alpha);
 
     let session = common::run(sc, &args).await;
 

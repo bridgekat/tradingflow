@@ -10,9 +10,10 @@
 //! compute(state, inputs, output, timestamp, produced) -> bool   # @staticmethod
 //! ```
 //!
-//! `inputs` is a tuple of **views** — [`NativeArrayView`] for `Array<f64>` cells
-//! and [`NativeSeriesView`] for recorded-history windows (`SeriesPort` edges),
-//! `None` for unit (clock) inputs. `output` is a writable array view, `timestamp` is TAI
+//! `inputs` is a tuple of **views** — [`NativeArrayView`] for array edges
+//! (`ArrayPort`) and [`NativeSeriesView`] for recorded-history windows
+//! (`SeriesPort` edges), `None` for unit (clock) inputs. `output` is a
+//! writable array view, `timestamp` is TAI
 //! nanoseconds (the graph's ambient event time), `produced` is a `tuple[bool, ...]`
 //! parallel to `inputs`, and `state` is a Python object carried across ticks.
 //!
@@ -22,20 +23,24 @@
 //!
 //! # Heterogeneous inputs
 //!
-//! The engine's typed interfaces are trees of port leaves (`RefPort<T>` /
-//! `SeriesPort<T>`), runtime-length groups (`RefPorts<T>` / `SeriesPorts<T>`),
-//! and tuples, so an operator's input shape is its concrete
+//! The host speaks the operator library's view currency on both sides: inputs
+//! are trees of port leaves (`ArrayPort<f64, N>` / `SeriesPort<f64, N>`, plus
+//! `RefPort<()>` for unit clocks), runtime-length groups (`ArrayPorts` /
+//! `SeriesPorts`), and tuples, so an operator's input shape is its concrete
 //! [`Interface`] type, e.g.
-//! `(RefPort<Array<f64>>, SeriesPort<f64>, SeriesPort<f64>)` for a predictor or
-//! `RefPorts<Array<f64>>` for an all-array operator. The [`PyArgs`] trait walks
-//! that type's refs to build the view tuple + produced bools in one pass. (An
-//! erased enum input would have to clone growing `Series` each tick — `PyArgs`
-//! reads the borrowed cells directly instead.)
+//! `(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)` for a
+//! predictor or `ArrayPorts<f64, 1>` for an all-array operator — and the
+//! output is an `ArrayPort<f64, NO>` view of the host's owned buffer. The
+//! [`PyArgs`] trait walks the input type's payload tree to build the Python
+//! view tuple + produced bools in one pass. (An erased enum input would have
+//! to clone growing `Series` each tick — `PyArgs` reads the borrowed views
+//! directly instead.)
 //!
 //! # Data model
 //!
-//! Copy-based (like the legacy bridge): each view copies the cell data out to a
-//! fresh NumPy array on read, and `output.write()` copies a NumPy array back.
+//! Copy-based (like the legacy bridge): each view copies the data out to a
+//! fresh NumPy array on read (a strided input view is materialized
+//! row-major at bind), and `output.write()` copies a NumPy array back.
 //! Copies make retention safe and the cost is negligible against the NumPy/SciPy
 //! math these operators run.
 //!
@@ -88,12 +93,14 @@
 //!
 //! # Safety
 //!
-//! The view pyclasses hold a raw pointer to a graph cell, valid only for the
-//! duration of one `compute`/`init` (the cell is borrowed by the engine then).
-//! Views are created fresh each call and must not be retained past it. The
-//! output array view's pointer carries write provenance (`&mut`); input views
-//! are read-only. `unsafe Send + Sync` is sound: a node's `compute` runs on one
-//! thread at a time and views never cross threads.
+//! The view pyclasses hold a raw pointer to graph edge data — an input view's
+//! backing buffer (or its owned row-major materialization) or the host's
+//! output buffer — valid only for the duration of one `compute`/`init` (the
+//! payload is borrowed by the engine then). Views are created fresh each call
+//! and must not be retained past it. The output array view's pointer carries
+//! write provenance (`&mut`); input views are read-only. `unsafe Send + Sync`
+//! is sound: a node's `compute` runs on one thread at a time and views never
+//! cross threads.
 
 use std::ffi::CString;
 use std::marker::PhantomData;
@@ -105,10 +112,10 @@ use pyo3::types::{PyDict, PySlice, PyTuple};
 use numpy::ndarray::{ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 
-use crate::graph::{Interface, InterfaceHandles, Operator, RefPort, RefPorts};
+use crate::graph::{Interface, InterfaceHandles, Operator, RefPort};
 
-use crate::operators::op::{SeriesPort, SeriesPorts};
-use crate::{Array, Instant, SeriesView};
+use crate::operators::op::{ArrayPort, ArrayPorts, SeriesPort, SeriesPorts};
+use crate::{Array, ArrayView, Instant, SeriesView};
 
 // ===========================================================================
 // NativeArrayView — Python-visible view over a cell's `Array<f64, N>`
@@ -125,17 +132,22 @@ use crate::{Array, Instant, SeriesView};
 // are rank-independent. The output view reconstructs the typed `&mut Array<f64,
 // NO>` from the stored pointer + rank tag (see [`NativeArrayView::bind`]).
 
-/// View over a graph cell's `Array<f64, N>`. `value()` copies out; `write()`
-/// copies in (output views only). Valid only during the call that created it.
+/// View over an array edge's data — an input [`ArrayView`] or the host's
+/// output `Array<f64, N>` buffer. `value()` copies out; `write()` copies in
+/// (output views only). Valid only during the call that created it.
 #[pyclass]
 pub struct NativeArrayView {
-    /// Pointer to the flat row-major `f64` buffer (`Array<f64, N>::as_slice`).
+    /// Pointer to the flat row-major `f64` buffer.
     data: *mut f64,
     /// Number of scalars (product of extents).
     len: usize,
-    /// Element extents (the cell's static `[usize; N]`, as a runtime vector).
+    /// Element extents (the edge's static `[usize; N]`, as a runtime vector).
     extents: Vec<usize>,
     writable: bool,
+    /// Owned row-major materialization of a strided input view (see
+    /// [`bind_view`](Self::bind_view)); `data` points into it when present.
+    /// Never read back — it exists to keep the pointee alive for the call.
+    _backing: Option<Vec<f64>>,
 }
 
 // SAFETY: single-threaded per compute, never retained/shared (module docs).
@@ -203,9 +215,10 @@ impl NativeArrayView {
 }
 
 impl NativeArrayView {
-    /// Bind a view over an `Array<f64, N>` (input: read-only, output: writable).
-    /// The concrete rank `N` is known at the call site, so the static extents
-    /// are read here and stored runtime-wide; the flat buffer is rank-agnostic.
+    /// Bind the writable output view over the host's owned `Array<f64, N>`
+    /// buffer. The concrete rank `N` is known at the call site, so the static
+    /// extents are read here and stored runtime-wide; the flat buffer is
+    /// rank-agnostic.
     fn bind<'py, const N: usize>(
         py: Python<'py>,
         arr: *mut Array<f64, N>,
@@ -218,6 +231,30 @@ impl NativeArrayView {
             len: r.len(),
             extents: r.extents().to_vec(),
             writable,
+            _backing: None,
+        };
+        Ok(Bound::new(py, view)?.into_any())
+    }
+
+    /// Bind a read-only view over an `ArrayPort` input payload (a possibly
+    /// strided [`ArrayView`]). A contiguous view is pointed at directly
+    /// (zero-copy until Python reads it); a strided one is materialized
+    /// row-major into an owned backing the pyclass carries for the call.
+    fn bind_view<'py, const N: usize>(
+        py: Python<'py>,
+        v: ArrayView<'_, f64, N>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let extents = v.extents().to_vec();
+        let (data, len, backing) = match v.to_contiguous() {
+            std::borrow::Cow::Borrowed(s) => (s.as_ptr().cast_mut(), s.len(), None),
+            std::borrow::Cow::Owned(vec) => (vec.as_ptr().cast_mut(), vec.len(), Some(vec)),
+        };
+        let view = NativeArrayView {
+            data,
+            len,
+            extents,
+            writable: false,
+            _backing: backing,
         };
         Ok(Bound::new(py, view)?.into_any())
     }
@@ -416,7 +453,7 @@ pub trait PyArgs: Interface + InterfaceHandles {
     ) -> PyResult<()>;
 }
 
-impl<const N: usize> PyArgs for RefPort<Array<f64, N>> {
+impl<const N: usize> PyArgs for ArrayPort<f64, N> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
@@ -424,11 +461,7 @@ impl<const N: usize> PyArgs for RefPort<Array<f64, N>> {
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
         let (notify, value) = refs;
-        views.push(NativeArrayView::bind::<N>(
-            py,
-            value as *const Array<f64, N> as *mut Array<f64, N>,
-            false,
-        )?);
+        views.push(NativeArrayView::bind_view::<N>(py, value)?);
         produced.push(notify);
         Ok(())
     }
@@ -463,10 +496,10 @@ impl PyArgs for RefPort<()> {
 }
 
 /// A runtime-length group appends one view + bit per element. (Concrete per
-/// leaf type — a generic `RefPorts<T> where RefPort<T>: PyArgs` impl cannot pass a
-/// `(bool, &T)` tuple where the unnormalized `<RefPort<T> as Interface>::Refs`
-/// projection is expected.)
-impl<const N: usize> PyArgs for RefPorts<Array<f64, N>> {
+/// leaf type — a generic `ViewPorts<V> where ViewPort<V>: PyArgs` impl cannot
+/// pass a `(bool, View)` tuple where the unnormalized
+/// `<ViewPort<V> as Interface>::Values` projection is expected.)
+impl<const N: usize> PyArgs for ArrayPorts<f64, N> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
@@ -476,15 +509,10 @@ impl<const N: usize> PyArgs for RefPorts<Array<f64, N>> {
         let (flags, values) = refs;
         debug_assert!(
             flags.len() == values.len(),
-            "RefPorts refs planes disagree on length"
+            "ArrayPorts payload planes disagree on length"
         );
         for (i, &value) in values.iter().enumerate() {
-            <RefPort<Array<f64, N>> as PyArgs>::append_views(
-                py,
-                (flags[i], value),
-                views,
-                produced,
-            )?;
+            <ArrayPort<f64, N> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
         }
         Ok(())
     }
@@ -648,17 +676,19 @@ fn resolve_operator<'py>(
     }
 }
 
-/// A class-based Python operator over input ports `I` (e.g. `RefPorts<Array<f64,
-/// 1>>` or `(RefPort<Array<f64, 1>>, SeriesPort<f64>, SeriesPort<f64>)`)
-/// producing a rank-`NO` array output. Load its definition from a `.py` file, an
-/// importable module, or an inline source; each defines `build(**kwargs)` (called
-/// with [`PyParams`]) or binds `__op__`.
+/// A class-based Python operator over input ports `I` (e.g. `ArrayPorts<f64,
+/// 1>` or `(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)`)
+/// producing a rank-`NO` array output (an `ArrayPort<f64, NO>` view of the
+/// host's owned buffer — the host speaks the view currency on both sides).
+/// Load its definition from a `.py` file, an importable module, or an inline
+/// source; each defines `build(**kwargs)` (called with [`PyParams`]) or binds
+/// `__op__`.
 ///
 /// `NO` is the static output rank, defaulting to `1` because the strategy
 /// operators all emit `(N,)` predictions / weights. The output's element shape
 /// comes from `out_shape` (its product must equal the rank-`NO` extents'
 /// product); the NumPy boundary negotiates by element count.
-pub struct PyClassOperator<I: PyArgs = RefPorts<Array<f64, 1>>, const NO: usize = 1> {
+pub struct PyClassOperator<I: PyArgs = ArrayPorts<f64, 1>, const NO: usize = 1> {
     loader: Loader,
     params: PyParams,
     out_shape: Vec<usize>,
@@ -714,7 +744,7 @@ pub struct PyClassState<const NO: usize> {
 
 impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
     type Inputs = I;
-    type Outputs = RefPort<Array<f64, NO>>;
+    type Outputs = ArrayPort<f64, NO>;
     type Context = Instant;
     type State = PyClassState<NO>;
 
@@ -734,7 +764,7 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
         time: &Instant,
         state: &'b mut PyClassState<NO>,
         init: bool,
-    ) -> (bool, &'a Array<f64, NO>) {
+    ) -> (bool, ArrayView<'a, f64, NO>) {
         // The batch's event time, straight from the graph context. The build
         // call runs before the driver's first batch, so Python `init` sees the
         // floor the `Scenario` was created with — `Instant::MIN`, i.e. the
@@ -765,7 +795,7 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
             state.operator = Some(operator);
             state.py_state = Some(py_state);
             state.out = Array::zeros(out_extents::<NO>(&state.out_shape));
-            return (false, &state.out);
+            return (false, state.out.view());
         }
 
         let PyClassState {
@@ -805,15 +835,15 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
         });
         let notify = result
             .unwrap_or_else(|()| panic!("python operator compute failed (see traceback above)"));
-        (notify, &*out)
+        (notify, out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: <I as Interface>::Values<'a>,
         _: &Instant,
         state: &'b PyClassState<NO>,
-    ) -> (bool, &'a Array<f64, NO>) {
-        (false, &state.out)
+    ) -> (bool, ArrayView<'a, f64, NO>) {
+        (false, state.out.view())
     }
 }
 
@@ -878,12 +908,11 @@ pub fn py_class_operator_file<I: PyArgs, const NO: usize>(
 #[cfg(test)]
 mod tests {
     use super::{PyClassOperator, PyParams};
-    use crate::graph::Pool;
-    use crate::graph::{Builder, RefPort, RefPorts, RefSource};
+    use crate::graph::{Builder, Pool};
 
     use crate::Array;
     use crate::Instant;
-    use crate::operators::{AsView, Record, SeriesPort};
+    use crate::operators::{ArrayPort, ArrayPorts, Record, SeriesPort, array_cell};
 
     /// A small stateful operator over one Array input (L1 turnover), used here
     /// purely as a from_source `PyClassOperator` fixture. Raw string at column 0
@@ -915,10 +944,10 @@ __op__ = Turnover()
     #[test]
     fn py_class_operator_turnover() {
         let mut b = Builder::new(Instant::MIN);
-        let src = b.push_source(RefSource::new(Array::from_vec([2], vec![0.5_f64, 0.5])));
+        let src = b.push_source(array_cell(Array::from_vec([2], vec![0.5_f64, 0.5])));
         let out = b.push(
             // Output is a scalar (`vec![]`), so NO = 0.
-            PyClassOperator::<RefPorts<Array<f64, 1>>, 0>::from_source(
+            PyClassOperator::<ArrayPorts<f64, 1>, 0>::from_source(
                 TURNOVER,
                 PyParams::new(),
                 vec![],
@@ -930,15 +959,15 @@ __op__ = Turnover()
 
         *g.state_mut(src) = Array::from_vec([2], vec![0.5, 0.5]);
         g.stabilize(&mut pool);
-        assert_eq!(g.ref_view(out).as_slice(), &[0.0]); // warmup
+        assert_eq!(g.view(out).contiguous_slice().unwrap(), &[0.0]); // warmup
 
         *g.state_mut(src) = Array::from_vec([2], vec![0.3, 0.7]);
         g.stabilize(&mut pool);
-        assert!((g.ref_view(out).as_slice()[0] - 0.4).abs() < 1e-12);
+        assert!((g.view(out).contiguous_slice().unwrap()[0] - 0.4).abs() < 1e-12);
 
         *g.state_mut(src) = Array::from_vec([2], vec![1.0, 0.0]);
         g.stabilize(&mut pool);
-        assert!((g.ref_view(out).as_slice()[0] - 1.4).abs() < 1e-12);
+        assert!((g.view(out).contiguous_slice().unwrap()[0] - 1.4).abs() < 1e-12);
     }
 
     /// Heterogeneous inputs: an (Array, Series) operator that reads Series
@@ -964,14 +993,13 @@ __op__ = HistDot()
     fn py_class_operator_heterogeneous_series() {
         let mut b = Builder::new(Instant::MIN);
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
-        let weights = b.push_source(RefSource::new(Array::from_vec([2], vec![1.0_f64, 1.0])));
-        let feed = b.push_source(RefSource::new(Array::from_vec([2], vec![0.0_f64, 0.0])));
-        // Record consumes the view currency; bridge the source via `AsView`.
-        let feed_v = b.push(AsView::<f64, 1>::new(), *feed);
-        let series = b.push(Record::new(), feed_v);
+        // Sources lend the view currency directly — `Record` wires straight on.
+        let weights = b.push_source(array_cell(Array::from_vec([2], vec![1.0_f64, 1.0])));
+        let feed = b.push_source(array_cell(Array::from_vec([2], vec![0.0_f64, 0.0])));
+        let series = b.push(Record::new(), *feed);
         let out = b.push(
             // Scalar output (`vec![]`), so NO = 0.
-            PyClassOperator::<(RefPort<Array<f64, 1>>, SeriesPort<f64, 1>), 0>::from_source(
+            PyClassOperator::<(ArrayPort<f64, 1>, SeriesPort<f64, 1>), 0>::from_source(
                 HIST_DOT,
                 PyParams::new(),
                 vec![],
@@ -986,13 +1014,13 @@ __op__ = HistDot()
         *g.state_mut(weights) = Array::from_vec([2], vec![1.0, 1.0]);
         *g.state_mut(feed) = Array::from_vec([2], vec![1.0, 2.0]);
         g.stabilize(&mut pool);
-        assert!((g.ref_view(out).as_slice()[0] - 3.0).abs() < 1e-12);
+        assert!((g.view(out).contiguous_slice().unwrap()[0] - 3.0).abs() < 1e-12);
 
         // Tick 2 @ t=200: feed [3,4]; series=[[1,2],[3,4]]; dots=3,7; mean=5.
         *g.context_mut() = Instant::from_nanos(200);
         *g.state_mut(feed) = Array::from_vec([2], vec![3.0, 4.0]);
         g.stabilize(&mut pool);
-        assert!((g.ref_view(out).as_slice()[0] - 5.0).abs() < 1e-12);
+        assert!((g.view(out).contiguous_slice().unwrap()[0] - 5.0).abs() < 1e-12);
     }
 
     /// Loading an operator from a plain `.py` file via a `build(**kwargs)`
@@ -1024,13 +1052,13 @@ def build(scale=1.0):
             .unwrap();
 
         let mut b = Builder::new(Instant::MIN);
-        let src = b.push_source(RefSource::new(Array::from_vec(
+        let src = b.push_source(array_cell(Array::from_vec(
             [4],
             vec![1.0_f64, 2.0, 3.0, 4.0],
         )));
         let out = b.push(
             // Scalar output (`vec![]`), so NO = 0.
-            PyClassOperator::<RefPorts<Array<f64, 1>>, 0>::from_file(
+            PyClassOperator::<ArrayPorts<f64, 1>, 0>::from_file(
                 &path,
                 PyParams::new().float("scale", 3.0),
                 vec![],
@@ -1042,7 +1070,8 @@ def build(scale=1.0):
 
         *g.state_mut(src) = Array::from_vec([4], vec![1.0, 2.0, 3.0, 4.0]);
         g.stabilize(&mut pool);
-        assert!((g.ref_view(out).as_slice()[0] - 30.0).abs() < 1e-12); // sum(1..4)=10 * 3
+        // sum(1..4)=10 * 3
+        assert!((g.view(out).contiguous_slice().unwrap()[0] - 30.0).abs() < 1e-12);
     }
 
     // -- Integration with the real `tradingflow` Python package (needs python/ --
@@ -1057,21 +1086,15 @@ def build(scale=1.0):
         const N: usize = 3;
         const F: usize = 2;
         let mut b = Builder::new(Instant::MIN);
-        let universe = b.push_source(RefSource::new(Array::from_vec([N], vec![1.0; N])));
-        let feat_feed = b.push_source(RefSource::new(Array::<f64, 2>::zeros([N, F])));
-        let tgt_feed = b.push_source(RefSource::new(Array::<f64, 1>::zeros([N])));
-        // Record consumes the view currency; bridge each source via `AsView`.
-        let feat_v = b.push(AsView::<f64, 2>::new(), *feat_feed);
-        let tgt_v = b.push(AsView::<f64, 1>::new(), *tgt_feed);
-        let feat_series = b.push(Record::new(), feat_v);
-        let tgt_series = b.push(Record::new(), tgt_v);
+        let universe = b.push_source(array_cell(Array::from_vec([N], vec![1.0; N])));
+        let feat_feed = b.push_source(array_cell(Array::<f64, 2>::zeros([N, F])));
+        let tgt_feed = b.push_source(array_cell(Array::<f64, 1>::zeros([N])));
+        // Sources lend the view currency directly — `Record` wires straight on.
+        let feat_series = b.push(Record::new(), *feat_feed);
+        let tgt_series = b.push(Record::new(), *tgt_feed);
         let pred = b.push(
             // Output is the (N,) prediction → NO = 1 (the default).
-            PyClassOperator::<(
-                RefPort<Array<f64, 1>>,
-                SeriesPort<f64, 2>,
-                SeriesPort<f64, 1>,
-            )>::from_module(
+            PyClassOperator::<(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)>::from_module(
                 "tradingflow.predictors.mean.linear_regression",
                 PyParams::new()
                     .int("num_stocks", N as i64)
@@ -1097,7 +1120,7 @@ def build(scale=1.0):
             g.stabilize(&mut pool);
         }
 
-        let mu = g.ref_view(pred).as_slice();
+        let mu = g.view(pred).contiguous_slice().unwrap();
         assert_eq!(mu.len(), N);
         assert!(
             mu.iter().all(|v| v.is_finite()),

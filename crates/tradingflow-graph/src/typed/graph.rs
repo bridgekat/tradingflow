@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use crate::{
     core::ErasedCell,
-    typed::{RefViewPort, SourceHandle, ValueView, ViewPort},
+    typed::{SourceHandle, Value, ViewPort},
 };
 
 use super::{
@@ -22,8 +22,7 @@ use super::{
 /// heap-allocated cell). Scratch is typed at `'static` purely as storage --
 /// layout is lifetime-invariant, every access re-types it at the calling
 /// generation's lifetime, and cross-generation validity rests on the engine's
-/// per-generation contract plus the leaves' covariance. Pass-by-reference
-/// leaves declare `()` scratch on both sides and pay nothing.
+/// per-generation contract plus the leaves' covariance.
 type NodeState<T> = (
     Box<[usize]>,
     <<T as Segment>::Inputs as Interface>::InScratch,
@@ -52,7 +51,7 @@ impl<C: Send + Sync + 'static> Builder<C> {
         &mut self.inner
     }
 
-    pub fn view<V: ValueView>(&self, handle: Handle<ViewPort<V>>) -> V::View<'_>
+    pub fn view<V: Value>(&self, handle: Handle<ViewPort<V>>) -> V::View<'_>
     where
         for<'a> V::View<'a>: Copy,
     {
@@ -60,16 +59,6 @@ impl<C: Send + Sync + 'static> Builder<C> {
         let type_id = self.inner.slot_type_id(index);
         assert!(type_id == TypeId::of::<ViewPort<V>>(), "slot type mismatch");
         unsafe { self.inner.slot_ptr(index).cast::<V::View<'_>>().read() }
-    }
-
-    pub fn ref_view<V: ValueView>(&self, handle: Handle<RefViewPort<V>>) -> &V::View<'_> {
-        let index = handle.index();
-        let type_id = self.inner.slot_type_id(index);
-        assert!(
-            type_id == TypeId::of::<RefViewPort<V>>(),
-            "slot type mismatch"
-        );
-        unsafe { &*self.inner.slot_ptr(index).cast::<V::View<'_>>() }
     }
 
     pub fn context(&self) -> &C {
@@ -105,7 +94,7 @@ impl<C: Send + Sync + 'static> Builder<C> {
         T: Segment<Inputs = H::Interface, Context = C>,
         T::Outputs: InterfaceHandles,
     {
-        // Get the input cell indices + the input shape (per-`RefViewPorts` element
+        // Get the input cell indices + the input shape (per-`ViewPorts` element
         // counts, tree-order) from the input handles.
         let mut input_indices = Vec::new();
         let mut input_shape = Vec::new();
@@ -256,7 +245,7 @@ unsafe fn compute_fn_for<T: Segment>(
     );
 }
 
-pub struct Graph<C: Send + Sync + 'static = ()> {
+pub struct Graph<C: Send + Sync + 'static> {
     inner: crate::core::Graph,
     _context: PhantomData<C>,
 }
@@ -270,22 +259,7 @@ impl<C: Send + Sync + 'static> Graph<C> {
         &mut self.inner
     }
 
-    pub fn ref_view<V: ValueView>(&self, handle: Handle<RefViewPort<V>>) -> &V::View<'_> {
-        let index = handle.index();
-        let type_id = self.inner.slot_type_id(index);
-        assert!(
-            type_id == TypeId::of::<RefViewPort<V>>(),
-            "slot type mismatch"
-        );
-        unsafe {
-            self.inner
-                .slot_ptr(index)
-                .cast::<V::View<'_>>()
-                .as_ref_unchecked()
-        }
-    }
-
-    pub fn view<V: ValueView>(&self, handle: Handle<ViewPort<V>>) -> V::View<'_>
+    pub fn view<V: Value>(&self, handle: Handle<ViewPort<V>>) -> V::View<'_>
     where
         for<'a> V::View<'a>: Copy,
     {

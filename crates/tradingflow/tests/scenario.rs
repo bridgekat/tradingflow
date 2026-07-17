@@ -2,9 +2,10 @@
 //! and operators driven by `tradingflow::ingest`'s [`Scenario`] / [`Session`]
 //! — event merging, coalesced batches, stale-input gating, and the driver's
 //! event counters. (The merge semantics themselves are covered in
-//! `tests/ingest.rs`.)
+//! `tests/ingest.rs`.) Source handles are `ArrayPort` view edges — the cell
+//! lends its view, so operators wire straight on.
 
-use tradingflow::operators::{add, as_view, filter, record};
+use tradingflow::operators::{add, filter, record};
 use tradingflow::sources::ArraySource;
 use tradingflow::{Array, ArrayView, Instant, Scenario, Series, SeriesView, WallClock};
 
@@ -24,8 +25,7 @@ fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
 async fn run_single_source_record() {
     let mut sc = Scenario::new(WallClock);
     let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let hv = sc.push(as_view(), h);
-    let hrec = sc.push(record(), hv);
+    let hrec = sc.push(record(), h);
 
     let mut session = sc.build();
     session.run(|_, _| {}).await;
@@ -42,8 +42,7 @@ async fn run_two_sources_add() {
     let mut sc = Scenario::new(WallClock);
     let ha = sc.add_source(src(&[1, 3], &[10.0, 30.0]));
     let hb = sc.add_source(src(&[2, 3], &[20.0, 40.0]));
-    let (hav, hbv) = (sc.push(as_view(), ha), sc.push(as_view(), hb));
-    let ho = sc.push(add(), (hav, hbv));
+    let ho = sc.push(add(), (ha, hb));
     let hrec = sc.push(record(), ho);
 
     let mut session = sc.build();
@@ -61,8 +60,7 @@ async fn run_coalescing() {
     let mut sc = Scenario::new(WallClock);
     let ha = sc.add_source(src(&[1, 2], &[10.0, 20.0]));
     let hb = sc.add_source(src(&[1, 2], &[100.0, 200.0]));
-    let (hav, hbv) = (sc.push(as_view(), ha), sc.push(as_view(), hb));
-    let ho = sc.push(add(), (hav, hbv));
+    let ho = sc.push(add(), (ha, hb));
     let hrec = sc.push(record(), ho);
 
     let mut session = sc.build();
@@ -79,11 +77,7 @@ async fn run_coalescing() {
 async fn run_filter_cutoff() {
     let mut sc = Scenario::new(WallClock);
     let h = sc.add_source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
-    let hv = sc.push(as_view(), h);
-    let hf = sc.push(
-        filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0),
-        hv,
-    );
+    let hf = sc.push(filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), h);
     let hrec = sc.push(record(), hf);
 
     let mut session = sc.build();
@@ -102,8 +96,7 @@ async fn run_filter_cutoff() {
 async fn on_stable_per_batch() {
     let mut sc = Scenario::new(WallClock);
     let h = sc.add_source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let hv = sc.push(as_view(), h);
-    let _ = sc.push(record(), hv);
+    let _ = sc.push(record(), h);
 
     let mut session = sc.build();
     assert_eq!(session.total_num_events(), Some(3));

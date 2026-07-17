@@ -1,5 +1,6 @@
-//! Operator-contract helpers shared by TradingFlow operators: the [`ArrayViewMarker`]
-//! view kind and the [`StripNotify`] payload helper.
+//! Operator-contract helpers shared by TradingFlow operators: the [`ArrayValue`]
+//! / [`SeriesValue`] [`Value`] kinds (with the [`array_cell`] / [`series_cell`]
+//! hand-poked cells over them), and the [`StripNotify`] payload helper.
 //!
 //! TradingFlow operators implement [`Operator`](crate::graph::Operator)
 //! (notify-gated; the common case) or [`Segment`](crate::graph::Segment) (custom
@@ -9,7 +10,16 @@
 //!
 //! # The array currency
 //!
-//! Array-shaped edges all carry a borrowed, strided
+//! **THE INVARIANT: every `Array`-shaped edge is an [`ArrayPort`] /
+//! [`ArrayPorts`] edge and every `Series`-shaped edge is a [`SeriesPort`] /
+//! [`SeriesPorts`] edge** — a borrowed view, passed by value. No graph edge
+//! carries a whole `Array` / `Series` by reference (`RefPort<Array<…>>`), so
+//! there are no bridge operators between an "owned" and a "view" spelling of
+//! the same data: sources lend views of their cells ([`ViewSource`]), compute
+//! operators lend views of their state, and whole-array consumers (the
+//! Python host) accept views.
+//!
+//! Concretely, array-shaped edges all carry a borrowed, strided
 //! [`ArrayView<'a, T, N>`](crate::ArrayView) by value through an
 //! [`ArrayPort<T, N>`] leaf — one currency for owned-buffer outputs and
 //! zero-copy slices alike. A compute operator homes its output buffer in `State`
@@ -22,6 +32,24 @@
 //! handles. Recorded-history edges carry a
 //! [`SeriesView<'a, T, N>`](crate::SeriesView) window through [`SeriesPort`] /
 //! [`SeriesPorts`] the same way.
+//!
+//! Owned values **enter** the currency at source cells — the engine's own
+//! sources, no TradingFlow-side segment: each marker's [`Value`] impl
+//! nominates the view's owned form (`ArrayValue` is owned by an
+//! [`Array`], `SeriesValue` by a [`Series`]), so a [`ViewSource`] cell
+//! owns the value in node state (poke it via
+//! [`state_mut`](crate::graph::Graph::state_mut), which dirties the node) and
+//! borrows its view per generation, while whole-value payloads (a pulse's
+//! `()`, a test's `i64`, an event batch `Vec<E>`) are
+//! [`Ref<T>`](crate::graph::Ref) cells
+//! ([`RefSource`](crate::graph::RefSource)). An
+//! [`EventSource`](crate::ingest::EventSource) simply names its cell's kind
+//! (`type Value`), and
+//! [`Scenario::add_source`](crate::Scenario::add_source) allocates the
+//! `ViewSource<S::Value>` directly — a source handle wires into the
+//! operator library with no adapter and no owned-type dispatch trait;
+//! hand-poked cells use [`array_cell`] / [`series_cell`] or the engine's
+//! [`RefSource`](crate::graph::RefSource).
 //!
 //! Conventions shared by every operator in this module tree:
 //!
@@ -67,31 +95,37 @@
 
 use std::marker::PhantomData;
 
-use crate::graph::{Interface, RefViewPort, RefViewPorts, ValueView, ViewPort, ViewPorts};
+use crate::graph::{Interface, Value, ViewPort, ViewPorts, ViewSource};
 
-use crate::{ArrayView, Scalar, SeriesView};
+use crate::{Array, ArrayView, Scalar, Series, SeriesView};
 
 // ===========================================================================
 // View markers + port aliases — the engine-facing spelling of the currencies.
 // ===========================================================================
 
-/// [`ValueView`] kind passing a borrowed [`ArrayView<'a, T, N>`](crate::ArrayView)
+/// [`Value`] kind passing a borrowed [`ArrayView<'a, T, N>`](crate::ArrayView)
 /// across interfaces with the engine's per-generation lifetime — fully
 /// borrow-checked zero-copy edges. Never spelled directly in operator
 /// signatures: use the port aliases [`ArrayPort`] / [`ArrayPorts`]. The rank
 /// `N` is compile-time; the operator's generic rank is inferred from the input
 /// handle types at `push`.
-pub struct ArrayViewMarker<T, const N: usize>(PhantomData<T>);
+pub struct ArrayValue<T, const N: usize>(PhantomData<T>);
 
 // SAFETY: `ArrayView<'a, T, N>` holds only `&'a [T]` plus plain `usize`s, so it
-// is covariant in `'a` — the only `ValueView` obligation.
-unsafe impl<T: Scalar, const N: usize> ValueView for ArrayViewMarker<T, N> {
+// is covariant in `'a` — the only `Value` obligation.
+unsafe impl<T: Scalar, const N: usize> Value for ArrayValue<T, N> {
     type View<'a> = ArrayView<'a, T, N>;
+    type Owned = Array<T, N>;
+
+    #[inline(always)]
+    fn borrow(owned: &Array<T, N>) -> ArrayView<'_, T, N> {
+        owned.view()
+    }
 }
 
-/// [`ValueView`] kind passing a borrowed
+/// [`Value`] kind passing a borrowed
 /// [`SeriesView<'a, T, N>`](crate::SeriesView) (a recorded-history window)
-/// across interfaces — the [`ArrayViewMarker`] analogue for [`Series`](crate::Series)
+/// across interfaces — the [`ArrayValue`] analogue for [`Series`]
 /// edges. Never spelled directly: use [`SeriesPort`] / [`SeriesPorts`].
 ///
 /// A [`SeriesView`] is the producer's *retained window* and its indices are
@@ -99,30 +133,61 @@ unsafe impl<T: Scalar, const N: usize> ValueView for ArrayViewMarker<T, N> {
 /// consumers address history relative to the end of the window — which is
 /// exactly what windowed operators do, and is retention-safe as long as the
 /// producing [`Record`](super::Record)'s bound covers the consumer's look-back.
-pub struct SeriesViewMarker<T, const N: usize>(PhantomData<T>);
+pub struct SeriesValue<T, const N: usize>(PhantomData<T>);
 
 // SAFETY: `SeriesView<'a, T, N>` holds only `&'a [Instant]` + `&'a [T]` plus a
-// plain `Shape` — covariant in `'a`, the only `ValueView` obligation.
-unsafe impl<T: Scalar, const N: usize> ValueView for SeriesViewMarker<T, N> {
+// plain `Shape` — covariant in `'a`, the only `Value` obligation.
+unsafe impl<T: Scalar, const N: usize> Value for SeriesValue<T, N> {
     type View<'a> = SeriesView<'a, T, N>;
+    type Owned = Series<T, N>;
+
+    #[inline(always)]
+    fn borrow(owned: &Series<T, N>) -> SeriesView<'_, T, N> {
+        owned.view()
+    }
 }
 
 /// A single port carrying a strided [`ArrayView<T, N>`](crate::ArrayView) by
 /// value — the array-shaped edge currency.
-pub type ArrayPort<T, const N: usize> = ViewPort<ArrayViewMarker<T, N>>;
+pub type ArrayPort<T, const N: usize> = ViewPort<ArrayValue<T, N>>;
 
 /// A runtime-length group of [`ArrayPort`]s, payload `(&[bool],
 /// &[ArrayView<T, N>])` — wires against a slice of independent [`ArrayPort`]
 /// producer handles (`&[Handle<ArrayPort<T, N>>]`), no bridging adapters.
-pub type ArrayPorts<T, const N: usize> = ViewPorts<ArrayViewMarker<T, N>>;
+pub type ArrayPorts<T, const N: usize> = ViewPorts<ArrayValue<T, N>>;
 
 /// A single port carrying a [`SeriesView<T, N>`](crate::SeriesView) (recorded
-/// history window) by value — the [`Series`](crate::Series) edge currency.
-pub type SeriesPort<T, const N: usize> = ViewPort<SeriesViewMarker<T, N>>;
+/// history window) by value — the [`Series`] edge currency.
+pub type SeriesPort<T, const N: usize> = ViewPort<SeriesValue<T, N>>;
 
 /// A runtime-length group of [`SeriesPort`]s, payload `(&[bool],
 /// &[SeriesView<T, N>])`.
-pub type SeriesPorts<T, const N: usize> = ViewPorts<SeriesViewMarker<T, N>>;
+pub type SeriesPorts<T, const N: usize> = ViewPorts<SeriesValue<T, N>>;
+
+// ===========================================================================
+// Hand-poked cells — free constructors for ViewSource over the markers.
+// ===========================================================================
+
+/// A hand-poked [`Array`] cell: a [`ViewSource`] owning `initial` in node
+/// state and lending its [`ArrayPort`] view (write it via
+/// [`state_mut`](crate::graph::Graph::state_mut), which dirties the node).
+/// This is what [`Scenario::add_source`](crate::Scenario::add_source)
+/// allocates for an [`ArrayValue`] source; push one directly for a constant
+/// or test cell. Whole-value cells use the engine's
+/// [`RefSource`](crate::graph::RefSource) / [`Source`](crate::graph::Source).
+pub fn array_cell<T: Scalar, const N: usize, C: Send + Sync + 'static>(
+    initial: Array<T, N>,
+) -> ViewSource<ArrayValue<T, N>, C> {
+    ViewSource::new(initial)
+}
+
+/// A hand-poked [`Series`] cell lending its [`SeriesPort`] view — the
+/// [`array_cell`] analogue for recorded-history cells.
+pub fn series_cell<T: Scalar, const N: usize, C: Send + Sync + 'static>(
+    initial: Series<T, N>,
+) -> ViewSource<SeriesValue<T, N>, C> {
+    ViewSource::new(initial)
+}
 
 // ===========================================================================
 // StripNotify — payload-only view of an `Interface` values tree.
@@ -141,7 +206,7 @@ pub trait StripNotify: Interface {
     fn plain<'a>(values: Self::Values<'a>) -> Self::Plain<'a>;
 }
 
-impl<V: ValueView> StripNotify for ViewPort<V>
+impl<V: Value> StripNotify for ViewPort<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -153,35 +218,11 @@ where
     }
 }
 
-impl<V: ValueView> StripNotify for ViewPorts<V>
+impl<V: Value> StripNotify for ViewPorts<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
     type Plain<'a> = &'a [V::View<'a>];
-
-    #[inline(always)]
-    fn plain<'a>(values: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {
-        values.1
-    }
-}
-
-impl<V: ValueView> StripNotify for RefViewPort<V>
-where
-    for<'a> V::View<'a>: Sync,
-{
-    type Plain<'a> = &'a V::View<'a>;
-
-    #[inline(always)]
-    fn plain<'a>(values: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {
-        values.1
-    }
-}
-
-impl<V: ValueView> StripNotify for RefViewPorts<V>
-where
-    for<'a> V::View<'a>: Sync,
-{
-    type Plain<'a> = &'a [&'a V::View<'a>];
 
     #[inline(always)]
     fn plain<'a>(values: <Self as Interface>::Values<'a>) -> Self::Plain<'a> {

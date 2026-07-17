@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::graph::{Builder, Graph, Handle, Pool, RefPort, RefSource};
+use crate::graph::{Builder, Graph, Handle, Pool, ViewPort, ViewSource};
 
 use super::clock::{Clock, WallClock};
 use super::feed::{Feed, LazyFeed, StreamFeed};
@@ -52,12 +52,24 @@ impl<C: Clock> Scenario<C> {
         }
     }
 
-    /// Register an [`EventSource`]. Its cell is a `RefSource` node holding
+    /// Register an [`EventSource`]. Its cell is an engine
+    /// [`ViewSource<S::Value>`](ViewSource) node holding
     /// [`EventSource::initial`]; the source's stream is materialized lazily at
     /// the first [`Session::step`], and its events are merged in timestamp
-    /// order and applied to the cell via [`EventSource::write`].
-    pub fn add_source<S: EventSource>(&mut self, source: S) -> Handle<RefPort<S::Output>> {
-        let handle = self.graph.push_source(RefSource::new(source.initial()));
+    /// order and applied to the cell via the writer [`EventSource::init`]
+    /// returns.
+    ///
+    /// The returned handle speaks the source's declared
+    /// [`Value`](EventSource::Value) kind: an
+    /// [`ArrayValue`](crate::operators::ArrayValue) source wires as an
+    /// `ArrayPort<T, N>` view edge (a `SeriesValue` source as a `SeriesPort`
+    /// edge) with no bridging adapter, while whole-value payloads (e.g. a
+    /// [`pulse()`](crate::sources::pulse())'s `()`) are `Ref<T>` cells wiring
+    /// as `RefPort<T>`.
+    pub fn add_source<S: EventSource>(&mut self, source: S) -> Handle<ViewPort<S::Value>> {
+        let handle = self
+            .graph
+            .push_source(ViewSource::<S::Value, Instant>::new(source.initial()));
         // Accumulate the progress estimate before the source is moved into the
         // feed; a single un-estimable source makes the whole total unknown.
         let est = source.total_num_events();
@@ -69,11 +81,11 @@ impl<C: Clock> Scenario<C> {
         // The feed is lazy: `init` (which may spawn producer tasks) runs on
         // the driving task at the first step, not here.
         self.queue.add_feed(LazyFeed::new(move || {
-            let (stream, mut state) = source.init();
+            let (stream, mut write) = source.init();
             let feed: Box<dyn Feed<Graph<Instant>>> = Box::new(StreamFeed::new(
                 stream,
                 move |graph: &mut Graph<Instant>, ts, event| {
-                    let n = S::write(&mut state, event, graph.state_mut(handle), ts);
+                    let n = write(event, graph.state_mut(handle), ts);
                     counter.fetch_add(n, Ordering::Relaxed);
                 },
             ));
@@ -110,7 +122,7 @@ impl<C: Clock> DerefMut for Scenario<C> {
 /// ([`num_events`](Self::num_events)).
 ///
 /// Derefs to the inner [`Graph`], so slot reads
-/// ([`view`](Graph::view) / [`ref_view`](Graph::ref_view)),
+/// ([`view`](Graph::view)),
 /// source-cell pokes ([`state_mut`](Graph::state_mut)) and the event
 /// time ([`context`](Graph::context)) are inherited. (The inherent
 /// [`stabilize`](Self::stabilize) uses the owned pool and shadows the inner
@@ -205,7 +217,7 @@ impl<C: Clock> Session<C> {
 
     /// Replay every feed to exhaustion, invoking `on_stable(&session, batch_ts)`
     /// once after each batch's stabilize (read outputs via the deref'd
-    /// [`view`](Graph::view) / [`ref_view`](Graph::ref_view),
+    /// [`view`](Graph::view),
     /// progress via [`num_events`](Self::num_events)).
     ///
     /// A live (never-exhausting) feed loops forever. For a shutdown path,

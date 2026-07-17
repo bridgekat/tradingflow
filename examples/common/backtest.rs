@@ -13,10 +13,10 @@
 //! benchmark), and execution is the native [`Benchmark`] trader (one-tick-delay
 //! mark-on-close, dividend reinvest, 涨跌停 limit blocking). No new operators.
 
-use tradingflow::graph::{Handle, RefPort};
+use tradingflow::graph::Handle;
 
 use tradingflow::operators::{
-    PyClassOperator, PyParams, SeriesPort, as_view, benchmark, map, own, py_class_operator, record,
+    ArrayPort, PyClassOperator, PyParams, SeriesPort, benchmark, map, py_class_operator, record,
     turnover,
 };
 use tradingflow::{Array, ArrayView, Scenario, Series};
@@ -52,12 +52,10 @@ fn bucket_nav(
     low: f64,
     high: f64,
 ) -> (NavH, NavH) {
-    // The Python portfolio consumes whole-array `RefPort` inputs; materialize the
-    // two view inputs via `own`.
-    let universe_ref = sc.push(own(), universe);
-    let factor_ref = sc.push(own(), factor);
+    // The Python portfolio speaks the view currency too — wire the universe
+    // and factor views straight in.
     let positions = sc.push(
-        py_class_operator::<(RefPort<Array<f64, 1>>, RefPort<Array<f64, 1>>), 1>(
+        py_class_operator::<(ArrayPort<f64, 1>, ArrayPort<f64, 1>), 1>(
             "tradingflow.portfolios.mean.rank_bucket",
             PyParams::new()
                 .int("num_stocks", n as i64)
@@ -65,19 +63,17 @@ fn bucket_nav(
                 .float("high", high),
             vec![n],
         ),
-        (universe_ref, factor_ref),
+        (universe, factor),
     );
-    // The trader speaks the view currency; bridge the `RefPort` positions back.
-    let positions_v = sc.push(as_view(), positions);
     let trader = sc.push(
         benchmark(n, 1.0, true),
-        (positions_v, close, adjusts, upper, lower),
+        (positions, close, adjusts, upper, lower),
     );
     let nav = sc.push(
         map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         trader,
     );
-    let turnover = sc.push(turnover(), positions_v);
+    let turnover = sc.push(turnover(), positions);
     (sc.push(record(), nav), sc.push(record(), turnover))
 }
 

@@ -22,7 +22,7 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::operators::{as_view, diff, own, record};
+use tradingflow::operators::{diff, record};
 use tradingflow::{Retention, Scenario, WallClock};
 
 use common::FeatureSet;
@@ -85,14 +85,13 @@ async fn main() {
         FeatureSet::Canonical,
         Retention::UNBOUNDED,
     );
-    // Raw daily log returns for the realized-variance metric, as a whole-array
-    // `RefPort` (the metric is a Python operator).
+    // Raw daily log returns for the realized-variance metric (an ordinary
+    // `ArrayPort` view — the Python metric consumes it directly).
     let log_returns = sc.push(diff(), m.log_adj);
-    let log_returns_ref = sc.push(own(), log_returns);
 
     let predicted_returns = sc.push(
         linear_regression_mean(m.dims, MIN_PERIODS),
-        (m.universe_ref, m.features.series, m.demeaned_series),
+        (m.universe, m.features.series, m.demeaned_series),
     );
 
     let h_index = m.index_nav(&mut sc);
@@ -105,12 +104,11 @@ async fn main() {
             // `LinearRegression` above keeps its own `min_periods`).
             let cov = sc.push(
                 e.build(m.dims, args.rebalance_days, None),
-                (m.universe_ref, m.features.series, m.target_series),
+                (m.universe, m.features.series, m.target_series),
             );
 
             // GMV realized-variance metric (diagnostic; fed cov + raw returns).
-            let mv = sc.push(minimum_variance(m.n), (cov, log_returns_ref));
-            let mv_v = sc.push(as_view(), mv);
+            let mv = sc.push(minimum_variance(m.n), (cov, log_returns));
 
             // Long-only and long-short Markowitz portfolios.
             let nav: Vec<NavH> = [true, false]
@@ -124,7 +122,7 @@ async fn main() {
                             RISK_AVERSION,
                             long_only,
                         ),
-                        (m.universe_ref, predicted_returns, cov),
+                        (m.universe, predicted_returns, cov),
                     );
                     m.record_nav(&mut sc, soft)
                 })
@@ -134,7 +132,7 @@ async fn main() {
                 name: e.name,
                 long: nav[0],
                 ls: nav[1],
-                mv: sc.push(record(), mv_v),
+                mv: sc.push(record(), mv),
             }
         })
         .collect();

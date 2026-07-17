@@ -1,21 +1,20 @@
-//! Structural operators — port of `Id`, `Where`, `Cast`, plus the
-//! [`Resample`] clock-gated identity and its view-currency counterparts
-//! [`ResampleView`] / [`ResampleClocked`], implemented directly on
-//! [`Operator`](crate::graph::Operator) / [`Segment`].
+//! Structural operators — port of `Id`, `Where`, `Cast`, plus the clock-gated
+//! view resamplers [`ResampleView`] / [`ResampleClocked`], implemented
+//! directly on [`Operator`](crate::graph::Operator) / [`Segment`].
 
 use std::marker::PhantomData;
 
 use num_traits::AsPrimitive;
 
-use crate::graph::{Interface, Operator, RefPort, Segment};
+use crate::graph::{Operator, RefPort, Segment};
 
-use super::gating::Clocked;
 use super::op::ArrayPort;
 use crate::{Array, ArrayView, Instant, Scalar};
 
 /// Identity passthrough: clones input to output unchanged. Generic over the
-/// payload `T` (an owned value carried by `RefPort<T>` — an `Array<T, N>`, a
-/// `Series<T>`, a scalar, …), so it is rank- and currency-agnostic.
+/// payload `T` (an owned **non-array** value carried by `RefPort<T>` — a
+/// scalar, a batch, …; `Array` / `Series` edges are always [`ArrayPort`] /
+/// `SeriesPort` view edges, per the [`op`](super::op) invariant).
 #[derive(Clone)]
 pub struct Id<T: Clone + Send + Sync + 'static> {
     _phantom: PhantomData<T>,
@@ -213,70 +212,6 @@ where
     }
 }
 
-/// Re-emit a data input's latest value on every clock tick:
-/// `Clocked<Id<O>, C>`. The clock (`C`) and data (`O`) node types are
-/// independent — only the clock's notify bit is consulted. Like
-/// [`Clocked`], this implements [`Segment`] directly (its gate ignores the
-/// data input's notify bit) and simply delegates to the wrapped segment.
-pub struct Resample<O, C>(Clocked<Id<O>, C>)
-where
-    O: Clone + Send + Sync + 'static,
-    C: Send + Sync + 'static;
-
-impl<O, C> Clone for Resample<O, C>
-where
-    O: Clone + Send + Sync + 'static,
-    C: Send + Sync + 'static,
-{
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<O, C> Resample<O, C>
-where
-    O: Clone + Send + Sync + 'static,
-    C: Send + Sync + 'static,
-{
-    pub fn new() -> Self {
-        Self(Clocked::new(Id::new()))
-    }
-}
-
-impl<O, C> Default for Resample<O, C>
-where
-    O: Clone + Send + Sync + 'static,
-    C: Send + Sync + 'static,
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<O, C> Segment for Resample<O, C>
-where
-    O: Clone + Send + Sync + 'static,
-    C: Send + Sync + 'static,
-{
-    type Inputs = <Clocked<Id<O>, C> as Segment>::Inputs; // = (RefPort<C>, RefPort<O>)
-    type Outputs = <Clocked<Id<O>, C> as Segment>::Outputs; // = RefPort<O>
-    type Context = <Clocked<Id<O>, C> as Segment>::Context; // = Instant
-    type State = <Clocked<Id<O>, C> as Segment>::State;
-
-    fn init(self) -> Self::State {
-        <Clocked<Id<O>, C> as Segment>::init(self.0)
-    }
-
-    fn compute<'a, 'b: 'a>(
-        inputs: <Self::Inputs as Interface>::Values<'a>,
-        context: &Self::Context,
-        state: &'b mut Self::State,
-        init: bool,
-    ) -> <Self::Outputs as Interface>::Values<'a> {
-        <Clocked<Id<O>, C> as Segment>::compute(inputs, context, state, init)
-    }
-}
-
 /// State shared by the view-currency resamplers: the last data view
 /// materialized into an owned buffer, so it survives between clock ticks while
 /// the upstream view's storage may change.
@@ -286,10 +221,9 @@ pub struct ResampleViewState<T: Scalar, const N: usize> {
 
 /// Clock-gated **view** passthrough whose clock is another data view (only the
 /// clock's notify bit is consulted): re-emits the rank-`N` data view on every
-/// tick of the rank-1 clock view, holding the last value in between. The
-/// view-currency counterpart of [`Resample`] — e.g. resample a feature panel
-/// onto the daily-close pulse. Stays in the [`ArrayView`] currency end-to-end,
-/// so it needs no [`Own`](super::Own) bridge on either side.
+/// tick of the rank-1 clock view, holding the last value in between — e.g.
+/// resample a feature panel onto the daily-close pulse. Stays in the
+/// [`ArrayView`] currency end-to-end.
 #[derive(Clone)]
 pub struct ResampleView<T: Scalar, const N: usize> {
     _phantom: PhantomData<T>,
@@ -404,12 +338,6 @@ pub fn keep_where<T: Scalar, F: Fn(T) -> bool + Clone, const N: usize>(
     fill: T,
 ) -> Where<T, F, N> {
     Where::new(condition, fill)
-}
-
-/// Re-emit a data input's latest value on every clock tick (the whole-value
-/// `RefPort` currency).
-pub fn resample<O: Clone + Send + Sync + 'static, C: Send + Sync + 'static>() -> Resample<O, C> {
-    Resample::new()
 }
 
 /// Re-emit an array view on every tick of a leading *view* pulse.
