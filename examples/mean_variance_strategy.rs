@@ -28,7 +28,6 @@ use clap::Parser;
 use tradingflow::data::Retention;
 use tradingflow::{Scenario, WallClock};
 
-use common::TARGET_OFFSET;
 use common::models::{Mode, markowitz, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable};
 
@@ -60,8 +59,7 @@ async fn main() {
     // The shared panel / target feed the shrinkage covariance predictor too,
     // which fits over its last `COV_MAX_PERIODS` pairs — so the records must
     // retain that window (the mean predictor's single-pair need is subsumed).
-    let panel_ret =
-        Retention::count((COV_MAX_PERIODS + TARGET_OFFSET) as usize + common::RETAIN_MARGIN);
+    let panel_ret = Retention::count(COV_MAX_PERIODS.max(1) as usize + 1);
     let m = Market::build(&mut sc, &symbols, &args, panel_ret);
     eprintln!("{} features", m.dims.num_features);
 

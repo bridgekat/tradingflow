@@ -21,8 +21,7 @@ use tradingflow::operators::{
 };
 use tradingflow::ports::{ArrayPort, SeriesPort};
 
-use super::AvH;
-use super::strategy::{NavH, total_value};
+use super::strategy::total_value;
 
 /// Number of layered-backtest groups (deciles).
 pub const NUM_GROUPS: usize = 10;
@@ -42,16 +41,19 @@ pub struct DecileBacktest {
 #[allow(clippy::too_many_arguments)]
 fn bucket_nav(
     sc: &mut Scenario,
-    universe: AvH,
-    factor: AvH,
-    close: AvH,
-    adjusts: AvH,
-    upper: AvH,
-    lower: AvH,
+    universe: PortHandle<ArrayPort<f64, 1>>,
+    factor: PortHandle<ArrayPort<f64, 1>>,
+    close: PortHandle<ArrayPort<f64, 1>>,
+    adjusts: PortHandle<ArrayPort<f64, 1>>,
+    upper: PortHandle<ArrayPort<f64, 1>>,
+    lower: PortHandle<ArrayPort<f64, 1>>,
     n: usize,
     low: f64,
     high: f64,
-) -> (NavH, NavH) {
+) -> (
+    PortHandle<SeriesPort<f64, 0>>,
+    PortHandle<SeriesPort<f64, 0>>,
+) {
     // The Python portfolio speaks the view currency too — wire the universe
     // and factor views straight in.
     let positions = sc.segment(
@@ -78,12 +80,12 @@ fn bucket_nav(
 #[allow(clippy::too_many_arguments)]
 pub fn build_decile_backtest(
     sc: &mut Scenario,
-    universe: AvH,
-    factor: AvH,
-    close: AvH,
-    adjusts: AvH,
-    upper: AvH,
-    lower: AvH,
+    universe: PortHandle<ArrayPort<f64, 1>>,
+    factor: PortHandle<ArrayPort<f64, 1>>,
+    close: PortHandle<ArrayPort<f64, 1>>,
+    adjusts: PortHandle<ArrayPort<f64, 1>>,
+    upper: PortHandle<ArrayPort<f64, 1>>,
+    lower: PortHandle<ArrayPort<f64, 1>>,
     n: usize,
 ) -> DecileBacktest {
     let mut decile_nav = Vec::with_capacity(NUM_GROUPS);

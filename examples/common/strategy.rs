@@ -13,7 +13,6 @@ use tradingflow::ports::{ArrayPort, SeriesPort};
 use tradingflow::sources::pulse;
 use tradingflow::{Scenario, Session};
 
-use super::AvH;
 use super::args::CommonArgs;
 use super::data::{Stacked, build_stacked};
 use super::features::{Features, build_features};
@@ -28,19 +27,12 @@ pub const INITIAL_CASH: f64 = 1_000_000.0;
 pub const TRADING_DAYS: f64 = 252.0;
 /// Daily price-limit band (±10% for most A-shares).
 pub const PRICE_LIMIT: f64 = 0.10;
-/// Forward-return offset pairing `features[i]` with `target[i + 1]`.
-pub const TARGET_OFFSET: i64 = 1;
-
-/// A scalar view handle (a rank-0 `ArrayView` port).
-pub type ScH = PortHandle<ArrayPort<f64, 0>>;
-/// A recorded scalar series handle — a NAV curve.
-pub type NavH = PortHandle<SeriesPort<f64, 0>>;
-/// A positions handle — the Python portfolios emit the same `ArrayPort` view
-/// currency as every other array edge.
-pub type PosH = PortHandle<ArrayPort<f64, 1>>;
 
 /// Map a trader's `(holdings_value, cash)` view to its scalar total value.
-pub fn total_value(sc: &mut Scenario, h: AvH) -> ScH {
+pub fn total_value(
+    sc: &mut Scenario,
+    h: PortHandle<ArrayPort<f64, 1>>,
+) -> PortHandle<ArrayPort<f64, 0>> {
     sc.segment(
         map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         h,
@@ -55,14 +47,14 @@ pub struct Market {
     pub features: Features,
     /// The cap-weighted universe as a view (also the benchmark weights, and
     /// what the Python operators consume directly).
-    pub universe: AvH,
+    pub universe: PortHandle<ArrayPort<f64, 1>>,
     pub rebalance_clock: PortHandle<RefPort<()>>,
-    pub upper: AvH,
-    pub lower: AvH,
+    pub upper: PortHandle<ArrayPort<f64, 1>>,
+    pub lower: PortHandle<ArrayPort<f64, 1>>,
     /// Log adjusted close — the source of returns.
-    pub log_adj: AvH,
+    pub log_adj: PortHandle<ArrayPort<f64, 1>>,
     /// Raw winsorized log returns, as a live view (the IC evaluators' target).
-    pub target: AvH,
+    pub target: PortHandle<ArrayPort<f64, 1>>,
     /// Raw winsorized log returns (the covariance predictor's target).
     pub target_series: PortHandle<SeriesPort<f64, 1>>,
     /// Cross-sectionally demeaned log returns (the mean predictor's target).
@@ -99,7 +91,7 @@ impl Market {
             num_stocks: n,
             num_features: features.names.len(),
             universe_size: args.index_size,
-            target_offset: TARGET_OFFSET,
+            target_offset: 1,
         };
         Self {
             st,
@@ -121,7 +113,12 @@ impl Market {
     /// returning its scalar total value. `trader` is any of the native traders —
     /// `Benchmark` (frictionless), `SimpleTrader` / `RandomTrader` (lot + fee
     /// aware) — which is the cost-model swap point.
-    pub fn simulate<T>(&self, sc: &mut Scenario, trader: T, positions: AvH) -> ScH
+    pub fn simulate<T>(
+        &self,
+        sc: &mut Scenario,
+        trader: T,
+        positions: PortHandle<ArrayPort<f64, 1>>,
+    ) -> PortHandle<ArrayPort<f64, 0>>
     where
         T: tradingflow_graph::typed::Segment<
                 Inputs = (
@@ -149,13 +146,17 @@ impl Market {
     }
 
     /// The cap-weighted index's NAV: trade the universe weights frictionlessly.
-    pub fn index_nav(&self, sc: &mut Scenario) -> NavH {
+    pub fn index_nav(&self, sc: &mut Scenario) -> PortHandle<SeriesPort<f64, 0>> {
         self.record_nav(sc, self.universe)
     }
 
     /// A Python portfolio's frictionless NAV: trade its position views via
     /// `Benchmark`, sum, and record.
-    pub fn record_nav(&self, sc: &mut Scenario, positions: PosH) -> NavH {
+    pub fn record_nav(
+        &self,
+        sc: &mut Scenario,
+        positions: PortHandle<ArrayPort<f64, 1>>,
+    ) -> PortHandle<SeriesPort<f64, 0>> {
         let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions);
         sc.segment(record(), value)
     }
@@ -266,7 +267,7 @@ impl NavTable {
         session: &Session,
         label: impl Into<String>,
         begin_ns: i64,
-        h: NavH,
+        h: PortHandle<SeriesPort<f64, 0>>,
     ) -> NavStats {
         let (t, v) = super::read_scalar_series(session, h);
         let (t, v) = trim_scale(begin_ns, t, v);

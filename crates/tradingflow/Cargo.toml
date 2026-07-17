@@ -26,8 +26,9 @@ num-traits = "0.2.19"
 bumpalo = "3"
 rand = { version = "0.10", features = ["thread_rng"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
-tradingflow-graph = { path = "../tradingflow-graph" }
 tradingflow-data = { path = "../tradingflow-data" }
+tradingflow-graph = { path = "../tradingflow-graph" }
+tradingflow-macros = { path = "../tradingflow-macros" }
 arrow = "58.3.0"
 parquet = { version = "58.3.0", features = ["arrow", "zstd"] }
 
@@ -73,9 +74,4 @@ required-features = ["python"]
 [[example]]
 name = "factor_ic"
 path = "../../examples/factor_ic.rs"
-required-features = ["python"]
-
-[[example]]
-name = "factor_handbook"
-path = "../../examples/factor_handbook.rs"
 required-features = ["python"]

@@ -8,9 +8,8 @@ use tradingflow::operators::{
     metrics::*, num::*, stocks::*, structural::*, traders::*, transform::*,
 };
 use tradingflow::ports::{ArrayPort, SeriesPort};
-use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
+use tradingflow::sources::{parquet_financial_report_panel_source, parquet_panel_source};
 
-use super::AvH;
 use super::args::CommonArgs;
 
 /// Cross-sectional `(num_stocks,)` panels produced by [`build_stacked`].
@@ -22,29 +21,29 @@ use super::args::CommonArgs;
 /// debit-positive and liabilities / expense items credit-**negative** — the factor
 /// formulas negate them where a positive magnitude is wanted.
 pub struct Stacked {
-    pub close: AvH,                  // unadjusted close (StackSync)
-    pub volume: AvH,                 // 成交量 shares (StackSync)
-    pub open: AvH,                   // 开盘价 unadjusted (StackSync)
-    pub high: AvH,                   // 最高价 unadjusted (StackSync)
-    pub low: AvH,                    // 最低价 unadjusted (StackSync)
-    pub amount: AvH,                 // 成交额 turnover value (StackSync)
-    pub adjusted_close: AvH,         // close * forward-adjust factor (StackSync)
-    pub adjusts: AvH,                // forward-adjust factor (Stack)
-    pub total_shares: AvH,           // (Stack)
-    pub circ_shares: AvH,            // (Stack)
-    pub parent_equity: AvH,          // 归母净资产, positive (Stack)
-    pub net_profit: AvH,             // 净利润, annualized, positive
-    pub operating_profit: AvH,       // 营业利润, annualized, positive
-    pub revenue: AvH,                // 营业收入, annualized, positive
-    pub operating_cost: AvH,         // 营业成本, annualized, NEGATIVE (a deduction)
-    pub total_assets: AvH,           // 总资产, positive
-    pub total_liab: AvH,             // 总负债, NEGATIVE (credit side)
-    pub current_assets: AvH,         // 流动资产, positive
-    pub current_liab: AvH,           // 流动负债, NEGATIVE (credit side)
-    pub cash: AvH,                   // 货币资金, positive
-    pub inventories: AvH,            // 存货, positive
-    pub receivables: AvH,            // 应收票据及账款, positive
-    pub net_operating_cashflow: AvH, // 经营现金流净额, annualized
+    pub close: PortHandle<ArrayPort<f64, 1>>, // unadjusted close (StackSync)
+    pub volume: PortHandle<ArrayPort<f64, 1>>, // 成交量 shares (StackSync)
+    pub open: PortHandle<ArrayPort<f64, 1>>,  // 开盘价 unadjusted (StackSync)
+    pub high: PortHandle<ArrayPort<f64, 1>>,  // 最高价 unadjusted (StackSync)
+    pub low: PortHandle<ArrayPort<f64, 1>>,   // 最低价 unadjusted (StackSync)
+    pub amount: PortHandle<ArrayPort<f64, 1>>, // 成交额 turnover value (StackSync)
+    pub adjusted_close: PortHandle<ArrayPort<f64, 1>>, // close * forward-adjust factor (StackSync)
+    pub adjusts: PortHandle<ArrayPort<f64, 1>>, // forward-adjust factor (Stack)
+    pub total_shares: PortHandle<ArrayPort<f64, 1>>, // (Stack)
+    pub circ_shares: PortHandle<ArrayPort<f64, 1>>, // (Stack)
+    pub parent_equity: PortHandle<ArrayPort<f64, 1>>, // 归母净资产, positive (Stack)
+    pub net_profit: PortHandle<ArrayPort<f64, 1>>, // 净利润, annualized, positive
+    pub operating_profit: PortHandle<ArrayPort<f64, 1>>, // 营业利润, annualized, positive
+    pub revenue: PortHandle<ArrayPort<f64, 1>>, // 营业收入, annualized, positive
+    pub operating_cost: PortHandle<ArrayPort<f64, 1>>, // 营业成本, annualized, NEGATIVE (a deduction)
+    pub total_assets: PortHandle<ArrayPort<f64, 1>>,   // 总资产, positive
+    pub total_liab: PortHandle<ArrayPort<f64, 1>>,     // 总负债, NEGATIVE (credit side)
+    pub current_assets: PortHandle<ArrayPort<f64, 1>>, // 流动资产, positive
+    pub current_liab: PortHandle<ArrayPort<f64, 1>>,   // 流动负债, NEGATIVE (credit side)
+    pub cash: PortHandle<ArrayPort<f64, 1>>,           // 货币资金, positive
+    pub inventories: PortHandle<ArrayPort<f64, 1>>,    // 存货, positive
+    pub receivables: PortHandle<ArrayPort<f64, 1>>,    // 应收票据及账款, positive
+    pub net_operating_cashflow: PortHandle<ArrayPort<f64, 1>>, // 经营现金流净额, annualized
 }
 
 /// Predicate for the per-stock `Gate`: the row has ≥1 finite entry, i.e.
@@ -81,9 +80,8 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     // view edge, which feeds `Split` directly.
     let daily_panel =
         |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> PortHandle<ArrayPort<f64, 2>> {
-            let s =
-                ParquetPanelSource::new(format!("{dir}/{kind}.parquet"), cols, universe.clone())
-                    .with_time_range(start, end);
+            let s = parquet_panel_source(format!("{dir}/{kind}.parquet"), cols, universe.clone())
+                .with_time_range(start, end);
             sc.source(s)
         };
     let report_panel = |sc: &mut Scenario,
@@ -91,7 +89,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
                         cols: Vec<String>,
                         with_report_date: bool|
      -> PortHandle<ArrayPort<f64, 2>> {
-        let s = ParquetFinancialReportPanelSource::new(
+        let s = parquet_financial_report_panel_source(
             format!("{dir}/{kind}.parquet"),
             cols,
             universe.clone(),
@@ -236,19 +234,19 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             let balance = gate(any_finite) @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
             let income = gate(any_finite) @ income_row; // [year, doy, profit, operating, revenue, cost]
             let cashflow = gate(any_finite) @ cashflow_row; // [year, doy, operating, investing, financing]
-            // Terminal column picks stay zero-copy views (`SliceView`) into the
-            // retaining `Gate`'s stable storage; squeezing one index drops the
+            // Terminal column picks `Select` out of the retaining `Gate`'s stable
+            // storage; squeezing one index drops the
             // axis (rank-1 row → rank-0 scalar). `close` feeds `ForwardAdjust` /
             // `multiply` and materializes via the owned `Select`.
-            let close = select(vec![0], 0, true) @ prices;
-            let volume = slice_view(vec![1], 0, true) @ prices;
+            let close = select_at(0, 0) @ prices;
+            let volume = select_at(1, 0) @ prices;
             // [open, high, low, amount] as a contiguous rank-1 view of cols 2..6.
-            let prices_extras = slice_view(vec![2, 3, 4, 5], 0, false) @ prices;
+            let prices_extras = select_many(vec![2, 3, 4, 5], 0) @ prices;
             let adjusts =
                 forward_adjust().with_output_prices(false) @ (close, dividends);
             let adjusted_close = multiply() @ (close, adjusts);
-            let total_shares = slice_view(vec![0], 0, true) @ equity;
-            let circ_shares = slice_view(vec![1], 0, true) @ equity;
+            let total_shares = select_at(0, 0) @ equity;
+            let circ_shares = select_at(1, 0) @ equity;
             // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).
             let parent_equity = apply::<ArrayPort<f64, 1>, f64, 0, _>(
                 |a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous()[..3].iter().sum::<f64>()),
@@ -258,7 +256,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
             // as a contiguous rank-1 view of cols 3..10.
             let income_ann = annualize() @ income;
             let cf_ann = annualize() @ cashflow;
-            let balance_extras = slice_view(vec![3, 4, 5, 6, 7, 8, 9], 0, false) @ balance;
+            let balance_extras = select_many(vec![3, 4, 5, 6, 7, 8, 9], 0) @ balance;
             (
                 close,
                 volume,
@@ -329,21 +327,21 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         total_shares: sc.segment(stack(0), &totals[..]),
         circ_shares: sc.segment(stack(0), &circs[..]),
         parent_equity: sc.segment(stack(0), &parent_equities[..]),
-        net_profit: sc.segment(select(vec![0], 1, true), income_xs),
-        operating_profit: sc.segment(select(vec![1], 1, true), income_xs),
-        revenue: sc.segment(select(vec![2], 1, true), income_xs),
-        operating_cost: sc.segment(select(vec![3], 1, true), income_xs),
-        total_assets: sc.segment(select(vec![0], 1, true), balance_xs),
-        total_liab: sc.segment(select(vec![1], 1, true), balance_xs),
-        current_assets: sc.segment(select(vec![2], 1, true), balance_xs),
-        current_liab: sc.segment(select(vec![3], 1, true), balance_xs),
-        cash: sc.segment(select(vec![4], 1, true), balance_xs),
-        inventories: sc.segment(select(vec![5], 1, true), balance_xs),
-        receivables: sc.segment(select(vec![6], 1, true), balance_xs),
-        net_operating_cashflow: sc.segment(select(vec![0], 1, true), cf_xs),
-        open: sc.segment(select(vec![0], 1, true), px_xs),
-        high: sc.segment(select(vec![1], 1, true), px_xs),
-        low: sc.segment(select(vec![2], 1, true), px_xs),
-        amount: sc.segment(select(vec![3], 1, true), px_xs),
+        net_profit: sc.segment(select_at(0, 1), income_xs),
+        operating_profit: sc.segment(select_at(1, 1), income_xs),
+        revenue: sc.segment(select_at(2, 1), income_xs),
+        operating_cost: sc.segment(select_at(3, 1), income_xs),
+        total_assets: sc.segment(select_at(0, 1), balance_xs),
+        total_liab: sc.segment(select_at(1, 1), balance_xs),
+        current_assets: sc.segment(select_at(2, 1), balance_xs),
+        current_liab: sc.segment(select_at(3, 1), balance_xs),
+        cash: sc.segment(select_at(4, 1), balance_xs),
+        inventories: sc.segment(select_at(5, 1), balance_xs),
+        receivables: sc.segment(select_at(6, 1), balance_xs),
+        net_operating_cashflow: sc.segment(select_at(0, 1), cf_xs),
+        open: sc.segment(select_at(0, 1), px_xs),
+        high: sc.segment(select_at(1, 1), px_xs),
+        low: sc.segment(select_at(2, 1), px_xs),
+        amount: sc.segment(select_at(3, 1), px_xs),
     }
 }

@@ -35,7 +35,7 @@ use tradingflow::operators::traders::{benchmark, random_trader};
 use tradingflow::{Scenario, WallClock};
 
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
-use common::strategy::{INITIAL_CASH, Market, TARGET_OFFSET, trim_scale};
+use common::strategy::{INITIAL_CASH, Market, trim_scale};
 
 const MIN_PERIODS: i64 = 100;
 const RIDGE_ALPHA: f64 = 0.01;
@@ -64,8 +64,8 @@ async fn main() {
 
     // ---- Data + features ------------------------------------------------
     // The incremental mean predictor folds one (feature, target) pair per tick,
-    // so the recorded panel / target only need the last `TARGET_OFFSET + 1` rows.
-    let feat_ret = Retention::count(TARGET_OFFSET as usize + common::RETAIN_MARGIN);
+    // so the recorded panel / target only need the last 2 rows.
+    let feat_ret = Retention::count(1 + 1);
     let m = Market::build(&mut sc, &symbols, &args, feat_ret);
     eprintln!("{} features", m.dims.num_features);
 

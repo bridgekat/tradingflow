@@ -296,8 +296,72 @@ where
     }
 }
 
+/// Equivalent to `Comp<F, Fork<Id, Comp<Arr<H>, G>>>`; used by macros to
+/// reduce type complexity.
+pub struct Bind<F, G, H>(pub F, pub G, pub H);
+
+impl<F, G, H> Segment for Bind<F, G, H>
+where
+    F: Segment,
+    G: Segment<Context = F::Context>,
+    H: for<'a> Fn(
+            <F::Outputs as Interface>::Values<'a>,
+            &'a (),
+        ) -> <G::Inputs as Interface>::Values<'a>
+        + Send
+        + 'static,
+{
+    type Inputs = F::Inputs;
+    type Outputs = (F::Outputs, G::Outputs);
+    type Context = F::Context;
+    type State = (F::State, G::State, H);
+
+    fn init(self) -> Self::State {
+        (self.0.init(), self.1.init(), self.2)
+    }
+
+    fn compute<'a, 'b: 'a>(
+        inputs: <Self::Inputs as Interface>::Values<'a>,
+        context: &Self::Context,
+        state: &'b mut Self::State,
+        is_first_run: bool,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        let (ps, ss, f) = state;
+        let env = F::compute(inputs, context, ps, is_first_run);
+        (env, G::compute(f(env, &()), context, ss, is_first_run))
+    }
+}
+
+/// Equivalent to `Comp<F, Arr<H>>`; used by macros to reduce type complexity.
+pub struct Route<F, U, T>(pub F, pub T, pub PhantomData<U>);
+
+impl<F, T, H> Segment for Route<F, T, H>
+where
+    F: Segment,
+    T: Interface,
+    H: for<'a> Fn(<F::Outputs as Interface>::Values<'a>, &'a ()) -> T::Values<'a> + Send + 'static,
+{
+    type Inputs = F::Inputs;
+    type Outputs = T;
+    type Context = F::Context;
+    type State = (F::State, H);
+
+    fn init(self) -> Self::State {
+        (self.0.init(), self.1)
+    }
+
+    fn compute<'a, 'b: 'a>(
+        inputs: <Self::Inputs as Interface>::Values<'a>,
+        context: &Self::Context,
+        state: &'b mut Self::State,
+        is_first_run: bool,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        let (ps, f) = state;
+        f(F::compute(inputs, context, ps, is_first_run), &())
+    }
+}
+
 /// Convenient combinator methods on any [`Segment`].
-#[allow(clippy::type_complexity)] // combinator return types are spelled out
 pub trait SegmentExt: Segment + Sized {
     fn then<G>(self, g: G) -> Comp<Self, G>
     where
@@ -323,19 +387,9 @@ pub trait SegmentExt: Segment + Sized {
     /// One `segment!` statement `let out = wires => seg`: route picks from the
     /// environment (`self`'s outputs) into `seg`'s inputs, and extend the
     /// environment with `seg`'s outputs, producing `(env, out)`.
-    fn bind<S, F>(
-        self,
-        seg: S,
-        route: F,
-    ) -> Comp<
-        Self,
-        Fork<
-            Id<Self::Outputs, Self::Context>,
-            Comp<Arr<Self::Outputs, S::Inputs, Self::Context, F>, S>,
-        >,
-    >
+    fn bind<S, F>(self, seg: S, route: F) -> Bind<Self, S, F>
     where
-        S: Segment,
+        S: Segment<Context = Self::Context>,
         F: for<'a> Fn(
                 <Self::Outputs as Interface>::Values<'a>,
                 &'a (),
@@ -343,7 +397,7 @@ pub trait SegmentExt: Segment + Sized {
             + Send
             + 'static,
     {
-        Comp(self, Fork(Id::default(), Comp(Arr::new(route), seg)))
+        Bind(self, seg, route)
     }
 
     /// Final re-route of the environment into the result tree `U` (the `segment!`
@@ -352,14 +406,14 @@ pub trait SegmentExt: Segment + Sized {
     /// annotation-free tail form needs no method of its own:
     /// `bind(seg, f).then(Right::default())` -- `Right` has no closure and is
     /// fully inferred top-down.)
-    fn route<U, F>(self, route: F) -> Comp<Self, Arr<Self::Outputs, U, Self::Context, F>>
+    fn route<U, F>(self, route: F) -> Route<Self, U, F>
     where
         U: Interface,
         F: for<'a> Fn(<Self::Outputs as Interface>::Values<'a>, &'a ()) -> U::Values<'a>
             + Send
             + 'static,
     {
-        Comp(self, Arr::new(route))
+        Route(self, route, PhantomData)
     }
 }
 

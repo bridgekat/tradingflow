@@ -19,35 +19,18 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::graph::typed::PortHandle;
-
-use tradingflow::data::{Array, ArrayView, Instant, SeriesView};
+use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::operators::constant::array_cell;
 use tradingflow::operators::num::{add, multiply, sqrt, subtract};
 use tradingflow::operators::rolling::{Window, rolling_mean, rolling_variance};
 use tradingflow::operators::stocks::forward_adjust;
 use tradingflow::operators::structural::{filter, record};
-use tradingflow::operators::transform::select;
-use tradingflow::ports::ArrayPort;
-use tradingflow::sources::ParquetPanelSource;
+use tradingflow::operators::transform::select_at;
+use tradingflow::sources::parquet_panel_source;
 use tradingflow::{Scenario, WallClock};
 
 const WINDOW: usize = 252;
 const MULTIPLE: f64 = 2.0;
-
-/// `Select` stock `i`'s row out of a `[N, K]` panel (→ rank-1 `[K]`) and drop the
-/// all-NaN "no data" ticks.
-fn pick(
-    sc: &mut Scenario,
-    panel: PortHandle<ArrayPort<f64, 2>>,
-    i: usize,
-) -> PortHandle<ArrayPort<f64, 1>> {
-    let sel = sc.segment(select(vec![i], 0, true), panel);
-    sc.segment(
-        filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
-        sel,
-    )
-}
 
 use clap::Parser;
 
@@ -81,14 +64,10 @@ async fn main() {
 
     let mut sc = Scenario::new(WallClock);
 
-    // Panel sources: close+volume from prices, (share, cash) from dividends.
-    let price_src = ParquetPanelSource::new(
-        prices_pq,
-        vec!["prices.close".into(), "prices.volume".into()],
-        symbols.clone(),
-    );
+    // Panel sources: close from prices, (share, cash) from dividends.
+    let price_src = parquet_panel_source(prices_pq, vec!["prices.close".into()], symbols.clone());
     let price_panel = sc.source(price_src);
-    let div_src = ParquetPanelSource::new(
+    let div_src = parquet_panel_source(
         dividends_pq,
         vec!["dividends.share".into(), "dividends.cash".into()],
         symbols.clone(),
@@ -97,10 +76,17 @@ async fn main() {
 
     // Select the target stock; close (scalar) and volume (scalar) from its row
     // (rank-1 `[K]` → rank-0 scalar via the squeezing `Select`).
-    let prices = pick(&mut sc, price_panel, idx);
-    let dividends = pick(&mut sc, div_panel, idx);
-    let closes = sc.segment(select(vec![0], 0, true), prices);
-    let volume = sc.segment(select(vec![1], 0, true), prices);
+    let prices = sc.segment(select_at(idx, 0), price_panel);
+    let prices = sc.segment(
+        filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
+        prices,
+    );
+    let dividends = sc.segment(select_at(idx, 0), div_panel);
+    let dividends = sc.segment(
+        filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
+        dividends,
+    );
+    let closes = sc.segment(select_at(0, 0), prices);
 
     // Forward-adjusted close (scalar close `0`, dividends row `1`), recorded into
     // a Series for the rolling stats.
@@ -121,7 +107,6 @@ async fn main() {
     let h_ma = sc.segment(record(), ma);
     let h_upper = sc.segment(record(), upper);
     let h_lower = sc.segment(record(), lower);
-    let h_vol = sc.segment(record(), volume);
 
     // Run the historical replay to completion.
     let mut session = sc.build();
@@ -130,12 +115,11 @@ async fn main() {
     eprintln!();
 
     // Align the recorded scalar series by timestamp and write a wide CSV.
-    let cols: [(&str, SeriesView<f64, 0>); 5] = [
+    let cols = [
         ("adj_close", session.view(h_adj)),
         ("ma", session.view(h_ma)),
         ("upper", session.view(h_upper)),
         ("lower", session.view(h_lower)),
-        ("volume", session.view(h_vol)),
     ];
     let mut rows: BTreeMap<i64, [f64; 5]> = BTreeMap::new();
     for (c, (_, series)) in cols.iter().enumerate() {

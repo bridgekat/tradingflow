@@ -6,7 +6,7 @@
 //! lends its view, so operators wire straight on.
 
 use tradingflow::operators::{num::add, structural::filter, structural::record};
-use tradingflow::sources::ArraySource;
+use tradingflow::sources::{ArraySource, array_source};
 use tradingflow::{Array, ArrayView, Instant, Series, SeriesView};
 use tradingflow::{Scenario, WallClock};
 
@@ -15,7 +15,7 @@ fn tss(xs: &[i64]) -> Vec<Instant> {
 }
 
 fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
-    ArraySource::new(
+    array_source(
         Series::from_vec([], tss(ts), vals.to_vec()),
         Array::scalar(0.0),
     )

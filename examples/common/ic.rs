@@ -1,22 +1,19 @@
-//! Information-coefficient evaluation, shared by `factor_ic` and `factor_handbook`.
-//!
-//! Both examples score factors by the cross-sectional correlation of a factor
-//! vector with a return vector, per rebalance; they differ only in what they feed
-//! it. `factor_ic` correlates the *lagged raw* canonical features against the
-//! realized return (Pearson IC); `factor_handbook` correlates *ranked* catalog
-//! factors against the *ranked forward* return (Spearman / RankIC). The wiring
-//! and the summary statistics are the same, and live here.
+//! Information-coefficient evaluation.
 
-use tradingflow::Scenario;
+use tradingflow::graph::typed::PortHandle;
 use tradingflow::operators::structural::record;
+use tradingflow::{ArrayPort, Scenario, SeriesPort};
 
-use super::AvH;
 use super::models::information_coefficient;
-use super::strategy::NavH;
 
 /// Record the per-rebalance IC of `factor` against `target` — both ordinary
 /// `ArrayPort` views, wired straight into the Python metric.
-pub fn ic_series(sc: &mut Scenario, factor: AvH, target: AvH, num_stocks: usize) -> NavH {
+pub fn ic_series(
+    sc: &mut Scenario,
+    factor: PortHandle<ArrayPort<f64, 1>>,
+    target: PortHandle<ArrayPort<f64, 1>>,
+    num_stocks: usize,
+) -> PortHandle<SeriesPort<f64, 0>> {
     let ic = sc.segment(information_coefficient(num_stocks), (factor, target));
     sc.segment(record(), ic)
 }

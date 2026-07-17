@@ -7,29 +7,37 @@
 //! [`receiver_stream`]; the event loop ([`Session::run`](crate::Session::run))
 //! merges them in timestamp order.
 //!
-//! # Data sources
+//! **Every source has a lowercase free constructor** — [`array_source`],
+//! [`iter_source`], [`parquet_panel_source`], … — taking the source's
+//! parameters and leaving `T` / `N` to be inferred from the wiring at
+//! [`Scenario::source`](crate::Scenario::source), exactly as the
+//! [operators](crate::operators) do. Prefer them to the inherent
+//! `Source::<T, N>::new(..)` forms. The `with_*` builders stay methods, chained
+//! onto the constructor.
 //!
-//! - [`ArraySource`] - historical-only source backed by pre-loaded timestamp
-//!   and value arrays. Each event carries an `Array<T>`. Requires a tokio
-//!   runtime.
-//! - [`IterSource`] - source driven by an arbitrary `(timestamp, value)`
-//!   iterator. More flexible than `ArraySource`; supports lazy/computed sequences
-//!   and arbitrary output types. Requires a tokio runtime.
-//! - [`ParquetPanelSource`] - cross-sectional panel over a long-format Parquet
-//!   table; emits one wide `[N, K]` cross-section per date. Requires a tokio
-//!   runtime.
-//! - [`ParquetFinancialReportPanelSource`] - panel variant for financial-report long tables,
-//!   with point-in-time effective-date alignment. Requires a tokio runtime.
+//! # [`basic`] — in-memory sources
 //!
-//! # Pulse sources
+//! - [`array_source`] ([`ArraySource`]) - historical-only source backed by
+//!   pre-loaded timestamp and value arrays. Each event carries an `Array<T>`.
+//! - [`iter_source`] / [`vec_source`] ([`IterSource`]) - source driven by an
+//!   arbitrary `(timestamp, value)` iterator. More flexible than `ArraySource`;
+//!   supports lazy/computed sequences and arbitrary output types.
+//! - [`pulse`] - `()` triggers from explicit timestamps, the clock the gated
+//!   operators fire on. Calendar-aligned schedules (daily / monthly in a given
+//!   timezone) are constructed in Python via `zoneinfo` and passed in as a
+//!   pre-computed list, keeping the Rust core free of timezone data.
 //!
-//! Pulse sources emit `()` events at specified timestamps and are used as
-//! triggers for periodic (clock-gated) operators.
+//! # [`panel`] — cross-sectional Parquet panels
 //!
-//! - [`pulse()`] - `()` triggers from explicit timestamps.  Calendar-aligned schedules
-//!   (daily / monthly in a given timezone) are constructed in Python via
-//!   `zoneinfo` and passed in as a pre-computed list, keeping the Rust core
-//!   free of timezone data.
+//! - [`parquet_panel_source`] ([`ParquetPanelSource`]) - cross-sectional panel
+//!   over a long-format Parquet table; emits one wide `[N, K]` cross-section per
+//!   date.
+//! - [`parquet_financial_report_panel_source`]
+//!   ([`ParquetFinancialReportPanelSource`]) - panel variant for
+//!   financial-report long tables, with point-in-time effective-date alignment.
+//!
+//! All of them stream through a spawned tokio task, so a tokio runtime must be
+//! active when they are added to a scenario.
 
 use futures::stream::Stream;
 use tokio::sync::mpsc;
@@ -37,17 +45,14 @@ use tokio::sync::mpsc;
 use crate::data::Instant;
 use crate::ingest::Event;
 
-pub mod array_source;
-pub mod iter_source;
-pub mod parquet_financial_report_panel_source;
-pub mod parquet_panel_source;
-pub mod pulse;
+pub mod basic;
+pub mod panel;
 
-pub use array_source::ArraySource;
-pub use iter_source::IterSource;
-pub use parquet_financial_report_panel_source::ParquetFinancialReportPanelSource;
-pub use parquet_panel_source::ParquetPanelSource;
-pub use pulse::pulse;
+pub use basic::{ArraySource, IterSource, array_source, iter_source, pulse, vec_source};
+pub use panel::{
+    ParquetFinancialReportPanelSource, ParquetPanelSource, parquet_financial_report_panel_source,
+    parquet_panel_source,
+};
 
 /// Adapt a producer channel — `(timestamp, event)` items in non-decreasing
 /// timestamp order, closed when the producer finishes — into the

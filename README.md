@@ -13,11 +13,9 @@ This framework is structured into sub-packages in the `crates/` directory:
 - The `tradingflow-macros` package, which provides procedural macros for composing sub-graphs;
 - The `tradingflow` package itself contains operator implementations for quantitative investment research. Operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
 
-Each package documents itself at its crate root (`src/lib.rs`); run `cargo doc --open` to read them rendered, with the API reference alongside.
-
 ## Get started
 
-Prerequisites: a stable Rust toolchain ([rustup.rs](https://rustup.rs)), and Python 3.12+ for the `python` feature.
+Prerequisites: Rust 1.95+ and Python 3.14+ (for the `python` feature).
 
 ```bash
 git clone https://github.com/bridgekat/tradingflow.git
@@ -27,16 +25,11 @@ cargo build -p tradingflow --features python
 
 The `python` feature links `libpython`, so it needs the environment variables `PYO3_PYTHON` and `PATH` to be set correctly. Moreover, the `PYTHONPATH` environment variable must point to `python/` in this repository, so that operator implementations can be imported.
 
+Read [the full documentation](https://bridgekat.github.io/tradingflow/) for more.
+
 ## Examples
 
-The [`examples/`](examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines (see [`examples/README.md`](examples/README.md) for build/run instructions). To follow along, install the `examples` extras (which fetch the [a-shares-crawler](https://github.com/bridgekat/a-shares-crawler) from GitHub) and download data:
-
-```bash
-pip install -e ".[examples]"       # fetches a-shares-crawler from GitHub + matplotlib
-python -m a_shares_crawler --help  # For configuration & download instructions
-```
-
-The crawler writes one CSV per symbol by default; pass `--export-long {csv,parquet}...` to emit consolidated long-format tables which the examples read.
+The [`examples/`](examples/) directory contains end-to-end strategies that load A-shares market data and run full pipelines. See [`examples/README.md`](examples/README.md) for build/run instructions[^1].
 
 **Visualizations**:
 
@@ -53,3 +46,5 @@ The crawler writes one CSV per symbol by default; pass `--export-long {csv,parqu
 
 - [**Mean-only strategy**](examples/mean_strategy.rs) — fits a periodic linear regression to predict cross-sectional stock returns, picks the top-ranked names with rank-linear weights, simulates trading with transaction costs, and plots portfolio value, rolling Sharpe, and drawdown vs. a market-cap-weighted index.
 - [**Mean-variance strategy**](examples/mean_variance_strategy.rs) — extends the mean strategy with Ledoit-Wolf shrinkage covariance estimator and Markowitz portfolio optimization, comparing several risk-aversion levels.
+
+[^1]: Currently LLM-generated.

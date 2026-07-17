@@ -13,5 +13,5 @@ pub use interface::{
     Interface, Port, Ports, Ref, RefPort, RefPorts, Scalar, Slice, Value, ViewPort, ViewPorts,
 };
 pub use operator::Operator;
-pub use segment::{Arr, Comp, Fork, Id, Left, Par, Right, Segment, SegmentExt};
+pub use segment::{Arr, Bind, Comp, Fork, Id, Left, Par, Right, Route, Segment, SegmentExt};
 pub use source::{RefSource, Source, ViewSource};

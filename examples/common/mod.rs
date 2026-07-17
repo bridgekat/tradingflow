@@ -38,11 +38,6 @@
 use tradingflow::graph::typed::{PortHandle, ViewPort};
 use tradingflow::ports::ArrayPort;
 
-// These modules wrap `tradingflow` operators (`PyClassOperator`), so they only
-// compile with the `python` feature. Their consumers (the strategy examples,
-// `factor_handbook`) are themselves `required-features = ["python"]`; gating
-// keeps the native examples — which pull in this `common` module too —
-// buildable without Python.
 #[cfg(feature = "python")]
 pub mod backtest;
 #[cfg(feature = "python")]
@@ -70,15 +65,6 @@ pub use universe::{build_cap_weighted_universe, calculate_index_weights};
 pub use ic::{IcStats, ic_series, ic_stats};
 #[cfg(feature = "python")]
 pub use strategy::{
-    INITIAL_CASH, Market, NavH, NavStats, NavTable, PosH, ScH, TARGET_OFFSET, TRADING_DAYS,
-    nav_final, nav_stats, run, total_value, trim_scale,
+    INITIAL_CASH, Market, NavStats, NavTable, TRADING_DAYS, nav_final, nav_stats, run, total_value,
+    trim_scale,
 };
-
-/// Rows kept beyond a consumer's exact count look-back, absorbing the
-/// amortized-compaction slack and any off-by-one at the window boundary.
-pub const RETAIN_MARGIN: usize = 8;
-
-/// A rank-1 cross-sectional array view port — the `[num_stocks]` panel currency.
-pub type Av1 = ArrayPort<f64, 1>;
-/// A rank-1 cross-sectional array view handle (a `[num_stocks]` panel handle).
-pub type AvH = PortHandle<Av1>;

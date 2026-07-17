@@ -1,4 +1,16 @@
-//! Cross-sectional panel source over a long-format Parquet table.
+//! Cross-sectional panel sources over long-format Parquet tables.
+//!
+//! Both read a **long** table and emit one **wide cross-section** per event
+//! date — an `Array<f64>` of shape `[N, K]` over a fixed `symbols` universe,
+//! rows for absent symbols `NaN`:
+//!
+//! * [`ParquetPanelSource`] — the general `(date, symbol, <values…>)` panel.
+//! * [`ParquetFinancialReportPanelSource`] — the financial-report variant,
+//!   which additionally understands the two-date report layout and
+//!   point-in-time (effective-date) alignment.
+//!
+//! # The general panel
+//!
 //!
 //! [`ParquetPanelSource`] reads one **long** table — `(date, symbol, <value
 //! columns…>)`, sorted by `(date, symbol)`, as written by
@@ -41,6 +53,35 @@
 //!
 //! Requires a tokio runtime when added to a scenario (the Parquet scan runs on a
 //! `spawn_blocking` task feeding the historical channel with back-pressure).
+//!
+//! # The financial-report panel
+//!
+//!
+//! Like [`ParquetPanelSource`] it pivots a long table
+//! into one wide `[N, R]` cross-section per event date (StackSync semantics — each
+//! cross-section reflects only that date's reports, `NaN` elsewhere; the
+//! carry-forward is the downstream [`Stack`](crate::operators::structural::Stack)'s job). It
+//! additionally understands the report layout — two date columns (`date` =
+//! period-end, `notice_date` = publication, nullable) — and point-in-time
+//! semantics:
+//!
+//! * **`use_effective_date = false`** (default) — events fire on the report
+//!   `date`. The table is already `(date, symbol)`-sorted, so this is a straight
+//!   scan (same as a `ParquetPanelSource` on `date`).
+//! * **`use_effective_date = true`** — events fire on the *effective date*
+//!   `e = max(date, notice_date)` (with `notice_fallback` added to `date` when
+//!   `notice_date` is null), so reports are not visible until published. Rows are
+//!   **reordered by `e`**, and **retrospective updates are dropped** (per symbol,
+//!   in `e` order, keep a report only if its report `date` advances that symbol's
+//!   high-water mark). This is the look-ahead-safe alignment that backtests want.
+//!
+//! The financial tables are small, so this is a **load-and-sort** entirely inside
+//! the source; the engine sees a clean timestamp-non-decreasing stream.
+//!
+//! [`with_report_date`](ParquetFinancialReportPanelSource::with_report_date) prepends
+//! `[year, day_of_year]` of the **report** date (for
+//! [`Annualize`](crate::operators::stocks::Annualize)). A per-stock pipeline is recovered
+//! downstream by `Select` + a NaN `Filter`.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -56,9 +97,13 @@ use parquet::file::statistics::Statistics;
 use tokio::sync::mpsc;
 
 use super::receiver_stream;
-use crate::data::{Array, Instant};
+use crate::data::{Array, Duration, Instant};
 use crate::ingest::{Event, EventSource};
 use crate::ports::ArrayValue;
+
+// ===========================================================================
+// ParquetPanelSource — the general (date, symbol, values...) panel.
+// ===========================================================================
 
 /// Historical-only source that pivots a long-format Parquet table into wide
 /// `[N, K]` cross-sections, one per distinct `date`. See the module docs.
@@ -117,6 +162,19 @@ impl ParquetPanelSource {
     }
 }
 
+/// A cross-sectional panel over the long-format Parquet table at `path`,
+/// emitting one `[symbols, value_columns]` cross-section per date. Chain
+/// [`with_time_range`](ParquetPanelSource::with_time_range) /
+/// [`with_columns`](ParquetPanelSource::with_columns) to bound the dates or
+/// rename the key columns.
+pub fn parquet_panel_source(
+    path: impl Into<String>,
+    value_columns: Vec<String>,
+    symbols: Vec<String>,
+) -> ParquetPanelSource {
+    ParquetPanelSource::new(path, value_columns, symbols)
+}
+
 /// `date32` days since 1970-01-01 → the day's UTC-midnight [`Epoch`] (hifitime).
 fn epoch_from_days(days: i32) -> Epoch {
     Epoch::from_unix_duration(HfDuration::from_truncated_nanoseconds(
@@ -125,14 +183,14 @@ fn epoch_from_days(days: i32) -> Epoch {
 }
 
 /// `date32` days → event [`Instant`] (UTC midnight → TAI).
-pub(crate) fn instant_from_days(days: i32) -> Instant {
+fn instant_from_days(days: i32) -> Instant {
     Instant::from_utc_days(days as i64)
 }
 
 /// `(year, day_of_year)` (1-based) for a report date via hifitime
 /// (`Epoch::year_days_of_year() + 1`), so [`Annualize`](crate::operators::stocks::Annualize)
 /// consumes it directly. Used by [`ParquetFinancialReportPanelSource`](super::ParquetFinancialReportPanelSource).
-pub(crate) fn report_year_and_doy(days: i32) -> (f64, f64) {
+fn report_year_and_doy(days: i32) -> (f64, f64) {
     let (year, day_of_year) = epoch_from_days(days).year_days_of_year();
     (year as f64, day_of_year + 1.0)
 }
@@ -154,7 +212,7 @@ pub struct RowUpdate {
 /// advances**, `panel_write` NaN-clears those rows first — reproducing the
 /// per-tick "only this date's rows" cross-section (pure StackSync, no carry).
 #[derive(Default)]
-pub(crate) struct PanelState {
+struct PanelState {
     last_ts: Option<Instant>,
     dirty: Vec<usize>,
 }
@@ -168,11 +226,11 @@ pub(crate) struct PanelState {
 /// The all-NaN initial panel: the per-tick `write` only sets rows that have
 /// an event, so an unwritten row must read as `NaN` (not `0.0`) for the
 /// per-stock `Filter` to drop it.
-pub(crate) fn nan_panel(shape: [usize; 2]) -> Array<f64, 2> {
+fn nan_panel(shape: [usize; 2]) -> Array<f64, 2> {
     Array::from_vec(shape, vec![f64::NAN; shape.iter().product()])
 }
 
-pub(crate) fn panel_write(
+fn panel_write(
     state: &mut PanelState,
     batch: Vec<RowUpdate>,
     output: &mut Array<f64, 2>,
@@ -371,7 +429,7 @@ fn read_panel(
 
 /// Total row count from the parquet footer metadata — O(1), no row decode.
 /// The number of rows a full scan (no `end` bound) reads.
-pub(crate) fn parquet_num_rows(path: &str) -> Result<usize, String> {
+fn parquet_num_rows(path: &str) -> Result<usize, String> {
     let file = File::open(path).map_err(|e| format!("open: {e}"))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| e.to_string())?;
     Ok(builder.metadata().file_metadata().num_rows().max(0) as usize)
@@ -427,7 +485,7 @@ fn date_row_groups_in_range(
 /// table is `(date, symbol)`-sorted so the scan also stops at the first row past
 /// `end`). This equals how many [`RowUpdate`]s [`read_panel`] emits in the window
 /// — the progress-estimate unit.
-pub(crate) fn count_rows_in_range(
+fn count_rows_in_range(
     path: &str,
     date_column: &str,
     start: Option<Instant>,
@@ -472,7 +530,7 @@ pub(crate) fn count_rows_in_range(
 
 /// Map each batch row to its universe index (or `None` if the symbol is not in
 /// the universe / is null). Fast path for dictionary-encoded symbol columns.
-pub(crate) fn resolve_symbols(
+fn resolve_symbols(
     sym_col: &ArrayRef,
     sym_index: &HashMap<&str, usize>,
 ) -> Result<Vec<Option<usize>>, String> {
@@ -516,4 +574,353 @@ pub(crate) fn resolve_symbols(
             })
             .collect())
     }
+}
+
+// ===========================================================================
+// ParquetFinancialReportPanelSource — the report panel (two dates, PIT).
+// ===========================================================================
+
+/// Historical-only panel source for financial-report long tables. See module docs.
+#[derive(Clone)]
+pub struct ParquetFinancialReportPanelSource {
+    path: String,
+    value_columns: Vec<String>,
+    symbols: Vec<String>,
+    with_report_date: bool,
+    use_effective_date: bool,
+    notice_fallback: Duration,
+    report_date_column: String,
+    notice_date_column: String,
+    symbol_column: String,
+    start: Option<Instant>,
+    end: Option<Instant>,
+}
+
+impl ParquetFinancialReportPanelSource {
+    /// Create a report panel source. `value_columns` are emitted in order (each
+    /// cast to `f64`); `symbols` is the universe row order. Defaults to report-date
+    /// alignment (`use_effective_date = false`).
+    pub fn new(path: impl Into<String>, value_columns: Vec<String>, symbols: Vec<String>) -> Self {
+        Self {
+            path: path.into(),
+            value_columns,
+            symbols,
+            with_report_date: false,
+            use_effective_date: false,
+            notice_fallback: Duration::ZERO,
+            report_date_column: "date".into(),
+            notice_date_column: "notice_date".into(),
+            symbol_column: "symbol".into(),
+            start: None,
+            end: None,
+        }
+    }
+
+    /// Prepend `[year, day_of_year]` of the report date to each row (for
+    /// `Annualize`); emitted shape becomes `[N, 2 + value_columns]`.
+    pub fn with_report_date(mut self, with_report_date: bool) -> Self {
+        self.with_report_date = with_report_date;
+        self
+    }
+
+    /// Fire events on the **effective date** `max(date, notice_date)` (with
+    /// `notice_fallback` added to `date` when `notice_date` is null), reordering
+    /// and dropping retrospective updates. Without this, events fire on the
+    /// report `date`. This is the look-ahead-safe alignment for backtesting.
+    pub fn use_effective_date(mut self, notice_fallback: Duration) -> Self {
+        self.use_effective_date = true;
+        self.notice_fallback = notice_fallback;
+        self
+    }
+
+    /// Restrict emitted cross-sections to event timestamps in `[start, end]`.
+    pub fn with_time_range(mut self, start: Option<Instant>, end: Option<Instant>) -> Self {
+        self.start = start;
+        self.end = end;
+        self
+    }
+
+    /// Override the report-date / notice-date / symbol column names.
+    pub fn with_columns(
+        mut self,
+        report_date_column: impl Into<String>,
+        notice_date_column: impl Into<String>,
+        symbol_column: impl Into<String>,
+    ) -> Self {
+        self.report_date_column = report_date_column.into();
+        self.notice_date_column = notice_date_column.into();
+        self.symbol_column = symbol_column.into();
+        self
+    }
+
+    /// Columns per cross-section row (`2 + value_columns` under `with_report_date`).
+    pub fn row_width(&self) -> usize {
+        (if self.with_report_date { 2 } else { 0 }) + self.value_columns.len()
+    }
+
+    /// Emitted element shape, `[N, row_width]`.
+    pub fn out_shape(&self) -> [usize; 2] {
+        [self.symbols.len(), self.row_width()]
+    }
+}
+
+/// A financial-report panel over the long-format Parquet table at `path`,
+/// report-date aligned. Chain
+/// [`use_effective_date`](ParquetFinancialReportPanelSource::use_effective_date)
+/// for point-in-time alignment,
+/// [`with_report_date`](ParquetFinancialReportPanelSource::with_report_date) to
+/// prepend `[year, day_of_year]` (for
+/// [`annualize`](crate::operators::stocks::annualize)), or
+/// [`with_time_range`](ParquetFinancialReportPanelSource::with_time_range) /
+/// [`with_columns`](ParquetFinancialReportPanelSource::with_columns).
+pub fn parquet_financial_report_panel_source(
+    path: impl Into<String>,
+    value_columns: Vec<String>,
+    symbols: Vec<String>,
+) -> ParquetFinancialReportPanelSource {
+    ParquetFinancialReportPanelSource::new(path, value_columns, symbols)
+}
+
+/// One parsed report row, keyed by its event timestamp.
+struct ReportRow {
+    key_ts: Instant,
+    report_days: i32,
+    ui: usize,
+    values: Vec<f64>,
+}
+
+impl EventSource for ParquetFinancialReportPanelSource {
+    type Event = Vec<RowUpdate>;
+    type Value = ArrayValue<f64, 2>;
+
+    fn total_num_events(&self) -> Option<usize> {
+        // Progress is in emitted long-table rows. The effective-date emits (after
+        // the retrospective-drop) are bounded by the rows in `[start, end]` on the
+        // report-date timeline — a close proxy (reports are a small minority of
+        // total events). On any read error fall back to `Some(0)`.
+        Some(
+            count_rows_in_range(&self.path, &self.report_date_column, self.start, self.end)
+                .unwrap_or(0),
+        )
+    }
+
+    fn initial(&self) -> Array<f64, 2> {
+        nan_panel(self.out_shape())
+    }
+
+    fn init(
+        &self,
+    ) -> (
+        impl Stream<Item = Event<Vec<RowUpdate>>> + Send + 'static,
+        impl FnMut(Vec<RowUpdate>, &mut Array<f64, 2>, Instant) -> usize + Send + 'static,
+    ) {
+        // One item per tick (a batch of that date's reports); small buffer.
+        let (hist_tx, hist_rx) = mpsc::channel(16);
+        let cfg = self.clone();
+
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = read_reports(&cfg, &hist_tx) {
+                eprintln!(
+                    "ParquetFinancialReportPanelSource error ({}): {e}",
+                    cfg.path
+                );
+            }
+        });
+
+        let mut state = PanelState::default();
+        (
+            receiver_stream(hist_rx),
+            move |batch, output: &mut Array<f64, 2>, ts| panel_write(&mut state, batch, output, ts),
+        )
+    }
+}
+
+#[expect(
+    clippy::needless_range_loop,
+    reason = "row drives the arrow column accessors (`dates.value(row)`), not just a slice"
+)]
+fn read_reports(
+    cfg: &ParquetFinancialReportPanelSource,
+    hist_tx: &mpsc::Sender<(Instant, Vec<RowUpdate>)>,
+) -> Result<(), String> {
+    let value_offset = if cfg.with_report_date { 2 } else { 0 };
+    let r = value_offset + cfg.value_columns.len();
+    let sym_index: HashMap<&str, usize> = cfg
+        .symbols
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.as_str(), i))
+        .collect();
+
+    let file = File::open(&cfg.path).map_err(|e| format!("open: {e}"))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| e.to_string())?;
+    let schema = builder.schema();
+    let mut needed: Vec<&str> = vec![
+        cfg.report_date_column.as_str(),
+        cfg.notice_date_column.as_str(),
+        cfg.symbol_column.as_str(),
+    ];
+    needed.extend(cfg.value_columns.iter().map(|s| s.as_str()));
+    let leaf_indices: Vec<usize> = needed
+        .iter()
+        .map(|name| schema.index_of(name).map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    let mask = ProjectionMask::leaves(builder.parquet_schema(), leaf_indices);
+    let reader = builder
+        .with_projection(mask)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // 1. Read every row, keyed by its event timestamp.
+    let mut rows: Vec<ReportRow> = Vec::new();
+    for batch in reader {
+        let batch = batch.map_err(|e| e.to_string())?;
+
+        let report_col = batch
+            .column_by_name(&cfg.report_date_column)
+            .ok_or_else(|| format!("missing report date column {:?}", cfg.report_date_column))?;
+        let report_dates = report_col
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .ok_or_else(|| {
+                format!(
+                    "report date column {:?} is not date32",
+                    cfg.report_date_column
+                )
+            })?;
+        let notice_dates = batch
+            .column_by_name(&cfg.notice_date_column)
+            .and_then(|c| c.as_any().downcast_ref::<Date32Array>());
+
+        let sym_col = batch
+            .column_by_name(&cfg.symbol_column)
+            .ok_or_else(|| format!("missing symbol column {:?}", cfg.symbol_column))?;
+        let row_uni = resolve_symbols(sym_col, &sym_index)?;
+
+        let val_refs: Vec<_> = cfg
+            .value_columns
+            .iter()
+            .map(|c| {
+                let col = batch
+                    .column_by_name(c)
+                    .ok_or_else(|| format!("missing value column {c:?}"))?;
+                cast(col.as_ref(), &DataType::Float64).map_err(|e| e.to_string())
+            })
+            .collect::<Result<_, _>>()?;
+        let vals: Vec<&arrow::array::Float64Array> = val_refs
+            .iter()
+            .map(|a| {
+                a.as_any()
+                    .downcast_ref::<arrow::array::Float64Array>()
+                    .unwrap()
+            })
+            .collect();
+
+        for row in 0..batch.num_rows() {
+            let Some(ui) = row_uni[row] else { continue };
+            let report_days = report_dates.value(row);
+            let report_ts = instant_from_days(report_days);
+            let key_ts = if cfg.use_effective_date {
+                let notice_ts = match notice_dates {
+                    Some(nd) if !nd.is_null(row) => instant_from_days(nd.value(row)),
+                    _ => report_ts + cfg.notice_fallback,
+                };
+                report_ts.max(notice_ts)
+            } else {
+                report_ts
+            };
+            let values: Vec<f64> = vals
+                .iter()
+                .map(|va| {
+                    if va.is_null(row) {
+                        f64::NAN
+                    } else {
+                        va.value(row)
+                    }
+                })
+                .collect();
+            rows.push(ReportRow {
+                key_ts,
+                report_days,
+                ui,
+                values,
+            });
+        }
+    }
+
+    // 2. Effective-date mode: drop retrospective updates per symbol (walking in
+    //    `e` order, keep only reports whose report date advances the high-water
+    //    mark).
+    if cfg.use_effective_date {
+        let mut by_symbol: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (i, row) in rows.iter().enumerate() {
+            by_symbol.entry(row.ui).or_default().push(i);
+        }
+        let mut keep = vec![false; rows.len()];
+        for idxs in by_symbol.values_mut() {
+            idxs.sort_by_key(|&i| rows[i].key_ts);
+            let mut hwm = i32::MIN;
+            for &i in idxs.iter() {
+                if rows[i].report_days > hwm {
+                    hwm = rows[i].report_days;
+                    keep[i] = true;
+                }
+            }
+        }
+        let mut k = 0;
+        rows.retain(|_| {
+            let keep_it = keep[k];
+            k += 1;
+            keep_it
+        });
+    }
+
+    // 3. Emit one batch per distinct effective date (`key_ts`), accumulating that
+    //    date's kept reports into a `Vec<RowUpdate>`. The downstream `panel_write`
+    //    reassembles each tick's cross-section (StackSync — only that tick's
+    //    reports; absent symbols NaN) and clears the previous tick when the
+    //    timestamp advances. Rows before `start` are skipped.
+    rows.sort_by_key(|row| row.key_ts);
+    let (start, end) = (cfg.start, cfg.end);
+    let mut cur_ts: Option<Instant> = None;
+    let mut tick: Vec<RowUpdate> = Vec::new();
+    for row in &rows {
+        let ts = row.key_ts;
+        if end.is_some_and(|e| ts > e) {
+            break;
+        }
+        if start.is_some_and(|s| ts < s) {
+            continue;
+        }
+        if cur_ts != Some(ts) {
+            if let Some(t) = cur_ts
+                && hist_tx
+                    .blocking_send((t, std::mem::take(&mut tick)))
+                    .is_err()
+            {
+                return Ok(());
+            }
+            cur_ts = Some(ts);
+        }
+        let mut payload = vec![f64::NAN; r];
+        if cfg.with_report_date {
+            let (year, doy) = report_year_and_doy(row.report_days);
+            payload[0] = year;
+            payload[1] = doy;
+        }
+        for (vi, v) in row.values.iter().enumerate() {
+            payload[value_offset + vi] = *v;
+        }
+        tick.push(RowUpdate {
+            row: row.ui,
+            vals: payload.into_boxed_slice(),
+        });
+    }
+    // Flush the final (also last in-window) tick.
+    if let Some(t) = cur_ts
+        && !tick.is_empty()
+    {
+        let _ = hist_tx.blocking_send((t, tick));
+    }
+    Ok(())
 }

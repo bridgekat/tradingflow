@@ -8,10 +8,6 @@
 //! metric. Per-feature IC series are written long-format for cumulative-IC
 //! plotting; mean / std / IR are printed.
 //!
-//! This is the minimal IC harness. `factor_handbook` scores the full CICC
-//! catalogs instead, and ranks both sides first (RankIC); both share
-//! `common::ic`.
-//!
 //! The IC metric is a Python (`tradingflow`) operator (no cvxpy), so this needs
 //! `--features python` and a venv with NumPy (a standard GIL venv is fine).
 //!

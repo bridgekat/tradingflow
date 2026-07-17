@@ -6,11 +6,6 @@ use tradingflow::graph::typed::{PortHandle, RefPort};
 use tradingflow::operators::{formula::*, num::*, structural::*, traders::*, transform::*};
 use tradingflow::ports::{ArrayPort, SeriesPort};
 
-use super::AvH;
-
-/// A recorded rank-1 cross-sectional series (the target / demeaned target).
-pub type SerH = PortHandle<SeriesPort<f64, 1>>;
-
 /// Cross-sectional demean preserving NaN.
 fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
     let s = r.to_contiguous();
@@ -38,11 +33,16 @@ fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
 /// look-back (the incremental mean predictor reads a single trailing pair, the
 /// shrinkage covariance reads its `max_periods` window); pass
 /// [`Retention::UNBOUNDED`] when full history is needed.
+#[allow(clippy::type_complexity)]
 pub fn build_log_return_target(
     sc: &mut Scenario,
-    log_adj: AvH,
+    log_adj: PortHandle<ArrayPort<f64, 1>>,
     target_retention: Retention,
-) -> (AvH, SerH, SerH) {
+) -> (
+    PortHandle<ArrayPort<f64, 1>>,
+    PortHandle<SeriesPort<f64, 1>>,
+    PortHandle<SeriesPort<f64, 1>>,
+) {
     let log_returns = sc.segment(diff(), log_adj);
     let target = sc.segment(winsorize(0.01), log_returns);
     let target_series = sc.segment(record_bounded(target_retention), target);
@@ -53,7 +53,11 @@ pub fn build_log_return_target(
 
 /// Constant ±`limit_pct` daily price limits from the previous close, rounded to
 /// 0.01 yuan. Returns `(upper, lower)`; first tick is NaN (no prior close).
-pub fn build_price_limits(sc: &mut Scenario, close: AvH, limit_pct: f64) -> (AvH, AvH) {
+pub fn build_price_limits(
+    sc: &mut Scenario,
+    close: PortHandle<ArrayPort<f64, 1>>,
+    limit_pct: f64,
+) -> (PortHandle<ArrayPort<f64, 1>>, PortHandle<ArrayPort<f64, 1>>) {
     // Self-recording 1-step lag (a tiny private trailing window).
     let prev_close = sc.segment(lag(1), close);
     let limit = move |scale: f64| {

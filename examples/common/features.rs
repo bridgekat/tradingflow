@@ -6,10 +6,7 @@
 //! Each factor is a small native sub-graph over the [`Stacked`](super::Stacked)
 //! cross-sectional panel, returning a `[num_stocks]` factor handle on the panel's
 //! native cadence (daily for price-derived, report-effective-date for
-//! fundamentals, carried forward by the panel's `Stack`). The driver
-//! ([`examples/factor_handbook.rs`]) resamples each onto the rebalance clock,
-//! masks to the universe, cross-sectionally ranks ([`Percentile`]), and evaluates
-//! RankIC against the forward return.
+//! fundamentals, carried forward by the panel's `Stack`).
 //!
 //! TTM (trailing-twelve-month) flows are a 365-day rolling mean of the annualized
 //! quarterly flow (the self-recording [`ma_time`] constructor). Balance-sheet
@@ -64,7 +61,6 @@ use tradingflow::operators::{
 use tradingflow::ports::{ArrayPort, SeriesPort};
 
 use super::data::Stacked;
-use super::{AvH, RETAIN_MARGIN};
 
 /// Trading days a 变动/同比 level is lagged (the 次新 ~1-year idiom); the
 /// self-recording [`change`] / [`growth`] retain exactly this look-back.
@@ -75,7 +71,7 @@ const LAG_YEAR: usize = 244;
 /// [`rank_impute`]), so a consumer reads the value the model actually uses.
 pub struct FactorSet {
     pub names: Vec<String>,
-    pub feature: Vec<AvH>,
+    pub feature: Vec<PortHandle<ArrayPort<f64, 1>>>,
 }
 
 /// Turn a raw factor into its model-ready feature: cross-sectionally percentile-
@@ -86,7 +82,10 @@ pub struct FactorSet {
 /// fundamental data, would otherwise leave the book in cash / a flat NAV for
 /// years). Every factor is rank-transformed, so `0.5` is the common neutral fill.
 /// The rank → fill chain is fused into one node via `segment!`.
-pub(super) fn rank_impute(sc: &mut Scenario, h: AvH) -> AvH {
+pub(super) fn rank_impute(
+    sc: &mut Scenario,
+    h: PortHandle<ArrayPort<f64, 1>>,
+) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(
         tradingflow_graph::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             fillna(0.5) @ percentile() @ x
@@ -96,19 +95,19 @@ pub(super) fn rank_impute(sc: &mut Scenario, h: AvH) -> AvH {
 }
 
 /// Total market cap = unadjusted close × total shares.
-pub fn market_cap(sc: &mut Scenario, st: &Stacked) -> AvH {
+pub fn market_cap(sc: &mut Scenario, st: &Stacked) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(multiply(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
-pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> AvH {
+pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(multiply(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
 /// annualized (effective-date-aligned) series, via the self-recording
 /// [`ma_time`] (record fused in, retention sized internally).
-fn ttm(sc: &mut Scenario, h: AvH) -> AvH {
+fn ttm(sc: &mut Scenario, h: PortHandle<ArrayPort<f64, 1>>) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(ma_time(Duration::from_days(365)), h)
 }
 
@@ -117,7 +116,11 @@ fn ttm(sc: &mut Scenario, h: AvH) -> AvH {
 /// 244-day [`change`] — is fused into ONE node via a `segment!`. The shared
 /// `level` block is computed once outside, so it is not recomputed here.
 /// The 次新 listing filter excludes names without a full prior year.
-fn delta(sc: &mut Scenario, st: &Stacked, level: AvH) -> AvH {
+fn delta(
+    sc: &mut Scenario,
+    st: &Stacked,
+    level: PortHandle<ArrayPort<f64, 1>>,
+) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(
         tradingflow_graph::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             change(LAG_YEAR) @ resample_view() @ (adj, lvl)
@@ -129,7 +132,11 @@ fn delta(sc: &mut Scenario, st: &Stacked, level: AvH) -> AvH {
 /// 同比 (YoY growth): the faithful `(cur − prev) / prev`, i.e. the
 /// self-recording [`growth`] over the same resampled daily pulse as
 /// [`delta`].
-fn yoy(sc: &mut Scenario, st: &Stacked, level: AvH) -> AvH {
+fn yoy(
+    sc: &mut Scenario,
+    st: &Stacked,
+    level: PortHandle<ArrayPort<f64, 1>>,
+) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(
         tradingflow_graph::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             growth(LAG_YEAR) @ resample_view() @ (adj, lvl)
@@ -143,7 +150,7 @@ fn yoy(sc: &mut Scenario, st: &Stacked, level: AvH) -> AvH {
 pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
-    let mut add = |name: &str, h: AvH| {
+    let mut add = |name: &str, h: PortHandle<ArrayPort<f64, 1>>| {
         names.push(name.to_string());
         raw.push(h);
     };
@@ -267,9 +274,9 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// next-period return the factor is meant to predict.
 pub fn build_forward_return(
     sc: &mut Scenario,
-    log_adj: AvH,
+    log_adj: PortHandle<ArrayPort<f64, 1>>,
     rebalance_clock: PortHandle<RefPort<()>>,
-) -> AvH {
+) -> PortHandle<ArrayPort<f64, 1>> {
     let resampled = sc.segment(resample_clocked(), (rebalance_clock, log_adj));
     sc.segment(diff(), resampled)
 }
@@ -278,7 +285,7 @@ pub fn build_forward_return(
 pub struct Features {
     /// Per-feature live view handles (each `(num_stocks,)`), in column order.
     pub names: Vec<String>,
-    pub handles: Vec<AvH>,
+    pub handles: Vec<PortHandle<ArrayPort<f64, 1>>>,
     /// Trading-day-aligned `Record` of the `(num_stocks, n_features)` panel.
     pub series: PortHandle<SeriesPort<f64, 2>>,
 }
@@ -286,23 +293,27 @@ pub struct Features {
 // ===========================================================================
 // Price-volume factor catalog (CICC 《价量因子手册》).
 // ===========================================================================
-type Ser = PortHandle<SeriesPort<f64, 1>>;
-type Ser2 = PortHandle<SeriesPort<f64, 2>>;
 
-/// Catalog records feed count-windowed reductions up to `Y` (one trading year)
-/// or the 250-day chip window; retain that deepest look-back plus the margin.
-fn rec(sc: &mut Scenario, h: AvH) -> Ser {
-    sc.segment(record_bounded(Retention::count(Y + RETAIN_MARGIN)), h)
-}
-
-fn rsum(sc: &mut Scenario, s: Ser, n: usize) -> AvH {
+fn rsum(
+    sc: &mut Scenario,
+    s: PortHandle<SeriesPort<f64, 1>>,
+    n: usize,
+) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(rolling_sum(Window::Count(n)), s)
 }
-fn rmean(sc: &mut Scenario, s: Ser, n: usize) -> AvH {
+fn rmean(
+    sc: &mut Scenario,
+    s: PortHandle<SeriesPort<f64, 1>>,
+    n: usize,
+) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(rolling_mean(Window::Count(n)), s)
 }
 /// Elementwise map preserving shape and NaN.
-fn emap(sc: &mut Scenario, h: AvH, f: fn(f64) -> f64) -> AvH {
+fn emap(
+    sc: &mut Scenario,
+    h: PortHandle<ArrayPort<f64, 1>>,
+    f: fn(f64) -> f64,
+) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(
         map(move |a: ArrayView<f64, 1>| {
             let s = a.to_contiguous();
@@ -312,7 +323,11 @@ fn emap(sc: &mut Scenario, h: AvH, f: fn(f64) -> f64) -> AvH {
     )
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
-fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> AvH {
+fn rstd(
+    sc: &mut Scenario,
+    s: PortHandle<SeriesPort<f64, 1>>,
+    n: usize,
+) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(
         tradingflow_graph::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
             sqrt() @ rolling_variance(Window::Count(n)) @ x
@@ -323,12 +338,16 @@ fn rstd(sc: &mut Scenario, s: Ser, n: usize) -> AvH {
 /// Per-stock rolling Pearson correlation of two daily handles over `n` ticks:
 /// `cov(x,y) = mean(xy) − mean(x)·mean(y)`, normalized by `σx·σy`. Records each
 /// input internally (some redundancy across factors, but keeps call sites simple).
-fn rcorr(sc: &mut Scenario, x: AvH, y: AvH, n: usize) -> AvH {
-    let win = Retention::count(n + RETAIN_MARGIN);
-    let xs = sc.segment(record_bounded(win), x);
-    let ys = sc.segment(record_bounded(win), y);
+fn rcorr(
+    sc: &mut Scenario,
+    x: PortHandle<ArrayPort<f64, 1>>,
+    y: PortHandle<ArrayPort<f64, 1>>,
+    n: usize,
+) -> PortHandle<ArrayPort<f64, 1>> {
+    let xs = sc.segment(buffer(n), x);
+    let ys = sc.segment(buffer(n), y);
     let xy = sc.segment(multiply(), (x, y));
-    let xys = sc.segment(record_bounded(win), xy);
+    let xys = sc.segment(buffer(n), xy);
     let mx = rmean(sc, xs, n);
     let my = rmean(sc, ys, n);
     let mxy = rmean(sc, xys, n);
@@ -410,7 +429,12 @@ impl Operator for WindowReduce {
         (false, state.out.view())
     }
 }
-fn window_reduce(sc: &mut Scenario, s: Ser, n: usize, f: fn(&[f64]) -> f64) -> AvH {
+fn window_reduce(
+    sc: &mut Scenario,
+    s: PortHandle<SeriesPort<f64, 1>>,
+    n: usize,
+    f: fn(&[f64]) -> f64,
+) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(WindowReduce { window: n, f }, s)
 }
 /// Time-series percentile rank of the latest window value among finite values.
@@ -513,7 +537,12 @@ impl Operator for WindowReduce2 {
         (false, state.out.view())
     }
 }
-fn window_reduce2(sc: &mut Scenario, s: Ser2, n: usize, f: fn(&[f64], &[f64]) -> f64) -> AvH {
+fn window_reduce2(
+    sc: &mut Scenario,
+    s: PortHandle<SeriesPort<f64, 2>>,
+    n: usize,
+    f: fn(&[f64], &[f64]) -> f64,
+) -> PortHandle<ArrayPort<f64, 1>> {
     sc.segment(WindowReduce2 { window: n, f }, s)
 }
 /// 振幅调整动量: Σ(returns on the top-20%-amplitude days) − Σ(bottom-20%-amplitude
@@ -702,35 +731,35 @@ impl Operator for ChipDist {
 pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
-    let mut add = |name: &str, h: AvH| {
+    let mut add = |name: &str, h: PortHandle<ArrayPort<f64, 1>>| {
         names.push(name.to_string());
         raw.push(h);
     };
 
     // --- daily building blocks (recorded on the price pulse) ---
     let lc = sc.segment(log(), st.adjusted_close); // adjusted log close
-    let lc_s = rec(sc, lc);
-    let adjclose_s = rec(sc, st.adjusted_close);
+    let lc_s = sc.segment(buffer(Y), lc);
+    let adjclose_s = sc.segment(buffer(Y), st.adjusted_close);
     let lo = sc.segment(log(), st.open); // raw log open
     let lcr = sc.segment(log(), st.close); // raw log close
-    let lcr_s = rec(sc, lcr);
+    let lcr_s = sc.segment(buffer(Y), lcr);
 
     let daily_ret = sc.segment(diff(), lc); // adjusted close-to-close log return
-    let dret_s = rec(sc, daily_ret);
+    let dret_s = sc.segment(buffer(Y), daily_ret);
     let intraday = sc.segment(subtract(), (lcr, lo)); // log(close/open)
-    let intra_s = rec(sc, intraday);
+    let intra_s = sc.segment(buffer(Y), intraday);
     let prev_lcr = sc.segment(lag_series(1, f64::NAN), lcr_s);
     let overnight = sc.segment(subtract(), (lo, prev_lcr)); // log(open / prev close)
-    let over_s = rec(sc, overnight);
+    let over_s = sc.segment(buffer(Y), overnight);
 
     let abs_ret = emap(sc, daily_ret, f64::abs);
-    let absret_s = rec(sc, abs_ret);
+    let absret_s = sc.segment(buffer(Y), abs_ret);
     let sign_ret = emap(sc, daily_ret, |x| {
         if x.is_finite() { x.signum() } else { f64::NAN }
     });
-    let sign_s = rec(sc, sign_ret);
+    let sign_s = sc.segment(buffer(Y), sign_ret);
     let xs_rank = sc.segment(percentile(), daily_ret); // daily cross-sectional rank
-    let xsr_s = rec(sc, xs_rank);
+    let xsr_s = sc.segment(buffer(Y), xs_rank);
 
     // shared rolling sums (reused by the _M / _A pairs)
     let rs_intra_m = rsum(sc, intra_s, M);
@@ -787,14 +816,14 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
             f64::NAN
         }
     });
-    let masked_s = rec(sc, masked_ret);
+    let masked_s = sc.segment(buffer(Y), masked_ret);
     add("mmt_off_limit_M", rsum(sc, masked_s, M));
     add("mmt_off_limit_A", rsum(sc, masked_s, Y));
 
     // 时序 rank 动量: daily time-series percentile of the log price within 1 year,
     // averaged over 20 days. 最高价距今天数: ticks since the 1-year high.
     let trank = window_reduce(sc, lc_s, Y, ts_rank);
-    let trank_s = rec(sc, trank);
+    let trank_s = sc.segment(buffer(Y), trank);
     add("mmt_time_rank_M", rmean(sc, trank_s, 20));
     add(
         "mmt_highest_days_A",
@@ -803,10 +832,10 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 
     // ============ 流动性 (liquidity) — 图表28 ============
     let turnover = sc.segment(divide(), (st.volume, st.circ_shares)); // daily turnover 换手率
-    let turnover_s = rec(sc, turnover);
-    let amount_s = rec(sc, st.amount);
+    let turnover_s = sc.segment(buffer(Y), turnover);
+    let amount_s = sc.segment(buffer(Y), st.amount);
     let amihud = sc.segment(divide(), (abs_ret, st.amount)); // |日收益率| / 成交额
-    let amihud_s = rec(sc, amihud);
+    let amihud_s = sc.segment(buffer(Y), amihud);
     // 日K线最短路径 = 2*(最高-最低) − |开盘−收盘|; shortcut 非流动 = 路径 / 成交额.
     let hl = sc.segment(subtract(), (st.high, st.low));
     let two_hl = emap(sc, hl, |x| 2.0 * x);
@@ -814,7 +843,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let abs_oc = emap(sc, oc, f64::abs);
     let path = sc.segment(subtract(), (two_hl, abs_oc));
     let shortcut = sc.segment(divide(), (path, st.amount));
-    let shortcut_s = rec(sc, shortcut);
+    let shortcut_s = sc.segment(buffer(Y), shortcut);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
         add(&format!("liq_turn_avg_{tag}"), rmean(sc, turnover_s, w)); // 换手率均值
@@ -835,7 +864,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // sync = corr(turn_t, x_t); post (量领先) = corr(turn_t, x_{t+1}) = corr(lag(turn,1), x);
     // prior (价领先) = corr(turn_t, x_{t-1}) = corr(turn, lag(x,1)).
     let turnover_change = sc.segment(diff(), turnover);
-    let turnchg_s = rec(sc, turnover_change);
+    let turnchg_s = sc.segment(buffer(Y), turnover_change);
     let lag_turn1 = sc.segment(lag_series(1, f64::NAN), turnover_s);
     let lag_turnd1 = sc.segment(lag_series(1, f64::NAN), turnchg_s);
     let lag_price1 = sc.segment(lag_series(1, f64::NAN), adjclose_s);
@@ -874,28 +903,28 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     let downside = emap(sc, daily_ret, |x| {
         if x.is_finite() { x.min(0.0) } else { f64::NAN }
     });
-    let downside_s = rec(sc, downside);
+    let downside_s = sc.segment(buffer(Y), downside);
     let upside = emap(sc, daily_ret, |x| {
         if x.is_finite() { x.max(0.0) } else { f64::NAN }
     });
-    let upside_s = rec(sc, upside);
+    let upside_s = sc.segment(buffer(Y), upside);
     let highlow = sc.segment(divide(), (st.high, st.low)); // 日内振幅 = 最高/最低
-    let highlow_s = rec(sc, highlow);
+    let highlow_s = sc.segment(buffer(Y), highlow);
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
     let max_oc = sc.segment(max(), (st.open, st.close));
     let min_oc = sc.segment(min(), (st.open, st.close));
     let up_num = sc.segment(subtract(), (st.high, max_oc)); // 上影线 = 最高 − max(开,收)
     let upshadow = sc.segment(divide(), (up_num, st.low));
-    let upshadow_s = rec(sc, upshadow);
+    let upshadow_s = sc.segment(buffer(Y), upshadow);
     let down_num = sc.segment(subtract(), (min_oc, st.low)); // 下影线 = min(开,收) − 最低
     let downshadow = sc.segment(divide(), (down_num, st.low));
-    let downshadow_s = rec(sc, downshadow);
+    let downshadow_s = sc.segment(buffer(Y), downshadow);
     let wup_num = sc.segment(subtract(), (st.high, st.close)); // 威廉上影线 = 最高 − 收
     let w_upshadow = sc.segment(divide(), (wup_num, st.low));
-    let w_upshadow_s = rec(sc, w_upshadow);
+    let w_upshadow_s = sc.segment(buffer(Y), w_upshadow);
     let wdown_num = sc.segment(subtract(), (st.close, st.low)); // 威廉下影线 = 收 − 最低
     let w_downshadow = sc.segment(divide(), (wdown_num, st.low));
-    let w_downshadow_s = rec(sc, w_downshadow);
+    let w_downshadow_s = sc.segment(buffer(Y), w_downshadow);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
         add(&format!("vol_std_{tag}"), rstd(sc, dret_s, w)); // 波动率
@@ -936,14 +965,14 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // `Stack` along axis 1 wires the two by-value view handles into an (N, 2)
     // cross-section, so `WindowReduce2` reads `[amp_i, ret_i]` pairs per element.
     let amp_ret = sc.segment(stack::<f64, 1, 2>(1), &[highlow, daily_ret]); // (N, 2)
-    let amp_ret_s = rec_2(sc, amp_ret);
+    let amp_ret_s = sc.segment(buffer(Y), amp_ret);
     add("mmt_range_M", window_reduce2(sc, amp_ret_s, M, range_mom));
     add("mmt_range_A", window_reduce2(sc, amp_ret_s, Y, range_mom));
 
     // ============ 筹码分布 (chip distribution) — 图表52 ============
     // (adjusted close, turnover) -> ChipDist -> (N, 10); column-select each factor.
     let chip_in = sc.segment(stack::<f64, 1, 2>(1), &[st.adjusted_close, turnover]); // (N, 2)
-    let chip_in_s = rec_2(sc, chip_in);
+    let chip_in_s = sc.segment(buffer(Y), chip_in);
     let chip = sc.segment(ChipDist { window: 250 }, chip_in_s); // (N, 10)
     for (c, name) in [
         "distribution_ret_avg",
@@ -966,13 +995,6 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
     // Finalize each entry into its model-ready feature: rank + impute.
     let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();
     FactorSet { names, feature }
-}
-
-/// Record a rank-2 `(N, 2)` cross-section into a `Series` (the two-channel chip /
-/// range inputs); retains the deepest count look-back the consumers read (`Y` /
-/// the 250-day chip window) plus the margin.
-fn rec_2(sc: &mut Scenario, h: PortHandle<ArrayPort<f64, 2>>) -> Ser2 {
-    sc.segment(record_bounded(Retention::count(Y + RETAIN_MARGIN)), h)
 }
 
 /// Build the cross-sectionally percentile-ranked feature panel: the whole CICC

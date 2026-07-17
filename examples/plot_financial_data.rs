@@ -31,9 +31,9 @@ use tradingflow::operators::num::{divide, multiply, negate};
 use tradingflow::operators::rolling::{Window, rolling_mean};
 use tradingflow::operators::stocks::annualize;
 use tradingflow::operators::structural::{filter, record};
-use tradingflow::operators::transform::{map, select};
+use tradingflow::operators::transform::{map, select_at, select_many};
 use tradingflow::ports::ArrayPort;
-use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
+use tradingflow::sources::{parquet_financial_report_panel_source, parquet_panel_source};
 use tradingflow::{Scenario, WallClock};
 
 const COLS: [&str; 10] = [
@@ -48,20 +48,6 @@ const COLS: [&str; 10] = [
     "bp_ratio",
     "roe",
 ];
-
-/// `Select` stock `i`'s row out of a `[N, K]` panel (→ rank-1 `[K]`) and drop the
-/// all-NaN "no data" ticks.
-fn pick(
-    sc: &mut Scenario,
-    panel: PortHandle<ArrayPort<f64, 2>>,
-    i: usize,
-) -> PortHandle<ArrayPort<f64, 1>> {
-    let sel = sc.segment(select(vec![i], 0, true), panel);
-    sc.segment(
-        filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
-        sel,
-    )
-}
 
 use clap::Parser;
 
@@ -95,28 +81,35 @@ async fn main() {
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
-    let daily = |sc: &mut Scenario,
-                 kind: &str,
-                 cols: Vec<String>|
-     -> PortHandle<ArrayPort<f64, 1>> {
-        let s =
-            ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
-        let panel = sc.source(s);
-        pick(sc, panel, idx)
-    };
+    let daily =
+        |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> PortHandle<ArrayPort<f64, 1>> {
+            let s =
+                parquet_panel_source(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
+            let panel = sc.source(s);
+            let sel = sc.segment(select_at(idx, 0), panel);
+            sc.segment(
+                filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
+                sel,
+            )
+        };
+
     let report = |sc: &mut Scenario,
                   kind: &str,
                   cols: Vec<String>,
                   with_report_date: bool|
      -> PortHandle<ArrayPort<f64, 1>> {
-        let s = ParquetFinancialReportPanelSource::new(
+        let s = parquet_financial_report_panel_source(
             format!("{data_dir}/{kind}.parquet"),
             cols,
             symbols.clone(),
         )
         .with_report_date(with_report_date);
         let panel = sc.source(s);
-        pick(sc, panel, idx)
+        let sel = sc.segment(select_at(idx, 0), panel);
+        sc.segment(
+            filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
+            sel,
+        )
     };
 
     let prices = daily(&mut sc, "daily_prices", vec!["prices.close".into()]); // [close]
@@ -154,24 +147,24 @@ async fn main() {
     // ------------------------------------------------------------------
     // Operators (identical to the CSV version).
     // ------------------------------------------------------------------
-    let close = sc.segment(select(vec![0], 0, true), prices);
-    let total_shares = sc.segment(select(vec![0], 0, true), equity);
+    let close = sc.segment(select_at(0, 0), prices);
+    let total_shares = sc.segment(select_at(0, 0), equity);
     let market_cap = sc.segment(multiply(), (close, total_shares));
 
-    let assets = sc.segment(select(vec![0], 0, true), balance);
-    let neg_equity = sc.segment(select(vec![1], 0, true), balance);
+    let assets = sc.segment(select_at(0, 0), balance);
+    let neg_equity = sc.segment(select_at(1, 0), balance);
     let equity_val = sc.segment(negate(), neg_equity);
-    let neg_peq = sc.segment(select(vec![2, 3, 4], 0, false), balance);
+    let neg_peq = sc.segment(select_many(vec![2, 3, 4], 0), balance);
     let parent_equity = sc.segment(
         map(|a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous().iter().sum::<f64>())),
         neg_peq,
     );
 
     let income_ann = sc.segment(annualize(), income); // [op_income, net_profit]
-    let op_income = sc.segment(select(vec![0], 0, true), income_ann);
-    let net_profit = sc.segment(select(vec![1], 0, true), income_ann);
+    let op_income = sc.segment(select_at(0, 0), income_ann);
+    let net_profit = sc.segment(select_at(1, 0), income_ann);
     let cf_ann = sc.segment(annualize(), cf); // [change]
-    let cash_flow = sc.segment(select(vec![0], 0, true), cf_ann);
+    let cash_flow = sc.segment(select_at(0, 0), cf_ann);
 
     let net_profit_series = sc.segment(record(), net_profit);
     let net_profit_ttm = sc.segment(
