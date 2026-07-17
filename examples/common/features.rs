@@ -3,7 +3,7 @@
 //!
 //! # Factor catalog
 //!
-//! Each factor is a small native sub-graph over the [`Stacked`](super::Stacked)
+//! Each factor is a small native subgraph over the [`Stacked`](super::Stacked)
 //! cross-sectional panel, returning a `[num_stocks]` factor handle on the panel's
 //! native cadence (daily for price-derived, report-effective-date for
 //! fundamentals, carried forward by the panel's `Stack`).

@@ -6,7 +6,7 @@
 //! lends its view, so operators wire straight on.
 
 use tradingflow::operators::{num::add, structural::filter, structural::record};
-use tradingflow::sources::{ArraySource, array_source};
+use tradingflow::sources::basic::*;
 use tradingflow::{Array, ArrayView, Instant, Series, SeriesView};
 use tradingflow::{Scenario, WallClock};
 

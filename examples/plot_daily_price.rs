@@ -26,7 +26,7 @@ use tradingflow::operators::rolling::{Window, rolling_mean, rolling_variance};
 use tradingflow::operators::stocks::forward_adjust;
 use tradingflow::operators::structural::{filter, record};
 use tradingflow::operators::transform::select_at;
-use tradingflow::sources::parquet_panel_source;
+use tradingflow::sources::panel::*;
 use tradingflow::{Scenario, WallClock};
 
 const WINDOW: usize = 252;

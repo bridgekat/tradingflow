@@ -25,7 +25,7 @@ use tradingflow::operators::structural::record;
 use tradingflow::operators::structural::resample_view;
 use tradingflow::operators::traders::benchmark;
 use tradingflow::operators::transform::{apply, map};
-use tradingflow::sources::pulse;
+use tradingflow::sources::basic::*;
 use tradingflow::{Scenario, WallClock};
 
 use clap::Parser;

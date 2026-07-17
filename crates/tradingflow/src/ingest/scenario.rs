@@ -1,6 +1,5 @@
 //! The scenario builder and the running session.
 
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,7 +10,8 @@ use super::source::EventSource;
 use crate::data::Instant;
 use crate::graph::core::Pool;
 use crate::graph::typed::{
-    Builder, Graph, HandlesInterface, InterfaceHandles, PortHandle, Segment, ViewPort, ViewSource,
+    Builder, Graph, HandlesInterface, InterfaceHandles, PortHandle, Segment, Value, ViewPort,
+    ViewSource,
 };
 
 /// The strategy graph builder: a [`Builder`] over the TAI [`Instant`]
@@ -178,6 +178,17 @@ pub struct Session<C: Clock = WallClock> {
 }
 
 impl<C: Clock> Session<C> {
+    pub fn view<V: Value>(&self, handle: PortHandle<ViewPort<V>>) -> V::View<'_>
+    where
+        for<'a> V::View<'a>: Copy,
+    {
+        self.graph.view(handle)
+    }
+
+    pub fn timestamp(&self) -> Instant {
+        *self.graph.context()
+    }
+
     pub fn pool(&self) -> &Pool {
         &self.pool
     }
@@ -218,12 +229,6 @@ impl<C: Clock> Session<C> {
         Some(t)
     }
 
-    /// Recompute the dirty cone after a batch's writes (and any manual pokes),
-    /// on the owned pool.
-    pub fn stabilize(&mut self) {
-        self.graph.stabilize(&mut self.pool);
-    }
-
     /// Replay every feed to exhaustion, invoking `on_stable(&session, batch_ts)`
     /// once after each batch's stabilize (read outputs via the deref'd
     /// [`view`](Graph::view),
@@ -236,22 +241,8 @@ impl<C: Clock> Session<C> {
     /// [`step`](Self::step) yourself.
     pub async fn run(&mut self, mut on_stable: impl FnMut(&Self, Instant)) {
         while let Some(t) = self.step().await {
-            self.stabilize();
+            self.graph.stabilize(&mut self.pool);
             on_stable(self, t);
         }
-    }
-}
-
-impl<C: Clock> Deref for Session<C> {
-    type Target = Graph<Instant>;
-
-    fn deref(&self) -> &Graph<Instant> {
-        &self.graph
-    }
-}
-
-impl<C: Clock> DerefMut for Session<C> {
-    fn deref_mut(&mut self) -> &mut Graph<Instant> {
-        &mut self.graph
     }
 }

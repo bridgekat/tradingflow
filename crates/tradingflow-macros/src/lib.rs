@@ -1,4 +1,4 @@
-//! Procedural macros for composing sub-graphs.
+//! Procedural macros for composing subgraphs.
 //!
 //! This crate is the macro half of the `tradingflow-graph` computation-graph
 //! engine, kept separate because a `proc-macro` crate can export nothing else.

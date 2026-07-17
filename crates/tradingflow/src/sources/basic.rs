@@ -15,7 +15,6 @@
 //!
 //! # Pulses
 //!
-//!
 //! The output node holds `()` (zero-sized, purely a trigger signal); pulse
 //! handles carry no data. Clock-gated operators ([`Clocked`],
 //! [`ResampleClocked`], and the since-inception metrics) take such a pulse as

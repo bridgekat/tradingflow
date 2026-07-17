@@ -10,7 +10,7 @@ use tradingflow::data::{Array, ArrayView, Instant, Retention};
 use tradingflow::graph::typed::{PortHandle, RefPort};
 use tradingflow::operators::{num::*, structural::*, traders::*, transform::*};
 use tradingflow::ports::{ArrayPort, SeriesPort};
-use tradingflow::sources::pulse;
+use tradingflow::sources::basic::*;
 use tradingflow::{Scenario, Session};
 
 use super::args::CommonArgs;

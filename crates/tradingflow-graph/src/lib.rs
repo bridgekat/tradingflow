@@ -7,7 +7,7 @@
 //! Multiple nodes can be fused together into a single node, or be scheduled
 //! independently to be run in parallel.
 //!
-//! # Examples
+//! # Basic usage
 //!
 //! A diamond-shaped graph - source `s`, `a = s + 1`, and `d = s + a`:
 //!
@@ -82,10 +82,35 @@
 //! assert_eq!(g.view(d), 11);
 //! ```
 //!
-//! # Segments
+//! # Constructing graphs
 //!
-//! Each unit of scheduling is a [`Segment`](typed::Segment): it has typed
-//! inputs and outputs, a mutable state, and a compute function.
+//! A [`Builder`](typed::Builder) is used to construct a
+//! [`Graph`](typed::Graph).
+//!
+//! - [`Builder::source`](typed::Builder::source) adds a source node to the
+//!   graph, returning the node handle and its output port handle.
+//! - [`Builder::segment`](typed::Builder::segment) adds a segment (sub-graph)
+//!   to the graph, returning its output port handles.
+//! - [`Builder::build`](typed::Builder::build) finalizes into a
+//!   [`Graph`](typed::Graph).
+//!
+//! A [`Graph`](typed::Graph) represents a complete computation graph.
+//!
+//! - [`Graph::context_mut`](typed::Graph::context_mut) sets a global context
+//!   passed down to every node.
+//! - [`Graph::state_mut`](typed::Graph::state_mut) writes a new value into a
+//!   source node's internal state.
+//! - [`Graph::stabilize`](typed::Graph::stabilize) propagates changes through
+//!   the graph.
+//! - [`Graph::view`](typed::Graph::view) reads values on wires. This can only
+//!   be used immediately after a [`stabilize`](typed::Graph::stabilize) call,
+//!   and before any subsequent mutations; violations will panic.
+//!
+//! # Creating segments (subgraphs)
+//!
+//! Each segment is a single node of scheduling. It must implement
+//! [`Segment`](typed::Segment), which declares its inputs and outputs, its
+//! mutable state, and a compute function.
 //!
 //! ```rust
 //! use tradingflow_graph::typed::*;
@@ -116,7 +141,7 @@
 //! `compute` method will be run again with new inputs and
 //! `is_first_run == false`.
 //!
-//! # Interfaces
+//! # Segment interfaces
 //!
 //! The associated types [`Inputs`](typed::Segment::Inputs) and
 //! [`Outputs`](typed::Segment::Outputs) define the [`Interface`](typed::Interface)
@@ -223,36 +248,6 @@
 //! executor sets the flags of modified source nodes, and skips a node completely
 //! if none of its upstream source nodes were modified. This makes stabilization
 //! after a sparse update touches only a fraction of the graph.
-//!
-//! # Graph-level context
-//!
-//! Besides its inputs and state, every [`compute`](typed::Segment::compute)
-//! receives a shared reference to a single graph-owned **context** value — the
-//! [`Context`](typed::Segment::Context) associated type. The context is seeded
-//! by [`Builder::new(context)`](typed::Builder::new) and overwritten between
-//! generations through [`graph.context_mut()`](typed::Graph::context_mut).
-//! Writing it dirties nothing: the context is ambient data, not a graph
-//! dependency, so a segment that reads it still recomputes only when its own
-//! inputs notify. Segments that ignore the context declare `type Context = ()`;
-//! combinators and [`segment!`] formulas are generic over it.
-//!
-//! The context reference's lifetime is deliberately unrelated to the
-//! per-generation lifetime `'a`, so outputs can never borrow from the context:
-//! out-of-cone output slots must stay valid across generations while the context
-//! keeps changing.
-//!
-//! The canonical use is an event-loop driver holding the current *event
-//! timestamp*: the driver writes each batch's timestamp into the context between
-//! the batch's source-node writes and its
-//! [`stabilize`](typed::Graph::stabilize), so a time-stamping segment declares
-//! `type Context = Timestamp` and is simply handed the batch time in its
-//! `compute` — no clock handle is threaded through construction, and stale-input
-//! segments never observe a half-advanced clock. (This is how the
-//! timestamp-ordered ingestion driver in
-//! [TradingFlow](https://github.com/bridgekat/tradingflow/) uses it.) Until the
-//! first write, the context holds the value passed to
-//! [`Builder::new`](typed::Builder::new); a segment that must tell the
-//! build-time first run apart already has `is_first_run`.
 //!
 //! # Segment fusion
 //!

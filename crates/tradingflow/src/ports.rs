@@ -1,3 +1,5 @@
+//! Segment interfaces for arrays and series.
+
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Scalar, Series, SeriesView};

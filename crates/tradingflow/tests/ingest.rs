@@ -512,5 +512,5 @@ fn event_time_context_stamps_batches() {
 
     pollster::block_on(d.run(|_, _| {}));
     assert_eq!(*rows.lock().unwrap(), vec![(t(5), 50), (t(9), 90)]);
-    assert_eq!(*d.context(), t(9));
+    assert_eq!(d.timestamp(), t(9));
 }

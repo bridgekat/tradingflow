@@ -9,15 +9,15 @@
 //! # Basic usage
 //!
 //! The three things you do in every program: create a [`Scenario`], register
-//! sources and operators (sub-graph segments), then use [`Scenario::build`] to
-//! create a [`Session`] which runs the event loop via [`Session::run`].
+//! sources and operators, then use [`Scenario::build`] to create a [`Session`]
+//! which runs the event loop via [`Session::run`].
 //!
 //! Below is a tiny example that records a synthetic price series, takes a
 //! rolling mean, and prints the resulting series.
 //!
 //! ```rust
 //! use tradingflow::operators::{rolling::*, structural::*};
-//! use tradingflow::sources::*;
+//! use tradingflow::sources::{basic::*};
 //! use tradingflow::{Array, ArrayPort, Instant, Scenario, Series, SeriesPort, WallClock};
 //! use tradingflow_macros::segment;
 //!
@@ -34,14 +34,17 @@
 //!         .collect();
 //!     let data = Series::from_vec([], timestamps, values);
 //!
-//!     // Build the computation graph.
+//!     // Create a computation graph.
 //!     let mut sc = Scenario::new(WallClock);
+//!
+//!     // Build the graph.
 //!     let prices = sc.source(array_source(data, Array::scalar(0.0)));
 //!     let prices_series = sc.segment(record(), prices);
 //!     let mean = sc.segment(rolling_mean(Window::Count(10)), prices_series);
 //!     let mean_series = sc.segment(record(), mean);
 //!
-//!     // Alternatively, one can use `segment!` to fuse nodes.
+//!     // Alternatively, one can use `segment!` to fuse operators into a
+//!     // single segment (subgraph).
 //!     let mean_series_fuse = sc.segment(
 //!         segment!(
 //!             |prices: ArrayPort<f64, 0>| -> SeriesPort<f64, 0> {
@@ -67,21 +70,27 @@
 //! }
 //! ```
 //!
-//! This is the whole pattern. An actual strategy can contain many more operators
-//! — [`forward_adjust`](operators::stocks::forward_adjust),
+//! This is the whole pattern. An actual strategy can contain many more
+//! operators — [`forward_adjust`](operators::stocks::forward_adjust),
 //! [`random_trader`](operators::traders::random_trader),
 //! [`sharpe_ratio`](operators::metrics::sharpe_ratio)
 //! — but the overall structure stays the same.
 //!
 //! # Arrays and series
 //!
-//! See module-level docs of the [`tradingflow_data`] crate, re-exported here
-//! as [`tradingflow::data`](data).
+//! See module-level docs of [`data`].
 //!
-//! # Writing operators
+//! # Building computation graphs
 //!
-//! See module-level docs of the [`tradingflow_graph`] crate, re-exported here
-//! as [`tradingflow::graph`](graph).
+//! See module-level docs of [`graph`].
+//!
+//! # The event loop driver
+//!
+//! See module-level docs of [`ingest`].
+//!
+//! # Built-in sources and operators
+//!
+//! See module-level docs of [`sources`] and [`operators`].
 
 pub use tradingflow_data as data;
 pub use tradingflow_graph as graph;

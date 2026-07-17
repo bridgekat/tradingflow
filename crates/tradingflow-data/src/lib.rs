@@ -8,36 +8,35 @@
 //!
 //! # Arrays
 //!
-//! The [`Array<T, N>`] type is an `N`-dimensional array of scalars `T`, which
-//! owns its data.
+//! An [`Array<T, N>`] is an `N`-dimensional array of scalars `T`, which owns
+//! its data.
 //!
-//! The [`ArrayView<'a, T, N>`] type is a borrowed, possibly strided view of
-//! such an array (with lifetime `'a`).
+//! An [`ArrayView<'a, T, N>`] is a borrowed, possibly strided view of such an
+//! array (with lifetime `'a`).
 //!
-//! The [`Array::view`] method creates an [`ArrayView`] borrow of its data,
-//! and [`ArrayView::to_array`] copies the viewed data into an owned [`Array`].
+//! [`Array::view`] creates an [`ArrayView`] borrow of its data, and
+//! [`ArrayView::to_array`] copies the viewed data into an owned [`Array`].
 //!
 //! # Series
 //!
-//! The [`Series<T, N>`] type is a time series whose elements are
-//! `N`-dimensional arrays of scalars `T`, which owns its data. Its history may
-//! be bounded by a [`Retention`] policy.
+//! A [`Series<T, N>`] is a time series whose elements are `N`-dimensional
+//! arrays of scalars `T`, which owns its data. Its history may be bounded by a
+//! [`Retention`] policy.
 //!
-//! The [`SeriesView<'a, T, N>`] type is a borrowed, possibly strided view of
-//! such a series (with lifetime `'a`).
+//! A [`SeriesView<'a, T, N>`] is a borrowed, possibly strided view of such a
+//! series (with lifetime `'a`).
 //!
-//! The [`Series::view`] method creates a [`SeriesView`] borrow of its data,
-//! and [`SeriesView::to_series`] copies the viewed data into an owned
-//! [`Series`].
+//! [`Series::view`] creates a [`SeriesView`] borrow of its data, and
+//! [`SeriesView::to_series`] copies the viewed data into an owned [`Series`].
 //!
 //! # Timestamps
 //!
 //! Each element in a time series is associated with a custom [`Instant`]
-//! timestamp, expressed as a 64-bit integer of SI nanoseconds since
+//! timestamp, stored as a 64-bit integer of SI nanoseconds since
 //! `1970-01-01 00:00:00 TAI`.
 //!
 //! Two timestamps can be subtracted to produce a [`Duration`] time span,
-//! expressed as a 64-bit integer of SI nanoseconds.
+//! stored as a 64-bit integer of SI nanoseconds.
 //!
 //! Calculating time spans on the TAI scale avoids issues caused by UTC
 //! leap seconds, but requires a conversion from standard UTC timestamps.

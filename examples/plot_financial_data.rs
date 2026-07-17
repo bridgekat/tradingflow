@@ -33,7 +33,7 @@ use tradingflow::operators::stocks::annualize;
 use tradingflow::operators::structural::{filter, record};
 use tradingflow::operators::transform::{map, select_at, select_many};
 use tradingflow::ports::ArrayPort;
-use tradingflow::sources::{parquet_financial_report_panel_source, parquet_panel_source};
+use tradingflow::sources::panel::*;
 use tradingflow::{Scenario, WallClock};
 
 const COLS: [&str; 10] = [

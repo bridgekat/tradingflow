@@ -8,7 +8,7 @@ use tradingflow::operators::{
     metrics::*, num::*, stocks::*, structural::*, traders::*, transform::*,
 };
 use tradingflow::ports::{ArrayPort, SeriesPort};
-use tradingflow::sources::{parquet_financial_report_panel_source, parquet_panel_source};
+use tradingflow::sources::panel::*;
 
 use super::args::CommonArgs;
 
