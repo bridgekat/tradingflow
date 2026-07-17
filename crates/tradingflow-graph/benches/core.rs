@@ -16,7 +16,7 @@ use std::thread;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 use tradingflow_graph::core::Pool;
-use tradingflow_graph::typed::{Builder, Graph, PortHandle, Operator, Port, RefPort, Source};
+use tradingflow_graph::typed::{Builder, Graph, Operator, Port, PortHandle, RefPort, Source};
 
 const DATA_LEN: usize = 1 << 16;
 const DATA_MASK: usize = DATA_LEN - 1;
@@ -360,7 +360,7 @@ fn bench_few_heavy(c: &mut Criterion) {
 // fusion removes.
 mod mesh {
     use tradingflow_graph::typed::{
-        Builder, PortHandle, NodeHandle, RefPort, RefPorts, RefSource, Segment,
+        Builder, NodeHandle, PortHandle, RefPort, RefPorts, RefSource, Segment,
     };
 
     /// A pokeable handle to one mesh source (a by-reference `i64`, since sources

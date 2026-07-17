@@ -48,7 +48,7 @@
 //!     let mut session = sc.build();
 //!     session.run(|_, _| {}).await;
 //!     let series = session.view(ma_history);
-//!     println!("{:?}", series.values());
+//!     println!("{:?}", series.data());
 //! }
 //! ```
 //!

@@ -17,7 +17,7 @@
 //! `mmt_report_*` (earnings-announcement dates), and the 波动率 / 流动性 /
 //! 量价相关性 categories.
 
-use tradingflow::graph::{PortHandle, Operator};
+use tradingflow::graph::{Operator, PortHandle};
 
 use tradingflow::operators::{
     ArrayPort, SeriesPort, Window, apply, diff, divide, lag_series, log, max, min, multiply,
@@ -146,7 +146,7 @@ impl Operator for WindowReduce {
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         if init {
-            let n = series.stride();
+            let n = series.elem_len();
             state.out = Array::from_vec([n], vec![f64::NAN; n]);
             return (false, state.out.view());
         }
@@ -156,9 +156,9 @@ impl Operator for WindowReduce {
             return (false, state.out.view());
         }
         let f = state.f;
-        let n = series.stride();
-        let slices: Vec<&[f64]> = (0..w).map(|k| series.at(len - w + k)).collect();
-        let out = state.out.as_mut_slice();
+        let n = series.elem_len();
+        let slices: Vec<&[f64]> = (0..w).map(|k| series.elem(len - w + k).data()).collect();
+        let out = state.out.data_mut();
         let mut buf = vec![0.0f64; w];
         for j in 0..n {
             for k in 0..w {
@@ -248,7 +248,7 @@ impl Operator for WindowReduce2 {
         state: &'b mut WindowReduce2State,
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 1>) {
-        let n = series.extents()[0]; // (N, 2) -> N
+        let n = series.elem_extents()[0]; // (N, 2) -> N
         if init {
             state.out = Array::from_vec([n], vec![f64::NAN; n]);
             return (false, state.out.view());
@@ -259,8 +259,8 @@ impl Operator for WindowReduce2 {
             return (false, state.out.view());
         }
         let f = state.f;
-        let slices: Vec<&[f64]> = (0..w).map(|k| series.at(len - w + k)).collect();
-        let out = state.out.as_mut_slice();
+        let slices: Vec<&[f64]> = (0..w).map(|k| series.elem(len - w + k).data()).collect();
+        let out = state.out.data_mut();
         let (mut c0, mut c1) = (vec![0.0f64; w], vec![0.0f64; w]);
         for j in 0..n {
             for k in 0..w {
@@ -339,7 +339,7 @@ impl Operator for ChipDist {
         state: &'b mut ChipDistState,
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 2>) {
-        let n = series.extents()[0];
+        let n = series.elem_extents()[0];
         if init {
             state.out = Array::from_vec([n, CHIP_COLS], vec![f64::NAN; n * CHIP_COLS]);
             return (false, state.out.view());
@@ -349,8 +349,8 @@ impl Operator for ChipDist {
         if len < w {
             return (false, state.out.view());
         }
-        let slices: Vec<&[f64]> = (0..w).map(|k| series.at(len - w + k)).collect();
-        let out = state.out.as_mut_slice();
+        let slices: Vec<&[f64]> = (0..w).map(|k| series.elem(len - w + k).data()).collect();
+        let out = state.out.data_mut();
         let (mut price, mut turn) = (vec![0.0f64; w], vec![0.0f64; w]);
         let (mut weight, mut ret) = (vec![0.0f64; w], vec![0.0f64; w]);
         for j in 0..n {

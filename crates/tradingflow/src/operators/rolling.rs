@@ -5,7 +5,7 @@
 //! `Accumulator: Send + Sync` bound holds because the accumulator lives in the
 //! operator State, which is a `Send + Sync` cell.
 //!
-//! Note: rolling reads event time from the series window (`timestamp_at`), NOT
+//! Note: rolling reads event time from the series window (`timestamp`), NOT
 //! the threaded `Instant`, so the time-delta window needs no clock wiring. A
 //! [`SeriesView`] window is view-local, so all addressing is relative to the
 //! window's newest row (the accumulated span is always the window's tail);
@@ -129,7 +129,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
         init: bool,
     ) -> (bool, ArrayView<'a, A::Scalar, NO>) {
         if init {
-            let input_shape = series.extents();
+            let input_shape = series.elem_extents();
             let output_shape = A::output_shape(&input_shape);
             let output_stride: usize = output_shape.iter().product();
             state.count = 0;
@@ -146,13 +146,15 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
         // `len - count` — stable under retention trims of older rows.
         let len = series.len();
 
-        state.accumulator.add(series.at(len - 1));
+        state.accumulator.add(series.elem(len - 1).data());
         state.count += 1;
 
         match state.window {
             Window::Count(w) => {
                 while state.count > w {
-                    state.accumulator.remove(series.at(len - state.count));
+                    state
+                        .accumulator
+                        .remove(series.elem(len - state.count).data());
                     state.count -= 1;
                 }
                 if state.count < w {
@@ -160,10 +162,12 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
                 }
             }
             Window::TimeDelta(w) => {
-                let current_ts = series.timestamp_at(len - 1);
+                let current_ts = series.timestamp(len - 1);
                 let cutoff = current_ts - w;
-                while state.count > 0 && series.timestamp_at(len - state.count) < cutoff {
-                    state.accumulator.remove(series.at(len - state.count));
+                while state.count > 0 && series.timestamp(len - state.count) < cutoff {
+                    state
+                        .accumulator
+                        .remove(series.elem(len - state.count).data());
                     state.count -= 1;
                 }
                 if state.count == 0 {
@@ -172,9 +176,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
             }
         }
 
-        state
-            .accumulator
-            .write(state.count, state.out.as_mut_slice());
+        state.accumulator.write(state.count, state.out.data_mut());
         (true, state.out.view())
     }
 
@@ -590,7 +592,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
 
     #[expect(
         clippy::needless_range_loop,
-        reason = "i walks several parallel per-column arrays plus `series.at(..)[i]`"
+        reason = "i walks several parallel per-column arrays plus `series.elem(..)[[i]]`"
     )]
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, SeriesView<'a, T, NO>),
@@ -599,16 +601,16 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
         init: bool,
     ) -> (bool, ArrayView<'a, T, NO>) {
         if init {
-            let stride = series.stride();
+            let stride = series.elem_len();
             state.weighted_sum = vec![T::zero(); stride];
             state.nonfinite_count = vec![0; stride];
             state.fill_decay = T::one();
-            state.out = Array::from_vec(series.extents(), vec![T::nan(); stride]);
+            state.out = Array::from_vec(series.elem_extents(), vec![T::nan(); stride]);
             return (false, state.out.view());
         }
 
         let len = series.len();
-        let row = series.at(len - 1);
+        let row = series.elem(len - 1).data();
         let stride = row.len();
         let alpha = state.alpha;
         let one_minus_alpha = state.one_minus_alpha;
@@ -630,7 +632,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
                 state.weighted_sum[i] = state.weighted_sum[i] + alpha * x;
             }
             if len > state.window {
-                let x_old = series.at(len - 1 - state.window)[i];
+                let x_old = series.elem(len - 1 - state.window).data()[i];
                 if !x_old.is_finite() {
                     state.nonfinite_count[i] -= 1;
                 } else {
@@ -643,7 +645,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
         if len < state.window {
             (false, state.out.view())
         } else {
-            let out = state.out.as_mut_slice();
+            let out = state.out.data_mut();
             for i in 0..stride {
                 out[i] = if state.nonfinite_count[i] == 0 && weight_sum > T::zero() {
                     state.weighted_sum[i] / weight_sum

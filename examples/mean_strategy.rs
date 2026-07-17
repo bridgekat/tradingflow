@@ -167,7 +167,7 @@ async fn main() {
         .fold(0.0_f64, f64::min);
     let ba: SeriesView<f64, 1> = session.view(h_beta_alpha);
     let (beta, alpha) = ba
-        .values()
+        .data()
         .rchunks(2)
         .next()
         .map(|c| (c[0], c[1] * 252.0))

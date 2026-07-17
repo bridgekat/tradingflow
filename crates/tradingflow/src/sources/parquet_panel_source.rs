@@ -184,7 +184,7 @@ pub(crate) fn panel_write(
 ) -> usize {
     let Some(first) = batch.first() else { return 0 };
     let k = first.vals.len();
-    let buf = output.as_mut_slice();
+    let buf = output.data_mut();
     if state.last_ts.is_some_and(|last| ts > last) {
         for &r in &state.dirty {
             buf[r * k..r * k + k].fill(f64::NAN);

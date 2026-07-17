@@ -32,7 +32,7 @@ async fn run_single_source_record() {
 
     let s: SeriesView<f64, 0> = session.view(hrec);
     assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
-    assert_eq!(s.values(), &[10.0, 20.0, 30.0]);
+    assert_eq!(s.data(), &[10.0, 20.0, 30.0]);
 }
 
 /// Staggered timestamps; the un-fired input keeps its stale value.
@@ -50,7 +50,7 @@ async fn run_two_sources_add() {
 
     let s: SeriesView<f64, 0> = session.view(hrec);
     assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
-    assert_eq!(s.values(), &[10.0, 30.0, 70.0]);
+    assert_eq!(s.data(), &[10.0, 30.0, 70.0]);
 }
 
 /// Two sources at the same timestamps → one coalesced batch each.
@@ -68,7 +68,7 @@ async fn run_coalescing() {
 
     let s: SeriesView<f64, 0> = session.view(hrec);
     assert_eq!(s.timestamps(), tss(&[1, 2]).as_slice());
-    assert_eq!(s.values(), &[110.0, 220.0]);
+    assert_eq!(s.data(), &[110.0, 220.0]);
 }
 
 /// The cutoff must survive the driver — dropped ticks produce no Record row.
@@ -86,7 +86,7 @@ async fn run_filter_cutoff() {
     let s: SeriesView<f64, 0> = session.view(hrec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.timestamps(), tss(&[2, 4]).as_slice());
-    assert_eq!(s.values(), &[5.0, 10.0]);
+    assert_eq!(s.data(), &[5.0, 10.0]);
 }
 
 /// `on_stable` fires once per coalesced batch (3 distinct timestamps here),

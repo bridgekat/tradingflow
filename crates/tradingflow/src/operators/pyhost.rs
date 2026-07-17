@@ -128,7 +128,7 @@ use crate::{Array, ArrayView, Instant, SeriesView};
 // as a `Vec<usize>` so a single non-generic pyclass serves every rank (PyO3
 // `#[pyclass]` cannot itself be const-generic). The flat `f64` buffer and a
 // raw byte length are enough for the copy-out / copy-in, since `Array<f64, N>`
-// is row-major contiguous — `as_slice()`/`as_mut_slice()` over the whole buffer
+// is row-major contiguous — `data()`/`data_mut()` over the whole buffer
 // are rank-independent. The output view reconstructs the typed `&mut Array<f64,
 // NO>` from the stored pointer + rank tag (see [`NativeArrayView::bind`]).
 
@@ -227,7 +227,7 @@ impl NativeArrayView {
         // SAFETY: `arr` is a live cell for the duration of this call (module docs).
         let r = unsafe { &mut *arr };
         let view = NativeArrayView {
-            data: r.as_mut_slice().as_mut_ptr(),
+            data: r.data_mut().as_mut_ptr(),
             len: r.len(),
             extents: r.extents().to_vec(),
             writable,
@@ -424,12 +424,12 @@ impl NativeSeriesView {
         s: SeriesView<'_, f64, N>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let view = NativeSeriesView {
-            values: s.values().as_ptr(),
+            values: s.data().as_ptr(),
             timestamps: s.timestamps().as_ptr(),
             retained: s.len(),
             base: 0,
-            stride: s.stride(),
-            extents: s.extents().to_vec(),
+            stride: s.elem_len(),
+            extents: s.elem_extents().to_vec(),
         };
         Ok(Bound::new(py, view)?.into_any())
     }
@@ -959,15 +959,15 @@ __op__ = Turnover()
 
         *g.state_mut(src_cell) = Array::from_vec([2], vec![0.5, 0.5]);
         g.stabilize(&mut pool);
-        assert_eq!(g.view(out).contiguous_slice().unwrap(), &[0.0]); // warmup
+        assert_eq!(g.view(out).as_slice().unwrap(), &[0.0]); // warmup
 
         *g.state_mut(src_cell) = Array::from_vec([2], vec![0.3, 0.7]);
         g.stabilize(&mut pool);
-        assert!((g.view(out).contiguous_slice().unwrap()[0] - 0.4).abs() < 1e-12);
+        assert!((g.view(out).as_slice().unwrap()[0] - 0.4).abs() < 1e-12);
 
         *g.state_mut(src_cell) = Array::from_vec([2], vec![1.0, 0.0]);
         g.stabilize(&mut pool);
-        assert!((g.view(out).contiguous_slice().unwrap()[0] - 1.4).abs() < 1e-12);
+        assert!((g.view(out).as_slice().unwrap()[0] - 1.4).abs() < 1e-12);
     }
 
     /// Heterogeneous inputs: an (Array, Series) operator that reads Series
@@ -994,7 +994,8 @@ __op__ = HistDot()
         let mut b = Builder::new(Instant::MIN);
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
         // Sources lend the view currency directly — `Record` wires straight on.
-        let (weights_cell, weights) = b.source(array_cell(Array::from_vec([2], vec![1.0_f64, 1.0])));
+        let (weights_cell, weights) =
+            b.source(array_cell(Array::from_vec([2], vec![1.0_f64, 1.0])));
         let (feed_cell, feed) = b.source(array_cell(Array::from_vec([2], vec![0.0_f64, 0.0])));
         let series = b.segment(Record::new(), feed);
         let out = b.segment(
@@ -1014,13 +1015,13 @@ __op__ = HistDot()
         *g.state_mut(weights_cell) = Array::from_vec([2], vec![1.0, 1.0]);
         *g.state_mut(feed_cell) = Array::from_vec([2], vec![1.0, 2.0]);
         g.stabilize(&mut pool);
-        assert!((g.view(out).contiguous_slice().unwrap()[0] - 3.0).abs() < 1e-12);
+        assert!((g.view(out).as_slice().unwrap()[0] - 3.0).abs() < 1e-12);
 
         // Tick 2 @ t=200: feed [3,4]; series=[[1,2],[3,4]]; dots=3,7; mean=5.
         *g.context_mut() = Instant::from_nanos(200);
         *g.state_mut(feed_cell) = Array::from_vec([2], vec![3.0, 4.0]);
         g.stabilize(&mut pool);
-        assert!((g.view(out).contiguous_slice().unwrap()[0] - 5.0).abs() < 1e-12);
+        assert!((g.view(out).as_slice().unwrap()[0] - 5.0).abs() < 1e-12);
     }
 
     /// Loading an operator from a plain `.py` file via a `build(**kwargs)`
@@ -1071,7 +1072,7 @@ def build(scale=1.0):
         *g.state_mut(src_cell) = Array::from_vec([4], vec![1.0, 2.0, 3.0, 4.0]);
         g.stabilize(&mut pool);
         // sum(1..4)=10 * 3
-        assert!((g.view(out).contiguous_slice().unwrap()[0] - 30.0).abs() < 1e-12);
+        assert!((g.view(out).as_slice().unwrap()[0] - 30.0).abs() < 1e-12);
     }
 
     // -- Integration with the real `tradingflow` Python package (needs python/ --
@@ -1120,7 +1121,7 @@ def build(scale=1.0):
             g.stabilize(&mut pool);
         }
 
-        let mu = g.view(pred).contiguous_slice().unwrap();
+        let mu = g.view(pred).as_slice().unwrap();
         assert_eq!(mu.len(), N);
         assert!(
             mu.iter().all(|v| v.is_finite()),

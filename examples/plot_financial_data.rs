@@ -110,7 +110,10 @@ async fn main() {
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
-    let daily = |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> PortHandle<ArrayPort<f64, 1>> {
+    let daily = |sc: &mut Scenario,
+                 kind: &str,
+                 cols: Vec<String>|
+     -> PortHandle<ArrayPort<f64, 1>> {
         let s =
             ParquetPanelSource::new(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
         let panel = sc.add_source(s);
@@ -219,7 +222,7 @@ async fn main() {
     let mut rows: BTreeMap<i64, [f64; 10]> = BTreeMap::new();
     for (c, h) in records.iter().enumerate() {
         let series: SeriesView<f64, 0> = session.view(*h);
-        for (ts, v) in series.timestamps().iter().zip(series.values().iter()) {
+        for (ts, v) in series.timestamps().iter().zip(series.data().iter()) {
             rows.entry(ts.as_nanos()).or_insert([f64::NAN; 10])[c] = *v;
         }
     }

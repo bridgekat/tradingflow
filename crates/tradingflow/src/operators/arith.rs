@@ -102,7 +102,7 @@ impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T) -> U + Send + Sync + 'static
         if init {
             state.out = Array::zeros(x.extents());
         }
-        apply_unary(&mut state.out, &x, &state.f);
+        apply_unary(&mut state.out, x, &state.f);
         (!init, state.out.view())
     }
 
@@ -168,7 +168,7 @@ impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T, T) -> U + Send + Sync + 'sta
         if init {
             state.out = Array::zeros(a.extents());
         }
-        apply_binary(&mut state.out, &a, &b, &state.f);
+        apply_binary(&mut state.out, a, b, &state.f);
         (!init, state.out.view())
     }
 
@@ -415,7 +415,7 @@ impl<T: Scalar, const N: usize> Operator for Choose<T, N> {
             *out = Array::zeros(cond.extents());
         }
         let (cs, as_, bs) = (cond.to_contiguous(), a.to_contiguous(), b.to_contiguous());
-        let dst = out.as_mut_slice();
+        let dst = out.data_mut();
         for i in 0..dst.len() {
             dst[i] = if cs[i] { as_[i].clone() } else { bs[i].clone() };
         }

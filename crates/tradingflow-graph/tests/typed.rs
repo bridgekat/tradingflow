@@ -18,8 +18,8 @@ use std::thread;
 use bumpalo::Bump;
 use tradingflow_graph::core::Pool;
 use tradingflow_graph::typed::{
-    Arr, Builder, Graph, PortHandle, Id, Operator, Port, Ports, RefPort, RefPorts, RefSource, Segment,
-    SegmentExt, Slice, Source, NodeHandle, Value, ViewPort, ViewPorts, ViewSource,
+    Arr, Builder, Graph, Id, NodeHandle, Operator, Port, PortHandle, Ports, RefPort, RefPorts,
+    RefSource, Segment, SegmentExt, Slice, Source, Value, ViewPort, ViewPorts, ViewSource,
 };
 
 fn pool() -> Pool {
@@ -1956,10 +1956,8 @@ fn build_mesh(
     Vec<Vec<PortHandle<RefPort<i64>>>>,
     Vec<PortHandle<RefPort<i64>>>,
 ) {
-    let (src, wires): (Vec<NodeHandle<RefSource<i64, ()>>>, Vec<_>) = srcs
-        .iter()
-        .map(|&v| b.source(RefSource::new(v)))
-        .unzip();
+    let (src, wires): (Vec<NodeHandle<RefSource<i64, ()>>>, Vec<_>) =
+        srcs.iter().map(|&v| b.source(RefSource::new(v))).unzip();
     let mut layers: Vec<Vec<PortHandle<RefPort<i64>>>> = vec![wires];
     for layer in 1..=LM {
         let prev = layers[layer - 1].clone();
@@ -1970,7 +1968,8 @@ fn build_mesh(
         }
         layers.push(cur);
     }
-    let aggs: Vec<PortHandle<RefPort<i64>>> = layers.iter().map(|l| b.segment(SumAll, &l[..])).collect();
+    let aggs: Vec<PortHandle<RefPort<i64>>> =
+        layers.iter().map(|l| b.segment(SumAll, &l[..])).collect();
     (src, layers, aggs)
 }
 

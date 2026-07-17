@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::graph::{Builder, Graph, PortHandle, Pool, ViewPort, ViewSource};
+use crate::graph::{Builder, Graph, Pool, PortHandle, ViewPort, ViewSource};
 
 use super::clock::{Clock, WallClock};
 use super::feed::{Feed, LazyFeed, StreamFeed};

@@ -127,7 +127,7 @@ impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static, const N: usize
         }
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        let out = state.out.as_mut_slice();
+        let out = state.out.data_mut();
         for i in 0..out.len() {
             out[i] = if (state.condition)(src[i].clone()) {
                 src[i].clone()
@@ -195,7 +195,7 @@ where
         }
         let xs = x.to_contiguous();
         let src: &[S] = &xs;
-        let dst = out.as_mut_slice();
+        let dst = out.data_mut();
         for i in 0..dst.len() {
             dst[i] = src[i].as_();
         }

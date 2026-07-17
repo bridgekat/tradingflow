@@ -105,7 +105,7 @@ impl Operator for CorrMatrix {
         let n = panel.extents()[0]; // (N, K)
         let data = panel.to_contiguous(); // row-major: data[i*k + a]
         let data = &data[..];
-        let out = state.out.as_mut_slice();
+        let out = state.out.data_mut();
         for a in 0..k {
             for b in a..k {
                 let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -364,7 +364,7 @@ async fn main() {
         let mut sum = vec![0.0f64; stride];
         let mut cnt = vec![0usize; stride];
         for t in 0..nt {
-            let row = s.at(t);
+            let row = s.elem(t).data();
             for (c, &v) in row.iter().enumerate() {
                 if v.is_finite() {
                     sum[c] += v;

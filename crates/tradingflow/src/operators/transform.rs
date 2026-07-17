@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 use crate::graph::{Interface, Operator, Segment};
 
 use super::op::{ArrayPort, SeriesPort, StripNotify};
-use crate::data::array::Shape;
+use crate::data::Shape;
 use crate::{Array, ArrayView, Instant, Scalar, SeriesView};
 
 // ---------------------------------------------------------------------------
@@ -432,7 +432,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Select<T, IN, OU
             );
             return (false, state.out.view());
         }
-        let dst = state.out.as_mut_slice();
+        let dst = state.out.data_mut();
         for (dst_i, &src_i) in state.index_map.iter().enumerate() {
             dst[dst_i] = src[src_i].clone();
         }
@@ -573,7 +573,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for SliceView<T, IN, 
         state: &'b mut Self::State,
         init: bool,
     ) -> (bool, ArrayView<'a, T, OUT>) {
-        let data = v.buffer();
+        let data = v.data();
         let shape = v.shape();
         let (ext, strd) = (shape.extents(), shape.strides());
         let offset = state.start * strd[state.axis];
@@ -599,7 +599,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for SliceView<T, IN, 
                 os[d] = strd[d];
             }
         }
-        let out = ArrayView::from_parts(&data[offset..], Shape::strided(oe, os));
+        let out = ArrayView::from_parts(Shape::strided(oe, os), &data[offset..]);
         (notified && !init, out)
     }
 }
@@ -654,13 +654,13 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
         init: bool,
     ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            state.out = Array::full(series.extents(), state.fill.clone());
+            state.out = Array::full(series.elem_extents(), state.fill.clone());
             return (false, state.out.view());
         }
         let len = series.len();
-        let dst = state.out.as_mut_slice();
+        let dst = state.out.data_mut();
         if len > state.offset {
-            dst.clone_from_slice(series.at(len - 1 - state.offset));
+            dst.clone_from_slice(series.elem(len - 1 - state.offset).data());
         } else {
             dst.fill(state.fill.clone());
         }

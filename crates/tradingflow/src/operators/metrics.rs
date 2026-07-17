@@ -83,21 +83,21 @@ impl<T: Scalar + Float, const N: usize> Operator for CompoundReturn<T, N> {
 
         if state.first_value.is_nan() {
             state.first_value = current;
-            state.out[0] = T::zero();
+            state.out[[]] = T::zero();
             return (true, state.out.view());
         }
 
         if state.first_value <= T::zero() || current <= T::zero() {
-            state.out[0] = T::nan();
+            state.out[[]] = T::nan();
             return (true, state.out.view());
         }
 
         let ratio = current / state.first_value;
         let n = T::from(state.count - 1).unwrap();
         if n <= T::zero() {
-            state.out[0] = T::zero();
+            state.out[[]] = T::zero();
         } else {
-            state.out[0] = ratio.powf(T::one() / n) - T::one();
+            state.out[[]] = ratio.powf(T::one() / n) - T::one();
         }
         (true, state.out.view())
     }
@@ -176,7 +176,7 @@ impl<T: Scalar + Float, const N: usize> Operator for AverageReturn<T, N> {
             let r = current / state.prev - T::one();
             state.sum = state.sum + r;
             state.count += 1;
-            state.out[0] = state.sum / T::from(state.count).unwrap();
+            state.out[[]] = state.sum / T::from(state.count).unwrap();
         }
 
         state.prev = current;
@@ -263,7 +263,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
             let n = T::from(state.count).unwrap();
             let mean = state.sum / n;
             let var = state.sum_sq / n - mean * mean;
-            state.out[0] = if var > T::zero() {
+            state.out[[]] = if var > T::zero() {
                 var.sqrt()
             } else {
                 T::zero()
@@ -356,7 +356,7 @@ impl<T: Scalar + Float, const N: usize> Operator for SharpeRatio<T, N> {
             let mean = state.sum / n;
             let var = state.sum_sq / n - mean * mean;
 
-            state.out[0] = if var > T::zero() {
+            state.out[[]] = if var > T::zero() {
                 mean / var.sqrt()
             } else {
                 T::nan()
@@ -437,7 +437,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Drawdown<T, N> {
             state.running_max = current;
         }
 
-        state.out[0] = if state.running_max > T::zero() {
+        state.out[[]] = if state.running_max > T::zero() {
             (current - state.running_max) / state.running_max
         } else {
             T::zero()
@@ -528,7 +528,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Turnover<T, N> {
             turnover = turnover + (c - *prev).abs();
             *prev = c;
         }
-        state.out[0] = turnover;
+        state.out[[]] = turnover;
         (true, state.out.view())
     }
 
@@ -595,19 +595,19 @@ mod tests {
         *g.state_mut(w_cell) = Array::from_vec([5], vec![0.2, 0.2, 0.2, 0.2, 0.2]);
         g.stabilize(&mut pool);
         assert!(
-            g.view(out).contiguous_slice().unwrap()[0].is_nan(),
+            g.view(out).as_slice().unwrap()[0].is_nan(),
             "warmup should not emit"
         );
 
         // L1 change: |0.4-0.2|+|0.1-0.2|+0+0+|0.1-0.2| = 0.2+0.1+0.1 = 0.4.
         *g.state_mut(w_cell) = Array::from_vec([5], vec![0.4, 0.1, 0.2, 0.2, 0.1]);
         g.stabilize(&mut pool);
-        assert!((g.view(out).contiguous_slice().unwrap()[0] - 0.4).abs() < 1e-12);
+        assert!((g.view(out).as_slice().unwrap()[0] - 0.4).abs() < 1e-12);
 
         // NaN treated as 0: stock 1 leaves (0.1 → 0), contributing its full 0.1;
         // |0.4-0.4|+|0-0.1|+0+0+|0.2-0.1| = 0.1 + 0.1 = 0.2.
         *g.state_mut(w_cell) = Array::from_vec([5], vec![0.4, f64::NAN, 0.2, 0.2, 0.2]);
         g.stabilize(&mut pool);
-        assert!((g.view(out).contiguous_slice().unwrap()[0] - 0.2).abs() < 1e-12);
+        assert!((g.view(out).as_slice().unwrap()[0] - 0.2).abs() < 1e-12);
     }
 }

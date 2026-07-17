@@ -199,7 +199,7 @@ impl Operator for Benchmark {
             state.pending = None;
             holdings_value = 0.0;
         }
-        let out = state.out.as_mut_slice();
+        let out = state.out.data_mut();
         out[0] = holdings_value;
         out[1] = state.cash;
         (true, state.out.view())
@@ -380,7 +380,7 @@ where
         s.pending = None;
         holdings_value = 0.0;
     }
-    let out = s.out.as_mut_slice();
+    let out = s.out.data_mut();
     out[0] = holdings_value;
     out[1] = s.cash;
     true
@@ -685,7 +685,7 @@ pub fn random_trader(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Builder, PortHandle, Pool, NodeHandle, ViewSource};
+    use crate::graph::{Builder, NodeHandle, Pool, PortHandle, ViewSource};
     use crate::operators::op::{ArrayValue, array_cell};
 
     fn arr(v: &[f64]) -> Array<f64, 1> {
@@ -720,17 +720,17 @@ mod tests {
         *g.state_mut(pos) = arr(&[0.5, 0.5]);
         *g.state_mut(close) = arr(&[10.0, 20.0]);
         g.stabilize(&mut pool);
-        assert_eq!(g.view(out).contiguous_slice().unwrap(), &[0.0, 1.0]);
+        assert_eq!(g.view(out).as_slice().unwrap(), &[0.0, 1.0]);
 
         *g.state_mut(close) = arr(&[11.0, 22.0]);
         g.stabilize(&mut pool);
-        let o = g.view(out).contiguous_slice().unwrap().to_vec();
+        let o = g.view(out).as_slice().unwrap().to_vec();
         assert!((o[0] - 1.0).abs() < 1e-12, "tick2 holdings {} != 1.0", o[0]);
         assert!(o[1].abs() < 1e-12, "tick2 cash {} != 0", o[1]);
 
         *g.state_mut(close) = arr(&[12.0, 22.0]);
         g.stabilize(&mut pool);
-        let o = g.view(out).contiguous_slice().unwrap().to_vec();
+        let o = g.view(out).as_slice().unwrap().to_vec();
         let nav = o[0] + o[1];
         let expected = 0.5 * (12.0 / 11.0) + 0.5;
         assert!(
@@ -759,7 +759,7 @@ mod tests {
         g.stabilize(&mut pool);
         *g.state_mut(close) = arr(&[10.0]);
         g.stabilize(&mut pool);
-        let o = g.view(out).contiguous_slice().unwrap().to_vec();
+        let o = g.view(out).as_slice().unwrap().to_vec();
         assert!(
             (o[0] - 1.0).abs() < 1e-12 && o[1].abs() < 1e-12,
             "fully invested: {o:?}"
@@ -768,7 +768,7 @@ mod tests {
         *g.state_mut(adj) = arr(&[2.0]);
         *g.state_mut(close) = arr(&[10.0]);
         g.stabilize(&mut pool);
-        let o = g.view(out).contiguous_slice().unwrap().to_vec();
+        let o = g.view(out).as_slice().unwrap().to_vec();
         assert!(
             (o[0] - 2.0).abs() < 1e-12,
             "reinvested holdings {} != 2.0",
@@ -795,14 +795,11 @@ mod tests {
         *g.state_mut(pos) = arr(&[1.0]);
         *g.state_mut(close) = arr(&[10.0]);
         g.stabilize(&mut pool);
-        assert_eq!(g.view(out).contiguous_slice().unwrap(), &[0.0, 1_000_000.0]);
+        assert_eq!(g.view(out).as_slice().unwrap(), &[0.0, 1_000_000.0]);
 
         *g.state_mut(close) = arr(&[10.0]);
         g.stabilize(&mut pool);
-        assert_eq!(
-            g.view(out).contiguous_slice().unwrap(),
-            &[1_000_000.0, -1000.0]
-        );
+        assert_eq!(g.view(out).as_slice().unwrap(), &[1_000_000.0, -1000.0]);
     }
 
     #[test]
@@ -826,10 +823,10 @@ mod tests {
             g.stabilize(&mut pool);
             *g.state_mut(close) = arr(&[10.0; 5]);
             g.stabilize(&mut pool);
-            let invested = g.view(out).contiguous_slice().unwrap().to_vec();
+            let invested = g.view(out).as_slice().unwrap().to_vec();
             *g.state_mut(close) = arr(&[11.0, 9.0, 10.0, 10.0, 10.0]);
             g.stabilize(&mut pool);
-            let marked = g.view(out).contiguous_slice().unwrap().to_vec();
+            let marked = g.view(out).as_slice().unwrap().to_vec();
             (invested, marked)
         };
         let (inv1, mk1) = run();

@@ -56,8 +56,8 @@ impl<T: Scalar, const N: usize> EventSource for ArraySource<T, N> {
         tokio::spawn(async move {
             let view = series.view();
             for i in 0..view.len() {
-                let arr = view.element(i).to_array();
-                if hist_tx.send((view.timestamp_at(i), arr)).await.is_err() {
+                let arr = view.elem(i).to_array();
+                if hist_tx.send((view.timestamp(i), arr)).await.is_err() {
                     break;
                 }
             }
@@ -66,7 +66,7 @@ impl<T: Scalar, const N: usize> EventSource for ArraySource<T, N> {
         (
             receiver_stream(hist_rx),
             |payload, output: &mut Array<T, N>, _| {
-                output.assign(payload.as_slice());
+                output.assign(payload.view());
                 1
             },
         )

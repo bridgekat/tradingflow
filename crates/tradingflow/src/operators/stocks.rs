@@ -74,7 +74,7 @@ impl Operator for Annualize {
         let day = input[1];
         let ytd = &input[2..];
         let n = ytd.len();
-        let out = state.out.as_mut_slice();
+        let out = state.out.data_mut();
 
         let (is_new_year, days_elapsed) = if !state.initialized || year != state.prev_year {
             (true, day)
@@ -214,7 +214,7 @@ impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
         }
         if price_notified {
             let p = price[0];
-            state.out.as_mut_slice()[0] = if state.output_prices {
+            state.out.data_mut()[0] = if state.output_prices {
                 p * state.factor
             } else {
                 state.factor

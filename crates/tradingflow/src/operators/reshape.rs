@@ -17,7 +17,7 @@ use crate::graph::{Interface, Operator, Segment};
 use bumpalo::Bump;
 
 use super::op::{ArrayPort, ArrayPorts};
-use crate::data::array::Shape;
+use crate::data::Shape;
 use crate::{Array, ArrayView, Instant, Scalar};
 
 /// Shared runtime state: the axis config, the outer × chunk layout (sized on the
@@ -144,7 +144,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Stack<T, IN, OUT
             return (false, state.out.view());
         }
         interleaved_copy_views(
-            state.out.as_mut_slice(),
+            state.out.data_mut(),
             views,
             state.n_inputs,
             state.outer_count,
@@ -211,17 +211,17 @@ impl<T: Scalar + Float, const IN: usize, const OUT: usize> Operator for StackSyn
             state.chunk_size = first[state.axis..].iter().product();
             state.n_inputs = views.len();
             let mut out = Array::zeros(stack_extents::<IN, OUT>(first, state.axis, views.len()));
-            for v in out.as_mut_slice().iter_mut() {
+            for v in out.data_mut().iter_mut() {
                 *v = T::nan();
             }
             state.out = out;
             return (false, state.out.view());
         }
-        for v in state.out.as_mut_slice().iter_mut() {
+        for v in state.out.data_mut().iter_mut() {
             *v = T::nan();
         }
         interleaved_copy_views_selective(
-            state.out.as_mut_slice(),
+            state.out.data_mut(),
             views,
             (0..flags.len()).filter(|&i| flags[i]),
             state.n_inputs,
@@ -296,7 +296,7 @@ impl<T: Scalar, const N: usize> Operator for Concat<T, N> {
             return (false, state.out.view());
         }
         interleaved_copy_views(
-            state.out.as_mut_slice(),
+            state.out.data_mut(),
             views,
             state.n_inputs,
             state.outer_count,
@@ -364,17 +364,17 @@ impl<T: Scalar + Float, const N: usize> Operator for ConcatSync<T, N> {
             state.n_inputs = views.len();
             ext[state.axis] *= views.len();
             let mut out = Array::zeros(ext);
-            for v in out.as_mut_slice().iter_mut() {
+            for v in out.data_mut().iter_mut() {
                 *v = T::nan();
             }
             state.out = out;
             return (false, state.out.view());
         }
-        for v in state.out.as_mut_slice().iter_mut() {
+        for v in state.out.data_mut().iter_mut() {
             *v = T::nan();
         }
         interleaved_copy_views_selective(
-            state.out.as_mut_slice(),
+            state.out.data_mut(),
             views,
             (0..flags.len()).filter(|&i| flags[i]),
             state.n_inputs,
@@ -463,7 +463,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
         init: bool,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let n = state.axis_size;
-        let data = x.buffer();
+        let data = x.data();
         let shape = x.shape();
         let (ext, strd) = (shape.extents(), shape.strides());
         if init {
@@ -485,7 +485,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
         let alloc: &'a Bump = &state.arena;
         let flags = alloc.alloc_slice_fill_iter(std::iter::repeat_n(notified && !init, n));
         let views = alloc.alloc_slice_fill_iter(
-            (0..n).map(|i| ArrayView::from_parts(&data[i * strd[0]..], row_shape)),
+            (0..n).map(|i| ArrayView::from_parts(row_shape, &data[i * strd[0]..])),
         );
         (&*flags, &*views)
     }

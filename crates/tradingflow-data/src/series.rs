@@ -7,41 +7,62 @@
 //!   Lives in operator `State`, exactly like [`Array`].
 //! * [`SeriesView<'a, T, N>`] — borrowed, `Copy`, self-contained window:
 //!   `&[Instant]` + `&[T]` + the element [`Shape`]. The [`Series`] analogue of
-//!   [`ArrayView`], convertible into a rank-`N+1` [`ArrayView`] via
+//!   [`ArrayView`], convertible into a rank-`N + 1` [`ArrayView`] via
 //!   [`as_array_view`](SeriesView::as_array_view) (the time axis becomes
 //!   axis 0).
 //!
 //! The element rank `N` is static; the extents are dynamic. A series is
 //! conceptually a `[time, extents…]` tensor whose axis 0 grows on
-//! [`push`](Series::push)(Series::push) — but the storage stays `Vec`-backed (an [`Array`]
+//! [`push`](Series::push) — but the storage stays `Vec`-backed (an [`Array`]
 //! is a fixed-size snapshot; a series needs amortized append and front-trim).
 //!
 //! # Logical vs physical indexing
 //!
-//! A series addresses its elements by **logical index** — the absolute position
-//! since the series was created (`0` is the first element ever pushed). [`len`](Series::len)
-//! is the logical length: the total number of elements pushed, regardless of how
-//! many are still physically retained.
+//! A series addresses its elements by **logical index** — the absolute
+//! position since the series was created (`0` is the first element ever
+//! pushed). [`len`](Series::len) is the logical length: the total number of
+//! elements pushed, regardless of how many are still physically retained.
 //!
 //! A series may carry a [`Retention`] bound (a maximum element count and/or a
-//! maximum time span). When set, [`push`](Series::push) drops the oldest elements from the
-//! front so that physical storage stays bounded. A [`base`](Series::base) offset records how
-//! many leading elements have been dropped; positional accessors map a logical
-//! index `i` to the physical slot `i - base`. The default retention is
-//! **unbounded** — nothing is ever dropped, `base` stays `0`, and logical and
-//! physical indices coincide (so all existing behaviour is unchanged).
+//! maximum time span). When set, [`push`](Series::push) drops the oldest
+//! elements from the front so that physical storage stays bounded. A
+//! [`base`](Series::base) offset records how many leading elements have been
+//! dropped; positional accessors map a logical index `i` to the physical slot
+//! `i - base`. The default retention is **unbounded** — nothing is ever
+//! dropped, `base` stays `0`, and logical and physical indices coincide.
 //!
-//! Positional accessors ([`at`](Series::at), [`values_range`](Series::values_range), [`timestamp_at`](Series::timestamp_at), [`window`](Series::window))
-//! take logical indices and panic if asked for an element that has been evicted
+//! Positional accessors ([`elem`](Series::elem),
+//! [`timestamp`](Series::timestamp), [`window`](Series::window)) take logical
+//! indices and panic if asked for an element that has been evicted
 //! (`i < base`). The bulk accessors that return the whole retained window
-//! ([`values`](Series::values), [`timestamps`](Series::timestamps), [`view`](Series::view), [`tail`](Series::tail)) return only the window
+//! ([`timestamps`](Series::timestamps), [`data`](Series::data),
+//! [`view`](Series::view), [`tail`](Series::tail)) return only the window
 //! `[base, len)`; for an unbounded series that is the full history. A
 //! [`SeriesView`] is a plain window snapshot — **its indices are view-local**
-//! (`0` is the view's first row), not logical.
+//! (`0` is the view's first element), not logical.
+//!
+//! The view is also where reads are *defined*: every derived read on a
+//! [`Series`] delegates to the corresponding [`SeriesView`] read on
+//! [`view`](Series::view), after mapping logical indices to the retained
+//! window. Within that window, a bounded series therefore reads identically
+//! to an unbounded one by construction.
+//!
+//! # Views vs flat data
+//!
+//! Accessors hand out [`ArrayView`]/[`SeriesView`] borrows rather than flat
+//! slices: [`elem`](Series::elem) and [`last`](Series::last) for one element,
+//! [`view`](Series::view)/[`window`](Series::window)/[`tail`](Series::tail)
+//! for a range, and [`push`](Series::push) to append one. The methods that
+//! name `data` are the flat row-major escape hatches —
+//! [`data`](Series::data)/[`data_mut`](Series::data_mut) for the whole
+//! retained buffer, [`elem_data`](Series::elem_data) for one element, and
+//! [`push_data`](Series::push_data) to append from a slice.
 
-use super::Scalar;
-use super::array::{Array, ArrayView, Shape};
+use std::ops::Range;
+
+use super::array::{Array, ArrayView};
 use super::time::{Duration, Instant};
+use super::{Scalar, Shape};
 
 // ===========================================================================
 // Retention — how much history a series keeps
@@ -97,7 +118,6 @@ impl Retention {
     }
 
     /// Whether this bound retains everything (no trimming).
-    #[inline(always)]
     pub fn is_unbounded(&self) -> bool {
         self.count.is_none() && self.duration.is_none()
     }
@@ -114,16 +134,16 @@ impl Retention {
 /// indexing and bounded retention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Series<T: Scalar, const N: usize> {
-    /// Physically retained elements (row-major, `stride` scalars each).
-    data: Vec<T>,
     /// Physically retained timestamps (one per element).
     timestamps: Vec<Instant>,
+    /// Physically retained elements (row-major, `shape.len()` scalars each).
+    data: Vec<T>,
     /// Element shape (canonical row-major; the time axis is implicit).
     shape: Shape<N>,
     /// Logical index of physical element `0` — the count of elements dropped
     /// off the front. `0` for an unbounded series.
     base: usize,
-    /// Retention bound applied on [`push`](Series::push)(Self::push).
+    /// Retention bound applied on [`push`](Self::push).
     retention: Retention,
 }
 
@@ -137,35 +157,39 @@ impl<T: Scalar, const N: usize> Series<T, N> {
         Self::with_retention(extents, Retention::UNBOUNDED)
     }
 
-    /// Create an empty series with the given element extents and retention bound.
+    /// Create an empty series with the given element extents and retention
+    /// bound.
     pub fn with_retention(extents: [usize; N], retention: Retention) -> Self {
         Self {
-            data: Vec::new(),
             timestamps: Vec::new(),
+            data: Vec::new(),
             shape: Shape::row_major(extents),
             base: 0,
             retention,
         }
     }
 
-    /// Create an unbounded series from timestamp and flat row-major value
-    /// vectors.
+    /// Create an unbounded series from element extents, timestamps, and a flat
+    /// row-major buffer of packed elements — the owning counterpart of
+    /// [`SeriesView::from_parts`].
     ///
     /// # Panics
     ///
-    /// Panics if `values.len() != timestamps.len() * extents.iter().product()`.
-    pub fn from_vec(extents: [usize; N], timestamps: Vec<Instant>, values: Vec<T>) -> Self {
+    /// Panics if `data.len() != timestamps.len() * extents.iter().product()`.
+    pub fn from_vec(extents: [usize; N], timestamps: Vec<Instant>, data: Vec<T>) -> Self {
         let shape = Shape::row_major(extents);
         assert_eq!(
-            values.len(),
-            timestamps.len() * shape.len(),
-            "from_vec: expected values length {}, got {}",
-            timestamps.len() * shape.len(),
-            values.len()
+            data.len(),
+            shape.blocks_len(timestamps.len()),
+            "from_vec: {} elements of extents {:?} expect {} scalars, got {}",
+            timestamps.len(),
+            extents,
+            shape.blocks_len(timestamps.len()),
+            data.len(),
         );
         Self {
-            data: values,
             timestamps,
+            data,
             shape,
             base: 0,
             retention: Retention::UNBOUNDED,
@@ -174,70 +198,107 @@ impl<T: Scalar, const N: usize> Series<T, N> {
 }
 
 // ---------------------------------------------------------------------------
+// Logical -> physical mapping
+// ---------------------------------------------------------------------------
+
+impl<T: Scalar, const N: usize> Series<T, N> {
+    /// Physical slot of logical index `i`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i` is outside the retained range `[base, len)` (either not yet
+    /// pushed, or already dropped by the retention bound).
+    fn slot(&self, i: usize) -> usize {
+        let len = self.len();
+        assert!(
+            i >= self.base && i < len,
+            "index {i} out of retained range [{}, {len})",
+            self.base
+        );
+        i - self.base
+    }
+
+    /// Physical slot range of the logical range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `range.start < base`, `range.end > len`, or the range is
+    /// inverted.
+    fn slots(&self, range: Range<usize>) -> Range<usize> {
+        let len = self.len();
+        assert!(
+            range.start >= self.base && range.end <= len && range.start <= range.end,
+            "range [{}, {}) out of retained range [{}, {len})",
+            range.start,
+            range.end,
+            self.base
+        );
+        range.start - self.base..range.end - self.base
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Dimensions
 // ---------------------------------------------------------------------------
 
 impl<T: Scalar, const N: usize> Series<T, N> {
-    /// The element shape (extents + canonical strides; without the time axis).
-    #[inline(always)]
-    pub fn shape(&self) -> Shape<N> {
+    /// The shape shared by every element (per-axis extents and strides; always
+    /// canonical row-major).
+    pub fn elem_shape(&self) -> Shape<N> {
         self.shape
     }
 
-    /// Per-axis element extents (without the time axis).
-    #[inline(always)]
-    pub fn extents(&self) -> [usize; N] {
+    /// Per-axis extents of each element.
+    pub fn elem_extents(&self) -> [usize; N] {
         self.shape.extents()
     }
 
-    /// Element rank (the compile-time rank `N`; without the time axis).
-    #[inline(always)]
-    pub const fn ndim(&self) -> usize {
-        N
-    }
-
-    /// Number of scalars per element (product of element extents).
-    #[inline(always)]
-    pub fn stride(&self) -> usize {
+    /// Number of scalars in each element (product of extents).
+    pub fn elem_len(&self) -> usize {
         self.shape.len()
     }
 
+    /// Whether there are no scalars in each element (some extent is zero).
+    pub fn elem_is_empty(&self) -> bool {
+        self.shape.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Length & retention state
+// ---------------------------------------------------------------------------
+
+impl<T: Scalar, const N: usize> Series<T, N> {
     /// Logical length: the total number of elements ever pushed (including any
     /// since dropped by the retention bound).
-    #[inline(always)]
     pub fn len(&self) -> usize {
         self.base + self.timestamps.len()
     }
 
+    /// Whether the series has never had an element pushed.
+    pub fn is_empty(&self) -> bool {
+        self.timestamps.is_empty()
+    }
+
     /// Number of physically retained elements (`len - base`).
-    #[inline(always)]
     pub fn retained_len(&self) -> usize {
         self.timestamps.len()
     }
 
     /// Logical index of the oldest retained element (count of dropped elements).
-    #[inline(always)]
     pub fn base(&self) -> usize {
         self.base
     }
 
-    /// The retention bound applied on [`push`](Series::push)(Self::push).
-    #[inline(always)]
+    /// The retention bound applied on [`push`](Self::push).
     pub fn retention(&self) -> Retention {
         self.retention
     }
 
     /// Set the retention bound. Does not retroactively trim already-stored
-    /// history; the bound applies on the next [`push`](Series::push)(Self::push).
-    #[inline(always)]
+    /// history; the bound applies on the next [`push`](Self::push).
     pub fn set_retention(&mut self, retention: Retention) {
         self.retention = retention;
-    }
-
-    /// Whether the series has had any element pushed.
-    #[inline(always)]
-    pub fn is_empty(&self) -> bool {
-        self.timestamps.is_empty()
     }
 }
 
@@ -246,26 +307,24 @@ impl<T: Scalar, const N: usize> Series<T, N> {
 // ---------------------------------------------------------------------------
 
 impl<T: Scalar, const N: usize> Series<T, N> {
-    /// Flat immutable slice of the retained timestamps (logical `[base, len)`).
-    #[inline(always)]
+    /// The retained timestamps (logical `[base, len)`), one per element.
     pub fn timestamps(&self) -> &[Instant] {
         &self.timestamps
     }
 
-    /// Flat immutable slice of the retained elements (logical `[base, len)`).
-    #[inline(always)]
-    pub fn values(&self) -> &[T] {
+    /// Flat immutable slice of the retained elements, packed row-major
+    /// (logical `[base, len)`). [`view`](Self::view) is the borrowing view.
+    pub fn data(&self) -> &[T] {
         &self.data
     }
 
-    /// Flat mutable slice of the retained elements (logical `[base, len)`).
-    #[inline(always)]
-    pub fn values_mut(&mut self) -> &mut [T] {
+    /// Flat mutable slice of the retained elements, packed row-major
+    /// (logical `[base, len)`).
+    pub fn data_mut(&mut self) -> &mut [T] {
         &mut self.data
     }
 
     /// Borrow the whole retained window as a [`SeriesView`].
-    #[inline(always)]
     pub fn view(&self) -> SeriesView<'_, T, N> {
         SeriesView {
             timestamps: &self.timestamps,
@@ -274,150 +333,76 @@ impl<T: Scalar, const N: usize> Series<T, N> {
         }
     }
 
-    /// Borrow logical `[start, end)` as a [`SeriesView`].
+    /// Borrow the logical range as a [`SeriesView`].
     ///
     /// # Panics
     ///
-    /// Panics if `start < base`, `end > len`, or `start > end`.
-    pub fn window(&self, start: usize, end: usize) -> SeriesView<'_, T, N> {
-        let len = self.len();
-        assert!(
-            start >= self.base && end <= len && start <= end,
-            "window: [{start}, {end}) out of retained range [{}, {len})",
-            self.base
-        );
-        let s = self.stride();
-        let ps = start - self.base;
-        let pe = end - self.base;
-        SeriesView {
-            timestamps: &self.timestamps[ps..pe],
-            data: &self.data[ps * s..pe * s],
-            shape: self.shape,
-        }
+    /// Panics if `range.start < base`, `range.end > len`, or the range is
+    /// inverted.
+    pub fn window(&self, range: Range<usize>) -> SeriesView<'_, T, N> {
+        let slots = self.slots(range);
+        self.view().window(slots)
     }
 
     /// Borrow the last `min(n, retained_len)` retained elements as a
     /// [`SeriesView`].
     pub fn tail(&self, n: usize) -> SeriesView<'_, T, N> {
-        let plen = self.timestamps.len();
-        let start = plen - n.min(plen);
-        let s = self.stride();
-        SeriesView {
-            timestamps: &self.timestamps[start..],
-            data: &self.data[start * s..],
-            shape: self.shape,
-        }
+        self.view().tail(n)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Positional access (logical indices)
+// Element access (logical indices)
+//
+// Each read is the corresponding view-local [`SeriesView`] read after mapping
+// logical indices through `slot` — the single definition of what a bounded
+// series returns within its retained window.
 // ---------------------------------------------------------------------------
 
 impl<T: Scalar, const N: usize> Series<T, N> {
-    /// Element at logical index `i` as a flat slice.
+    /// Element at logical index `i` as a rank-`N` [`ArrayView`] —
+    /// [`elem_data`](Self::elem_data) is the flat counterpart.
     ///
     /// # Panics
     ///
     /// Panics if `i` is outside the retained range `[base, len)` (either not yet
     /// pushed, or already dropped by the retention bound).
-    #[inline(always)]
-    pub fn at(&self, i: usize) -> &[T] {
-        let len = self.len();
-        assert!(
-            i >= self.base && i < len,
-            "index {i} out of retained range [{}, {len})",
-            self.base
-        );
-        let p = i - self.base;
-        let s = self.stride();
-        &self.data[p * s..(p + 1) * s]
+    pub fn elem(&self, i: usize) -> ArrayView<'_, T, N> {
+        self.view().elem(self.slot(i))
     }
 
-    /// Element at logical index `i` as a mutable flat slice.
+    /// Element at logical index `i` as a flat row-major slice.
     ///
     /// # Panics
     ///
     /// Panics if `i` is outside the retained range `[base, len)`.
-    #[inline(always)]
-    pub fn at_mut(&mut self, i: usize) -> &mut [T] {
-        let len = self.len();
-        assert!(
-            i >= self.base && i < len,
-            "index {i} out of retained range [{}, {len})",
-            self.base
-        );
-        let p = i - self.base;
-        let s = self.stride();
-        &mut self.data[p * s..(p + 1) * s]
+    pub fn elem_data(&self, i: usize) -> &[T] {
+        self.view().elem_data(self.slot(i))
     }
 
-    /// Element at logical index `i` as a rank-`N` [`ArrayView`].
+    /// Timestamp of the element at logical index `i`.
     ///
     /// # Panics
     ///
     /// Panics if `i` is outside the retained range `[base, len)`.
-    #[inline(always)]
-    pub fn element(&self, i: usize) -> ArrayView<'_, T, N> {
-        ArrayView::from_parts(self.at(i), self.shape)
+    pub fn timestamp(&self, i: usize) -> Instant {
+        self.view().timestamp(self.slot(i))
     }
 
-    /// The most recent element as a flat slice, or `None` if empty.
-    #[inline(always)]
-    pub fn last(&self) -> Option<&[T]> {
-        let plen = self.timestamps.len();
-        if plen == 0 {
-            None
-        } else {
-            let s = self.stride();
-            Some(&self.data[(plen - 1) * s..plen * s])
-        }
+    /// The most recent element as a rank-`N` [`ArrayView`], or `None` if the
+    /// series is empty.
+    pub fn last(&self) -> Option<ArrayView<'_, T, N>> {
+        self.view().last()
     }
 
-    /// Most recent timestamp, or `None` if empty.
-    #[inline(always)]
+    /// The most recent timestamp, or `None` if the series is empty.
     pub fn last_timestamp(&self) -> Option<Instant> {
-        self.timestamps.last().copied()
-    }
-
-    /// Timestamp at logical index `i`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `i` is outside the retained range `[base, len)`.
-    #[inline(always)]
-    pub fn timestamp_at(&self, i: usize) -> Instant {
-        let len = self.len();
-        assert!(
-            i >= self.base && i < len,
-            "timestamp_at {i} out of retained range [{}, {len})",
-            self.base
-        );
-        self.timestamps[i - self.base]
-    }
-
-    /// Values in logical `[start, end)` as a flat slice.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `start < base`, `end > len`, or `start > end`.
-    #[inline(always)]
-    pub fn values_range(&self, start: usize, end: usize) -> &[T] {
-        let len = self.len();
-        assert!(
-            start >= self.base && end <= len && start <= end,
-            "values_range: [{start}, {end}) out of retained range [{}, {len})",
-            self.base
-        );
-        let s = self.stride();
-        let ps = start - self.base;
-        let pe = end - self.base;
-        &self.data[ps * s..pe * s]
+        self.view().last_timestamp()
     }
 }
 
 // ---------------------------------------------------------------------------
-// Temporal access
+// Temporal lookup
 // ---------------------------------------------------------------------------
 
 impl<T: Scalar, const N: usize> Series<T, N> {
@@ -426,14 +411,8 @@ impl<T: Scalar, const N: usize> Series<T, N> {
     ///
     /// Returns `None` if no *retained* element satisfies the condition (an older
     /// qualifying element may have been dropped by the retention bound).
-    pub fn asof(&self, query_ts: Instant) -> Option<&[T]> {
-        let p = self.timestamps.partition_point(|&ts| ts <= query_ts);
-        if p == 0 {
-            None
-        } else {
-            let s = self.stride();
-            Some(&self.data[(p - 1) * s..p * s])
-        }
+    pub fn asof(&self, query_ts: Instant) -> Option<ArrayView<'_, T, N>> {
+        self.view().asof(query_ts)
     }
 
     /// Logical index of the first timestamp `>= query_ts` (binary search over
@@ -442,28 +421,44 @@ impl<T: Scalar, const N: usize> Series<T, N> {
     /// Returns `len` if all retained timestamps are less than `query_ts`, and
     /// `base` if `query_ts` precedes the retained window.
     pub fn search(&self, query_ts: Instant) -> usize {
-        self.base + self.timestamps.partition_point(|&ts| ts < query_ts)
+        self.base + self.view().search(query_ts)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Append
+// Mutation
 // ---------------------------------------------------------------------------
 
 impl<T: Scalar, const N: usize> Series<T, N> {
-    /// Append an element with the given timestamp, then trim the front to honour
-    /// the retention bound.
+    /// Append a rank-`N` [`ArrayView`] element (materialized row-major), then
+    /// trim the front to honour the retention bound.
     ///
     /// # Panics
     ///
-    /// Panics if `value.len() != self.stride()`.
-    #[inline(always)]
-    pub fn push(&mut self, timestamp: Instant, value: &[T]) {
+    /// Panics if `value.extents() != self.elem_extents()`.
+    pub fn push(&mut self, timestamp: Instant, value: ArrayView<'_, T, N>) {
+        assert_eq!(
+            value.extents(),
+            self.elem_extents(),
+            "push: element extents mismatch",
+        );
+        self.data.extend_from_slice(&value.to_contiguous());
+        self.timestamps.push(timestamp);
+        self.maybe_trim();
+    }
+
+    /// Append an element from a flat row-major slice, then trim the front to
+    /// honour the retention bound — the flat counterpart of [`push`](Self::push).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value.len() != self.elem_len()`.
+    pub fn push_data(&mut self, timestamp: Instant, value: &[T]) {
         assert_eq!(
             value.len(),
-            self.stride(),
-            "push: expected {} scalars, got {}",
-            self.stride(),
+            self.elem_len(),
+            "push_data: expected {} scalars, got {}",
+            self.elem_len(),
             value.len(),
         );
         self.data.extend_from_slice(value);
@@ -471,22 +466,22 @@ impl<T: Scalar, const N: usize> Series<T, N> {
         self.maybe_trim();
     }
 
-    /// Append a rank-`N` [`ArrayView`] element (materialized row-major), then
-    /// trim the front to honour the retention bound.
+    /// Change the element extents in place (same rank), without reallocating.
     ///
     /// # Panics
     ///
-    /// Panics if `value.extents() != self.extents()`.
-    #[inline]
-    pub fn push_view(&mut self, timestamp: Instant, value: &ArrayView<'_, T, N>) {
+    /// Panics if the new extents have a different scalar count.
+    pub fn elem_reshape(&mut self, extents: [usize; N]) {
+        let shape = Shape::row_major(extents);
         assert_eq!(
-            value.extents(),
-            self.extents(),
-            "push_view: element extents mismatch",
+            self.elem_len(),
+            shape.len(),
+            "elem_reshape: current elem_len {} != new extents {:?} ({} scalars)",
+            self.elem_len(),
+            extents,
+            shape.len(),
         );
-        self.data.extend_from_slice(&value.to_contiguous());
-        self.timestamps.push(timestamp);
-        self.maybe_trim();
+        self.shape = shape;
     }
 
     /// Drop the oldest elements from the front to honour [`retention`], in
@@ -522,35 +517,10 @@ impl<T: Scalar, const N: usize> Series<T, N> {
 
         let droppable = keep_from.saturating_sub(self.base);
         if droppable > 0 && droppable * 2 >= plen {
-            let s = self.stride();
-            self.data.drain(0..droppable * s);
+            self.data.drain(self.shape.blocks_range(0..droppable));
             self.timestamps.drain(0..droppable);
             self.base += droppable;
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Reshape
-// ---------------------------------------------------------------------------
-
-impl<T: Scalar, const N: usize> Series<T, N> {
-    /// Change the element extents in place (same rank), without reallocating.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the new extents have a different scalar count.
-    pub fn reshape(&mut self, extents: [usize; N]) {
-        let shape = Shape::row_major(extents);
-        assert_eq!(
-            self.stride(),
-            shape.len(),
-            "reshape: current stride {} != new extents {:?} ({} scalars)",
-            self.stride(),
-            extents,
-            shape.len(),
-        );
-        self.shape = shape;
     }
 }
 
@@ -562,17 +532,17 @@ impl<T: Scalar, const N: usize> Series<T, N> {
 /// row-major value slice, and the element [`Shape`] — the [`ArrayView`]
 /// analogue for history.
 ///
-/// Indices are **view-local** (`0` is the view's first row); a view carries no
-/// logical/retention bookkeeping. `Copy` (the payload is references + plain
-/// `usize`s) and fully lifetime-checked — a view cannot outlive the series it
-/// borrows from. Convertible into a rank-`N+1` [`ArrayView`] via
-/// [`as_array_view`](Self::as_array_view) (rows are packed, so the conversion
-/// is zero-copy).
+/// Indices are **view-local** (`0` is the view's first element); a view
+/// carries no logical/retention bookkeeping. `Copy` (the payload is
+/// references plus plain `usize`s) and fully lifetime-checked — a view cannot
+/// outlive the series it borrows from. Convertible into a rank-`N + 1`
+/// [`ArrayView`] via [`as_array_view`](Self::as_array_view) (elements are
+/// packed, so the conversion is zero-copy).
 #[derive(Debug)]
 pub struct SeriesView<'a, T: Scalar, const N: usize> {
-    /// One timestamp per row, non-decreasing.
+    /// One timestamp per element, non-decreasing.
     timestamps: &'a [Instant],
-    /// Packed row-major values: `timestamps.len() * stride` scalars.
+    /// Packed row-major elements: `timestamps.len() * shape.len()` scalars.
     data: &'a [T],
     /// Element shape (canonical row-major; the time axis is axis 0 of `data`).
     shape: Shape<N>,
@@ -588,20 +558,27 @@ impl<T: Scalar, const N: usize> Clone for SeriesView<'_, T, N> {
 }
 impl<T: Scalar, const N: usize> Copy for SeriesView<'_, T, N> {}
 
+// ---------------------------------------------------------------------------
+// Construction
+// ---------------------------------------------------------------------------
+
 impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
-    /// Build a view from parts: a timestamp slice, a packed row-major value
-    /// slice, and the element [`Shape`] (canonical row-major).
+    /// Build a window from the element [`Shape`] (canonical row-major), a
+    /// timestamp slice, and a flat row-major buffer of packed elements — the
+    /// borrowing counterpart of [`Series::from_vec`].
     ///
     /// # Panics
     ///
     /// Panics if `data.len() != timestamps.len() * shape.len()`.
-    pub fn from_parts(timestamps: &'a [Instant], data: &'a [T], shape: Shape<N>) -> Self {
+    pub fn from_parts(shape: Shape<N>, timestamps: &'a [Instant], data: &'a [T]) -> Self {
         assert_eq!(
             data.len(),
-            timestamps.len() * shape.len(),
-            "from_parts: expected values length {}, got {}",
-            timestamps.len() * shape.len(),
-            data.len()
+            shape.blocks_len(timestamps.len()),
+            "from_parts: {} elements of {} scalars expect {} scalars, got {}",
+            timestamps.len(),
+            shape.len(),
+            shape.blocks_len(timestamps.len()),
+            data.len(),
         );
         Self {
             timestamps,
@@ -609,119 +586,153 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
             shape,
         }
     }
+}
 
-    /// The element shape (extents + canonical strides; without the time axis).
-    #[inline(always)]
-    pub fn shape(&self) -> Shape<N> {
+// ---------------------------------------------------------------------------
+// Dimensions
+// ---------------------------------------------------------------------------
+
+impl<T: Scalar, const N: usize> SeriesView<'_, T, N> {
+    /// The shape shared by every element (per-axis extents and strides; always
+    /// canonical row-major).
+    pub fn elem_shape(&self) -> Shape<N> {
         self.shape
     }
 
-    /// Per-axis element extents (without the time axis).
-    #[inline(always)]
-    pub fn extents(&self) -> [usize; N] {
+    /// Per-axis extents of each element.
+    pub fn elem_extents(&self) -> [usize; N] {
         self.shape.extents()
     }
 
-    /// Number of scalars per element (product of element extents).
-    #[inline(always)]
-    pub fn stride(&self) -> usize {
+    /// Number of scalars in each element (product of extents).
+    pub fn elem_len(&self) -> usize {
         self.shape.len()
     }
+}
 
-    /// Number of rows in the window.
-    #[inline(always)]
+// ---------------------------------------------------------------------------
+// Length
+// ---------------------------------------------------------------------------
+
+impl<T: Scalar, const N: usize> SeriesView<'_, T, N> {
+    /// Number of elements in the window.
     pub fn len(&self) -> usize {
         self.timestamps.len()
     }
 
-    /// Whether the window holds no rows.
-    #[inline(always)]
+    /// Whether the window holds no elements.
     pub fn is_empty(&self) -> bool {
         self.timestamps.is_empty()
     }
+}
 
-    /// The window's timestamps (one per row, non-decreasing).
-    #[inline(always)]
+// ---------------------------------------------------------------------------
+// Bulk access
+// ---------------------------------------------------------------------------
+
+impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
+    /// The window's timestamps (one per element, non-decreasing).
     pub fn timestamps(&self) -> &'a [Instant] {
         self.timestamps
     }
 
-    /// The window's packed row-major values (`len() * stride()` scalars).
-    #[inline(always)]
-    pub fn values(&self) -> &'a [T] {
+    /// Flat slice of the window's elements, packed row-major
+    /// (`len() * elem_len()` scalars).
+    pub fn data(&self) -> &'a [T] {
         self.data
     }
 
-    /// Row `i` as a flat slice.
-    #[inline(always)]
-    pub fn at(&self, i: usize) -> &'a [T] {
-        let s = self.shape.len();
-        &self.data[i * s..(i + 1) * s]
-    }
-
-    /// Row `i` as a rank-`N` [`ArrayView`].
-    #[inline(always)]
-    pub fn element(&self, i: usize) -> ArrayView<'a, T, N> {
-        ArrayView::from_parts(self.at(i), self.shape)
-    }
-
-    /// Timestamp of row `i`.
-    #[inline(always)]
-    pub fn timestamp_at(&self, i: usize) -> Instant {
-        self.timestamps[i]
-    }
-
-    /// The last row as a flat slice, or `None` if the window is empty.
-    #[inline(always)]
-    pub fn last(&self) -> Option<&'a [T]> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.at(self.len() - 1))
-        }
-    }
-
-    /// The last row's timestamp, or `None` if the window is empty.
-    #[inline(always)]
-    pub fn last_timestamp(&self) -> Option<Instant> {
-        self.timestamps.last().copied()
-    }
-
-    /// Sub-window of rows `[start, end)`.
+    /// Sub-window of the given element range.
     ///
     /// # Panics
     ///
-    /// Panics if `start > end` or `end > len()`.
-    pub fn window(&self, start: usize, end: usize) -> SeriesView<'a, T, N> {
-        let s = self.shape.len();
+    /// Panics if `range.end > len()` or the range is inverted.
+    pub fn window(&self, range: Range<usize>) -> SeriesView<'a, T, N> {
         SeriesView {
-            timestamps: &self.timestamps[start..end],
-            data: &self.data[start * s..end * s],
+            timestamps: &self.timestamps[range.clone()],
+            data: &self.data[self.shape.blocks_range(range)],
             shape: self.shape,
         }
     }
 
-    /// The last `min(n, len())` rows.
+    /// The last `min(n, len())` elements.
     pub fn tail(&self, n: usize) -> SeriesView<'a, T, N> {
-        self.window(self.len() - n.min(self.len()), self.len())
+        self.window(self.len() - n.min(self.len())..self.len())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Element access (view-local indices)
+// ---------------------------------------------------------------------------
+
+impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
+    /// Element at view-local index `i` as a rank-`N` [`ArrayView`] —
+    /// [`elem_data`](Self::elem_data) is the flat counterpart.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= len()`.
+    pub fn elem(&self, i: usize) -> ArrayView<'a, T, N> {
+        ArrayView::from_parts(self.shape, self.elem_data(i))
     }
 
-    /// As-of lookup: the most recent row with `ts <= query_ts`, or `None` if
-    /// the window starts after `query_ts`.
-    pub fn asof(&self, query_ts: Instant) -> Option<&'a [T]> {
+    /// Element at view-local index `i` as a flat row-major slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= len()`.
+    pub fn elem_data(&self, i: usize) -> &'a [T] {
+        &self.data[self.shape.block_range(i)]
+    }
+
+    /// Timestamp of the element at view-local index `i`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= len()`.
+    pub fn timestamp(&self, i: usize) -> Instant {
+        self.timestamps[i]
+    }
+
+    /// The most recent element as a rank-`N` [`ArrayView`], or `None` if the
+    /// window is empty.
+    pub fn last(&self) -> Option<ArrayView<'a, T, N>> {
+        (!self.is_empty()).then(|| self.elem(self.len() - 1))
+    }
+
+    /// The most recent timestamp, or `None` if the window is empty.
+    pub fn last_timestamp(&self) -> Option<Instant> {
+        self.timestamps.last().copied()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Temporal lookup
+// ---------------------------------------------------------------------------
+
+impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
+    /// As-of lookup: the most recent element with `ts <= query_ts`, or `None`
+    /// if the window starts after `query_ts`.
+    pub fn asof(&self, query_ts: Instant) -> Option<ArrayView<'a, T, N>> {
         let p = self.timestamps.partition_point(|&ts| ts <= query_ts);
-        if p == 0 { None } else { Some(self.at(p - 1)) }
+        if p == 0 { None } else { Some(self.elem(p - 1)) }
     }
 
-    /// Index of the first row with timestamp `>= query_ts` (binary search);
-    /// `len()` if all rows are earlier.
+    /// View-local index of the first timestamp `>= query_ts` (binary search);
+    /// `len()` if all timestamps are earlier.
     pub fn search(&self, query_ts: Instant) -> usize {
         self.timestamps.partition_point(|&ts| ts < query_ts)
     }
+}
 
+// ---------------------------------------------------------------------------
+// Conversions
+// ---------------------------------------------------------------------------
+
+impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
     /// The whole window as a rank-`M = N + 1` [`ArrayView`] — the time axis
-    /// becomes axis 0, extents `[len(), extents()…]`. Zero-copy: rows are
-    /// packed row-major, so the result is contiguous.
+    /// becomes axis 0, extents `[len(), elem_extents()…]`. Zero-copy: elements
+    /// are packed row-major, so the result is contiguous.
     ///
     /// (`M` is spelled explicitly because stable Rust cannot form `N + 1` in a
     /// type; the relation is asserted at runtime, like the rank-changing
@@ -731,11 +742,7 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
     ///
     /// Panics if `M != N + 1`.
     pub fn as_array_view<const M: usize>(&self) -> ArrayView<'a, T, M> {
-        assert_eq!(M, N + 1, "as_array_view: M ({M}) must be N + 1 ({})", N + 1);
-        let mut extents = [0usize; M];
-        extents[0] = self.timestamps.len();
-        extents[1..].copy_from_slice(&self.shape.extents());
-        ArrayView::from_parts(self.data, Shape::row_major(extents))
+        ArrayView::from_parts(self.shape.stacked(self.len()), self.data)
     }
 
     /// Copy the window into an owned rank-`M = N + 1` [`Array`] (time axis 0).
@@ -760,14 +767,12 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
 }
 
 impl<'a, T: Scalar, const N: usize> From<&'a Series<T, N>> for SeriesView<'a, T, N> {
-    #[inline(always)]
     fn from(s: &'a Series<T, N>) -> Self {
         s.view()
     }
 }
 
 impl<T: Scalar, const N: usize> From<SeriesView<'_, T, N>> for Series<T, N> {
-    #[inline(always)]
     fn from(v: SeriesView<'_, T, N>) -> Self {
         v.to_series()
     }
@@ -790,62 +795,63 @@ mod tests {
         let mut s = Series::<f64, 1>::new([2]);
         assert!(s.is_empty());
 
-        s.push(ts(100), &[1.0, 2.0]);
-        s.push(ts(200), &[3.0, 4.0]);
-        s.push(ts(300), &[5.0, 6.0]);
+        s.push_data(ts(100), &[1.0, 2.0]);
+        s.push_data(ts(200), &[3.0, 4.0]);
+        s.push_data(ts(300), &[5.0, 6.0]);
 
         assert_eq!(s.len(), 3);
-        assert_eq!(s.stride(), 2);
+        assert_eq!(s.elem_len(), 2);
         assert_eq!(s.timestamps(), &[ts(100), ts(200), ts(300)]);
-        assert_eq!(s.values(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        assert_eq!(s.last(), Some([5.0, 6.0].as_slice()));
-        assert_eq!(s.at(0), &[1.0, 2.0]);
-        assert_eq!(s.at(1), &[3.0, 4.0]);
-        assert_eq!(s.element(1).to_vec(), vec![3.0, 4.0]);
+        assert_eq!(s.data(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(s.last().unwrap().data(), &[5.0, 6.0]);
+        assert_eq!(s.elem(0).data(), &[1.0, 2.0]);
+        assert_eq!(s.elem(1).data(), &[3.0, 4.0]);
+        assert_eq!(s.elem(1).to_vec(), vec![3.0, 4.0]);
+        assert_eq!(s.elem_data(1), &[3.0, 4.0]);
     }
 
     #[test]
     fn series_scalar() {
         let mut s = Series::<f64, 0>::new([]);
-        assert_eq!(s.stride(), 1);
+        assert_eq!(s.elem_len(), 1);
 
-        s.push(ts(1), &[10.0]);
-        s.push(ts(2), &[20.0]);
+        s.push_data(ts(1), &[10.0]);
+        s.push_data(ts(2), &[20.0]);
 
         assert_eq!(s.len(), 2);
-        assert_eq!(s.at(0), &[10.0]);
-        assert_eq!(s.last(), Some([20.0].as_slice()));
+        assert_eq!(s.elem(0).data(), &[10.0]);
+        assert_eq!(s.last().unwrap().data(), &[20.0]);
     }
 
     #[test]
     fn series_asof() {
         let mut s = Series::<f64, 0>::new([]);
-        s.push(ts(100), &[1.0]);
-        s.push(ts(200), &[2.0]);
-        s.push(ts(300), &[3.0]);
+        s.push_data(ts(100), &[1.0]);
+        s.push_data(ts(200), &[2.0]);
+        s.push_data(ts(300), &[3.0]);
 
-        assert_eq!(s.asof(ts(50)), None);
-        assert_eq!(s.asof(ts(100)), Some([1.0].as_slice()));
-        assert_eq!(s.asof(ts(150)), Some([1.0].as_slice()));
-        assert_eq!(s.asof(ts(200)), Some([2.0].as_slice()));
-        assert_eq!(s.asof(ts(250)), Some([2.0].as_slice()));
-        assert_eq!(s.asof(ts(300)), Some([3.0].as_slice()));
-        assert_eq!(s.asof(ts(999)), Some([3.0].as_slice()));
+        assert_eq!(s.asof(ts(50)).map(|v| v.data()), None);
+        assert_eq!(s.asof(ts(100)).map(|v| v.data()), Some([1.0].as_slice()));
+        assert_eq!(s.asof(ts(150)).map(|v| v.data()), Some([1.0].as_slice()));
+        assert_eq!(s.asof(ts(200)).map(|v| v.data()), Some([2.0].as_slice()));
+        assert_eq!(s.asof(ts(250)).map(|v| v.data()), Some([2.0].as_slice()));
+        assert_eq!(s.asof(ts(300)).map(|v| v.data()), Some([3.0].as_slice()));
+        assert_eq!(s.asof(ts(999)).map(|v| v.data()), Some([3.0].as_slice()));
     }
 
     #[test]
-    #[should_panic(expected = "push: expected 2 scalars, got 3")]
-    fn series_push_wrong_size() {
+    #[should_panic(expected = "push_data: expected 2 scalars, got 3")]
+    fn series_push_data_wrong_size() {
         let mut s = Series::<f64, 1>::new([2]);
-        s.push(ts(1), &[1.0, 2.0, 3.0]);
+        s.push_data(ts(1), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
-    fn series_shape() {
+    fn series_elem_shape() {
         let s = Series::<f64, 2>::new([3, 4]);
-        assert_eq!(s.extents(), [3, 4]);
-        assert_eq!(s.stride(), 12);
-        assert_eq!(s.ndim(), 2);
+        assert_eq!(s.elem_extents(), [3, 4]);
+        assert_eq!(s.elem_len(), 12);
+        assert!(s.elem_shape().is_contiguous());
     }
 
     #[test]
@@ -853,50 +859,60 @@ mod tests {
         let mut s = Series::<f64, 0>::new([]);
         assert_eq!(s.last_timestamp(), None);
 
-        s.push(ts(100), &[1.0]);
+        s.push_data(ts(100), &[1.0]);
         assert_eq!(s.last_timestamp(), Some(ts(100)));
 
-        s.push(ts(200), &[2.0]);
+        s.push_data(ts(200), &[2.0]);
         assert_eq!(s.last_timestamp(), Some(ts(200)));
     }
 
     #[test]
-    fn values_range() {
+    fn window_data_over_logical_range() {
         let mut s = Series::<f64, 1>::new([2]);
-        s.push(ts(100), &[1.0, 2.0]);
-        s.push(ts(200), &[3.0, 4.0]);
-        s.push(ts(300), &[5.0, 6.0]);
+        s.push_data(ts(100), &[1.0, 2.0]);
+        s.push_data(ts(200), &[3.0, 4.0]);
+        s.push_data(ts(300), &[5.0, 6.0]);
 
-        assert_eq!(s.values_range(0, 2), &[1.0, 2.0, 3.0, 4.0]);
-        assert_eq!(s.values_range(1, 3), &[3.0, 4.0, 5.0, 6.0]);
-        assert_eq!(s.values_range(2, 3), &[5.0, 6.0]);
-        assert_eq!(s.values_range(0, 0), &[] as &[f64]);
+        assert_eq!(s.window(0..2).data(), &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(s.window(1..3).data(), &[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(s.window(2..3).data(), &[5.0, 6.0]);
+        assert_eq!(s.window(0..0).data(), &[] as &[f64]);
     }
 
     #[test]
-    fn push_view_matches_push() {
+    fn push_matches_push_data() {
         let mut a = Series::<f64, 1>::new([2]);
         let mut b = Series::<f64, 1>::new([2]);
         let row = Array::from_vec([2], vec![1.0, 2.0]);
-        a.push(ts(100), row.as_slice());
-        b.push_view(ts(100), &row.view());
+        a.push_data(ts(100), row.data());
+        b.push(ts(100), row.view());
         assert_eq!(a, b);
     }
 
     #[test]
-    #[should_panic(expected = "push_view: element extents mismatch")]
-    fn push_view_wrong_extents() {
+    fn push_materializes_a_strided_view() {
+        // A strided element must land packed row-major in the series.
+        let panel = Array::from_vec([2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let col1 = ArrayView::from_parts(Shape::strided([2], [3]), &panel.data()[1..]);
+        let mut s = Series::<f64, 1>::new([2]);
+        s.push(ts(100), col1);
+        assert_eq!(s.data(), &[2.0, 5.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "push: element extents mismatch")]
+    fn push_wrong_extents() {
         let mut s = Series::<f64, 1>::new([2]);
         let row = Array::from_vec([3], vec![1.0, 2.0, 3.0]);
-        s.push_view(ts(1), &row.view());
+        s.push(ts(1), row.view());
     }
 
     #[test]
     fn search() {
         let mut s = Series::<f64, 0>::new([]);
-        s.push(ts(100), &[1.0]);
-        s.push(ts(200), &[2.0]);
-        s.push(ts(300), &[3.0]);
+        s.push_data(ts(100), &[1.0]);
+        s.push_data(ts(200), &[2.0]);
+        s.push_data(ts(300), &[3.0]);
 
         assert_eq!(s.search(ts(50)), 0); // before all
         assert_eq!(s.search(ts(100)), 0); // exact first
@@ -911,46 +927,47 @@ mod tests {
     #[test]
     fn view_window_tail_and_elements() {
         let mut s = Series::<f64, 1>::new([2]);
-        s.push(ts(100), &[1.0, 2.0]);
-        s.push(ts(200), &[3.0, 4.0]);
-        s.push(ts(300), &[5.0, 6.0]);
+        s.push_data(ts(100), &[1.0, 2.0]);
+        s.push_data(ts(200), &[3.0, 4.0]);
+        s.push_data(ts(300), &[5.0, 6.0]);
 
         let v = s.view();
         assert_eq!(v.len(), 3);
-        assert_eq!(v.stride(), 2);
+        assert_eq!(v.elem_len(), 2);
         assert_eq!(v.timestamps(), &[ts(100), ts(200), ts(300)]);
-        assert_eq!(v.values(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        assert_eq!(v.at(1), &[3.0, 4.0]);
-        assert_eq!(v.element(2).to_vec(), vec![5.0, 6.0]);
-        assert_eq!(v.timestamp_at(0), ts(100));
-        assert_eq!(v.last(), Some([5.0, 6.0].as_slice()));
+        assert_eq!(v.data(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(v.elem(1).data(), &[3.0, 4.0]);
+        assert_eq!(v.elem(2).to_vec(), vec![5.0, 6.0]);
+        assert_eq!(v.elem_data(1), &[3.0, 4.0]);
+        assert_eq!(v.timestamp(0), ts(100));
+        assert_eq!(v.last().unwrap().data(), &[5.0, 6.0]);
         assert_eq!(v.last_timestamp(), Some(ts(300)));
 
-        let w = v.window(1, 3);
+        let w = v.window(1..3);
         assert_eq!(w.len(), 2);
         assert_eq!(w.timestamps(), &[ts(200), ts(300)]);
-        assert_eq!(w.values(), &[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(w.data(), &[3.0, 4.0, 5.0, 6.0]);
 
         let t = s.tail(2);
         assert_eq!(t.timestamps(), &[ts(200), ts(300)]);
-        assert_eq!(t.values(), &[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(t.data(), &[3.0, 4.0, 5.0, 6.0]);
         // n > len returns all
         assert_eq!(s.tail(100).len(), 3);
 
         // Series::window takes logical indices.
-        let sw = s.window(1, 2);
+        let sw = s.window(1..2);
         assert_eq!(sw.timestamps(), &[ts(200)]);
-        assert_eq!(sw.values(), &[3.0, 4.0]);
+        assert_eq!(sw.data(), &[3.0, 4.0]);
     }
 
     #[test]
     fn view_asof_and_search() {
         let mut s = Series::<f64, 0>::new([]);
-        s.push(ts(100), &[1.0]);
-        s.push(ts(200), &[2.0]);
+        s.push_data(ts(100), &[1.0]);
+        s.push_data(ts(200), &[2.0]);
         let v = s.view();
-        assert_eq!(v.asof(ts(50)), None);
-        assert_eq!(v.asof(ts(150)), Some([1.0].as_slice()));
+        assert_eq!(v.asof(ts(50)).map(|v| v.data()), None);
+        assert_eq!(v.asof(ts(150)).map(|v| v.data()), Some([1.0].as_slice()));
         assert_eq!(v.search(ts(150)), 1);
         assert_eq!(v.search(ts(999)), 2);
     }
@@ -958,32 +975,32 @@ mod tests {
     #[test]
     fn view_as_array_view() {
         let mut s = Series::<f64, 1>::new([2]);
-        s.push(ts(100), &[1.0, 2.0]);
-        s.push(ts(200), &[3.0, 4.0]);
-        s.push(ts(300), &[5.0, 6.0]);
+        s.push_data(ts(100), &[1.0, 2.0]);
+        s.push_data(ts(200), &[3.0, 4.0]);
+        s.push_data(ts(300), &[5.0, 6.0]);
 
         // Whole window: [3, 2], contiguous.
         let av = s.view().as_array_view::<2>();
         assert_eq!(av.extents(), [3, 2]);
-        assert!(av.contiguous_slice().is_some());
+        assert!(av.as_slice().is_some());
         assert_eq!(av.to_vec(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
         // Sub-window converts too.
-        let av = s.window(1, 3).as_array_view::<2>();
+        let av = s.window(1..3).as_array_view::<2>();
         assert_eq!(av.extents(), [2, 2]);
         assert_eq!(av.to_vec(), vec![3.0, 4.0, 5.0, 6.0]);
 
         // Owned copy.
         let arr = s.tail(1).to_array::<2>();
         assert_eq!(arr.extents(), [1, 2]);
-        assert_eq!(arr.as_slice(), &[5.0, 6.0]);
+        assert_eq!(arr.data(), &[5.0, 6.0]);
     }
 
     #[test]
-    #[should_panic(expected = "as_array_view: M (3) must be N + 1 (2)")]
+    #[should_panic(expected = "M (3) must be N + 1 (2)")]
     fn view_as_array_view_wrong_rank() {
         let mut s = Series::<f64, 1>::new([2]);
-        s.push(ts(100), &[1.0, 2.0]);
+        s.push_data(ts(100), &[1.0, 2.0]);
         let _ = s.view().as_array_view::<3>();
     }
 
@@ -991,27 +1008,35 @@ mod tests {
     fn view_from_parts_checks_len() {
         let tss = [ts(1), ts(2)];
         let vals = [1.0, 2.0, 3.0, 4.0];
-        let v = SeriesView::<f64, 1>::from_parts(&tss, &vals, Shape::row_major([2]));
+        let v = SeriesView::<f64, 1>::from_parts(Shape::row_major([2]), &tss, &vals);
         assert_eq!(v.len(), 2);
-        assert_eq!(v.at(1), &[3.0, 4.0]);
+        assert_eq!(v.elem(1).data(), &[3.0, 4.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "from_parts: 2 elements of 2 scalars expect 4 scalars, got 3")]
+    fn view_from_parts_wrong_len() {
+        let tss = [ts(1), ts(2)];
+        let vals = [1.0, 2.0, 3.0];
+        let _ = SeriesView::<f64, 1>::from_parts(Shape::row_major([2]), &tss, &vals);
     }
 
     #[test]
     fn view_to_series() {
         let mut s = Series::<f64, 1>::new([2]);
-        s.push(ts(100), &[1.0, 2.0]);
-        s.push(ts(200), &[3.0, 4.0]);
-        s.push(ts(300), &[5.0, 6.0]);
+        s.push_data(ts(100), &[1.0, 2.0]);
+        s.push_data(ts(200), &[3.0, 4.0]);
+        s.push_data(ts(300), &[5.0, 6.0]);
 
         // Whole-window copy of an unbounded series equals the original.
         let owned = s.view().to_series();
         assert_eq!(owned, s);
 
-        // A sub-window copies just its rows into a fresh, same-rank series.
-        let sub = s.window(1, 3).to_series();
-        assert_eq!(sub.extents(), [2]);
+        // A sub-window copies just its elements into a fresh, same-rank series.
+        let sub = s.window(1..3).to_series();
+        assert_eq!(sub.elem_extents(), [2]);
         assert_eq!(sub.timestamps(), &[ts(200), ts(300)]);
-        assert_eq!(sub.values(), &[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(sub.data(), &[3.0, 4.0, 5.0, 6.0]);
     }
 
     // -- Retention -----------------------------------------------------------
@@ -1021,7 +1046,7 @@ mod tests {
         // Keep the most recent 3 elements; push 10.
         let mut s = Series::<f64, 1>::with_retention([1], Retention::count(3));
         for i in 0..10 {
-            s.push(ts((i + 1) * 100), &[i as f64]);
+            s.push_data(ts((i + 1) * 100), &[i as f64]);
         }
         // Logical length is the full count; physical storage is bounded (<= 2x
         // the window thanks to amortized compaction).
@@ -1035,12 +1060,12 @@ mod tests {
         assert_eq!(s.base(), s.len() - s.retained_len());
 
         // The required window [7, 10) reads identically to an unbounded series.
-        assert_eq!(s.at(7), &[7.0]);
-        assert_eq!(s.at(8), &[8.0]);
-        assert_eq!(s.at(9), &[9.0]);
-        assert_eq!(s.last(), Some([9.0].as_slice()));
-        assert_eq!(s.timestamp_at(9), ts(1000));
-        assert_eq!(s.values_range(7, 10), &[7.0, 8.0, 9.0]);
+        assert_eq!(s.elem(7).data(), &[7.0]);
+        assert_eq!(s.elem(8).data(), &[8.0]);
+        assert_eq!(s.elem(9).data(), &[9.0]);
+        assert_eq!(s.last().unwrap().data(), &[9.0]);
+        assert_eq!(s.timestamp(9), ts(1000));
+        assert_eq!(s.window(7..10).data(), &[7.0, 8.0, 9.0]);
     }
 
     #[test]
@@ -1048,10 +1073,10 @@ mod tests {
     fn count_retention_evicts_old_indices() {
         let mut s = Series::<f64, 1>::with_retention([1], Retention::count(3));
         for i in 0..10 {
-            s.push(ts((i + 1) * 100), &[i as f64]);
+            s.push_data(ts((i + 1) * 100), &[i as f64]);
         }
         // Index 0 was dropped long ago.
-        let _ = s.at(0);
+        let _ = s.elem(0).data();
     }
 
     #[test]
@@ -1060,14 +1085,35 @@ mod tests {
         let mut s =
             Series::<f64, 1>::with_retention([1], Retention::duration(Duration::from_nanos(250)));
         for i in 0..10 {
-            s.push(ts((i + 1) * 100), &[i as f64]);
+            s.push_data(ts((i + 1) * 100), &[i as f64]);
         }
         // Latest ts = 1000; cutoff = 750 → keep ts in {800, 900, 1000} = indices 7,8,9.
         assert_eq!(s.len(), 10);
-        assert_eq!(s.at(9), &[9.0]);
-        assert_eq!(s.at(8), &[8.0]);
-        assert_eq!(s.at(7), &[7.0]);
+        assert_eq!(s.elem(9).data(), &[9.0]);
+        assert_eq!(s.elem(8).data(), &[8.0]);
+        assert_eq!(s.elem(7).data(), &[7.0]);
         assert!(s.base() <= 7, "kept window too small: base {}", s.base());
+    }
+
+    #[test]
+    fn asof_and_search_use_logical_indices_under_retention() {
+        // Regression: `asof` once mixed a physical partition point into a
+        // logical accessor, which broke as soon as retention evicted elements.
+        let mut s = Series::<f64, 1>::with_retention([1], Retention::count(3));
+        for i in 0..10 {
+            s.push_data(ts((i + 1) * 100), &[i as f64]);
+        }
+        assert!(s.base() > 0, "retention must have evicted something");
+
+        assert_eq!(s.asof(ts(1000)).unwrap().data(), &[9.0]);
+        assert_eq!(s.asof(ts(850)).unwrap().data(), &[7.0]);
+        // Before the retained window: None, though older elements once matched.
+        assert_eq!(s.asof(ts(100)).map(|v| v.data()), None);
+
+        // `search` returns logical indices: the first ts >= 850 is t900,
+        // logically element 8.
+        assert_eq!(s.search(ts(850)), 8);
+        assert_eq!(s.search(ts(9999)), s.len());
     }
 
     #[test]
@@ -1080,15 +1126,18 @@ mod tests {
         for i in 0..40usize {
             let row = [i as f64, (i * 2) as f64];
             let t = ts((i as i64 + 1) * 10);
-            bounded.push(t, &row);
-            unbounded.push(t, &row);
+            bounded.push_data(t, &row);
+            unbounded.push_data(t, &row);
             assert_eq!(bounded.len(), unbounded.len());
             let lo = bounded.base();
             for j in lo..bounded.len() {
-                assert_eq!(bounded.at(j), unbounded.at(j), "value mismatch at {j}");
-                assert_eq!(bounded.timestamp_at(j), unbounded.timestamp_at(j));
+                assert_eq!(bounded.elem(j).data(), unbounded.elem(j).data());
+                assert_eq!(bounded.timestamp(j), unbounded.timestamp(j));
             }
-            assert_eq!(bounded.last(), unbounded.last());
+            assert_eq!(
+                bounded.last().unwrap().data(),
+                unbounded.last().unwrap().data()
+            );
         }
     }
 }

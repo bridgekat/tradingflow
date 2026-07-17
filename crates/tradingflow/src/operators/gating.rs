@@ -51,8 +51,7 @@ where
             return (false, state.out.view());
         }
         if (state.predicate)(x) {
-            let xs = x.to_contiguous();
-            state.out.assign(&xs);
+            state.out.assign(x);
             (true, state.out.view())
         } else {
             (false, state.out.view())
@@ -127,8 +126,7 @@ where
         }
         if notified && (state.predicate)(view) {
             // Pass: refresh the retained row in place (no realloc) and notify.
-            let xs = view.to_contiguous();
-            state.out.assign(&xs);
+            state.out.assign(view);
             (true, state.out.view())
         } else {
             // Gate out (or upstream silent): re-present the unchanged retained
@@ -217,7 +215,7 @@ impl<T: Scalar, const N: usize> Operator for Record<T, N> {
             state.out = Series::with_retention(x.extents(), state.retention);
             return (false, state.out.view());
         }
-        state.out.push_view(*time, &x);
+        state.out.push(*time, x);
         (true, state.out.view())
     }
 
@@ -272,7 +270,7 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
         init: bool,
     ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            let ext = series.extents();
+            let ext = series.elem_extents();
             state.out = match series.last() {
                 Some(last) => Array::from_vec(ext, last.to_vec()),
                 None => Array::full(ext, state.fill.clone()),
@@ -280,9 +278,9 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
             return (false, state.out.view());
         }
         match series.last() {
-            Some(last) => state.out.as_mut_slice().clone_from_slice(last),
+            Some(last) => state.out.assign(last),
             None => {
-                for v in state.out.as_mut_slice().iter_mut() {
+                for v in state.out.data_mut().iter_mut() {
                     *v = state.fill.clone();
                 }
             }
@@ -337,7 +335,7 @@ impl<const N: usize> Operator for Count<N> {
             return (false, state.out.view());
         }
         state.count += 1;
-        state.out.as_mut_slice()[0] = state.count as f64;
+        state.out.data_mut()[0] = state.count as f64;
         (true, state.out.view())
     }
 

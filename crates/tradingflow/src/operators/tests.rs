@@ -8,11 +8,11 @@
 //! `ArrayView<'a, T, N>` by value. Sources are owned [`array_cell`]s
 //! lending that currency directly (poke via `state_mut` on the source handle,
 //! wire via the paired `ArrayPort` handle); outputs are read with
-//! `g.view(h).contiguous_slice()` (view edges) or `g.view(h)` (`SeriesView`
+//! `g.view(h).as_slice()` (view edges) or `g.view(h)` (`SeriesView`
 //! edges). Arithmetic uses the lowercase free constructors (`add`/`negate`/…);
 //! the rank-changers carry explicit out-rank generics.
 
-use crate::graph::{Builder, PortHandle, NodeHandle, Pool, RefSource, ViewSource};
+use crate::graph::{Builder, NodeHandle, Pool, PortHandle, RefSource, ViewSource};
 
 use super::*;
 use crate::operators::op::ArrayPort;
@@ -68,7 +68,7 @@ fn simple_add() {
     *g.state_mut(hb) = Array::scalar(3.0);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.view(hc).contiguous_slice().unwrap(), &[13.0]);
+    assert_eq!(g.view(hc).as_slice().unwrap(), &[13.0]);
 }
 
 /// `scenario_chain`: (2 + 3) * 2 == 10. Exercises a 3-deep cone where the leaf
@@ -87,7 +87,7 @@ fn chain_add_then_mul() {
     *g.state_mut(bb) = Array::scalar(3.0);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.view(out).contiguous_slice().unwrap(), &[10.0]);
+    assert_eq!(g.view(out).as_slice().unwrap(), &[10.0]);
 }
 
 /// `scenario_record`: record (10+3), (20+7) → series [13, 27] @ [1, 2].
@@ -114,7 +114,7 @@ fn record_series() {
     let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.timestamps(), &[ts(1), ts(2)]);
-    assert_eq!(s.values(), &[13.0, 27.0]);
+    assert_eq!(s.data(), &[13.0, 27.0]);
 }
 
 /// `scenario_run_filter`: source [1,5,2,10]@[1,2,3,4], keep >3 → recorded
@@ -139,7 +139,7 @@ fn filter_gates_record() {
 
     let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 2);
-    assert_eq!(s.values(), &[5.0, 10.0]);
+    assert_eq!(s.data(), &[5.0, 10.0]);
     assert_eq!(s.timestamps(), &[ts(2), ts(4)]);
 }
 
@@ -159,7 +159,7 @@ fn last_of_record() {
         g.stabilize(&mut pool);
     }
 
-    assert_eq!(g.view(lst).contiguous_slice().unwrap(), &[20.0]);
+    assert_eq!(g.view(lst).as_slice().unwrap(), &[20.0]);
 }
 
 /// A retention-bounded `Record` feeding `Lag` and `RollingMean` produces the
@@ -186,17 +186,17 @@ fn bounded_record_feeds_rolling_and_lag() {
         if t >= 5 {
             // Mean of the last 5 values {t-4..t} == t - 2.
             assert!(
-                (g.view(rmean).contiguous_slice().unwrap()[0] - (t as f64 - 2.0)).abs() < 1e-9,
+                (g.view(rmean).as_slice().unwrap()[0] - (t as f64 - 2.0)).abs() < 1e-9,
                 "rmean@{t} = {}",
-                g.view(rmean).contiguous_slice().unwrap()[0],
+                g.view(rmean).as_slice().unwrap()[0],
             );
         }
         if t > 3 {
             // Lag(3): the value from 3 steps ago == t - 3.
             assert!(
-                (g.view(lag).contiguous_slice().unwrap()[0] - (t as f64 - 3.0)).abs() < 1e-9,
+                (g.view(lag).as_slice().unwrap()[0] - (t as f64 - 3.0)).abs() < 1e-9,
                 "lag@{t} = {}",
-                g.view(lag).contiguous_slice().unwrap()[0],
+                g.view(lag).as_slice().unwrap()[0],
             );
         }
     }
@@ -208,7 +208,7 @@ fn bounded_record_feeds_rolling_and_lag() {
         s.len()
     );
     assert!(s.len() <= 16, "physical storage unbounded: {}", s.len());
-    assert_eq!(s.last(), Some([m as f64].as_slice()), "latest value intact");
+    assert_eq!(s.last().unwrap().data(), &[m as f64], "latest value intact");
     assert_eq!(s.last_timestamp(), Some(ts(m)), "latest timestamp intact");
 }
 
@@ -239,7 +239,7 @@ fn clocked_periodic() {
 
     let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 1);
-    assert_eq!(s.values(), &[20.0]);
+    assert_eq!(s.data(), &[20.0]);
     assert_eq!(s.timestamps(), &[ts(2)]);
 }
 
@@ -262,7 +262,7 @@ fn coalesced_two_source_add() {
         g.stabilize(&mut pool);
     }
 
-    assert_eq!(g.view(rec).values(), &[110.0, 220.0]);
+    assert_eq!(g.view(rec).data(), &[110.0, 220.0]);
 }
 
 /// Per-element notify: gen1 all fire → [1,2,3]; gen2 only s1 → Stack keeps stale
@@ -283,19 +283,13 @@ fn slice_stack_and_sync() {
     *g.state_mut(s1) = Array::scalar(2.0);
     *g.state_mut(s2) = Array::scalar(3.0);
     g.stabilize(&mut pool);
-    assert_eq!(
-        g.view(stacked).contiguous_slice().unwrap(),
-        &[1.0, 2.0, 3.0]
-    );
-    assert_eq!(g.view(synced).contiguous_slice().unwrap(), &[1.0, 2.0, 3.0]);
+    assert_eq!(g.view(stacked).as_slice().unwrap(), &[1.0, 2.0, 3.0]);
+    assert_eq!(g.view(synced).as_slice().unwrap(), &[1.0, 2.0, 3.0]);
 
     *g.state_mut(s1) = Array::scalar(20.0);
     g.stabilize(&mut pool);
-    assert_eq!(
-        g.view(stacked).contiguous_slice().unwrap(),
-        &[1.0, 20.0, 3.0]
-    );
-    let v = g.view(synced).contiguous_slice().unwrap();
+    assert_eq!(g.view(stacked).as_slice().unwrap(), &[1.0, 20.0, 3.0]);
+    let v = g.view(synced).as_slice().unwrap();
     assert!(v[0].is_nan());
     assert_eq!(v[1], 20.0);
     assert!(v[2].is_nan());
@@ -318,12 +312,12 @@ fn rolling_mean_count_warmup_and_value() {
         *g.state_mut(src) = Array::scalar(v);
         g.stabilize(&mut pool);
     }
-    assert_eq!(g.view(rm).contiguous_slice().unwrap(), &[2.0]); // mean(1,2,3)
+    assert_eq!(g.view(rm).as_slice().unwrap(), &[2.0]); // mean(1,2,3)
 
     *g.context_mut() = ts(4);
     *g.state_mut(src) = Array::scalar(6.0);
     g.stabilize(&mut pool);
-    assert!((g.view(rm).contiguous_slice().unwrap()[0] - 11.0 / 3.0).abs() < 1e-12); // mean(2,3,6)
+    assert!((g.view(rm).as_slice().unwrap()[0] - 11.0 / 3.0).abs() < 1e-12); // mean(2,3,6)
 }
 
 // -- Batch 2: arithmetic / rolling / structural parity ----------------------
@@ -346,9 +340,9 @@ fn arith_unary_and_binary() {
     *g.state_mut(y) = Array::scalar(4.0);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.view(neg).contiguous_slice().unwrap(), &[-1.0, 2.0, -3.0]);
-    assert_eq!(g.view(sub).contiguous_slice().unwrap(), &[16.0]);
-    assert_eq!(g.view(div).contiguous_slice().unwrap(), &[5.0]);
+    assert_eq!(g.view(neg).as_slice().unwrap(), &[-1.0, 2.0, -3.0]);
+    assert_eq!(g.view(sub).as_slice().unwrap(), &[16.0]);
+    assert_eq!(g.view(div).as_slice().unwrap(), &[5.0]);
 }
 
 /// `min`/`max`/`pow` (values from `arithmetic` tests).
@@ -367,9 +361,9 @@ fn arith_min_max_pow() {
     *g.state_mut(bb) = Array::from_vec([3], vec![2.0, 4.0, 6.0]);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.view(mn).contiguous_slice().unwrap(), &[1.0, 4.0, 3.0]);
-    assert_eq!(g.view(mx).contiguous_slice().unwrap(), &[2.0, 5.0, 6.0]);
-    assert_eq!(g.view(p).contiguous_slice().unwrap(), &[1.0, 25.0, 9.0]);
+    assert_eq!(g.view(mn).as_slice().unwrap(), &[1.0, 4.0, 3.0]);
+    assert_eq!(g.view(mx).as_slice().unwrap(), &[2.0, 5.0, 6.0]);
+    assert_eq!(g.view(p).as_slice().unwrap(), &[1.0, 25.0, 9.0]);
 }
 
 /// `RollingSum`/`RollingVariance` window-3 (values from rolling tests).
@@ -388,13 +382,13 @@ fn rolling_sum_and_variance() {
         *g.state_mut(src) = Array::scalar(v);
         g.stabilize(&mut pool);
     }
-    assert_eq!(g.view(rsum).contiguous_slice().unwrap(), &[6.0]);
-    assert!((g.view(rvar).contiguous_slice().unwrap()[0] - 2.0 / 3.0).abs() < 1e-10);
+    assert_eq!(g.view(rsum).as_slice().unwrap(), &[6.0]);
+    assert!((g.view(rvar).as_slice().unwrap()[0] - 2.0 / 3.0).abs() < 1e-10);
 
     *g.context_mut() = ts(4);
     *g.state_mut(src) = Array::scalar(4.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.view(rsum).contiguous_slice().unwrap(), &[9.0]); // 2+3+4
+    assert_eq!(g.view(rsum).as_slice().unwrap(), &[9.0]); // 2+3+4
 }
 
 /// `RollingCovariance` on a `[2]` vector with `y = 2x` (values from cov tests).
@@ -435,7 +429,7 @@ fn ema_two_values() {
         g.stabilize(&mut pool);
     }
     let expected = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25);
-    assert!((g.view(e).contiguous_slice().unwrap()[0] - expected).abs() < 1e-10);
+    assert!((g.view(e).as_slice().unwrap()[0] - expected).abs() < 1e-10);
 }
 
 /// `Where` / `Cast` / `Id` (values from their legacy tests).
@@ -458,9 +452,9 @@ fn structural_where_cast_id() {
     *g.state_mut(ci_cell) = Array::from_vec([3], vec![1_i32, 2, 3]);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.view(w).contiguous_slice().unwrap(), &[0.0, 5.0, 0.0]);
+    assert_eq!(g.view(w).as_slice().unwrap(), &[0.0, 5.0, 0.0]);
     assert_eq!(*g.view(i), 9);
-    assert_eq!(g.view(c).contiguous_slice().unwrap(), &[1.0, 2.0, 3.0]);
+    assert_eq!(g.view(c).as_slice().unwrap(), &[1.0, 2.0, 3.0]);
 }
 
 // -- Batch 3: num tail (element-wise / cross-tick / cross-sectional) --------
@@ -481,9 +475,9 @@ fn num_clamp_fillna_ffill() {
     *g.state_mut(na) = Array::from_vec([3], vec![1.0, f64::NAN, 3.0]);
     g.stabilize(&mut pool);
 
-    assert_eq!(g.view(clamp).contiguous_slice().unwrap(), &[2.0, 3.0, 5.0]);
-    assert_eq!(g.view(fill).contiguous_slice().unwrap(), &[1.0, 0.0, 3.0]);
-    let v = g.view(ff).contiguous_slice().unwrap();
+    assert_eq!(g.view(clamp).as_slice().unwrap(), &[2.0, 3.0, 5.0]);
+    assert_eq!(g.view(fill).as_slice().unwrap(), &[1.0, 0.0, 3.0]);
+    let v = g.view(ff).as_slice().unwrap();
     assert_eq!(v[0], 1.0);
     assert!(v[1].is_nan());
     assert_eq!(v[2], 3.0);
@@ -501,13 +495,13 @@ fn num_diff_and_pct_change() {
 
     *g.state_mut(src) = Array::scalar(100.0);
     g.stabilize(&mut pool);
-    assert!(g.view(d).contiguous_slice().unwrap()[0].is_nan());
-    assert!(g.view(pc).contiguous_slice().unwrap()[0].is_nan());
+    assert!(g.view(d).as_slice().unwrap()[0].is_nan());
+    assert!(g.view(pc).as_slice().unwrap()[0].is_nan());
 
     *g.state_mut(src) = Array::scalar(110.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.view(d).contiguous_slice().unwrap()[0], 10.0);
-    assert!((g.view(pc).contiguous_slice().unwrap()[0] - 0.1).abs() < 1e-12);
+    assert_eq!(g.view(d).as_slice().unwrap()[0], 10.0);
+    assert!((g.view(pc).as_slice().unwrap()[0] - 0.1).abs() < 1e-12);
 }
 
 /// Cross-sectional `Gaussianize` / `Percentile` / `Standardize` / `Winsorize`
@@ -548,7 +542,7 @@ fn num_cross_sectional() {
     assert!((zv.iter().map(|&x| x * x).sum::<f64>() / 5.0 - 1.0).abs() < 1e-12);
     // Winsorize p=0.1 over [0..9] → clip to [1, 8].
     assert_eq!(
-        g.view(win).contiguous_slice().unwrap(),
+        g.view(win).as_slice().unwrap(),
         &[1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 8.0]
     );
 }
@@ -563,7 +557,7 @@ fn map_doubles() {
     let m = b.segment(
         map(|a: ArrayView<f64, 0>| {
             let mut o = a.to_array();
-            o[0] *= 2.0;
+            o[[]] *= 2.0;
             o
         }),
         srcv,
@@ -573,7 +567,7 @@ fn map_doubles() {
 
     *g.state_mut(src) = Array::scalar(5.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.view(m).contiguous_slice().unwrap(), &[10.0]);
+    assert_eq!(g.view(m).as_slice().unwrap(), &[10.0]);
 }
 
 /// `Apply` (two-input add) and `Select` (flat index pick).
@@ -585,7 +579,7 @@ fn apply_add_and_select() {
     let ap = b.segment(
         apply(|(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
             let mut out = a.to_array();
-            for (o, v) in out.as_mut_slice().iter_mut().zip(b.to_contiguous().iter()) {
+            for (o, v) in out.data_mut().iter_mut().zip(b.to_contiguous().iter()) {
                 *o += *v;
             }
             out
@@ -601,8 +595,8 @@ fn apply_add_and_select() {
     *g.state_mut(bb) = Array::from_vec([3], vec![10.0, 20.0, 30.0]);
     *g.state_mut(five) = Array::from_vec([5], vec![10.0, 20.0, 30.0, 40.0, 50.0]);
     g.stabilize(&mut pool);
-    assert_eq!(g.view(ap).contiguous_slice().unwrap(), &[11.0, 22.0, 33.0]);
-    assert_eq!(g.view(sel).contiguous_slice().unwrap(), &[20.0, 40.0]);
+    assert_eq!(g.view(ap).as_slice().unwrap(), &[11.0, 22.0, 33.0]);
+    assert_eq!(g.view(sel).as_slice().unwrap(), &[20.0, 40.0]);
 }
 
 /// `Lag` (offset 2 over a recorded series).
@@ -620,7 +614,7 @@ fn lag_offset_two() {
         *g.state_mut(src) = Array::scalar(v);
         g.stabilize(&mut pool);
     }
-    assert_eq!(g.view(lag).contiguous_slice().unwrap(), &[10.0]); // value from 2 steps ago
+    assert_eq!(g.view(lag).as_slice().unwrap(), &[10.0]); // value from 2 steps ago
 }
 
 /// `Concat` axis-0 of two `[2]` arrays → `[4]`.
@@ -636,10 +630,7 @@ fn concat_axis0() {
     *g.state_mut(a) = Array::from_vec([2], vec![1.0, 2.0]);
     *g.state_mut(bb) = Array::from_vec([2], vec![3.0, 4.0]);
     g.stabilize(&mut pool);
-    assert_eq!(
-        g.view(cc).contiguous_slice().unwrap(),
-        &[1.0, 2.0, 3.0, 4.0]
-    );
+    assert_eq!(g.view(cc).as_slice().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
 }
 
 // -- Batch 5/6: metrics (clock-gated) + stocks -----------------------------
@@ -663,15 +654,15 @@ fn metrics_clock_gated() {
         let _ = g.state_mut(tick_cell);
         g.stabilize(&mut pool);
     }
-    assert!((g.view(cr).contiguous_slice().unwrap()[0] - 0.10).abs() < 1e-10);
-    assert!((g.view(ar).contiguous_slice().unwrap()[0] - 0.10).abs() < 1e-10);
-    assert_eq!(g.view(vol).contiguous_slice().unwrap()[0], 0.0); // single return → zero std
+    assert!((g.view(cr).as_slice().unwrap()[0] - 0.10).abs() < 1e-10);
+    assert!((g.view(ar).as_slice().unwrap()[0] - 0.10).abs() < 1e-10);
+    assert_eq!(g.view(vol).as_slice().unwrap()[0], 0.0); // single return → zero std
 
     *g.state_mut(data) = Array::scalar(99.0);
     let _ = g.state_mut(tick_cell);
     g.stabilize(&mut pool);
-    assert!(g.view(ar).contiguous_slice().unwrap()[0].abs() < 1e-10); // 0.10, -0.10 → 0
-    assert!((g.view(vol).contiguous_slice().unwrap()[0] - 0.10).abs() < 1e-10); // std 0.10
+    assert!(g.view(ar).as_slice().unwrap()[0].abs() < 1e-10); // 0.10, -0.10 → 0
+    assert!((g.view(vol).as_slice().unwrap()[0] - 0.10).abs() < 1e-10); // std 0.10
 }
 
 /// `Drawdown` (single input, no clock) from the running maximum.
@@ -686,7 +677,7 @@ fn metrics_drawdown() {
     for (v, e) in [(100.0, 0.0), (120.0, 0.0), (90.0, -0.25)] {
         *g.state_mut(data) = Array::scalar(v);
         g.stabilize(&mut pool);
-        assert!((g.view(dd).contiguous_slice().unwrap()[0] - e).abs() < 1e-10);
+        assert!((g.view(dd).as_slice().unwrap()[0] - e).abs() < 1e-10);
     }
 }
 
@@ -701,7 +692,7 @@ fn stocks_annualize() {
 
     *g.state_mut(src) = Array::from_vec([4], vec![2024.0, 91.0, 100.0, 20.0]);
     g.stabilize(&mut pool);
-    let o = g.view(ann).contiguous_slice().unwrap();
+    let o = g.view(ann).as_slice().unwrap();
     assert!((o[0] - 100.0 * 365.0 / 91.0).abs() < 1e-10);
     assert!((o[1] - 20.0 * 365.0 / 91.0).abs() < 1e-10);
 }
@@ -720,13 +711,13 @@ fn stocks_forward_adjust() {
     // gen1: price only.
     *g.state_mut(price) = Array::scalar(10.0);
     g.stabilize(&mut pool);
-    assert_eq!(g.view(fa).contiguous_slice().unwrap(), &[10.0]);
+    assert_eq!(g.view(fa).as_slice().unwrap(), &[10.0]);
 
     // gen2: price 9.5 + cash dividend 0.5 → adjusted back to 10.0.
     *g.state_mut(price) = Array::scalar(9.5);
     *g.state_mut(divd) = Array::from_vec([2], vec![0.0, 0.5]);
     g.stabilize(&mut pool);
-    assert!((g.view(fa).contiguous_slice().unwrap()[0] - 10.0).abs() < 1e-12);
+    assert!((g.view(fa).as_slice().unwrap()[0] - 10.0).abs() < 1e-12);
 }
 
 // ===========================================================================
@@ -761,7 +752,7 @@ fn parallel_fanout_matches_sequential() {
     }
     for &rec in &recs {
         assert_eq!(
-            g.view(rec).values(),
+            g.view(rec).data(),
             &expected[..],
             "a parallel branch diverged"
         );
@@ -800,7 +791,7 @@ fn parallel_stress_stateful_counts() {
     }
     for &c in &cnts {
         assert_eq!(
-            g.view(c).contiguous_slice().unwrap(),
+            g.view(c).as_slice().unwrap(),
             &[passes],
             "a parallel Count raced"
         );
@@ -850,7 +841,7 @@ fn split_rows_notify_with_panel() {
     assert_eq!(g.view(rows[1]).to_contiguous().as_ref(), &[3.0, 4.0]);
     assert_eq!(g.view(rows[2]).to_contiguous().as_ref(), &[5.0, 6.0]);
     assert_eq!(
-        g.view(stacked).contiguous_slice().unwrap(),
+        g.view(stacked).as_slice().unwrap(),
         &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
     );
     assert_eq!(g.view(rec).len(), 1); // join recomputed once (on the panel poke)
@@ -1015,7 +1006,7 @@ fn view_join_carry_matches_owned_join() {
         // The stacked cross-section is the last poked panel (carried across idle
         // generations) — the no-notify⟹unchanged carry contract.
         assert_eq!(
-            g.view(view_join).contiguous_slice().unwrap(),
+            g.view(view_join).as_slice().unwrap(),
             &last,
             "tick {i}: carry"
         );

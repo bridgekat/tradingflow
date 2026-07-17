@@ -71,7 +71,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Clamp<T, N> {
         let (lo, hi) = (state.lo, state.hi);
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        let dst = state.out.as_mut_slice();
+        let dst = state.out.data_mut();
         for i in 0..dst.len() {
             dst[i] = lo.max(hi.min(src[i]));
         }
@@ -136,7 +136,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Fillna<T, N> {
         let val = state.val;
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        let dst = state.out.as_mut_slice();
+        let dst = state.out.data_mut();
         for i in 0..dst.len() {
             dst[i] = if src[i].is_nan() { val } else { src[i] };
         }
@@ -201,7 +201,7 @@ impl<T: Scalar + Float, const N: usize> Operator for ForwardFill<T, N> {
         }
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        let dst = out.as_mut_slice();
+        let dst = out.data_mut();
         for i in 0..dst.len() {
             if !src[i].is_nan() {
                 dst[i] = src[i];
@@ -273,7 +273,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Diff<T, N> {
         }
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        let dst = state.out.as_mut_slice();
+        let dst = state.out.data_mut();
         for i in 0..dst.len() {
             dst[i] = src[i] - state.prev[i];
         }
@@ -344,7 +344,7 @@ impl<T: Scalar + Float, const N: usize> Operator for PctChange<T, N> {
         }
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        let dst = state.out.as_mut_slice();
+        let dst = state.out.data_mut();
         let one = T::one();
         for i in 0..dst.len() {
             dst[i] = src[i] / state.prev[i] - one;
@@ -431,7 +431,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Gaussianize<T, N> {
         state.scratch[..n_valid]
             .sort_by(|&a, &b| src[a].partial_cmp(&src[b]).unwrap_or(Ordering::Equal));
 
-        let dst = state.out.as_mut_slice();
+        let dst = state.out.data_mut();
         let nan = T::nan();
         for slot in dst.iter_mut() {
             *slot = nan;
@@ -576,7 +576,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Percentile<T, N> {
         state.scratch[..n_valid]
             .sort_by(|&a, &b| src[a].partial_cmp(&src[b]).unwrap_or(Ordering::Equal));
 
-        let dst = state.out.as_mut_slice();
+        let dst = state.out.data_mut();
         let nan = T::nan();
         for slot in dst.iter_mut() {
             *slot = nan;
@@ -660,7 +660,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Standardize<T, N> {
             }
         }
 
-        let dst = out.as_mut_slice();
+        let dst = out.data_mut();
         if n_valid < 2 {
             for slot in dst.iter_mut() {
                 *slot = nan;
@@ -773,7 +773,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
         }
         state.sort_buf[..n_valid].sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
-        let dst = state.out.as_mut_slice();
+        let dst = state.out.data_mut();
         let nan = T::nan();
 
         if n_valid == 0 {

@@ -103,7 +103,7 @@ pub fn read_scalar_series(
 ) -> (Vec<i64>, Vec<f64>) {
     let s: SeriesView<f64, 0> = session.view(h);
     let ts = s.timestamps().iter().map(|t| t.as_nanos()).collect();
-    let vals = s.values().to_vec();
+    let vals = s.data().to_vec();
     (ts, vals)
 }
 

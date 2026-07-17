@@ -152,7 +152,7 @@ async fn main() {
     ];
     let mut rows: BTreeMap<i64, [f64; 5]> = BTreeMap::new();
     for (c, (_, series)) in cols.iter().enumerate() {
-        for (ts, v) in series.timestamps().iter().zip(series.values().iter()) {
+        for (ts, v) in series.timestamps().iter().zip(series.data().iter()) {
             rows.entry(ts.as_nanos()).or_insert([f64::NAN; 5])[c] = *v;
         }
     }
