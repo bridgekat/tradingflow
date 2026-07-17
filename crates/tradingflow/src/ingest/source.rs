@@ -52,7 +52,7 @@ where
     type Event: Send + 'static;
     /// The [`Value`] kind of the cell this source feeds: the cell holds a
     /// [`Value::Owned`] and the handle speaks `ViewPort<Self::Value>`. An
-    /// array source names [`ArrayValue`](crate::operators::ArrayValue); a
+    /// array source names [`ArrayValue`](crate::ports::ArrayValue); a
     /// whole-value payload (a pulse's `()`, an event batch `Vec<E>`) names
     /// [`Ref<T>`](tradingflow_graph::typed::Ref).
     type Value: Value;

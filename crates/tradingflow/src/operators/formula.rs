@@ -28,7 +28,7 @@
 //! several deep windows read the same stream: memory per use is
 //! `window × element size`. That is negligible for the typical month-scale
 //! window, but for a *year-deep* stream feeding many consumers, prefer the
-//! hoisted idiom — record once via [`record_bounded`] and wire the
+//! hoisted idiom — record once via [`record_bounded`](super::structural::record_bounded) and wire the
 //! series-consuming operators ([`RollingMean`], [`Lag`], …) against the shared
 //! handle.
 //!
@@ -36,13 +36,13 @@
 //!
 //! Each constructor here consumes a **live array handle** and records
 //! internally. Its `Series`-consuming primitive is reachable under the name of
-//! the underlying operator: [`rolling_mean`](super::rolling_mean) /
-//! [`rolling_sum`](super::rolling_sum) / [`rolling_variance`](super::rolling_variance)
+//! the underlying operator: [`rolling_mean`](super::rolling::rolling_mean) /
+//! [`rolling_sum`](super::rolling::rolling_sum) / [`rolling_variance`](super::rolling::rolling_variance)
 //! for [`ma`] / [`msum`] / [`mvar`], and — where the names would otherwise
-//! collide — [`ema_series`](super::ema_series) for [`ema`] and
-//! [`lag_series`](super::lag_series) for [`lag`]. Likewise the one-tick
+//! collide — [`ema_series`](super::rolling::ema_series) for [`ema`] and
+//! [`lag_series`](super::transform::lag_series) for [`lag`]. Likewise the one-tick
 //! specializations of [`change`] and [`growth`], which need no record at all,
-//! are [`diff`](super::diff) and [`pct_change`](super::pct_change).
+//! are [`diff`](super::num::diff) and [`pct_change`](super::num::pct_change).
 //!
 //! # Time is not a parameter
 //!
@@ -65,17 +65,12 @@
 use crate::graph::typed::{Comp, Fork, Id, Right};
 use num_traits::Float;
 
-use super::arith::{BinaryFn, UnaryFn, divide, sqrt, subtract};
-use super::gating::Record;
-use super::op::ArrayPort;
+use super::num::{BinaryFn, UnaryFn, divide, sqrt, subtract};
 use super::rolling::{Ema, RollingMean, RollingSum, RollingVariance};
+use super::structural::{Record, buffer};
 use super::transform::Lag;
 use crate::data::{Duration, Instant, Retention, Scalar};
-
-/// Extra rows a private record retains beyond its consumer's exact count
-/// look-back — absorbs the amortized-compaction slack plus the one-row
-/// overshoot a sliding window reads while evicting.
-const COUNT_MARGIN: usize = 8;
+use crate::ports::ArrayPort;
 
 /// Extra time a private record retains beyond a time-delta window. Must exceed
 /// the longest gap between consecutive events (weekends + holiday breaks for
@@ -91,26 +86,6 @@ pub type Windowed<T, const N: usize, O> = Comp<Record<T, N>, O>;
 /// `O` — the [`change`] / [`growth`] shape.
 pub type WithLagged<T, const N: usize, O> =
     Comp<Fork<Id<ArrayPort<T, N>, Instant>, Windowed<T, N, Lag<T, N>>>, O>;
-
-/// An unbounded [`Record`] of the input stream: `record() @ x` appends
-/// every notified value of `x`, stamped with event time. Prefer
-/// [`record_bounded`] whenever the consumers' look-back is known.
-pub fn record<T: Scalar, const N: usize>() -> Record<T, N> {
-    Record::new()
-}
-
-/// A [`Record`] keeping only the history within `retention` — the hoisted
-/// shared-record form: record once, feed many windowed consumers. Size
-/// `retention` to the deepest consumer look-back plus a compaction margin (see
-/// the module docs).
-pub fn record_bounded<T: Scalar, const N: usize>(retention: Retention) -> Record<T, N> {
-    Record::with_retention(retention)
-}
-
-/// A private record sized for a count look-back of `n`.
-fn buffer<T: Scalar, const N: usize>(n: usize) -> Record<T, N> {
-    Record::with_retention(Retention::count(n + COUNT_MARGIN))
-}
 
 /// Rolling mean of the last `n` ticks: `ma(n) @ x`. Self-recording;
 /// `NaN` (un-notified) until `n` values have been seen.
@@ -172,7 +147,7 @@ pub fn lag_or<T: Scalar, const N: usize>(n: usize, fill: T) -> Windowed<T, N, La
 
 /// `n`-tick change `x − x₋ₙ` (the momentum shape): `change(n) @ x`.
 /// Self-recording; `NaN` until the lag is available. The one-tick special
-/// case, without a private record, is [`diff`](super::diff).
+/// case, without a private record, is [`diff`](super::num::diff).
 pub fn change<T: Scalar + Float, const N: usize>(n: usize) -> WithLagged<T, N, BinaryFn<T, N>> {
     Comp(Fork(Id::default(), lag(n)), subtract())
 }
@@ -182,7 +157,7 @@ pub fn change<T: Scalar + Float, const N: usize>(n: usize) -> WithLagged<T, N, B
 /// `x / x₋ₙ − 1`-style rank equivalents) so a negative base keeps its faithful
 /// sign. Self-recording; `NaN` until the lag is available. The one-tick
 /// special case, without a private record, is
-/// [`pct_change`](super::pct_change).
+/// [`pct_change`](super::num::pct_change).
 #[allow(clippy::type_complexity)] // the combinator tree is the documentation
 pub fn growth<T: Scalar + Float, const N: usize>(
     n: usize,

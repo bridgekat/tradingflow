@@ -5,7 +5,7 @@
 //! `tests/ingest.rs`.) Source handles are `ArrayPort` view edges — the cell
 //! lends its view, so operators wire straight on.
 
-use tradingflow::operators::{add, filter, record};
+use tradingflow::operators::{num::add, structural::filter, structural::record};
 use tradingflow::sources::ArraySource;
 use tradingflow::{Array, ArrayView, Instant, Series, SeriesView};
 use tradingflow::{Scenario, WallClock};

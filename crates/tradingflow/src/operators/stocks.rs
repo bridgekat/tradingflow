@@ -2,9 +2,9 @@
 //! (corporate-action price adjustment, message-passing on price vs dividend
 //! inputs), over the strided [`ArrayView`] currency.
 
-use super::op::ArrayPort;
 use crate::data::{Array, ArrayView, Instant};
 use crate::graph::typed::Operator;
+use crate::ports::ArrayPort;
 
 // ---------------------------------------------------------------------------
 // Annualize

@@ -34,9 +34,13 @@ mod common;
 
 use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::graph::typed::Operator;
-use tradingflow::operators::{
-    ArrayPort, lag_series, log, multiply, percentile, record, resample_clocked, stack,
-};
+use tradingflow::operators::num::percentile;
+use tradingflow::operators::num::{log, multiply};
+use tradingflow::operators::structural::record;
+use tradingflow::operators::structural::resample_clocked;
+use tradingflow::operators::structural::stack;
+use tradingflow::operators::transform::lag_series;
+use tradingflow::ports::ArrayPort;
 use tradingflow::sources::pulse;
 use tradingflow::{Scenario, WallClock};
 
@@ -218,7 +222,7 @@ fn monotonicity(anns: &[f64]) -> f64 {
     (sxy / (sxx.sqrt() * syy.sqrt())).abs()
 }
 
-type NavHandle = tradingflow_graph::typed::PortHandle<tradingflow::operators::SeriesPort<f64, 0>>;
+type NavHandle = tradingflow_graph::typed::PortHandle<tradingflow::ports::SeriesPort<f64, 0>>;
 
 #[tokio::main]
 async fn main() {
@@ -236,7 +240,7 @@ async fn main() {
 
     let st = common::build_stacked(&mut sc, &symbols, &args.common);
     let catalog = match args.catalog.as_str() {
-        "fundamental" => common::factors::build_factor_catalog(&mut sc, &st),
+        "fundamental" => common::features::build_factor_catalog(&mut sc, &st),
         "pv" => common::pv_factors::build_pv_catalog(&mut sc, &st),
         other => panic!("unknown catalog {other:?} (expected fundamental|pv)"),
     };
@@ -267,7 +271,7 @@ async fn main() {
     let universe = common::universe::with_listing_filter(&mut sc, universe, prior_year_reb);
 
     // Forward (next-period) return, masked to the universe and cross-sectionally ranked.
-    let fwd = common::factors::build_forward_return(&mut sc, log_adj, rebalance_clock);
+    let fwd = common::features::build_forward_return(&mut sc, log_adj, rebalance_clock);
     let fwd_masked = common::universe::mask_to_universe(&mut sc, fwd, universe);
     let fwd_rank = sc.segment(percentile(), fwd_masked);
 

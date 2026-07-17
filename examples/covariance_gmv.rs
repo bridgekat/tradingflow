@@ -23,7 +23,8 @@ mod common;
 use clap::Parser;
 
 use tradingflow::data::Retention;
-use tradingflow::operators::{diff, record};
+use tradingflow::operators::num::diff;
+use tradingflow::operators::structural::record;
 use tradingflow::{Scenario, WallClock};
 
 use common::FeatureSet;

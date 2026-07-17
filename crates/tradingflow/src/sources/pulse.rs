@@ -14,8 +14,8 @@
 //! pre-computed list.  Keeping calendar/timezone logic in Python lets the
 //! Rust core stay free of `chrono` / `chrono-tz`.
 //!
-//! [`Clocked`]: crate::operators::Clocked
-//! [`ResampleClocked`]: crate::operators::ResampleClocked
+//! [`Clocked`]: crate::operators::structural::Clocked
+//! [`ResampleClocked`]: crate::operators::structural::ResampleClocked
 
 use crate::data::Instant;
 

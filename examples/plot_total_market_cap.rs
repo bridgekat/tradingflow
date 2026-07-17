@@ -20,7 +20,11 @@
 mod common;
 
 use tradingflow::data::{Array, ArrayView};
-use tradingflow::operators::{apply, benchmark, map, multiply, record, resample_view};
+use tradingflow::operators::num::multiply;
+use tradingflow::operators::structural::record;
+use tradingflow::operators::structural::resample_view;
+use tradingflow::operators::traders::benchmark;
+use tradingflow::operators::transform::{apply, map};
 use tradingflow::sources::pulse;
 use tradingflow::{Scenario, WallClock};
 

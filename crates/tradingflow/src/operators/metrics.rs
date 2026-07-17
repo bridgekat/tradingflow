@@ -6,8 +6,8 @@
 //! output is a rank-0 scalar view.
 //!
 //! The clock is the **leading** port, matching every other clock-gated operator
-//! in the library ([`Clocked`](super::Clocked),
-//! [`ResampleClocked`](super::ResampleClocked)), so the gated shapes stay
+//! in the library ([`Clocked`](super::structural::Clocked),
+//! [`ResampleClocked`](super::structural::ResampleClocked)), so the gated shapes stay
 //! interchangeable.
 
 use std::marker::PhantomData;
@@ -17,7 +17,7 @@ use num_traits::Float;
 use crate::graph::typed::{Operator, RefPort};
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::operators::op::ArrayPort;
+use crate::ports::ArrayPort;
 
 // ---------------------------------------------------------------------------
 // CompoundReturn
@@ -580,7 +580,7 @@ mod tests {
     use super::*;
     use crate::graph::core::Pool;
     use crate::graph::typed::Builder;
-    use crate::operators::op::array_cell;
+    use crate::operators::constant::array_cell;
 
     /// Turnover: warmup emits nothing; later updates emit the L1 change, with
     /// non-finite weights treated as zero.

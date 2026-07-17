@@ -5,9 +5,9 @@ use tradingflow::Scenario;
 use tradingflow::data::{Array, ArrayView, Duration};
 use tradingflow::graph::typed::PortHandle;
 use tradingflow::operators::{
-    ArrayPort, annualize, apply, forward_adjust, gate, multiply, select, slice_view, split, stack,
-    stack_sync,
+    metrics::*, num::*, stocks::*, structural::*, traders::*, transform::*,
 };
+use tradingflow::ports::{ArrayPort, SeriesPort};
 use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
 
 use super::AvH;
@@ -18,7 +18,7 @@ use super::args::CommonArgs;
 /// The fundamental fields below are point-in-time (effective-date-aligned,
 /// carried forward). Income / cash-flow flows are **annualized** (YTD →
 /// `Annualize`); a trailing-twelve-month figure is a 365-day rolling mean of the
-/// annualized series (see [`factors`](super::factors)). The parquet stores assets
+/// annualized series (see [`factors`](super::features)). The parquet stores assets
 /// debit-positive and liabilities / expense items credit-**negative** — the factor
 /// formulas negate them where a positive magnitude is wanted.
 pub struct Stacked {

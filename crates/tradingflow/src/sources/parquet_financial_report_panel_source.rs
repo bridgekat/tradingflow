@@ -3,7 +3,7 @@
 //! Like [`ParquetPanelSource`](super::ParquetPanelSource) it pivots a long table
 //! into one wide `[N, R]` cross-section per event date (StackSync semantics — each
 //! cross-section reflects only that date's reports, `NaN` elsewhere; the
-//! carry-forward is the downstream [`Stack`](crate::operators::Stack)'s job). It
+//! carry-forward is the downstream [`Stack`](crate::operators::structural::Stack)'s job). It
 //! additionally understands the report layout — two date columns (`date` =
 //! period-end, `notice_date` = publication, nullable) — and point-in-time
 //! semantics:
@@ -23,23 +23,19 @@
 //!
 //! [`with_report_date`](ParquetFinancialReportPanelSource::with_report_date) prepends
 //! `[year, day_of_year]` of the **report** date (for
-//! [`Annualize`](crate::operators::Annualize)). A per-stock pipeline is recovered
+//! [`Annualize`](crate::operators::stocks::Annualize)). A per-stock pipeline is recovered
 //! downstream by `Select` + a NaN `Filter`.
 
 use std::collections::HashMap;
 use std::fs::File;
 
-use futures::stream::Stream;
-use tokio::sync::mpsc;
-
-use crate::ingest::{Event, EventSource};
-use crate::operators::ArrayValue;
-
 use arrow::array::{Array as _, Date32Array};
 use arrow::compute::cast;
 use arrow::datatypes::DataType;
+use futures::stream::Stream;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use tokio::sync::mpsc;
 
 use super::parquet_panel_source::{
     PanelState, RowUpdate, count_rows_in_range, instant_from_days, nan_panel, panel_write,
@@ -47,6 +43,8 @@ use super::parquet_panel_source::{
 };
 use super::receiver_stream;
 use crate::data::{Array, Duration, Instant};
+use crate::ingest::{Event, EventSource};
+use crate::ports::ArrayValue;
 
 /// Historical-only panel source for financial-report long tables. See module docs.
 #[derive(Clone)]

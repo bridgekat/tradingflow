@@ -3,7 +3,8 @@
 use tradingflow::Scenario;
 use tradingflow::data::{Array, ArrayView, Retention, Series};
 use tradingflow::graph::typed::{PortHandle, RefPort};
-use tradingflow::operators::{SeriesPort, diff, lag, map, record_bounded, winsorize};
+use tradingflow::operators::{formula::*, num::*, structural::*, traders::*, transform::*};
+use tradingflow::ports::{ArrayPort, SeriesPort};
 
 use super::AvH;
 

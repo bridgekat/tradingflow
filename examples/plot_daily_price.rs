@@ -22,10 +22,13 @@ mod common;
 use tradingflow::graph::typed::PortHandle;
 
 use tradingflow::data::{Array, ArrayView, Instant, SeriesView};
-use tradingflow::operators::{
-    ArrayPort, Window, add, array_cell, filter, forward_adjust, multiply, record, rolling_mean,
-    rolling_variance, select, sqrt, subtract,
-};
+use tradingflow::operators::constant::array_cell;
+use tradingflow::operators::num::{add, multiply, sqrt, subtract};
+use tradingflow::operators::rolling::{Window, rolling_mean, rolling_variance};
+use tradingflow::operators::stocks::forward_adjust;
+use tradingflow::operators::structural::{filter, record};
+use tradingflow::operators::transform::select;
+use tradingflow::ports::ArrayPort;
 use tradingflow::sources::ParquetPanelSource;
 use tradingflow::{Scenario, WallClock};
 

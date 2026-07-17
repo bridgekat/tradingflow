@@ -23,9 +23,8 @@
 use tradingflow::Scenario;
 use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::typed::{PortHandle, RefPort};
-use tradingflow::operators::{
-    ArrayPort, and, clocked, greater_than, indicator, is_finite, map, multiply,
-};
+use tradingflow::operators::{num::*, structural::*, transform::*};
+use tradingflow::ports::{ArrayPort, SeriesPort};
 
 use super::{Av1, AvH};
 

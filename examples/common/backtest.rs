@@ -17,9 +17,10 @@ use tradingflow::Scenario;
 use tradingflow::data::{Array, ArrayView, Series};
 use tradingflow::graph::typed::PortHandle;
 use tradingflow::operators::{
-    ArrayPort, PyClassOperator, PyParams, SeriesPort, benchmark, map, py_class_operator, record,
-    turnover,
+    PyClassOperator, PyParams, metrics::*, py_class_operator, structural::*, traders::*,
+    transform::*,
 };
+use tradingflow::ports::{ArrayPort, SeriesPort};
 
 use super::AvH;
 use super::strategy::NavH;

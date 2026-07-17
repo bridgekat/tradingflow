@@ -14,7 +14,8 @@
 //! Swapping an optimizer is swapping a call.
 
 use tradingflow::graph::typed::RefPort;
-use tradingflow::operators::{ArrayPort, PyClassOperator, PyParams, SeriesPort, py_class_operator};
+use tradingflow::operators::{PyClassOperator, PyParams, py_class_operator};
+use tradingflow::ports::{ArrayPort, SeriesPort};
 
 // ===========================================================================
 // Port shapes (all array edges are `ArrayPort` views — the one currency)

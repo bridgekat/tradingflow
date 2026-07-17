@@ -18,7 +18,7 @@
 //! are `NaN`); there is no carry-forward and no window-start seeding. This is the
 //! event-driven behaviour of the old per-symbol sources: a source ticks only on
 //! its own dates, and any "carry the last value" / "NaN-fill" is the job of the
-//! downstream [`Stack`](crate::operators::Stack) / [`StackSync`](crate::operators::StackSync)
+//! downstream [`Stack`](crate::operators::structural::Stack) / [`StackSync`](crate::operators::structural::StackSync)
 //! operators — not the source. With `with_time_range`, rows before `start` are
 //! simply skipped (no last-value-before-`start` is carried in).
 //!
@@ -28,9 +28,9 @@
 //! dense. For **irregular** kinds (dividends, financial reports) the panel emits
 //! at the *union* of all symbols' event dates — which need not include every
 //! trading day. A per-stock `Select` therefore still fires on that union cadence
-//! with `NaN` where the stock had no row; a [`Filter`](crate::operators::Filter) that
+//! with `NaN` where the stock had no row; a [`Filter`](crate::operators::structural::Filter) that
 //! drops the all-`NaN` ("no data") rows recovers that stock's true event stream,
-//! so message-passing operators (e.g. [`ForwardAdjust`](crate::operators::ForwardAdjust))
+//! so message-passing operators (e.g. [`ForwardAdjust`](crate::operators::stocks::ForwardAdjust))
 //! see each real event exactly once — reproducing the per-symbol stream.
 //!
 //! # Timestamps
@@ -45,24 +45,20 @@
 use std::collections::HashMap;
 use std::fs::File;
 
-use futures::stream::Stream;
-use tokio::sync::mpsc;
-
-use crate::ingest::{Event, EventSource};
-use crate::operators::ArrayValue;
-
-use super::receiver_stream;
-
 use arrow::array::{Array as _, ArrayRef, Date32Array, DictionaryArray, Int32Array, StringArray};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Int32Type};
+use futures::stream::Stream;
+use hifitime::{Duration as HfDuration, Epoch};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::statistics::Statistics;
+use tokio::sync::mpsc;
 
-use hifitime::{Duration as HfDuration, Epoch};
-
+use super::receiver_stream;
 use crate::data::{Array, Instant};
+use crate::ingest::{Event, EventSource};
+use crate::ports::ArrayValue;
 
 /// Historical-only source that pivots a long-format Parquet table into wide
 /// `[N, K]` cross-sections, one per distinct `date`. See the module docs.
@@ -134,7 +130,7 @@ pub(crate) fn instant_from_days(days: i32) -> Instant {
 }
 
 /// `(year, day_of_year)` (1-based) for a report date via hifitime
-/// (`Epoch::year_days_of_year() + 1`), so [`Annualize`](crate::operators::Annualize)
+/// (`Epoch::year_days_of_year() + 1`), so [`Annualize`](crate::operators::stocks::Annualize)
 /// consumes it directly. Used by [`ParquetFinancialReportPanelSource`](super::ParquetFinancialReportPanelSource).
 pub(crate) fn report_year_and_doy(days: i32) -> (f64, f64) {
     let (year, day_of_year) = epoch_from_days(days).year_days_of_year();

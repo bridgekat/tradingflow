@@ -27,10 +27,12 @@ mod common;
 
 use tradingflow::data::{Array, ArrayView, Duration, Instant, SeriesView};
 use tradingflow::graph::typed::PortHandle;
-use tradingflow::operators::{
-    ArrayPort, Window, annualize, divide, filter, map, multiply, negate, record, rolling_mean,
-    select,
-};
+use tradingflow::operators::num::{divide, multiply, negate};
+use tradingflow::operators::rolling::{Window, rolling_mean};
+use tradingflow::operators::stocks::annualize;
+use tradingflow::operators::structural::{filter, record};
+use tradingflow::operators::transform::{map, select};
+use tradingflow::ports::ArrayPort;
 use tradingflow::sources::{ParquetFinancialReportPanelSource, ParquetPanelSource};
 use tradingflow::{Scenario, WallClock};
 

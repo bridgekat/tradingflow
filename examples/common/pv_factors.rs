@@ -1,7 +1,7 @@
 //! Price-volume factor catalog for the CICC 《价量因子手册》 replication.
 //!
 //! Reuses the same evaluation harness as the fundamental catalog
-//! ([`super::factors`]): each factor is a `[num_stocks]` handle on the daily
+//! ([`super::features`]): each factor is a `[num_stocks]` handle on the daily
 //! pulse; the driver resamples onto the rebalance clock, masks to the universe,
 //! cross-sectionally ranks, and evaluates RankIC vs the next-period return.
 //!
@@ -21,12 +21,11 @@ use tradingflow::Scenario;
 use tradingflow::data::{Array, ArrayView, Instant, Retention, SeriesView};
 use tradingflow::graph::typed::{Operator, PortHandle};
 use tradingflow::operators::{
-    ArrayPort, SeriesPort, Window, apply, diff, divide, lag_series, log, max, min, multiply,
-    percentile, record_bounded, rolling_mean, rolling_sum, rolling_variance, select, sqrt, stack,
-    subtract,
+    formula::*, metrics::*, num::*, rolling::*, stocks::*, structural::*, traders::*, transform::*,
 };
+use tradingflow::ports::{ArrayPort, SeriesPort};
 
-use super::factors::{FactorSet, rank_impute};
+use super::features::{FactorSet, rank_impute};
 use super::{AvH, RETAIN_MARGIN, Stacked};
 
 type H = AvH;
@@ -60,7 +59,7 @@ fn rmean(sc: &mut Scenario, s: Ser, n: usize) -> H {
 /// Elementwise map preserving shape and NaN.
 fn emap(sc: &mut Scenario, h: H, f: fn(f64) -> f64) -> H {
     sc.segment(
-        tradingflow::operators::map(move |a: ArrayView<f64, 1>| {
+        map(move |a: ArrayView<f64, 1>| {
             let s = a.to_contiguous();
             Array::from_vec([s.len()], s.iter().map(|&x| f(x)).collect())
         }),

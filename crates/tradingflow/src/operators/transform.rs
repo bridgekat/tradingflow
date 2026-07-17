@@ -10,10 +10,10 @@
 
 use std::marker::PhantomData;
 
-use super::op::{ArrayPort, SeriesPort, StripNotify};
 use crate::data::Shape;
 use crate::data::{Array, ArrayView, Instant, Scalar, SeriesView};
 use crate::graph::typed::{Interface, Operator, Segment};
+use crate::ports::{ArrayPort, SeriesPort, StripNotify};
 
 // ---------------------------------------------------------------------------
 // Map / MapInplace (single input)
@@ -495,14 +495,14 @@ fn select_out_extents<const OUT: usize>(
 /// run along one axis (a range, or a single index with `squeeze`) **by value**,
 /// over the input's own buffer — no copy, no owned storage, no per-generation
 /// arena. The view-chain counterpart of [`Select`]: where `Select` materializes
-/// (the retention point for a carry-style [`Stack`](super::Stack)), `SliceView`
+/// (the retention point for a carry-style [`Stack`](super::structural::Stack)), `SliceView`
 /// keeps the data as a view into its input's storage.
 ///
 /// It is correct precisely because every operator honours the no-notify⟹
 /// unchanged contract: the lent view reads the input's stable storage (a
-/// retaining [`Gate`](super::Gate) or an owned compute output), which only
+/// retaining [`Gate`](super::structural::Gate) or an owned compute output), which only
 /// changes when the input notifies, so a carry-style
-/// [`Stack`](super::Stack) reader sees the last notified value for an
+/// [`Stack`](super::structural::Stack) reader sees the last notified value for an
 /// un-notified stock. Implements [`Segment`] directly (the by-value view is
 /// derived from the fresh input, not from state).
 pub struct SliceView<T: Scalar, const IN: usize, const OUT: usize> {
@@ -763,7 +763,7 @@ pub fn slice_view<T: Scalar, const IN: usize, const OUT: usize>(
 }
 
 /// The value from `offset` ticks ago in a recorded [`Series`](tradingflow_data::Series), `fill` until it
-/// exists — the primitive behind the self-recording [`lag`](super::lag).
+/// exists — the primitive behind the self-recording [`lag`](super::formula::lag).
 /// (Named `_series` because `lag` is taken by its live-array counterpart.)
 pub fn lag_series<T: Scalar, const N: usize>(offset: usize, fill: T) -> Lag<T, N> {
     Lag::new(offset, fill)

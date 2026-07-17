@@ -112,10 +112,9 @@ use pyo3::types::{PyDict, PySlice, PyTuple};
 use numpy::ndarray::{ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 
-use crate::graph::typed::{Interface, InterfaceHandles, Operator, RefPort};
-
 use crate::data::{Array, ArrayView, Instant, SeriesView};
-use crate::operators::op::{ArrayPort, ArrayPorts, SeriesPort, SeriesPorts};
+use crate::graph::typed::{Interface, InterfaceHandles, Operator, RefPort};
+use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, SeriesPorts};
 
 // ===========================================================================
 // NativeArrayView — Python-visible view over a cell's `Array<f64, N>`
@@ -912,7 +911,9 @@ mod tests {
     use crate::data::Instant;
     use crate::graph::core::Pool;
     use crate::graph::typed::Builder;
-    use crate::operators::{ArrayPort, ArrayPorts, Record, SeriesPort, array_cell};
+    use crate::operators::constant::array_cell;
+    use crate::operators::structural::Record;
+    use crate::ports::{ArrayPort, ArrayPorts, SeriesPort};
 
     /// A small stateful operator over one Array input (L1 turnover), used here
     /// purely as a from_source `PyClassOperator` fixture. Raw string at column 0

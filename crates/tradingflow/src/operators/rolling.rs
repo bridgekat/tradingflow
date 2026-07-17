@@ -1,5 +1,5 @@
 //! Rolling (windowed) operators, implemented directly on
-//! [`Operator`](tradingflow_graph::typed::Operator). The [`Accumulator`] / [`Window`] /
+//! [`Operator`]. The [`Accumulator`] / [`Window`] /
 //! [`Rolling`] framework and the four accumulators + [`Ema`] keep the output
 //! buffer in the operator state (sized on the `init` build call); the
 //! `Accumulator: Send + Sync` bound holds because the accumulator lives in the
@@ -18,7 +18,7 @@ use num_traits::Float;
 
 use crate::data::{Array, ArrayView, Duration, Instant, Scalar, SeriesView};
 use crate::graph::typed::Operator;
-use crate::operators::op::{ArrayPort, SeriesPort};
+use crate::ports::{ArrayPort, SeriesPort};
 
 /// Convert an accumulator's dynamic output shape into a static `[usize; NO]`.
 #[inline]
@@ -489,13 +489,13 @@ pub fn rolling_sum<T: Scalar + Float, const NO: usize>(window: Window) -> Rollin
 }
 
 /// Rolling mean over a recorded [`Series`](tradingflow_data::Series). The self-recording counterpart
-/// over a live array handle is [`ma`](super::ma) / [`ma_time`](super::ma_time).
+/// over a live array handle is [`ma`](super::formula::ma) / [`ma_time`](super::formula::ma_time).
 pub fn rolling_mean<T: Scalar + Float, const NO: usize>(window: Window) -> RollingMean<T, NO> {
     rolling(window)
 }
 
 /// Rolling population variance over a recorded [`Series`](tradingflow_data::Series). Self-recording
-/// counterpart: [`mvar`](super::mvar).
+/// counterpart: [`mvar`](super::formula::mvar).
 pub fn rolling_variance<T: Scalar + Float, const NO: usize>(
     window: Window,
 ) -> RollingVariance<T, NO> {
@@ -509,7 +509,7 @@ pub fn rolling_covariance<T: Scalar + Float>(window: Window) -> RollingCovarianc
 }
 
 /// [`Ema`] over a recorded [`Series`](tradingflow_data::Series) — the primitive behind the
-/// self-recording [`ema`](super::ema). (Named `_series` because `ema` is taken
+/// self-recording [`ema`](super::formula::ema). (Named `_series` because `ema` is taken
 /// by its live-array counterpart.)
 pub fn ema_series<T: Scalar + Float, const NO: usize>(alpha: T, window: usize) -> Ema<T, NO> {
     Ema::new(alpha, window)

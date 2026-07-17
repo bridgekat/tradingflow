@@ -8,7 +8,8 @@
 
 use tradingflow::data::{Array, ArrayView, Instant, Retention};
 use tradingflow::graph::typed::{PortHandle, RefPort};
-use tradingflow::operators::{ArrayPort, SeriesPort, benchmark, log, map, multiply, record};
+use tradingflow::operators::{num::*, structural::*, traders::*, transform::*};
+use tradingflow::ports::{ArrayPort, SeriesPort};
 use tradingflow::sources::pulse;
 use tradingflow::{Scenario, Session};
 

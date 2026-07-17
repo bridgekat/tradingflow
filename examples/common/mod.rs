@@ -12,8 +12,7 @@
 //! | --- | --- |
 //! | [`args`] | CLI args (`CommonArgs`), date parsing, the symbol list |
 //! | [`data`] | parquet sources → the stacked `[num_stocks]` panel (`Stacked`) |
-//! | [`factors`] / [`pv_factors`] | the CICC fundamental / price-volume factor catalogs |
-//! | [`features`] | feature panels (`Features`, `FeatureSet`) over those catalogs |
+//! | [`features`] / [`pv_factors`] | the CICC fundamental / price-volume factor catalogs, and the feature panels over them |
 //! | [`universe`] | universe masks and the cap-weighted index |
 //! | [`target`] | the log-return prediction target and price limits |
 //! | [`backtest`] | the decile-backtest harness (needs the `python` feature) |
@@ -37,7 +36,7 @@
 #![allow(unused_imports)] // the re-exports below serve all examples, not each one
 
 use tradingflow::graph::typed::{PortHandle, ViewPort};
-use tradingflow::operators::ArrayPort;
+use tradingflow::ports::ArrayPort;
 
 // These modules wrap `tradingflow` operators (`PyClassOperator`), so they only
 // compile with the `python` feature. Their consumers (the strategy examples,
@@ -55,7 +54,6 @@ pub mod strategy;
 
 pub mod args;
 pub mod data;
-pub mod factors;
 pub mod features;
 pub mod pv_factors;
 pub mod report;

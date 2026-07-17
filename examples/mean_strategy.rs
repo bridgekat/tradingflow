@@ -27,9 +27,12 @@ mod common;
 use clap::Parser;
 
 use tradingflow::data::{Retention, SeriesView};
-use tradingflow::operators::{
-    benchmark, compound_return, diff, drawdown, log, random_trader, record, sharpe_ratio, stack,
-};
+use tradingflow::operators::metrics::{compound_return, drawdown, sharpe_ratio};
+use tradingflow::operators::num::diff;
+use tradingflow::operators::num::log;
+use tradingflow::operators::structural::record;
+use tradingflow::operators::structural::stack;
+use tradingflow::operators::traders::{benchmark, random_trader};
 use tradingflow::{Scenario, WallClock};
 
 use common::FeatureSet;

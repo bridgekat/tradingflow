@@ -152,14 +152,9 @@ pub struct Series<T: Scalar, const N: usize> {
 // ---------------------------------------------------------------------------
 
 impl<T: Scalar, const N: usize> Series<T, N> {
-    /// Create an empty, unbounded series with the given element extents.
-    pub fn new(extents: [usize; N]) -> Self {
-        Self::with_retention(extents, Retention::UNBOUNDED)
-    }
-
     /// Create an empty series with the given element extents and retention
     /// bound.
-    pub fn with_retention(extents: [usize; N], retention: Retention) -> Self {
+    pub fn new(extents: [usize; N], retention: Retention) -> Self {
         Self {
             timestamps: Vec::new(),
             data: Vec::new(),
@@ -167,6 +162,11 @@ impl<T: Scalar, const N: usize> Series<T, N> {
             base: 0,
             retention,
         }
+    }
+
+    /// Create an empty, unbounded series with the given element extents.
+    pub fn new_unbounded(extents: [usize; N]) -> Self {
+        Self::new(extents, Retention::UNBOUNDED)
     }
 
     /// Create an unbounded series from element extents, timestamps, and a flat
@@ -792,7 +792,7 @@ mod tests {
 
     #[test]
     fn series_push_and_access() {
-        let mut s = Series::<f64, 1>::new([2]);
+        let mut s = Series::<f64, 1>::new_unbounded([2]);
         assert!(s.is_empty());
 
         s.push_data(ts(100), &[1.0, 2.0]);
@@ -812,7 +812,7 @@ mod tests {
 
     #[test]
     fn series_scalar() {
-        let mut s = Series::<f64, 0>::new([]);
+        let mut s = Series::<f64, 0>::new_unbounded([]);
         assert_eq!(s.elem_len(), 1);
 
         s.push_data(ts(1), &[10.0]);
@@ -825,7 +825,7 @@ mod tests {
 
     #[test]
     fn series_asof() {
-        let mut s = Series::<f64, 0>::new([]);
+        let mut s = Series::<f64, 0>::new_unbounded([]);
         s.push_data(ts(100), &[1.0]);
         s.push_data(ts(200), &[2.0]);
         s.push_data(ts(300), &[3.0]);
@@ -842,13 +842,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "push_data: expected 2 scalars, got 3")]
     fn series_push_data_wrong_size() {
-        let mut s = Series::<f64, 1>::new([2]);
+        let mut s = Series::<f64, 1>::new_unbounded([2]);
         s.push_data(ts(1), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn series_elem_shape() {
-        let s = Series::<f64, 2>::new([3, 4]);
+        let s = Series::<f64, 2>::new_unbounded([3, 4]);
         assert_eq!(s.elem_extents(), [3, 4]);
         assert_eq!(s.elem_len(), 12);
         assert!(s.elem_shape().is_contiguous());
@@ -856,7 +856,7 @@ mod tests {
 
     #[test]
     fn last_timestamp() {
-        let mut s = Series::<f64, 0>::new([]);
+        let mut s = Series::<f64, 0>::new_unbounded([]);
         assert_eq!(s.last_timestamp(), None);
 
         s.push_data(ts(100), &[1.0]);
@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn window_data_over_logical_range() {
-        let mut s = Series::<f64, 1>::new([2]);
+        let mut s = Series::<f64, 1>::new_unbounded([2]);
         s.push_data(ts(100), &[1.0, 2.0]);
         s.push_data(ts(200), &[3.0, 4.0]);
         s.push_data(ts(300), &[5.0, 6.0]);
@@ -881,8 +881,8 @@ mod tests {
 
     #[test]
     fn push_matches_push_data() {
-        let mut a = Series::<f64, 1>::new([2]);
-        let mut b = Series::<f64, 1>::new([2]);
+        let mut a = Series::<f64, 1>::new_unbounded([2]);
+        let mut b = Series::<f64, 1>::new_unbounded([2]);
         let row = Array::from_vec([2], vec![1.0, 2.0]);
         a.push_data(ts(100), row.data());
         b.push(ts(100), row.view());
@@ -894,7 +894,7 @@ mod tests {
         // A strided element must land packed row-major in the series.
         let panel = Array::from_vec([2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let col1 = ArrayView::from_parts(Shape::strided([2], [3]), &panel.data()[1..]);
-        let mut s = Series::<f64, 1>::new([2]);
+        let mut s = Series::<f64, 1>::new_unbounded([2]);
         s.push(ts(100), col1);
         assert_eq!(s.data(), &[2.0, 5.0]);
     }
@@ -902,14 +902,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "push: element extents mismatch")]
     fn push_wrong_extents() {
-        let mut s = Series::<f64, 1>::new([2]);
+        let mut s = Series::<f64, 1>::new_unbounded([2]);
         let row = Array::from_vec([3], vec![1.0, 2.0, 3.0]);
         s.push(ts(1), row.view());
     }
 
     #[test]
     fn search() {
-        let mut s = Series::<f64, 0>::new([]);
+        let mut s = Series::<f64, 0>::new_unbounded([]);
         s.push_data(ts(100), &[1.0]);
         s.push_data(ts(200), &[2.0]);
         s.push_data(ts(300), &[3.0]);
@@ -926,7 +926,7 @@ mod tests {
 
     #[test]
     fn view_window_tail_and_elements() {
-        let mut s = Series::<f64, 1>::new([2]);
+        let mut s = Series::<f64, 1>::new_unbounded([2]);
         s.push_data(ts(100), &[1.0, 2.0]);
         s.push_data(ts(200), &[3.0, 4.0]);
         s.push_data(ts(300), &[5.0, 6.0]);
@@ -962,7 +962,7 @@ mod tests {
 
     #[test]
     fn view_asof_and_search() {
-        let mut s = Series::<f64, 0>::new([]);
+        let mut s = Series::<f64, 0>::new_unbounded([]);
         s.push_data(ts(100), &[1.0]);
         s.push_data(ts(200), &[2.0]);
         let v = s.view();
@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn view_as_array_view() {
-        let mut s = Series::<f64, 1>::new([2]);
+        let mut s = Series::<f64, 1>::new_unbounded([2]);
         s.push_data(ts(100), &[1.0, 2.0]);
         s.push_data(ts(200), &[3.0, 4.0]);
         s.push_data(ts(300), &[5.0, 6.0]);
@@ -999,7 +999,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "M (3) must be N + 1 (2)")]
     fn view_as_array_view_wrong_rank() {
-        let mut s = Series::<f64, 1>::new([2]);
+        let mut s = Series::<f64, 1>::new_unbounded([2]);
         s.push_data(ts(100), &[1.0, 2.0]);
         let _ = s.view().as_array_view::<3>();
     }
@@ -1023,7 +1023,7 @@ mod tests {
 
     #[test]
     fn view_to_series() {
-        let mut s = Series::<f64, 1>::new([2]);
+        let mut s = Series::<f64, 1>::new_unbounded([2]);
         s.push_data(ts(100), &[1.0, 2.0]);
         s.push_data(ts(200), &[3.0, 4.0]);
         s.push_data(ts(300), &[5.0, 6.0]);
@@ -1044,7 +1044,7 @@ mod tests {
     #[test]
     fn count_retention_bounds_storage_and_preserves_logical_reads() {
         // Keep the most recent 3 elements; push 10.
-        let mut s = Series::<f64, 1>::with_retention([1], Retention::count(3));
+        let mut s = Series::<f64, 1>::new([1], Retention::count(3));
         for i in 0..10 {
             s.push_data(ts((i + 1) * 100), &[i as f64]);
         }
@@ -1071,7 +1071,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of retained range")]
     fn count_retention_evicts_old_indices() {
-        let mut s = Series::<f64, 1>::with_retention([1], Retention::count(3));
+        let mut s = Series::<f64, 1>::new([1], Retention::count(3));
         for i in 0..10 {
             s.push_data(ts((i + 1) * 100), &[i as f64]);
         }
@@ -1082,8 +1082,7 @@ mod tests {
     #[test]
     fn duration_retention_keeps_time_window() {
         // Keep everything within 250ns of the latest; ticks are 100ns apart.
-        let mut s =
-            Series::<f64, 1>::with_retention([1], Retention::duration(Duration::from_nanos(250)));
+        let mut s = Series::<f64, 1>::new([1], Retention::duration(Duration::from_nanos(250)));
         for i in 0..10 {
             s.push_data(ts((i + 1) * 100), &[i as f64]);
         }
@@ -1099,7 +1098,7 @@ mod tests {
     fn asof_and_search_use_logical_indices_under_retention() {
         // Regression: `asof` once mixed a physical partition point into a
         // logical accessor, which broke as soon as retention evicted elements.
-        let mut s = Series::<f64, 1>::with_retention([1], Retention::count(3));
+        let mut s = Series::<f64, 1>::new([1], Retention::count(3));
         for i in 0..10 {
             s.push_data(ts((i + 1) * 100), &[i as f64]);
         }
@@ -1121,8 +1120,8 @@ mod tests {
         // A bounded series reads identically to an unbounded one for every index
         // that the bound retains — the equivalence the retention contract rests on.
         let window = 5usize;
-        let mut bounded = Series::<f64, 1>::with_retention([2], Retention::count(window));
-        let mut unbounded = Series::<f64, 1>::new([2]);
+        let mut bounded = Series::<f64, 1>::new([2], Retention::count(window));
+        let mut unbounded = Series::<f64, 1>::new_unbounded([2]);
         for i in 0..40usize {
             let row = [i as f64, (i * 2) as f64];
             let t = ts((i as i64 + 1) * 10);

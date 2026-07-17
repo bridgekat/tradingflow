@@ -73,7 +73,7 @@
 //! assert_eq!(g.view(a), 2);
 //! assert_eq!(g.view(d), 3);
 //!
-//! // Update the source value and recompute in parallel.
+//! // Update the source value and then recompute in parallel.
 //! *g.state_mut(s_cell) = 5;
 //! g.stabilize(&mut pool);
 //!

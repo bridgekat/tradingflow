@@ -8,7 +8,7 @@ use tradingflow::Session;
 use tradingflow::data::civil_from_days;
 use tradingflow::data::{Instant, SeriesView};
 use tradingflow::graph::typed::{PortHandle, RefPort};
-use tradingflow::operators::SeriesPort;
+use tradingflow::ports::SeriesPort;
 
 /// `YYYY-MM-DD` for an event [`Instant`].
 pub fn date_str(ts: Instant) -> String {

@@ -8,25 +8,22 @@
 //!
 //! * Operators implement [`Operator`](tradingflow_graph::typed::Operator) (notify-gated compute /
 //!   passthrough) or [`Segment`](tradingflow_graph::typed::Segment) (custom gating, e.g.
-//!   [`Clocked`]) **directly** — no TradingFlow-side operator trait or bridge.
-//!   **Every** `Array`-shaped edge carries a strided [`ArrayView`](tradingflow_data::ArrayView)
-//!   by value through `ArrayPort<T, N>` (and every `Series`-shaped edge a
-//!   [`SeriesView`](tradingflow_data::SeriesView) through `SeriesPort<T, N>`) — including
-//!   source cells (an engine [`ViewSource`](tradingflow_graph::typed::ViewSource) lends its
-//!   owned cell; see [`array_cell`]) and the Python host — so there are no
+//!   [`Clocked`](structural::Clocked)) **directly** — no TradingFlow-side operator trait or bridge.
+//!   Every edge carries a borrowed view by value through the
+//!   [`ports`](crate::ports) currency — including source cells (an engine
+//!   [`ViewSource`](tradingflow_graph::typed::ViewSource) lends its owned cell; see
+//!   [`array_cell`](constant::array_cell)) and the Python host — so there are no
 //!   owned↔view bridge operators. Output buffers live in each
 //!   operator's `State` (an owned [`Array<T, N>`](tradingflow_data::Array)) and `compute`
 //!   lends a view of it. The `init == true` build call sizes/seeds buffers from
-//!   the build-time input values without running per-tick side effects (see
-//!   [`op`] for the conventions). Because operators are plain segments, they
-//!   compose with the engine's combinators (`then`/`fork`/`par`) and the
-//!   `segment!` macro.
+//!   the build-time input values without running per-tick side effects. Because
+//!   operators are plain segments, they compose with the engine's combinators
+//!   (`then`/`fork`/`par`) and the `segment!` macro.
 //! * The engine's input-notification gating prunes the recompute cone: an
 //!   [`Operator`](tradingflow_graph::typed::Operator)'s compute path fires iff ≥1 input
 //!   notified (else its `passthrough` re-emits the previous output, un-notified).
-//! * **The contract that makes this sound: *no-notify ⟹ output unchanged*.** See
-//!   the [`op`] module conventions; it is a producer-side duty obeyed by every
-//!   operator here.
+//! * **The contract that makes this sound: *no-notify ⟹ output unchanged*** — a
+//!   producer-side duty obeyed by every operator here.
 //! * Time is ambient: every operator's `Context` is the [`Instant`](tradingflow_data::Instant)
 //!   the driver sets to the batch's event time before each `stabilize`, so
 //!   `compute` is handed the timestamp (only operators that stamp event time
@@ -39,74 +36,29 @@
 //!   site. Constructors are what `segment!` applies with `@`, so a formula
 //!   annotates only the segment's parameters and output interface — every
 //!   operator in between infers `T` / `N` from the wiring.
-//! * The **formula constructors** ([`ma`], [`lag`], [`change`], …) curry a
-//!   private, bounded [`Record`] into the windowed operators, so a `segment!`
+//! * The **formula constructors** ([`ma`](formula::ma), [`lag`](formula::lag),
+//!   [`change`](formula::change), …) curry a private, bounded
+//!   [`Record`](structural::Record) into the windowed operators, so a `segment!`
 //!   formula over live array handles reads like the formula itself — retention
 //!   sizing happens inside the constructor, and event time arrives through the
 //!   graph context, so they take no clock. See the [`formula`] module docs for the
 //!   private-record trade-off, the hoisted shared-record escape hatch, and the
 //!   naming rule relating them to their `Series`-consuming primitives
-//!   ([`rolling_mean`], [`ema_series`], [`lag_series`], …).
+//!   ([`rolling_mean`](rolling::rolling_mean), [`ema_series`](rolling::ema_series),
+//!   [`lag_series`](transform::lag_series), …).
 
-mod arith;
+pub mod constant;
 pub mod formula;
-mod gating;
-mod metrics;
-mod num;
-pub mod op;
-mod reshape;
-mod rolling;
-mod stocks;
-mod structural;
-mod traders;
-mod transform;
+pub mod metrics;
+pub mod num;
+pub mod rolling;
+pub mod stocks;
+pub mod structural;
+pub mod traders;
+pub mod transform;
 
 #[cfg(feature = "python")]
 mod pyhost;
-
-pub use op::{
-    ArrayPort, ArrayPorts, ArrayValue, SeriesPort, SeriesPorts, SeriesValue, StripNotify,
-    array_cell, series_cell,
-};
-
-pub use arith::{
-    Binary, BinaryFn, BinaryMap, Choose, Compare, CompareFn, Predicate, PredicateFn, Unary,
-    UnaryFn, UnaryMap, abs, add, and, at_least, at_most, ceil, choose, divide, equal, equal_to,
-    exp, exp2, floor, greater, greater_equal, greater_than, indicator, is_finite, is_nan, less,
-    less_equal, less_than, log, log2, log10, max, min, multiply, negate, not, not_equal,
-    not_equal_to, or, pow, recip, round, sign, sqrt, subtract, xor,
-};
-pub use formula::{
-    Windowed, WithLagged, change, ema, growth, lag, lag_or, ma, ma_time, mstd, msum, mvar, record,
-    record_bounded,
-};
-pub use gating::{Clocked, Count, Filter, Gate, Last, Record, clocked, count, filter, gate, last};
-pub use metrics::{
-    AverageReturn, CompoundReturn, Drawdown, SharpeRatio, Turnover, Volatility, average_return,
-    compound_return, drawdown, sharpe_ratio, turnover, volatility,
-};
-pub use num::{
-    Clamp, Diff, Fillna, ForwardFill, Gaussianize, PctChange, Percentile, Standardize, Winsorize,
-    clamp, diff, fillna, forward_fill, gaussianize, pct_change, percentile, standardize, winsorize,
-};
-pub use reshape::{
-    Concat, ConcatSync, Split, Stack, StackSync, concat, concat_sync, split, stack, stack_sync,
-};
-pub use rolling::{
-    Accumulator, CovarianceAccumulator, Ema, MeanAccumulator, Rolling, RollingCovariance,
-    RollingMean, RollingSum, RollingVariance, SumAccumulator, VarianceAccumulator, Window,
-    ema_series, rolling, rolling_covariance, rolling_mean, rolling_sum, rolling_variance,
-};
-pub use stocks::{Annualize, ForwardAdjust, annualize, forward_adjust};
-pub use structural::{
-    Cast, Id, ResampleClocked, ResampleView, Where, cast, id, keep_where, resample_clocked,
-    resample_view,
-};
-pub use traders::{Benchmark, RandomTrader, SimpleTrader, benchmark, random_trader, simple_trader};
-pub use transform::{
-    Apply, ApplyInplace, Lag, Map, MapInplace, Select, SliceView, apply, apply_inplace, lag_series,
-    map, map_inplace, select, select_along_axis, select_flat, slice_view,
-};
 
 #[cfg(feature = "python")]
 pub use pyhost::{

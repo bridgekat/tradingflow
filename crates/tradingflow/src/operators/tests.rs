@@ -12,11 +12,13 @@
 //! edges). Arithmetic uses the lowercase free constructors (`add`/`negate`/…);
 //! the rank-changers carry explicit out-rank generics.
 
-use super::*;
+use super::{
+    constant::*, formula::*, metrics::*, num::*, rolling::*, stocks::*, structural::*, transform::*,
+};
 use crate::data::{Array, ArrayView, Duration, Instant, Retention, SeriesView};
 use crate::graph::core::Pool;
 use crate::graph::typed::{Builder, NodeHandle, PortHandle, RefSource, ViewSource};
-use crate::operators::op::ArrayPort;
+use crate::ports::{ArrayPort, ArrayValue, SeriesPort};
 
 fn ts(n: i64) -> Instant {
     Instant::from_nanos(n)
@@ -1156,7 +1158,7 @@ fn ma_crossover_signal_fuses_into_one_node() {
 
     // The result is a single application in tail position; the crossover is a
     // rank-0 boolean edge.
-    let seg = tradingflow_graph::segment!(|xs: crate::operators::SeriesPort<f64, 0>| -> ArrayPort<bool, 0> {
+    let seg = tradingflow_graph::segment!(|xs: SeriesPort<f64, 0>| -> ArrayPort<bool, 0> {
         let d = subtract() @ (
             rolling_mean(Window::Count(fast)) @ xs,
             rolling_mean(Window::Count(slow)) @ xs,

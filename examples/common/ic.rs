@@ -8,7 +8,7 @@
 //! and the summary statistics are the same, and live here.
 
 use tradingflow::Scenario;
-use tradingflow::operators::record;
+use tradingflow::operators::structural::record;
 
 use super::AvH;
 use super::models::information_coefficient;

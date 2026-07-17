@@ -12,10 +12,10 @@
 //! owns its data.
 //!
 //! The [`ArrayView<'a, T, N>`] type is a borrowed, possibly strided view of
-//! such an array (with lifetime `'a`) — the analogue of a C++ `mdspan`.
+//! such an array (with lifetime `'a`).
 //!
-//! The [`Array::view`] method creates an [`ArrayView`] borrow of its data, and
-//! [`ArrayView::to_array`] copies the viewed data into an owned [`Array`].
+//! The [`Array::view`] method creates an [`ArrayView`] borrow of its data,
+//! and [`ArrayView::to_array`] copies the viewed data into an owned [`Array`].
 //!
 //! # Series
 //!
@@ -23,21 +23,21 @@
 //! `N`-dimensional arrays of scalars `T`, which owns its data. Its history may
 //! be bounded by a [`Retention`] policy.
 //!
-//! The [`SeriesView<'a, T, N>`] type is a borrowed window of such a series
-//! (with lifetime `'a`).
+//! The [`SeriesView<'a, T, N>`] type is a borrowed, possibly strided view of
+//! such a series (with lifetime `'a`).
 //!
 //! The [`Series::view`] method creates a [`SeriesView`] borrow of its data,
-//! and [`SeriesView::to_series`] copies the viewed window into an owned
+//! and [`SeriesView::to_series`] copies the viewed data into an owned
 //! [`Series`].
 //!
 //! # Timestamps
 //!
 //! Each element in a time series is associated with a custom [`Instant`]
-//! timestamp, which contains the number of SI nanoseconds since
+//! timestamp, expressed as a 64-bit integer of SI nanoseconds since
 //! `1970-01-01 00:00:00 TAI`.
 //!
 //! Two timestamps can be subtracted to produce a [`Duration`] time span,
-//! which contains a number of SI nanoseconds.
+//! expressed as a 64-bit integer of SI nanoseconds.
 //!
 //! Calculating time spans on the TAI scale avoids issues caused by UTC
 //! leap seconds, but requires a conversion from standard UTC timestamps.

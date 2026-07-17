@@ -16,7 +16,7 @@ use crate::graph::typed::{
 
 /// The strategy graph builder: a [`Builder`] over the TAI [`Instant`]
 /// context, coupled with an ingest [`Queue`] so a source cell and the feed
-/// that writes it register in one call ([`add_source`](Self::add_source)); it
+/// that writes it register in one call ([`source`](Self::source)); it
 /// also owns the event counter the finished [`Session`] inherits.
 ///
 /// Construct it as `Scenario::new(WallClock)`; the event time before the first
@@ -63,7 +63,7 @@ impl<C: Clock> Scenario<C> {
     ///
     /// The returned handle speaks the source's declared
     /// [`Value`](EventSource::Value) kind: an
-    /// [`ArrayValue`](crate::operators::ArrayValue) source wires as an
+    /// [`ArrayValue`](crate::ports::ArrayValue) source wires as an
     /// `ArrayPort<T, N>` view edge (a `SeriesValue` source as a `SeriesPort`
     /// edge) with no bridging adapter, while whole-value payloads (e.g. a
     /// [`pulse()`](crate::sources::pulse())'s `()`) are `Ref<T>` cells wiring
