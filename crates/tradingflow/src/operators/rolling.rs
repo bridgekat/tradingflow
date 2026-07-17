@@ -482,18 +482,18 @@ pub fn rolling<A: Accumulator, const NI: usize, const NO: usize>(
     }
 }
 
-/// Rolling sum over a recorded [`Series`]: `rolling_sum(Window::Count(20)) @ xs`.
+/// Rolling sum over a recorded [`Series`](crate::Series): `rolling_sum(Window::Count(20)) @ xs`.
 pub fn rolling_sum<T: Scalar + Float, const NO: usize>(window: Window) -> RollingSum<T, NO> {
     rolling(window)
 }
 
-/// Rolling mean over a recorded [`Series`]. The self-recording counterpart
+/// Rolling mean over a recorded [`Series`](crate::Series). The self-recording counterpart
 /// over a live array handle is [`ma`](super::ma) / [`ma_time`](super::ma_time).
 pub fn rolling_mean<T: Scalar + Float, const NO: usize>(window: Window) -> RollingMean<T, NO> {
     rolling(window)
 }
 
-/// Rolling population variance over a recorded [`Series`]. Self-recording
+/// Rolling population variance over a recorded [`Series`](crate::Series). Self-recording
 /// counterpart: [`mvar`](super::mvar).
 pub fn rolling_variance<T: Scalar + Float, const NO: usize>(
     window: Window,
@@ -502,12 +502,12 @@ pub fn rolling_variance<T: Scalar + Float, const NO: usize>(
 }
 
 /// Pairwise rolling covariance matrix (`[K] → [K, K]`) over a recorded
-/// [`Series`].
+/// [`Series`](crate::Series).
 pub fn rolling_covariance<T: Scalar + Float>(window: Window) -> RollingCovariance<T> {
     rolling(window)
 }
 
-/// [`Ema`] over a recorded [`Series`] — the primitive behind the
+/// [`Ema`] over a recorded [`Series`](crate::Series) — the primitive behind the
 /// self-recording [`ema`](super::ema). (Named `_series` because `ema` is taken
 /// by its live-array counterpart.)
 pub fn ema_series<T: Scalar + Float, const NO: usize>(alpha: T, window: usize) -> Ema<T, NO> {

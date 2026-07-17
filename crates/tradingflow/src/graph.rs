@@ -8,10 +8,10 @@
 //! graph building is available (and documented) here, and
 //! [`segment!`](crate::segment) is the facade form of the fusion macro.
 //!
-//! The engine itself is the sibling `tradingflow-graph` workspace crate —
+//! The engine itself is the sibling [`tradingflow_graph`] workspace crate —
 //! kept separate so it builds, tests, and runs Miri against its own minimal
 //! dependency set, and stays free of any notion of time (see
-//! [`ingest`](crate::ingest) for where time lives). Its README covers the
+//! [`ingest`](crate::ingest) for where time lives). Its crate docs cover the
 //! core concepts: segments, interfaces, notification flags, and the
 //! graph-level context.
 //!

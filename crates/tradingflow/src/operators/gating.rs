@@ -419,7 +419,7 @@ pub fn filter<T: Scalar, F, const N: usize>(predicate: F) -> Filter<T, F, N> {
 }
 
 /// Like [`filter`], but re-presents the last passed row as a stable
-/// [`ViewPort`] view (the carry-safe view gate).
+/// [`ArrayPort`] view (the carry-safe view gate).
 pub fn gate<T: Scalar, F, const N: usize>(predicate: F) -> Gate<T, F, N> {
     Gate(predicate, PhantomData)
 }

@@ -763,7 +763,7 @@ pub fn slice_view<T: Scalar, const IN: usize, const OUT: usize>(
     SliceView::new(indices, axis, squeeze)
 }
 
-/// The value from `offset` ticks ago in a recorded [`Series`], `fill` until it
+/// The value from `offset` ticks ago in a recorded [`Series`](crate::Series), `fill` until it
 /// exists — the primitive behind the self-recording [`lag`](super::lag).
 /// (Named `_series` because `lag` is taken by its live-array counterpart.)
 pub fn lag_series<T: Scalar, const N: usize>(offset: usize, fill: T) -> Lag<T, N> {
