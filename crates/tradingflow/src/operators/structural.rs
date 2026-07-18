@@ -1,7 +1,7 @@
 //! Structural operators — everything that routes, gates, records or reshapes
 //! the stream rather than computing over its values.
 //!
-//! * **Passthrough / conversion**: [`Id`], [`Where`], [`Cast`].
+//! * **Passthrough / conversion**: [`Where`], [`Cast`].
 //! * **Gating**: [`Filter`] (whole-array cutoff) and [`Gate`] (the carry-safe
 //!   view gate), plus the clock-driven [`Clocked`] / [`ResampleView`] /
 //!   [`ResampleClocked`].
@@ -233,8 +233,8 @@ impl<T: Scalar, const N: usize> Segment for ResampleView<T, N> {
 }
 
 /// Clock-gated **view** passthrough whose clock is a unit (`RefPort<()>`) clock
-/// source (e.g. a rebalance [`pulse`](crate::sources::pulse())): re-emits the
-/// rank-`N` data view on every clock tick. The unit-clock counterpart of
+/// source (e.g. a rebalance [`pulse`](crate::sources::basic::pulse): re-emits
+/// the rank-`N` data view on every clock tick. The unit-clock counterpart of
 /// [`ResampleView`].
 #[derive(Clone)]
 pub struct ResampleClocked<T: Scalar, const N: usize> {

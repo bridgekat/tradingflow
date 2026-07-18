@@ -580,14 +580,14 @@ mod tests {
     use super::*;
     use crate::graph::pool::Pool;
     use crate::graph::typed::Builder;
-    use crate::operators::constant::array_cell;
+    use crate::operators::constant::const_array;
 
     /// Turnover: warmup emits nothing; later updates emit the L1 change, with
     /// non-finite weights treated as zero.
     #[test]
     fn turnover_l1_change_with_nan_as_zero() {
         let mut b = Builder::new(Instant::MIN);
-        let (w_cell, w) = b.source(array_cell(Array::from_vec([5], vec![0.0_f64; 5])));
+        let (w_cell, w) = b.source(const_array(Array::from_vec([5], vec![0.0_f64; 5])));
         let out = b.segment(Turnover::<f64, 1>::new(), w);
         let mut g = b.build();
         let mut pool = Pool::new(0);

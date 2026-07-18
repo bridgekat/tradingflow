@@ -272,9 +272,6 @@ impl<C: Send + Sync + 'static> Graph<C> {
         unsafe { &mut *self.inner.context_mut().get().cast::<C>() }
     }
 
-    /// Mutable access to a source's state cell ([`V::Owned`](super::Value::Owned)
-    /// for a [`ViewSource`](super::ViewSource)), dirtying the source so its
-    /// cone recomputes on the next [`stabilize`](Self::stabilize).
     pub fn state_mut<S>(&mut self, handle: NodeHandle<S>) -> &mut S::State
     where
         S: Segment,

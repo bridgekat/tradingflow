@@ -16,7 +16,9 @@ use std::thread;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 use tradingflow_graph::pool::Pool;
-use tradingflow_graph::typed::{Builder, Graph, Operator, Port, PortHandle, Ref, Source, Val};
+use tradingflow_graph::typed::{
+    Builder, Graph, NodeHandle, Operator, Port, PortHandle, Ports, Ref, Segment, Val,
+};
 
 const DATA_LEN: usize = 1 << 16;
 const DATA_MASK: usize = DATA_LEN - 1;
@@ -44,6 +46,22 @@ fn pool() -> Pool {
 }
 
 // -- segments ---------------------------------------------------------------
+
+/// A generic source node.
+struct Source(f64);
+
+impl Segment for Source {
+    type Inputs = ();
+    type Outputs = Port<Val<f64>>;
+    type Context = ();
+    type State = f64;
+    fn init(self) -> f64 {
+        self.0
+    }
+    fn compute<'a, 'b: 'a>(_: (), _: &(), state: &'b mut f64, _: bool) -> (bool, f64) {
+        (true, *state)
+    }
+}
 
 /// An adder with two inputs.
 struct Add;
@@ -212,8 +230,8 @@ fn bench_engine_segment(c: &mut Criterion) {
     let (a, b) = make_data();
     let mut i = 0;
     let mut gb = Builder::new(());
-    let (ha_cell, ha) = gb.source(Source::new(0.0));
-    let (hb_cell, hb) = gb.source(Source::new(0.0));
+    let (ha_cell, ha) = gb.source(Source(0.0));
+    let (hb_cell, hb) = gb.source(Source(0.0));
     let _ = gb.segment(Add, (ha, hb));
     let mut g = gb.build();
     let mut pool = pool();
@@ -232,8 +250,8 @@ fn bench_engine_segment_series(c: &mut Criterion) {
     let (a, b) = make_data();
     let mut i = 0;
     let mut gb = Builder::new(());
-    let (ha_cell, ha) = gb.source(Source::new(0.0));
-    let (hb_cell, hb) = gb.source(Source::new(0.0));
+    let (ha_cell, ha) = gb.source(Source(0.0));
+    let (hb_cell, hb) = gb.source(Source(0.0));
     let sum = gb.segment(Add, (ha, hb));
     let _ = gb.segment(Record, sum);
     let mut g = gb.build();
@@ -254,8 +272,8 @@ fn bench_engine_chain(c: &mut Criterion) {
         let (a, b) = make_data();
         let mut i = 0;
         let mut gb = Builder::new(());
-        let (ha_cell, ha) = gb.source(Source::new(0.0));
-        let (hb_cell, hb) = gb.source(Source::new(0.0));
+        let (ha_cell, ha) = gb.source(Source(0.0));
+        let (hb_cell, hb) = gb.source(Source(0.0));
         let mut last = gb.segment(Add, (ha, hb));
         for _ in 1..depth {
             last = gb.segment(Add, (last, ha));
@@ -279,10 +297,10 @@ fn bench_engine_sparse(c: &mut Criterion) {
         let (a, b) = make_data();
         let mut i = 0;
         let mut gb = Builder::new(());
-        let (ha_cell, ha) = gb.source(Source::new(0.0));
-        let (hb_cell, hb) = gb.source(Source::new(0.0));
-        let (_, hc) = gb.source(Source::new(0.0));
-        let (_, hd) = gb.source(Source::new(0.0));
+        let (ha_cell, ha) = gb.source(Source(0.0));
+        let (hb_cell, hb) = gb.source(Source(0.0));
+        let (_, hc) = gb.source(Source(0.0));
+        let (_, hd) = gb.source(Source(0.0));
 
         // Active chain, fed (transitively) by a, b.
         let mut last = gb.segment(Add, (ha, hb));
@@ -321,7 +339,7 @@ fn bench_few_heavy(c: &mut Criterion) {
     const ITERS: usize = 1_000_000;
 
     let mut gb = Builder::new(());
-    let (src_cell, src) = gb.source(Source::new(1.0));
+    let (src_cell, src) = gb.source(Source(1.0));
     let _ = (0..K)
         .map(|_| gb.segment(Heavy(ITERS), src))
         .collect::<Vec<_>>();
@@ -352,181 +370,145 @@ fn bench_few_heavy(c: &mut Criterion) {
 }
 
 // -- complex mesh (large, non-trivial topology, variable workload) -----------
-//
-// A wide local+long-range mesh of 3-input `Work` nodes (per-node workload via
-// `iters_of`, a few deliberately heavy) plus a full-layer `SumAll` per layer --
-// the integration tests' graph, here driven for throughput. `bench_mesh`
-// stabilizes the whole graph per generation; `bench_mesh_fusion` builds the same
-// topology two ways -- each cell's `Add(Inc(w), Double(w))` diamond as one fused
-// node vs. four separate ones -- isolating the per-node scheduling overhead that
-// fusion removes.
-mod mesh {
-    use tradingflow_graph::typed::{
-        Builder, NodeHandle, Port, PortHandle, Ports, Segment, Source, Val,
-    };
 
-    /// A pokeable handle to one mesh source (a by-reference `i64`, since sources
-    /// feed the per-layer `SumAll`'s `Ports`).
-    pub type Src = NodeHandle<Source<Val<i64>, ()>>;
-
-    pub const MODULUS: i64 = 1_000_000_007;
-
-    /// `iters` rounds of an LCG, folded mod `MODULUS` so node values (and thus
-    /// full-layer sums) stay bounded.
-    pub fn lcg(seed: i64, iters: u32) -> i64 {
-        let mut h = seed.rem_euclid(MODULUS);
-        for _ in 0..iters {
-            h = h.wrapping_mul(48271).wrapping_add(1).rem_euclid(MODULUS);
-        }
-        h
+/// `iters` rounds of an LCG, folded mod `MODULUS` so node values (and thus
+/// full-layer sums) stay bounded.
+fn lcg(seed: i64, iters: u32) -> i64 {
+    const MODULUS: i64 = 1_000_000_007;
+    let mut h = seed.rem_euclid(MODULUS);
+    for _ in 0..iters {
+        h = h.wrapping_mul(48271).wrapping_add(1).rem_euclid(MODULUS);
     }
+    h
+}
 
-    pub fn work(a: i64, b: i64, c: i64, iters: u32) -> i64 {
-        let seed = a
-            .wrapping_mul(3)
-            .wrapping_add(b.wrapping_mul(5))
-            .wrapping_add(c.wrapping_mul(7));
-        lcg(seed, iters)
-    }
+fn work(a: i64, b: i64, c: i64, iters: u32) -> i64 {
+    let seed = a
+        .wrapping_mul(3)
+        .wrapping_add(b.wrapping_mul(5))
+        .wrapping_add(c.wrapping_mul(7));
+    lcg(seed, iters)
+}
 
-    /// Two local predecessors and one long-range one.
-    pub fn preds(layer: usize, j: usize, n: usize) -> [usize; 3] {
-        [j, (j + 1) % n, (j * 13 + layer * 7 + 1) % n]
-    }
+/// Two local predecessors and one long-range one.
+fn preds(layer: usize, j: usize, n: usize) -> [usize; 3] {
+    [j, (j + 1) % n, (j * 13 + layer * 7 + 1) % n]
+}
 
-    /// Mostly light (0..18 rounds), ~1/16 deliberately heavy.
-    pub fn iters_of(layer: usize, j: usize) -> u32 {
-        let base = ((layer * 31 + j * 17) % 19) as u32;
-        if (layer + j).is_multiple_of(16) {
-            base * 40 + 200
-        } else {
-            base
-        }
-    }
-
-    pub struct Work {
-        pub iters: u32,
-    }
-    impl Segment for Work {
-        type Inputs = (Port<Val<i64>>, Port<Val<i64>>, Port<Val<i64>>);
-        type Outputs = Port<Val<i64>>;
-        type State = u32; // iters
-        type Context = ();
-        fn init(self) -> Self::State {
-            self.iters
-        }
-        fn compute<'a, 'b: 'a>(
-            ((_, a), (_, b), (_, c)): ((bool, i64), (bool, i64), (bool, i64)),
-            _: &(),
-            iters: &'b mut Self::State,
-            _: bool,
-        ) -> (bool, i64) {
-            let out = work(a, b, c, *iters);
-            (true, out)
-        }
-    }
-
-    pub struct Inc;
-    impl Segment for Inc {
-        type Inputs = Port<Val<i64>>;
-        type Outputs = Port<Val<i64>>;
-        type State = ();
-        type Context = ();
-        fn init(self) {}
-        fn compute<'a, 'b: 'a>((_, x): (bool, i64), _: &(), _: &'b mut (), _: bool) -> (bool, i64) {
-            (true, x + 1)
-        }
-    }
-
-    pub struct Double;
-    impl Segment for Double {
-        type Inputs = Port<Val<i64>>;
-        type Outputs = Port<Val<i64>>;
-        type State = ();
-        type Context = ();
-        fn init(self) {}
-        fn compute<'a, 'b: 'a>((_, x): (bool, i64), _: &(), _: &'b mut (), _: bool) -> (bool, i64) {
-            (true, x * 2)
-        }
-    }
-
-    pub struct Add;
-    impl Segment for Add {
-        type Inputs = (Port<Val<i64>>, Port<Val<i64>>);
-        type Outputs = Port<Val<i64>>;
-        type State = ();
-        type Context = ();
-        fn init(self) {}
-        fn compute<'a, 'b: 'a>(
-            ((_, a), (_, b)): ((bool, i64), (bool, i64)),
-            _: &(),
-            _: &'b mut (),
-            _: bool,
-        ) -> (bool, i64) {
-            (true, a + b)
-        }
-    }
-
-    pub struct SumAll;
-    impl Segment for SumAll {
-        type Inputs = Ports<Val<i64>>;
-        type Outputs = Port<Val<i64>>;
-        type State = ();
-        type Context = ();
-        fn init(self) {}
-        fn compute<'a, 'b: 'a>(
-            (_, xs): (&'a [bool], &'a [i64]),
-            _: &(),
-            _: &'b mut (),
-            _: bool,
-        ) -> (bool, i64) {
-            (true, xs.iter().sum())
-        }
-    }
-
-    /// Build the `n` x `depth` mesh, delegating each cell's construction to
-    /// `cell` (a plain or fused node of the same 3-in/1-out interface), plus a
-    /// full-layer `SumAll` aggregate per layer. Returns the sources (to poke)
-    /// and the aggregates (the last of which transitively depends on everything).
-    pub fn build(
-        gb: &mut Builder<()>,
-        n: usize,
-        depth: usize,
-        mut cell: impl FnMut(
-            &mut Builder<()>,
-            usize,
-            usize,
-            [PortHandle<Val<i64>>; 3],
-        ) -> PortHandle<Val<i64>>,
-    ) -> (Vec<Src>, Vec<PortHandle<Val<i64>>>) {
-        let (src, wires): (Vec<Src>, Vec<_>) =
-            (0..n).map(|j| gb.source(Source::new(j as i64 + 1))).unzip();
-        let mut layers: Vec<Vec<PortHandle<Val<i64>>>> = vec![wires];
-        for layer in 1..=depth {
-            let prev = layers[layer - 1].clone();
-            let mut cur = Vec::with_capacity(n);
-            for j in 0..n {
-                let [a, b, c] = preds(layer, j, n);
-                cur.push(cell(&mut *gb, layer, j, [prev[a], prev[b], prev[c]]));
-            }
-            layers.push(cur);
-        }
-        let aggs = layers.iter().map(|l| gb.segment(SumAll, &l[..])).collect();
-        (src, aggs)
+/// Mostly light (0..18 rounds), ~1/16 deliberately heavy.
+fn iters_of(layer: usize, j: usize) -> u32 {
+    let base = ((layer * 31 + j * 17) % 19) as u32;
+    if (layer + j).is_multiple_of(16) {
+        base * 40 + 200
+    } else {
+        base
     }
 }
 
+struct Work {
+    iters: u32,
+}
+impl Segment for Work {
+    type Inputs = (Port<Val<f64>>, Port<Val<f64>>, Port<Val<f64>>);
+    type Outputs = Port<Val<f64>>;
+    type State = u32; // iters
+    type Context = ();
+    fn init(self) -> Self::State {
+        self.iters
+    }
+    fn compute<'a, 'b: 'a>(
+        ((_, a), (_, b), (_, c)): ((bool, f64), (bool, f64), (bool, f64)),
+        _: &(),
+        iters: &'b mut Self::State,
+        _: bool,
+    ) -> (bool, f64) {
+        let out = work(a as i64, b as i64, c as i64, *iters);
+        (true, out as f64)
+    }
+}
+
+struct Inc;
+impl Segment for Inc {
+    type Inputs = Port<Val<f64>>;
+    type Outputs = Port<Val<f64>>;
+    type State = ();
+    type Context = ();
+    fn init(self) {}
+    fn compute<'a, 'b: 'a>((_, x): (bool, f64), _: &(), _: &'b mut (), _: bool) -> (bool, f64) {
+        (true, x + 1.0)
+    }
+}
+
+struct Double;
+impl Segment for Double {
+    type Inputs = Port<Val<f64>>;
+    type Outputs = Port<Val<f64>>;
+    type State = ();
+    type Context = ();
+    fn init(self) {}
+    fn compute<'a, 'b: 'a>((_, x): (bool, f64), _: &(), _: &'b mut (), _: bool) -> (bool, f64) {
+        (true, x * 2.0)
+    }
+}
+
+struct SumAll;
+impl Segment for SumAll {
+    type Inputs = Ports<Val<f64>>;
+    type Outputs = Port<Val<f64>>;
+    type State = ();
+    type Context = ();
+    fn init(self) {}
+    fn compute<'a, 'b: 'a>(
+        (_, xs): (&'a [bool], &'a [f64]),
+        _: &(),
+        _: &'b mut (),
+        _: bool,
+    ) -> (bool, f64) {
+        (true, xs.iter().sum())
+    }
+}
+
+/// Build the `n` x `depth` mesh, delegating each cell's construction to
+/// `cell` (a plain or fused node of the same 3-in/1-out interface), plus a
+/// full-layer `SumAll` aggregate per layer. Returns the sources (to poke)
+/// and the aggregates (the last of which transitively depends on everything).
+fn build(
+    gb: &mut Builder<()>,
+    n: usize,
+    depth: usize,
+    mut cell: impl FnMut(
+        &mut Builder<()>,
+        usize,
+        usize,
+        [PortHandle<Val<f64>>; 3],
+    ) -> PortHandle<Val<f64>>,
+) -> (Vec<NodeHandle<Source>>, Vec<PortHandle<Val<f64>>>) {
+    let (src, wires): (Vec<_>, Vec<_>) = (0..n).map(|j| gb.source(Source(j as f64 + 1.0))).unzip();
+    let mut layers: Vec<Vec<PortHandle<Val<f64>>>> = vec![wires];
+    for layer in 1..=depth {
+        let prev = layers[layer - 1].clone();
+        let mut cur = Vec::with_capacity(n);
+        for j in 0..n {
+            let [a, b, c] = preds(layer, j, n);
+            cur.push(cell(&mut *gb, layer, j, [prev[a], prev[b], prev[c]]));
+        }
+        layers.push(cur);
+    }
+    let aggs = layers.iter().map(|l| gb.segment(SumAll, &l[..])).collect();
+    (src, aggs)
+}
+
 fn drive_mesh<'a>(
-    src: &'a [mesh::Src],
+    src: &'a [NodeHandle<Source>],
     g: &'a mut Graph<()>,
     pool: &'a mut Pool,
-    _: PortHandle<Val<i64>>,
+    _: PortHandle<Val<f64>>,
 ) -> impl FnMut() + 'a {
-    let mut base = 0i64;
+    let mut base = 0.0;
     move || {
-        base += 1;
+        base += 1.0;
         for (j, &s) in src.iter().enumerate() {
-            *g.state_mut(s) = base + j as i64;
+            *g.state_mut(s) = base + j as f64;
         }
         g.stabilize(pool);
     }
@@ -536,10 +518,10 @@ fn bench_mesh(c: &mut Criterion) {
     let mut group = c.benchmark_group("mesh");
     for (w, d) in [(16usize, 16usize), (32, 32)] {
         let mut gb = Builder::new(());
-        let (src, aggs) = mesh::build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
+        let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
             gb.segment(
-                mesh::Work {
-                    iters: mesh::iters_of(l, j),
+                Work {
+                    iters: iters_of(l, j),
                 },
                 (a, b, c),
             )
@@ -561,13 +543,13 @@ fn bench_mesh_fusion(c: &mut Criterion) {
     // The cell diamond `Add(Inc(w), Double(w))` fused into ONE scheduled node.
     {
         let mut gb = Builder::new(());
-        let (src, aggs) = mesh::build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
-            let it = mesh::iters_of(l, j);
-            let seg = tradingflow::segment!(|x: Port<Val<i64>>, y: Port<Val<i64>>, z: Port<Val<i64>>| -> Port<Val<i64>> {
-                let ww = mesh::Work { iters: it } @ (x, y, z);
-                let p = mesh::Inc @ ww;
-                let q = mesh::Double @ ww;
-                let r = mesh::Add @ (p, q);
+        let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
+            let it = iters_of(l, j);
+            let seg = tradingflow::segment!(|x: Port<Val<f64>>, y: Port<Val<f64>>, z: Port<Val<f64>>| -> Port<Val<f64>> {
+                let ww = Work { iters: it } @ (x, y, z);
+                let p = Inc @ ww;
+                let q = Double @ ww;
+                let r = Add @ (p, q);
                 r
             });
             gb.segment(seg, (a, b, c))
@@ -583,16 +565,16 @@ fn bench_mesh_fusion(c: &mut Criterion) {
     // The same diamond as FOUR scheduled nodes (identical result, 4x the nodes).
     {
         let mut gb = Builder::new(());
-        let (src, aggs) = mesh::build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
+        let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
             let w_h = gb.segment(
-                mesh::Work {
-                    iters: mesh::iters_of(l, j),
+                Work {
+                    iters: iters_of(l, j),
                 },
                 (a, b, c),
             );
-            let p = gb.segment(mesh::Inc, w_h);
-            let q = gb.segment(mesh::Double, w_h);
-            gb.segment(mesh::Add, (p, q))
+            let p = gb.segment(Inc, w_h);
+            let q = gb.segment(Double, w_h);
+            gb.segment(Add, (p, q))
         });
         let mut g = gb.build();
         let mut pool = pool();

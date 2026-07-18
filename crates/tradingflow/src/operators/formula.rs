@@ -1,5 +1,5 @@
 //! Formula constructors — curried, self-recording segments that make
-//! [`segment!`](tradingflow_graph::segment) formulas read like the formulas themselves.
+//! [`segment!`](crate::segment) formulas read like the formulas themselves.
 //!
 //! Every windowed operator ([`RollingMean`], [`Lag`], [`Ema`], …) consumes a
 //! recorded [`Series`](tradingflow_data::Series), so writing `MA(x, 10)` over a live
@@ -8,7 +8,7 @@
 //! and wire the rolling operator. The constructors here fuse that chain into
 //! one segment expression, so a signal like
 //! `MA(x, 10) − MA(x, 5) > 0 AND NOT LAG(…, 1) > 0` is a two-line
-//! [`segment!`](tradingflow_graph::segment) body:
+//! [`segment!`](crate::segment) body:
 //!
 //! ```ignore
 //! let signal = sc.segment(

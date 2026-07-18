@@ -911,7 +911,7 @@ mod tests {
     use crate::data::Instant;
     use crate::graph::pool::Pool;
     use crate::graph::typed::Builder;
-    use crate::operators::constant::array_cell;
+    use crate::operators::constant::const_array;
     use crate::operators::structural::Record;
     use crate::ports::{ArrayPort, ArrayPorts, SeriesPort};
 
@@ -945,7 +945,7 @@ __op__ = Turnover()
     #[test]
     fn py_class_operator_turnover() {
         let mut b = Builder::new(Instant::MIN);
-        let (src_cell, src) = b.source(array_cell(Array::from_vec([2], vec![0.5_f64, 0.5])));
+        let (src_cell, src) = b.source(const_array(Array::from_vec([2], vec![0.5_f64, 0.5])));
         let out = b.segment(
             // Output is a scalar (`vec![]`), so NO = 0.
             PyClassOperator::<ArrayPorts<f64, 1>, 0>::from_source(
@@ -996,8 +996,8 @@ __op__ = HistDot()
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
         // Sources lend the view currency directly — `Record` wires straight on.
         let (weights_cell, weights) =
-            b.source(array_cell(Array::from_vec([2], vec![1.0_f64, 1.0])));
-        let (feed_cell, feed) = b.source(array_cell(Array::from_vec([2], vec![0.0_f64, 0.0])));
+            b.source(const_array(Array::from_vec([2], vec![1.0_f64, 1.0])));
+        let (feed_cell, feed) = b.source(const_array(Array::from_vec([2], vec![0.0_f64, 0.0])));
         let series = b.segment(Record::new(), feed);
         let out = b.segment(
             // Scalar output (`vec![]`), so NO = 0.
@@ -1054,7 +1054,7 @@ def build(scale=1.0):
             .unwrap();
 
         let mut b = Builder::new(Instant::MIN);
-        let (src_cell, src) = b.source(array_cell(Array::from_vec(
+        let (src_cell, src) = b.source(const_array(Array::from_vec(
             [4],
             vec![1.0_f64, 2.0, 3.0, 4.0],
         )));
@@ -1088,9 +1088,9 @@ def build(scale=1.0):
         const N: usize = 3;
         const F: usize = 2;
         let mut b = Builder::new(Instant::MIN);
-        let (universe_cell, universe) = b.source(array_cell(Array::from_vec([N], vec![1.0; N])));
-        let (feat_feed_cell, feat_feed) = b.source(array_cell(Array::<f64, 2>::zeros([N, F])));
-        let (tgt_feed_cell, tgt_feed) = b.source(array_cell(Array::<f64, 1>::zeros([N])));
+        let (universe_cell, universe) = b.source(const_array(Array::from_vec([N], vec![1.0; N])));
+        let (feat_feed_cell, feat_feed) = b.source(const_array(Array::<f64, 2>::zeros([N, F])));
+        let (tgt_feed_cell, tgt_feed) = b.source(const_array(Array::<f64, 1>::zeros([N])));
         // Sources lend the view currency directly — `Record` wires straight on.
         let feat_series = b.segment(Record::new(), feat_feed);
         let tgt_series = b.segment(Record::new(), tgt_feed);

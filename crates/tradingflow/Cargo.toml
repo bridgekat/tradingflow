@@ -35,7 +35,6 @@ parquet = { version = "59.1.0", features = ["arrow", "zstd"] }
 [dev-dependencies]
 tempfile = "3"
 pollster = "1.0"
-futures = { version = "0.3", default-features = false, features = ["std"] }
 indicatif = "0.18"
 clap = { version = "4", features = ["derive"] }
 

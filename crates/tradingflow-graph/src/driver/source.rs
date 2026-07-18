@@ -3,7 +3,8 @@ use futures::stream::Stream;
 use super::Event;
 use crate::typed::Pass;
 
-pub trait Source: Send + 'static
+/// A stream of events writing into a source node.
+pub trait Source
 where
     for<'a> <Self::Pass as Pass>::View<'a>: Copy + Send + Sync,
 {
@@ -14,23 +15,22 @@ where
     /// Stored value and passing policy.
     type Pass: Pass;
 
-    /// The value the source cell holds before any event arrives.
-    fn initial(&self) -> <Self::Pass as Pass>::Owned;
+    /// Estimated total number of events this source will emit over its
+    /// lifetime, or `None` for unbounded/unknown.
+    fn size_hint(&self) -> Option<usize> {
+        None
+    }
 
-    /// Build the event stream and the writer.
+    /// Typed initialization function.
+    /// Returns the initial placeholder state, the event stream and the writer.
     #[allow(clippy::type_complexity)]
     fn init(
-        &self,
+        self,
     ) -> (
+        <Self::Pass as Pass>::Owned,
         impl Stream<Item = Event<Self::Instant, Self::Payload>> + Send + 'static,
         impl FnMut(Self::Instant, Self::Payload, &mut <Self::Pass as Pass>::Owned) -> usize
         + Send
         + 'static,
     );
-
-    /// Estimated total number of events this source will emit over its
-    /// lifetime, or `None` for unbounded/unknown.
-    fn total_num_events(&self) -> Option<usize> {
-        None
-    }
 }

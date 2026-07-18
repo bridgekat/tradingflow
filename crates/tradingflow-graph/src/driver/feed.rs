@@ -65,38 +65,3 @@ where
             .is_some()
     }
 }
-
-/// A feed materialized on its first poll — which happens on the driving task,
-/// once the merge is actually running. Use this when constructing the inner
-/// feed has effects that must not happen at registration time, e.g. spawning
-/// producer tasks on an async runtime or opening connections.
-pub struct LazyFeed<I, S: 'static> {
-    init: Option<Box<dyn FnOnce() -> BoxFeed<I, S>>>,
-    feed: Option<BoxFeed<I, S>>,
-}
-
-type BoxFeed<I, S> = Box<dyn Feed<I, S>>;
-
-impl<I, S: 'static> LazyFeed<I, S> {
-    pub fn new(init: impl FnOnce() -> Box<dyn Feed<I, S>> + 'static) -> Self {
-        Self {
-            init: Some(Box::new(init)),
-            feed: None,
-        }
-    }
-}
-
-impl<I, S: 'static> Feed<I, S> for LazyFeed<I, S> {
-    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let feed = self.feed.get_or_insert_with(|| self.init.take().unwrap()());
-        feed.poll_next(cx)
-    }
-
-    fn stamp(&self) -> Option<Stamp<I>> {
-        self.feed.as_ref().and_then(|f| f.stamp())
-    }
-
-    fn write(&mut self, instant: I, sink: &mut S) -> bool {
-        self.feed.as_mut().is_some_and(|f| f.write(instant, sink))
-    }
-}

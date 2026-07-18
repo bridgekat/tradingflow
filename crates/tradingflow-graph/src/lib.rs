@@ -1,4 +1,5 @@
-//! A multithreaded executor for static computation graphs.
+//! This crate implements a multithreaded executor for static computation
+//! graphs.
 //!
 //! Each compute node can hold a mutable state, read inputs and produce outputs
 //! *that may contain references into the node's state or into its inputs*: it
@@ -7,10 +8,10 @@
 //! Multiple nodes can be fused together into a single node, or be scheduled
 //! independently to be run in parallel.
 //!
-//! # Full example
+//! # Full example with custom sources and segments
 //!
-//! Here is an example graph which takes in a stream of values `s`, and
-//! computes `a = s + 1` and `d = s + a` whenever `s` changes:
+//! Here is an example graph which takes in streams `s` and `t` of values,
+//! and computes `x := s + t` and `y := s + x` whenever `s` or `t` changes:
 //!
 //! ```rust
 //! use futures::Stream;
@@ -19,53 +20,30 @@
 //! use tradingflow::graph::*;
 //!
 //! /// A stream of `i64` values.
-//! struct Data(Vec<i64>);
+//! struct SeqSource(Vec<i64>);
 //!
-//! impl Source for Data {
+//! impl Source for SeqSource {
 //!     type Instant = Instant;
 //!     type Payload = i64;
 //!     type Pass = Val<i64>;
 //!
-//!     fn initial(&self) -> i64 {
-//!         0
-//!     }
-//!
 //!     fn init(
-//!         &self,
+//!         self,
 //!     ) -> (
+//!         i64,
 //!         impl Stream<Item = Event<Instant, i64>> + Send + 'static,
 //!         impl FnMut(Instant, i64, &mut i64) -> usize + Send + 'static,
 //!     ) {
-//!         let items = self.0.clone().into_iter().map(|x| Event {
+//!         let default = 0;
+//!         let items = self.0.into_iter().map(|x| Event {
 //!             stamp: Stamp::Now,
 //!             payload: Some(x),
 //!         });
-//!         let write = |_time: Instant, payload: i64, output: &mut i64| {
+//!         let writer = |_time: Instant, payload: i64, output: &mut i64| {
 //!             *output = payload;
 //!             1
 //!         };
-//!         (futures::stream::iter(items), write)
-//!     }
-//! }
-//!
-//! /// A stateless increment operator.
-//! struct Inc;
-//!
-//! impl Segment for Inc {
-//!     type Inputs = Port<Val<i64>>;
-//!     type Outputs = Port<Val<i64>>;
-//!     type Context = Instant;
-//!     type State = ();
-//!
-//!     fn init(self) {}
-//!
-//!     fn compute<'a, 'b: 'a>(
-//!         (x_notify, x): (bool, i64),
-//!         _time: &Instant,
-//!         _state: &'b mut (),
-//!         _is_first_run: bool,
-//!     ) -> (bool, i64) {
-//!         (x_notify, x + 1)
+//!         (default, futures::stream::iter(items), writer)
 //!     }
 //! }
 //!
@@ -95,11 +73,12 @@
 //!     // Create the thread pool.
 //!     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
 //!
-//!     // Create the graph.
+//!     // Build the graph.
 //!     let mut b = Builder::new(WallClock);
-//!     let s = b.source(Data(vec![1, 2, 3, 4, 5]));
-//!     let a = b.segment(Inc, s);
-//!     let d = b.segment(Add, (s, a));
+//!     let s = b.source(SeqSource(vec![1, 2, 3, 4, 5]));
+//!     let t = b.source(SeqSource(vec![10, 20, 30, 40, 50]));
+//!     let x = b.segment(Add, (s, t));
+//!     let y = b.segment(Add, (s, x));
 //!     let mut g = b.build();
 //!
 //!     // Update the source value and then recompute in parallel.
@@ -107,8 +86,9 @@
 //!
 //!     // Check final values.
 //!     assert_eq!(g.view(s), 5);
-//!     assert_eq!(g.view(a), 6);
-//!     assert_eq!(g.view(d), 11);
+//!     assert_eq!(g.view(t), 50);
+//!     assert_eq!(g.view(x), 55);
+//!     assert_eq!(g.view(y), 60);
 //! }
 //! ```
 //!
@@ -132,46 +112,39 @@
 //! - [`Graph::view`] reads values on wires. This can only be used in-between
 //!   batches.
 //!
+//! # Creating sources
+//!
+//! Each source is a stream of [`Event`]s, associated onto a source node.
+//! It must implement [`Source`], which declares its timestamp type, its event
+//! payload type, and its stored value and passing policy.
+//!
+//! - The [`Source::size_hint`] method should return the total number of
+//!   events in the stream, or `None` if unbounded or unknown.
+//! - The [`Source::init`] method is called once during graph construction,
+//!   which should return:
+//!   - The node's initial data store,
+//!   - An event stream,
+//!   - A closure that writes each event into the node's data store.
+//!
 //! # Creating segments
 //!
 //! Each segment is a single node of scheduling. It must implement [`Segment`],
-//! which declares its inputs and outputs, its mutable state, and its compute
-//! function.
+//! which declares its inputs and outputs, its graph context (must be the
+//! timestamp type), its mutable state, and its compute function.
 //!
-//! ```rust
-//! use tradingflow::graph::*;
+//! - The [`Segment::init`] method is called once during graph construction,
+//!   to create the node's state.
+//! - The [`Segment::compute`] method is called immediately after, with
+//!   `is_first_run == true`, to obtain initial/default output values.
+//! - The [`Segment::compute`] method will be called on each subsequent
+//!   [`Graph::stabilize`], with new inputs and `is_first_run == false`,
+//!   to obtain updated output values.
 //!
-//! pub trait Segment {
-//!     type Inputs: Interface;
-//!     type Outputs: Interface;
-//!     type Context: Send + Sync + 'static;
-//!     type State: Send + 'static;
-//!
-//!     fn init(self) -> Self::State;
-//!
-//!     fn compute<'a, 'b: 'a>(
-//!         inputs: <Self::Inputs as Interface>::Values<'a>,
-//!         context: &Self::Context,
-//!         state: &'b mut Self::State,
-//!         is_first_run: bool,
-//!     ) -> <Self::Outputs as Interface>::Values<'a>;
-//! }
-//! ```
-//!
-//! The [`Segment::init`] method will be called once during graph
-//! construction to create the node's state. Immediately after, the
-//! [`Segment::compute`] method will be run once with
-//! `is_first_run == true` to obtain initial/default output values.
-//!
-//! On each subsequent [`Graph::stabilize`] call, the
-//! [`Segment::compute`] method will be run again with new inputs and
-//! `is_first_run == false`.
-//!
-//! # Segment interfaces
+//! # Interfaces and passing policies
 //!
 //! The associated types [`Segment::Inputs`] and [`Segment::Outputs`] define
 //! the [`Interface`] of a segment. They can be constructed from the following
-//! building blocks:
+//! basic building blocks:
 //!
 //! - [`Port<Val<T>>`] — a single pass-by-value port. It carries `(bool, T)`
 //!   where `T: Copy + Send + Sync`.
@@ -183,14 +156,24 @@
 //! - [`Ports<Ref<T>>`] — a dynamic-length group of pass-by-reference ports.
 //!   It carries `(&[bool], &[&T])` where `T: Send + Sync`, and is compatible
 //!   with a group of [`Port<Ref<T>>`]s.
-//! - Generalizations of the above: [`Port<V>`] and [`Ports<V>`] over
-//!   any [`Pass`] policy `V`, which allow passing custom lifetime-carrying
-//!   `Copy` views (e.g. slices or custom array views) to some underlying data.
 //! - Arbitrarily nested tuples of the above (each branch up to arity 12).
 //!
-//! For dynamic-length groups, the length must remain fixed after the first run,
-//! so that we have a well-defined static computation graph. Violations will be
-//! caught and panic at runtime.
+//! In fact, the [`Port<V>`] and [`Ports<V>`] markers can be used over any
+//! [`Pass`] policy `V`, which allow passing custom lifetime-carrying
+//! `Copy` views (e.g. slices or custom array views) to some underlying data.
+//!
+//! A [`Pass`] policy can be defined on any custom type by:
+//!
+//!   - An owned type [`Pass::Owned`], which is used for source storage;
+//!   - A view type [`Pass::View`], which is used on segment interfaces;
+//!   - A method [`Pass::borrow`], which borrows a view from an owned value.
+//!
+//! The [`Val<T>`] and [`Ref<T>`] are built-in [`Pass`] policies, representing
+//! simple pass-by-value and pass-by-reference.
+//!
+//! For dynamic-length [`Ports`] groups, the length must remain fixed after the
+//! first run, so that we have a well-defined static computation graph.
+//! Violations will be caught and panic at runtime.
 //!
 //! Producing a [`Ports`] output requires creating slices with lifetime `'a`
 //! matching the inputs. This allows for simple forwarding of input references,
@@ -272,6 +255,13 @@
 //! completely if none of its upstream source nodes were modified. This makes
 //! stabilization after a sparse update touches only a fraction of the graph.
 //!
+//! The [`Operator`] trait supports fine-grained skipping. It splits the
+//! compute function of [`Segment`] into two branches:
+//!
+//! - [`Operator::compute`] is called only when at least one input is notified;
+//! - [`Operator::passthrough`] is called otherwise. One can cache the previous
+//!   output value in the node state, and return it directly on passthrough.
+//!
 //! # Segment fusion
 //!
 //! Multi-threaded execution has a cost: every unit of work is a thread-pool
@@ -293,8 +283,8 @@
 //! | [`cb::Arr`] | — | Applies a stateful closure to the inputs. |
 //!
 //! However, point-free combinators get unreadable fast. As an alternative, the
-//! library also provides the [`segment!`] macro, which is a DSL that compiles
-//! down to combinators like the Arrow notation in Haskell[^1]:
+//! `tradingflow-macros` crate provides the `segment!` macro, which is a DSL
+//! that compiles down to combinators like the Arrow notation in Haskell[^1]:
 //!
 //! ```rust
 //! use tradingflow::clock::WallClock;

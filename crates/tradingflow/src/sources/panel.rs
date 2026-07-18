@@ -260,7 +260,7 @@ impl Source for ParquetPanelSource {
     type Payload = Vec<RowUpdate>;
     type Pass = ArrayPass<f64, 2>;
 
-    fn total_num_events(&self) -> Option<usize> {
+    fn size_hint(&self) -> Option<usize> {
         // Progress is measured in **emitted long-table rows** (one event per
         // universe row in `[start, end]`). No time range → the whole file (O(1)
         // from the footer); otherwise count rows in the window. On any read
@@ -275,32 +275,29 @@ impl Source for ParquetPanelSource {
         )
     }
 
-    fn initial(&self) -> Array<f64, 2> {
-        nan_panel(self.out_shape())
-    }
-
     fn init(
-        &self,
+        self,
     ) -> (
+        Array<f64, 2>,
         impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static,
         impl FnMut(Instant, Vec<RowUpdate>, &mut Array<f64, 2>) -> usize + Send + 'static,
     ) {
+        let default = nan_panel(self.out_shape());
+
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
         let (hist_tx, hist_rx) = mpsc::channel(16);
-        let cfg = self.clone();
-
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = read_panel(&cfg, &hist_tx) {
-                eprintln!("ParquetPanelSource error ({}): {e}", cfg.path);
+            if let Err(e) = read_panel(&self, &hist_tx) {
+                eprintln!("ParquetPanelSource error ({}): {e}", self.path);
             }
         });
 
         let mut state = PanelState::default();
-        (
-            receiver_stream(hist_rx),
-            move |ts, batch, output: &mut Array<f64, 2>| panel_write(&mut state, ts, batch, output),
-        )
+        let writer =
+            move |ts, batch, output: &mut Array<f64, 2>| panel_write(&mut state, ts, batch, output);
+
+        (default, receiver_stream(hist_rx), writer)
     }
 }
 
@@ -695,7 +692,7 @@ impl Source for ParquetFinancialReportPanelSource {
     type Payload = Vec<RowUpdate>;
     type Pass = ArrayPass<f64, 2>;
 
-    fn total_num_events(&self) -> Option<usize> {
+    fn size_hint(&self) -> Option<usize> {
         // Progress is in emitted long-table rows. The effective-date emits (after
         // the retrospective-drop) are bounded by the rows in `[start, end]` on the
         // report-date timeline — a close proxy (reports are a small minority of
@@ -706,34 +703,31 @@ impl Source for ParquetFinancialReportPanelSource {
         )
     }
 
-    fn initial(&self) -> Array<f64, 2> {
-        nan_panel(self.out_shape())
-    }
-
     fn init(
-        &self,
+        self,
     ) -> (
+        Array<f64, 2>,
         impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static,
         impl FnMut(Instant, Vec<RowUpdate>, &mut Array<f64, 2>) -> usize + Send + 'static,
     ) {
+        let default = nan_panel(self.out_shape());
+
         // One item per tick (a batch of that date's reports); small buffer.
         let (hist_tx, hist_rx) = mpsc::channel(16);
-        let cfg = self.clone();
-
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = read_reports(&cfg, &hist_tx) {
+            if let Err(e) = read_reports(&self, &hist_tx) {
                 eprintln!(
                     "ParquetFinancialReportPanelSource error ({}): {e}",
-                    cfg.path
+                    self.path
                 );
             }
         });
 
         let mut state = PanelState::default();
-        (
-            receiver_stream(hist_rx),
-            move |ts, batch, output: &mut Array<f64, 2>| panel_write(&mut state, ts, batch, output),
-        )
+        let writer =
+            move |ts, batch, output: &mut Array<f64, 2>| panel_write(&mut state, ts, batch, output);
+
+        (default, receiver_stream(hist_rx), writer)
     }
 }
 

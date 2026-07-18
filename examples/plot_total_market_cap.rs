@@ -19,15 +19,15 @@
 #[path = "common/mod.rs"]
 mod common;
 
+use tradingflow::clock::WallClock;
 use tradingflow::data::{Array, ArrayView};
+use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::num::multiply;
 use tradingflow::operators::structural::record;
 use tradingflow::operators::structural::resample_view;
 use tradingflow::operators::traders::benchmark;
 use tradingflow::operators::transform::{apply, map};
 use tradingflow::sources::basic::*;
-use tradingflow::clock::WallClock;
-use tradingflow::graph::{Builder, Pool};
 
 use clap::Parser;
 
@@ -95,7 +95,7 @@ async fn main() {
     let mut pool = Pool::new(args.threads);
     // Trim warmup output before `begin` so only the live index window is shown.
     let begin = args.begin();
-    let total = session.total_num_events();
+    let total = session.size_hint();
     session.run(&mut pool, common::progress(total, begin)).await;
     eprintln!();
 

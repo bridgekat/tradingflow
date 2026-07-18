@@ -687,8 +687,8 @@ pub fn random_trader(
 mod tests {
     use super::*;
     use crate::graph::pool::Pool;
-    use crate::graph::typed::{Builder, NodeHandle, PortHandle, Source};
-    use crate::operators::constant::array_cell;
+    use crate::graph::typed::{Builder, NodeHandle, PortHandle};
+    use crate::operators::constant::*;
     use crate::ports::ArrayPass;
 
     fn arr(v: &[f64]) -> Array<f64, 1> {
@@ -702,10 +702,10 @@ mod tests {
         b: &mut Builder<Instant>,
         v: &[f64],
     ) -> (
-        NodeHandle<Source<ArrayPass<f64, 1>, Instant>>,
+        NodeHandle<Constant<ArrayPass<f64, 1>>>,
         PortHandle<ArrayPass<f64, 1>>,
     ) {
-        b.source(array_cell(arr(v)))
+        b.source(const_array(arr(v)))
     }
 
     #[test]

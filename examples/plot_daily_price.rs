@@ -19,16 +19,16 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
+use tradingflow::clock::WallClock;
 use tradingflow::data::{Array, ArrayView, Instant};
-use tradingflow::operators::constant::array_cell;
+use tradingflow::graph::{Builder, Pool};
+use tradingflow::operators::constant::const_array;
 use tradingflow::operators::num::{add, multiply, sqrt, subtract};
 use tradingflow::operators::rolling::{Window, rolling_mean, rolling_variance};
 use tradingflow::operators::stocks::forward_adjust;
 use tradingflow::operators::structural::{filter, record};
 use tradingflow::operators::transform::select_at;
 use tradingflow::sources::panel::*;
-use tradingflow::clock::WallClock;
-use tradingflow::graph::{Builder, Pool};
 
 const WINDOW: usize = 252;
 const MULTIPLE: f64 = 2.0;
@@ -98,7 +98,7 @@ async fn main() {
     let ma = sc.segment(rolling_mean(Window::Count(WINDOW)), adj_series);
     let var = sc.segment(rolling_variance(Window::Count(WINDOW)), adj_series);
     let std = sc.segment(sqrt(), var);
-    let multiple = sc.segment(array_cell(Array::scalar(MULTIPLE)), ());
+    let multiple = sc.segment(const_array(Array::scalar(MULTIPLE)), ());
     let band = sc.segment(multiply(), (std, multiple));
     let upper = sc.segment(add(), (ma, band));
     let lower = sc.segment(subtract(), (ma, band));
@@ -112,7 +112,7 @@ async fn main() {
     // Run the historical replay to completion.
     let mut session = sc.build();
     let mut pool = Pool::new(0);
-    let total = session.total_num_events();
+    let total = session.size_hint();
     session
         .run(&mut pool, common::progress(total, Instant::MIN))
         .await;

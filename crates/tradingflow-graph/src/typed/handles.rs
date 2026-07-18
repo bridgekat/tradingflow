@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use super::{FlatRead, Interface, Port, Pass, Ports};
+use super::{FlatRead, Interface, Pass, Port, Ports};
 
 /// Pokeable handle to a source node: the first element of the
 /// `(node handle, port handles)` pair returned by
@@ -214,9 +214,8 @@ pub trait HandlesInterface {
     type Interface: Interface;
 
     /// Write every leaf's node index into `indices` in tree-order, pushing each
-    /// variadic group's ([`ViewPorts`]) element count into
-    /// `shape`. The walk-to-flat direction, owned wholly by this (handle-keyed)
-    /// side.
+    /// variadic group's element count into `shape`. The walk-to-flat direction,
+    /// owned wholly by this (handle-keyed) side.
     fn to_vec(self, shape: &mut Vec<usize>, indices: &mut Vec<usize>);
 }
 

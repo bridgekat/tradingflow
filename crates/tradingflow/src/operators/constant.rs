@@ -1,17 +1,46 @@
-use crate::data::{Array, Scalar, Series};
-use crate::graph::typed::Source;
+use crate::data::{Array, Instant, Scalar, Series};
+use crate::graph::{Pass, Port, Segment};
 use crate::ports::{ArrayPass, SeriesPass};
 
+pub struct Constant<V: Pass> {
+    value: V::Owned,
+}
+
+impl<V: Pass> Constant<V> {
+    pub fn new(value: V::Owned) -> Self {
+        Self { value }
+    }
+}
+
+impl<V: Pass> Segment for Constant<V>
+where
+    for<'a> V::View<'a>: Copy + Send + Sync,
+{
+    type Inputs = ();
+    type Outputs = Port<V>;
+    type Context = Instant;
+    type State = V::Owned;
+
+    fn init(self) -> Self::State {
+        self.value
+    }
+
+    fn compute<'a, 'b: 'a>(
+        _: (),
+        _: &Instant,
+        state: &'b mut V::Owned,
+        is_first_run: bool,
+    ) -> (bool, V::View<'a>) {
+        (!is_first_run, V::borrow(state))
+    }
+}
+
 /// A constant [`Array`] cell.
-pub fn array_cell<T: Scalar, const N: usize, C: Send + Sync + 'static>(
-    initial: Array<T, N>,
-) -> Source<ArrayPass<T, N>, C> {
-    Source::new(initial)
+pub fn const_array<T: Scalar, const N: usize>(value: Array<T, N>) -> Constant<ArrayPass<T, N>> {
+    Constant::new(value)
 }
 
 /// A constant [`Series`] cell.
-pub fn series_cell<T: Scalar, const N: usize, C: Send + Sync + 'static>(
-    initial: Series<T, N>,
-) -> Source<SeriesPass<T, N>, C> {
-    Source::new(initial)
+pub fn const_series<T: Scalar, const N: usize>(value: Series<T, N>) -> Constant<SeriesPass<T, N>> {
+    Constant::new(value)
 }

@@ -166,7 +166,7 @@ impl Market {
 pub async fn run(sc: Builder<Instant, WallClock>, args: &CommonArgs) -> Graph<Instant, WallClock> {
     let mut session = sc.build();
     let mut pool = Pool::new(args.threads);
-    let total = session.total_num_events();
+    let total = session.size_hint();
     session
         .run(&mut pool, super::progress(total, args.begin()))
         .await;

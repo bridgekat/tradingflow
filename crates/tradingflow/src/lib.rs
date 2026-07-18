@@ -37,11 +37,12 @@
 //!         .collect();
 //!     let data = Series::from_vec([], timestamps, values);
 //!
-//!     // Create a computation graph.
-//!     let mut b = Builder::new(WallClock);
+//!     // Create the thread pool.
+//!     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
 //!
 //!     // Build the graph.
-//!     let prices = b.source(array_source(data, Array::scalar(0.0)));
+//!     let mut b = Builder::new(WallClock);
+//!     let prices = b.source(array_source(Array::scalar(0.0), data));
 //!     let prices_series = b.segment(record(), prices);
 //!     let mean = b.segment(rolling_mean(Window::Count(10)), prices_series);
 //!     let mean_series = b.segment(record(), mean);
@@ -60,9 +61,10 @@
 //!         prices,
 //!     );
 //!
-//!     // Run the event loop until all sources are exhausted.
 //!     let mut g = b.build();
-//!     g.run(&mut Pool::new(0), |_, _| {}).await;
+//!
+//!     // Run the event loop until all sources are exhausted.
+//!     g.run(&mut pool, |_, _| {}).await;
 //!
 //!     // Inspect results.
 //!     assert_eq!(
@@ -86,6 +88,9 @@
 //! # Building computation graphs
 //!
 //! See module-level docs of [`graph`].
+//!
+//! The [`ports`] module provides type aliases for common port types
+//! (`()`, arrays, series).
 //!
 //! # Built-in sources and operators
 //!

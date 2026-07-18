@@ -14,8 +14,8 @@ fn tss(xs: &[i64]) -> Vec<Instant> {
 
 fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
     array_source(
-        Series::from_vec([], tss(ts), vals.to_vec()),
         Array::scalar(0.0),
+        Series::from_vec([], tss(ts), vals.to_vec()),
     )
 }
 
@@ -98,7 +98,7 @@ async fn on_stable_per_batch() {
     let _ = sc.segment(record(), h);
 
     let mut session = sc.build();
-    assert_eq!(session.total_num_events(), Some(3));
+    assert_eq!(session.size_hint(), Some(3));
     let mut batches = Vec::new();
     session
         .run(&mut pool(), |s, ts| {

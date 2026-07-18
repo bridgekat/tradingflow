@@ -14,7 +14,7 @@ use std::task::{Context, Poll};
 use std::thread;
 
 use futures::stream::{self, Stream};
-use tradingflow_graph::driver::{Builder, Clock, Event, LazyFeed, Queue, Source, StreamFeed};
+use tradingflow_graph::driver::{Builder, Clock, Event, Queue, Source, StreamFeed};
 use tradingflow_graph::pool::Pool;
 use tradingflow_graph::typed::{Port, Ref, Segment, Val};
 
@@ -124,24 +124,23 @@ impl Source for Replay {
     type Payload = i64;
     type Pass = Ref<i64>;
 
-    fn initial(&self) -> i64 {
-        0
-    }
-
     fn init(
-        &self,
+        self,
     ) -> (
+        i64,
         impl Stream<Item = Event<Instant, i64>> + Send + 'static,
         impl FnMut(Instant, i64, &mut i64) -> usize + Send + 'static,
     ) {
-        let events = self.0.clone().into_iter().map(|(n, v)| Event::at(n, v));
-        (stream::iter(events), |_, event, output: &mut i64| {
+        let default = 0;
+        let it = self.0.into_iter().map(|(n, v)| Event::at(n, v));
+        let writer = |_, event, output: &mut i64| {
             *output = event;
             1
-        })
+        };
+        (default, stream::iter(it), writer)
     }
 
-    fn total_num_events(&self) -> Option<usize> {
+    fn size_hint(&self) -> Option<usize> {
         Some(self.0.len())
     }
 }
@@ -169,30 +168,29 @@ impl<S: Stream<Item = Event<Instant, Batch>> + Send + 'static> Source for VecFee
     type Payload = Batch;
     type Pass = Ref<Batch>;
 
-    fn initial(&self) -> Batch {
-        Batch::new()
-    }
-
     fn init(
-        &self,
+        self,
     ) -> (
+        Batch,
         impl Stream<Item = Event<Instant, Batch>> + Send + 'static,
         impl FnMut(Instant, Batch, &mut Batch) -> usize + Send + 'static,
     ) {
+        let default = Batch::new();
         let stream = self
             .stream
             .lock()
             .unwrap()
             .take()
             .expect("VecFeed drives a single session");
-        let log = self.log.clone();
-        (stream, move |ts, event, output: &mut Batch| {
+        let log = self.log;
+        let writer = move |ts, event: Batch, output: &mut Batch| {
             if let Some(log) = &log {
                 log.lock().unwrap().push((ts, event.clone()));
             }
             *output = event;
             1
-        })
+        };
+        (default, stream, writer)
     }
 }
 
@@ -424,32 +422,6 @@ fn queue_merges_into_plain_sink() {
     assert_eq!(batches, vec![Instant(1), Instant(2), Instant(3)]);
 }
 
-/// A `LazyFeed` materializes only once the merge is polled: construction
-/// effects (here a flag; in practice spawning producer tasks) happen at step
-/// time on the driving task, not at registration.
-#[test]
-fn lazy_feed_materializes_on_first_poll() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    let started = Arc::new(AtomicBool::new(false));
-    let flag = started.clone();
-
-    let mut q = Queue::new(SimClock::at(Instant(100)));
-    q.add_feed(LazyFeed::new(move || {
-        flag.store(true, Ordering::Relaxed);
-        Box::new(StreamFeed::new(
-            hist([(1, vec![10])]),
-            |t, x: Batch, sink: &mut Vec<(Instant, i64)>| sink.push((t, x[0])),
-        ))
-    }));
-    assert!(!started.load(Ordering::Relaxed));
-
-    let mut sink = Vec::new();
-    pollster::block_on(async { while q.step(&mut sink).await.is_some() {} });
-    assert!(started.load(Ordering::Relaxed));
-    assert_eq!(sink, vec![(Instant(1), 10)]);
-}
-
 /// A session with no feeds is immediately done.
 #[test]
 fn empty_graph_is_done() {
@@ -503,7 +475,7 @@ fn builder_add_source_merges_and_counts() {
     let sum = b.segment(Add, (x, y));
     let mut d = b.build();
 
-    assert_eq!(d.total_num_events(), Some(4));
+    assert_eq!(d.size_hint(), Some(4));
     let mut log = Vec::new();
     pollster::block_on(d.run(&mut pool(), |d, t| {
         log.push((t, d.view(sum), d.num_events()))

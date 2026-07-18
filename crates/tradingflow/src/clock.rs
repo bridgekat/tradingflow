@@ -11,9 +11,6 @@ use crate::graph::Clock;
 /// runs: historical timestamps sit below `now` and replay at full speed,
 /// future-dated events are released only once their timestamp actually
 /// arrives, and implicit `Stamp::Now` events are stamped with real TAI time.
-///
-/// Pass it to `Scenario::new(WallClock)` to drive a session on
-/// real time — it is the default [`Scenario`](super::Scenario) clock.
 pub struct WallClock;
 
 impl Clock<Instant> for WallClock {

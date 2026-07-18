@@ -21,14 +21,14 @@ pub fn date_str(ts: Instant) -> String {
 ///
 /// Progress is measured in **long-table rows**: the panel sources emit one event
 /// per narrow row, so the driver's `events()` count *is* the row count (no shared
-/// counter needed). `total` is the session's `total_num_events()` in
+/// counter needed). `total` is the session's `size_hint()` in
 /// the same row unit; `Some(n)` → a bounded bar (percent / rate / ETA), else a
 /// spinner. `{per_sec}` is therefore rows/s. `begin` sets `{prefix}` (warm-up
 /// before it, running after); `{msg}` is the current event date. The bar uses a
 /// terminal-width `{wide_bar}` with Unicode sub-cell fill, and finalises itself
 /// when the callback drops at the end of `run`:
 /// ```ignore
-/// let total = session.total_num_events();
+/// let total = session.size_hint();
 /// session.run(common::progress(total, args.begin())).await;
 /// eprintln!(); // move past the finished bar line before printing results
 /// ```

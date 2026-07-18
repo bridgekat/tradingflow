@@ -30,10 +30,7 @@ jobs:
       # interpreter), so PyO3 just needs the setup-python interpreter on PATH.
       # The second invocation adds the in-tree engine crate's own pages, which
       # tradingflow's docs cross-link into (same target/doc bundle).
-      - run: cargo doc --no-deps -p tradingflow-data
-      - run: cargo doc --no-deps -p tradingflow-graph
-      - run: cargo doc --no-deps -p tradingflow-macros
-      - run: cargo doc --no-deps -p tradingflow --features python
+      - run: cargo doc --no-deps --workspace --features python
 
       # `cargo doc` puts the crate index at target/doc/tradingflow/index.html, but
       # the artifact root is target/doc; add a root index that redirects there so

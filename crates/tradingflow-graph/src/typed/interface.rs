@@ -15,15 +15,14 @@ use super::{FlatRead, FlatWrite};
 ///
 /// * `View<'a>` must be covariant in `'a`.
 pub unsafe trait Pass: 'static {
-    /// The owned form: what a [`Source`](super::Source) cell stores in
-    /// node state.
+    /// The owned form: what a source node stores in state.
     type Owned: Send + Sync + 'static;
 
     /// The view: what travels through ports.
     type View<'a>: 'a;
 
     /// Borrow a view from the owned form -- an actual borrow for a borrowing
-    /// view, a clone for a non-borrowing one.
+    /// policy, a clone for a non-borrowing one.
     fn borrow(owned: &Self::Owned) -> Self::View<'_>;
 }
 

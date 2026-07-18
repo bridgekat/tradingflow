@@ -25,8 +25,8 @@ use std::fs;
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::data::{Array, ArrayView, Duration, Instant, SeriesView};
 use tradingflow::clock::WallClock;
+use tradingflow::data::{Array, ArrayView, Duration, Instant, SeriesView};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::num::{divide, multiply, negate};
 use tradingflow::operators::rolling::{Window, rolling_mean};
@@ -81,17 +81,18 @@ async fn main() {
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
-    let daily =
-        |sc: &mut Builder<Instant, WallClock>, kind: &str, cols: Vec<String>| -> ArrayPortHandle<f64, 1> {
-            let s =
-                parquet_panel_source(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
-            let panel = sc.source(s);
-            let sel = sc.segment(select_at(idx, 0), panel);
-            sc.segment(
-                filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
-                sel,
-            )
-        };
+    let daily = |sc: &mut Builder<Instant, WallClock>,
+                 kind: &str,
+                 cols: Vec<String>|
+     -> ArrayPortHandle<f64, 1> {
+        let s = parquet_panel_source(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
+        let panel = sc.source(s);
+        let sel = sc.segment(select_at(idx, 0), panel);
+        sc.segment(
+            filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
+            sel,
+        )
+    };
 
     let report = |sc: &mut Builder<Instant, WallClock>,
                   kind: &str,
@@ -194,7 +195,7 @@ async fn main() {
     // ------------------------------------------------------------------
     let mut session = sc.build();
     let mut pool = Pool::new(0);
-    let total = session.total_num_events();
+    let total = session.size_hint();
     session
         .run(&mut pool, common::progress(total, Instant::MIN))
         .await;
