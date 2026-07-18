@@ -1,3 +1,5 @@
+//! The thread pool.
+
 use std::any::Any;
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -10,13 +12,13 @@ use crossbeam::deque::{Stealer, Worker};
 use crossbeam::utils::Backoff;
 
 #[derive(Debug)]
-pub struct EventCount {
+struct EventCount {
     waiters: AtomicUsize,
     epoch: Mutex<Option<usize>>,
     cond: Condvar,
 }
 
-pub struct Waiter<'a> {
+struct Waiter<'a> {
     ec: &'a EventCount,
     epoch: usize,
 }

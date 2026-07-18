@@ -1,10 +1,10 @@
 //! Prediction targets and trading constraints derived from the market panel.
 
-use tradingflow::Scenario;
-use tradingflow::data::{Array, ArrayView, Retention, Series};
-use tradingflow::graph::typed::{PortHandle, RefPort};
+use tradingflow::clock::WallClock;
+use tradingflow::data::{Array, ArrayView, Instant, Retention, Series};
+use tradingflow::graph::Builder;
 use tradingflow::operators::{formula::*, num::*, structural::*, traders::*, transform::*};
-use tradingflow::ports::{ArrayPort, SeriesPort};
+use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle};
 
 /// Cross-sectional demean preserving NaN.
 fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
@@ -35,13 +35,13 @@ fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
 /// [`Retention::UNBOUNDED`] when full history is needed.
 #[allow(clippy::type_complexity)]
 pub fn build_log_return_target(
-    sc: &mut Scenario,
-    log_adj: PortHandle<ArrayPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    log_adj: ArrayPortHandle<f64, 1>,
     target_retention: Retention,
 ) -> (
-    PortHandle<ArrayPort<f64, 1>>,
-    PortHandle<SeriesPort<f64, 1>>,
-    PortHandle<SeriesPort<f64, 1>>,
+    ArrayPortHandle<f64, 1>,
+    SeriesPortHandle<f64, 1>,
+    SeriesPortHandle<f64, 1>,
 ) {
     let log_returns = sc.segment(diff(), log_adj);
     let target = sc.segment(winsorize(0.01), log_returns);
@@ -54,10 +54,10 @@ pub fn build_log_return_target(
 /// Constant ±`limit_pct` daily price limits from the previous close, rounded to
 /// 0.01 yuan. Returns `(upper, lower)`; first tick is NaN (no prior close).
 pub fn build_price_limits(
-    sc: &mut Scenario,
-    close: PortHandle<ArrayPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    close: ArrayPortHandle<f64, 1>,
     limit_pct: f64,
-) -> (PortHandle<ArrayPort<f64, 1>>, PortHandle<ArrayPort<f64, 1>>) {
+) -> (ArrayPortHandle<f64, 1>, ArrayPortHandle<f64, 1>) {
     // Self-recording 1-step lag (a tiny private trailing window).
     let prev_close = sc.segment(lag(1), close);
     let limit = move |scale: f64| {

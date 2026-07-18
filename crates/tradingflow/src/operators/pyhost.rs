@@ -113,8 +113,8 @@ use numpy::ndarray::{ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 
 use crate::data::{Array, ArrayView, Instant, SeriesView};
-use crate::graph::typed::{Interface, InterfaceHandles, Operator, RefPort};
-use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, SeriesPorts};
+use crate::graph::typed::{Interface, InterfaceHandles, Operator};
+use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, SeriesPorts, UnitPort};
 
 // ===========================================================================
 // NativeArrayView — Python-visible view over a cell's `Array<f64, N>`
@@ -480,7 +480,7 @@ impl<const N: usize> PyArgs for SeriesPort<f64, N> {
     }
 }
 
-impl PyArgs for RefPort<()> {
+impl PyArgs for UnitPort {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
@@ -766,7 +766,7 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
     ) -> (bool, ArrayView<'a, f64, NO>) {
         // The batch's event time, straight from the graph context. The build
         // call runs before the driver's first batch, so Python `init` sees the
-        // floor the `Scenario` was created with — `Instant::MIN`, i.e. the
+        // floor the `Builder` was created with — `Instant::MIN`, i.e. the
         // `i64::MIN` "no time yet" sentinel of the legacy contract.
         let ts = time.as_nanos();
 
@@ -909,7 +909,7 @@ mod tests {
     use super::{PyClassOperator, PyParams};
     use crate::data::Array;
     use crate::data::Instant;
-    use crate::graph::core::Pool;
+    use crate::graph::pool::Pool;
     use crate::graph::typed::Builder;
     use crate::operators::constant::array_cell;
     use crate::operators::structural::Record;

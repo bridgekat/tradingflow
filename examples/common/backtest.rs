@@ -13,13 +13,14 @@
 //! benchmark), and execution is the native [`Benchmark`] trader (one-tick-delay
 //! mark-on-close, dividend reinvest, 涨跌停 limit blocking). No new operators.
 
-use tradingflow::Scenario;
-use tradingflow::graph::typed::PortHandle;
+use tradingflow::clock::WallClock;
+use tradingflow::data::Instant;
+use tradingflow::graph::Builder;
 use tradingflow::operators::{
     PyClassOperator, PyParams, metrics::*, py_class_operator, structural::*, traders::*,
     transform::*,
 };
-use tradingflow::ports::{ArrayPort, SeriesPort};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle};
 
 use super::strategy::total_value;
 
@@ -29,31 +30,28 @@ pub const NUM_GROUPS: usize = 10;
 /// Recorded NAV / turnover series for the decile portfolios and the benchmark.
 pub struct DecileBacktest {
     /// Per-decile NAV series (group 0 = lowest factor value … group 9 = highest).
-    pub decile_nav: Vec<PortHandle<SeriesPort<f64, 0>>>,
+    pub decile_nav: Vec<SeriesPortHandle<f64, 0>>,
     /// Per-decile turnover series (L1 weight change per rebalance).
-    pub decile_turnover: Vec<PortHandle<SeriesPort<f64, 0>>>,
+    pub decile_turnover: Vec<SeriesPortHandle<f64, 0>>,
     /// Equal-weight-universe benchmark NAV series.
-    pub bench_nav: PortHandle<SeriesPort<f64, 0>>,
+    pub bench_nav: SeriesPortHandle<f64, 0>,
 }
 
 /// One `RankBucket(low, high)` portfolio → `Benchmark` trader → `(NAV record,
 /// turnover record)`. `low == 0 && high == 1` is the equal-weight benchmark.
 #[allow(clippy::too_many_arguments)]
 fn bucket_nav(
-    sc: &mut Scenario,
-    universe: PortHandle<ArrayPort<f64, 1>>,
-    factor: PortHandle<ArrayPort<f64, 1>>,
-    close: PortHandle<ArrayPort<f64, 1>>,
-    adjusts: PortHandle<ArrayPort<f64, 1>>,
-    upper: PortHandle<ArrayPort<f64, 1>>,
-    lower: PortHandle<ArrayPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    universe: ArrayPortHandle<f64, 1>,
+    factor: ArrayPortHandle<f64, 1>,
+    close: ArrayPortHandle<f64, 1>,
+    adjusts: ArrayPortHandle<f64, 1>,
+    upper: ArrayPortHandle<f64, 1>,
+    lower: ArrayPortHandle<f64, 1>,
     n: usize,
     low: f64,
     high: f64,
-) -> (
-    PortHandle<SeriesPort<f64, 0>>,
-    PortHandle<SeriesPort<f64, 0>>,
-) {
+) -> (SeriesPortHandle<f64, 0>, SeriesPortHandle<f64, 0>) {
     // The Python portfolio speaks the view currency too — wire the universe
     // and factor views straight in.
     let positions = sc.segment(
@@ -79,13 +77,13 @@ fn bucket_nav(
 /// Build the 10-decile layered backtest for `factor` over `universe`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_decile_backtest(
-    sc: &mut Scenario,
-    universe: PortHandle<ArrayPort<f64, 1>>,
-    factor: PortHandle<ArrayPort<f64, 1>>,
-    close: PortHandle<ArrayPort<f64, 1>>,
-    adjusts: PortHandle<ArrayPort<f64, 1>>,
-    upper: PortHandle<ArrayPort<f64, 1>>,
-    lower: PortHandle<ArrayPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    universe: ArrayPortHandle<f64, 1>,
+    factor: ArrayPortHandle<f64, 1>,
+    close: ArrayPortHandle<f64, 1>,
+    adjusts: ArrayPortHandle<f64, 1>,
+    upper: ArrayPortHandle<f64, 1>,
+    lower: ArrayPortHandle<f64, 1>,
     n: usize,
 ) -> DecileBacktest {
     let mut decile_nav = Vec::with_capacity(NUM_GROUPS);

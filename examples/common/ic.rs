@@ -1,19 +1,21 @@
 //! Information-coefficient evaluation.
 
-use tradingflow::graph::typed::PortHandle;
+use tradingflow::clock::WallClock;
+use tradingflow::data::Instant;
+use tradingflow::graph::Builder;
 use tradingflow::operators::structural::record;
-use tradingflow::{ArrayPort, Scenario, SeriesPort};
+use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle};
 
 use super::models::information_coefficient;
 
 /// Record the per-rebalance IC of `factor` against `target` — both ordinary
 /// `ArrayPort` views, wired straight into the Python metric.
 pub fn ic_series(
-    sc: &mut Scenario,
-    factor: PortHandle<ArrayPort<f64, 1>>,
-    target: PortHandle<ArrayPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    factor: ArrayPortHandle<f64, 1>,
+    target: ArrayPortHandle<f64, 1>,
     num_stocks: usize,
-) -> PortHandle<SeriesPort<f64, 0>> {
+) -> SeriesPortHandle<f64, 0> {
     let ic = sc.segment(information_coefficient(num_stocks), (factor, target));
     sc.segment(record(), ic)
 }

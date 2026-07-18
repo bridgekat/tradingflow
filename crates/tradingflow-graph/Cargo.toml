@@ -5,11 +5,13 @@ edition.workspace = true
 
 [dependencies]
 crossbeam = "0.8.4"
-tradingflow-macros = { path = "../tradingflow-macros" }
+futures = "0.3.32"
 
 [dev-dependencies]
 bumpalo = "3"
 criterion = "0.8.2"
+pollster = { version = "1.0.1", features = ["macro"] }
+tradingflow = { path = "../tradingflow" }
 
 [[bench]]
 name = "core"

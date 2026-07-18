@@ -1,6 +1,6 @@
 //! Procedural macros for composing subgraphs.
 //!
-//! This crate is the macro half of the `tradingflow-graph` computation-graph
+//! This crate is the macro half of the `tradingflow` computation-graph
 //! engine, kept separate because a `proc-macro` crate can export nothing else.
 //! It has no dependency on the engine (the engine depends on *it*), so the
 //! names below — `Segment`, `Port`, the combinators — are documented there
@@ -37,8 +37,8 @@
 //!
 //! # Module path override
 //!
-//! Expansions prefix the combinators by `::tradingflow_graph::typed`, so callers
-//! need `tradingflow-graph` among their dependencies. A leading `@[path]`
+//! Expansions prefix the combinators by `::tradingflow::graph::cb`, so callers
+//! need `tradingflow` among their dependencies. A leading `@[path]`
 //! overrides that path:
 //!
 //! ```rust,ignore
@@ -46,7 +46,7 @@
 //! ```
 //!
 //! will resolve combinators in `::some::path::to::module` instead of
-//! `::tradingflow_graph::typed`.
+//! `::tradingflow::graph::cb`.
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use quote::quote;
@@ -61,12 +61,12 @@ mod lower;
 /// desugaring to a fresh intermediate wire. The whole expression becomes a
 /// single scheduled node; all plumbing is zero-copy ref routing.
 ///
-/// Expansions name the typed layer as `::tradingflow_graph::typed`, so callers need
-/// `tradingflow-graph` among their dependencies. A facade crate re-exporting this
-/// macro overrides that with a leading `@[path]`: a `macro_rules!` wrapper
-/// forwarding `@[$crate::path::to::typed] $($input)*` makes expansions
-/// resolve through the facade itself (the override is spliced verbatim, so
-/// `$crate` survives with its hygiene intact).
+/// Expansions name the combinator namespace as `::tradingflow::graph::cb` so
+/// callers need `tradingflow` among their dependencies. A facade crate
+/// re-exporting this macro overrides that with a leading `@[path]`:
+/// a `macro_rules!` wrapper forwarding `@[$crate::path::to::cb] $($input)*`
+/// makes expansions resolve through the facade itself (the override is spliced
+/// verbatim, so `$crate` survives with its hygiene intact).
 #[proc_macro]
 pub fn segment(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let (rt, input) = runtime_override(input.into());
@@ -80,7 +80,7 @@ pub fn segment(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 /// Split an optional leading `@[path]` off `input`, returning the runtime
-/// path to emit (defaulting to `::tradingflow_graph::typed`) and the remaining
+/// path to emit (defaulting to `::tradingflow::graph::cb`) and the remaining
 /// tokens. Unambiguous: a flow always starts with `|`.
 fn runtime_override(input: TokenStream) -> (TokenStream, TokenStream) {
     let mut iter = input.clone().into_iter();
@@ -90,5 +90,5 @@ fn runtime_override(input: TokenStream) -> (TokenStream, TokenStream) {
     {
         return (g.stream(), iter.collect());
     }
-    (quote!(::tradingflow_graph::typed), input)
+    (quote!(::tradingflow::graph::cb), input)
 }

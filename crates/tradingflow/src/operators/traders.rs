@@ -24,8 +24,10 @@ use crate::{Array, ArrayView, Instant};
 
 /// A single `[num_stocks]` view port — the per-input edge of every trader.
 type Vp = ArrayPort<f64, 1>;
+
 /// The five trader inputs `(positions, close, adjusts, upper, lower)`.
 type TraderInputs = (Vp, Vp, Vp, Vp, Vp);
+
 /// The five trader input values as `(notify, view)` pairs.
 type TraderValues<'a> = (
     (bool, ArrayView<'a, f64, 1>),
@@ -684,10 +686,10 @@ pub fn random_trader(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::core::Pool;
-    use crate::graph::typed::{Builder, NodeHandle, PortHandle, ViewSource};
+    use crate::graph::pool::Pool;
+    use crate::graph::typed::{Builder, NodeHandle, PortHandle, Source};
     use crate::operators::constant::array_cell;
-    use crate::ports::ArrayValue;
+    use crate::ports::ArrayPass;
 
     fn arr(v: &[f64]) -> Array<f64, 1> {
         Array::from_vec([v.len()], v.to_vec())
@@ -695,12 +697,13 @@ mod tests {
 
     /// Push a rank-1 array [`array_cell`] of `v`; return the source handle
     /// (for `state_mut`) and its `ArrayPort` view handle (for wiring).
+    #[allow(clippy::type_complexity)]
     fn src(
         b: &mut Builder<Instant>,
         v: &[f64],
     ) -> (
-        NodeHandle<ViewSource<ArrayValue<f64, 1>, Instant>>,
-        PortHandle<Vp>,
+        NodeHandle<Source<ArrayPass<f64, 1>, Instant>>,
+        PortHandle<ArrayPass<f64, 1>>,
     ) {
         b.source(array_cell(arr(v)))
     }

@@ -13,9 +13,8 @@
 //! shape is fixed by the return type, and the module path appears exactly once.
 //! Swapping an optimizer is swapping a call.
 
-use tradingflow::graph::typed::RefPort;
 use tradingflow::operators::{PyClassOperator, PyParams, py_class_operator};
-use tradingflow::ports::{ArrayPort, SeriesPort};
+use tradingflow::ports::{ArrayPort, SeriesPort, UnitPort};
 
 // ===========================================================================
 // Port shapes (all array edges are `ArrayPort` views — the one currency)
@@ -40,7 +39,7 @@ pub type MeanVarPortfolio =
 
 /// The rolling market beta/alpha metric: `(clock, strategy log-returns, index log-returns)`.
 pub type RegressionCoefficients =
-    PyClassOperator<(RefPort<()>, SeriesPort<f64, 0>, SeriesPort<f64, 1>), 1>;
+    PyClassOperator<(UnitPort, SeriesPort<f64, 0>, SeriesPort<f64, 1>), 1>;
 
 /// The GMV realized-variance metric: `(covariance, raw returns)` → scalar.
 pub type MinimumVariance = PyClassOperator<(ArrayPort<f64, 2>, ArrayPort<f64, 1>), 0>;

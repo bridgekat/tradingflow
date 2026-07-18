@@ -62,7 +62,6 @@
 //! the examples' long-standing slack). For exotic cadences, fall back to the
 //! hoisted idiom with an explicit [`Retention`].
 
-use crate::graph::typed::{Comp, Fork, Id, Right};
 use num_traits::Float;
 
 use super::num::{BinaryFn, UnaryFn, divide, sqrt, subtract};
@@ -70,6 +69,7 @@ use super::rolling::{Ema, RollingMean, RollingSum, RollingVariance};
 use super::structural::{Record, buffer};
 use super::transform::Lag;
 use crate::data::{Duration, Instant, Retention, Scalar};
+use crate::graph::cb::{Comp, Fork, Id, Right};
 use crate::ports::ArrayPort;
 
 /// Extra time a private record retains beyond a time-delta window. Must exceed

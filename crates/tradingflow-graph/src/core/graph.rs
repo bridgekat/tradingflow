@@ -5,7 +5,6 @@ use std::sync::atomic::{self, AtomicUsize, Ordering};
 
 use super::cell::ErasedCell;
 use super::error::Error;
-use super::pool::Pool;
 use super::segment::{ComputeFn, Segment};
 
 pub struct Adjacency {
@@ -352,7 +351,7 @@ impl Graph {
         &mut self.nodes[index].state
     }
 
-    pub fn stabilize(&mut self, pool: &mut Pool) {
+    pub fn stabilize(&mut self, pool: &mut crate::pool::Pool) {
         assert!(!self.poisoned, "cannot access poisoned graph.");
         self.poisoned = true;
 

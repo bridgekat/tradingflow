@@ -22,7 +22,8 @@ mod common;
 use clap::Parser;
 
 use tradingflow::data::Retention;
-use tradingflow::{Scenario, WallClock};
+use tradingflow::clock::WallClock;
+use tradingflow::graph::Builder;
 
 use common::models::{benchmark_relative, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable, TRADING_DAYS};
@@ -49,7 +50,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock);
+    let mut sc = Builder::new(WallClock);
 
     let m = Market::build(&mut sc, &symbols, &args, Retention::UNBOUNDED);
 

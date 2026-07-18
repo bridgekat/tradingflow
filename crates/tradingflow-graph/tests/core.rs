@@ -8,7 +8,8 @@
 use std::any::TypeId;
 use std::thread;
 
-use tradingflow_graph::core::{Builder, ComputeFn, ErasedCell, Error, Graph, Pool, Segment};
+use tradingflow_graph::core::{Builder, ComputeFn, ErasedCell, Error, Graph, Segment};
+use tradingflow_graph::pool::Pool;
 
 fn pool() -> Pool {
     Pool::new(thread::available_parallelism().unwrap().get())

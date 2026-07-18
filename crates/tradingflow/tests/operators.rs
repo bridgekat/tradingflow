@@ -12,13 +12,13 @@
 //! edges). Arithmetic uses the lowercase free constructors (`add`/`negate`/…);
 //! the rank-changers carry explicit out-rank generics.
 
-use super::{
+use tradingflow::data::{Array, ArrayView, Duration, Instant, Retention, SeriesView};
+use tradingflow::graph::pool::Pool;
+use tradingflow::graph::typed::{Builder, Source, Val};
+use tradingflow::operators::{
     constant::*, formula::*, metrics::*, num::*, rolling::*, stocks::*, structural::*, transform::*,
 };
-use crate::data::{Array, ArrayView, Duration, Instant, Retention, SeriesView};
-use crate::graph::core::Pool;
-use crate::graph::typed::{Builder, RefSource};
-use crate::ports::{ArrayPort, SeriesPort};
+use tradingflow::ports::{ArrayPort, SeriesPort};
 
 fn ts(n: i64) -> Instant {
     Instant::from_nanos(n)
@@ -192,9 +192,9 @@ fn bounded_record_feeds_rolling_and_lag() {
 fn clocked_periodic() {
     let mut b = Builder::new(Instant::MIN);
     let (data, datav) = b.source(array_cell(Array::scalar(0.0_f64)));
-    let (tick_cell, tick) = b.source(RefSource::new(()));
+    let (tick_cell, tick) = b.source(Source::new(()));
     let gated = b.segment(
-        Clocked::<_, ()>::new(filter(|_: ArrayView<f64, 0>| true)),
+        Clocked::new(filter(|_: ArrayView<f64, 0>| true)),
         (tick, datav),
     );
     let rec = b.segment(record(), gated);
@@ -406,16 +406,15 @@ fn ema_two_values() {
     assert!((g.view(e).as_slice().unwrap()[0] - expected).abs() < 1e-10);
 }
 
-/// `Where` / `Cast` / `Id` (values from their legacy tests).
+/// `Where` / `Cast` (values from their legacy tests).
 #[test]
-fn structural_where_cast_id() {
+fn structural_where_cast() {
     let mut b = Builder::new(Instant::MIN);
     let (a, av) = b.source(array_cell(Array::from_vec([3], vec![1.0_f64, 5.0, 2.0])));
     let w = b.segment(keep_where(|v: f64| v > 3.0, 0.0_f64), av);
     // `Id` is the whole-value `RefPort` identity — exercise it on a scalar
     // cell (array edges are always `ArrayPort` views, never `RefPort`).
-    let (k_cell, k) = b.source(RefSource::new(7_i64));
-    let i = b.segment(Id::<i64>::new(), k);
+    let (k_cell, k) = b.source(Source::<Val<_>, _>::new(7_i64));
     let (ci_cell, ci) = b.source(array_cell(Array::from_vec([3], vec![1_i32, 2, 3])));
     let c = b.segment(cast::<i32, f64, 1>(), ci);
     let mut g = b.build();
@@ -427,7 +426,7 @@ fn structural_where_cast_id() {
     g.stabilize(&mut pool);
 
     assert_eq!(g.view(w).as_slice().unwrap(), &[0.0, 5.0, 0.0]);
-    assert_eq!(*g.view(i), 9);
+    assert_eq!(g.view(k), 9);
     assert_eq!(g.view(c).as_slice().unwrap(), &[1.0, 2.0, 3.0]);
 }
 
@@ -630,7 +629,7 @@ fn concat_axis0() {
 fn metrics_clock_gated() {
     let mut b = Builder::new(Instant::MIN);
     let (data, datav) = b.source(array_cell(Array::scalar(0.0_f64)));
-    let (tick_cell, tick) = b.source(RefSource::new(()));
+    let (tick_cell, tick) = b.source(Source::new(()));
     let cr = b.segment(compound_return(), (tick, datav));
     let ar = b.segment(average_return(), (tick, datav));
     let vol = b.segment(volatility(), (tick, datav));
@@ -1017,16 +1016,16 @@ fn fused_segment_matches_unfused_nodes() {
         a.to_contiguous().iter().map(|x| x.to_bits()).collect()
     }
 
-    let fused = tradingflow_graph::segment!(
-        |prices_row: ArrayPort<f64, 1>, div_row: ArrayPort<f64, 1>|
-        -> (ArrayPort<f64, 0>, ArrayPort<f64, 0>) {
-        let prices = filter(any_finite) @ prices_row;
-        let dividends = filter(any_finite) @ div_row;
-        let close = select(vec![0], 0, true) @ prices;
-        let adjusts = forward_adjust().with_output_prices(false) @ (close, dividends);
-        let adjusted = multiply() @ (close, adjusts);
-        (adjusted, adjusts)
-    });
+    let fused = tradingflow::segment!(
+        |prices_row: ArrayPort<f64, 1>, div_row: ArrayPort<f64, 1>| -> (ArrayPort<f64, 0>, ArrayPort<f64, 0>) {
+            let prices = filter(any_finite) @ prices_row;
+            let dividends = filter(any_finite) @ div_row;
+            let close = select(vec![0], 0, true) @ prices;
+            let adjusts = forward_adjust().with_output_prices(false) @ (close, dividends);
+            let adjusted = multiply() @ (close, adjusts);
+            (adjusted, adjusts)
+        }
+    );
 
     let nan = f64::NAN;
     let mut b = Builder::new(Instant::MIN);
@@ -1148,17 +1147,19 @@ fn ma_crossover_signal_fuses_into_one_node() {
 
     // The result is a single application in tail position; the crossover is a
     // rank-0 boolean edge.
-    let seg = tradingflow_graph::segment!(|xs: SeriesPort<f64, 0>| -> ArrayPort<bool, 0> {
-        let d = subtract() @ (
-            rolling_mean(Window::Count(fast)) @ xs,
-            rolling_mean(Window::Count(slow)) @ xs,
-        );
-        let up = greater_than(0.0) @ d;
-        let prev = lag_series(1, f64::NAN)
-            @ record_bounded(ret)
-            @ d;
-        and() @ (up, not() @ (greater_than(0.0) @ prev))
-    });
+    let seg = tradingflow::segment!(
+        |xs: SeriesPort<f64, 0>| -> ArrayPort<bool, 0> {
+            let d = subtract() @ (
+                rolling_mean(Window::Count(fast)) @ xs,
+                rolling_mean(Window::Count(slow)) @ xs,
+            );
+            let up = greater_than(0.0) @ d;
+            let prev = lag_series(1, f64::NAN)
+                @ record_bounded(ret)
+                @ d;
+            and() @ (up, not() @ (greater_than(0.0) @ prev))
+        }
+    );
 
     let mut b = Builder::new(Instant::MIN);
     let (src, view) = b.source(array_cell(Array::scalar(0.0_f64)));
@@ -1254,13 +1255,15 @@ fn formula_ma_crossover_signal() {
     let mut b = Builder::new(Instant::MIN);
     let (src, xv) = b.source(array_cell(Array::from_vec([2], vec![0.0, 0.0])));
     let signal = b.segment(
-        tradingflow_graph::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
-            let d = subtract() @ (ma(fast) @ x, ma(slow) @ x);
-            and() @ (
-                greater_than(0.0) @ d,
-                not() @ (greater_than(0.0) @ lag(1) @ d),
-            )
-        }),
+        tradingflow::segment!(
+            |x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
+                let d = subtract() @ (ma(fast) @ x, ma(slow) @ x);
+                and() @ (
+                    greater_than(0.0) @ d,
+                    not() @ (greater_than(0.0) @ lag(1) @ d),
+                )
+            }
+        ),
         xv,
     );
     let mut g = b.build();

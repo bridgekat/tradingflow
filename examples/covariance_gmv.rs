@@ -23,10 +23,11 @@ mod common;
 use clap::Parser;
 
 use tradingflow::data::Retention;
-use tradingflow::graph::typed::PortHandle;
+use tradingflow::clock::WallClock;
+use tradingflow::graph::Builder;
 use tradingflow::operators::num::diff;
 use tradingflow::operators::structural::record;
-use tradingflow::{Scenario, SeriesPort, WallClock};
+use tradingflow::ports::SeriesPortHandle;
 
 use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};
 use common::strategy::{Market, NavTable, TRADING_DAYS};
@@ -55,9 +56,9 @@ struct Args {
 /// Per-estimator records: long / long-short NAV and the GMV realized variance.
 struct Rec {
     name: &'static str,
-    long: PortHandle<SeriesPort<f64, 0>>,
-    ls: PortHandle<SeriesPort<f64, 0>>,
-    mv: PortHandle<SeriesPort<f64, 0>>,
+    long: SeriesPortHandle<f64, 0>,
+    ls: SeriesPortHandle<f64, 0>,
+    mv: SeriesPortHandle<f64, 0>,
 }
 
 #[tokio::main]
@@ -70,7 +71,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock);
+    let mut sc = Builder::new(WallClock);
 
     let m = Market::build(&mut sc, &symbols, &args, Retention::UNBOUNDED);
     // Raw daily log returns for the realized-variance metric (an ordinary
@@ -99,7 +100,7 @@ async fn main() {
             let mv = sc.segment(minimum_variance(m.n), (cov, log_returns));
 
             // Long-only and long-short Markowitz portfolios.
-            let nav: Vec<PortHandle<SeriesPort<f64, 0>>> = [true, false]
+            let nav: Vec<SeriesPortHandle<f64, 0>> = [true, false]
                 .into_iter()
                 .map(|long_only| {
                     let soft = sc.segment(

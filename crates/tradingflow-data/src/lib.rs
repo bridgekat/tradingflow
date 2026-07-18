@@ -11,11 +11,12 @@
 //! An [`Array<T, N>`] is an `N`-dimensional array of scalars `T`, which owns
 //! its data.
 //!
+//! - [`Array::view`] creates an [`ArrayView`] borrow of its data.
+//!
 //! An [`ArrayView<'a, T, N>`] is a borrowed, possibly strided view of such an
 //! array (with lifetime `'a`).
 //!
-//! [`Array::view`] creates an [`ArrayView`] borrow of its data, and
-//! [`ArrayView::to_array`] copies the viewed data into an owned [`Array`].
+//! - [`ArrayView::to_array`] copies the viewed data into an owned [`Array`].
 //!
 //! # Series
 //!
@@ -23,11 +24,12 @@
 //! arrays of scalars `T`, which owns its data. Its history may be bounded by a
 //! [`Retention`] policy.
 //!
+//! - [`Series::view`] creates a [`SeriesView`] borrow of its data.
+//!
 //! A [`SeriesView<'a, T, N>`] is a borrowed, possibly strided view of such a
 //! series (with lifetime `'a`).
 //!
-//! [`Series::view`] creates a [`SeriesView`] borrow of its data, and
-//! [`SeriesView::to_series`] copies the viewed data into an owned [`Series`].
+//! - [`SeriesView::to_series`] copies the viewed data into an owned [`Series`].
 //!
 //! # Timestamps
 //!

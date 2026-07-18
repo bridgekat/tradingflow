@@ -1,13 +1,13 @@
 //! The stacked cross-sectional market panel: parquet sources → `[num_stocks]`
 //! per-field panels, via one fused per-stock segment.
 
-use tradingflow::Scenario;
-use tradingflow::data::{Array, ArrayView, Duration};
-use tradingflow::graph::typed::PortHandle;
+use tradingflow::clock::WallClock;
+use tradingflow::data::{Array, ArrayView, Duration, Instant};
+use tradingflow::graph::Builder;
 use tradingflow::operators::{
     metrics::*, num::*, stocks::*, structural::*, traders::*, transform::*,
 };
-use tradingflow::ports::{ArrayPort, SeriesPort};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle};
 use tradingflow::sources::panel::*;
 
 use super::args::CommonArgs;
@@ -21,29 +21,29 @@ use super::args::CommonArgs;
 /// debit-positive and liabilities / expense items credit-**negative** — the factor
 /// formulas negate them where a positive magnitude is wanted.
 pub struct Stacked {
-    pub close: PortHandle<ArrayPort<f64, 1>>, // unadjusted close (StackSync)
-    pub volume: PortHandle<ArrayPort<f64, 1>>, // 成交量 shares (StackSync)
-    pub open: PortHandle<ArrayPort<f64, 1>>,  // 开盘价 unadjusted (StackSync)
-    pub high: PortHandle<ArrayPort<f64, 1>>,  // 最高价 unadjusted (StackSync)
-    pub low: PortHandle<ArrayPort<f64, 1>>,   // 最低价 unadjusted (StackSync)
-    pub amount: PortHandle<ArrayPort<f64, 1>>, // 成交额 turnover value (StackSync)
-    pub adjusted_close: PortHandle<ArrayPort<f64, 1>>, // close * forward-adjust factor (StackSync)
-    pub adjusts: PortHandle<ArrayPort<f64, 1>>, // forward-adjust factor (Stack)
-    pub total_shares: PortHandle<ArrayPort<f64, 1>>, // (Stack)
-    pub circ_shares: PortHandle<ArrayPort<f64, 1>>, // (Stack)
-    pub parent_equity: PortHandle<ArrayPort<f64, 1>>, // 归母净资产, positive (Stack)
-    pub net_profit: PortHandle<ArrayPort<f64, 1>>, // 净利润, annualized, positive
-    pub operating_profit: PortHandle<ArrayPort<f64, 1>>, // 营业利润, annualized, positive
-    pub revenue: PortHandle<ArrayPort<f64, 1>>, // 营业收入, annualized, positive
-    pub operating_cost: PortHandle<ArrayPort<f64, 1>>, // 营业成本, annualized, NEGATIVE (a deduction)
-    pub total_assets: PortHandle<ArrayPort<f64, 1>>,   // 总资产, positive
-    pub total_liab: PortHandle<ArrayPort<f64, 1>>,     // 总负债, NEGATIVE (credit side)
-    pub current_assets: PortHandle<ArrayPort<f64, 1>>, // 流动资产, positive
-    pub current_liab: PortHandle<ArrayPort<f64, 1>>,   // 流动负债, NEGATIVE (credit side)
-    pub cash: PortHandle<ArrayPort<f64, 1>>,           // 货币资金, positive
-    pub inventories: PortHandle<ArrayPort<f64, 1>>,    // 存货, positive
-    pub receivables: PortHandle<ArrayPort<f64, 1>>,    // 应收票据及账款, positive
-    pub net_operating_cashflow: PortHandle<ArrayPort<f64, 1>>, // 经营现金流净额, annualized
+    pub close: ArrayPortHandle<f64, 1>, // unadjusted close (StackSync)
+    pub volume: ArrayPortHandle<f64, 1>, // 成交量 shares (StackSync)
+    pub open: ArrayPortHandle<f64, 1>,  // 开盘价 unadjusted (StackSync)
+    pub high: ArrayPortHandle<f64, 1>,  // 最高价 unadjusted (StackSync)
+    pub low: ArrayPortHandle<f64, 1>,   // 最低价 unadjusted (StackSync)
+    pub amount: ArrayPortHandle<f64, 1>, // 成交额 turnover value (StackSync)
+    pub adjusted_close: ArrayPortHandle<f64, 1>, // close * forward-adjust factor (StackSync)
+    pub adjusts: ArrayPortHandle<f64, 1>, // forward-adjust factor (Stack)
+    pub total_shares: ArrayPortHandle<f64, 1>, // (Stack)
+    pub circ_shares: ArrayPortHandle<f64, 1>, // (Stack)
+    pub parent_equity: ArrayPortHandle<f64, 1>, // 归母净资产, positive (Stack)
+    pub net_profit: ArrayPortHandle<f64, 1>, // 净利润, annualized, positive
+    pub operating_profit: ArrayPortHandle<f64, 1>, // 营业利润, annualized, positive
+    pub revenue: ArrayPortHandle<f64, 1>, // 营业收入, annualized, positive
+    pub operating_cost: ArrayPortHandle<f64, 1>, // 营业成本, annualized, NEGATIVE (a deduction)
+    pub total_assets: ArrayPortHandle<f64, 1>, // 总资产, positive
+    pub total_liab: ArrayPortHandle<f64, 1>, // 总负债, NEGATIVE (credit side)
+    pub current_assets: ArrayPortHandle<f64, 1>, // 流动资产, positive
+    pub current_liab: ArrayPortHandle<f64, 1>, // 流动负债, NEGATIVE (credit side)
+    pub cash: ArrayPortHandle<f64, 1>,  // 货币资金, positive
+    pub inventories: ArrayPortHandle<f64, 1>, // 存货, positive
+    pub receivables: ArrayPortHandle<f64, 1>, // 应收票据及账款, positive
+    pub net_operating_cashflow: ArrayPortHandle<f64, 1>, // 经营现金流净额, annualized
 }
 
 /// Predicate for the per-stock `Gate`: the row has ≥1 finite entry, i.e.
@@ -59,13 +59,13 @@ fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
 /// Each panel fans out through a single [`Split`] node (`1 → N` rows), every
 /// stock's whole transform chain (NaN `Gate` + column `Select`s +
 /// `ForwardAdjust` + `Annualize` + ...) is **fused into one segment** via
-/// `tradingflow_graph::segment!` — one scheduling unit per stock instead of ~19 nodes,
+/// `tradingflow::segment!` — one scheduling unit per stock instead of ~19 nodes,
 /// with identical per-operator notify/cutoff semantics (each sub-operator keeps
 /// its own gate inside the fused node) — and `StackSync` (NaN-fill non-trading
 /// slots) / `Stack` (carry last-known) recombine into `[N]` panels. The financial
 /// reports align on the look-ahead-safe effective date `max(report, notice)`
 /// (`use_effective_date`, zero fallback).
-pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -> Stacked {
+pub fn build_stacked(sc: &mut Builder<Instant, WallClock>, symbols: &[String], args: &CommonArgs) -> Stacked {
     let dir = &args.data_dir;
     let start = Some(args.data_start());
     let end = Some(args.end());
@@ -79,16 +79,16 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
     // A panel source cell lends its `[N, K]` panel as an `ArrayPort<f64, 2>`
     // view edge, which feeds `Split` directly.
     let daily_panel =
-        |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> PortHandle<ArrayPort<f64, 2>> {
+        |sc: &mut Builder<Instant, WallClock>, kind: &str, cols: Vec<String>| -> ArrayPortHandle<f64, 2> {
             let s = parquet_panel_source(format!("{dir}/{kind}.parquet"), cols, universe.clone())
                 .with_time_range(start, end);
             sc.source(s)
         };
-    let report_panel = |sc: &mut Scenario,
+    let report_panel = |sc: &mut Builder<Instant, WallClock>,
                         kind: &str,
                         cols: Vec<String>,
                         with_report_date: bool|
-     -> PortHandle<ArrayPort<f64, 2>> {
+     -> ArrayPortHandle<f64, 2> {
         let s = parquet_financial_report_panel_source(
             format!("{dir}/{kind}.parquet"),
             cols,
@@ -209,7 +209,7 @@ pub fn build_stacked(sc: &mut Scenario, symbols: &[String], args: &CommonArgs) -
         // (`prices_extras` [4], `income_ann` [4], `balance_extras` [7], `cf_ann`
         // [3]) are rank-1 `[K]` views. Each `Split` row is an ordinary by-value
         // `ArrayPort<f64, 1>`, consumed directly by the `Gate`/view operators.
-        let seg = tradingflow_graph::segment!(|prices_row: ArrayPort<f64, 1>,
+        let seg = tradingflow::segment!(|prices_row: ArrayPort<f64, 1>,
                                        div_row: ArrayPort<f64, 1>,
                                        equity_row: ArrayPort<f64, 1>,
                                        balance_row: ArrayPort<f64, 1>,

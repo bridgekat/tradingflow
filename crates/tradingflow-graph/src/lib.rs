@@ -7,30 +7,63 @@
 //! Multiple nodes can be fused together into a single node, or be scheduled
 //! independently to be run in parallel.
 //!
-//! # Basic usage
+//! # Full example
 //!
-//! A diamond-shaped graph - source `s`, `a = s + 1`, and `d = s + a`:
+//! Here is an example graph which takes in a stream of values `s`, and
+//! computes `a = s + 1` and `d = s + a` whenever `s` changes:
 //!
 //! ```rust
-//! use tradingflow_graph::core::Pool;
-//! use tradingflow_graph::typed::{Graph, Builder, Port, Segment, Source};
+//! use futures::Stream;
+//! use tradingflow::clock::WallClock;
+//! use tradingflow::data::Instant;
+//! use tradingflow::graph::*;
+//!
+//! /// A stream of `i64` values.
+//! struct Data(Vec<i64>);
+//!
+//! impl Source for Data {
+//!     type Instant = Instant;
+//!     type Payload = i64;
+//!     type Pass = Val<i64>;
+//!
+//!     fn initial(&self) -> i64 {
+//!         0
+//!     }
+//!
+//!     fn init(
+//!         &self,
+//!     ) -> (
+//!         impl Stream<Item = Event<Instant, i64>> + Send + 'static,
+//!         impl FnMut(Instant, i64, &mut i64) -> usize + Send + 'static,
+//!     ) {
+//!         let items = self.0.clone().into_iter().map(|x| Event {
+//!             stamp: Stamp::Now,
+//!             payload: Some(x),
+//!         });
+//!         let write = |_time: Instant, payload: i64, output: &mut i64| {
+//!             *output = payload;
+//!             1
+//!         };
+//!         (futures::stream::iter(items), write)
+//!     }
+//! }
 //!
 //! /// A stateless increment operator.
 //! struct Inc;
 //!
 //! impl Segment for Inc {
-//!     type Inputs = Port<i64>;
-//!     type Outputs = Port<i64>;
-//!     type Context = ();
+//!     type Inputs = Port<Val<i64>>;
+//!     type Outputs = Port<Val<i64>>;
+//!     type Context = Instant;
 //!     type State = ();
 //!
 //!     fn init(self) {}
 //!
 //!     fn compute<'a, 'b: 'a>(
 //!         (x_notify, x): (bool, i64),
-//!         _context: &(),
+//!         _time: &Instant,
 //!         _state: &'b mut (),
-//!         _is_first_run: bool
+//!         _is_first_run: bool,
 //!     ) -> (bool, i64) {
 //!         (x_notify, x + 1)
 //!     }
@@ -40,80 +73,73 @@
 //! struct Add;
 //!
 //! impl Segment for Add {
-//!     type Inputs = (Port<i64>, Port<i64>);
-//!     type Outputs = Port<i64>;
-//!     type Context = ();
+//!     type Inputs = (Port<Val<i64>>, Port<Val<i64>>);
+//!     type Outputs = Port<Val<i64>>;
+//!     type Context = Instant;
 //!     type State = ();
 //!
 //!     fn init(self) {}
 //!
 //!     fn compute<'a, 'b: 'a>(
 //!         ((a_notify, a), (b_notify, b)): ((bool, i64), (bool, i64)),
-//!         _context: &(),
+//!         _time: &Instant,
 //!         _state: &'b mut (),
-//!         _is_first_run: bool
+//!         _is_first_run: bool,
 //!     ) -> (bool, i64) {
 //!         (a_notify || b_notify, a + b)
 //!     }
 //! }
 //!
-//! // Create the thread pool.
-//! let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
+//! #[pollster::main]
+//! async fn main() {
+//!     // Create the thread pool.
+//!     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
 //!
-//! // Create the graph, which runs each segment for the first time. A source
-//! // returns a pokeable handle to its state cell plus its output wire.
-//! let mut b = Builder::new(());
-//! let (s_cell, s) = b.source(Source::new(1));
-//! let a = b.segment(Inc, s);
-//! let d = b.segment(Add, (s, a));
-//! let mut g = b.build();
+//!     // Create the graph.
+//!     let mut b = Builder::new(WallClock);
+//!     let s = b.source(Data(vec![1, 2, 3, 4, 5]));
+//!     let a = b.segment(Inc, s);
+//!     let d = b.segment(Add, (s, a));
+//!     let mut g = b.build();
 //!
-//! // Check initial values.
-//! assert_eq!(g.view(s), 1);
-//! assert_eq!(g.view(a), 2);
-//! assert_eq!(g.view(d), 3);
+//!     // Update the source value and then recompute in parallel.
+//!     g.run(&mut pool, |_, _| {}).await;
 //!
-//! // Update the source value and then recompute in parallel.
-//! *g.state_mut(s_cell) = 5;
-//! g.stabilize(&mut pool);
-//!
-//! // Check updated values.
-//! assert_eq!(g.view(a), 6);
-//! assert_eq!(g.view(d), 11);
+//!     // Check final values.
+//!     assert_eq!(g.view(s), 5);
+//!     assert_eq!(g.view(a), 6);
+//!     assert_eq!(g.view(d), 11);
+//! }
 //! ```
 //!
 //! # Constructing graphs
 //!
-//! A [`Builder`](typed::Builder) is used to construct a
-//! [`Graph`](typed::Graph).
+//! A [`Builder`] is used to construct a [`Graph`].
 //!
-//! - [`Builder::source`](typed::Builder::source) adds a source node to the
-//!   graph, returning the node handle and its output port handle.
-//! - [`Builder::segment`](typed::Builder::segment) adds a segment (sub-graph)
-//!   to the graph, returning its output port handles.
-//! - [`Builder::build`](typed::Builder::build) finalizes into a
-//!   [`Graph`](typed::Graph).
+//! - [`Builder::source`] adds a source stream to the graph, returning its
+//!   output port handle.
+//! - [`Builder::segment`] adds a segment node to the graph, taking input port
+//!   handles and returning its output port handles.
+//! - [`Builder::build`] finalizes into a [`Graph`].
 //!
-//! A [`Graph`](typed::Graph) represents a complete computation graph.
+//! A [`Graph`] represents a complete computation graph with source streams.
 //!
-//! - [`Graph::context_mut`](typed::Graph::context_mut) sets a global context
-//!   passed down to every node.
-//! - [`Graph::state_mut`](typed::Graph::state_mut) writes a new value into a
-//!   source node's internal state.
-//! - [`Graph::stabilize`](typed::Graph::stabilize) propagates changes through
-//!   the graph.
-//! - [`Graph::view`](typed::Graph::view) reads values on wires. This can only
-//!   be used immediately after a [`stabilize`](typed::Graph::stabilize) call,
-//!   and before any subsequent mutations; violations will panic.
+//! - [`Graph::step`] ingests a single batch of events from source streams,
+//!   writing the new data to their corresponding source ports.
+//! - [`Graph::stabilize`] propagates changes throughout the graph.
+//! - [`Graph::run`] ingests and propagates repeatedly, calling a custom
+//!   closure after each batch, until all sources are exhausted.
+//! - [`Graph::view`] reads values on wires. This can only be used in-between
+//!   batches.
 //!
-//! # Creating segments (subgraphs)
+//! # Creating segments
 //!
-//! Each segment is a single node of scheduling. It must implement
-//! [`Segment`](typed::Segment), which declares its inputs and outputs, its
-//! mutable state, and a compute function.
+//! Each segment is a single node of scheduling. It must implement [`Segment`],
+//! which declares its inputs and outputs, its mutable state, and its compute
+//! function.
 //!
 //! ```rust
-//! use tradingflow_graph::typed::*;
+//! use tradingflow::graph::*;
 //!
 //! pub trait Segment {
 //!     type Inputs: Interface;
@@ -132,60 +158,56 @@
 //! }
 //! ```
 //!
-//! The [`init`](typed::Segment::init) method will be called once during graph
+//! The [`Segment::init`] method will be called once during graph
 //! construction to create the node's state. Immediately after, the
-//! [`compute`](typed::Segment::compute) method will be run once with
+//! [`Segment::compute`] method will be run once with
 //! `is_first_run == true` to obtain initial/default output values.
 //!
-//! On each subsequent [`graph.stabilize`](typed::Graph::stabilize) call, the
-//! `compute` method will be run again with new inputs and
+//! On each subsequent [`Graph::stabilize`] call, the
+//! [`Segment::compute`] method will be run again with new inputs and
 //! `is_first_run == false`.
 //!
 //! # Segment interfaces
 //!
-//! The associated types [`Inputs`](typed::Segment::Inputs) and
-//! [`Outputs`](typed::Segment::Outputs) define the [`Interface`](typed::Interface)
-//! of a segment. They can be constructed from the following building blocks:
+//! The associated types [`Segment::Inputs`] and [`Segment::Outputs`] define
+//! the [`Interface`] of a segment. They can be constructed from the following
+//! building blocks:
 //!
-//! - [`Port<T>`](typed::Port) — a single pass-by-value port. It carries
-//!   `(bool, T)` where `T: Copy + Send + Sync`.
-//! - [`Ports<T>`](typed::Ports) — a dynamic-length group of pass-by-value
-//!   ports. It carries `(&[bool], &[T])` where `T: Copy + Send + Sync`, and is
-//!   compatible with a group of `Port<T>`s.
-//! - [`RefPort<T>`](typed::RefPort) — a single pass-by-reference port. It
-//!   carries `(bool, &T)` where `T: Send + Sync`.
-//! - [`RefPorts<T>`](typed::RefPorts) — a dynamic-length group of
-//!   pass-by-reference ports. It carries `(&[bool], &[&T])` where
-//!   `T: Send + Sync`, and is compatible with a group of `RefPort<T>`s.
-//! - Generalizations of the above: [`ViewPort<V>`](typed::ViewPort) and
-//!   [`ViewPorts<V>`](typed::ViewPorts) over any [`Value`](typed::Value) kind
-//!   `V`, which allow passing custom lifetime-carrying `Copy` views (like slices
-//!   or custom array views) to some underlying data. The four aliases above are
-//!   `ViewPort[s]` over the built-in kinds [`Scalar<T>`](typed::Scalar) (the
-//!   value itself) and [`Ref<T>`](typed::Ref) (a plain `&T` into producer
-//!   state).
+//! - [`Port<Val<T>>`] — a single pass-by-value port. It carries `(bool, T)`
+//!   where `T: Copy + Send + Sync`.
+//! - [`Ports<Val<T>>`] — a dynamic-length group of pass-by-value ports. It
+//!   carries `(&[bool], &[T])` where `T: Copy + Send + Sync`, and is
+//!   compatible with a group of [`Port<Val<T>>`]s.
+//! - [`Port<Ref<T>>`] — a single pass-by-reference port. It carries
+//!   `(bool, &T)` where `T: Send + Sync`.
+//! - [`Ports<Ref<T>>`] — a dynamic-length group of pass-by-reference ports.
+//!   It carries `(&[bool], &[&T])` where `T: Send + Sync`, and is compatible
+//!   with a group of [`Port<Ref<T>>`]s.
+//! - Generalizations of the above: [`Port<V>`] and [`Ports<V>`] over
+//!   any [`Pass`] policy `V`, which allow passing custom lifetime-carrying
+//!   `Copy` views (e.g. slices or custom array views) to some underlying data.
 //! - Arbitrarily nested tuples of the above (each branch up to arity 12).
 //!
 //! For dynamic-length groups, the length must remain fixed after the first run,
 //! so that we have a well-defined static computation graph. Violations will be
 //! caught and panic at runtime.
 //!
-//! Producing a [`Ports`](typed::Ports) or [`RefPorts`](typed::RefPorts) output
-//! requires creating slices with lifetime `'a` matching the inputs. This allows
-//! for simple forwarding of input references, but it also creates difficulty for
-//! a node that computes its own values: we have to put the arrays somewhere, but
-//! the node state must have static lifetime. To address this difficulty, use a
-//! lifetime-erased bump arena (such as [`bumpalo`](https://crates.io/crates/bumpalo))
-//! in the node state as a scratch buffer storing the arrays on each recompute.
-//! The arena can be cleared at the beginning of each recompute, so that buffer
-//! size is kept bounded.
+//! Producing a [`Ports`] output requires creating slices with lifetime `'a`
+//! matching the inputs. This allows for simple forwarding of input references,
+//! but it also creates difficulty for a node that computes its own values:
+//! we have to put the arrays somewhere, but the node state must have static
+//! lifetime. To address this difficulty, use a lifetime-erased bump arena
+//! (such as [`bumpalo`](https://crates.io/crates/bumpalo)) in the node state
+//! as a scratch buffer storing the arrays on each recompute. The arena can be
+//! cleared at the beginning of each recompute, so that buffer size is kept
+//! bounded.
 //!
 //! > Interface values are constrained to [`Copy`] because they are required to
-//! > have trivial [`Drop`] implementations. Data ownership is always inside node
-//! > states and never passed through an interface; only simple scalar values,
-//! > references and views do. This encourages pass-by-reference for complex data
-//! > types and simplifies the internal implementation, but may be less ergonomic
-//! > in some cases.
+//! > have trivial [`Drop`] implementations. Data ownership is always inside
+//! > node states and never passed through an interface; only simple scalar
+//! > values, references and views do. This encourages pass-by-reference for
+//! > complex data types and simplifies the internal implementation, but may be
+//! > less ergonomic in some cases.
 //!
 //! # Notification flags
 //!
@@ -195,21 +217,22 @@
 //! node can choose to skip heavy computation.
 //!
 //! ```rust
-//! use tradingflow_graph::typed::*;
+//! use tradingflow::data::Instant;
+//! use tradingflow::graph::*;
 //!
 //! struct Abs;
 //!
 //! impl Segment for Abs {
-//!     type Inputs = Port<i64>;
-//!     type Outputs = Port<i64>;
-//!     type Context = ();
+//!     type Inputs = Port<Val<i64>>;
+//!     type Outputs = Port<Val<i64>>;
+//!     type Context = Instant;
 //!     type State = i64; // Remembers the previous output.
 //!
 //!     fn init(self) -> i64 { 0 }
 //!
 //!     fn compute<'a, 'b: 'a>(
 //!         (x_notify, x): (bool, i64),
-//!         _context: &(),
+//!         _time: &Instant,
 //!         state: &'b mut i64,
 //!         _is_first_run: bool
 //!     ) -> (bool, i64) {
@@ -245,9 +268,9 @@
 //! event payload's conceptual identity, and a value change *is* a new event.
 //!
 //! The notification flags also help in scheduling. Each generation, the graph
-//! executor sets the flags of modified source nodes, and skips a node completely
-//! if none of its upstream source nodes were modified. This makes stabilization
-//! after a sparse update touches only a fraction of the graph.
+//! executor sets the flags of modified source nodes, and skips a node
+//! completely if none of its upstream source nodes were modified. This makes
+//! stabilization after a sparse update touches only a fraction of the graph.
 //!
 //! # Segment fusion
 //!
@@ -260,50 +283,69 @@
 //! The library provides combinator methods to fuse segments into larger
 //! segments:
 //!
-//! | Combinator | Method | Meaning |
+//! | Combinator | Method (via [`cb::SegmentExt`]) | Meaning |
 //! | --- | --- | --- |
-//! | [`Id<T>`](typed::Id) | — | Identity: outputs are inputs unchanged. |
-//! | [`Comp(f, g)`](typed::Comp) | [`f.then(g)`](typed::SegmentExt::then) | Composition: outputs `g(f(x))`. |
-//! | [`Left<T, U>`](typed::Left) / [`Right<T, U>`](typed::Right) | — | Projection: outputs the first / second element of a pair. |
-//! | [`Fork(f, g)`](typed::Fork) | [`f.fork(g)`](typed::SegmentExt::fork) | Fan-out: feed the same input to both, then pair outputs. |
-//! | [`Par(f, g)`](typed::Par) | [`f.par(g)`](typed::SegmentExt::par) | Parallel composition: run `f`, `g` on a pair of inputs, then pair outputs. Equivalent to `Fork(Comp(Left, f), Comp(Right, g))`. |
-//! | [`Arr::new(\|values, _\| …)`](typed::Arr::new) | — | Applies a stateful closure to the inputs. |
+//! | [`cb::Id<T>`] | — | Identity: outputs are inputs unchanged. |
+//! | [`cb::Comp<F, G>`] | `f.then(g)` | Composition: outputs `g(f(x))`. |
+//! | [`cb::Left<T, U>`] / [`cb::Right<T, U>`] | — | Projection: outputs the first / second element of a pair. |
+//! | [`cb::Fork<F, G>`] | `f.fork(g)` | Fan-out: feed the same input to both, then pair outputs. |
+//! | [`cb::Par<F, G>`] | `f.par(g)` | Parallel composition: run `f`, `g` on a pair of inputs, then pair outputs. Equivalent to `Fork<Comp<Left, F>, Comp<Right, G>>`. |
+//! | [`cb::Arr`] | — | Applies a stateful closure to the inputs. |
 //!
 //! However, point-free combinators get unreadable fast. As an alternative, the
 //! library also provides the [`segment!`] macro, which is a DSL that compiles
 //! down to combinators like the Arrow notation in Haskell[^1]:
 //!
 //! ```rust
-//! use tradingflow_graph::typed::*;
-//! use tradingflow_graph::segment;
+//! use tradingflow::clock::WallClock;
+//! use tradingflow::data::Instant;
+//! use tradingflow::graph::*;
+//! use tradingflow::segment;
+//! use tradingflow::sources::basic::*;
 //!
+//! /// An adder which passes inputs and outputs by reference.
+//! ///
+//! /// The `Operator` trait is a convenience wrapper around `Segment`, which
+//! /// calls `compute` only when at least one input has notified, and calls
+//! /// `passthrough` otherwise. This is a common pattern.
 //! struct Add;
 //!
-//! impl Segment for Add {
-//!     type Inputs = (Port<i64>, Port<i64>);
-//!     type Outputs = Port<i64>;
-//!     type Context = ();
-//!     type State = ();
+//! impl Operator for Add {
+//!     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
+//!     type Outputs = Port<Ref<i64>>;
+//!     type Context = Instant;
+//!     type State = i64;
 //!
-//!     fn init(self) {}
+//!     fn init(self) -> i64 {
+//!         0
+//!     }
 //!
 //!     fn compute<'a, 'b: 'a>(
-//!         ((a_notify, a), (b_notify, b)): ((bool, i64), (bool, i64)),
-//!         _context: &(),
-//!         _state: &'b mut (),
+//!         ((a_notify, a), (b_notify, b)): ((bool, &'a i64), (bool, &'a i64)),
+//!         _time: &Instant,
+//!         state: &'b mut i64,
 //!         _is_first_run: bool
-//!     ) -> (bool, i64) {
-//!         (a_notify || b_notify, a + b)
+//!     ) -> (bool, &'a i64) {
+//!         *state = *a + *b;
+//!         (true, &*state)
+//!     }
+//!
+//!     fn passthrough<'a, 'b: 'a>(
+//!         ((a_notify, a), (b_notify, b)): ((bool, &'a i64), (bool, &'a i64)),
+//!         _time: &Instant,
+//!         state: &'b i64
+//!     ) -> (bool, &'a i64) {
+//!         (false, &*state)
 //!     }
 //! }
 //!
-//! let mut b = Builder::new(());
-//! let (_, s) = b.source(Source::new(1));
-//! let (_, t) = b.source(Source::new(2));
+//! let mut b = Builder::new(WallClock);
+//! let s = b.source(vec_source(vec![(Instant::from_utc_nanos(0), 1)]));
+//! let t = b.source(vec_source(vec![(Instant::from_utc_nanos(0), 2)]));
 //!
 //! // One fused node computing: c = b + a; d = c + a; e = d + a; result (e, c).
 //! // Type annotation is needed on inputs and outputs.
-//! let seg = segment!(|a: Port<i64>, b: Port<i64>| -> (Port<i64>, Port<i64>) {
+//! let seg = segment!(|a: Port<Ref<i64>>, b: Port<Ref<i64>>| -> (Port<Ref<i64>>, Port<Ref<i64>>) {
 //!     let c = Add @ (b, a);
 //!     let e = Add @ (Add @ (c, a), a);
 //!     (e, c)
@@ -312,8 +354,8 @@
 //! let (e, c) = b.segment(seg, (s, t));
 //! ```
 //!
-//! `Seg @ wires` applies a segment (any [`Segment`](typed::Segment)-typed Rust
-//! expression) to wires. Applications nest inside any wire expression and chain
+//! `Seg @ wires` applies a segment (any [`Segment`]-typed Rust expression)
+//! to wires. Applications nest inside any wire expression and chain
 //! right-associatively.
 //!
 //! # Safety
@@ -326,25 +368,30 @@
 //!   producing node; each input slot is scattered into by exactly that one
 //!   producer. Concurrent `compute`s write disjoint slots.
 //! - **Per-generation lifetime.** Output pointers stay valid as long as inputs
-//!   and state are unchanged; [`passthrough`](typed::Operator::passthrough)'s
-//!   `&State` forbids reallocation, and the per-node scratch buffers are only
+//!   and state are unchanged; the per-node scratch buffers are only
 //!   ever overwritten in place by the node's own run, keeping out-of-cone
 //!   consumers' pointers live across generations.
 //! - **Read guard.** Reading a slot after poking a source but before
 //!   [`stabilize`](typed::Graph::stabilize) panics rather than dereferencing a
 //!   possibly-stale forwarded pointer.
 //! - **Poison on panic.** If a `compute` panics, downstream slots may hold
-//!   dangling forwarded pointers, so the graph is **poisoned**: the pool catches
-//!   the panic, settles the batch (no hang), re-raises out of `stabilize`, and
-//!   every later `stabilize` or slot read panics. There is no recovery — treat
-//!   the graph as dead. For *recoverable* failures, make the failure a value
-//!   (e.g. a `Result<T, E>` cell) instead of panicking.
+//!   dangling forwarded pointers, so the graph is **poisoned**: the pool
+//!   catches the panic, settles the batch (no hang), re-raises out of
+//!   `stabilize`, and every later `stabilize` or slot read panics.
+//!   There is no recovery — treat the graph as dead. For *recoverable*
+//!   failures, make the failure a value (e.g. a `Result<T, E>` cell) instead
+//!   of panicking.
 //!
 //! Tests have been run on Miri to check for memory safety and common UBs.
 //!
 //! [^1]: <https://www.haskell.org/arrows/syntax.html>
 
+pub mod cb;
 pub mod core;
+pub mod driver;
+pub mod pool;
 pub mod typed;
 
-pub use tradingflow_macros::segment;
+pub use driver::{Builder, Clock, Event, Graph, Source, Stamp};
+pub use pool::Pool;
+pub use typed::{Interface, Operator, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val};

@@ -26,7 +26,8 @@ use tradingflow::operators::structural::resample_view;
 use tradingflow::operators::traders::benchmark;
 use tradingflow::operators::transform::{apply, map};
 use tradingflow::sources::basic::*;
-use tradingflow::{Scenario, WallClock};
+use tradingflow::clock::WallClock;
+use tradingflow::graph::{Builder, Pool};
 
 use clap::Parser;
 
@@ -44,7 +45,7 @@ async fn main() {
     let n = symbols.len();
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);
 
-    let mut sc = Scenario::new(WallClock);
+    let mut sc = Builder::new(WallClock);
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));
@@ -90,11 +91,12 @@ async fn main() {
     let h_mc = sc.segment(record(), index_circ_market_cap);
     let h_nav = sc.segment(record(), index_value);
 
-    let mut session = sc.build_with_threads(args.threads);
+    let mut session = sc.build();
+    let mut pool = Pool::new(args.threads);
     // Trim warmup output before `begin` so only the live index window is shown.
     let begin = args.begin();
     let total = session.total_num_events();
-    session.run(common::progress(total, begin)).await;
+    session.run(&mut pool, common::progress(total, begin)).await;
     eprintln!();
 
     let (mc_ts, mc_v) = common::read_scalar_series(&session, h_mc);

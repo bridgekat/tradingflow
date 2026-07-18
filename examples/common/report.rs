@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
-use tradingflow::Session;
+use tradingflow::clock::WallClock;
 use tradingflow::data::civil_from_days;
 use tradingflow::data::{Instant, SeriesView};
-use tradingflow::graph::typed::{PortHandle, RefPort};
-use tradingflow::ports::SeriesPort;
+use tradingflow::graph::Graph;
+use tradingflow::ports::SeriesPortHandle;
 
 /// `YYYY-MM-DD` for an event [`Instant`].
 pub fn date_str(ts: Instant) -> String {
@@ -17,7 +17,7 @@ pub fn date_str(ts: Instant) -> String {
 }
 
 /// A `tqdm`-style progress callback (backed by [`indicatif`]) for
-/// `Session::run`'s `on_stable`.
+/// `Graph::run`'s `on_stable`.
 ///
 /// Progress is measured in **long-table rows**: the panel sources emit one event
 /// per narrow row, so the driver's `events()` count *is* the row count (no shared
@@ -32,7 +32,7 @@ pub fn date_str(ts: Instant) -> String {
 /// session.run(common::progress(total, args.begin())).await;
 /// eprintln!(); // move past the finished bar line before printing results
 /// ```
-pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(&Session, Instant) {
+pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(&Graph<Instant, WallClock>, Instant) {
     use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
     // Finish (leave) the bar when the callback is dropped — i.e. when `run`
@@ -82,7 +82,7 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(&Session, In
 
     let _begin_ns = begin.as_nanos();
     let guard = FinishOnDrop(pb);
-    move |session: &Session, ts: Instant| {
+    move |session: &Graph<Instant, WallClock>, ts: Instant| {
         let pb = &guard.0;
         let rows = session.num_events() as u64;
         // Grow the length if the estimate undershot (keeps the percentage sane).
@@ -98,8 +98,8 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(&Session, In
 
 /// Read a recorded **scalar** series into `(timestamps_ns, values)`.
 pub fn read_scalar_series(
-    session: &Session,
-    h: PortHandle<SeriesPort<f64, 0>>,
+    session: &Graph<Instant, WallClock>,
+    h: SeriesPortHandle<f64, 0>,
 ) -> (Vec<i64>, Vec<f64>) {
     let s: SeriesView<f64, 0> = session.view(h);
     let ts = s.timestamps().iter().map(|t| t.as_nanos()).collect();

@@ -6,12 +6,12 @@
 //! → trader → total value → record). What remains in each example is the part
 //! that actually differs: which predictor, which optimizer, which trader.
 
+use tradingflow::clock::WallClock;
 use tradingflow::data::{Array, ArrayView, Instant, Retention};
-use tradingflow::graph::typed::{PortHandle, RefPort};
+use tradingflow::graph::{Builder, Graph, Pool, Segment};
 use tradingflow::operators::{num::*, structural::*, traders::*, transform::*};
-use tradingflow::ports::{ArrayPort, SeriesPort};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPortHandle, UnitPortHandle};
 use tradingflow::sources::basic::*;
-use tradingflow::{Scenario, Session};
 
 use super::args::CommonArgs;
 use super::data::{Stacked, build_stacked};
@@ -30,9 +30,9 @@ pub const PRICE_LIMIT: f64 = 0.10;
 
 /// Map a trader's `(holdings_value, cash)` view to its scalar total value.
 pub fn total_value(
-    sc: &mut Scenario,
-    h: PortHandle<ArrayPort<f64, 1>>,
-) -> PortHandle<ArrayPort<f64, 0>> {
+    sc: &mut Builder<Instant, WallClock>,
+    h: ArrayPortHandle<f64, 1>,
+) -> ArrayPortHandle<f64, 0> {
     sc.segment(
         map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
         h,
@@ -47,18 +47,18 @@ pub struct Market {
     pub features: Features,
     /// The cap-weighted universe as a view (also the benchmark weights, and
     /// what the Python operators consume directly).
-    pub universe: PortHandle<ArrayPort<f64, 1>>,
-    pub rebalance_clock: PortHandle<RefPort<()>>,
-    pub upper: PortHandle<ArrayPort<f64, 1>>,
-    pub lower: PortHandle<ArrayPort<f64, 1>>,
+    pub universe: ArrayPortHandle<f64, 1>,
+    pub rebalance_clock: UnitPortHandle,
+    pub upper: ArrayPortHandle<f64, 1>,
+    pub lower: ArrayPortHandle<f64, 1>,
     /// Log adjusted close — the source of returns.
-    pub log_adj: PortHandle<ArrayPort<f64, 1>>,
+    pub log_adj: ArrayPortHandle<f64, 1>,
     /// Raw winsorized log returns, as a live view (the IC evaluators' target).
-    pub target: PortHandle<ArrayPort<f64, 1>>,
+    pub target: ArrayPortHandle<f64, 1>,
     /// Raw winsorized log returns (the covariance predictor's target).
-    pub target_series: PortHandle<SeriesPort<f64, 1>>,
+    pub target_series: SeriesPortHandle<f64, 1>,
     /// Cross-sectionally demeaned log returns (the mean predictor's target).
-    pub demeaned_series: PortHandle<SeriesPort<f64, 1>>,
+    pub demeaned_series: SeriesPortHandle<f64, 1>,
     /// Panel dimensions for the predictors.
     pub dims: Dims,
     /// Number of loaded symbols.
@@ -69,7 +69,7 @@ impl Market {
     /// Build the spine. `retention` bounds the recorded feature/target panels —
     /// size it to the deepest consumer look-back.
     pub fn build(
-        sc: &mut Scenario,
+        sc: &mut Builder<Instant, WallClock>,
         symbols: &[String],
         args: &CommonArgs,
         retention: Retention,
@@ -115,12 +115,12 @@ impl Market {
     /// aware) — which is the cost-model swap point.
     pub fn simulate<T>(
         &self,
-        sc: &mut Scenario,
+        sc: &mut Builder<Instant, WallClock>,
         trader: T,
-        positions: PortHandle<ArrayPort<f64, 1>>,
-    ) -> PortHandle<ArrayPort<f64, 0>>
+        positions: ArrayPortHandle<f64, 1>,
+    ) -> ArrayPortHandle<f64, 0>
     where
-        T: tradingflow_graph::typed::Segment<
+        T: Segment<
                 Inputs = (
                     ArrayPort<f64, 1>,
                     ArrayPort<f64, 1>,
@@ -146,7 +146,7 @@ impl Market {
     }
 
     /// The cap-weighted index's NAV: trade the universe weights frictionlessly.
-    pub fn index_nav(&self, sc: &mut Scenario) -> PortHandle<SeriesPort<f64, 0>> {
+    pub fn index_nav(&self, sc: &mut Builder<Instant, WallClock>) -> SeriesPortHandle<f64, 0> {
         self.record_nav(sc, self.universe)
     }
 
@@ -154,19 +154,22 @@ impl Market {
     /// `Benchmark`, sum, and record.
     pub fn record_nav(
         &self,
-        sc: &mut Scenario,
-        positions: PortHandle<ArrayPort<f64, 1>>,
-    ) -> PortHandle<SeriesPort<f64, 0>> {
+        sc: &mut Builder<Instant, WallClock>,
+        positions: ArrayPortHandle<f64, 1>,
+    ) -> SeriesPortHandle<f64, 0> {
         let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions);
         sc.segment(record(), value)
     }
 }
 
 /// Build, run to exhaustion with a progress bar, and return the finished session.
-pub async fn run(sc: Scenario, args: &CommonArgs) -> Session {
-    let mut session = sc.build_with_threads(args.threads);
+pub async fn run(sc: Builder<Instant, WallClock>, args: &CommonArgs) -> Graph<Instant, WallClock> {
+    let mut session = sc.build();
+    let mut pool = Pool::new(args.threads);
     let total = session.total_num_events();
-    session.run(super::progress(total, args.begin())).await;
+    session
+        .run(&mut pool, super::progress(total, args.begin()))
+        .await;
     eprintln!(); // move past the finished bar line
     session
 }
@@ -264,10 +267,10 @@ impl NavTable {
     /// it as a column — returning its statistics for printing.
     pub fn add(
         &mut self,
-        session: &Session,
+        session: &Graph<Instant, WallClock>,
         label: impl Into<String>,
         begin_ns: i64,
-        h: PortHandle<SeriesPort<f64, 0>>,
+        h: SeriesPortHandle<f64, 0>,
     ) -> NavStats {
         let (t, v) = super::read_scalar_series(session, h);
         let (t, v) = trim_scale(begin_ns, t, v);

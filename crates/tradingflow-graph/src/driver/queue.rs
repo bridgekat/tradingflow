@@ -10,9 +10,7 @@ use futures::StreamExt;
 use futures::future::Either;
 use futures::stream::FuturesUnordered;
 
-use super::clock::{Clock, WallClock};
-use super::feed::{Feed, Stamp};
-use crate::data::Instant;
+use super::{Clock, Feed, Stamp};
 
 /// The currently known frontier of a feed.
 ///
@@ -20,21 +18,21 @@ use crate::data::Instant;
 /// bottom and blocks everything, explicit stamps compare as instants,
 /// `Stamp(Now)` sits above them (an implicit feed never blocks an explicit
 /// batch, the wall clock covers it), and `Done` is the top and never blocks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Frontier {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Frontier<I: Clone + Ord> {
     None,
-    Stamp(Stamp),
+    Stamp(Stamp<I>),
     Done,
 }
 
 /// A feed that is being polled for the next event.
-struct Active<S: 'static> {
+struct Active<I, S> {
     id: usize,
-    feed: Option<Box<dyn Feed<S>>>,
+    feed: Option<Box<dyn Feed<I, S>>>,
 }
 
-impl<S: 'static> Active<S> {
-    pub fn new(id: usize, feed: Box<dyn Feed<S>>) -> Self {
+impl<I, S> Active<I, S> {
+    pub fn new(id: usize, feed: Box<dyn Feed<I, S>>) -> Self {
         Self {
             id,
             feed: Some(feed),
@@ -42,8 +40,8 @@ impl<S: 'static> Active<S> {
     }
 }
 
-impl<S: 'static> Future for Active<S> {
-    type Output = (usize, Box<dyn Feed<S>>);
+impl<I, S> Future for Active<I, S> {
+    type Output = (usize, Box<dyn Feed<I, S>>);
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -71,27 +69,27 @@ impl<S: 'static> Future for Active<S> {
 /// with explicit timestamps are generally used for replaying "historical" data
 /// rather than "real-time" events, in which case the next event is always
 /// available, so the frontier is always advancing.
-pub struct Queue<S: 'static, C: Clock = WallClock> {
+pub struct Queue<I: Clone + Ord, C: Clock<I>, S: 'static> {
     /// The wall clock source.
     clock: C,
     /// Feeds currently being polled for the next event.
-    active: FuturesUnordered<Active<S>>,
+    active: FuturesUnordered<Active<I, S>>,
     /// Parked feeds with buffered events waiting to be read.
     /// Complementary to `active`, except for exhausted feeds.
-    parked: Vec<Option<Box<dyn Feed<S>>>>,
+    parked: Vec<Option<Box<dyn Feed<I, S>>>>,
     /// Exact min-heap over parked feeds, keyed by buffered stamp.
-    parked_heap: BinaryHeap<Reverse<(Instant, usize)>>,
+    parked_heap: BinaryHeap<Reverse<(I, usize)>>,
     /// Per-feed frontiers. Each feed guarantees not to emit events strictly
     /// before its frontier.
-    frontier: Vec<Frontier>,
+    frontier: Vec<Frontier<I>>,
     /// Lazy min-heap over frontiers, pushed on changes only.
     /// Entries can become stale as `frontier` advances.
-    frontier_heap: BinaryHeap<Reverse<(Frontier, usize)>>,
+    frontier_heap: BinaryHeap<Reverse<(Frontier<I>, usize)>>,
     /// The timestamp of the current batch, if any.
-    instant: Option<Instant>,
+    instant: Option<I>,
 }
 
-impl<S: 'static, C: Clock> Queue<S, C> {
+impl<I: Clone + Ord, S: 'static, C: Clock<I>> Queue<I, C, S> {
     /// Create an empty queue over a (required) wall clock.
     pub fn new(clock: C) -> Self {
         Self {
@@ -106,7 +104,7 @@ impl<S: 'static, C: Clock> Queue<S, C> {
     }
 
     /// Register a feed.
-    pub fn add_feed(&mut self, feed: impl Feed<S> + 'static) {
+    pub fn add_feed(&mut self, feed: impl Feed<I, S> + 'static) {
         let id = self.parked.len();
         self.active.push(Active::new(id, Box::new(feed)));
         self.parked.push(None);
@@ -115,19 +113,19 @@ impl<S: 'static, C: Clock> Queue<S, C> {
     }
 
     /// Advance a feed's frontier, pushing a heap entry only on change.
-    fn advance_frontier(&mut self, id: usize, frontier: Frontier) {
+    fn advance_frontier(&mut self, id: usize, frontier: Frontier<I>) {
         if self.frontier[id] != frontier {
-            self.frontier[id] = frontier;
+            self.frontier[id] = frontier.clone();
             self.frontier_heap.push(Reverse((frontier, id)));
         }
     }
 
     /// Peeks the minimum frontier across feeds, dropping stale entries.
     /// `Frontier::Done` when empty (the minimum over no feeds is the top).
-    fn peek_frontier(&mut self) -> Frontier {
+    fn peek_frontier(&mut self) -> Frontier<I> {
         while let Some(Reverse((f, id))) = self.frontier_heap.peek() {
             if self.frontier[*id] == *f {
-                return *f;
+                return f.clone();
             }
             self.frontier_heap.pop();
         }
@@ -136,7 +134,7 @@ impl<S: 'static, C: Clock> Queue<S, C> {
 
     /// Await the one thing that can unblock: an active feed received its next
     /// event, or the wall clock reaching `wall` (optional).
-    async fn await_progress(&mut self, wall: Option<Instant>) {
+    async fn await_progress(&mut self, wall: Option<I>) {
         let res = match wall {
             Some(wall) if self.active.is_empty() => {
                 self.clock.wait_until(wall).await;
@@ -154,7 +152,7 @@ impl<S: 'static, C: Clock> Queue<S, C> {
         };
         if let Some((id, feed)) = res {
             if let Some(stamp) = feed.stamp() {
-                let t = match stamp {
+                let t = match stamp.clone() {
                     Stamp::Instant(t) => t,
                     Stamp::Now => self.clock.now(),
                 };
@@ -169,7 +167,7 @@ impl<S: 'static, C: Clock> Queue<S, C> {
 
     /// Advances to the next completed batch, returning its timestamp or `None`
     /// if every feed is exhausted.
-    pub async fn step(&mut self, sink: &mut S) -> Option<Instant> {
+    pub async fn step(&mut self, sink: &mut S) -> Option<I> {
         loop {
             let now = self.clock.now();
             // The minimum frontier over all feeds. `None` means the global
@@ -182,22 +180,21 @@ impl<S: 'static, C: Clock> Queue<S, C> {
             // The concrete frontier: the minimum over every feed's abstract
             // frontier and the wall clock, resolved to an explicit instant.
             // Nothing can arrive stamped below it.
-            let floor = match frontier {
+            let floor = match frontier.clone() {
                 Frontier::None => None,
-                Frontier::Stamp(Stamp::Instant(e)) => Some(e.min(now)),
-                Frontier::Stamp(Stamp::Now) | Frontier::Done => Some(now),
+                Frontier::Stamp(Stamp::Instant(e)) => Some(e.min(now.clone())),
+                Frontier::Stamp(Stamp::Now) | Frontier::Done => Some(now.clone()),
             };
             // Re-activate parked feeds in timestamp order, up to the floor.
             // Coalesce all events at the current batch timestamp.
-            while let Some(floor) = floor
-                && let Some(Reverse((t, id))) = self.parked_heap.peek()
-                && *t <= floor
-                && self.instant.is_none_or(|g| g == *t)
+            while let Some(ref floor) = floor
+                && let Some(Reverse((t, id))) = self.parked_heap.peek().cloned()
+                && t <= *floor
+                && self.instant.clone().is_none_or(|g| g == t)
             {
-                let (t, id) = (*t, *id);
                 self.parked_heap.pop();
                 let mut feed = self.parked[id].take().unwrap();
-                if feed.write(sink, t) {
+                if feed.write(t.clone(), sink) {
                     self.instant = Some(t);
                 }
                 self.active.push(Active::new(id, feed));
@@ -210,16 +207,16 @@ impl<S: 'static, C: Clock> Queue<S, C> {
             }
             // Otherwise name what the wall clock must strictly pass, if it is
             // a blocker.
-            let wall = match (self.instant, self.parked_heap.peek()) {
-                (Some(g), _) if frontier > Frontier::Stamp(Stamp::Instant(g)) => Some(g),
+            let wall = match (&self.instant, self.parked_heap.peek()) {
+                (Some(g), _) if frontier > Frontier::Stamp(Stamp::Instant(g.clone())) => Some(g),
                 (None, Some(Reverse((t, _))))
-                    if frontier >= Frontier::Stamp(Stamp::Instant(*t)) && now < *t =>
+                    if frontier >= Frontier::Stamp(Stamp::Instant(t.clone())) && now < *t =>
                 {
-                    Some(*t)
+                    Some(t)
                 }
                 _ => None,
             };
-            self.await_progress(wall).await;
+            self.await_progress(wall.cloned()).await;
         }
     }
 }

@@ -18,6 +18,3 @@ pub use pyhost::{
     NativeArrayView, NativeSeriesView, PyArgs, PyClassOperator, PyParams, py_class_operator,
     py_class_operator_file, py_class_operator_source,
 };
-
-#[cfg(test)]
-mod tests;

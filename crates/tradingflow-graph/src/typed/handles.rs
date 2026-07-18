@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use super::{FlatRead, Interface, Value, ViewPort, ViewPorts};
+use super::{FlatRead, Interface, Port, Pass, Ports};
 
 /// Pokeable handle to a source node: the first element of the
 /// `(node handle, port handles)` pair returned by
@@ -16,9 +16,9 @@ use super::{FlatRead, Interface, Value, ViewPort, ViewPorts};
 ///
 /// The phantom is `fn() -> S` so a handle is unconditionally `Send + Sync`
 /// (it is just a node index; `S` only tags the segment type).
-pub struct NodeHandle<S> {
+pub struct NodeHandle<T> {
     node: usize,
-    _phantom: PhantomData<fn() -> S>,
+    _phantom: PhantomData<fn() -> T>,
 }
 
 impl<S> NodeHandle<S> {
@@ -53,14 +53,14 @@ impl<S> Copy for NodeHandle<S> {}
 
 /// Typed handle to a slot in the graph.
 ///
-/// The phantom is `fn() -> T` so a handle is unconditionally `Send + Sync`
-/// (it is just an index; `T` only tags the slot's port type).
-pub struct PortHandle<T> {
+/// The phantom is `fn() -> V` so a handle is unconditionally `Send + Sync`
+/// (it is just an index; `V` only tags the slot's port type).
+pub struct PortHandle<V: Pass> {
     index: usize,
-    _phantom: PhantomData<fn() -> T>,
+    _phantom: PhantomData<fn() -> V>,
 }
 
-impl<T> PortHandle<T> {
+impl<V: Pass> PortHandle<V> {
     pub(crate) fn new(index: usize) -> Self {
         Self {
             index,
@@ -75,19 +75,19 @@ impl<T> PortHandle<T> {
 
 // Manual (not derived) so it never requires `T: Debug` -- a `PortHandle` is
 // just an index, and `T` is only a phantom tag.
-impl<T> std::fmt::Debug for PortHandle<T> {
+impl<V: Pass> std::fmt::Debug for PortHandle<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "PortHandle({})", self.index)
     }
 }
 
-impl<T> Clone for PortHandle<T> {
+impl<V: Pass> Clone for PortHandle<V> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T> Copy for PortHandle<T> {}
+impl<V: Pass> Copy for PortHandle<V> {}
 
 /// Maps an [`Interface`] to its handle trees — the *forward* half of the
 /// [`Interface`] ⇆ handle-tree bijection. The *backward* half is the inverse
@@ -155,30 +155,30 @@ impl_handles_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9:
 
 // -- Leaf: ViewPort<V> ------------------------------------------------------
 
-impl<V: Value> InterfaceHandles for ViewPort<V>
+impl<V: Pass> InterfaceHandles for Port<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
-    type Handles<'a> = PortHandle<ViewPort<V>>;
-    type HandlesOwned = PortHandle<ViewPort<V>>;
+    type Handles<'a> = PortHandle<V>;
+    type HandlesOwned = PortHandle<V>;
 
     #[inline(always)]
     fn handles_from_flat(
         _shape: &mut FlatRead<usize>,
         indices: &mut FlatRead<usize>,
-    ) -> PortHandle<ViewPort<V>> {
+    ) -> PortHandle<V> {
         PortHandle::new(*indices.pop())
     }
 }
 
 // -- Variadic leaf: ViewPorts<V> ---------------------------------------------
 
-impl<V: Value> InterfaceHandles for ViewPorts<V>
+impl<V: Pass> InterfaceHandles for Ports<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
-    type Handles<'a> = &'a [PortHandle<ViewPort<V>>];
-    type HandlesOwned = Box<[PortHandle<ViewPort<V>>]>;
+    type Handles<'a> = &'a [PortHandle<V>];
+    type HandlesOwned = Box<[PortHandle<V>]>;
 
     #[inline]
     fn handles_from_flat(
@@ -259,11 +259,11 @@ impl_handles_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H
 
 // -- Leaf: PortHandle<ViewPort<V>> -------------------------------------------
 
-impl<V: Value> HandlesInterface for PortHandle<ViewPort<V>>
+impl<V: Pass> HandlesInterface for PortHandle<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
-    type Interface = ViewPort<V>;
+    type Interface = Port<V>;
 
     #[inline(always)]
     fn to_vec(self, _shape: &mut Vec<usize>, indices: &mut Vec<usize>) {
@@ -273,11 +273,11 @@ where
 
 // -- Variadic leaf: &[PortHandle<ViewPort<V>>] --------------------------------
 
-impl<V: Value> HandlesInterface for &[PortHandle<ViewPort<V>>]
+impl<V: Pass> HandlesInterface for &[PortHandle<V>]
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
-    type Interface = ViewPorts<V>;
+    type Interface = Ports<V>;
 
     #[inline]
     fn to_vec(self, shape: &mut Vec<usize>, indices: &mut Vec<usize>) {
@@ -289,11 +289,11 @@ where
 // A reference to a fixed-size array of handles, e.g. `&[a, b, c]`. With a free
 // handle type parameter there is no slice-typed parameter to unsize-coerce into,
 // so the array case is supported explicitly (delegating to the slice logic).
-impl<V: Value, const M: usize> HandlesInterface for &[PortHandle<ViewPort<V>>; M]
+impl<V: Pass, const M: usize> HandlesInterface for &[PortHandle<V>; M]
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
-    type Interface = ViewPorts<V>;
+    type Interface = Ports<V>;
 
     #[inline]
     fn to_vec(self, shape: &mut Vec<usize>, indices: &mut Vec<usize>) {

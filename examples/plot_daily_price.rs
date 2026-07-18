@@ -27,7 +27,8 @@ use tradingflow::operators::stocks::forward_adjust;
 use tradingflow::operators::structural::{filter, record};
 use tradingflow::operators::transform::select_at;
 use tradingflow::sources::panel::*;
-use tradingflow::{Scenario, WallClock};
+use tradingflow::clock::WallClock;
+use tradingflow::graph::{Builder, Pool};
 
 const WINDOW: usize = 252;
 const MULTIPLE: f64 = 2.0;
@@ -62,7 +63,7 @@ async fn main() {
         .position(|s| s == &symbol)
         .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
-    let mut sc = Scenario::new(WallClock);
+    let mut sc = Builder::new(WallClock);
 
     // Panel sources: close from prices, (share, cash) from dividends.
     let price_src = parquet_panel_source(prices_pq, vec!["prices.close".into()], symbols.clone());
@@ -110,8 +111,11 @@ async fn main() {
 
     // Run the historical replay to completion.
     let mut session = sc.build();
+    let mut pool = Pool::new(0);
     let total = session.total_num_events();
-    session.run(common::progress(total, Instant::MIN)).await;
+    session
+        .run(&mut pool, common::progress(total, Instant::MIN))
+        .await;
     eprintln!();
 
     // Align the recorded scalar series by timestamp and write a wide CSV.

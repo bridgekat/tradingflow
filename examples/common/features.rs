@@ -22,7 +22,7 @@
 //! ~1-year lag of an irregular-cadence series: the level is resampled onto the
 //! daily close pulse and run through the self-recording 244-day [`change`] /
 //! [`growth`] (the 次新 idiom), fused into one node via a nested
-//! [`segment!`](tradingflow_graph::segment) — the form recommended for individual
+//! [`segment!`](tradingflow::segment) — the form recommended for individual
 //! factors. (`(cur − prev)/prev` is NOT rank-equivalent to `cur/prev` once a
 //! year-ago base goes negative, so the subtraction is kept rather than dropped.)
 //!
@@ -52,13 +52,13 @@
 //! `(N, F)` and recorded on the daily pulse — the model-ready panel the
 //! predictors regress on. See [`build_features`].
 
-use tradingflow::Scenario;
+use tradingflow::clock::WallClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Retention, Series, SeriesView};
-use tradingflow::graph::typed::{Operator, PortHandle, RefPort, ViewPort};
+use tradingflow::graph::{Builder, Operator};
 use tradingflow::operators::{
     formula::*, metrics::*, num::*, rolling::*, stocks::*, structural::*, traders::*, transform::*,
 };
-use tradingflow::ports::{ArrayPort, SeriesPort};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle, UnitPortHandle};
 
 use super::data::Stacked;
 
@@ -71,7 +71,7 @@ const LAG_YEAR: usize = 244;
 /// [`rank_impute`]), so a consumer reads the value the model actually uses.
 pub struct FactorSet {
     pub names: Vec<String>,
-    pub feature: Vec<PortHandle<ArrayPort<f64, 1>>>,
+    pub feature: Vec<ArrayPortHandle<f64, 1>>,
 }
 
 /// Turn a raw factor into its model-ready feature: cross-sectionally percentile-
@@ -83,11 +83,11 @@ pub struct FactorSet {
 /// years). Every factor is rank-transformed, so `0.5` is the common neutral fill.
 /// The rank → fill chain is fused into one node via `segment!`.
 pub(super) fn rank_impute(
-    sc: &mut Scenario,
-    h: PortHandle<ArrayPort<f64, 1>>,
-) -> PortHandle<ArrayPort<f64, 1>> {
+    sc: &mut Builder<Instant, WallClock>,
+    h: ArrayPortHandle<f64, 1>,
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        tradingflow_graph::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+        tradingflow::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             fillna(0.5) @ percentile() @ x
         }),
         h,
@@ -95,19 +95,19 @@ pub(super) fn rank_impute(
 }
 
 /// Total market cap = unadjusted close × total shares.
-pub fn market_cap(sc: &mut Scenario, st: &Stacked) -> PortHandle<ArrayPort<f64, 1>> {
+pub fn market_cap(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> ArrayPortHandle<f64, 1> {
     sc.segment(multiply(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
-pub fn circ_market_cap(sc: &mut Scenario, st: &Stacked) -> PortHandle<ArrayPort<f64, 1>> {
+pub fn circ_market_cap(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> ArrayPortHandle<f64, 1> {
     sc.segment(multiply(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
 /// annualized (effective-date-aligned) series, via the self-recording
 /// [`ma_time`] (record fused in, retention sized internally).
-fn ttm(sc: &mut Scenario, h: PortHandle<ArrayPort<f64, 1>>) -> PortHandle<ArrayPort<f64, 1>> {
+fn ttm(sc: &mut Builder<Instant, WallClock>, h: ArrayPortHandle<f64, 1>) -> ArrayPortHandle<f64, 1> {
     sc.segment(ma_time(Duration::from_days(365)), h)
 }
 
@@ -117,12 +117,12 @@ fn ttm(sc: &mut Scenario, h: PortHandle<ArrayPort<f64, 1>>) -> PortHandle<ArrayP
 /// `level` block is computed once outside, so it is not recomputed here.
 /// The 次新 listing filter excludes names without a full prior year.
 fn delta(
-    sc: &mut Scenario,
+    sc: &mut Builder<Instant, WallClock>,
     st: &Stacked,
-    level: PortHandle<ArrayPort<f64, 1>>,
-) -> PortHandle<ArrayPort<f64, 1>> {
+    level: ArrayPortHandle<f64, 1>,
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        tradingflow_graph::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+        tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             change(LAG_YEAR) @ resample_view() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
@@ -133,12 +133,12 @@ fn delta(
 /// self-recording [`growth`] over the same resampled daily pulse as
 /// [`delta`].
 fn yoy(
-    sc: &mut Scenario,
+    sc: &mut Builder<Instant, WallClock>,
     st: &Stacked,
-    level: PortHandle<ArrayPort<f64, 1>>,
-) -> PortHandle<ArrayPort<f64, 1>> {
+    level: ArrayPortHandle<f64, 1>,
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        tradingflow_graph::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+        tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
             growth(LAG_YEAR) @ resample_view() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
@@ -147,10 +147,10 @@ fn yoy(
 
 /// Build the fundamental factor catalog. Each entry is `(name, raw_handle)`,
 /// added in category order.
-pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
+pub fn build_factor_catalog(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
-    let mut add = |name: &str, h: PortHandle<ArrayPort<f64, 1>>| {
+    let mut add = |name: &str, h: ArrayPortHandle<f64, 1>| {
         names.push(name.to_string());
         raw.push(h);
     };
@@ -273,10 +273,10 @@ pub fn build_factor_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// the factor stored at `t-1` inside `InformationCoefficient`, it is the
 /// next-period return the factor is meant to predict.
 pub fn build_forward_return(
-    sc: &mut Scenario,
-    log_adj: PortHandle<ArrayPort<f64, 1>>,
-    rebalance_clock: PortHandle<RefPort<()>>,
-) -> PortHandle<ArrayPort<f64, 1>> {
+    sc: &mut Builder<Instant, WallClock>,
+    log_adj: ArrayPortHandle<f64, 1>,
+    rebalance_clock: UnitPortHandle,
+) -> ArrayPortHandle<f64, 1> {
     let resampled = sc.segment(resample_clocked(), (rebalance_clock, log_adj));
     sc.segment(diff(), resampled)
 }
@@ -285,9 +285,9 @@ pub fn build_forward_return(
 pub struct Features {
     /// Per-feature live view handles (each `(num_stocks,)`), in column order.
     pub names: Vec<String>,
-    pub handles: Vec<PortHandle<ArrayPort<f64, 1>>>,
+    pub handles: Vec<ArrayPortHandle<f64, 1>>,
     /// Trading-day-aligned `Record` of the `(num_stocks, n_features)` panel.
-    pub series: PortHandle<SeriesPort<f64, 2>>,
+    pub series: SeriesPortHandle<f64, 2>,
 }
 
 // ===========================================================================
@@ -295,25 +295,25 @@ pub struct Features {
 // ===========================================================================
 
 fn rsum(
-    sc: &mut Scenario,
-    s: PortHandle<SeriesPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    s: SeriesPortHandle<f64, 1>,
     n: usize,
-) -> PortHandle<ArrayPort<f64, 1>> {
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(rolling_sum(Window::Count(n)), s)
 }
 fn rmean(
-    sc: &mut Scenario,
-    s: PortHandle<SeriesPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    s: SeriesPortHandle<f64, 1>,
     n: usize,
-) -> PortHandle<ArrayPort<f64, 1>> {
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(rolling_mean(Window::Count(n)), s)
 }
 /// Elementwise map preserving shape and NaN.
 fn emap(
-    sc: &mut Scenario,
-    h: PortHandle<ArrayPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    h: ArrayPortHandle<f64, 1>,
     f: fn(f64) -> f64,
-) -> PortHandle<ArrayPort<f64, 1>> {
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         map(move |a: ArrayView<f64, 1>| {
             let s = a.to_contiguous();
@@ -324,12 +324,12 @@ fn emap(
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(
-    sc: &mut Scenario,
-    s: PortHandle<SeriesPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    s: SeriesPortHandle<f64, 1>,
     n: usize,
-) -> PortHandle<ArrayPort<f64, 1>> {
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        tradingflow_graph::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
+        tradingflow::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
             sqrt() @ rolling_variance(Window::Count(n)) @ x
         }),
         s,
@@ -339,11 +339,11 @@ fn rstd(
 /// `cov(x,y) = mean(xy) − mean(x)·mean(y)`, normalized by `σx·σy`. Records each
 /// input internally (some redundancy across factors, but keeps call sites simple).
 fn rcorr(
-    sc: &mut Scenario,
-    x: PortHandle<ArrayPort<f64, 1>>,
-    y: PortHandle<ArrayPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    x: ArrayPortHandle<f64, 1>,
+    y: ArrayPortHandle<f64, 1>,
     n: usize,
-) -> PortHandle<ArrayPort<f64, 1>> {
+) -> ArrayPortHandle<f64, 1> {
     let xs = sc.segment(buffer(n), x);
     let ys = sc.segment(buffer(n), y);
     let xy = sc.segment(multiply(), (x, y));
@@ -430,11 +430,11 @@ impl Operator for WindowReduce {
     }
 }
 fn window_reduce(
-    sc: &mut Scenario,
-    s: PortHandle<SeriesPort<f64, 1>>,
+    sc: &mut Builder<Instant, WallClock>,
+    s: SeriesPortHandle<f64, 1>,
     n: usize,
     f: fn(&[f64]) -> f64,
-) -> PortHandle<ArrayPort<f64, 1>> {
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(WindowReduce { window: n, f }, s)
 }
 /// Time-series percentile rank of the latest window value among finite values.
@@ -538,11 +538,11 @@ impl Operator for WindowReduce2 {
     }
 }
 fn window_reduce2(
-    sc: &mut Scenario,
-    s: PortHandle<SeriesPort<f64, 2>>,
+    sc: &mut Builder<Instant, WallClock>,
+    s: SeriesPortHandle<f64, 2>,
     n: usize,
     f: fn(&[f64], &[f64]) -> f64,
-) -> PortHandle<ArrayPort<f64, 1>> {
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(WindowReduce2 { window: n, f }, s)
 }
 /// 振幅调整动量: Σ(returns on the top-20%-amplitude days) − Σ(bottom-20%-amplitude
@@ -728,10 +728,10 @@ impl Operator for ChipDist {
 }
 
 /// Build the price-volume factor catalog (动量 & 反转 first pass).
-pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
+pub fn build_pv_catalog(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
-    let mut add = |name: &str, h: PortHandle<ArrayPort<f64, 1>>| {
+    let mut add = |name: &str, h: ArrayPortHandle<f64, 1>| {
         names.push(name.to_string());
         raw.push(h);
     };
@@ -1008,7 +1008,7 @@ pub fn build_pv_catalog(sc: &mut Scenario, st: &Stacked) -> FactorSet {
 /// by the predictor's all-features-finite mask). The panel is heavily collinear
 /// by design and leans on the predictors' pool-standardized Ridge (`alpha`) to
 /// regularise.
-pub fn build_features(sc: &mut Scenario, st: &Stacked, feature_retention: Retention) -> Features {
+pub fn build_features(sc: &mut Builder<Instant, WallClock>, st: &Stacked, feature_retention: Retention) -> Features {
     let fund = build_factor_catalog(sc, st);
     let pv = build_pv_catalog(sc, st);
     let mut names = fund.names;

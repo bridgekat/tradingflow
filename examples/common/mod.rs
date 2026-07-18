@@ -35,9 +35,6 @@
 #![allow(dead_code)] // not every example uses every helper
 #![allow(unused_imports)] // the re-exports below serve all examples, not each one
 
-use tradingflow::graph::typed::{PortHandle, ViewPort};
-use tradingflow::ports::ArrayPort;
-
 #[cfg(feature = "python")]
 pub mod backtest;
 #[cfg(feature = "python")]

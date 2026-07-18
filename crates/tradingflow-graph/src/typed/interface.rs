@@ -9,32 +9,29 @@ use super::{FlatRead, FlatWrite};
 /// "borrow" is a clone); a user `Array<T>` marker might pass a genuinely
 /// borrowing `ArrayView<'a, T>` owned by an `Array<T>`. `View` carries no
 /// bounds here (only `'a`) -- the leaves that use it add their own (e.g.
-/// [`ViewPort`] needs `View: Copy + Send + Sync`).
+/// [`Port`] needs `View: Copy + Send + Sync`).
 ///
 /// # Safety
 ///
 /// * `View<'a>` must be covariant in `'a`.
-pub unsafe trait Value: 'static {
+pub unsafe trait Pass: 'static {
+    /// The owned form: what a [`Source`](super::Source) cell stores in
+    /// node state.
+    type Owned: Send + Sync + 'static;
+
     /// The view: what travels through ports.
     type View<'a>: 'a;
-
-    /// The owned form: what a [`ViewSource`](super::ViewSource) cell stores in
-    /// node state. A marker whose only data really is `'static` (a constant
-    /// table) can nominate the view itself: `Owned = Self::View<'static>`.
-    type Owned: Send + Sync + 'static;
 
     /// Borrow a view from the owned form -- an actual borrow for a borrowing
     /// view, a clone for a non-borrowing one.
     fn borrow(owned: &Self::Owned) -> Self::View<'_>;
 }
 
-/// `T` by value: the wire carries the value itself (homed in the producer's
-/// output scratch), not a reference into producer state -- so small-scalar
-/// producers can be stateless.
-pub struct Scalar<T>(PhantomData<T>);
+/// Pass `T` by value.
+pub struct Val<T>(PhantomData<T>);
 
 // SAFETY: `T: 'static` so it is trivially covariant in `'a`.
-unsafe impl<T: Clone + Send + Sync + 'static> Value for Scalar<T> {
+unsafe impl<T: Clone + Send + Sync + 'static> Pass for Val<T> {
     type View<'a> = T;
     type Owned = T;
 
@@ -44,32 +41,11 @@ unsafe impl<T: Clone + Send + Sync + 'static> Value for Scalar<T> {
     }
 }
 
-/// `&[T]` as a view: the contiguous counterpart of [`RefPorts`] (one fat wire
-/// slot; position *and length* free to vary per generation).
-pub struct Slice<T>(PhantomData<T>);
-
-// SAFETY: `T: 'static` so `&'a [T]` is covariant in `'a`.
-unsafe impl<T: Send + Sync + 'static> Value for Slice<T> {
-    type View<'a> = &'a [T];
-    type Owned = Vec<T>;
-
-    #[inline(always)]
-    fn borrow(owned: &Vec<T>) -> &[T] {
-        owned
-    }
-}
-
-/// `&T` as a view: the **whole-value by-reference** kind. The view is a plain
-/// reference to a value living in the producer's state, so arbitrarily large
-/// non-`Copy` payloads (a `Vec` batch, a `String`) cross node boundaries
-/// without cloning -- only the reference itself is homed in output scratch.
-/// The aliases [`RefPort<T>`] / [`RefPorts<T>`] /
-/// [`RefSource<T>`](super::RefSource) are the ports and source cell of this
-/// kind; [`Scalar<T>`] is the whole-value-by-value (clone-on-borrow) sibling.
+/// Pass `T` by reference.
 pub struct Ref<T>(PhantomData<T>);
 
 // SAFETY: `&'a T` is covariant in `'a` (`T: 'static`).
-unsafe impl<T: Send + Sync + 'static> Value for Ref<T> {
+unsafe impl<T: Send + Sync + 'static> Pass for Ref<T> {
     type View<'a> = &'a T;
     type Owned = T;
 
@@ -79,52 +55,28 @@ unsafe impl<T: Send + Sync + 'static> Value for Ref<T> {
     }
 }
 
-/// A single *view* leaf in an [`Interface`] tree: carries a borrowed fat
-/// reference `V::View<'a>` -- a sub-slice, a strided view struct -- BY VALUE
-/// between fused sub-segments, through one wire slot between nodes. The wire
-/// pointer targets the view's home in the producer's output scratch;
-/// deserialization copies it back out (hence `View: Copy`, `Send + Sync` for
-/// the cross-worker scratch storage -- the bounds [`Value`] omits).
-/// Payload type: `(bool, V::View<'_>)`.
-pub struct ViewPort<V>(PhantomData<V>);
+/// Pass `Vec<T>` by `&[T]`.
+pub struct Slice<T>(PhantomData<T>);
 
-/// A runtime-length group of [`ViewPort`]-leaves over `V`: a fan-in of N
-/// by-value producers, payload `(&[bool], &[V::View<'a>])`.
-///
-/// Wire-compatible with `ViewPort<V>` slot by slot: each element wires against
-/// a plain `ViewPort<V>` producer, and each element of a `ViewPorts` *output*
-/// can feed a single-`ViewPort` consumer. On input, the wire planes hold
-/// pointers to N views scattered across the producers' storage, so
-/// deserialization gathers them (a per-element `V::View` copy -- a small
-/// `Copy` struct, never the data it views) into the consuming node's input
-/// scratch and lends the payload from there as one contiguous slice. On
-/// output, the payload slice is already the views' contiguous home, so the
-/// wire simply carries each element's address (no scratch).
-pub struct ViewPorts<V>(PhantomData<V>);
+// SAFETY: `T: 'static` so `&'a [T]` is covariant in `'a`.
+unsafe impl<T: Send + Sync + 'static> Pass for Slice<T> {
+    type View<'a> = &'a [T];
+    type Owned = Vec<T>;
+
+    #[inline(always)]
+    fn borrow(owned: &Vec<T>) -> &[T] {
+        owned
+    }
+}
+
+/// Marks a single leaf in an [`Interface`] tree.
+pub struct Port<V>(PhantomData<fn() -> V>);
+
+/// Marks a variadic leaf in an [`Interface`] tree.
+pub struct Ports<V>(PhantomData<fn() -> V>);
 
 /// Recursive description of a segment's inputs or outputs: a tree of
-/// [`ViewPort`] and [`ViewPorts`] leaves over [`Value`]s.
-///
-/// Each leaf's payload is `(notify, value)` -- `(bool, V::View<'a>)` for a
-/// [`ViewPort`], and parallel slices `(&[bool], &[V::View<'a>])` for the
-/// variadic [`ViewPorts`]. A whole-value by-reference edge is just a
-/// `ViewPort` whose view is a reference ([`Ref<T>`] passes `&'a T`; the
-/// [`RefPort`] alias). The flat wire form the core moves between nodes is two
-/// index-aligned planes: a `bool` notify plane and a `*const ()` value-pointer
-/// plane.
-///
-/// Payloads are the intra-node currency -- segment fusion passes them
-/// directly. Crossing a node boundary requires (de)serialization to the wire
-/// planes, and leaves whose payload cannot borrow the planes themselves need
-/// backing storage for it: the **scratch buffers** [`InScratch`](Self::InScratch)
-/// and [`OutScratch`](Self::OutScratch), living in the node's state cell.
-///
-/// When the tree contains a variadic leaf, the flat layout is ambiguous on its
-/// own, so the per-group element counts are carried out-of-band as a
-/// **shape**: a flat `[usize]` that is the pre-order serialization of the
-/// count tree (each [`ViewPorts`] contributes its count).
-/// The shape is built from the input handles / `init` values and replayed via
-/// a [`FlatRead<usize>`] cursor threaded alongside the plane cursors.
+/// [`Port`] and [`Ports`] leaves.
 ///
 /// # Safety
 ///
@@ -133,8 +85,8 @@ pub struct ViewPorts<V>(PhantomData<V>);
 /// [`TypeId`] check validates agreement *between* nodes, not the internal
 /// coherence of one impl, so an implementor must guarantee:
 ///
-/// * `Values<'a>` is covariant in `'a` (payloads and scratch contents are
-///   stored `'static`-erased and read back at a shorter lifetime).
+/// * [`Self::Values<'a>`] is covariant in `'a` (payloads and scratch contents
+///   are stored `'static`-erased and read back at a shorter lifetime).
 /// * For any given `shape`, [`flat_len`](Self::flat_len),
 ///   [`type_ids_to_vec`](Self::type_ids_to_vec),
 ///   [`new_in_scratch`](Self::new_in_scratch),
@@ -161,15 +113,15 @@ pub unsafe trait Interface {
 
     /// Node-boundary *deserialization* buffer, living in the node's state
     /// cell: a leaf that must gather scattered wire data into contiguous
-    /// storage ([`ViewPorts`]) declares it here and lends its payload from it;
+    /// storage ([`Ports`]) declares it here and lends its payload from it;
     /// zero-copy leaves declare `()`. Typed at `'static` purely as storage --
     /// layout is lifetime-invariant and every access re-types it at the
     /// calling generation's lifetime.
     type InScratch: Send + 'static;
 
     /// Node-boundary *serialization* buffer, living in the node's state cell:
-    /// a [`ViewPort`] homes its view here and points the wire slot at it; a
-    /// [`ViewPorts`] output declares `()` (its payload slice is already the
+    /// a [`Port`] homes its view here and points the wire slot at it; a
+    /// [`Ports`] output declares `()` (its payload slice is already the
     /// views' contiguous home). Same `'static`-as-storage convention as
     /// [`InScratch`](Self::InScratch).
     type OutScratch: Send + 'static;
@@ -198,8 +150,8 @@ pub unsafe trait Interface {
 
     /// Construct the nested payload tree by consuming the two parallel wire
     /// planes (`flags` + value pointers `ptrs`), using `shape` to size each
-    /// variadic leaf. A [`ViewPort`] copies its view back out of the pointed-to
-    /// home; the gathering [`ViewPorts`] copies the pointed-to views into
+    /// variadic leaf. A [`Port`] copies its view back out of the pointed-to
+    /// home; the gathering [`Ports`] copies the pointed-to views into
     /// `scratch` (overwriting last generation's in place) and lends the
     /// payload from there.
     ///
@@ -215,10 +167,10 @@ pub unsafe trait Interface {
         scratch: &'a mut Self::InScratch,
     ) -> Self::Values<'a>;
 
-    /// Serialize the payload tree onto the wire planes. A [`ViewPort`] leaf
+    /// Serialize the payload tree onto the wire planes. A [`Port`] leaf
     /// homes its view into `scratch` -- overwriting last generation's in place
     /// -- and writes a thin pointer to that home, which keeps a stable address
-    /// until the node's next run; a [`ViewPorts`] output writes each element's
+    /// until the node's next run; a [`Ports`] output writes each element's
     /// address directly (the payload slice is the home).
     fn values_to_flat<'a>(
         values: Self::Values<'a>,
@@ -384,15 +336,15 @@ impl_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 
 impl_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K);
 impl_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);
 
-// -- Value leaf: ViewPort<V> ------------------------------------------------
+// -- Value leaf: Port<V> ------------------------------------------------
 
-// SAFETY: one flat slot tagged `TypeId::of::<ViewPort<V>>()`; the value is
+// SAFETY: one flat slot tagged `TypeId::of::<V>()`; the value is
 // carried by value, so serialization homes it in the one-view `OutScratch`
 // (overwritten in place each run; the `'static` typing is storage-only, per
 // the [`Value`] covariance contract, and views are `Copy` so the
 // overwrite drops nothing) and points the wire slot there; deserialization
 // reads it back at the same `V::View` type.
-unsafe impl<V: Value> Interface for ViewPort<V>
+unsafe impl<V: Pass> Interface for Port<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -407,7 +359,7 @@ where
 
     #[inline]
     fn type_ids_to_vec(_shape: &mut FlatRead<usize>, writer: &mut Vec<TypeId>) {
-        writer.push(TypeId::of::<ViewPort<V>>());
+        writer.push(TypeId::of::<V>());
     }
 
     #[inline]
@@ -467,11 +419,11 @@ where
     }
 }
 
-// -- Value leaves: ViewPorts<V> ----------------------------------------------
+// -- Value leaves: Ports<V> ----------------------------------------------
 
-// SAFETY: `*shape.pop()` flat slots, each tagged `TypeId::of::<ViewPort<V>>()`
-// (matching what a single `ViewPort<V>` consumer expects and what a single
-// `ViewPort<V>` producer emits), so a group wires against by-value producers.
+// SAFETY: `*shape.pop()` flat slots, each tagged `TypeId::of::<V>()`
+// (matching what a single `Port<V>` consumer expects and what a single
+// `Port<V>` producer emits), so a group wires against by-value producers.
 // Deserialization gathers the N pointed-to views into the `InScratch` buffer
 // (sized once from the shape at build, overwritten in place each run; its
 // `'static` typing is storage-only, per the [`Value`] covariance contract,
@@ -480,7 +432,7 @@ where
 // itself is the contiguous home of the N views — element `i`'s thin pointer
 // is just `&values.1[i]` — and the producer keeps that storage stable for the
 // generation (state / arena / its own `InScratch`).
-unsafe impl<V: Value> Interface for ViewPorts<V>
+unsafe impl<V: Pass> Interface for Ports<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -496,7 +448,7 @@ where
     #[inline]
     fn type_ids_to_vec(shape: &mut FlatRead<usize>, writer: &mut Vec<TypeId>) {
         let n = *shape.pop();
-        writer.extend(std::iter::repeat_n(TypeId::of::<ViewPort<V>>(), n));
+        writer.extend(std::iter::repeat_n(TypeId::of::<V>(), n));
     }
 
     #[inline]
@@ -518,7 +470,7 @@ where
         let f = flags.take(n);
         let p = ptrs.take(n);
         let dst: &'a mut [MaybeUninit<V::View<'static>>] = scratch;
-        debug_assert!(dst.len() == n, "ViewPorts scratch disagrees with shape");
+        debug_assert!(dst.len() == n, "Ports scratch disagrees with shape");
         for (slot, &ptr) in dst.iter_mut().zip(p) {
             // SAFETY: `ptr` targets a valid `V::View` for `'a` by the caller's
             // contract; storing it `'static`-erased is storage-only (layout is
@@ -545,7 +497,7 @@ where
         ptrs: &mut FlatWrite<*const ()>,
     ) {
         let (f, v) = values;
-        debug_assert!(f.len() == v.len(), "ViewPorts planes disagree on length");
+        debug_assert!(f.len() == v.len(), "Ports planes disagree on length");
         flags.extend(f);
         for view in v {
             ptrs.push(std::ptr::from_ref(view).cast());
@@ -561,7 +513,7 @@ where
         ptrs: &mut Vec<*const ()>,
     ) {
         let (f, v) = values;
-        debug_assert!(f.len() == v.len(), "ViewPorts planes disagree on length");
+        debug_assert!(f.len() == v.len(), "Ports planes disagree on length");
         shape.push(v.len());
         flags.extend_from_slice(f);
         for view in v {
@@ -574,11 +526,3 @@ where
         values.0.iter().any(|&n| n)
     }
 }
-
-pub type Port<T> = ViewPort<Scalar<T>>;
-
-pub type Ports<T> = ViewPorts<Scalar<T>>;
-
-pub type RefPort<T> = ViewPort<Ref<T>>;
-
-pub type RefPorts<T> = ViewPorts<Ref<T>>;

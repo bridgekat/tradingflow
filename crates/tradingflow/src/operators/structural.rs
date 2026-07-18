@@ -28,74 +28,12 @@ use bumpalo::Bump;
 use num_traits::{AsPrimitive, Float};
 
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, Series, SeriesView, Shape};
-use crate::graph::typed::{Interface, Operator, RefPort, Segment};
-use crate::ports::{ArrayPort, ArrayPorts, SeriesPort};
+use crate::graph::typed::{Interface, Operator, Segment};
+use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, UnitPort};
 
 // ===========================================================================
-// Passthrough / conversion — Id, Where, Cast.
+// Passthrough / conversion — Where, Cast.
 // ===========================================================================
-
-/// Identity passthrough: clones input to output unchanged. Generic over the
-/// payload `T` (an owned **non-array** value carried by `RefPort<T>` — a
-/// scalar, a batch, …; `Array` / `Series` edges are always [`ArrayPort`] /
-/// `SeriesPort` view edges, per the [`ports`](crate::ports) invariant).
-#[derive(Clone)]
-pub struct Id<T: Clone + Send + Sync + 'static> {
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Clone + Send + Sync + 'static> Id<T> {
-    pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<T: Clone + Send + Sync + 'static> Default for Id<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// State is `Option<T>` because `init(self)` runs before any input value is
-// seen and `T` carries no `Default` bound: the build (`init == true`) call
-// fills the `Some` from the build-time input value, so every later call may
-// unwrap it.
-impl<T: Clone + Send + Sync + 'static> Operator for Id<T> {
-    type Inputs = RefPort<T>;
-    type Outputs = RefPort<T>;
-    type Context = Instant;
-    type State = Option<T>;
-
-    fn init(self) -> Option<T> {
-        None
-    }
-
-    #[inline(always)]
-    fn compute<'a, 'b: 'a>(
-        (_, x): (bool, &'a T),
-        _: &Instant,
-        state: &'b mut Option<T>,
-        init: bool,
-    ) -> (bool, &'a T) {
-        if init {
-            *state = Some(x.clone());
-            return (false, state.as_ref().unwrap());
-        }
-        state.as_mut().unwrap().clone_from(x);
-        (true, state.as_ref().unwrap())
-    }
-
-    #[inline(always)]
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, &'a T),
-        _: &Instant,
-        state: &'b Option<T>,
-    ) -> (bool, &'a T) {
-        (false, state.as_ref().unwrap())
-    }
-}
 
 /// Element-wise conditional: keep the value where `condition` holds, else
 /// replace with `fill`.
@@ -318,7 +256,7 @@ impl<T: Scalar, const N: usize> Default for ResampleClocked<T, N> {
 }
 
 impl<T: Scalar, const N: usize> Segment for ResampleClocked<T, N> {
-    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Inputs = (UnitPort, ArrayPort<T, N>);
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = ResampleViewState<T, N>;
@@ -328,7 +266,7 @@ impl<T: Scalar, const N: usize> Segment for ResampleClocked<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((clock_fired, _), (_, x)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        ((clock_fired, _), (_, x)): ((bool, ()), (bool, ArrayView<'a, T, N>)),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -344,11 +282,6 @@ impl<T: Scalar, const N: usize> Segment for ResampleClocked<T, N> {
 // ===========================================================================
 // Constructors
 // ===========================================================================
-
-/// The identity operator: forwards its input unchanged.
-pub fn id<T: Clone + Send + Sync + 'static>() -> Id<T> {
-    Id::new()
-}
 
 /// Element-wise scalar cast `S -> T`.
 pub fn cast<S: Scalar, T: Scalar, const N: usize>() -> Cast<S, T, N> {
@@ -720,35 +653,22 @@ impl<const N: usize> Operator for Count<N> {
 // Clocked — clock-gated wrapper.
 // ---------------------------------------------------------------------------
 
-/// Prepends a leading `RefPort<C>` clock input; runs the inner operator's compute
+/// Prepends a leading `UnitPort` clock input; runs the inner operator's compute
 /// path only when the clock notifies, else the inner passthrough. Implements
 /// [`Segment`] directly because its gate ignores the data inputs' notify bits.
-pub struct Clocked<O, C> {
+#[derive(Debug, Clone)]
+pub struct Clocked<O> {
     inner: O,
-    _c: PhantomData<fn() -> C>,
 }
 
-impl<O, C> Clocked<O, C> {
+impl<O> Clocked<O> {
     pub fn new(inner: O) -> Self {
-        Self {
-            inner,
-            _c: PhantomData,
-        }
+        Self { inner }
     }
 }
 
-// Manual `Clone` (avoids an unnecessary `C: Clone` bound — `C` is phantom).
-impl<O: Clone, C> Clone for Clocked<O, C> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            _c: PhantomData,
-        }
-    }
-}
-
-impl<O: Operator, C: Send + Sync + 'static> Segment for Clocked<O, C> {
-    type Inputs = (RefPort<C>, O::Inputs);
+impl<O: Operator> Segment for Clocked<O> {
+    type Inputs = (UnitPort, O::Inputs);
     type Outputs = O::Outputs;
     // Forwarded, not pinned: `Clocked` is a gate, so it stays as
     // context-agnostic as whatever it wraps.
@@ -760,7 +680,7 @@ impl<O: Operator, C: Send + Sync + 'static> Segment for Clocked<O, C> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((clock_fired, _), rest): ((bool, &'a C), <O::Inputs as Interface>::Values<'a>),
+        ((clock_fired, _), rest): ((bool, ()), <O::Inputs as Interface>::Values<'a>),
         context: &O::Context,
         state: &'b mut O::State,
         init: bool,
@@ -826,7 +746,7 @@ pub fn count<const N: usize>() -> Count<N> {
 
 /// Prepend a leading clock port to `inner`, running its compute path only when
 /// the clock notifies.
-pub fn clocked<O, C>(inner: O) -> Clocked<O, C> {
+pub fn clocked<O>(inner: O) -> Clocked<O> {
     Clocked::new(inner)
 }
 

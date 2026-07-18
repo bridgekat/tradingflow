@@ -1,10 +1,8 @@
 use std::any::TypeId;
 use std::marker::PhantomData;
 
-use crate::{
-    core::ErasedCell,
-    typed::{NodeHandle, Value, ViewPort},
-};
+use crate::core::ErasedCell;
+use crate::typed::{NodeHandle, Pass};
 
 use super::{
     FlatRead, FlatWrite, HandlesInterface, Interface, InterfaceHandles, PortHandle, Segment,
@@ -50,13 +48,13 @@ impl<C: Send + Sync + 'static> Builder<C> {
         &mut self.inner
     }
 
-    pub fn view<V: Value>(&self, handle: PortHandle<ViewPort<V>>) -> V::View<'_>
+    pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_>
     where
         for<'a> V::View<'a>: Copy,
     {
         let index = handle.index();
         let type_id = self.inner.slot_type_id(index);
-        assert!(type_id == TypeId::of::<ViewPort<V>>(), "slot type mismatch");
+        assert!(type_id == TypeId::of::<V>(), "slot type mismatch");
         unsafe { self.inner.slot_ptr(index).cast::<V::View<'_>>().read() }
     }
 
@@ -64,11 +62,7 @@ impl<C: Send + Sync + 'static> Builder<C> {
         unsafe { &*self.inner.context().get().cast::<C>() }
     }
 
-    /// Push an input-less *source* segment ([`RefSource<T>`](super::RefSource) /
-    /// [`Source<T>`](super::Source), or any `Segment<Inputs = ()>`),
-    /// returning the pokeable [`NodeHandle`] paired with the source's output
-    /// port handles: poke through the former
-    /// ([`state_mut`](Graph::state_mut)), wire consumers with the latter.
+    /// Adds a source node to the graph.
     pub fn source<S>(
         &mut self,
         source: S,
@@ -84,16 +78,7 @@ impl<C: Send + Sync + 'static> Builder<C> {
         (NodeHandle::new(self.inner.num_nodes() - 1), handles)
     }
 
-    /// Push a segment wired to `input_handles`, returning its output wire
-    /// handles.
-    ///
-    /// `input_handles` is a free type parameter `H` (the handle tree),
-    /// inferred structurally from the argument; the segment's inputs are then
-    /// pinned by `T: Segment<Inputs = H::Interface>`. This is what lets an
-    /// operator's generic parameters be inferred FROM the wiring (the inverse
-    /// `H -> Interface` of [`HandlesInterface`]), rather than the handle type
-    /// being a non-invertible forward projection of `T`. The segment's
-    /// `Context` is pinned to the builder's `C` the same way.
+    /// Adds a segment node to the graph.
     pub fn segment<T, H>(
         &mut self,
         segment: T,
@@ -269,13 +254,13 @@ impl<C: Send + Sync + 'static> Graph<C> {
         &mut self.inner
     }
 
-    pub fn view<V: Value>(&self, handle: PortHandle<ViewPort<V>>) -> V::View<'_>
+    pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_>
     where
         for<'a> V::View<'a>: Copy,
     {
         let index = handle.index();
         let type_id = self.inner.slot_type_id(index);
-        assert!(type_id == TypeId::of::<ViewPort<V>>(), "slot type mismatch");
+        assert!(type_id == TypeId::of::<V>(), "slot type mismatch");
         unsafe { self.inner.slot_ptr(index).cast::<V::View<'_>>().read() }
     }
 
@@ -305,7 +290,7 @@ impl<C: Send + Sync + 'static> Graph<C> {
         state_mut
     }
 
-    pub fn stabilize(&mut self, pool: &mut crate::core::Pool) {
+    pub fn stabilize(&mut self, pool: &mut crate::pool::Pool) {
         self.inner.stabilize(pool);
     }
 }

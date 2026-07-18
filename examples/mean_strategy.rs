@@ -32,7 +32,8 @@ use tradingflow::operators::num::log;
 use tradingflow::operators::structural::record;
 use tradingflow::operators::structural::stack;
 use tradingflow::operators::traders::{benchmark, random_trader};
-use tradingflow::{Scenario, WallClock};
+use tradingflow::clock::WallClock;
+use tradingflow::graph::Builder;
 
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
 use common::strategy::{INITIAL_CASH, Market, trim_scale};
@@ -60,7 +61,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Scenario::new(WallClock);
+    let mut sc = Builder::new(WallClock);
 
     // ---- Data + features ------------------------------------------------
     // The incremental mean predictor folds one (feature, target) pair per tick,

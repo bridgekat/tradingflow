@@ -15,8 +15,8 @@ use std::thread;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use tradingflow_graph::core::Pool;
-use tradingflow_graph::typed::{Builder, Graph, Operator, Port, PortHandle, RefPort, Source};
+use tradingflow_graph::pool::Pool;
+use tradingflow_graph::typed::{Builder, Graph, Operator, Port, PortHandle, Ref, Source, Val};
 
 const DATA_LEN: usize = 1 << 16;
 const DATA_MASK: usize = DATA_LEN - 1;
@@ -49,8 +49,8 @@ fn pool() -> Pool {
 struct Add;
 
 impl Operator for Add {
-    type Inputs = (Port<f64>, Port<f64>);
-    type Outputs = Port<f64>;
+    type Inputs = (Port<Val<f64>>, Port<Val<f64>>);
+    type Outputs = Port<Val<f64>>;
     type Context = ();
     type State = f64; // holds the last sum, to re-emit by value on passthrough
 
@@ -81,8 +81,8 @@ impl Operator for Add {
 struct Heavy(usize);
 
 impl Operator for Heavy {
-    type Inputs = Port<f64>;
-    type Outputs = Port<()>;
+    type Inputs = Port<Val<f64>>;
+    type Outputs = Port<Val<()>>;
     type Context = ();
     type State = usize;
 
@@ -109,8 +109,8 @@ impl Operator for Heavy {
 struct Record;
 
 impl Operator for Record {
-    type Inputs = Port<f64>; // scalar in by value, `Vec` out by reference
-    type Outputs = RefPort<Vec<f64>>;
+    type Inputs = Port<Val<f64>>; // scalar in by value, `Vec` out by reference
+    type Outputs = Port<Ref<Vec<f64>>>;
     type Context = ();
     type State = Vec<f64>;
 
@@ -322,7 +322,9 @@ fn bench_few_heavy(c: &mut Criterion) {
 
     let mut gb = Builder::new(());
     let (src_cell, src) = gb.source(Source::new(1.0));
-    let _: Vec<PortHandle<Port<()>>> = (0..K).map(|_| gb.segment(Heavy(ITERS), src)).collect();
+    let _ = (0..K)
+        .map(|_| gb.segment(Heavy(ITERS), src))
+        .collect::<Vec<_>>();
     let mut g = gb.build();
     let mut pool = pool();
     let mut group = c.benchmark_group("few_heavy");
@@ -360,12 +362,12 @@ fn bench_few_heavy(c: &mut Criterion) {
 // fusion removes.
 mod mesh {
     use tradingflow_graph::typed::{
-        Builder, NodeHandle, PortHandle, RefPort, RefPorts, RefSource, Segment,
+        Builder, NodeHandle, Port, PortHandle, Ports, Segment, Source, Val,
     };
 
     /// A pokeable handle to one mesh source (a by-reference `i64`, since sources
-    /// feed the per-layer `SumAll`'s `RefPorts`).
-    pub type Src = NodeHandle<RefSource<i64, ()>>;
+    /// feed the per-layer `SumAll`'s `Ports`).
+    pub type Src = NodeHandle<Source<Val<i64>, ()>>;
 
     pub const MODULUS: i64 = 1_000_000_007;
 
@@ -406,101 +408,79 @@ mod mesh {
         pub iters: u32,
     }
     impl Segment for Work {
-        type Inputs = (RefPort<i64>, RefPort<i64>, RefPort<i64>);
-        type Outputs = RefPort<i64>;
-        type State = (u32, i64); // (iters, output)
+        type Inputs = (Port<Val<i64>>, Port<Val<i64>>, Port<Val<i64>>);
+        type Outputs = Port<Val<i64>>;
+        type State = u32; // iters
         type Context = ();
         fn init(self) -> Self::State {
-            (self.iters, 0)
+            self.iters
         }
         fn compute<'a, 'b: 'a>(
-            ((_, a), (_, b), (_, c)): ((bool, &'a i64), (bool, &'a i64), (bool, &'a i64)),
+            ((_, a), (_, b), (_, c)): ((bool, i64), (bool, i64), (bool, i64)),
             _: &(),
-            (iters, out): &'b mut Self::State,
+            iters: &'b mut Self::State,
             _: bool,
-        ) -> (bool, &'a i64) {
-            *out = work(*a, *b, *c, *iters);
-            (true, &*out)
+        ) -> (bool, i64) {
+            let out = work(a, b, c, *iters);
+            (true, out)
         }
     }
 
     pub struct Inc;
     impl Segment for Inc {
-        type Inputs = RefPort<i64>;
-        type Outputs = RefPort<i64>;
-        type State = i64;
+        type Inputs = Port<Val<i64>>;
+        type Outputs = Port<Val<i64>>;
+        type State = ();
         type Context = ();
-        fn init(self) -> i64 {
-            0
-        }
-        fn compute<'a, 'b: 'a>(
-            (_, x): (bool, &'a i64),
-            _: &(),
-            state: &'b mut i64,
-            _: bool,
-        ) -> (bool, &'a i64) {
-            *state = x + 1;
-            (true, &*state)
+        fn init(self) {}
+        fn compute<'a, 'b: 'a>((_, x): (bool, i64), _: &(), _: &'b mut (), _: bool) -> (bool, i64) {
+            (true, x + 1)
         }
     }
 
     pub struct Double;
     impl Segment for Double {
-        type Inputs = RefPort<i64>;
-        type Outputs = RefPort<i64>;
-        type State = i64;
+        type Inputs = Port<Val<i64>>;
+        type Outputs = Port<Val<i64>>;
+        type State = ();
         type Context = ();
-        fn init(self) -> i64 {
-            0
-        }
-        fn compute<'a, 'b: 'a>(
-            (_, x): (bool, &'a i64),
-            _: &(),
-            state: &'b mut i64,
-            _: bool,
-        ) -> (bool, &'a i64) {
-            *state = x * 2;
-            (true, &*state)
+        fn init(self) {}
+        fn compute<'a, 'b: 'a>((_, x): (bool, i64), _: &(), _: &'b mut (), _: bool) -> (bool, i64) {
+            (true, x * 2)
         }
     }
 
     pub struct Add;
     impl Segment for Add {
-        type Inputs = (RefPort<i64>, RefPort<i64>);
-        type Outputs = RefPort<i64>;
-        type State = i64;
+        type Inputs = (Port<Val<i64>>, Port<Val<i64>>);
+        type Outputs = Port<Val<i64>>;
+        type State = ();
         type Context = ();
-        fn init(self) -> i64 {
-            0
-        }
+        fn init(self) {}
         fn compute<'a, 'b: 'a>(
-            ((_, a), (_, b)): ((bool, &'a i64), (bool, &'a i64)),
+            ((_, a), (_, b)): ((bool, i64), (bool, i64)),
             _: &(),
-            state: &'b mut i64,
+            _: &'b mut (),
             _: bool,
-        ) -> (bool, &'a i64) {
-            *state = a + b;
-            (true, &*state)
+        ) -> (bool, i64) {
+            (true, a + b)
         }
     }
 
     pub struct SumAll;
     impl Segment for SumAll {
-        type Inputs = RefPorts<i64>;
-        type Outputs = RefPort<i64>;
-        type State = i64;
+        type Inputs = Ports<Val<i64>>;
+        type Outputs = Port<Val<i64>>;
+        type State = ();
         type Context = ();
-        fn init(self) -> i64 {
-            0
-        }
+        fn init(self) {}
         fn compute<'a, 'b: 'a>(
-            (_, xs): (&'a [bool], &'a [&'a i64]),
+            (_, xs): (&'a [bool], &'a [i64]),
             _: &(),
-            state: &'b mut i64,
+            _: &'b mut (),
             _: bool,
-        ) -> (bool, &'a i64) {
-            *state = xs.iter().map(|&v| *v).sum();
-            (true, &*state)
+        ) -> (bool, i64) {
+            (true, xs.iter().sum())
         }
     }
 
@@ -516,13 +496,12 @@ mod mesh {
             &mut Builder<()>,
             usize,
             usize,
-            [PortHandle<RefPort<i64>>; 3],
-        ) -> PortHandle<RefPort<i64>>,
-    ) -> (Vec<Src>, Vec<PortHandle<RefPort<i64>>>) {
-        let (src, wires): (Vec<Src>, Vec<_>) = (0..n)
-            .map(|j| gb.source(RefSource::new(j as i64 + 1)))
-            .unzip();
-        let mut layers: Vec<Vec<PortHandle<RefPort<i64>>>> = vec![wires];
+            [PortHandle<Val<i64>>; 3],
+        ) -> PortHandle<Val<i64>>,
+    ) -> (Vec<Src>, Vec<PortHandle<Val<i64>>>) {
+        let (src, wires): (Vec<Src>, Vec<_>) =
+            (0..n).map(|j| gb.source(Source::new(j as i64 + 1))).unzip();
+        let mut layers: Vec<Vec<PortHandle<Val<i64>>>> = vec![wires];
         for layer in 1..=depth {
             let prev = layers[layer - 1].clone();
             let mut cur = Vec::with_capacity(n);
@@ -541,7 +520,7 @@ fn drive_mesh<'a>(
     src: &'a [mesh::Src],
     g: &'a mut Graph<()>,
     pool: &'a mut Pool,
-    _: PortHandle<RefPort<i64>>,
+    _: PortHandle<Val<i64>>,
 ) -> impl FnMut() + 'a {
     let mut base = 0i64;
     move || {
@@ -584,7 +563,7 @@ fn bench_mesh_fusion(c: &mut Criterion) {
         let mut gb = Builder::new(());
         let (src, aggs) = mesh::build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
             let it = mesh::iters_of(l, j);
-            let seg = tradingflow_graph::segment!(|x: RefPort<i64>, y: RefPort<i64>, z: RefPort<i64>| -> RefPort<i64> {
+            let seg = tradingflow::segment!(|x: Port<Val<i64>>, y: Port<Val<i64>>, z: Port<Val<i64>>| -> Port<Val<i64>> {
                 let ww = mesh::Work { iters: it } @ (x, y, z);
                 let p = mesh::Inc @ ww;
                 let q = mesh::Double @ ww;

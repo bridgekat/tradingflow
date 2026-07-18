@@ -3,15 +3,15 @@
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Scalar, Series, SeriesView};
-use crate::graph::typed::{Interface, Value, ViewPort, ViewPorts};
+use crate::graph::{Interface, Pass, Port, PortHandle, Ports, Val};
 
-/// The [`Value`] policy which passes borrowed [`ArrayView<'a, T, N>`]
+/// The [`Pass`] policy which passes borrowed [`ArrayView<'a, T, N>`]
 /// for [`Array<T, N>`] across graph interfaces.
-pub struct ArrayValue<T, const N: usize>(PhantomData<T>);
+pub struct ArrayPass<T, const N: usize>(PhantomData<T>);
 
 // SAFETY: `ArrayView<'a, T, N>` holds only `&'a [T]`,
 // which is covariant in `'a`.
-unsafe impl<T: Scalar, const N: usize> Value for ArrayValue<T, N> {
+unsafe impl<T: Scalar, const N: usize> Pass for ArrayPass<T, N> {
     type View<'a> = ArrayView<'a, T, N>;
     type Owned = Array<T, N>;
 
@@ -21,13 +21,13 @@ unsafe impl<T: Scalar, const N: usize> Value for ArrayValue<T, N> {
     }
 }
 
-/// The [`Value`] policy which passes borrowed [`SeriesView<'a, T, N>`]
+/// The [`Pass`] policy which passes borrowed [`SeriesView<'a, T, N>`]
 /// for [`Series<T, N>`] across graph interfaces.
-pub struct SeriesValue<T, const N: usize>(PhantomData<T>);
+pub struct SeriesPass<T, const N: usize>(PhantomData<T>);
 
 // SAFETY: `SeriesView<'a, T, N>` holds only `&'a [Instant]` + `&'a [T]`,
 // which is covariant in `'a`.
-unsafe impl<T: Scalar, const N: usize> Value for SeriesValue<T, N> {
+unsafe impl<T: Scalar, const N: usize> Pass for SeriesPass<T, N> {
     type View<'a> = SeriesView<'a, T, N>;
     type Owned = Series<T, N>;
 
@@ -37,22 +37,37 @@ unsafe impl<T: Scalar, const N: usize> Value for SeriesValue<T, N> {
     }
 }
 
+/// A single port carrying no payload.
+pub type UnitPort = Port<Val<()>>;
+
+/// A runtime-length group of [`UnitPort`]s, payload `(&[bool], &[()])`.
+pub type UnitPorts = Ports<Val<()>>;
+
+/// A handle to a single [`UnitPort`].
+pub type UnitPortHandle = PortHandle<Val<()>>;
+
 /// A single port carrying a strided [`ArrayView<T, N>`](crate::data::ArrayView)
 /// by value — the array-shaped edge currency.
-pub type ArrayPort<T, const N: usize> = ViewPort<ArrayValue<T, N>>;
+pub type ArrayPort<T, const N: usize> = Port<ArrayPass<T, N>>;
 
 /// A runtime-length group of [`ArrayPort`]s, payload `(&[bool],
 /// &[ArrayView<T, N>])` — wires against a slice of independent [`ArrayPort`]
 /// producer handles (`&[PortHandle<ArrayPort<T, N>>]`), no bridging adapters.
-pub type ArrayPorts<T, const N: usize> = ViewPorts<ArrayValue<T, N>>;
+pub type ArrayPorts<T, const N: usize> = Ports<ArrayPass<T, N>>;
+
+/// A handle to a single [`ArrayPort`].
+pub type ArrayPortHandle<T, const N: usize> = PortHandle<ArrayPass<T, N>>;
 
 /// A single port carrying a [`SeriesView<T, N>`](crate::data::SeriesView)
 /// (recorded history window) by value — the [`Series`] edge currency.
-pub type SeriesPort<T, const N: usize> = ViewPort<SeriesValue<T, N>>;
+pub type SeriesPort<T, const N: usize> = Port<SeriesPass<T, N>>;
 
 /// A runtime-length group of [`SeriesPort`]s, payload `(&[bool],
 /// &[SeriesView<T, N>])`.
-pub type SeriesPorts<T, const N: usize> = ViewPorts<SeriesValue<T, N>>;
+pub type SeriesPorts<T, const N: usize> = Ports<SeriesPass<T, N>>;
+
+/// A handle to a single [`SeriesPort`].
+pub type SeriesPortHandle<T, const N: usize> = PortHandle<SeriesPass<T, N>>;
 
 /// Maps an [`Interface`] into its values-only type tree,
 /// for use by the map operators.
@@ -61,7 +76,7 @@ pub trait StripNotify: Interface {
     fn plain<'a>(values: Self::Values<'a>) -> Self::Plain<'a>;
 }
 
-impl<V: Value> StripNotify for ViewPort<V>
+impl<V: Pass> StripNotify for Port<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {
@@ -73,7 +88,7 @@ where
     }
 }
 
-impl<V: Value> StripNotify for ViewPorts<V>
+impl<V: Pass> StripNotify for Ports<V>
 where
     for<'a> V::View<'a>: Copy + Send + Sync,
 {

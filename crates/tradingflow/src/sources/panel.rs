@@ -98,8 +98,8 @@ use tokio::sync::mpsc;
 
 use super::receiver_stream;
 use crate::data::{Array, Duration, Instant};
-use crate::ingest::{Event, EventSource};
-use crate::ports::ArrayValue;
+use crate::graph::{Event, Source};
+use crate::ports::ArrayPass;
 
 // ===========================================================================
 // ParquetPanelSource — the general (date, symbol, values...) panel.
@@ -232,9 +232,9 @@ fn nan_panel(shape: [usize; 2]) -> Array<f64, 2> {
 
 fn panel_write(
     state: &mut PanelState,
+    ts: Instant,
     batch: Vec<RowUpdate>,
     output: &mut Array<f64, 2>,
-    ts: Instant,
 ) -> usize {
     let Some(first) = batch.first() else { return 0 };
     let k = first.vals.len();
@@ -255,9 +255,10 @@ fn panel_write(
     n
 }
 
-impl EventSource for ParquetPanelSource {
-    type Event = Vec<RowUpdate>;
-    type Value = ArrayValue<f64, 2>;
+impl Source for ParquetPanelSource {
+    type Instant = Instant;
+    type Payload = Vec<RowUpdate>;
+    type Pass = ArrayPass<f64, 2>;
 
     fn total_num_events(&self) -> Option<usize> {
         // Progress is measured in **emitted long-table rows** (one event per
@@ -281,8 +282,8 @@ impl EventSource for ParquetPanelSource {
     fn init(
         &self,
     ) -> (
-        impl Stream<Item = Event<Vec<RowUpdate>>> + Send + 'static,
-        impl FnMut(Vec<RowUpdate>, &mut Array<f64, 2>, Instant) -> usize + Send + 'static,
+        impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static,
+        impl FnMut(Instant, Vec<RowUpdate>, &mut Array<f64, 2>) -> usize + Send + 'static,
     ) {
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
@@ -298,7 +299,7 @@ impl EventSource for ParquetPanelSource {
         let mut state = PanelState::default();
         (
             receiver_stream(hist_rx),
-            move |batch, output: &mut Array<f64, 2>, ts| panel_write(&mut state, batch, output, ts),
+            move |ts, batch, output: &mut Array<f64, 2>| panel_write(&mut state, ts, batch, output),
         )
     }
 }
@@ -689,9 +690,10 @@ struct ReportRow {
     values: Vec<f64>,
 }
 
-impl EventSource for ParquetFinancialReportPanelSource {
-    type Event = Vec<RowUpdate>;
-    type Value = ArrayValue<f64, 2>;
+impl Source for ParquetFinancialReportPanelSource {
+    type Instant = Instant;
+    type Payload = Vec<RowUpdate>;
+    type Pass = ArrayPass<f64, 2>;
 
     fn total_num_events(&self) -> Option<usize> {
         // Progress is in emitted long-table rows. The effective-date emits (after
@@ -711,8 +713,8 @@ impl EventSource for ParquetFinancialReportPanelSource {
     fn init(
         &self,
     ) -> (
-        impl Stream<Item = Event<Vec<RowUpdate>>> + Send + 'static,
-        impl FnMut(Vec<RowUpdate>, &mut Array<f64, 2>, Instant) -> usize + Send + 'static,
+        impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static,
+        impl FnMut(Instant, Vec<RowUpdate>, &mut Array<f64, 2>) -> usize + Send + 'static,
     ) {
         // One item per tick (a batch of that date's reports); small buffer.
         let (hist_tx, hist_rx) = mpsc::channel(16);
@@ -730,7 +732,7 @@ impl EventSource for ParquetFinancialReportPanelSource {
         let mut state = PanelState::default();
         (
             receiver_stream(hist_rx),
-            move |batch, output: &mut Array<f64, 2>, ts| panel_write(&mut state, batch, output, ts),
+            move |ts, batch, output: &mut Array<f64, 2>| panel_write(&mut state, ts, batch, output),
         )
     }
 }

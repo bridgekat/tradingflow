@@ -13,7 +13,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use tradingflow_graph::core::Pool;
+use tradingflow_graph::pool::Pool;
 
 fn pool() -> Pool {
     Pool::new(thread::available_parallelism().map_or(1, |n| n.get()))

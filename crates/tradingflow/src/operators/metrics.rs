@@ -14,10 +14,10 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::graph::typed::{Operator, RefPort};
+use crate::graph::Operator;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::ports::ArrayPort;
+use crate::ports::{ArrayPort, UnitPort};
 
 // ---------------------------------------------------------------------------
 // CompoundReturn
@@ -52,7 +52,7 @@ pub struct CompoundReturnState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for CompoundReturn<T, N> {
-    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Inputs = (UnitPort, ArrayPort<T, N>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = CompoundReturnState<T>;
@@ -66,7 +66,7 @@ impl<T: Scalar + Float, const N: usize> Operator for CompoundReturn<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((produced_clock, _), (_, data)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        ((produced_clock, _), (_, data)): ((bool, ()), (bool, ArrayView<'a, T, N>)),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -103,7 +103,7 @@ impl<T: Scalar + Float, const N: usize> Operator for CompoundReturn<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        _: ((bool, ()), (bool, ArrayView<'a, T, N>)),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, 0>) {
@@ -144,7 +144,7 @@ pub struct AverageReturnState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for AverageReturn<T, N> {
-    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Inputs = (UnitPort, ArrayPort<T, N>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = AverageReturnState<T>;
@@ -159,7 +159,7 @@ impl<T: Scalar + Float, const N: usize> Operator for AverageReturn<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((produced_clock, _), (_, data)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        ((produced_clock, _), (_, data)): ((bool, ()), (bool, ArrayView<'a, T, N>)),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -184,7 +184,7 @@ impl<T: Scalar + Float, const N: usize> Operator for AverageReturn<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        _: ((bool, ()), (bool, ArrayView<'a, T, N>)),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, 0>) {
@@ -226,7 +226,7 @@ pub struct VolatilityState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
-    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Inputs = (UnitPort, ArrayPort<T, N>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = VolatilityState<T>;
@@ -242,7 +242,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((produced_clock, _), (_, data)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        ((produced_clock, _), (_, data)): ((bool, ()), (bool, ArrayView<'a, T, N>)),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -275,7 +275,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Volatility<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        _: ((bool, ()), (bool, ArrayView<'a, T, N>)),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, 0>) {
@@ -317,7 +317,7 @@ pub struct SharpeRatioState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float, const N: usize> Operator for SharpeRatio<T, N> {
-    type Inputs = (RefPort<()>, ArrayPort<T, N>);
+    type Inputs = (UnitPort, ArrayPort<T, N>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = SharpeRatioState<T>;
@@ -333,7 +333,7 @@ impl<T: Scalar + Float, const N: usize> Operator for SharpeRatio<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((produced_clock, _), (_, data)): ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        ((produced_clock, _), (_, data)): ((bool, ()), (bool, ArrayView<'a, T, N>)),
         _: &Instant,
         state: &'b mut Self::State,
         init: bool,
@@ -368,7 +368,7 @@ impl<T: Scalar + Float, const N: usize> Operator for SharpeRatio<T, N> {
     }
 
     fn passthrough<'a, 'b: 'a>(
-        _: ((bool, &'a ()), (bool, ArrayView<'a, T, N>)),
+        _: ((bool, ()), (bool, ArrayView<'a, T, N>)),
         _: &Instant,
         state: &'b Self::State,
     ) -> (bool, ArrayView<'a, T, 0>) {
@@ -578,7 +578,7 @@ pub fn turnover<T: Scalar + Float, const N: usize>() -> Turnover<T, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::core::Pool;
+    use crate::graph::pool::Pool;
     use crate::graph::typed::Builder;
     use crate::operators::constant::array_cell;
 

@@ -8,18 +8,21 @@
 //!
 //! # Basic usage
 //!
-//! The three things you do in every program: create a [`Scenario`], register
-//! sources and operators, then use [`Scenario::build`] to create a [`Session`]
-//! which runs the event loop via [`Session::run`].
+//! The three things you do in every program: create a [`Builder`](graph::Builder),
+//! register sources and operators, then use [`build`](graph::Builder::build) to
+//! create a [`Graph`](graph::Graph) which runs the event loop via
+//! [`run`](graph::Graph::run).
 //!
 //! Below is a tiny example that records a synthetic price series, takes a
 //! rolling mean, and prints the resulting series.
 //!
 //! ```rust
+//! use tradingflow::clock::WallClock;
+//! use tradingflow::graph::{Builder, Pool};
 //! use tradingflow::operators::{rolling::*, structural::*};
-//! use tradingflow::sources::{basic::*};
-//! use tradingflow::{Array, ArrayPort, Instant, Scenario, Series, SeriesPort, WallClock};
-//! use tradingflow_macros::segment;
+//! use tradingflow::segment;
+//! use tradingflow::sources::basic::*;
+//! use tradingflow::{Array, ArrayPort, Instant, Series, SeriesPort};
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -35,17 +38,17 @@
 //!     let data = Series::from_vec([], timestamps, values);
 //!
 //!     // Create a computation graph.
-//!     let mut sc = Scenario::new(WallClock);
+//!     let mut b = Builder::new(WallClock);
 //!
 //!     // Build the graph.
-//!     let prices = sc.source(array_source(data, Array::scalar(0.0)));
-//!     let prices_series = sc.segment(record(), prices);
-//!     let mean = sc.segment(rolling_mean(Window::Count(10)), prices_series);
-//!     let mean_series = sc.segment(record(), mean);
+//!     let prices = b.source(array_source(data, Array::scalar(0.0)));
+//!     let prices_series = b.segment(record(), prices);
+//!     let mean = b.segment(rolling_mean(Window::Count(10)), prices_series);
+//!     let mean_series = b.segment(record(), mean);
 //!
 //!     // Alternatively, one can use `segment!` to fuse operators into a
-//!     // single segment (subgraph).
-//!     let mean_series_fuse = sc.segment(
+//!     // single segment.
+//!     let mean_series_fuse = b.segment(
 //!         segment!(
 //!             |prices: ArrayPort<f64, 0>| -> SeriesPort<f64, 0> {
 //!                 let prices_series = record() @ prices;
@@ -58,15 +61,15 @@
 //!     );
 //!
 //!     // Run the event loop until all sources are exhausted.
-//!     let mut session = sc.build();
-//!     session.run(|_, _| {}).await;
+//!     let mut g = b.build();
+//!     g.run(&mut Pool::new(0), |_, _| {}).await;
 //!
 //!     // Inspect results.
 //!     assert_eq!(
-//!         session.view(mean_series).data(),
-//!         session.view(mean_series_fuse).data()
+//!         g.view(mean_series).data(),
+//!         g.view(mean_series_fuse).data()
 //!     );
-//!     println!("{:?}", session.view(mean_series).data());
+//!     println!("{:?}", g.view(mean_series).data());
 //! }
 //! ```
 //!
@@ -84,24 +87,20 @@
 //!
 //! See module-level docs of [`graph`].
 //!
-//! # The event loop driver
-//!
-//! See module-level docs of [`ingest`].
-//!
 //! # Built-in sources and operators
 //!
 //! See module-level docs of [`sources`] and [`operators`].
 
 pub use tradingflow_data as data;
 pub use tradingflow_graph as graph;
+pub use tradingflow_macros::segment;
 
-pub mod ingest;
+pub mod clock;
 pub mod operators;
 pub mod ports;
 pub mod sources;
 pub mod utils;
 
 pub use data::{Array, ArrayView, Duration, Instant, Retention, Scalar, Series, SeriesView, Shape};
-pub use ingest::{Scenario, Session, WallClock};
-pub use ports::{ArrayPort, ArrayPorts, ArrayValue, SeriesPort, SeriesPorts, SeriesValue};
+pub use ports::{ArrayPass, ArrayPort, ArrayPorts, SeriesPass, SeriesPort, SeriesPorts};
 pub use utils::Schema;

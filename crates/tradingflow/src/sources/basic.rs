@@ -6,8 +6,8 @@
 //! * [`IterSource`] — driven by a factory of `(timestamp, value)` iterators;
 //!   more flexible than [`ArraySource`], supporting lazy / computed sequences
 //!   and arbitrary event types.
-//! * [`pulse()`] — an [`IterSource<()>`](IterSource) of bare triggers, the
-//!   clock the gated operators fire on.
+//! * [`pulse()`] — a [`PulseSource`] of bare `Val<()>` triggers, the clock the
+//!   gated operators fire on.
 //!
 //! All three drain into the graph through a spawned tokio task with bounded
 //! back-pressure, so a tokio runtime must be active when they are added to a
@@ -39,9 +39,8 @@ use tokio::sync::mpsc;
 
 use super::receiver_stream;
 use crate::data::{Array, Instant, Scalar, Series};
-use crate::graph::typed::Ref;
-use crate::ingest::{Event, EventSource};
-use crate::ports::ArrayValue;
+use crate::graph::{Event, Ref, Source, Val};
+use crate::ports::ArrayPass;
 
 // ===========================================================================
 // ArraySource — historical replay of a pre-loaded Series.
@@ -68,9 +67,10 @@ impl<T: Scalar, const N: usize> ArraySource<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> EventSource for ArraySource<T, N> {
-    type Event = Array<T, N>;
-    type Value = ArrayValue<T, N>;
+impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
+    type Instant = Instant;
+    type Payload = Array<T, N>;
+    type Pass = ArrayPass<T, N>;
 
     fn total_num_events(&self) -> Option<usize> {
         Some(self.series.len())
@@ -83,8 +83,8 @@ impl<T: Scalar, const N: usize> EventSource for ArraySource<T, N> {
     fn init(
         &self,
     ) -> (
-        impl Stream<Item = Event<Array<T, N>>> + Send + 'static,
-        impl FnMut(Array<T, N>, &mut Array<T, N>, Instant) -> usize + Send + 'static,
+        impl Stream<Item = Event<Instant, Array<T, N>>> + Send + 'static,
+        impl FnMut(Instant, Array<T, N>, &mut Array<T, N>) -> usize + Send + 'static,
     ) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
@@ -103,7 +103,7 @@ impl<T: Scalar, const N: usize> EventSource for ArraySource<T, N> {
 
         (
             receiver_stream(hist_rx),
-            |payload, output: &mut Array<T, N>, _| {
+            |_, payload, output: &mut Array<T, N>| {
                 output.assign(payload.view());
                 1
             },
@@ -131,7 +131,7 @@ type EventIter<T> = Box<dyn Iterator<Item = (Instant, T)> + Send>;
 ///
 /// Stored behind `Arc<...>` so the [`IterSource`] spec satisfies `Clone`
 /// (refcount bump only) and can drive multiple scenario sessions, each with a
-/// freshly built iterator — and `Send`, as [`EventSource`] requires (the spec
+/// freshly built iterator — and `Send`, as [`Source`] requires (the spec
 /// moves into the session's lazily-started feed).
 type IterFactory<T> = Arc<dyn Fn() -> EventIter<T> + Send + Sync>;
 
@@ -165,7 +165,7 @@ impl<T: Clone + Send + 'static> Clone for IterSource<T> {
 impl<T: Clone + Send + 'static> IterSource<T> {
     /// Create from an iterator factory and a default output value.
     ///
-    /// `factory` is called once per [`EventSource::init`] invocation and must
+    /// `factory` is called once per [`Source::init`] invocation and must
     /// produce a fresh iterator over `(timestamp, value)` pairs each time.
     /// The factory is shared via `Arc` across clones of the source.
     pub fn new<I, F>(factory: F, default: T) -> Self
@@ -183,7 +183,7 @@ impl<T: Clone + Send + 'static> IterSource<T> {
     /// Create from a fixed `Vec` of `(timestamp, value)` events.
     ///
     /// The vector is shared across clones via `Arc` and cloned on each
-    /// [`EventSource::init`] call to produce a fresh iterator.  The estimated
+    /// [`Source::init`] call to produce a fresh iterator.  The estimated
     /// event count is set to the vector length automatically.
     pub fn from_vec(events: Vec<(Instant, T)>) -> Self
     where
@@ -221,9 +221,10 @@ impl<T: Clone + Send + 'static> IterSource<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> EventSource for IterSource<T> {
-    type Event = T;
-    type Value = Ref<T>;
+impl<T: Clone + Send + Sync + 'static> Source for IterSource<T> {
+    type Instant = Instant;
+    type Payload = T;
+    type Pass = Ref<T>;
 
     fn total_num_events(&self) -> Option<usize> {
         self.total_num_events
@@ -236,8 +237,8 @@ impl<T: Clone + Send + Sync + 'static> EventSource for IterSource<T> {
     fn init(
         &self,
     ) -> (
-        impl Stream<Item = Event<T>> + Send + 'static,
-        impl FnMut(T, &mut T, Instant) -> usize + Send + 'static,
+        impl Stream<Item = Event<Instant, T>> + Send + 'static,
+        impl FnMut(Instant, T, &mut T) -> usize + Send + 'static,
     ) {
         let (hist_tx, hist_rx) = mpsc::channel(64);
 
@@ -250,7 +251,7 @@ impl<T: Clone + Send + Sync + 'static> EventSource for IterSource<T> {
             }
         });
 
-        (receiver_stream(hist_rx), |payload, output: &mut T, _| {
+        (receiver_stream(hist_rx), |_, payload, output: &mut T| {
             *output = payload;
             1
         })
@@ -285,11 +286,55 @@ pub fn vec_source<T: Clone + Default + Send + Sync + 'static>(
 // Pulse — bare () triggers for the clock-gated operators.
 // ===========================================================================
 
+/// A pulse (bare-trigger) source: emits a `()` at each of the given
+/// timestamps, passed **by value** (`Val<()>`) so it wires directly into the
+/// clock-gated operators' `UnitPort` inputs. `Clone` and reusable across
+/// sessions; its events drain through a spawned tokio task like the other
+/// sources.
+#[derive(Clone)]
+pub struct PulseSource {
+    timestamps: Arc<Vec<Instant>>,
+}
+
+impl Source for PulseSource {
+    type Instant = Instant;
+    type Payload = ();
+    type Pass = Val<()>;
+
+    fn total_num_events(&self) -> Option<usize> {
+        Some(self.timestamps.len())
+    }
+
+    fn initial(&self) {}
+
+    fn init(
+        &self,
+    ) -> (
+        impl Stream<Item = Event<Instant, ()>> + Send + 'static,
+        impl FnMut(Instant, (), &mut ()) -> usize + Send + 'static,
+    ) {
+        let (hist_tx, hist_rx) = mpsc::channel(64);
+
+        let timestamps = self.timestamps.clone();
+        tokio::spawn(async move {
+            for ts in timestamps.iter().copied() {
+                if hist_tx.send((ts, ())).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        (receiver_stream(hist_rx), |_, _payload, _output: &mut ()| 1)
+    }
+}
+
 /// Create a pulse source from explicit timestamps.
 ///
-/// The output node holds `()` (zero-sized, purely a trigger).  The
-/// resulting [`IterSource`] is `Clone` and reusable across multiple
+/// The output node holds `()` (zero-sized, purely a trigger) passed by value.
+/// The resulting [`PulseSource`] is `Clone` and reusable across multiple
 /// scenario sessions.
-pub fn pulse(timestamps: Vec<Instant>) -> IterSource<()> {
-    IterSource::from_vec_with_default(timestamps.into_iter().map(|ts| (ts, ())).collect(), ())
+pub fn pulse(timestamps: Vec<Instant>) -> PulseSource {
+    PulseSource {
+        timestamps: Arc::new(timestamps),
+    }
 }

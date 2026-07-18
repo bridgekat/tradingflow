@@ -1,33 +1,7 @@
-//! Wall-clock time sources gating the ingest event loop.
-
-use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::data::Instant;
-
-/// A wall clock source: gates the release of future-dated and implicitly
-/// (["now"](super::Stamp::Now)) stamped events in the ingest merge.
-///
-/// The [`Queue`](super::Queue) is generic over this so tests can substitute a
-/// simulated clock whose `wait_until` jumps time forward deterministically;
-/// everything else runs on the real [`WallClock`].
-pub trait Clock {
-    /// Returns current wall-clock reading. Must be non-decreasing.
-    fn now(&self) -> Instant;
-
-    /// Returns a future that resolves once the wall clock has moved strictly
-    /// past `t` (so `now() > t` afterwards).
-    fn wait_until(&mut self, t: Instant) -> impl Future<Output = ()>;
-}
-
-/// Current TAI time from the system clock (UTC → TAI through [`hifitime`]'s
-/// leap-second table, see [`Instant::from_utc_nanos`]).
-fn tai_now() -> Instant {
-    let unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before the Unix epoch");
-    Instant::from_utc_nanos(unix.as_nanos() as i64)
-}
+use crate::graph::Clock;
 
 /// The real (TAI) wall clock driving the event loop: `now()` reads system
 /// time converted to TAI, and `wait_until` sleeps on the tokio timer until
@@ -42,9 +16,18 @@ fn tai_now() -> Instant {
 /// real time — it is the default [`Scenario`](super::Scenario) clock.
 pub struct WallClock;
 
-impl Clock for WallClock {
+impl Clock<Instant> for WallClock {
+    fn min(&self) -> Instant {
+        Instant::from_nanos(i64::MIN)
+    }
+
     fn now(&self) -> Instant {
-        tai_now()
+        // Current TAI time from the system clock (UTC → TAI through [`hifitime`]'s
+        // leap-second table, see [`Instant::from_utc_nanos`]).
+        let unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is before the Unix epoch");
+        Instant::from_utc_nanos(unix.as_nanos() as i64)
     }
 
     async fn wait_until(&mut self, t: Instant) {
@@ -52,7 +35,7 @@ impl Clock for WallClock {
         // contract is strict (`now() > t` on return), and the timer may round
         // or wake early.
         loop {
-            let now = tai_now();
+            let now = self.now();
             if now > t {
                 return;
             }

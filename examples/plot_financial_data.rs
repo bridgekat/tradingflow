@@ -26,15 +26,15 @@ use std::fs;
 mod common;
 
 use tradingflow::data::{Array, ArrayView, Duration, Instant, SeriesView};
-use tradingflow::graph::typed::PortHandle;
+use tradingflow::clock::WallClock;
+use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::num::{divide, multiply, negate};
 use tradingflow::operators::rolling::{Window, rolling_mean};
 use tradingflow::operators::stocks::annualize;
 use tradingflow::operators::structural::{filter, record};
 use tradingflow::operators::transform::{map, select_at, select_many};
-use tradingflow::ports::ArrayPort;
+use tradingflow::ports::ArrayPortHandle;
 use tradingflow::sources::panel::*;
-use tradingflow::{Scenario, WallClock};
 
 const COLS: [&str; 10] = [
     "market_cap",
@@ -76,13 +76,13 @@ async fn main() {
         .position(|s| s == &symbol)
         .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
-    let mut sc = Scenario::new(WallClock);
+    let mut sc = Builder::new(WallClock);
 
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
     let daily =
-        |sc: &mut Scenario, kind: &str, cols: Vec<String>| -> PortHandle<ArrayPort<f64, 1>> {
+        |sc: &mut Builder<Instant, WallClock>, kind: &str, cols: Vec<String>| -> ArrayPortHandle<f64, 1> {
             let s =
                 parquet_panel_source(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
             let panel = sc.source(s);
@@ -93,11 +93,11 @@ async fn main() {
             )
         };
 
-    let report = |sc: &mut Scenario,
+    let report = |sc: &mut Builder<Instant, WallClock>,
                   kind: &str,
                   cols: Vec<String>,
                   with_report_date: bool|
-     -> PortHandle<ArrayPort<f64, 1>> {
+     -> ArrayPortHandle<f64, 1> {
         let s = parquet_financial_report_panel_source(
             format!("{data_dir}/{kind}.parquet"),
             cols,
@@ -193,8 +193,11 @@ async fn main() {
     // Run.
     // ------------------------------------------------------------------
     let mut session = sc.build();
+    let mut pool = Pool::new(0);
     let total = session.total_num_events();
-    session.run(common::progress(total, Instant::MIN)).await;
+    session
+        .run(&mut pool, common::progress(total, Instant::MIN))
+        .await;
     eprintln!();
 
     let mut rows: BTreeMap<i64, [f64; 10]> = BTreeMap::new();

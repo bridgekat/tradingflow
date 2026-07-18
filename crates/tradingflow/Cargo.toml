@@ -20,8 +20,8 @@ tokio = { version = "1", features = [
     "time",
 ] }
 hifitime = "4"
-pyo3 = { version = "0.28.2", optional = true }
-numpy = { version = "0.28.0", optional = true }
+pyo3 = { version = "0.29.0", optional = true }
+numpy = { version = "0.29.0", optional = true }
 num-traits = "0.2.19"
 bumpalo = "3"
 rand = { version = "0.10", features = ["thread_rng"] }
@@ -29,14 +29,14 @@ futures = { version = "0.3", default-features = false, features = ["alloc"] }
 tradingflow-data = { path = "../tradingflow-data" }
 tradingflow-graph = { path = "../tradingflow-graph" }
 tradingflow-macros = { path = "../tradingflow-macros" }
-arrow = "58.3.0"
-parquet = { version = "58.3.0", features = ["arrow", "zstd"] }
+arrow = "59.1.0"
+parquet = { version = "59.1.0", features = ["arrow", "zstd"] }
 
 [dev-dependencies]
 tempfile = "3"
-pollster = "0.4"
+pollster = "1.0"
 futures = { version = "0.3", default-features = false, features = ["std"] }
-indicatif = "0.17"
+indicatif = "0.18"
 clap = { version = "4", features = ["derive"] }
 
 [[example]]
