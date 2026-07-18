@@ -1,3 +1,5 @@
+//! Layer 2: typed, event-driven graph and builder (public API).
+
 mod clock;
 mod event;
 mod feed;

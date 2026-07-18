@@ -1,3 +1,5 @@
+//! Layer 1: typed, passive graph and builder.
+
 mod flat;
 mod graph;
 mod handles;

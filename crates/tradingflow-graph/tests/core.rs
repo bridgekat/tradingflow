@@ -160,11 +160,11 @@ fn set(g: &mut Graph, slot: usize, v: i64) {
 fn diamond_and_root_edge_are_glitch_free() {
     // S -> A=S+1, S -> B=S*10, (A,B) -> D=A+B; plus E=S+A.
     let mut b = Builder::new(ErasedCell::new(()));
-    let s = b.push(source(), &[]).unwrap().start;
-    let a = b.push(unary(inc), &[s]).unwrap().start;
-    let bb = b.push(unary(times10), &[s]).unwrap().start;
-    let d = b.push(binary(add), &[a, bb]).unwrap().start;
-    let e = b.push(binary(add), &[s, a]).unwrap().start;
+    let s = b.push(source(), &[]).unwrap().1.start;
+    let a = b.push(unary(inc), &[s]).unwrap().1.start;
+    let bb = b.push(unary(times10), &[s]).unwrap().1.start;
+    let d = b.push(binary(add), &[a, bb]).unwrap().1.start;
+    let e = b.push(binary(add), &[s, a]).unwrap().1.start;
     let mut g = b.build();
     let mut pool = pool();
 
@@ -192,11 +192,11 @@ fn wide_fan_in_runs_on_the_pool() {
     let agg = seg(vec![TypeId::of::<i64>(); N].into_boxed_slice(), sum_all);
 
     let mut b = Builder::new(ErasedCell::new(()));
-    let s = b.push(source(), &[]).unwrap().start;
+    let s = b.push(source(), &[]).unwrap().1.start;
     let layer: Vec<usize> = (0..N)
-        .map(|_| b.push(unary(inc), &[s]).unwrap().start)
+        .map(|_| b.push(unary(inc), &[s]).unwrap().1.start)
         .collect();
-    let total = b.push(agg, &layer).unwrap().start;
+    let total = b.push(agg, &layer).unwrap().1.start;
     let mut g = b.build();
     let mut pool = pool();
 
@@ -216,9 +216,9 @@ fn panic_in_compute_poisons_the_graph() {
     // forwarded pointers), so the graph is poisoned: no recovery is attempted,
     // and every later stabilize and slot read panics.
     let mut b = Builder::new(ErasedCell::new(()));
-    let s = b.push(source(), &[]).unwrap().start;
-    let p = b.push(unary(panic_if_negative), &[s]).unwrap().start;
-    let d = b.push(unary(inc), &[p]).unwrap().start;
+    let s = b.push(source(), &[]).unwrap().1.start;
+    let p = b.push(unary(panic_if_negative), &[s]).unwrap().1.start;
+    let d = b.push(unary(inc), &[p]).unwrap().1.start;
     let mut g = b.build();
     let mut pool = pool();
 
@@ -257,7 +257,7 @@ fn push_rejects_out_of_bounds_input() {
 #[test]
 fn push_rejects_arity_mismatch() {
     let mut b = Builder::new(ErasedCell::new(()));
-    let s = b.push(source(), &[]).unwrap().start;
+    let s = b.push(source(), &[]).unwrap().1.start;
     // `binary` declares two inputs; wire only one.
     let err = b.push(binary(add), &[s]).unwrap_err();
     assert_eq!(
@@ -287,7 +287,7 @@ fn push_rejects_type_mismatch() {
             )
         }
     };
-    let fc = b.push(f, &[]).unwrap().start;
+    let fc = b.push(f, &[]).unwrap().1.start;
     // ... wired into `inc`, which expects i64.
     let err = b.push(unary(inc), &[fc]).unwrap_err();
     assert_eq!(

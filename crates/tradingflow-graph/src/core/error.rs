@@ -1,8 +1,6 @@
 use std::any::TypeId;
 
-/// Why `Builder::push` rejected a segment's wiring. Carries raw data
-/// (places, slot indices, [`TypeId`]s, counts) so a caller can render a
-/// message; this crate does not format one.
+/// Errors returned by [`Builder::push`](super::Builder::push).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Wrong number of input slots for the segment.

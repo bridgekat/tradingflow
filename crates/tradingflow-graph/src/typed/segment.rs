@@ -1,6 +1,6 @@
 use super::Interface;
 
-/// A composable morphism `Inputs -> Outputs`.
+/// A composable graph segment: can be a node or a subgraph.
 pub trait Segment {
     /// Input tree (e.g. `(Port<f64>, Ports<f64>)`).
     type Inputs: Interface;
@@ -23,7 +23,7 @@ pub trait Segment {
     ) -> <Self::Outputs as Interface>::Values<'a>;
 }
 
-/// A [`Segment`] that automatically handles notification flags.
+/// A [`Segment`] that handles notification flags.
 pub trait Operator {
     /// Input tree (e.g. `(Port<f64>, Ports<f64>)`).
     type Inputs: Interface;

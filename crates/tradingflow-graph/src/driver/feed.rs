@@ -22,8 +22,7 @@ pub trait Feed<I, S> {
     fn write(&mut self, instant: I, sink: &mut S) -> bool;
 }
 
-/// A feed constructed from a [`Stream`] of events. The sink type is pinned by
-/// the write closure's [`Feed`] implementation, not the struct.
+/// A feed constructed from a stream of events.
 pub struct StreamFeed<I, T, F> {
     stream: Pin<Box<dyn Stream<Item = Event<I, T>>>>,
     buffer: Option<Event<I, T>>,
@@ -31,10 +30,7 @@ pub struct StreamFeed<I, T, F> {
 }
 
 impl<I, T, F> StreamFeed<I, T, F> {
-    pub fn new<S>(stream: S, write: F) -> Self
-    where
-        S: Stream<Item = Event<I, T>> + 'static,
-    {
+    pub fn new(stream: impl Stream<Item = Event<I, T>> + 'static, write: F) -> Self {
         Self {
             stream: Box::pin(stream),
             buffer: None,

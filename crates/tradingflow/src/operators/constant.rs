@@ -12,10 +12,7 @@ impl<V: Pass> Constant<V> {
     }
 }
 
-impl<V: Pass> Segment for Constant<V>
-where
-    for<'a> V::View<'a>: Copy + Send + Sync,
-{
+impl<V: Pass> Segment for Constant<V> {
     type Inputs = ();
     type Outputs = Port<V>;
     type Context = Instant;
@@ -31,7 +28,7 @@ where
         state: &'b mut V::Owned,
         is_first_run: bool,
     ) -> (bool, V::View<'a>) {
-        (!is_first_run, V::borrow(state))
+        (!is_first_run, V::view(state))
     }
 }
 

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::{Clock, Queue, Source, StreamFeed};
 use crate::typed::{HandlesInterface, InterfaceHandles, Pass, Port, PortHandle, Segment};
 
+/// The on-graph value node for a source stream.
 struct Store<I: Clone + Ord + Send + Sync + 'static, V: Pass> {
     value: V::Owned,
     _phantom: PhantomData<fn() -> I>,
@@ -21,10 +22,7 @@ impl<I: Clone + Ord + Send + Sync + 'static, V: Pass> Store<I, V> {
     }
 }
 
-impl<I: Clone + Ord + Send + Sync + 'static, V: Pass> Segment for Store<I, V>
-where
-    for<'a> V::View<'a>: Copy + Send + Sync,
-{
+impl<I: Clone + Ord + Send + Sync + 'static, V: Pass> Segment for Store<I, V> {
     type Inputs = ();
     type Outputs = Port<V>;
     type Context = I;
@@ -41,10 +39,13 @@ where
         is_first_run: bool,
     ) -> (bool, V::View<'a>) {
         let owned: &'a V::Owned = state;
-        (!is_first_run, V::borrow(owned))
+        (!is_first_run, V::view(owned))
     }
 }
 
+/// Builder for the top-layer [`Graph`].
+///
+/// This is the default level of the public graph API.
 pub struct Builder<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> {
     inner: crate::typed::Builder<I>,
     queue: Queue<I, C, crate::typed::Graph<I>>,
@@ -116,6 +117,10 @@ impl<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> Builder<I, C> {
     }
 }
 
+/// The top-level wrapper over the typed layer [`Graph`](crate::typed::Graph)
+/// and the event [`Queue`].
+///
+/// This is the default level of the public graph API.
 pub struct Graph<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> {
     inner: crate::typed::Graph<I>,
     queue: Queue<I, C, crate::typed::Graph<I>>,
@@ -124,10 +129,7 @@ pub struct Graph<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> {
 }
 
 impl<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> Graph<I, C> {
-    pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_>
-    where
-        for<'a> V::View<'a>: Copy,
-    {
+    pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_> {
         self.inner.view(handle)
     }
 

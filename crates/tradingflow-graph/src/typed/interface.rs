@@ -2,68 +2,66 @@ use std::{any::TypeId, marker::PhantomData, mem::MaybeUninit};
 
 use super::{FlatRead, FlatWrite};
 
-/// Marks a *way to pass a value through a port*: a `'static` name `V` for a
-/// payload view `V::View<'a>`, together with the view's owned form
-/// [`Owned`](Self::Owned) and how a view is [borrowed](Self::borrow) from it.
-/// `Scalar<T>` passes `T` (a non-borrowing view is its own owned form, and its
-/// "borrow" is a clone); a user `Array<T>` marker might pass a genuinely
-/// borrowing `ArrayView<'a, T>` owned by an `Array<T>`. `View` carries no
-/// bounds here (only `'a`) -- the leaves that use it add their own (e.g.
-/// [`Port`] needs `View: Copy + Send + Sync`).
+/// Marker type defining the policy for passing a type across interfaces.
 ///
 /// # Safety
 ///
-/// * `View<'a>` must be covariant in `'a`.
+/// - [`Pass::View<'a>`] must be covariant in `'a` - required by [`Interface`].
 pub unsafe trait Pass: 'static {
-    /// The owned form: what a source node stores in state.
+    /// The owned value: what a source node stores in state.
     type Owned: Send + Sync + 'static;
 
     /// The view: what travels through ports.
-    type View<'a>: 'a;
+    type View<'a>: Copy + Send + Sync + 'a;
 
-    /// Borrow a view from the owned form -- an actual borrow for a borrowing
-    /// policy, a clone for a non-borrowing one.
-    fn borrow(owned: &Self::Owned) -> Self::View<'_>;
+    /// Derives a view from an owned value.
+    fn view(owned: &Self::Owned) -> Self::View<'_>;
 }
 
-/// Pass `T` by value.
+/// The policy passing `T` by `T` (pass-by-value).
 pub struct Val<T>(PhantomData<T>);
 
-// SAFETY: `T: 'static` so it is trivially covariant in `'a`.
-unsafe impl<T: Clone + Send + Sync + 'static> Pass for Val<T> {
+// # Safety
+//
+// `T: 'static` so it is trivially covariant in `'a`.
+unsafe impl<T: Copy + Send + Sync + 'static> Pass for Val<T> {
     type View<'a> = T;
     type Owned = T;
 
     #[inline(always)]
-    fn borrow(owned: &T) -> T {
-        owned.clone()
+    fn view(owned: &T) -> T {
+        *owned
     }
 }
 
-/// Pass `T` by reference.
+/// The policy passing `T` by `&T` (pass-by-reference).
 pub struct Ref<T>(PhantomData<T>);
 
-// SAFETY: `&'a T` is covariant in `'a` (`T: 'static`).
+// # Safety
+//
+// `&'a T` is covariant in `'a` (`T: 'static`).
 unsafe impl<T: Send + Sync + 'static> Pass for Ref<T> {
     type View<'a> = &'a T;
     type Owned = T;
 
     #[inline(always)]
-    fn borrow(owned: &T) -> &T {
+    fn view(owned: &T) -> &T {
         owned
     }
 }
 
-/// Pass `Vec<T>` by `&[T]`.
+/// The policy passing `Box<[T]>` by `&[T]`.
 pub struct Slice<T>(PhantomData<T>);
 
-// SAFETY: `T: 'static` so `&'a [T]` is covariant in `'a`.
+// # Safety
+//
+// `T: 'static` so `&'a [T]` is covariant in `'a`.
 unsafe impl<T: Send + Sync + 'static> Pass for Slice<T> {
     type View<'a> = &'a [T];
-    type Owned = Vec<T>;
+    type Owned = Box<[T]>;
 
     #[inline(always)]
-    fn borrow(owned: &Vec<T>) -> &[T] {
+    fn view(owned: &Box<[T]>) -> &[T] {
         owned
     }
 }
@@ -74,21 +72,22 @@ pub struct Port<V>(PhantomData<fn() -> V>);
 /// Marks a variadic leaf in an [`Interface`] tree.
 pub struct Ports<V>(PhantomData<fn() -> V>);
 
-/// Recursive description of a segment's inputs or outputs: a tree of
-/// [`Port`] and [`Ports`] leaves.
+/// A type-level specification of an interface, constructed from [`Port`] and
+/// [`Ports`] leaves and tuple branches.
 ///
 /// # Safety
 ///
-/// The engine reconstructs payloads by re-typing `*const ()` wire pointers,
-/// trusting this impl's methods to be mutually consistent. The cross-node
-/// [`TypeId`] check validates agreement *between* nodes, not the internal
-/// coherence of one impl, so an implementor must guarantee:
+/// Across node boundaries, interface payloads needs to be de/serialized
+/// from/into a number of `*const ()` pointer slots, optionally using scratch
+/// buffers. The two-way conversions implemented by this trait must be mutually
+/// consistent. In particular:
 ///
-/// * [`Self::Values<'a>`] is covariant in `'a` (payloads and scratch contents
-///   are stored `'static`-erased and read back at a shorter lifetime).
+/// * [`Self::Values<'a>`] must be covariant in `'a`. This is because payloads
+///   and scratch buffer contents may be transmuted into, and be used at, a
+///   shorter lifetime.
 /// * For any given `shape`, [`flat_len`](Self::flat_len),
 ///   [`type_ids_to_vec`](Self::type_ids_to_vec),
-///   [`new_in_scratch`](Self::new_in_scratch),
+///   [`in_scratch`](Self::in_scratch),
 ///   [`values_to_flat`](Self::values_to_flat),
 ///   [`values_to_vecs`](Self::values_to_vecs) and
 ///   [`values_from_flat`](Self::values_from_flat) agree on the number, order,
@@ -97,68 +96,46 @@ pub struct Ports<V>(PhantomData<fn() -> V>);
 /// * Each [`TypeId`] [`type_ids_to_vec`](Self::type_ids_to_vec) emits uniquely
 ///   identifies the wire type the matching [`values_from_flat`](Self::values_from_flat)
 ///   reads (this is what the wiring check is matched against).
-/// * Every pointer written by [`values_to_flat`](Self::values_to_flat) /
-///   [`values_to_vecs`](Self::values_to_vecs) targets a value that stays valid,
-///   at a stable address, for as long as a consumer may dereference it -- in
-///   particular, a pointer into `OutScratch` must stay valid until the node's
-///   next run, so scratch storage may only be (re)allocated by
-///   [`values_to_vecs`](Self::values_to_vecs) (the once-per-node build call);
-///   [`values_to_flat`](Self::values_to_flat) and
-///   [`values_from_flat`](Self::values_from_flat) must overwrite it in place.
 pub unsafe trait Interface {
-    /// Nested `(notify, value)` payload tree. `Copy + Send`, so it threads
-    /// freely through fused bodies and across node-boundary serialization.
+    /// The payload type across this interface.
+    /// Each leaf is a `(notify, value)` pair.
     type Values<'a>: Copy + Send + 'a;
 
-    /// Node-boundary *deserialization* buffer, living in the node's state
-    /// cell: a leaf that must gather scattered wire data into contiguous
-    /// storage ([`Ports`]) declares it here and lends its payload from it;
-    /// zero-copy leaves declare `()`. Typed at `'static` purely as storage --
-    /// layout is lifetime-invariant and every access re-types it at the
-    /// calling generation's lifetime.
+    /// The deserialization scratch buffer type (optional).
     type InScratch: Send + 'static;
 
-    /// Node-boundary *serialization* buffer, living in the node's state cell:
-    /// a [`Port`] homes its view here and points the wire slot at it; a
-    /// [`Ports`] output declares `()` (its payload slice is already the
-    /// views' contiguous home). Same `'static`-as-storage convention as
-    /// [`InScratch`](Self::InScratch).
+    /// The serialization scratch buffer type (optional).
     type OutScratch: Send + 'static;
 
-    /// Number of flat leaf slots this node spans, advancing `shape` past it.
-    ///
-    /// Dynamic generalization of a static arity: fixed-shape nodes ignore
-    /// `shape`; a variadic leaf pops and returns its count.
+    /// Returns the number of pointer slots this node spans.
+    /// The `shape` reader stores number of elements for variadic ports,
+    /// and should be advanced each time a variadic leaf is encountered.
     fn flat_len(shape: &mut FlatRead<usize>) -> usize;
 
-    /// Write the [`TypeId`] of each flat leaf into `writer` in tree-order,
-    /// consuming `shape` at each variadic leaf.
+    /// Writes the [`TypeId`] of each pointer slot into `writer` in tree-order,
+    /// consuming `shape` at each variadic port.
     fn type_ids_to_vec(shape: &mut FlatRead<usize>, writer: &mut Vec<TypeId>);
 
-    /// Construct the input scratch, consuming `shape` exactly as
-    /// [`flat_len`](Self::flat_len) does and sizing the storage consistently
-    /// with what [`values_from_flat`](Self::values_from_flat) expects for that
-    /// shape. Called once per node at build.
-    fn new_in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch;
+    /// Creates an input scratch buffer (uninitialized storage), consuming
+    /// `shape` exactly as [`flat_len`](Self::flat_len) does.
+    /// Called once per node at build.
+    fn in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch;
 
-    /// Construct the output scratch (uninitialized storage: it is written
-    /// before every read, by [`values_to_vecs`](Self::values_to_vecs) /
-    /// [`values_to_flat`](Self::values_to_flat)). Called once per node at
-    /// build.
-    fn new_out_scratch() -> Self::OutScratch;
+    /// Creates an output scratch buffer (uninitialized storage).
+    /// Called once per node at build.
+    fn out_scratch() -> Self::OutScratch;
 
-    /// Construct the nested payload tree by consuming the two parallel wire
-    /// planes (`flags` + value pointers `ptrs`), using `shape` to size each
-    /// variadic leaf. A [`Port`] copies its view back out of the pointed-to
-    /// home; the gathering [`Ports`] copies the pointed-to views into
-    /// `scratch` (overwriting last generation's in place) and lends the
-    /// payload from there.
+    /// Constructs the payload by consuming pointer slots (`flags` and `ptrs`).
+    /// Consumes `shape` exactly as [`flat_len`](Self::flat_len) does.
+    /// The scratch buffer is assumed uninitialized and can be overwritten.
     ///
     /// # Safety
     ///
-    /// Each consumed pointer must point to a valid value of the matching type,
-    /// and `shape` must be the shape that produced this layout (and sized
-    /// `scratch` via [`new_in_scratch`](Self::new_in_scratch)).
+    /// The caller must guarantee that each pointer slot originates with a
+    /// [`TypeId`] matching the output generated by
+    /// [`type_ids_to_vec`](Self::type_ids_to_vec) for the same `shape`.
+    /// The scratch buffer must be created by
+    /// [`in_scratch`](Self::in_scratch) for the same `shape`.
     unsafe fn values_from_flat<'a>(
         shape: &mut FlatRead<'a, usize>,
         flags: &mut FlatRead<'a, bool>,
@@ -166,37 +143,43 @@ pub unsafe trait Interface {
         scratch: &'a mut Self::InScratch,
     ) -> Self::Values<'a>;
 
-    /// Serialize the payload tree onto the wire planes. A [`Port`] leaf
-    /// homes its view into `scratch` -- overwriting last generation's in place
-    /// -- and writes a thin pointer to that home, which keeps a stable address
-    /// until the node's next run; a [`Ports`] output writes each element's
-    /// address directly (the payload slice is the home).
-    fn values_to_flat<'a>(
+    /// Serializes the payload into pointer slots (`flags` and `ptrs`).
+    /// The scratch buffer is assumed uninitialized and can be overwritten.
+    ///
+    /// # Safety
+    ///
+    /// The result must agree with [`values_to_vecs`](Self::values_to_vecs).
+    unsafe fn values_to_flat<'a>(
         values: Self::Values<'a>,
-        scratch: &mut Self::OutScratch,
         flags: &mut FlatWrite<bool>,
         ptrs: &mut FlatWrite<*const ()>,
+        scratch: &mut Self::OutScratch,
     );
 
-    /// [`values_to_flat`](Self::values_to_flat) into growable vecs, recording
-    /// the shape (the once-per-node build call). This is the one place allowed
-    /// to (re)allocate `scratch` -- variadic output leaves size theirs here.
-    fn values_to_vecs<'a>(
+    /// Serializes the payload into pointer slots (`flags` and `ptrs`).
+    /// Writes to `shape` in the exact same format as how
+    /// [`flat_len`](Self::flat_len) reads.
+    /// The scratch buffer is assumed uninitialized and can be overwritten.
+    ///
+    /// # Safety
+    ///
+    /// The scratch buffer must be created by
+    /// [`out_scratch`](Self::out_scratch) for the same `shape`.
+    /// The callee guarantees that the resulting pointer slots are compatible
+    /// with [`TypeId`]s generated by [`type_ids_to_vec`](Self::type_ids_to_vec)
+    /// called on the resulting `shape`.
+    unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
-        scratch: &mut Self::OutScratch,
         shape: &mut Vec<usize>,
         flags: &mut Vec<bool>,
         ptrs: &mut Vec<*const ()>,
+        scratch: &mut Self::OutScratch,
     );
 
-    /// Whether any leaf's notify flag is set (the gate for a fused operator).
+    /// Returns whether any leaf's notify flag is set.
     fn any_notify(values: &Self::Values<'_>) -> bool;
 }
 
-// -- Compound: empty tuple (arity 0) ----------------------------------------
-
-// SAFETY: the empty tree spans zero leaves; every method is a no-op, so the
-// consistency obligations hold vacuously.
 unsafe impl Interface for () {
     type Values<'a> = ();
     type InScratch = ();
@@ -211,10 +194,10 @@ unsafe impl Interface for () {
     fn type_ids_to_vec(_shape: &mut FlatRead<usize>, _writer: &mut Vec<TypeId>) {}
 
     #[inline]
-    fn new_in_scratch(_shape: &mut FlatRead<usize>) -> Self::InScratch {}
+    fn in_scratch(_shape: &mut FlatRead<usize>) -> Self::InScratch {}
 
     #[inline]
-    fn new_out_scratch() -> Self::OutScratch {}
+    fn out_scratch() -> Self::OutScratch {}
 
     #[inline]
     unsafe fn values_from_flat<'a>(
@@ -226,21 +209,21 @@ unsafe impl Interface for () {
     }
 
     #[inline]
-    fn values_to_flat<'a>(
+    unsafe fn values_to_flat<'a>(
         _values: Self::Values<'a>,
-        _scratch: &mut Self::OutScratch,
         _flags: &mut FlatWrite<bool>,
         _ptrs: &mut FlatWrite<*const ()>,
+        _scratch: &mut Self::OutScratch,
     ) {
     }
 
     #[inline]
-    fn values_to_vecs<'a>(
+    unsafe fn values_to_vecs<'a>(
         _values: Self::Values<'a>,
-        _scratch: &mut Self::OutScratch,
         _shape: &mut Vec<usize>,
         _flags: &mut Vec<bool>,
         _ptrs: &mut Vec<*const ()>,
+        _scratch: &mut Self::OutScratch,
     ) {
     }
 
@@ -274,13 +257,13 @@ macro_rules! impl_interface_for_tuple {
             }
 
             #[inline]
-            fn new_in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch {
-                ( $( $T::new_in_scratch(shape), )+ )
+            fn in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch {
+                ( $( $T::in_scratch(shape), )+ )
             }
 
             #[inline]
-            fn new_out_scratch() -> Self::OutScratch {
-                ( $( $T::new_out_scratch(), )+ )
+            fn out_scratch() -> Self::OutScratch {
+                ( $( $T::out_scratch(), )+ )
             }
 
             #[inline]
@@ -294,24 +277,24 @@ macro_rules! impl_interface_for_tuple {
             }
 
             #[inline]
-            fn values_to_flat<'a>(
+            unsafe fn values_to_flat<'a>(
                 values: Self::Values<'a>,
-                scratch: &mut Self::OutScratch,
                 flags: &mut FlatWrite<bool>,
                 ptrs: &mut FlatWrite<*const ()>,
+                scratch: &mut Self::OutScratch,
             ) {
-                $( $T::values_to_flat(values.$idx, &mut scratch.$idx, flags, ptrs); )+
+                $( unsafe { $T::values_to_flat(values.$idx, flags, ptrs, &mut scratch.$idx); } )+
             }
 
             #[inline]
-            fn values_to_vecs<'a>(
+            unsafe fn values_to_vecs<'a>(
                 values: Self::Values<'a>,
-                scratch: &mut Self::OutScratch,
                 shape: &mut Vec<usize>,
                 flags: &mut Vec<bool>,
                 ptrs: &mut Vec<*const ()>,
+                scratch: &mut Self::OutScratch,
             ) {
-                $( $T::values_to_vecs(values.$idx, &mut scratch.$idx, shape, flags, ptrs); )+
+                $( unsafe { $T::values_to_vecs(values.$idx, shape, flags, ptrs, &mut scratch.$idx); } )+
             }
 
             #[inline]
@@ -335,18 +318,7 @@ impl_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 
 impl_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K);
 impl_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);
 
-// -- Value leaf: Port<V> ------------------------------------------------
-
-// SAFETY: one flat slot tagged `TypeId::of::<V>()`; the value is
-// carried by value, so serialization homes it in the one-view `OutScratch`
-// (overwritten in place each run; the `'static` typing is storage-only, per
-// the [`Value`] covariance contract, and views are `Copy` so the
-// overwrite drops nothing) and points the wire slot there; deserialization
-// reads it back at the same `V::View` type.
-unsafe impl<V: Pass> Interface for Port<V>
-where
-    for<'a> V::View<'a>: Copy + Send + Sync,
-{
+unsafe impl<V: Pass> Interface for Port<V> {
     type Values<'a> = (bool, V::View<'a>);
     type InScratch = ();
     type OutScratch = MaybeUninit<V::View<'static>>;
@@ -362,10 +334,10 @@ where
     }
 
     #[inline]
-    fn new_in_scratch(_shape: &mut FlatRead<usize>) -> Self::InScratch {}
+    fn in_scratch(_shape: &mut FlatRead<usize>) -> Self::InScratch {}
 
     #[inline]
-    fn new_out_scratch() -> Self::OutScratch {
+    fn out_scratch() -> Self::OutScratch {
         MaybeUninit::uninit()
     }
 
@@ -384,11 +356,11 @@ where
     }
 
     #[inline]
-    fn values_to_flat<'a>(
+    unsafe fn values_to_flat<'a>(
         values: Self::Values<'a>,
-        scratch: &mut Self::OutScratch,
         flags: &mut FlatWrite<bool>,
         ptrs: &mut FlatWrite<*const ()>,
+        scratch: &mut Self::OutScratch,
     ) {
         flags.push(values.0);
         // SAFETY: storage-only lifetime erasure -- layout is lifetime-invariant
@@ -399,12 +371,12 @@ where
     }
 
     #[inline]
-    fn values_to_vecs<'a>(
+    unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
-        scratch: &mut Self::OutScratch,
         _shape: &mut Vec<usize>,
         flags: &mut Vec<bool>,
         ptrs: &mut Vec<*const ()>,
+        scratch: &mut Self::OutScratch,
     ) {
         flags.push(values.0);
         // SAFETY: as in `values_to_flat`.
@@ -418,23 +390,7 @@ where
     }
 }
 
-// -- Value leaves: Ports<V> ----------------------------------------------
-
-// SAFETY: `*shape.pop()` flat slots, each tagged `TypeId::of::<V>()`
-// (matching what a single `Port<V>` consumer expects and what a single
-// `Port<V>` producer emits), so a group wires against by-value producers.
-// Deserialization gathers the N pointed-to views into the `InScratch` buffer
-// (sized once from the shape at build, overwritten in place each run; its
-// `'static` typing is storage-only, per the [`Value`] covariance contract,
-// and views are `Copy`, so in-place overwrites drop nothing) and lends the
-// payload slice from there. Serialization needs no scratch: the payload slice
-// itself is the contiguous home of the N views — element `i`'s thin pointer
-// is just `&values.1[i]` — and the producer keeps that storage stable for the
-// generation (state / arena / its own `InScratch`).
-unsafe impl<V: Pass> Interface for Ports<V>
-where
-    for<'a> V::View<'a>: Copy + Send + Sync,
-{
+unsafe impl<V: Pass> Interface for Ports<V> {
     type Values<'a> = (&'a [bool], &'a [V::View<'a>]);
     type InScratch = Box<[MaybeUninit<V::View<'static>>]>;
     type OutScratch = ();
@@ -451,12 +407,12 @@ where
     }
 
     #[inline]
-    fn new_in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch {
+    fn in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch {
         Box::new_uninit_slice(*shape.pop())
     }
 
     #[inline]
-    fn new_out_scratch() -> Self::OutScratch {}
+    fn out_scratch() -> Self::OutScratch {}
 
     #[inline]
     unsafe fn values_from_flat<'a>(
@@ -469,7 +425,7 @@ where
         let f = flags.take(n);
         let p = ptrs.take(n);
         let dst: &'a mut [MaybeUninit<V::View<'static>>] = scratch;
-        debug_assert!(dst.len() == n, "Ports scratch disagrees with shape");
+        debug_assert!(dst.len() == n, "ports scratch disagrees with shape");
         for (slot, &ptr) in dst.iter_mut().zip(p) {
             // SAFETY: `ptr` targets a valid `V::View` for `'a` by the caller's
             // contract; storing it `'static`-erased is storage-only (layout is
@@ -489,14 +445,14 @@ where
     }
 
     #[inline]
-    fn values_to_flat<'a>(
+    unsafe fn values_to_flat<'a>(
         values: Self::Values<'a>,
-        _scratch: &mut Self::OutScratch,
         flags: &mut FlatWrite<bool>,
         ptrs: &mut FlatWrite<*const ()>,
+        _scratch: &mut Self::OutScratch,
     ) {
         let (f, v) = values;
-        debug_assert!(f.len() == v.len(), "Ports planes disagree on length");
+        debug_assert!(f.len() == v.len(), "ports planes disagree on length");
         flags.extend(f);
         for view in v {
             ptrs.push(std::ptr::from_ref(view).cast());
@@ -504,15 +460,15 @@ where
     }
 
     #[inline]
-    fn values_to_vecs<'a>(
+    unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
-        _scratch: &mut Self::OutScratch,
         shape: &mut Vec<usize>,
         flags: &mut Vec<bool>,
         ptrs: &mut Vec<*const ()>,
+        _scratch: &mut Self::OutScratch,
     ) {
         let (f, v) = values;
-        debug_assert!(f.len() == v.len(), "Ports planes disagree on length");
+        debug_assert!(f.len() == v.len(), "ports planes disagree on length");
         shape.push(v.len());
         flags.extend_from_slice(f);
         for view in v {

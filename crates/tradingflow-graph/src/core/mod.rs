@@ -1,3 +1,5 @@
+//! Layer 0: untyped graph and builder.
+
 mod cell;
 mod error;
 mod graph;

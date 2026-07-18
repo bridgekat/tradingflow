@@ -51,16 +51,13 @@ impl<I, S> Future for Active<I, S> {
     }
 }
 
-/// A timestamp-ordered merge stream of event feeds.
+/// A timestamp-ordered merge queue of event feeds.
 ///
-/// Each feed is a stream of events; each event executes one write against a
-/// caller-supplied sink `S`, and each completed batch yields its timestamp
-/// back to the caller (who runs the per-batch action — e.g. a graph
-/// stabilize). The queue never owns the sink: [`step`](Self::step) borrows it
-/// per call.
+/// Each feed is a stream of events. On ingestion of each event, one write
+/// operation is executed against a caller-supplied sink `S`.
 ///
 /// The queue merges all feeds' events in a global timestamp order and batches
-/// together all events at the same timestamp; batches always have strictly
+/// together all events at the same timestamp. Batches always have strictly
 /// increasing timestamps.
 ///
 /// With `k` feeds, each event is roughly processed in `O(log k)` time. However,
@@ -90,7 +87,7 @@ pub struct Queue<I: Clone + Ord, C: Clock<I>, S: 'static> {
 }
 
 impl<I: Clone + Ord, S: 'static, C: Clock<I>> Queue<I, C, S> {
-    /// Create an empty queue over a (required) wall clock.
+    /// Creates an empty queue over a wall clock.
     pub fn new(clock: C) -> Self {
         Self {
             clock,
@@ -103,7 +100,7 @@ impl<I: Clone + Ord, S: 'static, C: Clock<I>> Queue<I, C, S> {
         }
     }
 
-    /// Register a feed.
+    /// Registers a feed.
     pub fn add_feed(&mut self, feed: impl Feed<I, S> + 'static) {
         let id = self.parked.len();
         self.active.push(Active::new(id, Box::new(feed)));
@@ -112,7 +109,7 @@ impl<I: Clone + Ord, S: 'static, C: Clock<I>> Queue<I, C, S> {
         self.frontier_heap.push(Reverse((Frontier::None, id)));
     }
 
-    /// Advance a feed's frontier, pushing a heap entry only on change.
+    /// Advances a feed's frontier, pushing a heap entry only on change.
     fn advance_frontier(&mut self, id: usize, frontier: Frontier<I>) {
         if self.frontier[id] != frontier {
             self.frontier[id] = frontier.clone();
@@ -121,7 +118,7 @@ impl<I: Clone + Ord, S: 'static, C: Clock<I>> Queue<I, C, S> {
     }
 
     /// Peeks the minimum frontier across feeds, dropping stale entries.
-    /// `Frontier::Done` when empty (the minimum over no feeds is the top).
+    /// Returns `Frontier::Done` when empty.
     fn peek_frontier(&mut self) -> Frontier<I> {
         while let Some(Reverse((f, id))) = self.frontier_heap.peek() {
             if self.frontier[*id] == *f {
@@ -132,7 +129,7 @@ impl<I: Clone + Ord, S: 'static, C: Clock<I>> Queue<I, C, S> {
         Frontier::Done
     }
 
-    /// Await the one thing that can unblock: an active feed received its next
+    /// Waits for one thing that can unblock: an active feed received its next
     /// event, or the wall clock reaching `wall` (optional).
     async fn await_progress(&mut self, wall: Option<I>) {
         let res = match wall {

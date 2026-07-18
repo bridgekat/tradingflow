@@ -1,4 +1,4 @@
-/// Single-pass cursor over a flat slice `&'a [T]`.
+/// Single-pass cursor reader over a flat slice `&'a [T]`.
 pub struct FlatRead<'a, T> {
     data: &'a [T],
     index: usize,
@@ -25,7 +25,7 @@ impl<'a, T> FlatRead<'a, T> {
         v
     }
 
-    /// Consume `n` elements, returning a sub-slice with the outer `'a` lifetime.
+    /// Consume `n` elements, returning a sub-slice.
     #[inline]
     pub fn take(&mut self, n: usize) -> &'a [T] {
         let slice = &self.data[self.index..self.index + n];
@@ -34,7 +34,7 @@ impl<'a, T> FlatRead<'a, T> {
     }
 }
 
-/// Single-pass cursor over a flat mutable slice `&'a mut [T]`.
+/// Single-pass cursor writer over a flat mutable slice `&'a mut [T]`.
 pub struct FlatWrite<'a, T> {
     data: &'a mut [T],
     index: usize,
@@ -53,14 +53,14 @@ impl<'a, T> FlatWrite<'a, T> {
         self.data.len() - self.index
     }
 
-    /// Write `v` at the cursor position, then advance by 1.
+    /// Write `v` at the cursor position, then advance cursor by 1.
     #[inline]
     pub fn push(&mut self, v: T) {
         self.data[self.index] = v;
         self.index += 1;
     }
 
-    /// Write all of `vs` at the cursor, advancing past them.
+    /// Write all of `vs` at the cursor, advancing cursor past them.
     #[inline]
     pub fn extend(&mut self, vs: &[T])
     where

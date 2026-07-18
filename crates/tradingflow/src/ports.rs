@@ -16,7 +16,7 @@ unsafe impl<T: Scalar, const N: usize> Pass for ArrayPass<T, N> {
     type Owned = Array<T, N>;
 
     #[inline(always)]
-    fn borrow(owned: &Array<T, N>) -> ArrayView<'_, T, N> {
+    fn view(owned: &Array<T, N>) -> ArrayView<'_, T, N> {
         owned.view()
     }
 }
@@ -32,7 +32,7 @@ unsafe impl<T: Scalar, const N: usize> Pass for SeriesPass<T, N> {
     type Owned = Series<T, N>;
 
     #[inline(always)]
-    fn borrow(owned: &Series<T, N>) -> SeriesView<'_, T, N> {
+    fn view(owned: &Series<T, N>) -> SeriesView<'_, T, N> {
         owned.view()
     }
 }
@@ -76,10 +76,7 @@ pub trait StripNotify: Interface {
     fn plain<'a>(values: Self::Values<'a>) -> Self::Plain<'a>;
 }
 
-impl<V: Pass> StripNotify for Port<V>
-where
-    for<'a> V::View<'a>: Copy + Send + Sync,
-{
+impl<V: Pass> StripNotify for Port<V> {
     type Plain<'a> = V::View<'a>;
 
     #[inline(always)]
@@ -88,10 +85,7 @@ where
     }
 }
 
-impl<V: Pass> StripNotify for Ports<V>
-where
-    for<'a> V::View<'a>: Copy + Send + Sync,
-{
+impl<V: Pass> StripNotify for Ports<V> {
     type Plain<'a> = &'a [V::View<'a>];
 
     #[inline(always)]

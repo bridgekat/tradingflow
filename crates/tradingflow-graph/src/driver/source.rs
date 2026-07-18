@@ -4,10 +4,7 @@ use super::Event;
 use crate::typed::Pass;
 
 /// A stream of events writing into a source node.
-pub trait Source
-where
-    for<'a> <Self::Pass as Pass>::View<'a>: Copy + Send + Sync,
-{
+pub trait Source {
     /// Event timestamp type.
     type Instant: Send + 'static;
     /// Event payload type.

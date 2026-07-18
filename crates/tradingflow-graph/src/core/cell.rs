@@ -1,6 +1,7 @@
 use std::any::TypeId;
 use std::ptr::NonNull;
 
+/// Type-erased store. The content must be `Send + 'static`.
 #[derive(Debug)]
 pub struct ErasedCell {
     data: NonNull<()>,

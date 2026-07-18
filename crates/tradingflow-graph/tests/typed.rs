@@ -36,10 +36,7 @@ fn fresh(arena: &mut Bump) -> &Bump {
 }
 
 struct Source<V: Pass>(V::Owned);
-impl<V: Pass> Segment for Source<V>
-where
-    for<'a> V::View<'a>: Copy + Send + Sync,
-{
+impl<V: Pass> Segment for Source<V> {
     type Inputs = ();
     type Outputs = Port<V>;
     type Context = ();
@@ -48,7 +45,7 @@ where
         self.0
     }
     fn compute<'a, 'b: 'a>(_: (), _: &(), state: &'b mut V::Owned, _: bool) -> (bool, V::View<'a>) {
-        (true, V::borrow(state))
+        (true, V::view(state))
     }
 }
 
@@ -1550,7 +1547,7 @@ unsafe impl Pass for StridedF64 {
     type View<'a> = Strided<'a>;
     type Owned = (Vec<f64>, Vec<usize>);
 
-    fn borrow((data, shape): &Self::Owned) -> Strided<'_> {
+    fn view((data, shape): &Self::Owned) -> Strided<'_> {
         Strided { data, shape }
     }
 }
@@ -1643,7 +1640,7 @@ fn view_source_lends_borrowing_view_from_owned_cell() {
     // through `state_mut`, which dirties the node, so the view is re-derived
     // and re-homed before any consumer in the cone reads it.
     let mut b = Builder::new(());
-    let (xs_cell, xs) = b.source(Source::<Slice<i64>>(vec![1, 2, 3]));
+    let (xs_cell, xs) = b.source(Source::<Slice<i64>>(vec![1, 2, 3].into()));
     let (k_cell, k) = b.source(Source(100i64));
     let out = b.segment(SliceTotal, (xs, k));
     let mut g = b.build();
@@ -1660,7 +1657,7 @@ fn view_source_lends_borrowing_view_from_owned_cell() {
 
     // Poke the owned cell with a write that reallocates its buffer: the node
     // is dirtied, so the lent view tracks the moved storage.
-    g.state_mut(xs_cell).extend(4..=64);
+    *g.state_mut(xs_cell) = (1..=64).collect();
     g.stabilize(&mut pool);
     assert_eq!(g.view(xs).len(), 64);
     assert_eq!(g.view(out), (1..=64).sum::<i64>() + 1000);

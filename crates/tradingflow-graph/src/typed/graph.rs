@@ -10,16 +10,6 @@ use super::{
 
 /// The erased per-node state: the (immutable) input shape, the input/output
 /// scratch buffers, and the user state.
-///
-/// The scratch buffers are what make by-value (fat) leaves work across node
-/// boundaries: deserialization gathers scattered wire views into the input
-/// scratch and lends the payload from there, and serialization homes output
-/// views in the output scratch and points wire slots at its fields, which
-/// keep stable addresses (both are overwritten in place each run, inside the
-/// heap-allocated cell). Scratch is typed at `'static` purely as storage --
-/// layout is lifetime-invariant, every access re-types it at the calling
-/// generation's lifetime, and cross-generation validity rests on the engine's
-/// per-generation contract plus the leaves' covariance.
 type NodeState<T> = (
     Box<[usize]>,
     <<T as Segment>::Inputs as Interface>::InScratch,
@@ -27,6 +17,7 @@ type NodeState<T> = (
     <T as Segment>::State,
 );
 
+/// Builder for the typed layer [`Graph`].
 pub struct Builder<C: Send + Sync + 'static> {
     inner: crate::core::Builder,
     _context: PhantomData<C>,
@@ -48,10 +39,7 @@ impl<C: Send + Sync + 'static> Builder<C> {
         &mut self.inner
     }
 
-    pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_>
-    where
-        for<'a> V::View<'a>: Copy,
-    {
+    pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_> {
         let index = handle.index();
         let type_id = self.inner.slot_type_id(index);
         assert!(type_id == TypeId::of::<V>(), "slot type mismatch");
@@ -62,28 +50,14 @@ impl<C: Send + Sync + 'static> Builder<C> {
         unsafe { &*self.inner.context().get().cast::<C>() }
     }
 
-    /// Adds a source node to the graph.
-    pub fn source<S>(
-        &mut self,
-        source: S,
-    ) -> (
-        NodeHandle<S>,
-        <S::Outputs as InterfaceHandles>::HandlesOwned,
-    )
-    where
-        S: Segment<Inputs = (), Context = C>,
-        S::Outputs: InterfaceHandles,
-    {
-        let handles = self.segment(source, ());
-        (NodeHandle::new(self.inner.num_nodes() - 1), handles)
-    }
-
-    /// Adds a segment node to the graph.
-    pub fn segment<T, H>(
+    pub fn push<T, H>(
         &mut self,
         segment: T,
         input_handles: H,
-    ) -> <T::Outputs as InterfaceHandles>::HandlesOwned
+    ) -> (
+        NodeHandle<T>,
+        <T::Outputs as InterfaceHandles>::HandlesOwned,
+    )
     where
         H: HandlesInterface,
         T: Segment<Inputs = H::Interface, Context = C>,
@@ -93,7 +67,7 @@ impl<C: Send + Sync + 'static> Builder<C> {
         // counts, tree-order) from the input handles.
         let mut input_indices = Vec::new();
         let mut input_shape = Vec::new();
-        input_handles.to_vec(&mut input_shape, &mut input_indices);
+        input_handles.indices_to_vec(&mut input_shape, &mut input_indices);
 
         // Get the expected input types of the segment, sized to the actual leaf
         // count and filled in tree-order driven by `input_shape`.
@@ -115,11 +89,12 @@ impl<C: Send + Sync + 'static> Builder<C> {
         // Bundle the (immutable) shape and the scratch buffers with the user
         // state so `compute` can reconstruct the nested payload trees from
         // the flat cell slices and home its result (see `NodeState`).
-        let in_scratch = <T::Inputs as Interface>::new_in_scratch(&mut FlatRead::new(&input_shape));
+        let in_scratch = <T::Inputs as Interface>::in_scratch(&mut FlatRead::new(&input_shape));
+        let out_scratch = <T::Outputs as Interface>::out_scratch();
         let state: NodeState<T> = (
             input_shape.into_boxed_slice(),
             in_scratch,
-            <T::Outputs as Interface>::new_out_scratch(),
+            out_scratch,
             segment.init(),
         );
         let state_cell = ErasedCell::new(state);
@@ -152,13 +127,15 @@ impl<C: Send + Sync + 'static> Builder<C> {
         let mut output_shape = Vec::new();
         let mut output_flags = Vec::new();
         let mut output_ptrs = Vec::new();
-        <T::Outputs as Interface>::values_to_vecs(
-            outputs,
-            out_scratch,
-            &mut output_shape,
-            &mut output_flags,
-            &mut output_ptrs,
-        );
+        unsafe {
+            <T::Outputs as Interface>::values_to_vecs(
+                outputs,
+                &mut output_shape,
+                &mut output_flags,
+                &mut output_ptrs,
+                out_scratch,
+            )
+        };
 
         let mut output_type_ids = Vec::new();
         <T::Outputs as Interface>::type_ids_to_vec(
@@ -177,14 +154,45 @@ impl<C: Send + Sync + 'static> Builder<C> {
                 output_ptrs.into_boxed_slice(),
             )
         };
-        let output_range = self.inner.push(segment, &input_indices).unwrap();
+        let (node_index, output_range) = self.inner.push(segment, &input_indices).unwrap();
         let output_indices = output_range.collect::<Box<[_]>>();
 
         // Get the output handles from the output cell indices + output shape.
-        <T::Outputs as InterfaceHandles>::handles_from_flat(
+        let node_handle = NodeHandle::new(node_index);
+        let output_handles = <T::Outputs as InterfaceHandles>::handles_from_flat(
             &mut FlatRead::new(&output_shape),
             &mut FlatRead::new(&output_indices),
-        )
+        );
+        (node_handle, output_handles)
+    }
+
+    /// Adds a source node to the graph.
+    pub fn source<T>(
+        &mut self,
+        source: T,
+    ) -> (
+        NodeHandle<T>,
+        <T::Outputs as InterfaceHandles>::HandlesOwned,
+    )
+    where
+        T: Segment<Inputs = (), Context = C>,
+        T::Outputs: InterfaceHandles,
+    {
+        self.push(source, ())
+    }
+
+    /// Adds a segment node to the graph.
+    pub fn segment<T, H>(
+        &mut self,
+        segment: T,
+        input_handles: H,
+    ) -> <T::Outputs as InterfaceHandles>::HandlesOwned
+    where
+        H: HandlesInterface,
+        T: Segment<Inputs = H::Interface, Context = C>,
+        T::Outputs: InterfaceHandles,
+    {
+        self.push(segment, input_handles).1
     }
 
     /// Finalize into a runnable [`Graph`].
@@ -218,19 +226,16 @@ unsafe fn compute_fn_for<T: Segment>(
     };
     let outputs = T::compute(inputs, context, state_mut, false);
 
-    // Serialize the outputs, homing by-value views into the output scratch,
-    // overwriting last generation's in place (see `NodeState`): every output
-    // slot is rewritten before any consumer runs, and a node that does not
-    // run keeps its scratch untouched, so out-of-cone consumers' pointers
-    // stay live.
     let mut flags_writer = FlatWrite::new(unsafe { out_flags.as_mut_unchecked() });
     let mut ptrs_writer = FlatWrite::new(unsafe { out_ptrs.as_mut_unchecked() });
-    <T::Outputs as Interface>::values_to_flat(
-        outputs,
-        out_scratch,
-        &mut flags_writer,
-        &mut ptrs_writer,
-    );
+    unsafe {
+        <T::Outputs as Interface>::values_to_flat(
+            outputs,
+            &mut flags_writer,
+            &mut ptrs_writer,
+            out_scratch,
+        )
+    };
 
     // A changed output shape should panic, instead of leaving old dangling
     // pointers in the output cells.
@@ -240,6 +245,7 @@ unsafe fn compute_fn_for<T: Segment>(
     );
 }
 
+/// The typed wrapper over the core layer [`Graph`](crate::core::Graph).
 pub struct Graph<C: Send + Sync + 'static> {
     inner: crate::core::Graph,
     _context: PhantomData<C>,
@@ -254,10 +260,7 @@ impl<C: Send + Sync + 'static> Graph<C> {
         &mut self.inner
     }
 
-    pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_>
-    where
-        for<'a> V::View<'a>: Copy,
-    {
+    pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_> {
         let index = handle.index();
         let type_id = self.inner.slot_type_id(index);
         assert!(type_id == TypeId::of::<V>(), "slot type mismatch");
@@ -265,25 +268,29 @@ impl<C: Send + Sync + 'static> Graph<C> {
     }
 
     pub fn context(&self) -> &C {
+        let type_id = self.inner.context().type_id();
+        assert!(type_id == TypeId::of::<C>(), "context type mismatch");
         unsafe { &*self.inner.context().get().cast::<C>() }
     }
 
     pub fn context_mut(&mut self) -> &mut C {
+        let type_id = self.inner.context_mut().type_id();
+        assert!(type_id == TypeId::of::<C>(), "context type mismatch");
         unsafe { &mut *self.inner.context_mut().get().cast::<C>() }
     }
 
-    pub fn state_mut<S>(&mut self, handle: NodeHandle<S>) -> &mut S::State
+    pub fn state_mut<T>(&mut self, handle: NodeHandle<T>) -> &mut T::State
     where
-        S: Segment,
+        T: Segment,
     {
         let index = handle.index();
         let type_id = self.inner.state_mut(index).type_id();
         assert!(
-            type_id == TypeId::of::<NodeState<S>>(),
+            type_id == TypeId::of::<NodeState<T>>(),
             "cell type mismatch"
         );
         let state = self.inner.state_mut(index).get();
-        let (_, _, _, state_mut) = unsafe { state.cast::<NodeState<S>>().as_mut_unchecked() };
+        let (_, _, _, state_mut) = unsafe { state.cast::<NodeState<T>>().as_mut_unchecked() };
         state_mut
     }
 

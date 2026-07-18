@@ -7,6 +7,7 @@ use super::cell::ErasedCell;
 use super::error::Error;
 use super::segment::{ComputeFn, Segment};
 
+/// Adjacency matrix stored in compressed sparse row format.
 pub struct Adjacency {
     columns: Vec<usize>,
     row_ends: Vec<usize>,
@@ -111,6 +112,7 @@ struct Node {
     state: ErasedCell,
 }
 
+/// Builder for the core layer [`Graph`].
 pub struct Builder {
     input_flags: Vec<SyncCell<bool>>,
     input_ptrs: Vec<SyncCell<*const ()>>,
@@ -152,17 +154,11 @@ impl Builder {
         &self.context
     }
 
-    /// Number of nodes pushed so far. The next [`push`](Self::push) creates
-    /// node `num_nodes()`; the node just pushed is `num_nodes() - 1`.
-    pub fn num_nodes(&self) -> usize {
-        self.nodes.len()
-    }
-
     pub fn push(
         &mut self,
         segment: Segment,
         input_indices: &[usize],
-    ) -> Result<Range<usize>, Error> {
+    ) -> Result<(usize, Range<usize>), Error> {
         let (input_types, output_types, compute_fn, state, output_flags, output_ptrs) =
             segment.into_parts();
 
@@ -214,16 +210,16 @@ impl Builder {
         let input_range = input_begin..self.input_ptrs.len();
         let output_range = output_begin..self.output_ptrs.len();
 
+        let node_index = self.nodes.len();
         self.nodes.push(Node {
             compute_fn,
             input_range,
             output_range: output_range.clone(),
             state,
         });
-        Ok(output_range)
+        Ok((node_index, output_range))
     }
 
-    /// Finalize into a runnable [`Graph`].
     pub fn build(self) -> Graph {
         let Builder {
             input_flags,
@@ -297,6 +293,7 @@ impl Builder {
     }
 }
 
+/// The type-erased core of a graph.
 pub struct Graph {
     input_flags: Box<[SyncCell<bool>]>,
     input_ptrs: Box<[SyncCell<*const ()>]>,
@@ -339,9 +336,6 @@ impl Graph {
         &mut self.context
     }
 
-    /// Mutable access to node `index`'s state cell, dirtying the node: it (and
-    /// its cone) will recompute on the next [`stabilize`](Self::stabilize).
-    /// `index` is the *node* index (push order), not an output slot index.
     pub fn state_mut(&mut self, index: usize) -> &mut ErasedCell {
         assert!(!self.poisoned, "cannot access poisoned graph.");
         if !self.is_dirty[index] {

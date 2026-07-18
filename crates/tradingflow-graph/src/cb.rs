@@ -4,8 +4,6 @@ use std::marker::PhantomData;
 
 use super::{Interface, Segment};
 
-// -- Combinators: the cartesian category structure ----------------------------
-
 /// The identity operator `id`: the categorical identity.
 /// Forwards inputs to outputs without modification.
 pub struct Id<T, C>(pub PhantomData<(T, C)>);
@@ -260,9 +258,6 @@ where
     }
 }
 
-// The `new` impl repeats the `Segment` impl's bounds on purpose: the closure
-// bound at the construction site is what drives closure-signature inference
-// (a bound-free `new` leaves the higher-ranked signature ambiguous).
 impl<T, U, F, C> Arr<T, U, F, C>
 where
     T: Interface,
@@ -363,9 +358,6 @@ pub trait SegmentExt: Segment + Sized {
         Par(self, g)
     }
 
-    /// One `segment!` statement `let out = wires => seg`: route picks from the
-    /// environment (`self`'s outputs) into `seg`'s inputs, and extend the
-    /// environment with `seg`'s outputs, producing `(env, out)`.
     fn bind<S, F>(self, seg: S, route: F) -> Bind<Self, S, F>
     where
         S: Segment<Context = Self::Context>,
@@ -379,12 +371,6 @@ pub trait SegmentExt: Segment + Sized {
         Bind(self, seg, route)
     }
 
-    /// Final re-route of the environment into the result tree `U` (the `segment!`
-    /// epilogue). `U` cannot be inferred from the closure (`Values` is a
-    /// non-injective projection), so call as `route::<OutInterface, _>(..)`. (The
-    /// annotation-free tail form needs no method of its own:
-    /// `bind(seg, f).then(Right::default())` -- `Right` has no closure and is
-    /// fully inferred top-down.)
     fn route<U, F>(self, route: F) -> Route<Self, U, F>
     where
         U: Interface,

@@ -166,7 +166,7 @@
 //!
 //!   - An owned type [`Pass::Owned`], which is used for source storage;
 //!   - A view type [`Pass::View`], which is used on segment interfaces;
-//!   - A method [`Pass::borrow`], which borrows a view from an owned value.
+//!   - A method [`Pass::view`], which derives a view from an owned value.
 //!
 //! The [`Val<T>`] and [`Ref<T>`] are built-in [`Pass`] policies, representing
 //! simple pass-by-value and pass-by-reference.
