@@ -27,7 +27,8 @@ use std::marker::PhantomData;
 use bumpalo::Bump;
 use num_traits::{AsPrimitive, Float};
 
-use crate::data::{Array, ArrayView, Instant, Retention, Scalar, Series, SeriesView, Shape};
+use crate::data::layout::Strided;
+use crate::data::{Array, ArrayView, Instant, Layout, Retention, Scalar, Series, SeriesView};
 use crate::graph::typed::{Interface, Operator, Segment};
 use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, UnitPort};
 
@@ -467,7 +468,7 @@ pub struct Record<T: Scalar, const N: usize> {
 impl<T: Scalar, const N: usize> Record<T, N> {
     /// An unbounded record (retains full history).
     pub fn new() -> Self {
-        Self::with_retention(Retention::UNBOUNDED)
+        Self::with_retention(Retention::unbounded())
     }
 
     /// A record whose `Series` keeps only the history within `retention`.
@@ -571,22 +572,16 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
         init: bool,
     ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            let ext = series.elem_extents();
-            state.out = match series.last() {
-                Some(last) => Array::from_vec(ext, last.to_vec()),
-                None => Array::full(ext, state.fill.clone()),
-            };
-            return (false, state.out.view());
+            state.out = Array::full(series.layout().extents(), state.fill.clone());
         }
-        match series.last() {
-            Some(last) => state.out.assign(last),
-            None => {
-                for v in state.out.data_mut().iter_mut() {
-                    *v = state.fill.clone();
-                }
+        if series.is_empty() {
+            for v in state.out.data_mut().iter_mut() {
+                *v = state.fill.clone();
             }
+        } else {
+            state.out.assign(series.at(series.len() - 1).unwrap().1);
         }
-        (true, state.out.view())
+        (!init, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
@@ -1198,8 +1193,8 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let n = state.axis_size;
         let data = x.data();
-        let shape = x.shape();
-        let (ext, strd) = (shape.extents(), shape.strides());
+        let layout = x.layout();
+        let (ext, strd) = (layout.extents(), layout.strides());
         if init {
             assert!(IN >= 1, "Split requires IN >= 1");
             assert!(OUT == IN - 1, "Split: OUT ({OUT}) must be IN ({IN}) - 1");
@@ -1214,7 +1209,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT>
         let mut inner_str = [0usize; OUT];
         inner_ext.copy_from_slice(&ext[1..]);
         inner_str.copy_from_slice(&strd[1..]);
-        let row_shape = Shape::strided(inner_ext, inner_str);
+        let row_shape = Strided::new(inner_ext, inner_str);
         state.arena.reset();
         let alloc: &'a Bump = &state.arena;
         let flags = alloc.alloc_slice_fill_iter(std::iter::repeat_n(notified && !init, n));

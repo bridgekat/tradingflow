@@ -1,171 +1,178 @@
-//! Inherent impls for the owned [`Array<T, N>`](Array): construction,
-//! dimensions, bulk and per-axis access, and in-place mutation.
+use std::ops::{Index, IndexMut};
 
-use std::ops;
+use super::{ArrayIntoIter, ArrayIter, ArrayView};
+use crate::{Layout, Scalar, layout};
 
-use super::{Array, ArrayView, write_row_major};
-use crate::{Scalar, Shape};
-
-// ---------------------------------------------------------------------------
-// Construction
-// ---------------------------------------------------------------------------
+/// An owned, row-major contiguous, rank-`N` array.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Array<T: Scalar, const N: usize> {
+    layout: layout::RowMajor<N>,
+    data: Box<[T]>,
+}
 
 impl<T: Scalar> Array<T, 0> {
-    /// Create a rank-0 array holding one scalar.
+    /// Creates a rank-0 array holding one scalar.
     pub fn scalar(value: T) -> Self {
         Self {
+            layout: layout::RowMajor::new([]),
             data: vec![value].into(),
-            shape: Shape::row_major([]),
         }
     }
 }
 
 impl<T: Scalar, const N: usize> Array<T, N> {
-    /// Create an array filled with `value`.
+    /// Creates an array filled with `value`.
     pub fn full(extents: [usize; N], value: T) -> Self {
-        let shape = Shape::row_major(extents);
+        let layout = layout::RowMajor::new(extents);
         Self {
-            data: vec![value; shape.len()].into(),
-            shape,
+            layout,
+            data: vec![value; layout.len()].into(),
         }
     }
 
-    /// Create an array filled with `T::default()` (0 for numeric types).
+    /// Creates an array filled with `T::default()` (0 for numeric types).
     pub fn zeros(extents: [usize; N]) -> Self {
         Self::full(extents, T::default())
     }
 
-    /// Create an array from extents and a flat row-major buffer — the owning
-    /// counterpart of [`ArrayView::from_slice`].
+    /// Creates an array from a row-major contiguous buffer.
     ///
     /// # Panics
     ///
     /// Panics if `data.len() != extents.iter().product()`.
-    pub fn from_vec(extents: [usize; N], data: Vec<T>) -> Self {
-        let shape = Shape::row_major(extents);
+    pub fn from_parts(extents: [usize; N], data: Box<[T]>) -> Self {
+        let layout = layout::RowMajor::new(extents);
         assert_eq!(
             data.len(),
-            shape.len(),
-            "from_vec: extents {:?} expect {} scalars, got {}",
+            layout.len(),
+            "from_parts: extents {:?} expect {} scalars, got {}",
             extents,
-            shape.len(),
+            layout.len(),
             data.len(),
         );
-        Self {
-            data: data.into(),
-            shape,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Dimensions
-// ---------------------------------------------------------------------------
-
-impl<T: Scalar, const N: usize> Array<T, N> {
-    /// The shape (per-axis extents and strides; always canonical row-major).
-    pub fn shape(&self) -> Shape<N> {
-        self.shape
+        Self { layout, data }
     }
 
-    /// Per-axis extents.
-    pub fn extents(&self) -> [usize; N] {
-        self.shape.extents()
+    /// Creates an array from a row-major contiguous buffer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `data.len() == extents.iter().product()`.
+    pub unsafe fn from_parts_unchecked(extents: [usize; N], data: Box<[T]>) -> Self {
+        let layout = layout::RowMajor::new(extents);
+        debug_assert_eq!(data.len(), layout.len());
+        Self { layout, data }
     }
 
-    /// Number of scalars (product of extents).
-    pub fn len(&self) -> usize {
-        self.shape.len()
+    pub fn layout(&self) -> layout::RowMajor<N> {
+        self.layout
     }
 
-    /// Whether there are no scalars (some extent is zero).
-    pub fn is_empty(&self) -> bool {
-        self.shape.is_empty()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Bulk access
-// ---------------------------------------------------------------------------
-
-impl<T: Scalar, const N: usize> Array<T, N> {
-    /// Flat immutable slice of all scalars (row-major).
     pub fn data(&self) -> &[T] {
         &self.data
     }
 
-    /// Flat mutable slice of all scalars (row-major).
     pub fn data_mut(&mut self) -> &mut [T] {
         &mut self.data
     }
 
-    /// Borrow the whole array as a contiguous [`ArrayView`].
+    /// Borrows the whole array as an [`ArrayView`].
     pub fn view(&self) -> ArrayView<'_, T, N> {
-        ArrayView {
-            data: &self.data,
-            shape: self.shape,
-        }
+        // SAFETY: `self.data.len() == self.layout.len() >= self.layout.span()`.
+        unsafe { ArrayView::from_parts_unchecked(self.layout.into(), &self.data) }
     }
-}
 
-// ---------------------------------------------------------------------------
-// Element access
-// ---------------------------------------------------------------------------
-
-/// Index by a per-axis logical index — `a[[i, j]]` for a rank-2 array, `a[[]]`
-/// for a rank-0 one. [`data`](Array::data) is the flat row-major escape hatch.
-///
-/// # Panics
-///
-/// Panics if the index is out of bounds on any axis.
-impl<T: Scalar, const N: usize> ops::Index<[usize; N]> for Array<T, N> {
-    type Output = T;
-
-    #[inline]
-    fn index(&self, index: [usize; N]) -> &T {
-        &self.data[self.shape.offset(index)]
-    }
-}
-
-impl<T: Scalar, const N: usize> ops::IndexMut<[usize; N]> for Array<T, N> {
-    #[inline]
-    fn index_mut(&mut self, index: [usize; N]) -> &mut T {
-        &mut self.data[self.shape.offset(index)]
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Mutation
-// ---------------------------------------------------------------------------
-
-impl<T: Scalar, const N: usize> Array<T, N> {
-    /// Copy in the scalars of a rank-`N` view, which may be strided (it is
-    /// materialized row-major). [`data_mut`](Self::data_mut) is the flat
-    /// counterpart.
+    /// Writes data into the array.
     ///
     /// # Panics
     ///
     /// Panics if `value.extents() != self.extents()`.
     pub fn assign(&mut self, value: ArrayView<'_, T, N>) {
         assert_eq!(value.extents(), self.extents(), "assign: extents mismatch");
-        write_row_major(&mut self.data, value);
+        if let Some(s) = value.as_slice() {
+            self.data.clone_from_slice(s);
+            return;
+        }
+        for (d, off) in self.data.iter_mut().zip(value.layout().offsets()) {
+            *d = value.data()[off].clone();
+        }
     }
 
-    /// Change the extents in place (same rank), without reallocating.
+    /// Returns a new array with the specified extents, without reallocating.
     ///
     /// # Panics
     ///
     /// Panics if the new extents have a different scalar count.
-    pub fn reshape(&mut self, extents: [usize; N]) {
-        let shape = Shape::row_major(extents);
+    pub fn reshape<const M: usize>(self, extents: [usize; M]) -> Array<T, M> {
+        let layout = layout::RowMajor::new(extents);
         assert_eq!(
             self.len(),
-            shape.len(),
+            layout.len(),
             "reshape: current len {} != new extents {:?} ({} scalars)",
             self.len(),
             extents,
-            shape.len(),
+            layout.len(),
         );
-        self.shape = shape;
+        Array {
+            layout,
+            data: self.data,
+        }
+    }
+}
+
+impl<T: Scalar, const N: usize> Layout<N> for Array<T, N> {
+    fn extents(&self) -> [usize; N] {
+        self.layout.extents()
+    }
+
+    fn strides(&self) -> [usize; N] {
+        self.layout.strides()
+    }
+
+    fn is_contiguous(&self) -> bool {
+        self.layout.is_contiguous()
+    }
+}
+
+impl<T: Scalar, const N: usize> Index<[usize; N]> for Array<T, N> {
+    type Output = T;
+
+    fn index(&self, index: [usize; N]) -> &T {
+        &self.data[self.offset(index)]
+    }
+}
+
+impl<T: Scalar, const N: usize> IndexMut<[usize; N]> for Array<T, N> {
+    fn index_mut(&mut self, index: [usize; N]) -> &mut T {
+        &mut self.data[self.offset(index)]
+    }
+}
+
+impl<T: Scalar, const N: usize> Array<T, N> {
+    /// Iterates over the scalars in row-major order.
+    pub fn iter(&self) -> ArrayIter<'_, T, N> {
+        self.view().iter()
+    }
+}
+
+impl<'a, T: Scalar, const N: usize> IntoIterator for &'a Array<T, N> {
+    type Item = T;
+    type IntoIter = ArrayIter<'a, T, N>;
+
+    /// Iterates over the scalars in row-major order.
+    fn into_iter(self) -> Self::IntoIter {
+        self.view().iter()
+    }
+}
+
+impl<T: Scalar, const N: usize> IntoIterator for Array<T, N> {
+    type Item = T;
+    type IntoIter = ArrayIntoIter<T, N>;
+
+    /// Iterates over the scalars in row-major order, consuming the array.
+    fn into_iter(self) -> Self::IntoIter {
+        ArrayIntoIter {
+            inner: self.data.into_iter(),
+        }
     }
 }

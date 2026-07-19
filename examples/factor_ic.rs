@@ -21,12 +21,12 @@ mod common;
 
 use clap::Parser;
 
+use tradingflow::clock::WallClock;
 use tradingflow::data::Retention;
+use tradingflow::graph::Builder;
 use tradingflow::operators::structural::record;
 use tradingflow::operators::structural::resample_clocked;
 use tradingflow::operators::transform::lag_series;
-use tradingflow::clock::WallClock;
-use tradingflow::graph::Builder;
 
 use common::ic::{ic_series, ic_stats};
 use common::strategy::Market;
@@ -51,7 +51,7 @@ async fn main() {
 
     let mut sc = Builder::new(WallClock);
 
-    let m = Market::build(&mut sc, &symbols, &args, Retention::UNBOUNDED);
+    let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
     let names = m.features.names.clone();
     let ic_handles: Vec<_> = m
         .features

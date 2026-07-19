@@ -1,30 +1,30 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::data::Instant;
+use crate::data::{Duration, Instant};
 use crate::graph::Clock;
 
-/// The real (TAI) wall clock driving the event loop: `now()` reads system
-/// time converted to TAI, and `wait_until` sleeps on the tokio timer until
-/// the clock has moved strictly past the target.
+/// The system wall clock driving the event loop: `now()` reads system time as
+/// UNIX nanoseconds (fixing the naive [`Instant`] epoch at 1970-01-01), and
+/// `wait_until` sleeps on the tokio timer until the clock has moved strictly
+/// past the target.
 ///
 /// Under the ingest merge rules this behaves uniformly for backtests and live
 /// runs: historical timestamps sit below `now` and replay at full speed,
 /// future-dated events are released only once their timestamp actually
-/// arrives, and implicit `Stamp::Now` events are stamped with real TAI time.
+/// arrives, and implicit `Stamp::Now` events are stamped with the current
+/// wall-clock reading.
 pub struct WallClock;
 
 impl Clock<Instant> for WallClock {
     fn min(&self) -> Instant {
-        Instant::from_nanos(i64::MIN)
+        Instant::MIN
     }
 
     fn now(&self) -> Instant {
-        // Current TAI time from the system clock (UTC → TAI through [`hifitime`]'s
-        // leap-second table, see [`Instant::from_utc_nanos`]).
         let unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock is before the Unix epoch");
-        Instant::from_utc_nanos(unix.as_nanos() as i64)
+        Instant::from_offset(Duration::from_nanos(unix.as_nanos() as i64))
     }
 
     async fn wait_until(&mut self, t: Instant) {
@@ -36,7 +36,7 @@ impl Clock<Instant> for WallClock {
             if now > t {
                 return;
             }
-            let ns = (t.as_nanos() - now.as_nanos()).max(0) as u64 + 1;
+            let ns = (t - now).as_nanos().max(0) as u64 + 1;
             tokio::time::sleep(std::time::Duration::from_nanos(ns)).await;
         }
     }

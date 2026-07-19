@@ -22,10 +22,12 @@ pub struct Retention {
 
 impl Retention {
     /// Unbounded retention: never drop anything (the default).
-    pub const UNBOUNDED: Retention = Retention {
-        count: None,
-        duration: None,
-    };
+    pub const fn unbounded() -> Self {
+        Self {
+            count: None,
+            duration: None,
+        }
+    }
 
     /// Keep the most-recent `count` elements.
     pub fn count(count: usize) -> Self {

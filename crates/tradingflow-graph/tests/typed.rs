@@ -1340,7 +1340,7 @@ fn segment_notation_pure_permutation() {
 
 #[test]
 fn segment_notation_apply_nests() {
-    // Prefix application `Seg @ wires` nests inside wire expressions; each
+    // Prefix application `seg @ wires` nests inside wire expressions; each
     // nesting desugars to a fresh intermediate wire: d = a + (a + b).
     let seg = tradingflow::segment!(|a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
         let d = Add @ (a, Add @ (a, b));

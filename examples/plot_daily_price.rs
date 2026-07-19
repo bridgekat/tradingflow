@@ -12,15 +12,11 @@
 //! python examples/plot.py target/plot_daily_price.csv
 //! ```
 
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
-use std::fs;
-
 #[path = "common/mod.rs"]
 mod common;
 
 use tradingflow::clock::WallClock;
-use tradingflow::data::{Array, ArrayView, Instant};
+use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::constant::const_array;
 use tradingflow::operators::num::{add, multiply, sqrt, subtract};
@@ -113,40 +109,28 @@ async fn main() {
     let mut session = sc.build();
     let mut pool = Pool::new(0);
     let total = session.size_hint();
-    session
-        .run(&mut pool, common::progress(total, Instant::MIN))
-        .await;
+    session.run(&mut pool, common::progress(total)).await;
     eprintln!();
 
-    // Align the recorded scalar series by timestamp and write a wide CSV.
-    let cols = [
-        ("adj_close", session.view(h_adj)),
-        ("ma", session.view(h_ma)),
-        ("upper", session.view(h_upper)),
-        ("lower", session.view(h_lower)),
-    ];
-    let mut rows: BTreeMap<i64, [f64; 5]> = BTreeMap::new();
-    for (c, (_, series)) in cols.iter().enumerate() {
-        for (ts, v) in series.timestamps().iter().zip(series.data().iter()) {
-            rows.entry(ts.as_nanos()).or_insert([f64::NAN; 5])[c] = *v;
-        }
-    }
+    // Read the recorded series and align them by timestamp into a wide CSV.
+    let series = [
+        ("adj_close", h_adj),
+        ("ma", h_ma),
+        ("upper", h_upper),
+        ("lower", h_lower),
+    ]
+    .map(|(name, h)| {
+        let (ts, v) = common::read_scalar_series(&session, h);
+        (name.to_string(), ts, v)
+    });
 
-    let n = session.view(h_adj).len();
+    let n = series[0].1.len();
     if n == 0 {
         eprintln!("no data for {symbol}");
         std::process::exit(1);
     }
 
-    let mut csv = String::from("timestamp_ns,adj_close,ma,upper,lower,volume\n");
-    for (ts, vals) in &rows {
-        write!(csv, "{ts}").unwrap();
-        for v in vals {
-            write!(csv, ",{v}").unwrap();
-        }
-        csv.push('\n');
-    }
     let path = "target/plot_daily_price.csv";
-    fs::write(path, csv).expect("write csv");
+    common::write_wide_csv(path, &series);
     println!("{symbol}: {n} trading days -> {path}\nplot with:  python examples/plot.py {path}");
 }

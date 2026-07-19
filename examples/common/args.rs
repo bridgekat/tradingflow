@@ -2,7 +2,9 @@
 
 use std::fs;
 
-use tradingflow::data::{Instant, days_from_civil};
+use tradingflow::data::Instant;
+
+use super::date::{days_from_civil, instant_from_days};
 
 /// Parse a `YYYY-MM-DD` string into days since 1970-01-01 (a `clap` value parser,
 /// so a malformed date yields a usage error rather than a panic).
@@ -60,17 +62,17 @@ pub struct CommonArgs {
 
 impl CommonArgs {
     pub fn begin(&self) -> Instant {
-        Instant::from_utc_days(self.begin_days)
+        instant_from_days(self.begin_days)
     }
     pub fn end(&self) -> Instant {
-        Instant::from_utc_days(self.end_days)
+        instant_from_days(self.end_days)
     }
     pub fn data_start(&self) -> Instant {
         let days = match self.sample_begin {
             Some(s) => s.min(self.begin_days),
             None => self.begin_days - 400,
         };
-        Instant::from_utc_days(days)
+        instant_from_days(days)
     }
 
     /// Rebalance trigger instants: every `rebalance_days` calendar days from
@@ -79,7 +81,7 @@ impl CommonArgs {
         let mut out = Vec::new();
         let mut d = self.begin_days;
         while d <= self.end_days {
-            out.push(Instant::from_utc_days(d));
+            out.push(instant_from_days(d));
             d += self.rebalance_days;
         }
         out

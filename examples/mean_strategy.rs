@@ -120,7 +120,7 @@ async fn main() {
     let session = common::run(sc, &args).await;
 
     // ---- Extract + report ----------------------------------------------
-    let begin = args.begin().as_nanos();
+    let begin = args.begin().as_offset().as_nanos();
     // The index / frictionless baselines are unit-cash: scale to the actual
     // capital. The actual trader already runs on `INITIAL_CASH`.
     let (it, iv) = common::read_scalar_series(&session, h_index);

@@ -5,16 +5,11 @@ use std::fmt::Write as _;
 use std::fs;
 
 use tradingflow::clock::WallClock;
-use tradingflow::data::civil_from_days;
 use tradingflow::data::{Instant, SeriesView};
 use tradingflow::graph::Graph;
 use tradingflow::ports::SeriesPortHandle;
 
-/// `YYYY-MM-DD` for an event [`Instant`].
-pub fn date_str(ts: Instant) -> String {
-    let (y, m, d) = civil_from_days(ts.to_utc_days());
-    format!("{y:04}-{m:02}-{d:02}")
-}
+use super::date::date_str;
 
 /// A `tqdm`-style progress callback (backed by [`indicatif`]) for
 /// `Graph::run`'s `on_stable`.
@@ -23,16 +18,15 @@ pub fn date_str(ts: Instant) -> String {
 /// per narrow row, so the driver's `events()` count *is* the row count (no shared
 /// counter needed). `total` is the session's `size_hint()` in
 /// the same row unit; `Some(n)` → a bounded bar (percent / rate / ETA), else a
-/// spinner. `{per_sec}` is therefore rows/s. `begin` sets `{prefix}` (warm-up
-/// before it, running after); `{msg}` is the current event date. The bar uses a
-/// terminal-width `{wide_bar}` with Unicode sub-cell fill, and finalises itself
-/// when the callback drops at the end of `run`:
+/// spinner. `{per_sec}` is therefore rows/s. `{prefix}` is the current event
+/// date. The bar uses a terminal-width `{wide_bar}` with Unicode sub-cell fill,
+/// and finalises itself when the callback drops at the end of `run`:
 /// ```ignore
 /// let total = session.size_hint();
-/// session.run(common::progress(total, args.begin())).await;
+/// session.run(&mut pool, common::progress(total)).await;
 /// eprintln!(); // move past the finished bar line before printing results
 /// ```
-pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(&Graph<Instant, WallClock>, Instant) {
+pub fn progress(total: Option<usize>) -> impl FnMut(&Graph<Instant, WallClock>, Instant) {
     use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
     // Finish (leave) the bar when the callback is dropped — i.e. when `run`
@@ -80,7 +74,6 @@ pub fn progress(total: Option<usize>, begin: Instant) -> impl FnMut(&Graph<Insta
     // Cap redraws at ~20 fps regardless of how often the callback fires.
     pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(20));
 
-    let _begin_ns = begin.as_nanos();
     let guard = FinishOnDrop(pb);
     move |session: &Graph<Instant, WallClock>, ts: Instant| {
         let pb = &guard.0;
@@ -102,7 +95,7 @@ pub fn read_scalar_series(
     h: SeriesPortHandle<f64, 0>,
 ) -> (Vec<i64>, Vec<f64>) {
     let s: SeriesView<f64, 0> = session.view(h);
-    let ts = s.timestamps().iter().map(|t| t.as_nanos()).collect();
+    let ts = s.timestamps().iter().map(|t| t.as_offset().as_nanos()).collect();
     let vals = s.data().to_vec();
     (ts, vals)
 }

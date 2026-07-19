@@ -1,20 +1,19 @@
-//! Lowering: AST -> a `bind`/`route` chain (see `SegmentExt`).
+//! Lowering: from AST to a `bind` and `route` chain.
 //!
 //! This is Paterson's arrow-notation translation specialized to a cartesian
 //! category: the *environment* of live wires is threaded as a left-nested pair
 //! tree `((params, out_1), out_2)...`, each statement extends it via `bind`,
 //! and plumbing closures are pure ref shuffles. The translation is entirely
-//! positional -- no type information is consulted; closure patterns bind
-//! whatever `Values` the wires turn out to have. Wires the closure does not use
-//! lower to `_` (no unused warnings); the innermost binding of a name wins
-//! (shadowed slots also lower to `_`, never to a duplicate pattern binding).
+//! positional: no type information is needed. Closure patterns bind whatever
+//! `Values` the wires turn out to have. Wires the closure does not use
+//! lower to `_`; shadowed slots also lower to `_`.
 //!
-//! Inline applications (`Seg @ wires`) are desugared first: each one becomes a
+//! Inline applications (`seg @ wires`) are desugared first: each one becomes a
 //! fresh `__flowN` statement (post-order, so nested applications come first),
 //! and the surrounding expression keeps its tree shape over the fresh wires.
-//! After this pass the body is the flat statement list the translation above
+//! After this pass, the body is the flat statement list the translation above
 //! consumes, followed by a result wire tree that the closing `route` projects
-//! out of the environment under the mandatory `-> OutInterface` annotation.
+//! out of the environment.
 
 use std::collections::{HashMap, HashSet};
 
@@ -22,42 +21,42 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::spanned::Spanned;
 
-use crate::ast::{Flow, Tree, WireExpr};
+use crate::ast::{Segment, WireExpr, WirePat};
 
-impl Tree {
+impl WirePat {
     fn leaves(&self, f: &mut impl FnMut(&syn::Ident)) {
         match self {
-            Tree::Var(v) => f(v),
-            Tree::Tuple(ts) => ts.iter().for_each(|t| t.leaves(f)),
+            WirePat::Var(v) => f(v),
+            WirePat::Tuple(ts) => ts.iter().for_each(|t| t.leaves(f)),
         }
     }
 }
 
 /// A fully desugared statement: one segment applied to tree-shaped args.
 struct FlatStmt {
-    pat: Tree,
-    args: Tree,
+    pat: WirePat,
     seg: syn::Expr,
+    args: WirePat,
 }
 
-/// Desugar inline applications out of a wire expression. Each `Seg @ wires`
+/// Desugar inline applications out of a wire expression. Each `seg @ wires`
 /// leaf is emitted as a fresh `__flowN` statement (its span kept on the
 /// segment expression, so type errors point at the right application) and
 /// replaced by the fresh wire; `__flow` is a reserved name prefix.
-fn flatten(e: WireExpr, out: &mut Vec<FlatStmt>, n: &mut usize) -> Tree {
+fn flatten(e: WireExpr, out: &mut Vec<FlatStmt>, n: &mut usize) -> WirePat {
     match e {
-        WireExpr::Var(v) => Tree::Var(v),
-        WireExpr::Tuple(es) => Tree::Tuple(es.into_iter().map(|e| flatten(e, out, n)).collect()),
+        WireExpr::Var(v) => WirePat::Var(v),
+        WireExpr::Tuple(es) => WirePat::Tuple(es.into_iter().map(|e| flatten(e, out, n)).collect()),
         WireExpr::Apply(seg, args) => {
             let args = flatten(*args, out, n);
             let v = syn::Ident::new(&format!("__flow{n}"), seg.span());
             *n += 1;
             out.push(FlatStmt {
-                pat: Tree::Var(v.clone()),
-                args,
+                pat: WirePat::Var(v.clone()),
                 seg,
+                args,
             });
-            Tree::Var(v)
+            WirePat::Var(v)
         }
     }
 }
@@ -66,13 +65,13 @@ fn flatten(e: WireExpr, out: &mut Vec<FlatStmt>, n: &mut usize) -> Tree {
 /// leaf index, `live` flags innermost bindings, `used` the names this closure
 /// references. Fully-unused subtrees collapse to a single `_`.
 fn slot_pattern(
-    slot: &Tree,
+    slot: &WirePat,
     counter: &mut usize,
     live: &[bool],
     used: &HashSet<String>,
 ) -> TokenStream {
     match slot {
-        Tree::Var(v) => {
+        WirePat::Var(v) => {
             let i = *counter;
             *counter += 1;
             if live[i] && used.contains(&v.to_string()) {
@@ -81,7 +80,7 @@ fn slot_pattern(
                 quote!(_)
             }
         }
-        Tree::Tuple(ts) => {
+        WirePat::Tuple(ts) => {
             let subs: Vec<_> = ts
                 .iter()
                 .map(|t| slot_pattern(t, counter, live, used))
@@ -97,9 +96,9 @@ fn slot_pattern(
 
 /// Wire expression: a name's last occurrence moves; earlier occurrences
 /// `.clone()` (`Interface::Values` is `Copy`, so the clone is free).
-fn wires_expr(t: &Tree, remaining: &mut HashMap<String, usize>) -> TokenStream {
+fn wires_expr(t: &WirePat, remaining: &mut HashMap<String, usize>) -> TokenStream {
     match t {
-        Tree::Var(v) => {
+        WirePat::Var(v) => {
             let r = remaining.get_mut(&v.to_string()).unwrap();
             *r -= 1;
             if *r > 0 {
@@ -108,7 +107,7 @@ fn wires_expr(t: &Tree, remaining: &mut HashMap<String, usize>) -> TokenStream {
                 quote!(#v)
             }
         }
-        Tree::Tuple(ts) => {
+        WirePat::Tuple(ts) => {
             let es: Vec<_> = ts.iter().map(|t| wires_expr(t, remaining)).collect();
             quote!(( #(#es),* ))
         }
@@ -116,7 +115,7 @@ fn wires_expr(t: &Tree, remaining: &mut HashMap<String, usize>) -> TokenStream {
 }
 
 /// The shuffle closure `|env_pattern, _| wires` over the current environment.
-fn closure(env: &[Tree], wires: &Tree) -> syn::Result<TokenStream> {
+fn closure(env: &[WirePat], wires: &WirePat) -> syn::Result<TokenStream> {
     // Innermost-binding flags by leaf index (later binding of a name wins).
     let mut last = HashMap::new();
     let mut n = 0;
@@ -156,15 +155,15 @@ fn closure(env: &[Tree], wires: &Tree) -> syn::Result<TokenStream> {
     Ok(quote!(|#pat, _| #expr))
 }
 
-pub fn lower(flow: Flow, rt: TokenStream) -> syn::Result<TokenStream> {
-    let tys: Vec<_> = flow.params.iter().map(|p| &p.ty).collect();
+pub fn lower(flow: Segment, rt: TokenStream) -> syn::Result<TokenStream> {
+    let tys: Vec<_> = flow.params.iter().map(|p| &p.1).collect();
     let in_ty = match &tys[..] {
         [t] => quote!(#t),
         _ => quote!(( #(#tys),* )),
     };
     let mut env = vec![match flow.params.len() {
-        1 => flow.params[0].pat.clone(),
-        _ => Tree::Tuple(flow.params.iter().map(|p| p.pat.clone()).collect()),
+        1 => flow.params[0].0.clone(),
+        _ => WirePat::Tuple(flow.params.iter().map(|p| p.0.clone()).collect()),
     }];
 
     // Desugar inline `@` applications into the flat statement list.
@@ -174,8 +173,8 @@ pub fn lower(flow: Flow, rt: TokenStream) -> syn::Result<TokenStream> {
         let args = flatten(s.args, &mut stmts, &mut n);
         stmts.push(FlatStmt {
             pat: s.pat,
-            args,
             seg: s.seg,
+            args,
         });
     }
     let result = flatten(flow.result, &mut stmts, &mut n);
@@ -189,6 +188,7 @@ pub fn lower(flow: Flow, rt: TokenStream) -> syn::Result<TokenStream> {
         cur = quote!(#rt::SegmentExt::bind(#cur, #seg, #f));
         env.push(s.pat.clone());
     }
+
     // The result is a pure projection of the accumulated environment; the
     // required `-> OutInterface` annotation pins the routed output type.
     let out = &flow.output;

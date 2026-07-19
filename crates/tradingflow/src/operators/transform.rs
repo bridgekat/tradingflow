@@ -10,7 +10,7 @@
 
 use std::marker::PhantomData;
 
-use crate::data::{Array, ArrayView, Instant, Scalar, SeriesView};
+use crate::data::{Array, ArrayView, Instant, Layout, Scalar, SeriesView};
 use crate::graph::typed::{Interface, Operator};
 use crate::ports::{ArrayPort, SeriesPort, StripNotify};
 
@@ -404,7 +404,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Select<T, IN, OU
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
         if init {
-            let input_extents = x.extents();
+            let input_extents = x.layout().extents();
             state.index_map = compute_select_map(&input_extents, &state.indices, state.axis);
             let out_extents = select_out_extents::<OUT>(
                 &input_extents,
@@ -416,7 +416,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Select<T, IN, OU
             // input (NOT zeros — a fabricated finite observation leaks through
             // carry-style consumers; the faithful selection of a NaN-initialised
             // panel correctly reads "no data yet").
-            state.out = Array::from_vec(
+            state.out = Array::from_parts(
                 out_extents,
                 state.index_map.iter().map(|&s| src[s].clone()).collect(),
             );
@@ -528,13 +528,13 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
         init: bool,
     ) -> (bool, ArrayView<'a, T, N>) {
         if init {
-            state.out = Array::full(series.elem_extents(), state.fill.clone());
+            state.out = Array::full(series.layout().extents(), state.fill.clone());
             return (false, state.out.view());
         }
         let len = series.len();
         let dst = state.out.data_mut();
         if len > state.offset {
-            dst.clone_from_slice(series.elem(len - 1 - state.offset).data());
+            dst.clone_from_slice(series.at(len - 1 - state.offset).unwrap().1.data());
         } else {
             dst.fill(state.fill.clone());
         }

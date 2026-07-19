@@ -13,7 +13,7 @@
 //! `inputs` is a tuple of **views** — [`NativeArrayView`] for array edges
 //! (`ArrayPort`) and [`NativeSeriesView`] for recorded-history windows
 //! (`SeriesPort` edges), `None` for unit (clock) inputs. `output` is a
-//! writable array view, `timestamp` is TAI
+//! writable array view, `timestamp` is naive
 //! nanoseconds (the graph's ambient event time), `produced` is a `tuple[bool, ...]`
 //! parallel to `inputs`, and `state` is a Python object carried across ticks.
 //!
@@ -112,7 +112,7 @@ use pyo3::types::{PyDict, PySlice, PyTuple};
 use numpy::ndarray::{ArrayD, IxDyn};
 use numpy::{PyArray1, PyArrayDyn, PyReadonlyArrayDyn};
 
-use crate::data::{Array, ArrayView, Instant, SeriesView};
+use crate::data::{Array, ArrayView, Instant, Layout, SeriesView};
 use crate::graph::typed::{Interface, InterfaceHandles, Operator};
 use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, SeriesPorts, UnitPort};
 
@@ -366,7 +366,7 @@ impl NativeSeriesView {
         Ok(PyArrayDyn::from_owned_array(py, nd))
     }
 
-    /// Timestamps in logical `[start, end)` as an int64 (TAI ns) NumPy array.
+    /// Timestamps in logical `[start, end)` as an int64 (naive ns) NumPy array.
     /// Indices are clamped to the retained window `[base, len)`.
     #[pyo3(signature = (start=0, end=None))]
     fn slice<'py>(
@@ -382,7 +382,7 @@ impl NativeSeriesView {
         let window = unsafe {
             std::slice::from_raw_parts(self.timestamps.add(start - self.base), end - start)
         };
-        let ts: Vec<i64> = window.iter().map(|t| t.as_nanos()).collect();
+        let ts: Vec<i64> = window.iter().map(|t| t.as_offset().as_nanos()).collect();
         PyArray1::from_slice(py, &ts)
     }
 
@@ -427,8 +427,8 @@ impl NativeSeriesView {
             timestamps: s.timestamps().as_ptr(),
             retained: s.len(),
             base: 0,
-            stride: s.elem_len(),
-            extents: s.elem_extents().to_vec(),
+            stride: s.layout().len(),
+            extents: s.layout().extents().to_vec(),
         };
         Ok(Bound::new(py, view)?.into_any())
     }
@@ -768,7 +768,7 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
         // call runs before the driver's first batch, so Python `init` sees the
         // floor the `Builder` was created with — `Instant::MIN`, i.e. the
         // `i64::MIN` "no time yet" sentinel of the legacy contract.
-        let ts = time.as_nanos();
+        let ts = time.as_offset().as_nanos();
 
         if init {
             // Build call: instantiate the Python operator and call its `init`
@@ -907,8 +907,7 @@ pub fn py_class_operator_file<I: PyArgs, const NO: usize>(
 #[cfg(test)]
 mod tests {
     use super::{PyClassOperator, PyParams};
-    use crate::data::Array;
-    use crate::data::Instant;
+    use crate::data::{Array, Duration, Instant};
     use crate::graph::pool::Pool;
     use crate::graph::typed::Builder;
     use crate::operators::constant::const_array;
@@ -945,7 +944,10 @@ __op__ = Turnover()
     #[test]
     fn py_class_operator_turnover() {
         let mut b = Builder::new(Instant::MIN);
-        let (src_cell, src) = b.source(const_array(Array::from_vec([2], vec![0.5_f64, 0.5])));
+        let (src_cell, src) = b.source(const_array(Array::from_parts(
+            [2],
+            vec![0.5_f64, 0.5].into(),
+        )));
         let out = b.segment(
             // Output is a scalar (`vec![]`), so NO = 0.
             PyClassOperator::<ArrayPorts<f64, 1>, 0>::from_source(
@@ -958,15 +960,15 @@ __op__ = Turnover()
         let mut g = b.build();
         let mut pool = Pool::new(0);
 
-        *g.state_mut(src_cell) = Array::from_vec([2], vec![0.5, 0.5]);
+        *g.state_mut(src_cell) = Array::from_parts([2], vec![0.5, 0.5].into());
         g.stabilize(&mut pool);
         assert_eq!(g.view(out).as_slice().unwrap(), &[0.0]); // warmup
 
-        *g.state_mut(src_cell) = Array::from_vec([2], vec![0.3, 0.7]);
+        *g.state_mut(src_cell) = Array::from_parts([2], vec![0.3, 0.7].into());
         g.stabilize(&mut pool);
         assert!((g.view(out).as_slice().unwrap()[0] - 0.4).abs() < 1e-12);
 
-        *g.state_mut(src_cell) = Array::from_vec([2], vec![1.0, 0.0]);
+        *g.state_mut(src_cell) = Array::from_parts([2], vec![1.0, 0.0].into());
         g.stabilize(&mut pool);
         assert!((g.view(out).as_slice().unwrap()[0] - 1.4).abs() < 1e-12);
     }
@@ -995,9 +997,14 @@ __op__ = HistDot()
         let mut b = Builder::new(Instant::MIN);
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
         // Sources lend the view currency directly — `Record` wires straight on.
-        let (weights_cell, weights) =
-            b.source(const_array(Array::from_vec([2], vec![1.0_f64, 1.0])));
-        let (feed_cell, feed) = b.source(const_array(Array::from_vec([2], vec![0.0_f64, 0.0])));
+        let (weights_cell, weights) = b.source(const_array(Array::from_parts(
+            [2],
+            vec![1.0_f64, 1.0].into(),
+        )));
+        let (feed_cell, feed) = b.source(const_array(Array::from_parts(
+            [2],
+            vec![0.0_f64, 0.0].into(),
+        )));
         let series = b.segment(Record::new(), feed);
         let out = b.segment(
             // Scalar output (`vec![]`), so NO = 0.
@@ -1012,15 +1019,15 @@ __op__ = HistDot()
         let mut pool = Pool::new(0);
 
         // Tick 1 @ t=100: feed [1,2]; series=[[1,2]]; dot with [1,1]=3; mean=3.
-        *g.context_mut() = Instant::from_nanos(100);
-        *g.state_mut(weights_cell) = Array::from_vec([2], vec![1.0, 1.0]);
-        *g.state_mut(feed_cell) = Array::from_vec([2], vec![1.0, 2.0]);
+        *g.context_mut() = Instant::from_offset(Duration::from_nanos(100));
+        *g.state_mut(weights_cell) = Array::from_parts([2], vec![1.0, 1.0].into());
+        *g.state_mut(feed_cell) = Array::from_parts([2], vec![1.0, 2.0].into());
         g.stabilize(&mut pool);
         assert!((g.view(out).as_slice().unwrap()[0] - 3.0).abs() < 1e-12);
 
         // Tick 2 @ t=200: feed [3,4]; series=[[1,2],[3,4]]; dots=3,7; mean=5.
-        *g.context_mut() = Instant::from_nanos(200);
-        *g.state_mut(feed_cell) = Array::from_vec([2], vec![3.0, 4.0]);
+        *g.context_mut() = Instant::from_offset(Duration::from_nanos(200));
+        *g.state_mut(feed_cell) = Array::from_parts([2], vec![3.0, 4.0].into());
         g.stabilize(&mut pool);
         assert!((g.view(out).as_slice().unwrap()[0] - 5.0).abs() < 1e-12);
     }
@@ -1054,9 +1061,9 @@ def build(scale=1.0):
             .unwrap();
 
         let mut b = Builder::new(Instant::MIN);
-        let (src_cell, src) = b.source(const_array(Array::from_vec(
+        let (src_cell, src) = b.source(const_array(Array::from_parts(
             [4],
-            vec![1.0_f64, 2.0, 3.0, 4.0],
+            vec![1.0_f64, 2.0, 3.0, 4.0].into(),
         )));
         let out = b.segment(
             // Scalar output (`vec![]`), so NO = 0.
@@ -1070,7 +1077,7 @@ def build(scale=1.0):
         let mut g = b.build();
         let mut pool = Pool::new(0);
 
-        *g.state_mut(src_cell) = Array::from_vec([4], vec![1.0, 2.0, 3.0, 4.0]);
+        *g.state_mut(src_cell) = Array::from_parts([4], vec![1.0, 2.0, 3.0, 4.0].into());
         g.stabilize(&mut pool);
         // sum(1..4)=10 * 3
         assert!((g.view(out).as_slice().unwrap()[0] - 30.0).abs() < 1e-12);
@@ -1088,7 +1095,8 @@ def build(scale=1.0):
         const N: usize = 3;
         const F: usize = 2;
         let mut b = Builder::new(Instant::MIN);
-        let (universe_cell, universe) = b.source(const_array(Array::from_vec([N], vec![1.0; N])));
+        let (universe_cell, universe) =
+            b.source(const_array(Array::from_parts([N], vec![1.0; N].into())));
         let (feat_feed_cell, feat_feed) = b.source(const_array(Array::<f64, 2>::zeros([N, F])));
         let (tgt_feed_cell, tgt_feed) = b.source(const_array(Array::<f64, 1>::zeros([N])));
         // Sources lend the view currency directly — `Record` wires straight on.
@@ -1115,10 +1123,10 @@ def build(scale=1.0):
         for t in 1..=5_i64 {
             let x: Vec<f64> = (0..N * F).map(|k| (t as f64) + 0.1 * k as f64).collect();
             let y: Vec<f64> = (0..N).map(|i| 0.5 * (t as f64) + i as f64).collect();
-            *g.context_mut() = Instant::from_nanos(t * 100);
-            *g.state_mut(feat_feed_cell) = Array::from_vec([N, F], x);
-            *g.state_mut(tgt_feed_cell) = Array::from_vec([N], y);
-            *g.state_mut(universe_cell) = Array::from_vec([N], vec![1.0; N]);
+            *g.context_mut() = Instant::from_offset(Duration::from_nanos(t * 100));
+            *g.state_mut(feat_feed_cell) = Array::from_parts([N, F], x.into());
+            *g.state_mut(tgt_feed_cell) = Array::from_parts([N], y.into());
+            *g.state_mut(universe_cell) = Array::from_parts([N], vec![1.0; N].into());
             g.stabilize(&mut pool);
         }
 

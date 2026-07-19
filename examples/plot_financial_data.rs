@@ -18,15 +18,11 @@
 //! python examples/plot_financial_data.py target/plot_financial_data.csv
 //! ```
 
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
-use std::fs;
-
 #[path = "common/mod.rs"]
 mod common;
 
 use tradingflow::clock::WallClock;
-use tradingflow::data::{Array, ArrayView, Duration, Instant, SeriesView};
+use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::num::{divide, multiply, negate};
 use tradingflow::operators::rolling::{Window, rolling_mean};
@@ -196,41 +192,28 @@ async fn main() {
     let mut session = sc.build();
     let mut pool = Pool::new(0);
     let total = session.size_hint();
-    session
-        .run(&mut pool, common::progress(total, Instant::MIN))
-        .await;
+    session.run(&mut pool, common::progress(total)).await;
     eprintln!();
 
-    let mut rows: BTreeMap<i64, [f64; 10]> = BTreeMap::new();
-    for (c, h) in records.iter().enumerate() {
-        let series: SeriesView<f64, 0> = session.view(*h);
-        for (ts, v) in series.timestamps().iter().zip(series.data().iter()) {
-            rows.entry(ts.as_nanos()).or_insert([f64::NAN; 10])[c] = *v;
-        }
-    }
+    // Read the recorded series and align them by timestamp into a wide CSV.
+    let series: Vec<_> = COLS
+        .iter()
+        .zip(records)
+        .map(|(name, h)| {
+            let (ts, v) = common::read_scalar_series(&session, h);
+            (name.to_string(), ts, v)
+        })
+        .collect();
 
-    let n_mc = session.view(records[0]).len();
+    let n_mc = series[0].1.len();
     if n_mc == 0 {
         eprintln!("no data for {symbol}");
         std::process::exit(1);
     }
 
-    let mut csv = String::from("timestamp_ns");
-    for c in COLS {
-        write!(csv, ",{c}").unwrap();
-    }
-    csv.push('\n');
-    for (ts, vals) in &rows {
-        write!(csv, "{ts}").unwrap();
-        for v in vals {
-            write!(csv, ",{v}").unwrap();
-        }
-        csv.push('\n');
-    }
     let path = "target/plot_financial_data.csv";
-    fs::write(path, csv).expect("write csv");
+    common::write_wide_csv(path, &series);
     println!(
-        "{symbol}: {} report+price rows -> {path}\nplot with:  python examples/plot_financial_data.py {path}",
-        rows.len()
+        "{symbol}: {n_mc} market-cap rows -> {path}\nplot with:  python examples/plot_financial_data.py {path}"
     );
 }

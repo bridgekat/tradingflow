@@ -18,9 +18,9 @@ use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
+use crate::data::{Array, ArrayView, Instant, Layout};
 use crate::graph::typed::Operator;
 use crate::ports::ArrayPort;
-use crate::{Array, ArrayView, Instant};
 
 /// A single `[num_stocks]` view port — the per-input edge of every trader.
 type Vp = ArrayPort<f64, 1>;
@@ -692,7 +692,7 @@ mod tests {
     use crate::ports::ArrayPass;
 
     fn arr(v: &[f64]) -> Array<f64, 1> {
-        Array::from_vec([v.len()], v.to_vec())
+        Array::from_parts([v.len()], v.into())
     }
 
     /// Push a rank-1 array [`array_cell`] of `v`; return the source handle

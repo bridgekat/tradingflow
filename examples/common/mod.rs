@@ -11,6 +11,7 @@
 //! | Module | Contents |
 //! | --- | --- |
 //! | [`args`] | CLI args (`CommonArgs`), date parsing, the symbol list |
+//! | [`date`] | civil-date ↔ day-number ↔ `Instant` helpers |
 //! | [`data`] | parquet sources → the stacked `[num_stocks]` panel (`Stacked`) |
 //! | [`features`] | the CICC factor catalogs (fundamental + price-volume) and the feature panel over them |
 //! | [`universe`] | universe masks and the cap-weighted index |
@@ -22,11 +23,11 @@
 //!
 //! Differences from the Python original, all intentional:
 //!
-//! * Calendar/timezone handling is the caller's job in Rust (the core has no
-//!   tz database), so rebalance dates are generated from a plain
-//!   `Duration::from_days` step, and date strings are turned into `Instant`s
-//!   via [`Instant::from_utc_days`](tradingflow::Instant::from_utc_days) — a
-//!   UTC-midnight → TAI parse matching `ParquetPanelSource`'s.
+//! * Calendar/timezone handling is the caller's job in Rust (the core's
+//!   timestamps are naive nanosecond counts), so rebalance dates are generated
+//!   from a plain `Duration::from_days` step, and date strings are turned into
+//!   `Instant`s via the [`date`] helpers — a midnight day-number parse matching
+//!   `ParquetPanelSource`'s `date32` convention.
 //! * The Python lambdas (`calculate_index_weights`, cross-sectional demean,
 //!   price-limit rounding) become native Rust closures fed to `Map`/`Apply`.
 //! * All symbols in `symbol_list.csv` are loaded (matching the original);
@@ -46,6 +47,7 @@ pub mod strategy;
 
 pub mod args;
 pub mod data;
+pub mod date;
 pub mod features;
 pub mod report;
 pub mod target;
@@ -53,8 +55,9 @@ pub mod universe;
 
 pub use args::{CommonArgs, load_symbols, parse_date_days};
 pub use data::{Stacked, build_stacked};
+pub use date::{civil_from_days, date_str, days_from_civil, instant_from_days};
 pub use features::{Features, build_features};
-pub use report::{date_str, progress, read_scalar_series, write_long_csv, write_wide_csv};
+pub use report::{progress, read_scalar_series, write_long_csv, write_wide_csv};
 pub use target::{build_log_return_target, build_price_limits};
 pub use universe::{build_cap_weighted_universe, calculate_index_weights};
 

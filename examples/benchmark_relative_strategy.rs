@@ -21,8 +21,8 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::data::Retention;
 use tradingflow::clock::WallClock;
+use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
 
 use common::models::{benchmark_relative, ridge_mean, shrinkage_cov};
@@ -52,7 +52,7 @@ async fn main() {
 
     let mut sc = Builder::new(WallClock);
 
-    let m = Market::build(&mut sc, &symbols, &args, Retention::UNBOUNDED);
+    let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
 
     let predicted_returns = sc.segment(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
@@ -80,7 +80,7 @@ async fn main() {
 
     let session = common::run(sc, &args).await;
 
-    let begin = args.begin().as_nanos();
+    let begin = args.begin().as_offset().as_nanos();
     let mut table = NavTable::default();
     let s = table.add(&session, "index", begin, h_index);
     println!(

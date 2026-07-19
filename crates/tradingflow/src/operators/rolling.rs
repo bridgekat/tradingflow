@@ -16,7 +16,7 @@ use std::marker::PhantomData;
 
 use num_traits::Float;
 
-use crate::data::{Array, ArrayView, Duration, Instant, Scalar, SeriesView};
+use crate::data::{Array, ArrayView, Duration, Instant, Layout, Scalar, SeriesView};
 use crate::graph::typed::Operator;
 use crate::ports::{ArrayPort, SeriesPort};
 
@@ -128,14 +128,14 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
         init: bool,
     ) -> (bool, ArrayView<'a, A::Scalar, NO>) {
         if init {
-            let input_shape = series.elem_extents();
+            let input_shape = series.layout().extents();
             let output_shape = A::output_shape(&input_shape);
             let output_stride: usize = output_shape.iter().product();
             state.count = 0;
             state.accumulator = A::new(&input_shape);
-            state.out = Array::from_vec(
+            state.out = Array::from_parts(
                 out_extents::<NO>(&output_shape),
-                vec![A::Scalar::nan(); output_stride],
+                vec![A::Scalar::nan(); output_stride].into(),
             );
             return (false, state.out.view());
         }
@@ -145,7 +145,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
         // `len - count` — stable under retention trims of older rows.
         let len = series.len();
 
-        state.accumulator.add(series.elem(len - 1).data());
+        state.accumulator.add(series.at(len - 1).unwrap().1.data());
         state.count += 1;
 
         match state.window {
@@ -153,7 +153,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
                 while state.count > w {
                     state
                         .accumulator
-                        .remove(series.elem(len - state.count).data());
+                        .remove(series.at(len - state.count).unwrap().1.data());
                     state.count -= 1;
                 }
                 if state.count < w {
@@ -161,12 +161,12 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
                 }
             }
             Window::TimeDelta(w) => {
-                let current_ts = series.timestamp(len - 1);
+                let current_ts = series.at(len - 1).unwrap().0;
                 let cutoff = current_ts - w;
-                while state.count > 0 && series.timestamp(len - state.count) < cutoff {
+                while state.count > 0 && series.at(len - state.count).unwrap().0 < cutoff {
                     state
                         .accumulator
-                        .remove(series.elem(len - state.count).data());
+                        .remove(series.at(len - state.count).unwrap().1.data());
                     state.count -= 1;
                 }
                 if state.count == 0 {
@@ -600,16 +600,16 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
         init: bool,
     ) -> (bool, ArrayView<'a, T, NO>) {
         if init {
-            let stride = series.elem_len();
+            let stride = series.layout().len();
             state.weighted_sum = vec![T::zero(); stride];
             state.nonfinite_count = vec![0; stride];
             state.fill_decay = T::one();
-            state.out = Array::from_vec(series.elem_extents(), vec![T::nan(); stride]);
+            state.out = Array::from_parts(series.layout().extents(), vec![T::nan(); stride].into());
             return (false, state.out.view());
         }
 
         let len = series.len();
-        let row = series.elem(len - 1).data();
+        let row = series.at(len - 1).unwrap().1.data();
         let stride = row.len();
         let alpha = state.alpha;
         let one_minus_alpha = state.one_minus_alpha;
@@ -631,7 +631,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
                 state.weighted_sum[i] = state.weighted_sum[i] + alpha * x;
             }
             if len > state.window {
-                let x_old = series.elem(len - 1 - state.window).data()[i];
+                let x_old = series.at(len - 1 - state.window).unwrap().1.data()[i];
                 if !x_old.is_finite() {
                     state.nonfinite_count[i] -= 1;
                 } else {

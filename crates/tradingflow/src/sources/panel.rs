@@ -48,7 +48,7 @@
 //! # Timestamps
 //!
 //! `date` is a Parquet `date32` (days since 1970-01-01). The event timestamp is
-//! the day's UTC-midnight instant via [`hifitime`], so a panel→select→filter
+//! the day's midnight instant (`EPOCH + days · 24 h`), so a panel→select→filter
 //! stream is timestamp-aligned across kinds.
 //!
 //! Requires a tokio runtime when added to a scenario (the Parquet scan runs on a
@@ -182,9 +182,9 @@ fn epoch_from_days(days: i32) -> Epoch {
     ))
 }
 
-/// `date32` days → event [`Instant`] (UTC midnight → TAI).
+/// `date32` days → event [`Instant`] (the day's midnight, naive).
 fn instant_from_days(days: i32) -> Instant {
-    Instant::from_utc_days(days as i64)
+    Instant::from_offset(Duration::from_days(days as i64))
 }
 
 /// `(year, day_of_year)` (1-based) for a report date via hifitime
@@ -227,7 +227,7 @@ struct PanelState {
 /// an event, so an unwritten row must read as `NaN` (not `0.0`) for the
 /// per-stock `Filter` to drop it.
 fn nan_panel(shape: [usize; 2]) -> Array<f64, 2> {
-    Array::from_vec(shape, vec![f64::NAN; shape.iter().product()])
+    Array::from_parts(shape, vec![f64::NAN; shape.iter().product()].into())
 }
 
 fn panel_write(

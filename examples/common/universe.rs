@@ -40,7 +40,7 @@ pub fn build_full_market_universe(
     sc.segment(
         clocked(map(|m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
-            Array::from_vec(
+            Array::from_parts(
                 [s.len()],
                 s.iter()
                     .map(|&c| {
@@ -72,13 +72,13 @@ pub fn build_caprank_universe(
             let n = s.len();
             let mut idx: Vec<usize> = (0..n).filter(|&i| s[i].is_finite() && s[i] > 0.0).collect();
             idx.sort_by(|&a, &b| s[b].partial_cmp(&s[a]).unwrap());
-            let mut mask = vec![f64::NAN; n];
+            let mut mask: Box<[f64]> = vec![f64::NAN; n].into();
             for (rank, &i) in idx.iter().enumerate() {
                 if rank >= lo && rank < hi {
                     mask[i] = 1.0;
                 }
             }
-            Array::from_vec([n], mask)
+            Array::from_parts([n], mask)
         })),
         (rebalance_clock, market_cap),
     )
@@ -128,10 +128,10 @@ pub fn mask_to_universe(
 
 /// Market-cap-weighted index weights for the top-`k` stocks (proportional to
 /// cap, normalised to 1; others zero).
-pub fn calculate_index_weights(mc: &[f64], k: usize) -> Vec<f64> {
+pub fn calculate_index_weights(mc: &[f64], k: usize) -> Box<[f64]> {
     let n = mc.len();
-    let mut w = vec![0.0f64; n];
-    let mut valid: Vec<usize> = (0..n)
+    let mut w = vec![0.0f64; n].into();
+    let mut valid: Box<[usize]> = (0..n)
         .filter(|&i| mc[i].is_finite() && mc[i] > 0.0)
         .collect();
     if valid.is_empty() {
@@ -167,7 +167,7 @@ pub fn build_cap_weighted_universe(
     sc.segment(
         clocked(map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
-            Array::from_vec([s.len()], calculate_index_weights(&s, k))
+            Array::from_parts([s.len()], calculate_index_weights(&s, k))
         })),
         (rebalance_clock, market_cap),
     )

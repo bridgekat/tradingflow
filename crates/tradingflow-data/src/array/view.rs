@@ -1,152 +1,154 @@
-//! Inherent impls and conversions for the borrowed [`ArrayView<'a, T, N>`](ArrayView):
-//! construction, dimensions, bulk access, per-axis indexing, and materialization.
-
 use std::borrow::Cow;
-use std::ops;
+use std::ops::Index;
 
-use super::{Array, ArrayView};
-use crate::{Scalar, Shape};
+use super::{Array, ArrayIter};
+use crate::{Layout, Scalar, layout};
 
-// ---------------------------------------------------------------------------
-// Construction
-// ---------------------------------------------------------------------------
+/// A borrowed, strided view of an [`Array`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct ArrayView<'a, T: Scalar, const N: usize> {
+    layout: layout::Strided<N>,
+    data: &'a [T],
+}
 
 impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
-    /// View extents and a flat row-major buffer as a contiguous array — the
-    /// borrowing counterpart of [`Array::from_vec`].
+    /// Creates an array view from a row-major contiguous slice.
     ///
     /// # Panics
     ///
     /// Panics if `data.len() != extents.iter().product()`.
     pub fn from_slice(extents: [usize; N], data: &'a [T]) -> Self {
-        let shape = Shape::row_major(extents);
+        let layout = layout::RowMajor::new(extents);
         assert_eq!(
             data.len(),
-            shape.len(),
+            layout.len(),
             "from_slice: extents {:?} expect {} scalars, got {}",
             extents,
-            shape.len(),
+            layout.len(),
             data.len(),
         );
-        Self { data, shape }
+        Self {
+            layout: layout.into(),
+            data,
+        }
     }
 
-    /// Build a strided view from a [`Shape`] and a backing slice whose **first
-    /// element is the view's origin** (`[0, …, 0]`).
+    /// Creates an array view from a row-major contiguous slice.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `data.len() == extents.iter().product()`.
+    pub unsafe fn from_slice_unchecked(extents: [usize; N], data: &'a [T]) -> Self {
+        let layout = layout::RowMajor::new(extents);
+        debug_assert_eq!(data.len(), layout.len());
+        Self {
+            layout: layout.into(),
+            data,
+        }
+    }
+
+    /// Creates an array view from a strided slice.
     ///
     /// # Panics
     ///
-    /// Panics if `data` is too short to contain every scalar the shape
-    /// addresses (`data.len() < shape.span()`).
-    pub fn from_parts(shape: Shape<N>, data: &'a [T]) -> Self {
+    /// Panics if `data.len() < layout.span()`.
+    pub fn from_parts(layout: layout::Strided<N>, data: &'a [T]) -> Self {
         assert!(
-            data.len() >= shape.span(),
+            data.len() >= layout.span(),
             "from_parts: shape spans {} scalars, got {}",
-            shape.span(),
+            layout.span(),
             data.len(),
         );
-        Self { data, shape }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Dimensions
-// ---------------------------------------------------------------------------
-
-impl<T: Scalar, const N: usize> ArrayView<'_, T, N> {
-    /// The shape (per-axis extents and strides; possibly non-canonical).
-    pub fn shape(&self) -> Shape<N> {
-        self.shape
+        Self { layout, data }
     }
 
-    /// Per-axis extents.
-    pub fn extents(&self) -> [usize; N] {
-        self.shape.extents()
+    /// Creates an array view from a strided slice.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `data.len() >= layout.span()`.
+    pub unsafe fn from_parts_unchecked(layout: layout::Strided<N>, data: &'a [T]) -> Self {
+        debug_assert!(data.len() >= layout.span());
+        Self { layout, data }
     }
 
-    /// Number of scalars (product of extents).
-    pub fn len(&self) -> usize {
-        self.shape.len()
+    pub fn layout(&self) -> layout::Strided<N> {
+        self.layout
     }
 
-    /// Whether there are no scalars (some extent is zero).
-    pub fn is_empty(&self) -> bool {
-        self.shape.is_empty()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Bulk access
-// ---------------------------------------------------------------------------
-
-impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
-    /// The backing slice from the view's origin — for callers that walk the
-    /// view with explicit stride arithmetic (index `0` is the `[0, …, 0]`
-    /// element).
     pub fn data(&self) -> &'a [T] {
         self.data
     }
 
-    /// The contiguous fast path: `Some(flat slice)` iff the view has canonical
-    /// row-major strides. `None` for a strided view (e.g. a column).
+    /// Returns `Some(data)` if the view has row-major contiguous layout.
     pub fn as_slice(&self) -> Option<&'a [T]> {
-        if self.shape.is_contiguous() {
-            Some(&self.data[..self.shape.len()])
+        if self.layout.is_contiguous() {
+            Some(&self.data[..self.layout.len()])
         } else {
             None
         }
     }
 
-    /// Borrow the view's scalars as a contiguous flat slice, materializing into
-    /// an owned buffer (row-major) only when the view is strided. Zero-copy for
-    /// the common contiguous case.
+    /// Borrows the view's scalars as a row-major contiguous slice,
+    /// materializing into an owned buffer if needed.
     pub fn to_contiguous(&self) -> Cow<'a, [T]> {
-        match self.as_slice() {
-            Some(s) => Cow::Borrowed(s),
-            None => Cow::Owned(self.to_vec()),
+        if let Some(slice) = self.as_slice() {
+            Cow::Borrowed(slice)
+        } else {
+            let mut owned = Vec::with_capacity(self.layout.len());
+            for i in self.layout.offsets() {
+                owned.push(self.data[i].clone());
+            }
+            Cow::Owned(owned)
         }
     }
 
-    /// Materialize the view into a fresh row-major `Vec<T>`.
-    pub fn to_vec(&self) -> Vec<T> {
-        match self.as_slice() {
-            Some(s) => s.to_vec(),
-            None => self
-                .shape
-                .offsets()
-                .map(|off| self.data[off].clone())
-                .collect(),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Element access
-// ---------------------------------------------------------------------------
-
-/// Index by a per-axis logical index, resolved through the view's strides —
-/// `v[[i, j]]` is the same scalar as in the parent array, with no copy.
-///
-/// # Panics
-///
-/// Panics if the index is out of bounds on any axis.
-impl<T: Scalar, const N: usize> ops::Index<[usize; N]> for ArrayView<'_, T, N> {
-    type Output = T;
-
-    #[inline]
-    fn index(&self, index: [usize; N]) -> &T {
-        &self.data[self.shape.offset(index)]
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Conversions
-// ---------------------------------------------------------------------------
-
-impl<T: Scalar, const N: usize> ArrayView<'_, T, N> {
     /// Copy the view into an owned, contiguous [`Array`].
     pub fn to_array(&self) -> Array<T, N> {
-        Array::from_vec(self.shape.extents(), self.to_vec())
+        // SAFETY: `to_contiguous()` returns a slice of length `self.layout.len()`.
+        unsafe { Array::from_parts_unchecked(self.layout.extents(), self.to_contiguous().into()) }
+    }
+}
+
+impl<T: Scalar, const N: usize> Layout<N> for ArrayView<'_, T, N> {
+    fn extents(&self) -> [usize; N] {
+        self.layout.extents()
+    }
+
+    fn strides(&self) -> [usize; N] {
+        self.layout.strides()
+    }
+
+    fn is_contiguous(&self) -> bool {
+        self.layout.is_contiguous()
+    }
+}
+
+impl<T: Scalar, const N: usize> Index<[usize; N]> for ArrayView<'_, T, N> {
+    type Output = T;
+
+    fn index(&self, index: [usize; N]) -> &T {
+        &self.data[self.layout.offset(index)]
+    }
+}
+
+impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
+    /// Iterates over the scalars in row-major order.
+    pub fn iter(&self) -> ArrayIter<'a, T, N> {
+        ArrayIter {
+            offsets: self.layout().offsets(),
+            data: self.data(),
+        }
+    }
+}
+
+impl<'a, T: Scalar, const N: usize> IntoIterator for ArrayView<'a, T, N> {
+    type Item = T;
+    type IntoIter = ArrayIter<'a, T, N>;
+
+    /// Iterates over the scalars in row-major order.
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -161,3 +163,11 @@ impl<T: Scalar, const N: usize> From<ArrayView<'_, T, N>> for Array<T, N> {
         v.to_array()
     }
 }
+
+impl<T: Scalar, const N: usize> Clone for ArrayView<'_, T, N> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: Scalar, const N: usize> Copy for ArrayView<'_, T, N> {}

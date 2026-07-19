@@ -22,8 +22,8 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::data::Retention;
 use tradingflow::clock::WallClock;
+use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
 use tradingflow::operators::num::diff;
 use tradingflow::operators::structural::record;
@@ -73,7 +73,7 @@ async fn main() {
 
     let mut sc = Builder::new(WallClock);
 
-    let m = Market::build(&mut sc, &symbols, &args, Retention::UNBOUNDED);
+    let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
     // Raw daily log returns for the realized-variance metric (an ordinary
     // `ArrayPort` view — the Python metric consumes it directly).
     let log_returns = sc.segment(diff(), m.log_adj);
@@ -128,7 +128,7 @@ async fn main() {
 
     let session = common::run(sc, &args).await;
 
-    let begin = args.begin().as_nanos();
+    let begin = args.begin().as_offset().as_nanos();
     let mut table = NavTable::default();
     let index = table.add(&session, "index", begin, h_index);
     println!("index: final={:.0} CNY", index.final_finite);

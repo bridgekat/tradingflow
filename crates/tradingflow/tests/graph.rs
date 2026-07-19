@@ -1,21 +1,24 @@
 use tradingflow::clock::WallClock;
+use tradingflow::data::{Array, ArrayView, Duration, Instant, Retention, Series, SeriesView};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::{num::add, structural::filter, structural::record};
 use tradingflow::sources::basic::*;
-use tradingflow::{Array, ArrayView, Instant, Series, SeriesView};
 
 fn pool() -> Pool {
     Pool::new(0)
 }
 
 fn tss(xs: &[i64]) -> Vec<Instant> {
-    xs.iter().copied().map(Instant::from_nanos).collect()
+    xs.iter()
+        .copied()
+        .map(|ns| Instant::from_offset(Duration::from_nanos(ns)))
+        .collect()
 }
 
 fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
     array_source(
         Array::scalar(0.0),
-        Series::from_vec([], tss(ts), vals.to_vec()),
+        Series::from_parts([], tss(ts), vals.to_vec(), Retention::unbounded()),
     )
 }
 
@@ -102,7 +105,7 @@ async fn on_stable_per_batch() {
     let mut batches = Vec::new();
     session
         .run(&mut pool(), |s, ts| {
-            batches.push((ts.as_nanos(), s.num_events()))
+            batches.push((ts.as_offset().as_nanos(), s.num_events()))
         })
         .await;
     assert_eq!(batches, vec![(1, 1), (2, 2), (3, 3)]);

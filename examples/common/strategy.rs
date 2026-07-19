@@ -167,9 +167,7 @@ pub async fn run(sc: Builder<Instant, WallClock>, args: &CommonArgs) -> Graph<In
     let mut session = sc.build();
     let mut pool = Pool::new(args.threads);
     let total = session.size_hint();
-    session
-        .run(&mut pool, super::progress(total, args.begin()))
-        .await;
+    session.run(&mut pool, super::progress(total)).await;
     eprintln!(); // move past the finished bar line
     session
 }

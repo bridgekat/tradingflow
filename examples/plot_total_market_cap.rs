@@ -93,18 +93,18 @@ async fn main() {
 
     let mut session = sc.build();
     let mut pool = Pool::new(args.threads);
-    // Trim warmup output before `begin` so only the live index window is shown.
-    let begin = args.begin();
     let total = session.size_hint();
-    session.run(&mut pool, common::progress(total, begin)).await;
+    session.run(&mut pool, common::progress(total)).await;
     eprintln!();
 
+    // Trim warmup output before `begin` so only the live index window is shown.
+    let begin_ns = args.begin().as_offset().as_nanos();
     let (mc_ts, mc_v) = common::read_scalar_series(&session, h_mc);
     let (nav_ts, nav_v) = common::read_scalar_series(&session, h_nav);
     let keep = |ts: &[i64], v: &[f64]| -> (Vec<i64>, Vec<f64>) {
         ts.iter()
             .zip(v.iter())
-            .filter(|(t, _)| **t >= begin.as_nanos())
+            .filter(|(t, _)| **t >= begin_ns)
             .map(|(t, x)| (*t, *x))
             .unzip()
     };

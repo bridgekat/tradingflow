@@ -18,16 +18,19 @@
 //!
 //! ```rust
 //! use tradingflow::clock::WallClock;
+//! use tradingflow::data::*;
 //! use tradingflow::graph::{Builder, Pool};
 //! use tradingflow::operators::{rolling::*, structural::*};
+//! use tradingflow::ports::*;
 //! use tradingflow::segment;
 //! use tradingflow::sources::basic::*;
-//! use tradingflow::{Array, ArrayPort, Instant, Series, SeriesPort};
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     // Example data: a random-walk daily price series.
-//!     let timestamps = (0..90).map(Instant::from_nanos).collect();
+//!     let timestamps = (0..90)
+//!         .map(|ns| Instant::from_offset(Duration::from_nanos(ns)))
+//!         .collect();
 //!     let values = (0..90)
 //!         .map(|_| rand::random_range(-1.0..1.0))
 //!         .scan(100.0, |sum, delta| {
@@ -35,7 +38,7 @@
 //!             Some(*sum)
 //!         })
 //!         .collect();
-//!     let data = Series::from_vec([], timestamps, values);
+//!     let data = Series::from_parts([], timestamps, values, Retention::unbounded());
 //!
 //!     // Create the thread pool.
 //!     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
@@ -104,8 +107,3 @@ pub mod clock;
 pub mod operators;
 pub mod ports;
 pub mod sources;
-pub mod utils;
-
-pub use data::{Array, ArrayView, Duration, Instant, Retention, Scalar, Series, SeriesView, Shape};
-pub use ports::{ArrayPass, ArrayPort, ArrayPorts, SeriesPass, SeriesPort, SeriesPorts};
-pub use utils::Schema;

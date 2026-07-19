@@ -18,7 +18,7 @@ fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
         }
     }
     let mean = if cnt > 0 { sum / cnt as f64 } else { 0.0 };
-    Array::from_vec(
+    Array::from_parts(
         [s.len()],
         s.iter()
             .map(|&x| if x.is_finite() { x - mean } else { x })
@@ -63,7 +63,7 @@ pub fn build_price_limits(
     let limit = move |scale: f64| {
         map(move |c: ArrayView<f64, 1>| {
             let s = c.to_contiguous();
-            Array::from_vec(
+            Array::from_parts(
                 [s.len()],
                 s.iter()
                     .map(|&x| ((x * scale) * 100.0).round() / 100.0)

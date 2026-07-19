@@ -3,5 +3,5 @@ name = "tradingflow-data"
 version.workspace = true
 edition.workspace = true
 
-[dependencies]
-hifitime = "4"
+[dev-dependencies]
+tradingflow = { path = "../tradingflow" }

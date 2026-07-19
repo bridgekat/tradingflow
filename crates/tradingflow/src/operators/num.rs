@@ -61,7 +61,7 @@ use std::ops;
 use num_traits::{Float, Signed};
 
 use crate::data::array::{apply_binary, apply_unary};
-use crate::data::{Array, ArrayView, Instant, Scalar};
+use crate::data::{Array, ArrayView, Instant, Layout, Scalar};
 use crate::graph::typed::Operator;
 use crate::ports::ArrayPort;
 

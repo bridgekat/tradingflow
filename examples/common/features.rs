@@ -53,12 +53,16 @@
 //! predictors regress on. See [`build_features`].
 
 use tradingflow::clock::WallClock;
-use tradingflow::data::{Array, ArrayView, Duration, Instant, Retention, Series, SeriesView};
+use tradingflow::data::{
+    Array, ArrayView, Duration, Instant, Layout, Retention, Series, SeriesView,
+};
 use tradingflow::graph::{Builder, Operator};
 use tradingflow::operators::{
     formula::*, metrics::*, num::*, rolling::*, stocks::*, structural::*, traders::*, transform::*,
 };
-use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle, UnitPortHandle};
+use tradingflow::ports::{
+    ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle, UnitPortHandle,
+};
 
 use super::data::Stacked;
 
@@ -100,14 +104,20 @@ pub fn market_cap(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> ArrayPo
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
-pub fn circ_market_cap(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> ArrayPortHandle<f64, 1> {
+pub fn circ_market_cap(
+    sc: &mut Builder<Instant, WallClock>,
+    st: &Stacked,
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(multiply(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
 /// annualized (effective-date-aligned) series, via the self-recording
 /// [`ma_time`] (record fused in, retention sized internally).
-fn ttm(sc: &mut Builder<Instant, WallClock>, h: ArrayPortHandle<f64, 1>) -> ArrayPortHandle<f64, 1> {
+fn ttm(
+    sc: &mut Builder<Instant, WallClock>,
+    h: ArrayPortHandle<f64, 1>,
+) -> ArrayPortHandle<f64, 1> {
     sc.segment(ma_time(Duration::from_days(365)), h)
 }
 
@@ -317,7 +327,7 @@ fn emap(
     sc.segment(
         map(move |a: ArrayView<f64, 1>| {
             let s = a.to_contiguous();
-            Array::from_vec([s.len()], s.iter().map(|&x| f(x)).collect())
+            Array::from_parts([s.len()], s.iter().map(|&x| f(x)).collect())
         }),
         h,
     )
@@ -398,8 +408,8 @@ impl Operator for WindowReduce {
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         if init {
-            let n = series.elem_len();
-            state.out = Array::from_vec([n], vec![f64::NAN; n]);
+            let n = series.layout().len();
+            state.out = Array::from_parts([n], vec![f64::NAN; n].into());
             return (false, state.out.view());
         }
         let w = state.window;
@@ -408,8 +418,10 @@ impl Operator for WindowReduce {
             return (false, state.out.view());
         }
         let f = state.f;
-        let n = series.elem_len();
-        let slices: Vec<&[f64]> = (0..w).map(|k| series.elem(len - w + k).data()).collect();
+        let n = series.layout().len();
+        let slices: Vec<&[f64]> = (0..w)
+            .map(|k| series.at(len - w + k).unwrap().1.data())
+            .collect();
         let out = state.out.data_mut();
         let mut buf = vec![0.0f64; w];
         for j in 0..n {
@@ -505,9 +517,9 @@ impl Operator for WindowReduce2 {
         state: &'b mut WindowReduce2State,
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 1>) {
-        let n = series.elem_extents()[0]; // (N, 2) -> N
+        let n = series.layout().extents()[0]; // (N, 2) -> N
         if init {
-            state.out = Array::from_vec([n], vec![f64::NAN; n]);
+            state.out = Array::from_parts([n], vec![f64::NAN; n].into());
             return (false, state.out.view());
         }
         let w = state.window;
@@ -516,7 +528,9 @@ impl Operator for WindowReduce2 {
             return (false, state.out.view());
         }
         let f = state.f;
-        let slices: Vec<&[f64]> = (0..w).map(|k| series.elem(len - w + k).data()).collect();
+        let slices: Vec<&[f64]> = (0..w)
+            .map(|k| series.at(len - w + k).unwrap().1.data())
+            .collect();
         let out = state.out.data_mut();
         let (mut c0, mut c1) = (vec![0.0f64; w], vec![0.0f64; w]);
         for j in 0..n {
@@ -601,9 +615,9 @@ impl Operator for ChipDist {
         state: &'b mut ChipDistState,
         init: bool,
     ) -> (bool, ArrayView<'a, f64, 2>) {
-        let n = series.elem_extents()[0];
+        let n = series.layout().extents()[0];
         if init {
-            state.out = Array::from_vec([n, CHIP_COLS], vec![f64::NAN; n * CHIP_COLS]);
+            state.out = Array::from_parts([n, CHIP_COLS], vec![f64::NAN; n * CHIP_COLS].into());
             return (false, state.out.view());
         }
         let w = state.window;
@@ -611,7 +625,9 @@ impl Operator for ChipDist {
         if len < w {
             return (false, state.out.view());
         }
-        let slices: Vec<&[f64]> = (0..w).map(|k| series.elem(len - w + k).data()).collect();
+        let slices: Vec<&[f64]> = (0..w)
+            .map(|k| series.at(len - w + k).unwrap().1.data())
+            .collect();
         let out = state.out.data_mut();
         let (mut price, mut turn) = (vec![0.0f64; w], vec![0.0f64; w]);
         let (mut weight, mut ret) = (vec![0.0f64; w], vec![0.0f64; w]);
@@ -1008,7 +1024,11 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> F
 /// by the predictor's all-features-finite mask). The panel is heavily collinear
 /// by design and leans on the predictors' pool-standardized Ridge (`alpha`) to
 /// regularise.
-pub fn build_features(sc: &mut Builder<Instant, WallClock>, st: &Stacked, feature_retention: Retention) -> Features {
+pub fn build_features(
+    sc: &mut Builder<Instant, WallClock>,
+    st: &Stacked,
+    feature_retention: Retention,
+) -> Features {
     let fund = build_factor_catalog(sc, st);
     let pv = build_pv_catalog(sc, st);
     let mut names = fund.names;

@@ -91,7 +91,7 @@ async fn main() {
     let session = common::run(sc, &args).await;
 
     // Extract + report.
-    let begin = args.begin().as_nanos();
+    let begin = args.begin().as_offset().as_nanos();
     let mut table = NavTable::default();
     let s = table.add(&session, "index", begin, h_index);
     println!(

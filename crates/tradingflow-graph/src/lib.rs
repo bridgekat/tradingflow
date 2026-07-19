@@ -16,7 +16,7 @@
 //! ```rust
 //! use futures::Stream;
 //! use tradingflow::clock::WallClock;
-//! use tradingflow::data::Instant;
+//! use tradingflow::data::*;
 //! use tradingflow::graph::*;
 //!
 //! /// A stream of `i64` values.
@@ -200,7 +200,7 @@
 //! node can choose to skip heavy computation.
 //!
 //! ```rust
-//! use tradingflow::data::Instant;
+//! use tradingflow::data::*;
 //! use tradingflow::graph::*;
 //!
 //! struct Abs;
@@ -288,7 +288,7 @@
 //!
 //! ```rust
 //! use tradingflow::clock::WallClock;
-//! use tradingflow::data::Instant;
+//! use tradingflow::data::*;
 //! use tradingflow::graph::*;
 //! use tradingflow::segment;
 //! use tradingflow::sources::basic::*;
@@ -330,8 +330,8 @@
 //! }
 //!
 //! let mut b = Builder::new(WallClock);
-//! let s = b.source(vec_source(vec![(Instant::from_utc_nanos(0), 1)]));
-//! let t = b.source(vec_source(vec![(Instant::from_utc_nanos(0), 2)]));
+//! let s = b.source(vec_source(vec![(Instant::EPOCH, 1)]));
+//! let t = b.source(vec_source(vec![(Instant::EPOCH, 2)]));
 //!
 //! // One fused node computing: c = b + a; d = c + a; e = d + a; result (e, c).
 //! // Type annotation is needed on inputs and outputs.
@@ -344,9 +344,9 @@
 //! let (e, c) = b.segment(seg, (s, t));
 //! ```
 //!
-//! `Seg @ wires` applies a segment (any [`Segment`]-typed Rust expression)
-//! to wires. Applications nest inside any wire expression and chain
-//! right-associatively.
+//! The expression `seg @ wires` applies a segment (can be any Rust expression
+//! whose type `T` implements the [`Segment`] trait) to wires. Applications
+//! nest inside any wire expression and chain right-associatively.
 //!
 //! # Safety
 //!
