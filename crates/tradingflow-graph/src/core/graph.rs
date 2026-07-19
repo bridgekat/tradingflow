@@ -120,12 +120,11 @@ pub struct Builder {
     output_ptrs: Vec<SyncCell<*const ()>>,
     output_type_ids: Vec<TypeId>,
     input_from_outputs: Adjacency,
-    context: ErasedCell,
     nodes: Vec<Node>,
 }
 
 impl Builder {
-    pub fn new(context: ErasedCell) -> Self {
+    pub fn new() -> Self {
         Self {
             input_flags: Vec::new(),
             input_ptrs: Vec::new(),
@@ -133,7 +132,6 @@ impl Builder {
             output_ptrs: Vec::new(),
             output_type_ids: Vec::new(),
             input_from_outputs: Adjacency::new(),
-            context,
             nodes: Vec::new(),
         }
     }
@@ -148,10 +146,6 @@ impl Builder {
 
     pub fn slot_ptr(&self, index: usize) -> *const () {
         unsafe { *self.output_ptrs[index].get() }
-    }
-
-    pub fn context(&self) -> &ErasedCell {
-        &self.context
     }
 
     pub fn push(
@@ -228,7 +222,6 @@ impl Builder {
             output_ptrs,
             output_type_ids,
             input_from_outputs,
-            context,
             nodes,
         } = self;
 
@@ -282,7 +275,6 @@ impl Builder {
             output_type_ids,
             output_to_inputs,
             node_to_nodes,
-            context,
             nodes,
             counters,
             roots: Vec::new(),
@@ -290,6 +282,12 @@ impl Builder {
             is_dirty,
             poisoned: false,
         }
+    }
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -302,7 +300,6 @@ pub struct Graph {
     output_type_ids: Box<[TypeId]>,
     output_to_inputs: Adjacency,
     node_to_nodes: Adjacency,
-    context: ErasedCell,
     nodes: Box<[Node]>,
     counters: Box<[AtomicUsize]>,
     roots: Vec<usize>,
@@ -328,14 +325,6 @@ impl Graph {
         unsafe { *self.output_ptrs[index].get() }
     }
 
-    pub fn context(&self) -> &ErasedCell {
-        &self.context
-    }
-
-    pub fn context_mut(&mut self) -> &mut ErasedCell {
-        &mut self.context
-    }
-
     pub fn state_mut(&mut self, index: usize) -> &mut ErasedCell {
         assert!(!self.poisoned, "cannot access poisoned graph.");
         if !self.is_dirty[index] {
@@ -345,7 +334,7 @@ impl Graph {
         &mut self.nodes[index].state
     }
 
-    pub fn stabilize(&mut self, pool: &mut crate::pool::Pool) {
+    pub fn stabilize(&mut self, pool: &mut crate::pool::Pool, context: &impl Sync) {
         assert!(!self.poisoned, "cannot access poisoned graph.");
         self.poisoned = true;
 
@@ -387,18 +376,9 @@ impl Graph {
             let in_ptrs = cell_slice(&self.input_ptrs[in_range]);
             let out_flags = cell_slice_mut(&self.output_flags[out_range.clone()]);
             let out_ptrs = cell_slice_mut(&self.output_ptrs[out_range]);
-            let context = &self.context;
-            let state = &self.nodes[i].state;
-            unsafe {
-                compute_fn(
-                    in_flags,
-                    in_ptrs,
-                    out_flags,
-                    out_ptrs,
-                    context.get(),
-                    state.get(),
-                )
-            };
+            let state = self.nodes[i].state.get();
+            let context = context as *const _ as *const ();
+            unsafe { compute_fn(in_flags, in_ptrs, out_flags, out_ptrs, state, context) };
 
             // Scatter this node's fresh output slots into every consumer's
             // input slot unconditionally. Load-bearing for pointer/reference

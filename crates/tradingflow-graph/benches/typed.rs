@@ -17,7 +17,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 use tradingflow_graph::pool::Pool;
 use tradingflow_graph::typed::{
-    Builder, Graph, NodeHandle, Operator, Port, PortHandle, Ports, Ref, Segment, Val,
+    Builder, Graph, NodeHandle, Operator, Port, PortHandle, Ports, Ref, Val,
 };
 
 const DATA_LEN: usize = 1 << 16;
@@ -50,16 +50,19 @@ fn pool() -> Pool {
 /// A generic source node.
 struct Source(f64);
 
-impl Segment for Source {
+impl Operator for Source {
     type Inputs = ();
     type Outputs = Port<Val<f64>>;
     type Context = ();
     type State = f64;
-    fn init(self) -> f64 {
+    fn init(self, _: ()) -> f64 {
         self.0
     }
-    fn compute<'a, 'b: 'a>(_: (), _: &(), state: &'b mut f64, _: bool) -> (bool, f64) {
+    fn passthrough<'a, 'b: 'a>(_: (), state: &'b mut f64) -> (bool, f64) {
         (true, *state)
+    }
+    fn compute<'a, 'b: 'a>(inputs: (), state: &'b mut f64, _: &()) -> (bool, f64) {
+        Self::passthrough(inputs, state)
     }
 }
 
@@ -72,25 +75,20 @@ impl Operator for Add {
     type Context = ();
     type State = f64; // holds the last sum, to re-emit by value on passthrough
 
-    fn init(self) -> f64 {
-        0.0
+    fn init(self, ((_, a), (_, b)): ((bool, f64), (bool, f64))) -> f64 {
+        a + b
     }
 
     fn compute<'a, 'b: 'a>(
         ((_, a), (_, b)): ((bool, f64), (bool, f64)),
-        _: &(),
         state: &'b mut f64,
-        _: bool,
+        _: &(),
     ) -> (bool, f64) {
         *state = a + b;
         (true, *state)
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: ((bool, f64), (bool, f64)),
-        _: &(),
-        state: &'b f64,
-    ) -> (bool, f64) {
+    fn passthrough<'a, 'b: 'a>(_: ((bool, f64), (bool, f64)), state: &'b mut f64) -> (bool, f64) {
         (false, *state)
     }
 }
@@ -104,21 +102,16 @@ impl Operator for Heavy {
     type Context = ();
     type State = usize;
 
-    fn init(self) -> usize {
+    fn init(self, _: (bool, f64)) -> usize {
         self.0
     }
 
-    fn compute<'a, 'b: 'a>(
-        (_, x): (bool, f64),
-        _: &(),
-        state: &'b mut usize,
-        _: bool,
-    ) -> (bool, ()) {
+    fn compute<'a, 'b: 'a>((_, x): (bool, f64), state: &'b mut usize, _: &()) -> (bool, ()) {
         heavy_work(x, *state);
         (true, ())
     }
 
-    fn passthrough<'a, 'b: 'a>(_: (bool, f64), _: &(), _: &'b usize) -> (bool, ()) {
+    fn passthrough<'a, 'b: 'a>(_: (bool, f64), _: &'b mut usize) -> (bool, ()) {
         (false, ())
     }
 }
@@ -132,15 +125,14 @@ impl Operator for Record {
     type Context = ();
     type State = Vec<f64>;
 
-    fn init(self) -> Vec<f64> {
-        Vec::new()
+    fn init(self, (_, x): (bool, f64)) -> Vec<f64> {
+        vec![x]
     }
 
     fn compute<'a, 'b: 'a>(
         (_, x): (bool, f64),
-        _: &(),
         state: &'b mut Vec<f64>,
-        _: bool,
+        _: &(),
     ) -> (bool, &'a Vec<f64>) {
         if state.len() >= SERIES_LEN {
             black_box(state.last());
@@ -150,11 +142,7 @@ impl Operator for Record {
         (true, &*state)
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, f64),
-        _: &(),
-        state: &'b Vec<f64>,
-    ) -> (bool, &'a Vec<f64>) {
+    fn passthrough<'a, 'b: 'a>(_: (bool, f64), state: &'b mut Vec<f64>) -> (bool, &'a Vec<f64>) {
         (false, state)
     }
 }
@@ -229,7 +217,7 @@ fn bench_direct_compute_series(c: &mut Criterion) {
 fn bench_engine_segment(c: &mut Criterion) {
     let (a, b) = make_data();
     let mut i = 0;
-    let mut gb = Builder::new(());
+    let mut gb = Builder::new();
     let (ha_cell, ha) = gb.source(Source(0.0));
     let (hb_cell, hb) = gb.source(Source(0.0));
     let _ = gb.segment(Add, (ha, hb));
@@ -240,7 +228,7 @@ fn bench_engine_segment(c: &mut Criterion) {
         bencher.iter(|| {
             *g.state_mut(ha_cell) = a[i];
             *g.state_mut(hb_cell) = b[i];
-            g.stabilize(&mut pool);
+            g.stabilize(&mut pool, &());
             i = (i + 1) & DATA_MASK;
         });
     });
@@ -249,7 +237,7 @@ fn bench_engine_segment(c: &mut Criterion) {
 fn bench_engine_segment_series(c: &mut Criterion) {
     let (a, b) = make_data();
     let mut i = 0;
-    let mut gb = Builder::new(());
+    let mut gb = Builder::new();
     let (ha_cell, ha) = gb.source(Source(0.0));
     let (hb_cell, hb) = gb.source(Source(0.0));
     let sum = gb.segment(Add, (ha, hb));
@@ -261,7 +249,7 @@ fn bench_engine_segment_series(c: &mut Criterion) {
         bencher.iter(|| {
             *g.state_mut(ha_cell) = a[i];
             *g.state_mut(hb_cell) = b[i];
-            g.stabilize(&mut pool);
+            g.stabilize(&mut pool, &());
             i = (i + 1) & DATA_MASK;
         });
     });
@@ -271,7 +259,7 @@ fn bench_engine_chain(c: &mut Criterion) {
     for depth in [1usize, 5, 10] {
         let (a, b) = make_data();
         let mut i = 0;
-        let mut gb = Builder::new(());
+        let mut gb = Builder::new();
         let (ha_cell, ha) = gb.source(Source(0.0));
         let (hb_cell, hb) = gb.source(Source(0.0));
         let mut last = gb.segment(Add, (ha, hb));
@@ -285,7 +273,7 @@ fn bench_engine_chain(c: &mut Criterion) {
             bencher.iter(|| {
                 *g.state_mut(ha_cell) = a[i];
                 *g.state_mut(hb_cell) = b[i];
-                g.stabilize(&mut pool);
+                g.stabilize(&mut pool, &());
                 i = (i + 1) & DATA_MASK;
             });
         });
@@ -296,7 +284,7 @@ fn bench_engine_sparse(c: &mut Criterion) {
     for (total, active) in [(100usize, 5usize), (1000, 5)] {
         let (a, b) = make_data();
         let mut i = 0;
-        let mut gb = Builder::new(());
+        let mut gb = Builder::new();
         let (ha_cell, ha) = gb.source(Source(0.0));
         let (hb_cell, hb) = gb.source(Source(0.0));
         let (_, hc) = gb.source(Source(0.0));
@@ -326,7 +314,7 @@ fn bench_engine_sparse(c: &mut Criterion) {
                 bencher.iter(|| {
                     *g.state_mut(ha_cell) = a[i];
                     *g.state_mut(hb_cell) = b[i];
-                    g.stabilize(&mut pool);
+                    g.stabilize(&mut pool, &());
                     i = (i + 1) & DATA_MASK;
                 });
             },
@@ -338,7 +326,7 @@ fn bench_few_heavy(c: &mut Criterion) {
     const K: usize = 4;
     const ITERS: usize = 1_000_000;
 
-    let mut gb = Builder::new(());
+    let mut gb = Builder::new();
     let (src_cell, src) = gb.source(Source(1.0));
     let _ = (0..K)
         .map(|_| gb.segment(Heavy(ITERS), src))
@@ -352,7 +340,7 @@ fn bench_few_heavy(c: &mut Criterion) {
         bencher.iter(|| {
             x += 1.0;
             *g.state_mut(src_cell) = x;
-            g.stabilize(&mut pool);
+            g.stabilize(&mut pool, &());
         });
     });
 
@@ -408,63 +396,67 @@ fn iters_of(layer: usize, j: usize) -> u32 {
 struct Work {
     iters: u32,
 }
-impl Segment for Work {
+impl Operator for Work {
     type Inputs = (Port<Val<f64>>, Port<Val<f64>>, Port<Val<f64>>);
     type Outputs = Port<Val<f64>>;
     type State = u32; // iters
     type Context = ();
-    fn init(self) -> Self::State {
+    fn init(self, _: ((bool, f64), (bool, f64), (bool, f64))) -> Self::State {
         self.iters
+    }
+    fn passthrough<'a, 'b: 'a>(
+        ((_, a), (_, b), (_, c)): ((bool, f64), (bool, f64), (bool, f64)),
+        iters: &'b mut Self::State,
+    ) -> (bool, f64) {
+        (true, work(a as i64, b as i64, c as i64, *iters) as f64)
     }
     fn compute<'a, 'b: 'a>(
         ((_, a), (_, b), (_, c)): ((bool, f64), (bool, f64), (bool, f64)),
-        _: &(),
         iters: &'b mut Self::State,
-        _: bool,
+        _: &(),
     ) -> (bool, f64) {
         let out = work(a as i64, b as i64, c as i64, *iters);
         (true, out as f64)
     }
 }
 
-struct Inc;
-impl Segment for Inc {
+/// Stateless unary map `x -> f(x)`; `passthrough` and `compute` are identical
+/// (it recomputes from the input every generation, gate or no gate).
+struct UnaryMap(fn(f64) -> f64);
+impl Operator for UnaryMap {
     type Inputs = Port<Val<f64>>;
     type Outputs = Port<Val<f64>>;
-    type State = ();
+    type State = fn(f64) -> f64;
     type Context = ();
-    fn init(self) {}
-    fn compute<'a, 'b: 'a>((_, x): (bool, f64), _: &(), _: &'b mut (), _: bool) -> (bool, f64) {
-        (true, x + 1.0)
+    fn init(self, _: (bool, f64)) -> Self::State {
+        self.0
+    }
+    fn passthrough<'a, 'b: 'a>((_, x): (bool, f64), f: &'b mut Self::State) -> (bool, f64) {
+        (true, f(x))
+    }
+    fn compute<'a, 'b: 'a>(inputs: (bool, f64), f: &'b mut Self::State, _: &()) -> (bool, f64) {
+        Self::passthrough(inputs, f)
     }
 }
-
-struct Double;
-impl Segment for Double {
-    type Inputs = Port<Val<f64>>;
-    type Outputs = Port<Val<f64>>;
-    type State = ();
-    type Context = ();
-    fn init(self) {}
-    fn compute<'a, 'b: 'a>((_, x): (bool, f64), _: &(), _: &'b mut (), _: bool) -> (bool, f64) {
-        (true, x * 2.0)
-    }
+fn inc() -> UnaryMap {
+    UnaryMap(|x| x + 1.0)
+}
+fn double() -> UnaryMap {
+    UnaryMap(|x| x * 2.0)
 }
 
 struct SumAll;
-impl Segment for SumAll {
+impl Operator for SumAll {
     type Inputs = Ports<Val<f64>>;
     type Outputs = Port<Val<f64>>;
     type State = ();
     type Context = ();
-    fn init(self) {}
-    fn compute<'a, 'b: 'a>(
-        (_, xs): (&'a [bool], &'a [f64]),
-        _: &(),
-        _: &'b mut (),
-        _: bool,
-    ) -> (bool, f64) {
+    fn init(self, _: (&[bool], &[f64])) {}
+    fn passthrough<'a, 'b: 'a>((_, xs): (&'a [bool], &'a [f64]), _: &'b mut ()) -> (bool, f64) {
         (true, xs.iter().sum())
+    }
+    fn compute<'a, 'b: 'a>(inputs: (&'a [bool], &'a [f64]), state: &'b mut (), _: &()) -> (bool, f64) {
+        Self::passthrough(inputs, state)
     }
 }
 
@@ -510,14 +502,14 @@ fn drive_mesh<'a>(
         for (j, &s) in src.iter().enumerate() {
             *g.state_mut(s) = base + j as f64;
         }
-        g.stabilize(pool);
+        g.stabilize(pool, &());
     }
 }
 
 fn bench_mesh(c: &mut Criterion) {
     let mut group = c.benchmark_group("mesh");
     for (w, d) in [(16usize, 16usize), (32, 32)] {
-        let mut gb = Builder::new(());
+        let mut gb = Builder::new();
         let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
             gb.segment(
                 Work {
@@ -542,13 +534,13 @@ fn bench_mesh_fusion(c: &mut Criterion) {
 
     // The cell diamond `Add(Inc(w), Double(w))` fused into ONE scheduled node.
     {
-        let mut gb = Builder::new(());
+        let mut gb = Builder::new();
         let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
             let it = iters_of(l, j);
             let seg = tradingflow::segment!(|x: Port<Val<f64>>, y: Port<Val<f64>>, z: Port<Val<f64>>| -> Port<Val<f64>> {
                 let ww = Work { iters: it } @ (x, y, z);
-                let p = Inc @ ww;
-                let q = Double @ ww;
+                let p = inc() @ ww;
+                let q = double() @ ww;
                 let r = Add @ (p, q);
                 r
             });
@@ -564,7 +556,7 @@ fn bench_mesh_fusion(c: &mut Criterion) {
 
     // The same diamond as FOUR scheduled nodes (identical result, 4x the nodes).
     {
-        let mut gb = Builder::new(());
+        let mut gb = Builder::new();
         let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
             let w_h = gb.segment(
                 Work {
@@ -572,8 +564,8 @@ fn bench_mesh_fusion(c: &mut Criterion) {
                 },
                 (a, b, c),
             );
-            let p = gb.segment(Inc, w_h);
-            let q = gb.segment(Double, w_h);
+            let p = gb.segment(inc(), w_h);
+            let q = gb.segment(double(), w_h);
             gb.segment(Add, (p, q))
         });
         let mut g = gb.build();

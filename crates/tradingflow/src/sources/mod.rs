@@ -10,8 +10,8 @@ pub mod basic;
 pub mod panel;
 
 fn receiver_stream<E: Send + 'static>(
-    rx: mpsc::Receiver<(Instant, E)>,
-) -> impl Stream<Item = Event<Instant, E>> + Send + 'static {
+    rx: mpsc::Receiver<(E, Instant)>,
+) -> impl Stream<Item = Event<E, Instant>> + Send + 'static {
     futures::stream::unfold(rx, |mut rx| async move {
         let (ts, event) = rx.recv().await?;
         Some((Event::at(ts, event), rx))

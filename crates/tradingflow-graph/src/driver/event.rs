@@ -9,17 +9,17 @@ pub enum Stamp<I> {
 ///
 /// Each event carries a frontier timestamp (non-decreasing in [`Stamp`]
 /// ordering), and optionally a payload at that timestamp.
-pub struct Event<I, T> {
-    pub stamp: Stamp<I>,
+pub struct Event<T, I> {
     pub payload: Option<T>,
+    pub stamp: Stamp<I>,
 }
 
-impl<I, T> Event<I, T> {
-    /// An explicitly-stamped event: `payload` at timestamp `t`.
-    pub fn at(instant: I, payload: T) -> Self {
+impl<T, I> Event<T, I> {
+    /// An explicitly-stamped event: `payload` at timestamp `instant`.
+    pub fn at(payload: T, instant: I) -> Self {
         Self {
-            stamp: Stamp::Instant(instant),
             payload: Some(payload),
+            stamp: Stamp::Instant(instant),
         }
     }
 
@@ -27,8 +27,8 @@ impl<I, T> Event<I, T> {
     /// at receipt.
     pub fn now(payload: T) -> Self {
         Self {
-            stamp: Stamp::Now,
             payload: Some(payload),
+            stamp: Stamp::Now,
         }
     }
 
@@ -36,8 +36,8 @@ impl<I, T> Event<I, T> {
     /// stamped strictly below `t`.
     pub fn frontier(instant: I) -> Self {
         Self {
-            stamp: Stamp::Instant(instant),
             payload: None,
+            stamp: Stamp::Instant(instant),
         }
     }
 }

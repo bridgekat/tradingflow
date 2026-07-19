@@ -37,38 +37,30 @@ impl Operator for Annualize {
     type Context = Instant;
     type State = AnnualizeState;
 
-    fn init(self) -> AnnualizeState {
+    fn init(self, (_, view): (bool, ArrayView<'_, f64, 1>)) -> AnnualizeState {
+        // Only the build-time input's shape is read here, to size the buffers.
+        let input_len = view.to_contiguous().len();
+        assert!(
+            input_len >= 3,
+            "Annualize: input must have shape [2 + N] with N >= 1, got length {input_len}"
+        );
+        let n = input_len - 2;
         AnnualizeState {
-            prev_ytd: Vec::new(),
+            prev_ytd: vec![0.0; n],
             prev_year: 0,
             prev_day: 0.0,
             initialized: false,
-            out: Array::zeros([0]),
+            out: Array::zeros([n]),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, view): (bool, ArrayView<'a, f64, 1>),
-        _: &Instant,
         state: &'b mut AnnualizeState,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         let xs = view.to_contiguous();
         let input: &[f64] = &xs;
-        if init {
-            let input_len = input.len();
-            assert!(
-                input_len >= 3,
-                "Annualize: input must have shape [2 + N] with N >= 1, got length {input_len}"
-            );
-            let n = input_len - 2;
-            state.prev_ytd = vec![0.0; n];
-            state.prev_year = 0;
-            state.prev_day = 0.0;
-            state.initialized = false;
-            state.out = Array::zeros([n]);
-            return (false, state.out.view());
-        }
         let year = input[0].floor() as i64;
         let day = input[1];
         let ytd = &input[2..];
@@ -106,8 +98,7 @@ impl Operator for Annualize {
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, f64, 1>),
-        _: &Instant,
-        state: &'b AnnualizeState,
+        state: &'b mut AnnualizeState,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         (false, state.out.view())
     }
@@ -168,12 +159,30 @@ impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
     type Context = Instant;
     type State = ForwardAdjustState<NP>;
 
-    fn init(self) -> Self::State {
+    fn init(
+        self,
+        ((_, price_view), (_, div_view)): (
+            (bool, ArrayView<'_, f64, NP>),
+            (bool, ArrayView<'_, f64, ND>),
+        ),
+    ) -> Self::State {
+        // Only the build-time inputs' shapes are read here.
+        assert_eq!(
+            price_view.to_contiguous().len(),
+            1,
+            "stock price must be a single value"
+        );
+        assert_eq!(
+            div_view.to_contiguous().len(),
+            2,
+            "dividend data must have shape [2]: [share_dividends, cash_dividends]"
+        );
+        let init_val = if self.output_prices { 0.0 } else { 1.0 };
         ForwardAdjustState {
             prev_price: f64::NAN,
             factor: 1.0,
             output_prices: self.output_prices,
-            out: Array::zeros([0; NP]),
+            out: Array::from_parts(price_view.layout().extents(), vec![init_val].into()),
         }
     }
 
@@ -182,25 +191,11 @@ impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
             (bool, ArrayView<'a, f64, NP>),
             (bool, ArrayView<'a, f64, ND>),
         ),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, f64, NP>) {
         let price = price_view.to_contiguous();
         let dividend = div_view.to_contiguous();
-        if init {
-            assert_eq!(price.len(), 1, "stock price must be a single value");
-            assert_eq!(
-                dividend.len(),
-                2,
-                "dividend data must have shape [2]: [share_dividends, cash_dividends]"
-            );
-            state.prev_price = f64::NAN;
-            state.factor = 1.0;
-            let init_val = if state.output_prices { 0.0 } else { 1.0 };
-            state.out = Array::from_parts(price_view.layout().extents(), vec![init_val].into());
-            return (false, state.out.view());
-        }
         if div_notified {
             let share_dividends = dividend[0];
             let cash_dividends = dividend[1];
@@ -230,8 +225,7 @@ impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
             (bool, ArrayView<'a, f64, NP>),
             (bool, ArrayView<'a, f64, ND>),
         ),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, f64, NP>) {
         (false, state.out.view())
     }

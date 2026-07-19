@@ -14,19 +14,19 @@ type NodeState<T> = (
     Box<[usize]>,
     <<T as Segment>::Inputs as Interface>::InScratch,
     <<T as Segment>::Outputs as Interface>::OutScratch,
-    <T as Segment>::State,
+    Option<<T as Segment>::State>,
 );
 
 /// Builder for the typed layer [`Graph`].
-pub struct Builder<C: Send + Sync + 'static> {
+pub struct Builder<C: Sync> {
     inner: crate::core::Builder,
     _context: PhantomData<C>,
 }
 
-impl<C: Send + Sync + 'static> Builder<C> {
-    pub fn new(context: C) -> Self {
+impl<C: Sync> Builder<C> {
+    pub fn new() -> Self {
         Self {
-            inner: crate::core::Builder::new(ErasedCell::new(context)),
+            inner: crate::core::Builder::new(),
             _context: PhantomData,
         }
     }
@@ -44,10 +44,6 @@ impl<C: Send + Sync + 'static> Builder<C> {
         let type_id = self.inner.slot_type_id(index);
         assert!(type_id == TypeId::of::<V>(), "slot type mismatch");
         unsafe { self.inner.slot_ptr(index).cast::<V::View<'_>>().read() }
-    }
-
-    pub fn context(&self) -> &C {
-        unsafe { &*self.inner.context().get().cast::<C>() }
     }
 
     pub fn push<T, H>(
@@ -95,11 +91,11 @@ impl<C: Send + Sync + 'static> Builder<C> {
             input_shape.into_boxed_slice(),
             in_scratch,
             out_scratch,
-            segment.init(),
+            None,
         );
         let state_cell = ErasedCell::new(state);
 
-        // Run the compute function once to get the output shape and types.
+        // Run the init functions once to get the output shape and types.
         let (input_shape, in_scratch, out_scratch, state_mut) =
             unsafe { state_cell.get().cast::<NodeState<T>>().as_mut_unchecked() };
 
@@ -120,7 +116,7 @@ impl<C: Send + Sync + 'static> Builder<C> {
                 in_scratch,
             )
         };
-        let outputs = T::compute(inputs, self.context(), state_mut, true);
+        let outputs = T::output(inputs, state_mut.insert(T::init(segment, inputs)));
 
         // Serialize the outputs, homing by-value views into the output
         // scratch (this build call also sizes variadic leaves' scratch).
@@ -204,15 +200,20 @@ impl<C: Send + Sync + 'static> Builder<C> {
     }
 }
 
+impl<C: Sync> Default for Builder<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 unsafe fn compute_fn_for<T: Segment>(
     in_flags: *const [bool],
     in_ptrs: *const [*const ()],
     out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
-    context: *const (),
     state: *mut (),
+    context: *const (),
 ) {
-    let context = unsafe { &*context.cast::<T::Context>() };
     let (input_shape, in_scratch, out_scratch, state_mut) =
         unsafe { state.cast::<NodeState<T>>().as_mut_unchecked() };
 
@@ -224,7 +225,9 @@ unsafe fn compute_fn_for<T: Segment>(
             in_scratch,
         )
     };
-    let outputs = T::compute(inputs, context, state_mut, false);
+    let state_mut = unsafe { state_mut.as_mut().unwrap_unchecked() };
+    let context = unsafe { &*context.cast::<T::Context>() };
+    let outputs = T::compute(inputs, state_mut, context);
 
     let mut flags_writer = FlatWrite::new(unsafe { out_flags.as_mut_unchecked() });
     let mut ptrs_writer = FlatWrite::new(unsafe { out_ptrs.as_mut_unchecked() });
@@ -246,12 +249,12 @@ unsafe fn compute_fn_for<T: Segment>(
 }
 
 /// The typed wrapper over the core layer [`Graph`](crate::core::Graph).
-pub struct Graph<C: Send + Sync + 'static> {
+pub struct Graph<C: Sync> {
     inner: crate::core::Graph,
     _context: PhantomData<C>,
 }
 
-impl<C: Send + Sync + 'static> Graph<C> {
+impl<C: Sync> Graph<C> {
     pub fn inner(&self) -> &crate::core::Graph {
         &self.inner
     }
@@ -267,22 +270,7 @@ impl<C: Send + Sync + 'static> Graph<C> {
         unsafe { self.inner.slot_ptr(index).cast::<V::View<'_>>().read() }
     }
 
-    pub fn context(&self) -> &C {
-        let type_id = self.inner.context().type_id();
-        assert!(type_id == TypeId::of::<C>(), "context type mismatch");
-        unsafe { &*self.inner.context().get().cast::<C>() }
-    }
-
-    pub fn context_mut(&mut self) -> &mut C {
-        let type_id = self.inner.context_mut().type_id();
-        assert!(type_id == TypeId::of::<C>(), "context type mismatch");
-        unsafe { &mut *self.inner.context_mut().get().cast::<C>() }
-    }
-
-    pub fn state_mut<T>(&mut self, handle: NodeHandle<T>) -> &mut T::State
-    where
-        T: Segment,
-    {
+    pub fn state_mut<T: Segment>(&mut self, handle: NodeHandle<T>) -> &mut T::State {
         let index = handle.index();
         let type_id = self.inner.state_mut(index).type_id();
         assert!(
@@ -291,10 +279,10 @@ impl<C: Send + Sync + 'static> Graph<C> {
         );
         let state = self.inner.state_mut(index).get();
         let (_, _, _, state_mut) = unsafe { state.cast::<NodeState<T>>().as_mut_unchecked() };
-        state_mut
+        state_mut.as_mut().expect("state emplaced at build")
     }
 
-    pub fn stabilize(&mut self, pool: &mut crate::pool::Pool) {
-        self.inner.stabilize(pool);
+    pub fn stabilize(&mut self, pool: &mut crate::pool::Pool, context: &C) {
+        self.inner.stabilize(pool, context);
     }
 }

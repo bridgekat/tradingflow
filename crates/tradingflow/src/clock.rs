@@ -1,3 +1,5 @@
+//! The wall clock source.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::data::{Duration, Instant};
@@ -16,10 +18,6 @@ use crate::graph::Clock;
 pub struct WallClock;
 
 impl Clock<Instant> for WallClock {
-    fn min(&self) -> Instant {
-        Instant::MIN
-    }
-
     fn now(&self) -> Instant {
         let unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)

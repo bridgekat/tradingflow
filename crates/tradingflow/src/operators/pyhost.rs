@@ -728,16 +728,12 @@ impl<I: PyArgs, const NO: usize> PyClassOperator<I, NO> {
     }
 }
 
-/// State: the deferred config (consumed on the `init` build call), the Python
-/// operator instance + its Python state object (created on that call), and the
-/// rank-`NO` output buffer. No clock: the event time arrives as the graph
-/// context, per `compute` call.
+/// State: the Python operator instance + its Python state object (created at
+/// init), and the rank-`NO` output buffer. No clock: the event time arrives as
+/// the graph context, per `compute` call.
 pub struct PyClassState<const NO: usize> {
-    loader: Option<Loader>,
-    params: Option<PyParams>,
-    out_shape: Vec<usize>,
-    operator: Option<Py<PyAny>>,
-    py_state: Option<Py<PyAny>>,
+    operator: Py<PyAny>,
+    py_state: Py<PyAny>,
     out: Array<f64, NO>,
 }
 
@@ -747,68 +743,48 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
     type Context = Instant;
     type State = PyClassState<NO>;
 
-    fn init(self) -> PyClassState<NO> {
+    fn init(self, inputs: <I as Interface>::Values<'_>) -> PyClassState<NO> {
+        // Instantiate the Python operator and call its `init` with the
+        // build-time input views (no produced bits — the legacy Python
+        // `init(inputs, ts)` contract); allocate the output buffer. No Python
+        // `compute` runs here. Init runs before the driver's first batch, so
+        // Python `init` sees `i64::MIN` — the "no time yet" sentinel of the
+        // legacy contract.
+        let ts = Instant::MIN.as_offset().as_nanos();
+        let (operator, py_state) = Python::attach(|py| {
+            let run = || -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+                let operator = resolve_operator(py, &self.loader, &self.params)?;
+                let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
+                let mut produced: Vec<bool> = Vec::new(); // discarded on init
+                I::append_views(py, inputs, &mut views, &mut produced)?;
+                let st = operator.call_method1("init", (PyTuple::new(py, views)?, ts))?;
+                Ok((operator.unbind(), st.unbind()))
+            };
+            run().unwrap_or_else(|e| {
+                e.print(py);
+                panic!("python operator init failed (see traceback above)");
+            })
+        });
         PyClassState {
-            loader: Some(self.loader),
-            params: Some(self.params),
-            out_shape: self.out_shape,
-            operator: None,
-            py_state: None,
-            out: Array::zeros([0; NO]),
+            operator,
+            py_state,
+            out: Array::zeros(out_extents::<NO>(&self.out_shape)),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         inputs: <I as Interface>::Values<'a>,
-        time: &Instant,
         state: &'b mut PyClassState<NO>,
-        init: bool,
+        time: &Instant,
     ) -> (bool, ArrayView<'a, f64, NO>) {
-        // The batch's event time, straight from the graph context. The build
-        // call runs before the driver's first batch, so Python `init` sees the
-        // floor the `Builder` was created with — `Instant::MIN`, i.e. the
-        // `i64::MIN` "no time yet" sentinel of the legacy contract.
+        // The batch's event time, straight from the graph context.
         let ts = time.as_offset().as_nanos();
-
-        if init {
-            // Build call: instantiate the Python operator and call its `init`
-            // with the build-time input views (no produced bits — the legacy
-            // Python `init(inputs, ts)` contract); allocate the output buffer.
-            // No Python `compute` runs here.
-            let loader = state.loader.take().expect("build call ran twice");
-            let params = state.params.take().expect("build call ran twice");
-            let (operator, py_state) = Python::attach(|py| {
-                let run = || -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-                    let operator = resolve_operator(py, &loader, &params)?;
-                    let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
-                    let mut produced: Vec<bool> = Vec::new(); // discarded on init
-                    I::append_views(py, inputs, &mut views, &mut produced)?;
-                    let st = operator.call_method1("init", (PyTuple::new(py, views)?, ts))?;
-                    Ok((operator.unbind(), st.unbind()))
-                };
-                run().unwrap_or_else(|e| {
-                    e.print(py);
-                    panic!("python operator init failed (see traceback above)");
-                })
-            });
-            state.operator = Some(operator);
-            state.py_state = Some(py_state);
-            state.out = Array::zeros(out_extents::<NO>(&state.out_shape));
-            return (false, state.out.view());
-        }
 
         let PyClassState {
             operator,
             py_state,
             out,
-            ..
         } = state;
-        let operator = operator
-            .as_ref()
-            .expect("python operator is instantiated on the build call");
-        let py_state = py_state
-            .as_ref()
-            .expect("python operator is instantiated on the build call");
         let out_ptr: *mut Array<f64, NO> = &mut *out;
 
         let result: Result<bool, ()> = Python::attach(|py| {
@@ -839,8 +815,7 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
 
     fn passthrough<'a, 'b: 'a>(
         _: <I as Interface>::Values<'a>,
-        _: &Instant,
-        state: &'b PyClassState<NO>,
+        state: &'b mut PyClassState<NO>,
     ) -> (bool, ArrayView<'a, f64, NO>) {
         (false, state.out.view())
     }
@@ -943,7 +918,7 @@ __op__ = Turnover()
 
     #[test]
     fn py_class_operator_turnover() {
-        let mut b = Builder::new(Instant::MIN);
+        let mut b = Builder::new();
         let (src_cell, src) = b.source(const_array(Array::from_parts(
             [2],
             vec![0.5_f64, 0.5].into(),
@@ -961,15 +936,15 @@ __op__ = Turnover()
         let mut pool = Pool::new(0);
 
         *g.state_mut(src_cell) = Array::from_parts([2], vec![0.5, 0.5].into());
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         assert_eq!(g.view(out).as_slice().unwrap(), &[0.0]); // warmup
 
         *g.state_mut(src_cell) = Array::from_parts([2], vec![0.3, 0.7].into());
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         assert!((g.view(out).as_slice().unwrap()[0] - 0.4).abs() < 1e-12);
 
         *g.state_mut(src_cell) = Array::from_parts([2], vec![1.0, 0.0].into());
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         assert!((g.view(out).as_slice().unwrap()[0] - 1.4).abs() < 1e-12);
     }
 
@@ -994,7 +969,7 @@ __op__ = HistDot()
 
     #[test]
     fn py_class_operator_heterogeneous_series() {
-        let mut b = Builder::new(Instant::MIN);
+        let mut b = Builder::new();
         // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
         // Sources lend the view currency directly — `Record` wires straight on.
         let (weights_cell, weights) = b.source(const_array(Array::from_parts(
@@ -1019,16 +994,16 @@ __op__ = HistDot()
         let mut pool = Pool::new(0);
 
         // Tick 1 @ t=100: feed [1,2]; series=[[1,2]]; dot with [1,1]=3; mean=3.
-        *g.context_mut() = Instant::from_offset(Duration::from_nanos(100));
+        let ctx = Instant::from_offset(Duration::from_nanos(100));
         *g.state_mut(weights_cell) = Array::from_parts([2], vec![1.0, 1.0].into());
         *g.state_mut(feed_cell) = Array::from_parts([2], vec![1.0, 2.0].into());
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &ctx);
         assert!((g.view(out).as_slice().unwrap()[0] - 3.0).abs() < 1e-12);
 
         // Tick 2 @ t=200: feed [3,4]; series=[[1,2],[3,4]]; dots=3,7; mean=5.
-        *g.context_mut() = Instant::from_offset(Duration::from_nanos(200));
+        let ctx = Instant::from_offset(Duration::from_nanos(200));
         *g.state_mut(feed_cell) = Array::from_parts([2], vec![3.0, 4.0].into());
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &ctx);
         assert!((g.view(out).as_slice().unwrap()[0] - 5.0).abs() < 1e-12);
     }
 
@@ -1060,7 +1035,7 @@ def build(scale=1.0):
             )
             .unwrap();
 
-        let mut b = Builder::new(Instant::MIN);
+        let mut b = Builder::new();
         let (src_cell, src) = b.source(const_array(Array::from_parts(
             [4],
             vec![1.0_f64, 2.0, 3.0, 4.0].into(),
@@ -1078,7 +1053,7 @@ def build(scale=1.0):
         let mut pool = Pool::new(0);
 
         *g.state_mut(src_cell) = Array::from_parts([4], vec![1.0, 2.0, 3.0, 4.0].into());
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         // sum(1..4)=10 * 3
         assert!((g.view(out).as_slice().unwrap()[0] - 30.0).abs() < 1e-12);
     }
@@ -1094,7 +1069,7 @@ def build(scale=1.0):
     fn pyhost_linear_regression_predictor() {
         const N: usize = 3;
         const F: usize = 2;
-        let mut b = Builder::new(Instant::MIN);
+        let mut b = Builder::new();
         let (universe_cell, universe) =
             b.source(const_array(Array::from_parts([N], vec![1.0; N].into())));
         let (feat_feed_cell, feat_feed) = b.source(const_array(Array::<f64, 2>::zeros([N, F])));
@@ -1123,11 +1098,11 @@ def build(scale=1.0):
         for t in 1..=5_i64 {
             let x: Vec<f64> = (0..N * F).map(|k| (t as f64) + 0.1 * k as f64).collect();
             let y: Vec<f64> = (0..N).map(|i| 0.5 * (t as f64) + i as f64).collect();
-            *g.context_mut() = Instant::from_offset(Duration::from_nanos(t * 100));
+            let ctx = Instant::from_offset(Duration::from_nanos(t * 100));
             *g.state_mut(feat_feed_cell) = Array::from_parts([N, F], x.into());
             *g.state_mut(tgt_feed_cell) = Array::from_parts([N], y.into());
             *g.state_mut(universe_cell) = Array::from_parts([N], vec![1.0; N].into());
-            g.stabilize(&mut pool);
+            g.stabilize(&mut pool, &ctx);
         }
 
         let mu = g.view(pred).as_slice().unwrap();

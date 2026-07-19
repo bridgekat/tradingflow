@@ -23,14 +23,14 @@ pub trait Feed<I, S> {
 }
 
 /// A feed constructed from a stream of events.
-pub struct StreamFeed<I, T, F> {
-    stream: Pin<Box<dyn Stream<Item = Event<I, T>>>>,
-    buffer: Option<Event<I, T>>,
+pub struct StreamFeed<T, I, F> {
+    stream: Pin<Box<dyn Stream<Item = Event<T, I>>>>,
+    buffer: Option<Event<T, I>>,
     write: F,
 }
 
-impl<I, T, F> StreamFeed<I, T, F> {
-    pub fn new(stream: impl Stream<Item = Event<I, T>> + 'static, write: F) -> Self {
+impl<T, I, F> StreamFeed<T, I, F> {
+    pub fn new(stream: impl Stream<Item = Event<T, I>> + 'static, write: F) -> Self {
         Self {
             stream: Box::pin(stream),
             buffer: None,
@@ -39,10 +39,10 @@ impl<I, T, F> StreamFeed<I, T, F> {
     }
 }
 
-impl<I, T, F, S> Feed<I, S> for StreamFeed<I, T, F>
+impl<T, I, F, S> Feed<I, S> for StreamFeed<T, I, F>
 where
     I: Clone,
-    F: FnMut(I, T, &mut S) + 'static,
+    F: FnMut(T, I, &mut S),
 {
     fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.buffer = ready!(self.stream.as_mut().poll_next(cx));
@@ -57,7 +57,7 @@ where
         self.buffer
             .take()
             .and_then(|e| e.payload)
-            .map(|p| (self.write)(instant, p, sink))
+            .map(|p| (self.write)(p, instant, sink))
             .is_some()
     }
 }

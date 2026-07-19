@@ -393,25 +393,20 @@ impl Operator for WindowReduce {
     type Context = Instant;
     type State = WindowReduceState;
 
-    fn init(self) -> WindowReduceState {
+    fn init(self, (_, series): (bool, SeriesView<'_, f64, 1>)) -> WindowReduceState {
+        let n = series.layout().len();
         WindowReduceState {
             window: self.window,
             f: self.f,
-            out: Array::zeros([0]),
+            out: Array::from_parts([n], vec![f64::NAN; n].into()),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, SeriesView<'a, f64, 1>),
-        _: &Instant,
         state: &'b mut WindowReduceState,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 1>) {
-        if init {
-            let n = series.layout().len();
-            state.out = Array::from_parts([n], vec![f64::NAN; n].into());
-            return (false, state.out.view());
-        }
         let w = state.window;
         let len = series.len();
         if len < w {
@@ -435,8 +430,7 @@ impl Operator for WindowReduce {
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, SeriesView<'a, f64, 1>),
-        _: &Instant,
-        state: &'b WindowReduceState,
+        state: &'b mut WindowReduceState,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         (false, state.out.view())
     }
@@ -503,25 +497,21 @@ impl Operator for WindowReduce2 {
     type Context = Instant;
     type State = WindowReduce2State;
 
-    fn init(self) -> WindowReduce2State {
+    fn init(self, (_, series): (bool, SeriesView<'_, f64, 2>)) -> WindowReduce2State {
+        let n = series.layout().extents()[0]; // (N, 2) -> N
         WindowReduce2State {
             window: self.window,
             f: self.f,
-            out: Array::zeros([0]),
+            out: Array::from_parts([n], vec![f64::NAN; n].into()),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, SeriesView<'a, f64, 2>),
-        _: &Instant,
         state: &'b mut WindowReduce2State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         let n = series.layout().extents()[0]; // (N, 2) -> N
-        if init {
-            state.out = Array::from_parts([n], vec![f64::NAN; n].into());
-            return (false, state.out.view());
-        }
         let w = state.window;
         let len = series.len();
         if len < w {
@@ -545,8 +535,7 @@ impl Operator for WindowReduce2 {
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, SeriesView<'a, f64, 2>),
-        _: &Instant,
-        state: &'b WindowReduce2State,
+        state: &'b mut WindowReduce2State,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         (false, state.out.view())
     }
@@ -602,24 +591,20 @@ impl Operator for ChipDist {
     type Context = Instant;
     type State = ChipDistState;
 
-    fn init(self) -> ChipDistState {
+    fn init(self, (_, series): (bool, SeriesView<'_, f64, 2>)) -> ChipDistState {
+        let n = series.layout().extents()[0];
         ChipDistState {
             window: self.window,
-            out: Array::zeros([0, CHIP_COLS]),
+            out: Array::from_parts([n, CHIP_COLS], vec![f64::NAN; n * CHIP_COLS].into()),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, SeriesView<'a, f64, 2>),
-        _: &Instant,
         state: &'b mut ChipDistState,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 2>) {
         let n = series.layout().extents()[0];
-        if init {
-            state.out = Array::from_parts([n, CHIP_COLS], vec![f64::NAN; n * CHIP_COLS].into());
-            return (false, state.out.view());
-        }
         let w = state.window;
         let len = series.len();
         if len < w {
@@ -736,8 +721,7 @@ impl Operator for ChipDist {
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, SeriesView<'a, f64, 2>),
-        _: &Instant,
-        state: &'b ChipDistState,
+        state: &'b mut ChipDistState,
     ) -> (bool, ArrayView<'a, f64, 2>) {
         (false, state.out.view())
     }

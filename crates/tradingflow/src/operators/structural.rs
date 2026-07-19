@@ -29,7 +29,7 @@ use num_traits::{AsPrimitive, Float};
 
 use crate::data::layout::Strided;
 use crate::data::{Array, ArrayView, Instant, Layout, Retention, Scalar, Series, SeriesView};
-use crate::graph::typed::{Interface, Operator, Segment};
+use crate::graph::typed::{Interface, Operator};
 use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, UnitPort};
 
 // ===========================================================================
@@ -70,24 +70,20 @@ impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static, const N: usize
     type Context = Instant;
     type State = WhereState<T, F, N>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
         WhereState {
             condition: self.condition,
             fill: self.fill,
-            out: Array::zeros([0; N]),
+            out: Array::zeros(x.extents()),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (_, x): (bool, ArrayView<'a, T, N>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init {
-            state.out = Array::zeros(x.extents());
-        }
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
         let out = state.out.data_mut();
@@ -98,14 +94,13 @@ impl<T: Scalar, F: Fn(T) -> bool + Clone + Send + Sync + 'static, const N: usize
                 state.fill.clone()
             };
         }
-        (!init, state.out.view())
+        (true, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, T, N>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }
@@ -142,34 +137,29 @@ where
     type Context = Instant;
     type State = Array<T, N>;
 
-    fn init(self) -> Self::State {
-        Array::zeros([0; N])
+    fn init(self, (_, x): (bool, ArrayView<'_, S, N>)) -> Self::State {
+        Array::zeros(x.extents())
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (_, x): (bool, ArrayView<'a, S, N>),
-        _: &Instant,
         out: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init {
-            *out = Array::zeros(x.extents());
-        }
         let xs = x.to_contiguous();
         let src: &[S] = &xs;
         let dst = out.data_mut();
         for i in 0..dst.len() {
             dst[i] = src[i].as_();
         }
-        (!init, out.view())
+        (true, out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, S, N>),
-        _: &Instant,
-        out: &'b Self::State,
+        out: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, out.view())
     }
@@ -179,7 +169,7 @@ where
 /// materialized into an owned buffer, so it survives between clock ticks while
 /// the upstream view's storage may change.
 pub struct ResampleViewState<T: Scalar, const N: usize> {
-    out: Option<Array<T, N>>,
+    out: Array<T, N>,
 }
 
 /// Clock-gated **view** passthrough whose clock is another data view (only the
@@ -206,30 +196,40 @@ impl<T: Scalar, const N: usize> Default for ResampleView<T, N> {
     }
 }
 
-// A `Segment`, not an `Operator`: the gate ignores the data input's notify bit
-// (only the clock's fires it), which the `Operator` any-notify gate cannot
-// express.
-impl<T: Scalar, const N: usize> Segment for ResampleView<T, N> {
+// The auto-gate routes to `compute` when the clock OR the data notifies, but
+// `compute` re-emits only on a clock tick and otherwise returns the cached view
+// unchanged — identical to `passthrough`. So a data-notify-without-clock is a
+// no-op whether it lands in `compute` or `passthrough`.
+impl<T: Scalar, const N: usize> Operator for ResampleView<T, N> {
     type Inputs = (ArrayPort<T, 1>, ArrayPort<T, N>);
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = ResampleViewState<T, N>;
 
-    fn init(self) -> Self::State {
-        ResampleViewState { out: None }
+    fn init(
+        self,
+        (_, (_, x)): ((bool, ArrayView<'_, T, 1>), (bool, ArrayView<'_, T, N>)),
+    ) -> Self::State {
+        ResampleViewState { out: x.to_array() }
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: ((bool, ArrayView<'a, T, 1>), (bool, ArrayView<'a, T, N>)),
+        state: &'b mut Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 
     fn compute<'a, 'b: 'a>(
         ((clock_fired, _), (_, x)): ((bool, ArrayView<'a, T, 1>), (bool, ArrayView<'a, T, N>)),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init || clock_fired {
-            state.out = Some(x.to_array());
-            return (!init, state.out.as_ref().unwrap().view());
+        if clock_fired {
+            state.out = x.to_array();
+            return (true, state.out.view());
         }
-        (false, state.out.as_ref().unwrap().view())
+        (false, state.out.view())
     }
 }
 
@@ -256,27 +256,33 @@ impl<T: Scalar, const N: usize> Default for ResampleClocked<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> Segment for ResampleClocked<T, N> {
+impl<T: Scalar, const N: usize> Operator for ResampleClocked<T, N> {
     type Inputs = (UnitPort, ArrayPort<T, N>);
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = ResampleViewState<T, N>;
 
-    fn init(self) -> Self::State {
-        ResampleViewState { out: None }
+    fn init(self, (_, (_, x)): ((bool, ()), (bool, ArrayView<'_, T, N>))) -> Self::State {
+        ResampleViewState { out: x.to_array() }
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: ((bool, ()), (bool, ArrayView<'a, T, N>)),
+        state: &'b mut Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 
     fn compute<'a, 'b: 'a>(
         ((clock_fired, _), (_, x)): ((bool, ()), (bool, ArrayView<'a, T, N>)),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init || clock_fired {
-            state.out = Some(x.to_array());
-            return (!init, state.out.as_ref().unwrap().view());
+        if clock_fired {
+            state.out = x.to_array();
+            return (true, state.out.view());
         }
-        (false, state.out.as_ref().unwrap().view())
+        (false, state.out.view())
     }
 }
 
@@ -335,23 +341,18 @@ where
     type Context = Instant;
     type State = FilterState<T, F, N>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
         FilterState {
             predicate: self.0,
-            out: Array::zeros([0; N]),
+            out: x.to_array(),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, x): (bool, ArrayView<'a, T, N>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init {
-            state.out = x.to_array();
-            return (false, state.out.view());
-        }
         if (state.predicate)(x) {
             state.out.assign(x);
             (true, state.out.view())
@@ -362,8 +363,7 @@ where
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, T, N>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }
@@ -406,26 +406,21 @@ where
     type Context = Instant;
     type State = GateState<T, F, N>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, view): (bool, ArrayView<'_, T, N>)) -> Self::State {
         GateState {
             predicate: self.0,
-            out: Array::zeros([0; N]),
+            // Seed the retained buffer with the faithful build-time row (so the
+            // first view matches what `Split` lends).
+            out: view.to_array(),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (notified, view): (bool, ArrayView<'a, T, N>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init {
-            // Seed the retained buffer with the faithful build-time row (so the
-            // first view matches what `Split` lends), but do not notify.
-            state.out = view.to_array();
-            return (false, state.out.view());
-        }
         if notified && (state.predicate)(view) {
             // Pass: refresh the retained row in place (no realloc) and notify.
             state.out.assign(view);
@@ -440,8 +435,7 @@ where
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, T, N>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }
@@ -486,9 +480,9 @@ impl<T: Scalar, const N: usize> Default for Record<T, N> {
     }
 }
 
-/// Runtime state for [`Record`]: the retention bound plus the recorded series.
+/// Runtime state for [`Record`]: the recorded series (which carries its own
+/// retention bound).
 pub struct RecordState<T: Scalar, const N: usize> {
-    retention: Retention,
     out: Series<T, N>,
 }
 
@@ -498,33 +492,26 @@ impl<T: Scalar, const N: usize> Operator for Record<T, N> {
     type Context = Instant;
     type State = RecordState<T, N>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
+        // Init only sizes the series — no row is appended, so the
+        // pre-first-batch context value is never stamped into it.
         RecordState {
-            retention: self.retention,
-            out: Series::new_unbounded([0; N]),
+            out: Series::new(x.extents(), self.retention),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, x): (bool, ArrayView<'a, T, N>),
-        time: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        time: &Instant,
     ) -> (bool, SeriesView<'a, T, N>) {
-        if init {
-            // The build call only sizes the series — no row is appended, so the
-            // pre-first-batch context value is never stamped into it.
-            state.out = Series::new(x.extents(), state.retention);
-            return (false, state.out.view());
-        }
         state.out.push(*time, x);
         (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, T, N>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, SeriesView<'a, T, N>) {
         (false, state.out.view())
     }
@@ -558,22 +545,22 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
     type Context = Instant;
     type State = LastState<T, N>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, series): (bool, SeriesView<'_, T, N>)) -> Self::State {
+        let mut out = Array::full(series.layout().extents(), self.fill.clone());
+        if !series.is_empty() {
+            out.assign(series.at(series.len() - 1).unwrap().1);
+        }
         LastState {
-            fill: self.fill.clone(),
-            out: Array::zeros([0; N]),
+            fill: self.fill,
+            out,
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, SeriesView<'a, T, N>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init {
-            state.out = Array::full(series.layout().extents(), state.fill.clone());
-        }
         if series.is_empty() {
             for v in state.out.data_mut().iter_mut() {
                 *v = state.fill.clone();
@@ -581,13 +568,12 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
         } else {
             state.out.assign(series.at(series.len() - 1).unwrap().1);
         }
-        (!init, state.out.view())
+        (true, state.out.view())
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, SeriesView<'a, T, N>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }
@@ -614,7 +600,7 @@ impl<const N: usize> Operator for Count<N> {
     type Context = Instant;
     type State = CountState;
 
-    fn init(self) -> Self::State {
+    fn init(self, _: (bool, ArrayView<'_, f64, N>)) -> Self::State {
         CountState {
             count: 0,
             out: Array::scalar(0.0),
@@ -623,13 +609,9 @@ impl<const N: usize> Operator for Count<N> {
 
     fn compute<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, f64, N>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 0>) {
-        if init {
-            return (false, state.out.view());
-        }
         state.count += 1;
         state.out.data_mut()[0] = state.count as f64;
         (true, state.out.view())
@@ -637,8 +619,7 @@ impl<const N: usize> Operator for Count<N> {
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, f64, N>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, f64, 0>) {
         (false, state.out.view())
     }
@@ -649,8 +630,11 @@ impl<const N: usize> Operator for Count<N> {
 // ---------------------------------------------------------------------------
 
 /// Prepends a leading `UnitPort` clock input; runs the inner operator's compute
-/// path only when the clock notifies, else the inner passthrough. Implements
-/// [`Segment`] directly because its gate ignores the data inputs' notify bits.
+/// path only when the clock notifies, else the inner passthrough. The auto-gate
+/// routes to `compute` on any input notify, but `compute` runs the inner
+/// `compute` only on a clock tick and otherwise falls through to the inner
+/// `passthrough` — so a data-notify-without-clock behaves the same in either
+/// branch.
 #[derive(Debug, Clone)]
 pub struct Clocked<O> {
     inner: O,
@@ -662,7 +646,7 @@ impl<O> Clocked<O> {
     }
 }
 
-impl<O: Operator> Segment for Clocked<O> {
+impl<O: Operator> Operator for Clocked<O> {
     type Inputs = (UnitPort, O::Inputs);
     type Outputs = O::Outputs;
     // Forwarded, not pinned: `Clocked` is a gate, so it stays as
@@ -670,20 +654,26 @@ impl<O: Operator> Segment for Clocked<O> {
     type Context = O::Context;
     type State = O::State;
 
-    fn init(self) -> O::State {
-        O::init(self.inner)
+    fn init(self, (_, rest): ((bool, ()), <O::Inputs as Interface>::Values<'_>)) -> O::State {
+        O::init(self.inner, rest)
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        (_, rest): ((bool, ()), <O::Inputs as Interface>::Values<'a>),
+        state: &'b mut O::State,
+    ) -> <O::Outputs as Interface>::Values<'a> {
+        O::passthrough(rest, state)
     }
 
     fn compute<'a, 'b: 'a>(
         ((clock_fired, _), rest): ((bool, ()), <O::Inputs as Interface>::Values<'a>),
-        context: &O::Context,
         state: &'b mut O::State,
-        init: bool,
+        context: &O::Context,
     ) -> <O::Outputs as Interface>::Values<'a> {
-        if init || clock_fired {
-            O::compute(rest, context, state, init)
+        if clock_fired {
+            O::compute(rest, state, context)
         } else {
-            O::passthrough(rest, context, &*state)
+            O::passthrough(rest, state)
         }
     }
 }
@@ -749,10 +739,9 @@ pub fn clocked<O>(inner: O) -> Clocked<O> {
 // Reshape / combine — Stack, Concat, Split.
 // ===========================================================================
 
-/// Shared runtime state: the axis config, the outer × chunk layout (sized on the
-/// build call), and the output buffer.
+/// Shared runtime state: the outer × chunk combine layout (sized at init from
+/// the build-time input views) and the output buffer.
 pub struct ReshapeState<T: Scalar, const OUT: usize> {
-    axis: usize,
     outer_count: usize,
     chunk_size: usize,
     n_inputs: usize,
@@ -845,33 +834,24 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Stack<T, IN, OUT
     type Context = Instant;
     type State = ReshapeState<T, OUT>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, views): (&[bool], &[ArrayView<'_, T, IN>])) -> Self::State {
+        assert!(!views.is_empty(), "Stack requires at least one input");
+        let first = views[0].extents();
+        assert!(self_axis_ok(self.axis, IN, true), "axis out of bounds");
         ReshapeState {
-            axis: self.axis,
-            outer_count: 0,
-            chunk_size: 0,
-            n_inputs: 0,
-            out: Array::zeros([0; OUT]),
+            outer_count: first[..self.axis].iter().product(),
+            chunk_size: first[self.axis..].iter().product(),
+            n_inputs: views.len(),
+            out: Array::zeros(stack_extents::<IN, OUT>(first, self.axis, views.len())),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (_, views): (&'a [bool], &'a [ArrayView<'a, T, IN>]),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, OUT>) {
-        if init {
-            assert!(!views.is_empty(), "Stack requires at least one input");
-            let first = views[0].extents();
-            assert!(self_axis_ok(state.axis, IN, true), "axis out of bounds");
-            state.outer_count = first[..state.axis].iter().product();
-            state.chunk_size = first[state.axis..].iter().product();
-            state.n_inputs = views.len();
-            state.out = Array::zeros(stack_extents::<IN, OUT>(first, state.axis, views.len()));
-            return (false, state.out.view());
-        }
         interleaved_copy_views(
             state.out.data_mut(),
             views,
@@ -885,8 +865,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Stack<T, IN, OUT
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (&'a [bool], &'a [ArrayView<'a, T, IN>]),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, OUT>) {
         (false, state.out.view())
     }
@@ -915,37 +894,28 @@ impl<T: Scalar + Float, const IN: usize, const OUT: usize> Operator for StackSyn
     type Context = Instant;
     type State = ReshapeState<T, OUT>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, views): (&[bool], &[ArrayView<'_, T, IN>])) -> Self::State {
+        assert!(!views.is_empty(), "StackSync requires at least one input");
+        let first = views[0].extents();
+        assert!(self_axis_ok(self.axis, IN, true), "axis out of bounds");
+        let mut out = Array::zeros(stack_extents::<IN, OUT>(first, self.axis, views.len()));
+        for v in out.data_mut().iter_mut() {
+            *v = T::nan();
+        }
         ReshapeState {
-            axis: self.axis,
-            outer_count: 0,
-            chunk_size: 0,
-            n_inputs: 0,
-            out: Array::zeros([0; OUT]),
+            outer_count: first[..self.axis].iter().product(),
+            chunk_size: first[self.axis..].iter().product(),
+            n_inputs: views.len(),
+            out,
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (flags, views): (&'a [bool], &'a [ArrayView<'a, T, IN>]),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, OUT>) {
-        if init {
-            assert!(!views.is_empty(), "StackSync requires at least one input");
-            let first = views[0].extents();
-            assert!(self_axis_ok(state.axis, IN, true), "axis out of bounds");
-            state.outer_count = first[..state.axis].iter().product();
-            state.chunk_size = first[state.axis..].iter().product();
-            state.n_inputs = views.len();
-            let mut out = Array::zeros(stack_extents::<IN, OUT>(first, state.axis, views.len()));
-            for v in out.data_mut().iter_mut() {
-                *v = T::nan();
-            }
-            state.out = out;
-            return (false, state.out.view());
-        }
         for v in state.out.data_mut().iter_mut() {
             *v = T::nan();
         }
@@ -963,8 +933,7 @@ impl<T: Scalar + Float, const IN: usize, const OUT: usize> Operator for StackSyn
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (&'a [bool], &'a [ArrayView<'a, T, IN>]),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, OUT>) {
         (false, state.out.view())
     }
@@ -996,34 +965,29 @@ impl<T: Scalar, const N: usize> Operator for Concat<T, N> {
     type Context = Instant;
     type State = ReshapeState<T, N>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, views): (&[bool], &[ArrayView<'_, T, N>])) -> Self::State {
+        assert!(!views.is_empty(), "Concat requires at least one input");
+        let mut ext = views[0].extents();
+        assert!(self.axis < N, "axis out of bounds");
+        let (outer_count, chunk_size) = (
+            ext[..self.axis].iter().product(),
+            ext[self.axis..].iter().product(),
+        );
+        ext[self.axis] *= views.len();
         ReshapeState {
-            axis: self.axis,
-            outer_count: 0,
-            chunk_size: 0,
-            n_inputs: 0,
-            out: Array::zeros([0; N]),
+            outer_count,
+            chunk_size,
+            n_inputs: views.len(),
+            out: Array::zeros(ext),
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (_, views): (&'a [bool], &'a [ArrayView<'a, T, N>]),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init {
-            assert!(!views.is_empty(), "Concat requires at least one input");
-            let mut ext = views[0].extents();
-            assert!(state.axis < N, "axis out of bounds");
-            state.outer_count = ext[..state.axis].iter().product();
-            state.chunk_size = ext[state.axis..].iter().product();
-            state.n_inputs = views.len();
-            ext[state.axis] *= views.len();
-            state.out = Array::zeros(ext);
-            return (false, state.out.view());
-        }
         interleaved_copy_views(
             state.out.data_mut(),
             views,
@@ -1037,8 +1001,7 @@ impl<T: Scalar, const N: usize> Operator for Concat<T, N> {
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (&'a [bool], &'a [ArrayView<'a, T, N>]),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }
@@ -1067,38 +1030,33 @@ impl<T: Scalar + Float, const N: usize> Operator for ConcatSync<T, N> {
     type Context = Instant;
     type State = ReshapeState<T, N>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, views): (&[bool], &[ArrayView<'_, T, N>])) -> Self::State {
+        assert!(!views.is_empty(), "ConcatSync requires at least one input");
+        let mut ext = views[0].extents();
+        assert!(self.axis < N, "axis out of bounds");
+        let (outer_count, chunk_size) = (
+            ext[..self.axis].iter().product(),
+            ext[self.axis..].iter().product(),
+        );
+        ext[self.axis] *= views.len();
+        let mut out = Array::zeros(ext);
+        for v in out.data_mut().iter_mut() {
+            *v = T::nan();
+        }
         ReshapeState {
-            axis: self.axis,
-            outer_count: 0,
-            chunk_size: 0,
-            n_inputs: 0,
-            out: Array::zeros([0; N]),
+            outer_count,
+            chunk_size,
+            n_inputs: views.len(),
+            out,
         }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (flags, views): (&'a [bool], &'a [ArrayView<'a, T, N>]),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init {
-            assert!(!views.is_empty(), "ConcatSync requires at least one input");
-            let mut ext = views[0].extents();
-            assert!(state.axis < N, "axis out of bounds");
-            state.outer_count = ext[..state.axis].iter().product();
-            state.chunk_size = ext[state.axis..].iter().product();
-            state.n_inputs = views.len();
-            ext[state.axis] *= views.len();
-            let mut out = Array::zeros(ext);
-            for v in out.data_mut().iter_mut() {
-                *v = T::nan();
-            }
-            state.out = out;
-            return (false, state.out.view());
-        }
         for v in state.out.data_mut().iter_mut() {
             *v = T::nan();
         }
@@ -1116,8 +1074,7 @@ impl<T: Scalar + Float, const N: usize> Operator for ConcatSync<T, N> {
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (&'a [bool], &'a [ArrayView<'a, T, N>]),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }
@@ -1147,8 +1104,11 @@ fn self_axis_ok(axis: usize, rank: usize, allow_equal: bool) -> bool {
 /// arena — no row data is copied. All rows notify exactly when the input
 /// notifies, and each row handle is an ordinary [`ArrayPort`] producer.
 ///
-/// Implements [`Segment`] directly: views cannot be re-lent through `&State`, so
-/// every invocation rebuilds the planes and expresses the gate in the flags.
+/// An [`Operator`] whose two branches both rebuild the planes (borrowing the
+/// fresh input, so nothing is re-lent through state): [`compute`](Operator::compute)
+/// on a notified input (rows notify), [`passthrough`](Operator::passthrough) on a
+/// silent one (rows don't). Both reset the arena first — possible because
+/// `passthrough` takes `&mut State`.
 pub struct Split<T: Scalar, const IN: usize, const OUT: usize> {
     axis_size: usize,
     _phantom: std::marker::PhantomData<T>,
@@ -1172,52 +1132,70 @@ pub struct SplitState {
     arena: Bump,
 }
 
-impl<T: Scalar, const IN: usize, const OUT: usize> Segment for Split<T, IN, OUT> {
+impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Split<T, IN, OUT> {
     type Inputs = ArrayPort<T, IN>;
     type Outputs = ArrayPorts<T, OUT>;
     type Context = Instant;
     type State = SplitState;
 
-    fn init(self) -> SplitState {
+    fn init(self, (_, x): (bool, ArrayView<'_, T, IN>)) -> SplitState {
+        assert!(IN >= 1, "Split requires IN >= 1");
+        assert!(OUT == IN - 1, "Split: OUT ({OUT}) must be IN ({IN}) - 1");
+        assert!(
+            x.extents()[0] == self.axis_size,
+            "Split: input axis-0 size {} != declared {}",
+            x.extents()[0],
+            self.axis_size,
+        );
         SplitState {
             axis_size: self.axis_size,
             arena: Bump::new(),
         }
     }
 
-    fn compute<'a, 'b: 'a>(
-        (notified, x): (bool, ArrayView<'a, T, IN>),
-        _: &Instant,
+    fn passthrough<'a, 'b: 'a>(
+        (_, x): (bool, ArrayView<'a, T, IN>),
         state: &'b mut SplitState,
-        init: bool,
     ) -> <Self::Outputs as Interface>::Values<'a> {
-        let n = state.axis_size;
-        let data = x.data();
-        let layout = x.layout();
-        let (ext, strd) = (layout.extents(), layout.strides());
-        if init {
-            assert!(IN >= 1, "Split requires IN >= 1");
-            assert!(OUT == IN - 1, "Split: OUT ({OUT}) must be IN ({IN}) - 1");
-            assert!(
-                ext[0] == n,
-                "Split: input axis-0 size {} != declared {n}",
-                ext[0],
-            );
-        }
-        // Each row drops axis 0, keeping the inner axes' extents/strides.
-        let mut inner_ext = [0usize; OUT];
-        let mut inner_str = [0usize; OUT];
-        inner_ext.copy_from_slice(&ext[1..]);
-        inner_str.copy_from_slice(&strd[1..]);
-        let row_shape = Strided::new(inner_ext, inner_str);
+        // Silent input (also the build call): rebuild the row planes over the
+        // carried input, none notifying.
         state.arena.reset();
-        let alloc: &'a Bump = &state.arena;
-        let flags = alloc.alloc_slice_fill_iter(std::iter::repeat_n(notified && !init, n));
-        let views = alloc.alloc_slice_fill_iter(
-            (0..n).map(|i| ArrayView::from_parts(row_shape, &data[i * strd[0]..])),
-        );
-        (&*flags, &*views)
+        split_rows::<T, IN, OUT>(x, state.axis_size, &state.arena, false)
     }
+
+    fn compute<'a, 'b: 'a>(
+        (_, x): (bool, ArrayView<'a, T, IN>),
+        state: &'b mut SplitState,
+        _: &Instant,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        // Reached only when the input notified, so every row notifies.
+        state.arena.reset();
+        split_rows::<T, IN, OUT>(x, state.axis_size, &state.arena, true)
+    }
+}
+
+/// Build the per-row notify/view planes for [`Split`] in `arena`.
+#[inline(always)]
+fn split_rows<'a, T: Scalar, const IN: usize, const OUT: usize>(
+    x: ArrayView<'a, T, IN>,
+    n: usize,
+    arena: &'a Bump,
+    notify: bool,
+) -> (&'a [bool], &'a [ArrayView<'a, T, OUT>]) {
+    let data = x.data();
+    let layout = x.layout();
+    let (ext, strd) = (layout.extents(), layout.strides());
+    // Each row drops axis 0, keeping the inner axes' extents/strides.
+    let mut inner_ext = [0usize; OUT];
+    let mut inner_str = [0usize; OUT];
+    inner_ext.copy_from_slice(&ext[1..]);
+    inner_str.copy_from_slice(&strd[1..]);
+    let row_shape = Strided::new(inner_ext, inner_str);
+    let flags = arena.alloc_slice_fill_iter(std::iter::repeat_n(notify, n));
+    let views = arena.alloc_slice_fill_iter(
+        (0..n).map(|i| ArrayView::from_parts(row_shape, &data[i * strd[0]..])),
+    );
+    (&*flags, &*views)
 }
 
 // ===========================================================================

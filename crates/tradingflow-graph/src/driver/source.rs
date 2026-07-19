@@ -1,16 +1,18 @@
 use futures::stream::Stream;
 
 use super::Event;
-use crate::typed::Pass;
+use crate::typed::Interface;
 
 /// A stream of events writing into a source node.
 pub trait Source {
-    /// Event timestamp type.
-    type Instant: Send + 'static;
     /// Event payload type.
     type Payload: Send + 'static;
-    /// Stored value and passing policy.
-    type Pass: Pass;
+    /// Event timestamp type.
+    type Instant: Sync + 'static;
+    /// Output tree (e.g. `(Port<f64>, Ports<f64>)`).
+    type Outputs: Interface;
+    /// Mutable node state, must be completely owned.
+    type State: Send + 'static;
 
     /// Estimated total number of events this source will emit over its
     /// lifetime, or `None` for unbounded/unknown.
@@ -19,15 +21,19 @@ pub trait Source {
     }
 
     /// Typed initialization function.
-    /// Returns the initial placeholder state, the event stream and the writer.
-    #[allow(clippy::type_complexity)]
+    /// Returns the initial state and the event stream.
     fn init(
         self,
     ) -> (
-        <Self::Pass as Pass>::Owned,
-        impl Stream<Item = Event<Self::Instant, Self::Payload>> + Send + 'static,
-        impl FnMut(Self::Instant, Self::Payload, &mut <Self::Pass as Pass>::Owned) -> usize
-        + Send
-        + 'static,
+        Self::State,
+        impl Stream<Item = Event<Self::Payload, Self::Instant>> + 'static,
     );
+
+    /// Typed output function.
+    /// Returns an output derived from the current state.
+    fn output(state: &mut Self::State) -> <Self::Outputs as Interface>::Values<'_>;
+
+    /// Typed state update function.
+    /// Returns the number of events processed.
+    fn write(payload: Self::Payload, instant: Self::Instant, state: &mut Self::State) -> usize;
 }

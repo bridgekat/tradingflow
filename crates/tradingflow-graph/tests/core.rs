@@ -20,8 +20,8 @@ unsafe fn source_fn(
     _: *const [*const ()],
     out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
-    _context: *const (),
     state: *mut (),
+    _context: *const (),
 ) {
     unsafe {
         out_flags.as_mut_unchecked()[0] = true;
@@ -34,8 +34,8 @@ unsafe fn inc(
     in_ptrs: *const [*const ()],
     out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
-    _context: *const (),
     state: *mut (),
+    _context: *const (),
 ) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let s = unsafe { &mut *(state as *mut i64) };
@@ -51,8 +51,8 @@ unsafe fn times10(
     in_ptrs: *const [*const ()],
     out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
-    _context: *const (),
     state: *mut (),
+    _context: *const (),
 ) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let s = unsafe { &mut *(state as *mut i64) };
@@ -68,8 +68,8 @@ unsafe fn add(
     in_ptrs: *const [*const ()],
     out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
-    _context: *const (),
     state: *mut (),
+    _context: *const (),
 ) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let s = unsafe { &mut *(state as *mut i64) };
@@ -85,8 +85,8 @@ unsafe fn sum_all(
     in_ptrs: *const [*const ()],
     out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
-    _context: *const (),
     state: *mut (),
+    _context: *const (),
 ) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let s = unsafe { &mut *(state as *mut i64) };
@@ -104,8 +104,8 @@ unsafe fn panic_if_negative(
     in_ptrs: *const [*const ()],
     out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
-    _context: *const (),
     state: *mut (),
+    _context: *const (),
 ) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let x = unsafe { *(in_ptrs[0] as *const i64) };
@@ -159,7 +159,7 @@ fn set(g: &mut Graph, slot: usize, v: i64) {
 #[test]
 fn diamond_and_root_edge_are_glitch_free() {
     // S -> A=S+1, S -> B=S*10, (A,B) -> D=A+B; plus E=S+A.
-    let mut b = Builder::new(ErasedCell::new(()));
+    let mut b = Builder::new();
     let s = b.push(source(), &[]).unwrap().1.start;
     let a = b.push(unary(inc), &[s]).unwrap().1.start;
     let bb = b.push(unary(times10), &[s]).unwrap().1.start;
@@ -169,19 +169,19 @@ fn diamond_and_root_edge_are_glitch_free() {
     let mut pool = pool();
 
     set(&mut g, s, 1);
-    g.stabilize(&mut pool);
+    g.stabilize(&mut pool, &());
     assert_eq!(read(&g, a), 2);
     assert_eq!(read(&g, bb), 10);
     assert_eq!(read(&g, d), 12); // (1+1) + (1*10)
     assert_eq!(read(&g, e), 3); //  1  + (1+1)
 
     set(&mut g, s, 4);
-    g.stabilize(&mut pool);
+    g.stabilize(&mut pool, &());
     assert_eq!(read(&g, d), 45); // 5 + 40
     assert_eq!(read(&g, e), 9); //  4 + 5
 
     // Untouched source -> empty dirty cone -> stabilize is a no-op.
-    g.stabilize(&mut pool);
+    g.stabilize(&mut pool, &());
     assert_eq!(read(&g, d), 45);
 }
 
@@ -191,7 +191,7 @@ fn wide_fan_in_runs_on_the_pool() {
     const N: usize = 64;
     let agg = seg(vec![TypeId::of::<i64>(); N].into_boxed_slice(), sum_all);
 
-    let mut b = Builder::new(ErasedCell::new(()));
+    let mut b = Builder::new();
     let s = b.push(source(), &[]).unwrap().1.start;
     let layer: Vec<usize> = (0..N)
         .map(|_| b.push(unary(inc), &[s]).unwrap().1.start)
@@ -201,11 +201,11 @@ fn wide_fan_in_runs_on_the_pool() {
     let mut pool = pool();
 
     set(&mut g, s, 1);
-    g.stabilize(&mut pool);
+    g.stabilize(&mut pool, &());
     assert_eq!(read(&g, total), 2 * N as i64); // each layer node = 1 + 1
 
     set(&mut g, s, 9);
-    g.stabilize(&mut pool);
+    g.stabilize(&mut pool, &());
     assert_eq!(read(&g, total), 10 * N as i64); // each = 9 + 1
 }
 
@@ -215,7 +215,7 @@ fn panic_in_compute_poisons_the_graph() {
     // failed to produce a valid output (downstream slots may hold dangling
     // forwarded pointers), so the graph is poisoned: no recovery is attempted,
     // and every later stabilize and slot read panics.
-    let mut b = Builder::new(ErasedCell::new(()));
+    let mut b = Builder::new();
     let s = b.push(source(), &[]).unwrap().1.start;
     let p = b.push(unary(panic_if_negative), &[s]).unwrap().1.start;
     let d = b.push(unary(inc), &[p]).unwrap().1.start;
@@ -225,7 +225,7 @@ fn panic_in_compute_poisons_the_graph() {
     // Poison value: P panics, unwinding out of `stabilize` (the panic message
     // is printed to stderr by the default hook -- expected, the test catches it).
     set(&mut g, s, -1);
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.stabilize(&mut pool)));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.stabilize(&mut pool, &())));
     assert!(r.is_err());
 
     // Poisoned: a slot read panics rather than touching a possibly-stale output.
@@ -241,7 +241,7 @@ fn panic_in_compute_poisons_the_graph() {
 
 #[test]
 fn push_rejects_out_of_bounds_input() {
-    let mut b = Builder::new(ErasedCell::new(()));
+    let mut b = Builder::new();
     // No slots exist yet, so slot 0 is out of bounds.
     let err = b.push(unary(inc), &[0]).unwrap_err();
     assert_eq!(
@@ -256,7 +256,7 @@ fn push_rejects_out_of_bounds_input() {
 
 #[test]
 fn push_rejects_arity_mismatch() {
-    let mut b = Builder::new(ErasedCell::new(()));
+    let mut b = Builder::new();
     let s = b.push(source(), &[]).unwrap().1.start;
     // `binary` declares two inputs; wire only one.
     let err = b.push(binary(add), &[s]).unwrap_err();
@@ -271,7 +271,7 @@ fn push_rejects_arity_mismatch() {
 
 #[test]
 fn push_rejects_type_mismatch() {
-    let mut b = Builder::new(ErasedCell::new(()));
+    let mut b = Builder::new();
     // An f64 source slot ...
     let f = {
         let state = ErasedCell::new(0.0f64);

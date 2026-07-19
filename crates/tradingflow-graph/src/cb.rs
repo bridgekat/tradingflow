@@ -18,13 +18,16 @@ where
     type Context = C;
     type State = ();
 
-    fn init(self) -> Self::State {}
+    fn init(self, _: T::Values<'_>) -> Self::State {}
+
+    fn output<'a, 'b: 'a>(inputs: T::Values<'a>, _: &'b mut Self::State) -> T::Values<'a> {
+        inputs
+    }
 
     fn compute<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
-        _: &Self::Context,
         _: &'b mut Self::State,
-        _: bool,
+        _: &Self::Context,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         inputs
     }
@@ -36,7 +39,6 @@ impl<T, C> Default for Id<T, C> {
     }
 }
 
-/// Sequential composition `F >>> G`: the categorical composition.
 /// Feeds the outputs of `F` as inputs to `G` and produces the outputs of `G`.
 pub struct Comp<F, G>(pub F, pub G);
 
@@ -50,19 +52,27 @@ where
     type Context = F::Context;
     type State = (F::State, G::State);
 
-    fn init(self) -> Self::State {
-        (self.0.init(), self.1.init())
+    fn init(self, inputs: <F::Inputs as Interface>::Values<'_>) -> Self::State {
+        let mut fs = self.0.init(inputs);
+        let mid = F::output(<F::Inputs as Interface>::reborrow(inputs), &mut fs);
+        let gs = self.1.init(mid);
+        (fs, gs)
+    }
+
+    fn output<'a, 'b: 'a>(
+        inputs: <F::Inputs as Interface>::Values<'a>,
+        state: &'b mut Self::State,
+    ) -> <G::Outputs as Interface>::Values<'a> {
+        G::output(F::output(inputs, &mut state.0), &mut state.1)
     }
 
     fn compute<'a, 'b: 'a>(
         inputs: <F::Inputs as Interface>::Values<'a>,
-        context: &Self::Context,
         state: &'b mut Self::State,
-        is_first_run: bool,
+        context: &Self::Context,
     ) -> <G::Outputs as Interface>::Values<'a> {
         let (fs, gs) = state;
-        let mid = F::compute(inputs, context, fs, is_first_run);
-        G::compute(mid, context, gs, is_first_run)
+        G::compute(F::compute(inputs, fs, context), gs, context)
     }
 }
 
@@ -90,20 +100,29 @@ where
     type Context = F::Context;
     type State = (F::State, G::State);
 
-    fn init(self) -> Self::State {
-        (self.0.init(), self.1.init())
+    fn init(self, inputs: <F::Inputs as Interface>::Values<'_>) -> Self::State {
+        (self.0.init(inputs), self.1.init(inputs))
+    }
+
+    fn output<'a, 'b: 'a>(
+        inputs: <F::Inputs as Interface>::Values<'a>,
+        state: &'b mut Self::State,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        (
+            F::output(inputs, &mut state.0),
+            G::output(inputs, &mut state.1),
+        )
     }
 
     fn compute<'a, 'b: 'a>(
         inputs: <F::Inputs as Interface>::Values<'a>,
-        context: &Self::Context,
         state: &'b mut Self::State,
-        is_first_run: bool,
+        context: &Self::Context,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let (fs, gs) = state;
         (
-            F::compute(inputs, context, fs, is_first_run),
-            G::compute(inputs, context, gs, is_first_run),
+            F::compute(inputs, fs, context),
+            G::compute(inputs, gs, context),
         )
     }
 }
@@ -133,13 +152,19 @@ where
     type Context = C;
     type State = ();
 
-    fn init(self) -> Self::State {}
+    fn init(self, _: <Self::Inputs as Interface>::Values<'_>) -> Self::State {}
+
+    fn output<'a, 'b: 'a>(
+        inputs: <Self::Inputs as Interface>::Values<'a>,
+        _: &'b mut Self::State,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        inputs.0
+    }
 
     fn compute<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
-        _: &Self::Context,
         _: &'b mut Self::State,
-        _: bool,
+        _: &Self::Context,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         inputs.0
     }
@@ -166,13 +191,19 @@ where
     type Context = C;
     type State = ();
 
-    fn init(self) -> Self::State {}
+    fn init(self, _: <Self::Inputs as Interface>::Values<'_>) -> Self::State {}
+
+    fn output<'a, 'b: 'a>(
+        inputs: <Self::Inputs as Interface>::Values<'a>,
+        _: &'b mut Self::State,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        inputs.1
+    }
 
     fn compute<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
-        _: &Self::Context,
         _: &'b mut Self::State,
-        _: bool,
+        _: &Self::Context,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         inputs.1
     }
@@ -199,22 +230,27 @@ where
     type Context = F::Context;
     type State = (F::State, G::State);
 
-    fn init(self) -> Self::State {
-        (self.0.init(), self.1.init())
+    fn init(self, inputs: <Self::Inputs as Interface>::Values<'_>) -> Self::State {
+        let (a, b) = inputs;
+        (self.0.init(a), self.1.init(b))
+    }
+
+    fn output<'a, 'b: 'a>(
+        inputs: <Self::Inputs as Interface>::Values<'a>,
+        state: &'b mut Self::State,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        let (a, b) = inputs;
+        (F::output(a, &mut state.0), G::output(b, &mut state.1))
     }
 
     fn compute<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
-        context: &Self::Context,
         state: &'b mut Self::State,
-        is_first_run: bool,
+        context: &Self::Context,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let (a, b) = inputs;
         let (fs, gs) = state;
-        (
-            F::compute(a, context, fs, is_first_run),
-            G::compute(b, context, gs, is_first_run),
-        )
+        (F::compute(a, fs, context), G::compute(b, gs, context))
     }
 }
 
@@ -237,22 +273,28 @@ where
     T: Interface,
     U: Interface,
     C: Send + Sync + 'static,
-    F: for<'a> FnMut(T::Values<'a>, &'a ()) -> U::Values<'a> + Send + 'static,
+    F: for<'a> Fn(T::Values<'a>, &'a ()) -> U::Values<'a> + Send + 'static,
 {
     type Inputs = T;
     type Outputs = U;
     type Context = C;
     type State = F;
 
-    fn init(self) -> Self::State {
+    fn init(self, _: T::Values<'_>) -> Self::State {
         self.0
+    }
+
+    fn output<'a, 'b: 'a>(
+        inputs: <Self::Inputs as Interface>::Values<'a>,
+        state: &'b mut Self::State,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        state(inputs, &())
     }
 
     fn compute<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
-        _: &Self::Context,
         state: &'b mut Self::State,
-        _: bool,
+        _: &Self::Context,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         state(inputs, &())
     }
@@ -263,7 +305,7 @@ where
     T: Interface,
     U: Interface,
     C: Send + Sync + 'static,
-    F: for<'a> FnMut(T::Values<'a>, &'a ()) -> U::Values<'a> + Send + 'static,
+    F: for<'a> Fn(T::Values<'a>, &'a ()) -> U::Values<'a> + Send + 'static,
 {
     pub fn new(f: F) -> Self {
         Self(f, PhantomData)
@@ -290,19 +332,30 @@ where
     type Context = F::Context;
     type State = (F::State, G::State, H);
 
-    fn init(self) -> Self::State {
-        (self.0.init(), self.1.init(), self.2)
+    fn init(self, inputs: <Self::Inputs as Interface>::Values<'_>) -> Self::State {
+        let mut fs = self.0.init(inputs);
+        let env = F::output(<F::Inputs as Interface>::reborrow(inputs), &mut fs);
+        let gs = self.1.init((self.2)(env, &()));
+        (fs, gs, self.2)
+    }
+
+    fn output<'a, 'b: 'a>(
+        inputs: <Self::Inputs as Interface>::Values<'a>,
+        state: &'b mut Self::State,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        let (fs, gs, f) = state;
+        let env = F::output(inputs, fs);
+        (env, G::output(f(env, &()), gs))
     }
 
     fn compute<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
-        context: &Self::Context,
         state: &'b mut Self::State,
-        is_first_run: bool,
+        context: &Self::Context,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let (ps, ss, f) = state;
-        let env = F::compute(inputs, context, ps, is_first_run);
-        (env, G::compute(f(env, &()), context, ss, is_first_run))
+        let env = F::compute(inputs, ps, context);
+        (env, G::compute(f(env, &()), ss, context))
     }
 }
 
@@ -320,18 +373,25 @@ where
     type Context = F::Context;
     type State = (F::State, H);
 
-    fn init(self) -> Self::State {
-        (self.0.init(), self.1)
+    fn init(self, inputs: <Self::Inputs as Interface>::Values<'_>) -> Self::State {
+        (self.0.init(inputs), self.1)
+    }
+
+    fn output<'a, 'b: 'a>(
+        inputs: <Self::Inputs as Interface>::Values<'a>,
+        state: &'b mut Self::State,
+    ) -> <Self::Outputs as Interface>::Values<'a> {
+        let (fs, f) = state;
+        f(F::output(inputs, fs), &())
     }
 
     fn compute<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
-        context: &Self::Context,
         state: &'b mut Self::State,
-        is_first_run: bool,
+        context: &Self::Context,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let (ps, f) = state;
-        f(F::compute(inputs, context, ps, is_first_run), &())
+        f(F::compute(inputs, ps, context), &())
     }
 }
 

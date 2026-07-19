@@ -80,8 +80,14 @@ impl Operator for Benchmark {
     type Context = Instant;
     type State = BenchmarkState;
 
-    fn init(self) -> BenchmarkState {
+    fn init(self, ((_, pos), ..): TraderValues<'_>) -> BenchmarkState {
         let n = self.num_stocks;
+        assert_eq!(
+            pos.len(),
+            n,
+            "Benchmark: input length {} != num_stocks {n}",
+            pos.len(),
+        );
         BenchmarkState {
             num_stocks: n,
             use_adjusts: self.use_adjusts,
@@ -96,20 +102,9 @@ impl Operator for Benchmark {
 
     fn compute<'a, 'b: 'a>(
         ((pos_notified, pos), (_, close), (_, adj), (_, up), (_, lo)): TraderValues<'a>,
-        _: &Instant,
         state: &'b mut BenchmarkState,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 1>) {
-        if init {
-            assert_eq!(
-                pos.len(),
-                state.num_stocks,
-                "Benchmark: input length {} != num_stocks {}",
-                pos.len(),
-                state.num_stocks,
-            );
-            return (false, state.out.view());
-        }
         let n = state.num_stocks;
         let positions = pos.to_contiguous();
         let closes = close.to_contiguous();
@@ -208,8 +203,7 @@ impl Operator for Benchmark {
 
     fn passthrough<'a, 'b: 'a>(
         _: TraderValues<'a>,
-        _: &Instant,
-        state: &'b BenchmarkState,
+        state: &'b mut BenchmarkState,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         (false, state.out.view())
     }
@@ -268,27 +262,11 @@ impl TraderCore {
     clippy::needless_range_loop,
     reason = "i walks the per-stock book arrays (shares/last_close/last_adjust) in lockstep with the price inputs"
 )]
-fn run_tick<L>(
-    s: &mut TraderCore,
-    pos_notified: bool,
-    cols: [&[f64]; 5],
-    init: bool,
-    mut lots: L,
-) -> bool
+fn run_tick<L>(s: &mut TraderCore, pos_notified: bool, cols: [&[f64]; 5], mut lots: L) -> bool
 where
     L: FnMut(f64, &[f64], &[f64], f64, &[f64], &mut [f64]),
 {
     let [soft, closes, adjusts, upper, lower] = cols;
-    if init {
-        assert_eq!(
-            soft.len(),
-            s.num_stocks,
-            "trader: input length {} != num_stocks {}",
-            soft.len(),
-            s.num_stocks,
-        );
-        return false;
-    }
     let n = s.num_stocks;
 
     // Reinvest dividends.
@@ -392,7 +370,6 @@ where
 fn run_trader<'a, 'b: 'a, L>(
     core: &'b mut TraderCore,
     values: TraderValues<'a>,
-    init: bool,
     lots: L,
 ) -> (bool, ArrayView<'a, f64, 1>)
 where
@@ -406,7 +383,7 @@ where
         up.to_contiguous(),
         lo.to_contiguous(),
     );
-    let notify = run_tick(core, pn, [&a, &b, &c, &d, &e], init, lots);
+    let notify = run_tick(core, pn, [&a, &b, &c, &d, &e], lots);
     (notify, core.out.view())
 }
 
@@ -526,7 +503,14 @@ impl Operator for SimpleTrader {
     type Context = Instant;
     type State = SimpleTraderState;
 
-    fn init(self) -> SimpleTraderState {
+    fn init(self, ((_, pos), ..): TraderValues<'_>) -> SimpleTraderState {
+        assert_eq!(
+            pos.len(),
+            self.num_stocks,
+            "trader: input length {} != num_stocks {}",
+            pos.len(),
+            self.num_stocks,
+        );
         SimpleTraderState {
             core: TraderCore::new(
                 self.num_stocks,
@@ -540,17 +524,15 @@ impl Operator for SimpleTrader {
 
     fn compute<'a, 'b: 'a>(
         values: TraderValues<'a>,
-        _: &Instant,
         state: &'b mut SimpleTraderState,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 1>) {
-        run_trader(&mut state.core, values, init, value_weight_lots)
+        run_trader(&mut state.core, values, value_weight_lots)
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: TraderValues<'a>,
-        _: &Instant,
-        state: &'b SimpleTraderState,
+        state: &'b mut SimpleTraderState,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         (false, state.core.out.view())
     }
@@ -602,7 +584,14 @@ impl Operator for RandomTrader {
     type Context = Instant;
     type State = RandomTraderState;
 
-    fn init(self) -> RandomTraderState {
+    fn init(self, ((_, pos), ..): TraderValues<'_>) -> RandomTraderState {
+        assert_eq!(
+            pos.len(),
+            self.num_stocks,
+            "trader: input length {} != num_stocks {}",
+            pos.len(),
+            self.num_stocks,
+        );
         RandomTraderState {
             core: TraderCore::new(
                 self.num_stocks,
@@ -618,9 +607,8 @@ impl Operator for RandomTrader {
 
     fn compute<'a, 'b: 'a>(
         values: TraderValues<'a>,
-        _: &Instant,
         state: &'b mut RandomTraderState,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         let RandomTraderState {
             core,
@@ -628,15 +616,14 @@ impl Operator for RandomTrader {
             portfolio_size,
         } = state;
         let ps = *portfolio_size;
-        run_trader(core, values, init, |cv, exec, shares, ls, soft, out| {
+        run_trader(core, values, |cv, exec, shares, ls, soft, out| {
             random_lots(rng, ps, cv, exec, shares, ls, soft, out)
         })
     }
 
     fn passthrough<'a, 'b: 'a>(
         _: TraderValues<'a>,
-        _: &Instant,
-        state: &'b RandomTraderState,
+        state: &'b mut RandomTraderState,
     ) -> (bool, ArrayView<'a, f64, 1>) {
         (false, state.core.out.view())
     }
@@ -711,7 +698,7 @@ mod tests {
     #[test]
     fn benchmark_one_tick_delay_exec_and_mark() {
         let nan = f64::NAN;
-        let mut b = Builder::new(Instant::MIN);
+        let mut b = Builder::new();
         let (pos, posv) = src(&mut b, &[nan, nan]);
         let (close, closev) = src(&mut b, &[nan, nan]);
         let (_adj, adjv) = src(&mut b, &[1.0, 1.0]);
@@ -723,17 +710,17 @@ mod tests {
 
         *g.state_mut(pos) = arr(&[0.5, 0.5]);
         *g.state_mut(close) = arr(&[10.0, 20.0]);
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         assert_eq!(g.view(out).as_slice().unwrap(), &[0.0, 1.0]);
 
         *g.state_mut(close) = arr(&[11.0, 22.0]);
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         let o = g.view(out).as_slice().unwrap().to_vec();
         assert!((o[0] - 1.0).abs() < 1e-12, "tick2 holdings {} != 1.0", o[0]);
         assert!(o[1].abs() < 1e-12, "tick2 cash {} != 0", o[1]);
 
         *g.state_mut(close) = arr(&[12.0, 22.0]);
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         let o = g.view(out).as_slice().unwrap().to_vec();
         let nav = o[0] + o[1];
         let expected = 0.5 * (12.0 / 11.0) + 0.5;
@@ -748,7 +735,7 @@ mod tests {
     #[test]
     fn benchmark_reinvests_dividends() {
         let nan = f64::NAN;
-        let mut b = Builder::new(Instant::MIN);
+        let mut b = Builder::new();
         let (pos, posv) = src(&mut b, &[nan]);
         let (close, closev) = src(&mut b, &[nan]);
         let (adj, adjv) = src(&mut b, &[1.0]);
@@ -760,9 +747,9 @@ mod tests {
 
         *g.state_mut(pos) = arr(&[1.0]);
         *g.state_mut(close) = arr(&[10.0]);
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         *g.state_mut(close) = arr(&[10.0]);
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         let o = g.view(out).as_slice().unwrap().to_vec();
         assert!(
             (o[0] - 1.0).abs() < 1e-12 && o[1].abs() < 1e-12,
@@ -771,7 +758,7 @@ mod tests {
 
         *g.state_mut(adj) = arr(&[2.0]);
         *g.state_mut(close) = arr(&[10.0]);
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         let o = g.view(out).as_slice().unwrap().to_vec();
         assert!(
             (o[0] - 2.0).abs() < 1e-12,
@@ -783,7 +770,7 @@ mod tests {
     #[test]
     fn simple_trader_value_weight_with_fees_and_lots() {
         let nan = f64::NAN;
-        let mut b = Builder::new(Instant::MIN);
+        let mut b = Builder::new();
         let (pos, posv) = src(&mut b, &[nan]);
         let (close, closev) = src(&mut b, &[nan]);
         let (_adj, adjv) = src(&mut b, &[1.0]);
@@ -798,11 +785,11 @@ mod tests {
 
         *g.state_mut(pos) = arr(&[1.0]);
         *g.state_mut(close) = arr(&[10.0]);
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         assert_eq!(g.view(out).as_slice().unwrap(), &[0.0, 1_000_000.0]);
 
         *g.state_mut(close) = arr(&[10.0]);
-        g.stabilize(&mut pool);
+        g.stabilize(&mut pool, &Instant::MIN);
         assert_eq!(g.view(out).as_slice().unwrap(), &[1_000_000.0, -1000.0]);
     }
 
@@ -810,7 +797,7 @@ mod tests {
     fn random_trader_invests_and_is_seed_deterministic() {
         let nan = f64::NAN;
         let run = || {
-            let mut b = Builder::new(Instant::MIN);
+            let mut b = Builder::new();
             let (pos, posv) = src(&mut b, &[nan; 5]);
             let (close, closev) = src(&mut b, &[nan; 5]);
             let (_adj, adjv) = src(&mut b, &[1.0; 5]);
@@ -824,12 +811,12 @@ mod tests {
             let mut pool = Pool::new(0);
             *g.state_mut(pos) = arr(&[0.2; 5]);
             *g.state_mut(close) = arr(&[10.0; 5]);
-            g.stabilize(&mut pool);
+            g.stabilize(&mut pool, &Instant::MIN);
             *g.state_mut(close) = arr(&[10.0; 5]);
-            g.stabilize(&mut pool);
+            g.stabilize(&mut pool, &Instant::MIN);
             let invested = g.view(out).as_slice().unwrap().to_vec();
             *g.state_mut(close) = arr(&[11.0, 9.0, 10.0, 10.0, 10.0]);
-            g.stabilize(&mut pool);
+            g.stabilize(&mut pool, &Instant::MIN);
             let marked = g.view(out).as_slice().unwrap().to_vec();
             (invested, marked)
         };

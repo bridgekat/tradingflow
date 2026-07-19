@@ -25,25 +25,27 @@
 //! impl Source for SeqSource {
 //!     type Instant = Instant;
 //!     type Payload = i64;
-//!     type Pass = Val<i64>;
+//!     type Outputs = Port<Val<i64>>;
+//!     type State = i64;
 //!
-//!     fn init(
-//!         self,
-//!     ) -> (
-//!         i64,
-//!         impl Stream<Item = Event<Instant, i64>> + Send + 'static,
-//!         impl FnMut(Instant, i64, &mut i64) -> usize + Send + 'static,
-//!     ) {
-//!         let default = 0;
+//!     fn init(self) -> (i64, impl Stream<Item = Event<i64, Instant>> + 'static) {
+//!         // The event stream.
 //!         let items = self.0.into_iter().map(|x| Event {
 //!             stamp: Stamp::Now,
 //!             payload: Some(x),
 //!         });
-//!         let writer = |_time: Instant, payload: i64, output: &mut i64| {
-//!             *output = payload;
-//!             1
-//!         };
-//!         (default, futures::stream::iter(items), writer)
+//!         (0, futures::stream::iter(items))
+//!     }
+//!
+//!     fn write(payload: i64, _instant: Instant, state: &mut i64) -> usize {
+//!         // Write event payload into stored value.
+//!         *state = payload;
+//!         1
+//!     }
+//!
+//!     fn output(state: &mut i64) -> (bool, i64) {
+//!         // Output current stored value.
+//!         (true, *state)
 //!     }
 //! }
 //!
@@ -56,14 +58,22 @@
 //!     type Context = Instant;
 //!     type State = ();
 //!
-//!     fn init(self) {}
+//!     fn init(self, _: ((bool, i64), (bool, i64))) {}
+//!
+//!     fn output<'a, 'b: 'a>(
+//!         ((_, a), (_, b)): ((bool, i64), (bool, i64)),
+//!         _state: &'b mut (),
+//!     ) -> (bool, i64) {
+//!         // The initial placeholder output.
+//!         (false, 0)
+//!     }
 //!
 //!     fn compute<'a, 'b: 'a>(
 //!         ((a_notify, a), (b_notify, b)): ((bool, i64), (bool, i64)),
-//!         _time: &Instant,
 //!         _state: &'b mut (),
-//!         _is_first_run: bool,
+//!         _instant: &Instant,
 //!     ) -> (bool, i64) {
+//!         // Compute the sum.
 //!         (a_notify || b_notify, a + b)
 //!     }
 //! }
@@ -121,10 +131,11 @@
 //! - The [`Source::size_hint`] method should return the total number of
 //!   events in the stream, or `None` if unbounded or unknown.
 //! - The [`Source::init`] method is called once during graph construction,
-//!   which should return:
-//!   - The node's initial data store,
-//!   - An event stream,
-//!   - A closure that writes each event into the node's data store.
+//!   to create the node's state and the event stream.
+//! - The [`Source::output`] method will be called immediately after *and*
+//!   on each subsequent [`Graph::stabilize`], to obtain current output values.
+//! - The [`Source::write`] method will be called on each subsequent
+//!   [`Graph::step`] with new events, to write the events into the node.
 //!
 //! # Creating segments
 //!
@@ -134,11 +145,16 @@
 //!
 //! - The [`Segment::init`] method is called once during graph construction,
 //!   to create the node's state.
-//! - The [`Segment::compute`] method is called immediately after, with
-//!   `is_first_run == true`, to obtain initial/default output values.
+//! - The [`Segment::output`] method is called immediately after (possibly
+//!   multiple times), to obtain initial output values (typically placeholders).
 //! - The [`Segment::compute`] method will be called on each subsequent
-//!   [`Graph::stabilize`], with new inputs and `is_first_run == false`,
-//!   to obtain updated output values.
+//!   [`Graph::stabilize`] with new inputs, to obtain updated output values.
+//!   It can also access the graph context (typically the current timestamp)
+//!   or mutate the node's state.
+//!
+//! Most users should implement the similar [`Operator`] trait instead,
+//! which provides a more natural semantics (see below). [`Segment`] is mainly
+//! used for composition; [`Operator`] is used for individual operations.
 //!
 //! # Interfaces and passing policies
 //!
@@ -209,22 +225,29 @@
 //!     type Inputs = Port<Val<i64>>;
 //!     type Outputs = Port<Val<i64>>;
 //!     type Context = Instant;
-//!     type State = i64; // Remembers the previous output.
+//!     type State = i64;
 //!
-//!     fn init(self) -> i64 { 0 }
+//!     fn init(self, (_, x): (bool, i64)) -> i64 {
+//!         // The initial state.
+//!         0
+//!     }
+//!
+//!     fn output<'a, 'b: 'a>(_: (bool, i64), state: &'b mut i64) -> (bool, i64) {
+//!         // The initial placeholder output.
+//!         (false, 0)
+//!     }
 //!
 //!     fn compute<'a, 'b: 'a>(
 //!         (x_notify, x): (bool, i64),
-//!         _time: &Instant,
 //!         state: &'b mut i64,
-//!         _is_first_run: bool
+//!         _instant: &Instant,
 //!     ) -> (bool, i64) {
 //!         if x_notify {
 //!             // Input notified, recompute.
 //!             let output = x.abs();
 //!             let changed = output != *state; // Notify downstream only when |x| actually changed.
 //!             *state = output;
-//!             (changed, output)
+//!             (changed, *state)
 //!         } else {
 //!             // Input did not notify, simply pass through.
 //!             (false, *state)
@@ -280,7 +303,7 @@
 //! | [`cb::Left<T, U>`] / [`cb::Right<T, U>`] | — | Projection: outputs the first / second element of a pair. |
 //! | [`cb::Fork<F, G>`] | `f.fork(g)` | Fan-out: feed the same input to both, then pair outputs. |
 //! | [`cb::Par<F, G>`] | `f.par(g)` | Parallel composition: run `f`, `g` on a pair of inputs, then pair outputs. Equivalent to `Fork<Comp<Left, F>, Comp<Right, G>>`. |
-//! | [`cb::Arr`] | — | Applies a stateful closure to the inputs. |
+//! | [`cb::Arr`] | — | Applies a stateless closure to the inputs. |
 //!
 //! However, point-free combinators get unreadable fast. As an alternative, the
 //! `tradingflow-macros` crate provides the `segment!` macro, which is a DSL
@@ -306,26 +329,27 @@
 //!     type Context = Instant;
 //!     type State = i64;
 //!
-//!     fn init(self) -> i64 {
+//!     fn init(self, ((_, a), (_, b)): ((bool, &i64), (bool, &i64))) -> i64 {
+//!         // The initial state.
 //!         0
-//!     }
-//!
-//!     fn compute<'a, 'b: 'a>(
-//!         ((a_notify, a), (b_notify, b)): ((bool, &'a i64), (bool, &'a i64)),
-//!         _time: &Instant,
-//!         state: &'b mut i64,
-//!         _is_first_run: bool
-//!     ) -> (bool, &'a i64) {
-//!         *state = *a + *b;
-//!         (true, &*state)
 //!     }
 //!
 //!     fn passthrough<'a, 'b: 'a>(
 //!         ((a_notify, a), (b_notify, b)): ((bool, &'a i64), (bool, &'a i64)),
-//!         _time: &Instant,
-//!         state: &'b i64
+//!         state: &'b mut i64
 //!     ) -> (bool, &'a i64) {
+//!         // A simple forwarding.
 //!         (false, &*state)
+//!     }
+//!
+//!     fn compute<'a, 'b: 'a>(
+//!         ((a_notify, a), (b_notify, b)): ((bool, &'a i64), (bool, &'a i64)),
+//!         state: &'b mut i64,
+//!         _instant: &Instant,
+//!     ) -> (bool, &'a i64) {
+//!         // Compute the sum.
+//!         *state = *a + *b;
+//!         (true, &*state)
 //!     }
 //! }
 //!

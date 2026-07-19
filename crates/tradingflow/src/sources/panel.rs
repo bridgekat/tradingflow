@@ -97,9 +97,9 @@ use parquet::file::statistics::Statistics;
 use tokio::sync::mpsc;
 
 use super::receiver_stream;
-use crate::data::{Array, Duration, Instant};
+use crate::data::{Array, ArrayView, Duration, Instant};
 use crate::graph::{Event, Source};
-use crate::ports::ArrayPass;
+use crate::ports::ArrayPort;
 
 // ===========================================================================
 // ParquetPanelSource — the general (date, symbol, values...) panel.
@@ -212,7 +212,7 @@ pub struct RowUpdate {
 /// advances**, `panel_write` NaN-clears those rows first — reproducing the
 /// per-tick "only this date's rows" cross-section (pure StackSync, no carry).
 #[derive(Default)]
-struct PanelState {
+pub struct PanelState {
     last_ts: Option<Instant>,
     dirty: Vec<usize>,
 }
@@ -258,7 +258,8 @@ fn panel_write(
 impl Source for ParquetPanelSource {
     type Instant = Instant;
     type Payload = Vec<RowUpdate>;
-    type Pass = ArrayPass<f64, 2>;
+    type Outputs = ArrayPort<f64, 2>;
+    type State = (PanelState, Array<f64, 2>);
 
     fn size_hint(&self) -> Option<usize> {
         // Progress is measured in **emitted long-table rows** (one event per
@@ -278,26 +279,28 @@ impl Source for ParquetPanelSource {
     fn init(
         self,
     ) -> (
-        Array<f64, 2>,
-        impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static,
-        impl FnMut(Instant, Vec<RowUpdate>, &mut Array<f64, 2>) -> usize + Send + 'static,
+        Self::State,
+        impl Stream<Item = Event<Vec<RowUpdate>, Instant>> + 'static,
     ) {
-        let default = nan_panel(self.out_shape());
-
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
+        let state = (PanelState::default(), nan_panel(self.out_shape()));
         let (hist_tx, hist_rx) = mpsc::channel(16);
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_panel(&self, &hist_tx) {
                 eprintln!("ParquetPanelSource error ({}): {e}", self.path);
             }
         });
+        (state, receiver_stream(hist_rx))
+    }
 
-        let mut state = PanelState::default();
-        let writer =
-            move |ts, batch, output: &mut Array<f64, 2>| panel_write(&mut state, ts, batch, output);
+    fn output(state: &mut Self::State) -> (bool, ArrayView<'_, f64, 2>) {
+        (true, state.1.view())
+    }
 
-        (default, receiver_stream(hist_rx), writer)
+    fn write(payload: Vec<RowUpdate>, instant: Instant, state: &mut Self::State) -> usize {
+        let (state, output) = state;
+        panel_write(state, instant, payload, output)
     }
 }
 
@@ -313,7 +316,7 @@ impl Source for ParquetPanelSource {
 )]
 fn read_panel(
     cfg: &ParquetPanelSource,
-    hist_tx: &mpsc::Sender<(Instant, Vec<RowUpdate>)>,
+    hist_tx: &mpsc::Sender<(Vec<RowUpdate>, Instant)>,
 ) -> Result<(), String> {
     let k = cfg.value_columns.len();
     let sym_index: HashMap<&str, usize> = cfg
@@ -397,7 +400,7 @@ fn read_panel(
             if cur_ts != Some(ts) {
                 if let Some(t) = cur_ts
                     && hist_tx
-                        .blocking_send((t, std::mem::take(&mut tick)))
+                        .blocking_send((std::mem::take(&mut tick), t))
                         .is_err()
                 {
                     return Ok(());
@@ -420,7 +423,7 @@ fn read_panel(
     if let Some(t) = cur_ts
         && !tick.is_empty()
     {
-        let _ = hist_tx.blocking_send((t, tick));
+        let _ = hist_tx.blocking_send((tick, t));
     }
     Ok(())
 }
@@ -690,7 +693,8 @@ struct ReportRow {
 impl Source for ParquetFinancialReportPanelSource {
     type Instant = Instant;
     type Payload = Vec<RowUpdate>;
-    type Pass = ArrayPass<f64, 2>;
+    type Outputs = ArrayPort<f64, 2>;
+    type State = (PanelState, Array<f64, 2>);
 
     fn size_hint(&self) -> Option<usize> {
         // Progress is in emitted long-table rows. The effective-date emits (after
@@ -706,13 +710,11 @@ impl Source for ParquetFinancialReportPanelSource {
     fn init(
         self,
     ) -> (
-        Array<f64, 2>,
-        impl Stream<Item = Event<Instant, Vec<RowUpdate>>> + Send + 'static,
-        impl FnMut(Instant, Vec<RowUpdate>, &mut Array<f64, 2>) -> usize + Send + 'static,
+        Self::State,
+        impl Stream<Item = Event<Vec<RowUpdate>, Instant>> + 'static,
     ) {
-        let default = nan_panel(self.out_shape());
-
         // One item per tick (a batch of that date's reports); small buffer.
+        let state = (PanelState::default(), nan_panel(self.out_shape()));
         let (hist_tx, hist_rx) = mpsc::channel(16);
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_reports(&self, &hist_tx) {
@@ -722,12 +724,16 @@ impl Source for ParquetFinancialReportPanelSource {
                 );
             }
         });
+        (state, receiver_stream(hist_rx))
+    }
 
-        let mut state = PanelState::default();
-        let writer =
-            move |ts, batch, output: &mut Array<f64, 2>| panel_write(&mut state, ts, batch, output);
+    fn output(state: &mut Self::State) -> (bool, ArrayView<'_, f64, 2>) {
+        (true, state.1.view())
+    }
 
-        (default, receiver_stream(hist_rx), writer)
+    fn write(payload: Vec<RowUpdate>, instant: Instant, state: &mut Self::State) -> usize {
+        let (state, output) = state;
+        panel_write(state, instant, payload, output)
     }
 }
 
@@ -737,7 +743,7 @@ impl Source for ParquetFinancialReportPanelSource {
 )]
 fn read_reports(
     cfg: &ParquetFinancialReportPanelSource,
-    hist_tx: &mpsc::Sender<(Instant, Vec<RowUpdate>)>,
+    hist_tx: &mpsc::Sender<(Vec<RowUpdate>, Instant)>,
 ) -> Result<(), String> {
     let value_offset = if cfg.with_report_date { 2 } else { 0 };
     let r = value_offset + cfg.value_columns.len();
@@ -891,7 +897,7 @@ fn read_reports(
         if cur_ts != Some(ts) {
             if let Some(t) = cur_ts
                 && hist_tx
-                    .blocking_send((t, std::mem::take(&mut tick)))
+                    .blocking_send((std::mem::take(&mut tick), t))
                     .is_err()
             {
                 return Ok(());
@@ -916,7 +922,7 @@ fn read_reports(
     if let Some(t) = cur_ts
         && !tick.is_empty()
     {
-        let _ = hist_tx.blocking_send((t, tick));
+        let _ = hist_tx.blocking_send((tick, t));
     }
     Ok(())
 }

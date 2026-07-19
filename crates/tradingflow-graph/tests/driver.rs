@@ -16,7 +16,7 @@ use std::thread;
 use futures::stream::{self, Stream};
 use tradingflow_graph::driver::{Builder, Clock, Event, Queue, Source, StreamFeed};
 use tradingflow_graph::pool::Pool;
-use tradingflow_graph::typed::{Port, Ref, Segment, Val};
+use tradingflow_graph::typed::{Operator, Port, Ref, Val};
 
 fn pool() -> Pool {
     Pool::new(thread::available_parallelism().unwrap().get())
@@ -37,9 +37,6 @@ impl SimClock {
     }
 }
 impl Clock<Instant> for SimClock {
-    fn min(&self) -> Instant {
-        Instant(i64::MIN)
-    }
     fn now(&self) -> Instant {
         *self.0.lock().unwrap()
     }
@@ -63,56 +60,63 @@ impl Future for Jump {
 type Batch = Vec<i64>;
 
 /// Explicit feed: sorted `(timestamp, batch)` rows.
-fn hist(rows: impl IntoIterator<Item = (i64, Batch)>) -> impl Stream<Item = Event<Instant, Batch>> {
+fn hist(rows: impl IntoIterator<Item = (i64, Batch)>) -> impl Stream<Item = Event<Batch, Instant>> {
     stream::iter(
         rows.into_iter()
-            .map(|(n, payload)| Event::at(Instant(n), payload)),
+            .map(|(n, payload)| Event::at(payload, Instant(n))),
     )
 }
 
 /// Implicit feed: wall-clock-stamped batches, in arrival order.
-fn live(batches: impl IntoIterator<Item = Batch>) -> impl Stream<Item = Event<Instant, Batch>> {
+fn live(batches: impl IntoIterator<Item = Batch>) -> impl Stream<Item = Event<Batch, Instant>> {
     stream::iter(batches.into_iter().map(Event::now))
 }
 
 /// Sums each notified delta batch into a running total.
 struct Sum;
-impl Segment for Sum {
+impl Operator for Sum {
     type Inputs = Port<Ref<Batch>>;
     type Outputs = Port<Val<i64>>;
     type Context = Instant;
     type State = i64;
-    fn init(self) -> i64 {
+    fn init(self, _: (bool, &Batch)) -> i64 {
         0
     }
+    fn passthrough<'a, 'b: 'a>(_: (bool, &'a Batch), sum: &'b mut i64) -> (bool, i64) {
+        (true, *sum)
+    }
     fn compute<'a, 'b: 'a>(
-        (notify, batch): (bool, &'a Batch),
-        _: &Instant,
+        (_, batch): (bool, &'a Batch),
         sum: &'b mut i64,
-        _: bool,
+        _: &Instant,
     ) -> (bool, i64) {
-        if notify {
-            *sum += batch.iter().sum::<i64>();
-        }
+        // The auto-gate only calls `compute` on a notified batch; unchanged
+        // generations re-lend the running total through `passthrough`.
+        *sum += batch.iter().sum::<i64>();
         (true, *sum)
     }
 }
 
 /// A stateless adder over two by-reference `i64` cells.
 struct Add;
-impl Segment for Add {
+impl Operator for Add {
     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = Instant;
     type State = ();
-    fn init(self) {}
-    fn compute<'a, 'b: 'a>(
+    fn init(self, _: ((bool, &i64), (bool, &i64))) {}
+    fn passthrough<'a, 'b: 'a>(
         ((na, a), (nb, b)): ((bool, &'a i64), (bool, &'a i64)),
-        _: &Instant,
         _: &'b mut (),
-        _: bool,
     ) -> (bool, i64) {
         (na || nb, a + b)
+    }
+    fn compute<'a, 'b: 'a>(
+        inputs: ((bool, &'a i64), (bool, &'a i64)),
+        state: &'b mut (),
+        _: &Instant,
+    ) -> (bool, i64) {
+        Self::passthrough(inputs, state)
     }
 }
 
@@ -122,26 +126,26 @@ struct Replay(Vec<(Instant, i64)>);
 impl Source for Replay {
     type Instant = Instant;
     type Payload = i64;
-    type Pass = Ref<i64>;
-
-    fn init(
-        self,
-    ) -> (
-        i64,
-        impl Stream<Item = Event<Instant, i64>> + Send + 'static,
-        impl FnMut(Instant, i64, &mut i64) -> usize + Send + 'static,
-    ) {
-        let default = 0;
-        let it = self.0.into_iter().map(|(n, v)| Event::at(n, v));
-        let writer = |_, event, output: &mut i64| {
-            *output = event;
-            1
-        };
-        (default, stream::iter(it), writer)
-    }
+    type Outputs = Port<Ref<i64>>;
+    type State = i64;
 
     fn size_hint(&self) -> Option<usize> {
         Some(self.0.len())
+    }
+
+    fn init(self) -> (i64, impl Stream<Item = Event<i64, Instant>> + 'static) {
+        let default = 0;
+        let it = self.0.into_iter().map(|(ts, v)| Event::at(v, ts));
+        (default, stream::iter(it))
+    }
+
+    fn output(state: &mut i64) -> (bool, &i64) {
+        (true, state)
+    }
+
+    fn write(payload: i64, _: Instant, state: &mut i64) -> usize {
+        *state = payload;
+        1
     }
 }
 
@@ -163,34 +167,39 @@ struct VecFeed<S> {
 /// A shared write-side log of `(event time, item)` rows for a [`VecFeed`].
 type FeedLog = Arc<Mutex<Vec<(Instant, Batch)>>>;
 
-impl<S: Stream<Item = Event<Instant, Batch>> + Send + 'static> Source for VecFeed<S> {
+impl<S: Stream<Item = Event<Batch, Instant>> + Send + 'static> Source for VecFeed<S> {
     type Instant = Instant;
     type Payload = Batch;
-    type Pass = Ref<Batch>;
+    type Outputs = Port<Ref<Batch>>;
+    type State = (Option<Arc<Mutex<Vec<(Instant, Vec<i64>)>>>>, Batch);
 
     fn init(
         self,
     ) -> (
-        Batch,
-        impl Stream<Item = Event<Instant, Batch>> + Send + 'static,
-        impl FnMut(Instant, Batch, &mut Batch) -> usize + Send + 'static,
+        Self::State,
+        impl Stream<Item = Event<Batch, Instant>> + 'static,
     ) {
-        let default = Batch::new();
+        let state = (self.log, Batch::new());
         let stream = self
             .stream
             .lock()
             .unwrap()
             .take()
             .expect("VecFeed drives a single session");
-        let log = self.log;
-        let writer = move |ts, event: Batch, output: &mut Batch| {
-            if let Some(log) = &log {
-                log.lock().unwrap().push((ts, event.clone()));
-            }
-            *output = event;
-            1
-        };
-        (default, stream, writer)
+        (state, stream)
+    }
+
+    fn output(state: &mut Self::State) -> (bool, &Batch) {
+        (true, &state.1)
+    }
+
+    fn write(payload: Batch, ts: Instant, state: &mut Self::State) -> usize {
+        let (log, state) = state;
+        if let Some(log) = &log {
+            log.lock().unwrap().push((ts, payload.clone()));
+        }
+        *state = payload;
+        1
     }
 }
 
@@ -210,30 +219,27 @@ fn feed_logged<S>(stream: S, log: FeedLog) -> VecFeed<S> {
     }
 }
 
-/// A time-stamping sink segment: on each notified input, appends
+/// A time-stamping sink operator: on each notified input, appends
 /// `(event time, value)` to a shared log. The batch timestamp is the
 /// graph-level context — no clock handle is threaded in, and no unwrapping:
-/// the build call is told apart by `first`, not by an absent time.
+/// the build call renders through `passthrough` (which never sees a time and
+/// records nothing), and the auto-gate only calls `compute` on a notified
+/// input, so `compute` always has a real timestamp.
 struct Recorder(Arc<Mutex<Vec<(Instant, i64)>>>);
-impl Segment for Recorder {
+impl Operator for Recorder {
     type Inputs = Port<Ref<i64>>;
     type Outputs = ();
     type Context = Instant;
     type State = Arc<Mutex<Vec<(Instant, i64)>>>;
 
-    fn init(self) -> Self::State {
+    fn init(self, _: (bool, &i64)) -> Self::State {
         self.0
     }
 
-    fn compute<'a, 'b: 'a>(
-        (notify, x): (bool, &'a i64),
-        time: &Instant,
-        state: &'b mut Self::State,
-        first: bool,
-    ) {
-        if notify && !first {
-            state.lock().unwrap().push((*time, *x));
-        }
+    fn passthrough<'a, 'b: 'a>(_: (bool, &'a i64), _: &'b mut Self::State) {}
+
+    fn compute<'a, 'b: 'a>((_, x): (bool, &'a i64), state: &'b mut Self::State, time: &Instant) {
+        state.lock().unwrap().push((*time, *x));
     }
 }
 
@@ -360,7 +366,7 @@ fn frontier_message_advances_without_data() {
     let mut b = Builder::new(SimClock::at(Instant(100)));
     b.source(feed(stream::iter([
         Event::frontier(Instant(4)),
-        Event::at(Instant(5), vec![50]),
+        Event::at(vec![50], Instant(5)),
     ])));
     b.source(feed(hist([(2, vec![20])])));
     let mut d = b.build();
@@ -401,11 +407,11 @@ fn queue_merges_into_plain_sink() {
     let mut q = Queue::new(SimClock::at(Instant(100)));
     q.add_feed(StreamFeed::new(
         hist([(1, vec![10]), (3, vec![30])]),
-        |t, x: Batch, sink: &mut Vec<(Instant, i64)>| sink.push((t, x[0])),
+        |x: Batch, t, sink: &mut Vec<(Instant, i64)>| sink.push((t, x[0])),
     ));
     q.add_feed(StreamFeed::new(
         hist([(2, vec![20])]),
-        |t, x: Batch, sink: &mut Vec<(Instant, i64)>| sink.push((t, x[0])),
+        |x: Batch, t, sink: &mut Vec<(Instant, i64)>| sink.push((t, x[0])),
     ));
 
     let mut sink = Vec::new();
@@ -443,12 +449,12 @@ fn async_channel_feeds_merge_in_order() {
     let pa = thread::spawn(move || {
         for (n, v) in [(1i64, 10i64), (3, 30)] {
             thread::sleep(Duration::from_millis(5));
-            tx_a.start_send(Event::at(Instant(n), vec![v])).unwrap();
+            tx_a.start_send(Event::at(vec![v], Instant(n))).unwrap();
         }
     });
     let pc = thread::spawn(move || {
         for (n, v) in [(2i64, 20i64), (4, 40)] {
-            tx_c.start_send(Event::at(Instant(n), vec![v])).unwrap();
+            tx_c.start_send(Event::at(vec![v], Instant(n))).unwrap();
         }
     });
 
@@ -502,10 +508,11 @@ fn event_time_context_stamps_batches() {
     b.segment(Recorder(rows.clone()), x);
     let mut d = b.build();
 
-    pollster::block_on(d.run(&mut pool(), |_, _| {}));
+    let mut last = None;
+    pollster::block_on(d.run(&mut pool(), |_, t| last = Some(t)));
     assert_eq!(
         *rows.lock().unwrap(),
         vec![(Instant(5), 50), (Instant(9), 90)]
     );
-    assert_eq!(d.instant(), Instant(9));
+    assert_eq!(last, Some(Instant(9)));
 }

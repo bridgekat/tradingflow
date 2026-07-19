@@ -19,8 +19,8 @@ pub type ComputeFn = unsafe fn(
     in_ptrs: *const [*const ()],
     out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
-    context: *const (),
     state: *mut (),
+    context: *const (),
 );
 
 /// Type-erased segment definition.

@@ -110,36 +110,26 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
     type Context = Instant;
     type State = RollingState<A, NO>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, series): (bool, SeriesView<'_, A::Scalar, NI>)) -> Self::State {
+        let input_shape = series.layout().extents();
+        let output_shape = A::output_shape(&input_shape);
+        let output_stride: usize = output_shape.iter().product();
         RollingState {
             window: self.window,
             count: 0,
-            // Placeholder; replaced with a properly-shaped accumulator on the
-            // build call, where the input shape is known.
-            accumulator: A::new(&[0]),
-            out: Array::zeros([0; NO]),
+            accumulator: A::new(&input_shape),
+            out: Array::from_parts(
+                out_extents::<NO>(&output_shape),
+                vec![A::Scalar::nan(); output_stride].into(),
+            ),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, SeriesView<'a, A::Scalar, NI>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, A::Scalar, NO>) {
-        if init {
-            let input_shape = series.layout().extents();
-            let output_shape = A::output_shape(&input_shape);
-            let output_stride: usize = output_shape.iter().product();
-            state.count = 0;
-            state.accumulator = A::new(&input_shape);
-            state.out = Array::from_parts(
-                out_extents::<NO>(&output_shape),
-                vec![A::Scalar::nan(); output_stride].into(),
-            );
-            return (false, state.out.view());
-        }
-
         // The accumulated rows are always the newest `count` rows of the
         // window, so the oldest accumulated row sits at view-local index
         // `len - count` — stable under retention trims of older rows.
@@ -181,8 +171,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, SeriesView<'a, A::Scalar, NI>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, A::Scalar, NO>) {
         (false, state.out.view())
     }
@@ -569,23 +558,22 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
     type Context = Instant;
     type State = EmaState<T, NO>;
 
-    fn init(self) -> Self::State {
-        // `one_minus_alpha` / `decay_factor` depend only on config; the
-        // input-shaped buffers are sized on the build call.
+    fn init(self, (_, series): (bool, SeriesView<'_, T, NO>)) -> Self::State {
         let one_minus_alpha = T::one() - self.alpha;
         let mut decay_factor = T::one();
         for _ in 0..self.window {
             decay_factor = decay_factor * one_minus_alpha;
         }
+        let stride = series.layout().len();
         EmaState {
             alpha: self.alpha,
             one_minus_alpha,
             decay_factor,
             window: self.window,
-            weighted_sum: Vec::new(),
-            nonfinite_count: Vec::new(),
+            weighted_sum: vec![T::zero(); stride],
+            nonfinite_count: vec![0; stride],
             fill_decay: T::one(),
-            out: Array::zeros([0; NO]),
+            out: Array::from_parts(series.layout().extents(), vec![T::nan(); stride].into()),
         }
     }
 
@@ -595,19 +583,9 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
     )]
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, SeriesView<'a, T, NO>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, NO>) {
-        if init {
-            let stride = series.layout().len();
-            state.weighted_sum = vec![T::zero(); stride];
-            state.nonfinite_count = vec![0; stride];
-            state.fill_decay = T::one();
-            state.out = Array::from_parts(series.layout().extents(), vec![T::nan(); stride].into());
-            return (false, state.out.view());
-        }
-
         let len = series.len();
         let row = series.at(len - 1).unwrap().1.data();
         let stride = row.len();
@@ -658,8 +636,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, SeriesView<'a, T, NO>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, NO>) {
         (false, state.out.view())
     }

@@ -37,11 +37,11 @@ where
     }
 }
 
-/// Runtime state for [`Map`]: the function plus the output cell, `None` only
-/// until the build call runs the closure once.
+/// Runtime state for [`Map`]: the function plus the output cell, seeded by
+/// running the closure once on the build-time input in `init`.
 pub struct MapState<SO: Scalar, const NO: usize, F> {
     f: F,
-    out: Option<Array<SO, NO>>,
+    out: Array<SO, NO>,
 }
 
 impl<SI: Scalar, const NI: usize, SO: Scalar, const NO: usize, F> Operator
@@ -54,33 +54,29 @@ where
     type Context = Instant;
     type State = MapState<SO, NO, F>;
 
-    fn init(self) -> Self::State {
-        MapState {
-            f: self.f,
-            out: None,
-        }
+    fn init(self, (_, x): (bool, ArrayView<'_, SI, NI>)) -> Self::State {
+        // Run the closure once on the build-time input to seed the output; the
+        // initial render then goes through `passthrough` without notifying.
+        let out = (self.f)(x);
+        MapState { f: self.f, out }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (_, x): (bool, ArrayView<'a, SI, NI>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, SO, NO>) {
-        // The build call runs the closure once on the build-time input to seed
-        // the output — replicating the legacy `init` — but does not notify.
-        state.out = Some((state.f)(x));
-        (!init, state.out.as_ref().unwrap().view())
+        state.out = (state.f)(x);
+        (true, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, SI, NI>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, SO, NO>) {
-        (false, state.out.as_ref().unwrap().view())
+        (false, state.out.view())
     }
 }
 
@@ -105,11 +101,10 @@ where
     }
 }
 
-/// Runtime state for [`MapInplace`]: the function, the initial value, and the
-/// output buffer.
+/// Runtime state for [`MapInplace`]: the function and the output buffer
+/// (seeded from the initial value in `init`).
 pub struct MapInplaceState<SO: Scalar, const NO: usize, F> {
     f: F,
-    initial: Array<SO, NO>,
     out: Array<SO, NO>,
 }
 
@@ -123,26 +118,18 @@ where
     type Context = Instant;
     type State = MapInplaceState<SO, NO, F>;
 
-    fn init(self) -> Self::State {
-        MapInplaceState {
-            f: self.f,
-            out: self.initial.clone(),
-            initial: self.initial,
-        }
+    fn init(self, (_, x): (bool, ArrayView<'_, SI, NI>)) -> Self::State {
+        let mut out = self.initial;
+        (self.f)(x, &mut out);
+        MapInplaceState { f: self.f, out }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (_, x): (bool, ArrayView<'a, SI, NI>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, SO, NO>) {
-        if init {
-            state.out = state.initial.clone();
-            (state.f)(x, &mut state.out);
-            return (false, state.out.view());
-        }
         let notify = (state.f)(x, &mut state.out);
         (notify, state.out.view())
     }
@@ -150,8 +137,7 @@ where
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, SI, NI>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, SO, NO>) {
         (false, state.out.view())
     }
@@ -187,11 +173,11 @@ where
     }
 }
 
-/// Runtime state for [`Apply`]: the function plus the output cell, `None` only
-/// until the build call runs the closure once.
+/// Runtime state for [`Apply`]: the function plus the output cell, seeded by
+/// running the closure once on the build-time inputs in `init`.
 pub struct ApplyState<SO: Scalar, const NO: usize, F> {
     f: F,
-    out: Option<Array<SO, NO>>,
+    out: Array<SO, NO>,
 }
 
 impl<I, SO: Scalar, const NO: usize, F> Operator for Apply<I, SO, NO, F>
@@ -204,31 +190,29 @@ where
     type Context = Instant;
     type State = ApplyState<SO, NO, F>;
 
-    fn init(self) -> Self::State {
-        ApplyState {
-            f: self.f,
-            out: None,
-        }
+    fn init(self, inputs: <I as Interface>::Values<'_>) -> Self::State {
+        // Run the closure once on the build-time inputs to seed the output; the
+        // initial render then goes through `passthrough` without notifying.
+        let out = (self.f)(<I as StripNotify>::plain(inputs));
+        ApplyState { f: self.f, out }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         inputs: <I as Interface>::Values<'a>,
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, SO, NO>) {
-        state.out = Some((state.f)(<I as StripNotify>::plain(inputs)));
-        (!init, state.out.as_ref().unwrap().view())
+        state.out = (state.f)(<I as StripNotify>::plain(inputs));
+        (true, state.out.view())
     }
 
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: <I as Interface>::Values<'a>,
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, SO, NO>) {
-        (false, state.out.as_ref().unwrap().view())
+        (false, state.out.view())
     }
 }
 
@@ -263,11 +247,10 @@ where
     }
 }
 
-/// Runtime state for [`ApplyInplace`]: the function, the initial value, and the
-/// output buffer.
+/// Runtime state for [`ApplyInplace`]: the function and the output buffer
+/// (seeded from the initial value in `init`).
 pub struct ApplyInplaceState<SO: Scalar, const NO: usize, F> {
     f: F,
-    initial: Array<SO, NO>,
     out: Array<SO, NO>,
 }
 
@@ -284,26 +267,18 @@ where
     type Context = Instant;
     type State = ApplyInplaceState<SO, NO, F>;
 
-    fn init(self) -> Self::State {
-        ApplyInplaceState {
-            f: self.f,
-            out: self.initial.clone(),
-            initial: self.initial,
-        }
+    fn init(self, inputs: <I as Interface>::Values<'_>) -> Self::State {
+        let mut out = self.initial;
+        (self.f)(<I as StripNotify>::plain(inputs), &mut out);
+        ApplyInplaceState { f: self.f, out }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         inputs: <I as Interface>::Values<'a>,
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, SO, NO>) {
-        if init {
-            state.out = state.initial.clone();
-            (state.f)(<I as StripNotify>::plain(inputs), &mut state.out);
-            return (false, state.out.view());
-        }
         let notify = (state.f)(<I as StripNotify>::plain(inputs), &mut state.out);
         (notify, state.out.view())
     }
@@ -311,8 +286,7 @@ where
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: <I as Interface>::Values<'a>,
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, SO, NO>) {
         (false, state.out.view())
     }
@@ -367,13 +341,9 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Select<T, IN, OUT> {
     }
 }
 
-/// Runtime state for [`Select`]: the configuration, the resolved flat index map
-/// (computable only on the build call once the input shape is known), and the
-/// output buffer.
+/// Runtime state for [`Select`]: the resolved flat index map (computed in
+/// `init` once the input shape is known) and the output buffer.
 pub struct SelectState<T: Scalar, const OUT: usize> {
-    indices: Vec<usize>,
-    axis: usize,
-    squeeze: bool,
     index_map: Vec<usize>,
     out: Array<T, OUT>,
 }
@@ -384,44 +354,32 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Select<T, IN, OU
     type Context = Instant;
     type State = SelectState<T, OUT>;
 
-    fn init(self) -> Self::State {
-        SelectState {
-            indices: self.indices,
-            axis: self.axis,
-            squeeze: self.squeeze,
-            index_map: Vec::new(),
-            out: Array::zeros([0; OUT]),
-        }
+    fn init(self, (_, x): (bool, ArrayView<'_, T, IN>)) -> Self::State {
+        let xs = x.to_contiguous();
+        let src: &[T] = &xs;
+        let input_extents = x.layout().extents();
+        let index_map = compute_select_map(&input_extents, &self.indices, self.axis);
+        let out_extents =
+            select_out_extents::<OUT>(&input_extents, self.indices.len(), self.axis, self.squeeze);
+        // Seed the initial output with the actual selection of the build-time
+        // input (NOT zeros — a fabricated finite observation leaks through
+        // carry-style consumers; the faithful selection of a NaN-initialised
+        // panel correctly reads "no data yet").
+        let out = Array::from_parts(
+            out_extents,
+            index_map.iter().map(|&s| src[s].clone()).collect(),
+        );
+        SelectState { index_map, out }
     }
 
     #[inline(always)]
     fn compute<'a, 'b: 'a>(
         (_, x): (bool, ArrayView<'a, T, IN>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, OUT>) {
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        if init {
-            let input_extents = x.layout().extents();
-            state.index_map = compute_select_map(&input_extents, &state.indices, state.axis);
-            let out_extents = select_out_extents::<OUT>(
-                &input_extents,
-                state.indices.len(),
-                state.axis,
-                state.squeeze,
-            );
-            // Seed the initial output with the actual selection of the build-time
-            // input (NOT zeros — a fabricated finite observation leaks through
-            // carry-style consumers; the faithful selection of a NaN-initialised
-            // panel correctly reads "no data yet").
-            state.out = Array::from_parts(
-                out_extents,
-                state.index_map.iter().map(|&s| src[s].clone()).collect(),
-            );
-            return (false, state.out.view());
-        }
         let dst = state.out.data_mut();
         for (dst_i, &src_i) in state.index_map.iter().enumerate() {
             dst[dst_i] = src[src_i].clone();
@@ -432,8 +390,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Select<T, IN, OU
     #[inline(always)]
     fn passthrough<'a, 'b: 'a>(
         _: (bool, ArrayView<'a, T, IN>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, OUT>) {
         (false, state.out.view())
     }
@@ -500,7 +457,7 @@ impl<T: Scalar, const N: usize> Lag<T, N> {
 }
 
 /// Runtime state for [`Lag`]: the configuration plus the output buffer (sized
-/// and seeded with the fill value on the build call).
+/// and seeded with the fill value in `init`).
 pub struct LagState<T: Scalar, const N: usize> {
     offset: usize,
     fill: T,
@@ -513,24 +470,19 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
     type Context = Instant;
     type State = LagState<T, N>;
 
-    fn init(self) -> Self::State {
+    fn init(self, (_, series): (bool, SeriesView<'_, T, N>)) -> Self::State {
         LagState {
             offset: self.offset,
+            out: Array::full(series.layout().extents(), self.fill.clone()),
             fill: self.fill,
-            out: Array::zeros([0; N]),
         }
     }
 
     fn compute<'a, 'b: 'a>(
         (_, series): (bool, SeriesView<'a, T, N>),
-        _: &Instant,
         state: &'b mut Self::State,
-        init: bool,
+        _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        if init {
-            state.out = Array::full(series.layout().extents(), state.fill.clone());
-            return (false, state.out.view());
-        }
         let len = series.len();
         let dst = state.out.data_mut();
         if len > state.offset {
@@ -543,8 +495,7 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
 
     fn passthrough<'a, 'b: 'a>(
         _: (bool, SeriesView<'a, T, N>),
-        _: &Instant,
-        state: &'b Self::State,
+        state: &'b mut Self::State,
     ) -> (bool, ArrayView<'a, T, N>) {
         (false, state.out.view())
     }

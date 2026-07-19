@@ -16,6 +16,12 @@ pub unsafe trait Pass: 'static {
 
     /// Derives a view from an owned value.
     fn view(owned: &Self::Owned) -> Self::View<'_>;
+
+    /// Reborrows a view to a shorter lifetime.
+    fn reborrow<'a, 'b: 'a>(view: Self::View<'b>) -> Self::View<'a> {
+        // SAFETY: by covariance in the contract.
+        unsafe { std::mem::transmute::<Self::View<'b>, Self::View<'a>>(view) }
+    }
 }
 
 /// The policy passing `T` by `T` (pass-by-value).
@@ -28,7 +34,7 @@ unsafe impl<T: Copy + Send + Sync + 'static> Pass for Val<T> {
     type View<'a> = T;
     type Owned = T;
 
-    #[inline(always)]
+    #[inline]
     fn view(owned: &T) -> T {
         *owned
     }
@@ -44,7 +50,7 @@ unsafe impl<T: Send + Sync + 'static> Pass for Ref<T> {
     type View<'a> = &'a T;
     type Owned = T;
 
-    #[inline(always)]
+    #[inline]
     fn view(owned: &T) -> &T {
         owned
     }
@@ -60,7 +66,7 @@ unsafe impl<T: Send + Sync + 'static> Pass for Slice<T> {
     type View<'a> = &'a [T];
     type Owned = Box<[T]>;
 
-    #[inline(always)]
+    #[inline]
     fn view(owned: &Box<[T]>) -> &[T] {
         owned
     }
@@ -178,6 +184,12 @@ pub unsafe trait Interface {
 
     /// Returns whether any leaf's notify flag is set.
     fn any_notify(values: &Self::Values<'_>) -> bool;
+
+    /// Reborrows an interface to a shorter lifetime.
+    fn reborrow<'a, 'b: 'a>(values: Self::Values<'b>) -> Self::Values<'a> {
+        // SAFETY: by covariance in the contract.
+        unsafe { std::mem::transmute::<Self::Values<'b>, Self::Values<'a>>(values) }
+    }
 }
 
 unsafe impl Interface for () {
@@ -194,10 +206,10 @@ unsafe impl Interface for () {
     fn type_ids_to_vec(_shape: &mut FlatRead<usize>, _writer: &mut Vec<TypeId>) {}
 
     #[inline]
-    fn in_scratch(_shape: &mut FlatRead<usize>) -> Self::InScratch {}
+    fn in_scratch(_shape: &mut FlatRead<usize>) {}
 
     #[inline]
-    fn out_scratch() -> Self::OutScratch {}
+    fn out_scratch() {}
 
     #[inline]
     unsafe fn values_from_flat<'a>(

@@ -1,62 +1,59 @@
 //! The scenario builder and the running session.
 
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{Clock, Queue, Source, StreamFeed};
-use crate::typed::{HandlesInterface, InterfaceHandles, Pass, Port, PortHandle, Segment};
+use crate::typed::{HandlesInterface, Interface, InterfaceHandles, Pass, PortHandle, Segment};
 
-/// The on-graph value node for a source stream.
-struct Store<I: Clone + Ord + Send + Sync + 'static, V: Pass> {
-    value: V::Owned,
-    _phantom: PhantomData<fn() -> I>,
+/// The on-graph node for a source stream.
+struct Store<T: Source> {
+    state: T::State,
 }
 
-impl<I: Clone + Ord + Send + Sync + 'static, V: Pass> Store<I, V> {
-    pub fn new(value: V::Owned) -> Self {
-        Self {
-            value,
-            _phantom: PhantomData,
-        }
+impl<T: Source> Store<T> {
+    pub fn new(state: T::State) -> Self {
+        Self { state }
     }
 }
 
-impl<I: Clone + Ord + Send + Sync + 'static, V: Pass> Segment for Store<I, V> {
+impl<T: Source> Segment for Store<T> {
     type Inputs = ();
-    type Outputs = Port<V>;
-    type Context = I;
-    type State = V::Owned;
+    type Outputs = T::Outputs;
+    type Context = T::Instant;
+    type State = T::State;
 
-    fn init(self) -> Self::State {
-        self.value
+    fn init(self, _: ()) -> Self::State {
+        self.state
+    }
+
+    fn output<'a, 'b: 'a>(_: (), state: &'b mut T::State) -> <T::Outputs as Interface>::Values<'a> {
+        T::output(state)
     }
 
     fn compute<'a, 'b: 'a>(
         _: (),
-        _: &I,
-        state: &'b mut V::Owned,
-        is_first_run: bool,
-    ) -> (bool, V::View<'a>) {
-        let owned: &'a V::Owned = state;
-        (!is_first_run, V::view(owned))
+        state: &'b mut T::State,
+        _: &T::Instant,
+    ) -> <T::Outputs as Interface>::Values<'a> {
+        T::output(state)
     }
 }
 
 /// Builder for the top-layer [`Graph`].
 ///
 /// This is the default level of the public graph API.
-pub struct Builder<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> {
+pub struct Builder<I: Clone + Ord + Sync + 'static, C: Clock<I>> {
     inner: crate::typed::Builder<I>,
     queue: Queue<I, C, crate::typed::Graph<I>>,
     num_events: Arc<AtomicUsize>,
     size_hint: Option<usize>,
 }
 
-impl<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> Builder<I, C> {
+impl<I: Clone + Ord + Sync + 'static, C: Clock<I>> Builder<I, C> {
     pub fn new(clock: C) -> Self {
         Self {
-            inner: crate::typed::Builder::new(clock.min()),
+            inner: crate::typed::Builder::new(),
             queue: Queue::new(clock),
             num_events: Arc::new(AtomicUsize::new(0)),
             size_hint: Some(0),
@@ -64,21 +61,22 @@ impl<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> Builder<I, C> {
     }
 
     /// Adds a source stream to the graph.
-    pub fn source<T>(&mut self, source: T) -> PortHandle<T::Pass>
+    pub fn source<T>(&mut self, source: T) -> <T::Outputs as InterfaceHandles>::HandlesOwned
     where
-        T: Source<Instant = I>,
+        T: Source<Instant = I> + 'static,
+        T::Outputs: InterfaceHandles,
     {
         self.size_hint = match (self.size_hint, source.size_hint()) {
             (Some(acc), Some(n)) => Some(acc.saturating_add(n)),
             _ => None,
         };
-        let (default, stream, mut write) = source.init();
-        let (cell, handle) = self.inner.source(Store::new(default));
+        let (default, stream) = source.init();
+        let (cell, handle) = self.inner.source(Store::<T>::new(default));
         let num_events = self.num_events.clone();
         self.queue.add_feed(StreamFeed::new(
             stream,
-            move |ts, event, graph: &mut crate::typed::Graph<I>| {
-                let n = write(ts, event, graph.state_mut(cell));
+            move |payload, ts, graph: &mut crate::typed::Graph<I>| {
+                let n = T::write(payload, ts, graph.state_mut(cell));
                 num_events.fetch_add(n, Ordering::Relaxed);
             },
         ));
@@ -110,6 +108,7 @@ impl<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> Builder<I, C> {
 
         Graph {
             inner: graph.build(),
+            instant: None,
             queue,
             num_events,
             size_hint,
@@ -121,20 +120,17 @@ impl<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> Builder<I, C> {
 /// and the event [`Queue`].
 ///
 /// This is the default level of the public graph API.
-pub struct Graph<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> {
+pub struct Graph<I: Clone + Ord + Sync + 'static, C: Clock<I>> {
     inner: crate::typed::Graph<I>,
+    instant: Option<I>,
     queue: Queue<I, C, crate::typed::Graph<I>>,
     num_events: Arc<AtomicUsize>,
     size_hint: Option<usize>,
 }
 
-impl<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> Graph<I, C> {
+impl<I: Clone + Ord + Sync + 'static, C: Clock<I>> Graph<I, C> {
     pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_> {
         self.inner.view(handle)
-    }
-
-    pub fn instant(&self) -> I {
-        self.inner.context().clone()
     }
 
     pub fn num_events(&self) -> usize {
@@ -146,13 +142,13 @@ impl<I: Clone + Ord + Send + Sync + 'static, C: Clock<I>> Graph<I, C> {
     }
 
     pub async fn step(&mut self) -> Option<I> {
-        let t = self.queue.step(&mut self.inner).await?;
-        *self.inner.context_mut() = t.clone();
-        Some(t)
+        let t = self.queue.step(&mut self.inner).await;
+        self.instant = t;
+        self.instant.clone()
     }
 
     pub fn stabilize(&mut self, pool: &mut crate::pool::Pool) {
-        self.inner.stabilize(pool);
+        self.inner.stabilize(pool, self.instant.as_ref().unwrap());
     }
 
     pub async fn run(&mut self, pool: &mut crate::pool::Pool, mut on_stable: impl FnMut(&Self, I)) {

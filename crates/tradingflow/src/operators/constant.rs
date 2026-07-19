@@ -18,17 +18,16 @@ impl<V: Pass> Segment for Constant<V> {
     type Context = Instant;
     type State = V::Owned;
 
-    fn init(self) -> Self::State {
+    fn init(self, _: ()) -> Self::State {
         self.value
     }
 
-    fn compute<'a, 'b: 'a>(
-        _: (),
-        _: &Instant,
-        state: &'b mut V::Owned,
-        is_first_run: bool,
-    ) -> (bool, V::View<'a>) {
-        (!is_first_run, V::view(state))
+    fn output<'a, 'b: 'a>(_: (), state: &'b mut V::Owned) -> (bool, V::View<'a>) {
+        (false, V::view(state))
+    }
+
+    fn compute<'a, 'b: 'a>(_: (), state: &'b mut V::Owned, _: &Instant) -> (bool, V::View<'a>) {
+        (true, V::view(state))
     }
 }
 

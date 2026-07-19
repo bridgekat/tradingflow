@@ -19,7 +19,7 @@
 //! ```rust
 //! use tradingflow::clock::WallClock;
 //! use tradingflow::data::*;
-//! use tradingflow::graph::{Builder, Pool};
+//! use tradingflow::graph::*;
 //! use tradingflow::operators::{rolling::*, structural::*};
 //! use tradingflow::ports::*;
 //! use tradingflow::segment;
@@ -101,9 +101,11 @@
 
 pub use tradingflow_data as data;
 pub use tradingflow_graph as graph;
-pub use tradingflow_macros::segment;
+pub use tradingflow_macros as macros;
 
 pub mod clock;
 pub mod operators;
 pub mod ports;
 pub mod sources;
+
+pub use macros::segment;
