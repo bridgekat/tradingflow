@@ -25,15 +25,15 @@ mod common;
 
 use clap::Parser;
 
+use tradingflow::clock::WallClock;
 use tradingflow::data::{Retention, SeriesView};
+use tradingflow::graph::Builder;
 use tradingflow::operators::metrics::{compound_return, drawdown, sharpe_ratio};
 use tradingflow::operators::num::diff;
 use tradingflow::operators::num::log;
 use tradingflow::operators::structural::record;
 use tradingflow::operators::structural::stack;
 use tradingflow::operators::traders::{benchmark, random_trader};
-use tradingflow::clock::WallClock;
-use tradingflow::graph::Builder;
 
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
 use common::strategy::{INITIAL_CASH, Market, trim_scale};
@@ -153,10 +153,10 @@ async fn main() {
         .fold(0.0_f64, f64::min);
     let ba: SeriesView<f64, 1> = session.view(h_beta_alpha);
     let (beta, alpha) = ba
-        .data()
-        .rchunks(2)
-        .next()
-        .map(|c| (c[0], c[1] * 252.0))
+        .len()
+        .checked_sub(1)
+        .and_then(|last| ba.at(last))
+        .map(|(_, v)| (v[[0]], v[[1]] * 252.0))
         .unwrap_or((f64::NAN, f64::NAN));
 
     println!(

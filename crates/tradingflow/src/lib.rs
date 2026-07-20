@@ -6,7 +6,7 @@
 //! Writing a strategy backtest amounts to wiring together reusable operators,
 //! and new operators can be readily implemented.
 //!
-//! # Basic usage
+//! # Examples
 //!
 //! The three things you do in every program: create a [`Builder`](graph::Builder),
 //! register sources and operators, then use [`build`](graph::Builder::build) to
@@ -71,11 +71,8 @@
 //!     g.run(&mut pool, |_, _| {}).await;
 //!
 //!     // Inspect results.
-//!     assert_eq!(
-//!         g.view(mean_series).data(),
-//!         g.view(mean_series_fuse).data()
-//!     );
-//!     println!("{:?}", g.view(mean_series).data());
+//!     assert_eq!(g.view(mean_series), g.view(mean_series_fuse));
+//!     println!("{:?}", g.view(mean_series));
 //! }
 //! ```
 //!

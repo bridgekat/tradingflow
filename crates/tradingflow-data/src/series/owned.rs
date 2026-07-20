@@ -109,6 +109,14 @@ impl<T: Scalar, const N: usize> Series<T, N> {
         self.layout
     }
 
+    pub fn ndim(&self) -> usize {
+        self.layout.ndim()
+    }
+
+    pub fn extents(&self) -> [usize; N] {
+        self.layout.extents()
+    }
+
     pub fn timestamps(&self) -> &[Instant] {
         &self.timestamps
     }
@@ -166,8 +174,8 @@ impl<T: Scalar, const N: usize> Series<T, N> {
     pub fn at(&self, i: usize) -> Option<(Instant, ArrayView<'_, T, N>)> {
         let i = self.slot(i)?;
         let ts = self.timestamps[i];
-        let data = &self.data[i * self.stride..(i + 1) * self.stride];
-        // SAFETY: `data.len() == self.stride == self.layout.len() >= self.layout.span()`.
+        let data = &self.data[i * self.stride..];
+        // SAFETY: `data.len() >= self.stride == self.layout.len() >= self.layout.span()`.
         let view = unsafe { ArrayView::from_parts_unchecked(self.layout.into(), data) };
         Some((ts, view))
     }
@@ -176,13 +184,9 @@ impl<T: Scalar, const N: usize> Series<T, N> {
     ///
     /// # Panics
     ///
-    /// Panics if `value.extents() != self.layout().extents()`.
+    /// Panics if `value.extents() != self.extents()`.
     pub fn push(&mut self, timestamp: Instant, value: ArrayView<'_, T, N>) {
-        assert_eq!(
-            value.extents(),
-            self.layout().extents(),
-            "push: extents mismatch",
-        );
+        assert_eq!(value.extents(), self.extents(), "push: extents mismatch",);
         self.data.extend_from_slice(&value.to_contiguous());
         self.timestamps.push(timestamp);
         self.maybe_trim();

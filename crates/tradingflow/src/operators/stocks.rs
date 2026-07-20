@@ -2,7 +2,7 @@
 //! (corporate-action price adjustment, message-passing on price vs dividend
 //! inputs), over the strided [`ArrayView`] currency.
 
-use crate::data::{Array, ArrayView, Instant, Layout};
+use crate::data::{Array, ArrayView, Instant};
 use crate::graph::typed::Operator;
 use crate::ports::ArrayPort;
 
@@ -182,7 +182,7 @@ impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
             prev_price: f64::NAN,
             factor: 1.0,
             output_prices: self.output_prices,
-            out: Array::from_parts(price_view.layout().extents(), vec![init_val].into()),
+            out: Array::from_parts(price_view.extents(), vec![init_val].into()),
         }
     }
 

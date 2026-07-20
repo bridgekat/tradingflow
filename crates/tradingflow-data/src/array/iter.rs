@@ -18,12 +18,6 @@ impl<T: Scalar, const N: usize> Iterator for ArrayIntoIter<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> DoubleEndedIterator for ArrayIntoIter<T, N> {
-    fn next_back(&mut self) -> Option<T> {
-        self.inner.next_back()
-    }
-}
-
 impl<T: Scalar, const N: usize> ExactSizeIterator for ArrayIntoIter<T, N> {}
 impl<T: Scalar, const N: usize> std::iter::FusedIterator for ArrayIntoIter<T, N> {}
 

@@ -65,28 +65,20 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
     ///
     /// # Panics
     ///
-    /// Panics if `data.len() != timestamps.len() * stride` or
-    /// `stride < layout.span()`.
+    /// Panics if `data.len() < layout.span_ext(timestamps.len(), stride)`.
     pub fn from_parts(
         layout: layout::Strided<N>,
         stride: usize,
         timestamps: &'a [Instant],
         data: &'a [T],
     ) -> Self {
-        assert_eq!(
-            data.len(),
-            timestamps.len() * stride,
-            "from_parts: {} elements of stride {} expect {} scalars, got {}",
+        assert!(
+            data.len() >= layout.span_ext(timestamps.len(), stride),
+            "from_parts: {} elements of stride {} span {} scalars, got {}",
             timestamps.len(),
             stride,
-            timestamps.len() * stride,
+            layout.span_ext(timestamps.len(), stride),
             data.len(),
-        );
-        assert!(
-            stride >= layout.span(),
-            "from_parts: shape spans {} scalars, got {}",
-            layout.span(),
-            stride,
         );
         Self {
             layout,
@@ -100,16 +92,14 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that `data.len() == timestamps.len() * stride`
-    /// and `stride >= layout.span()`.
+    /// The caller must ensure that `data.len() >= layout.span_ext(timestamps.len(), stride)`.
     pub unsafe fn from_parts_unchecked(
         layout: layout::Strided<N>,
         stride: usize,
         timestamps: &'a [Instant],
         data: &'a [T],
     ) -> Self {
-        debug_assert_eq!(data.len(), timestamps.len() * stride);
-        debug_assert!(stride >= layout.span());
+        debug_assert!(data.len() >= layout.span_ext(timestamps.len(), stride));
         Self {
             layout,
             stride,
@@ -120,6 +110,14 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
 
     pub fn layout(&self) -> layout::Strided<N> {
         self.layout
+    }
+
+    pub fn ndim(&self) -> usize {
+        self.layout.ndim()
+    }
+
+    pub fn extents(&self) -> [usize; N] {
+        self.layout.extents()
     }
 
     pub fn timestamps(&self) -> &'a [Instant] {
@@ -148,7 +146,7 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
             layout: self.layout,
             stride: self.stride,
             timestamps: &self.timestamps[range.clone()],
-            data: &self.data[range.start * self.stride..range.end * self.stride],
+            data: &self.data[range.start * self.stride..],
         }
     }
 
@@ -158,8 +156,9 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
             return None;
         }
         let ts = self.timestamps[i];
-        let data = &self.data[i * self.stride..(i + 1) * self.stride];
-        // SAFETY: `data.len() == self.stride >= self.layout.span()`.
+        let data = &self.data[i * self.stride..];
+        // SAFETY: `data.len() >= self.layout.span()` since
+        // `self.data.len() >= self.layout.span_ext(self.timestamps.len(), self.stride)`.
         let view = unsafe { ArrayView::from_parts_unchecked(self.layout, data) };
         Some((ts, view))
     }
@@ -182,7 +181,7 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
         } else {
             let mut owned = Vec::with_capacity(self.len() * self.layout.len());
             for i in 0..self.len() {
-                for j in self.layout.offsets() {
+                for j in self.layout.iter() {
                     owned.push(self.data[i * self.stride + j].clone());
                 }
             }
@@ -221,8 +220,42 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
         extents[1..].copy_from_slice(&self.layout.extents());
         strides[1..].copy_from_slice(&self.layout.strides());
         let layout = layout::Strided::new(extents, strides);
-        // SAFETY: `self.data.len() == self.len() * self.stride >= layout.span()`.
+        // SAFETY: `self.data.len() >= self.layout.span_ext(self.timestamps.len(), self.stride)`.
         unsafe { ArrayView::from_parts_unchecked(layout, self.data()) }
+    }
+
+    /// A view whose elements are the sub-regions selected by `slices`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `slices` is out of bounds on any element axis.
+    pub fn slice(&self, slices: impl layout::IntoSlices<N>) -> Self {
+        let (offset, layout) = self.layout.slice(slices);
+        Self::from_parts(layout, self.stride, self.timestamps, &self.data[offset..])
+    }
+
+    /// A view whose elements have `axis` restricted to `slice`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `axis >= N` or `slice` is out of bounds.
+    pub fn slice_along_axis(&self, axis: usize, slice: impl Into<layout::Slice>) -> Self {
+        let (offset, layout) = self.layout.slice_along_axis(axis, slice);
+        Self::from_parts(layout, self.stride, self.timestamps, &self.data[offset..])
+    }
+
+    /// A view whose elements are the rank-`M` sub-regions selected by `slices`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `slices` does not consume exactly `N` axes or produce
+    /// exactly `M` axes, or is out of bounds on any element axis.
+    pub fn slice_reshape<const M: usize, const K: usize>(
+        &self,
+        slices: impl layout::IntoSliceReshapes<K>,
+    ) -> SeriesView<'a, T, M> {
+        let (offset, layout) = self.layout.slice_reshape(slices);
+        SeriesView::from_parts(layout, self.stride, self.timestamps, &self.data[offset..])
     }
 }
 
@@ -267,6 +300,16 @@ impl<T: Scalar, const N: usize> Clone for SeriesView<'_, T, N> {
 }
 
 impl<T: Scalar, const N: usize> Copy for SeriesView<'_, T, N> {}
+
+impl<T: Scalar + PartialEq, const N: usize> PartialEq for SeriesView<'_, T, N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.timestamps == other.timestamps
+            && self.extents() == other.extents()
+            && self.iter().zip(other.iter()).all(|((_, a), (_, b))| a == b)
+    }
+}
+
+impl<T: Scalar + Eq, const N: usize> Eq for SeriesView<'_, T, N> {}
 
 impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
     /// As-of lookup: the most recent element with `ts <= query_ts`, or `None`

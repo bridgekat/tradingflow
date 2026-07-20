@@ -273,7 +273,7 @@ where
     T: Interface,
     U: Interface,
     C: Sync + 'static,
-    F: for<'a> Fn(T::Values<'a>, &'a ()) -> U::Values<'a> + Send + 'static,
+    F: for<'a> FnMut(T::Values<'a>, &'a ()) -> U::Values<'a> + Send + 'static,
 {
     type Inputs = T;
     type Outputs = U;

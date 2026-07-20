@@ -414,8 +414,8 @@ impl Operator for WindowReduce {
         }
         let f = state.f;
         let n = series.layout().len();
-        let slices: Vec<&[f64]> = (0..w)
-            .map(|k| series.at(len - w + k).unwrap().1.data())
+        let slices: Vec<_> = (0..w)
+            .map(|k| series.at(len - w + k).unwrap().1.to_contiguous())
             .collect();
         let out = state.out.data_mut();
         let mut buf = vec![0.0f64; w];
@@ -498,7 +498,7 @@ impl Operator for WindowReduce2 {
     type State = WindowReduce2State;
 
     fn init(self, (_, series): (bool, SeriesView<'_, f64, 2>)) -> WindowReduce2State {
-        let n = series.layout().extents()[0]; // (N, 2) -> N
+        let n = series.extents()[0]; // (N, 2) -> N
         WindowReduce2State {
             window: self.window,
             f: self.f,
@@ -511,15 +511,15 @@ impl Operator for WindowReduce2 {
         state: &'b mut WindowReduce2State,
         _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 1>) {
-        let n = series.layout().extents()[0]; // (N, 2) -> N
+        let n = series.extents()[0]; // (N, 2) -> N
         let w = state.window;
         let len = series.len();
         if len < w {
             return (false, state.out.view());
         }
         let f = state.f;
-        let slices: Vec<&[f64]> = (0..w)
-            .map(|k| series.at(len - w + k).unwrap().1.data())
+        let slices: Vec<_> = (0..w)
+            .map(|k| series.at(len - w + k).unwrap().1.to_contiguous())
             .collect();
         let out = state.out.data_mut();
         let (mut c0, mut c1) = (vec![0.0f64; w], vec![0.0f64; w]);
@@ -592,7 +592,7 @@ impl Operator for ChipDist {
     type State = ChipDistState;
 
     fn init(self, (_, series): (bool, SeriesView<'_, f64, 2>)) -> ChipDistState {
-        let n = series.layout().extents()[0];
+        let n = series.extents()[0];
         ChipDistState {
             window: self.window,
             out: Array::from_parts([n, CHIP_COLS], vec![f64::NAN; n * CHIP_COLS].into()),
@@ -604,14 +604,14 @@ impl Operator for ChipDist {
         state: &'b mut ChipDistState,
         _: &Instant,
     ) -> (bool, ArrayView<'a, f64, 2>) {
-        let n = series.layout().extents()[0];
+        let n = series.extents()[0];
         let w = state.window;
         let len = series.len();
         if len < w {
             return (false, state.out.view());
         }
-        let slices: Vec<&[f64]> = (0..w)
-            .map(|k| series.at(len - w + k).unwrap().1.data())
+        let slices: Vec<_> = (0..w)
+            .map(|k| series.at(len - w + k).unwrap().1.to_contiguous())
             .collect();
         let out = state.out.data_mut();
         let (mut price, mut turn) = (vec![0.0f64; w], vec![0.0f64; w]);

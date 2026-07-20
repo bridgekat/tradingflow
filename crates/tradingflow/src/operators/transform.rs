@@ -10,7 +10,7 @@
 
 use std::marker::PhantomData;
 
-use crate::data::{Array, ArrayView, Instant, Layout, Scalar, SeriesView};
+use crate::data::{Array, ArrayView, Instant, Scalar, SeriesView};
 use crate::graph::typed::{Interface, Operator};
 use crate::ports::{ArrayPort, SeriesPort, StripNotify};
 
@@ -357,7 +357,7 @@ impl<T: Scalar, const IN: usize, const OUT: usize> Operator for Select<T, IN, OU
     fn init(self, (_, x): (bool, ArrayView<'_, T, IN>)) -> Self::State {
         let xs = x.to_contiguous();
         let src: &[T] = &xs;
-        let input_extents = x.layout().extents();
+        let input_extents = x.extents();
         let index_map = compute_select_map(&input_extents, &self.indices, self.axis);
         let out_extents =
             select_out_extents::<OUT>(&input_extents, self.indices.len(), self.axis, self.squeeze);
@@ -473,7 +473,7 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
     fn init(self, (_, series): (bool, SeriesView<'_, T, N>)) -> Self::State {
         LagState {
             offset: self.offset,
-            out: Array::full(series.layout().extents(), self.fill.clone()),
+            out: Array::full(series.extents(), self.fill.clone()),
             fill: self.fill,
         }
     }
@@ -484,11 +484,11 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
         _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
         let len = series.len();
-        let dst = state.out.data_mut();
         if len > state.offset {
-            dst.clone_from_slice(series.at(len - 1 - state.offset).unwrap().1.data());
+            let (_, lagged) = series.at(len - 1 - state.offset).unwrap();
+            state.out.assign(lagged);
         } else {
-            dst.fill(state.fill.clone());
+            state.out.data_mut().fill(state.fill.clone());
         }
         (true, state.out.view())
     }

@@ -12,7 +12,7 @@
 //! edges). Arithmetic uses the lowercase free constructors (`add`/`negate`/…);
 //! the rank-changers carry explicit out-rank generics.
 
-use tradingflow::data::{Array, ArrayView, Duration, Instant, Layout, Retention, SeriesView};
+use tradingflow::data::{Array, ArrayView, Duration, Instant, Retention, SeriesView};
 use tradingflow::graph::pool::Pool;
 use tradingflow::graph::typed::Builder;
 use tradingflow::operators::{
@@ -88,7 +88,7 @@ fn record_series() {
     let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 2);
     assert_eq!(s.timestamps(), &[ts(1), ts(2)]);
-    assert_eq!(s.data(), &[13.0, 27.0]);
+    assert_eq!(&*s.to_contiguous(), &[13.0, 27.0]);
 }
 
 /// `scenario_run_filter`: source [1,5,2,10]@[1,2,3,4], keep >3 → recorded
@@ -113,7 +113,7 @@ fn filter_gates_record() {
 
     let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 2);
-    assert_eq!(s.data(), &[5.0, 10.0]);
+    assert_eq!(&*s.to_contiguous(), &[5.0, 10.0]);
     assert_eq!(s.timestamps(), &[ts(2), ts(4)]);
 }
 
@@ -183,7 +183,7 @@ fn bounded_record_feeds_rolling_and_lag() {
     );
     assert!(s.len() <= 16, "physical storage unbounded: {}", s.len());
     assert_eq!(
-        s.at(s.len() - 1).unwrap().1.data(),
+        &*s.at(s.len() - 1).unwrap().1.to_contiguous(),
         &[m as f64],
         "latest value intact"
     );
@@ -221,7 +221,7 @@ fn clocked_periodic() {
 
     let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 1);
-    assert_eq!(s.data(), &[20.0]);
+    assert_eq!(&*s.to_contiguous(), &[20.0]);
     assert_eq!(s.timestamps(), &[ts(2)]);
 }
 
@@ -244,7 +244,7 @@ fn coalesced_two_source_add() {
         g.stabilize(&mut pool, &ctx);
     }
 
-    assert_eq!(g.view(rec).data(), &[110.0, 220.0]);
+    assert_eq!(&*g.view(rec).to_contiguous(), &[110.0, 220.0]);
 }
 
 /// Per-element notify: gen1 all fire → [1,2,3]; gen2 only s1 → Stack keeps stale
@@ -784,7 +784,7 @@ fn parallel_fanout_matches_sequential() {
     }
     for &rec in &recs {
         assert_eq!(
-            g.view(rec).data(),
+            &*g.view(rec).to_contiguous(),
             &expected[..],
             "a parallel branch diverged"
         );
@@ -1139,9 +1139,9 @@ fn comparisons_follow_ieee_nan_semantics() {
     let fin = b.segment(is_finite(), x);
     let g = b.build();
 
-    assert_eq!(g.view(gt0).data(), &[true, false, false, false]);
-    assert_eq!(g.view(ne0).data(), &[true, true, false, true]); // NaN != 0 is true
-    assert_eq!(g.view(fin).data(), &[true, true, true, false]);
+    assert_eq!(&*g.view(gt0).to_contiguous(), &[true, false, false, false]);
+    assert_eq!(&*g.view(ne0).to_contiguous(), &[true, true, false, true]); // NaN != 0 is true
+    assert_eq!(&*g.view(fin).to_contiguous(), &[true, true, true, false]);
 }
 
 #[test]
@@ -1166,16 +1166,22 @@ fn logical_connectives_and_mask_readout() {
     let pick = b.segment(Choose::<f64, 1>::new(), (onehot, a, bb));
     let g = b.build();
 
-    assert_eq!(g.view(both).data(), &[true, false, false, false]);
-    assert_eq!(g.view(either).data(), &[true, true, true, false]);
-    assert_eq!(g.view(neither).data(), &[false, false, false, true]);
-    assert_eq!(g.view(onehot).data(), &[false, true, true, false]);
-    let iv = g.view(ind).data();
+    assert_eq!(&*g.view(both).to_contiguous(), &[true, false, false, false]);
+    assert_eq!(&*g.view(either).to_contiguous(), &[true, true, true, false]);
+    assert_eq!(
+        &*g.view(neither).to_contiguous(),
+        &[false, false, false, true]
+    );
+    assert_eq!(
+        &*g.view(onehot).to_contiguous(),
+        &[false, true, true, false]
+    );
+    let iv = g.view(ind).to_contiguous();
     assert_eq!(iv[0], 1.0);
     assert!(iv[1..].iter().all(|x| x.is_nan()));
     // `onehot` selects from `a` where exactly one mask is set, else from `bb`:
     // [bb[0], a[1], a[2], bb[3]] = [1, 1, 0, 0].
-    assert_eq!(g.view(pick).data(), &[1.0, 1.0, 0.0, 0.0]);
+    assert_eq!(&*g.view(pick).to_contiguous(), &[1.0, 1.0, 0.0, 0.0]);
 }
 
 #[test]
@@ -1193,7 +1199,7 @@ fn comparison_of_two_arrays_and_strided_inputs() {
     let col1 = b.segment(select::<f64, 2, 1>(vec![1], 1, true), s); // [5, 2]
     let lt = b.segment(less(), (col0, col1));
     let g = b.build();
-    assert_eq!(g.view(lt).data(), &[true, false]);
+    assert_eq!(&*g.view(lt).to_contiguous(), &[true, false]);
 }
 
 /// The signal from the design brief, as one fused node:
@@ -1235,7 +1241,7 @@ fn ma_crossover_signal_fuses_into_one_node() {
         let ctx = ts(i as i64 + 1);
         *g.state_mut(src) = Array::scalar(x);
         g.stabilize(&mut pool, &ctx);
-        fired.push(g.view(signal).data()[0]);
+        fired.push(g.view(signal).to_contiguous()[0]);
     }
     // Warm-up (windows not full) yields no signal; the crossover fires once,
     // and stays quiet while the spread merely remains positive.
@@ -1335,7 +1341,11 @@ fn formula_ma_crossover_signal() {
         let ctx = ts(t as i64 + 1);
         *g.state_mut(src) = Array::from_parts([2], vec![path0[t], path1[t]].into());
         g.stabilize(&mut pool, &ctx);
-        assert_eq!(g.view(signal).data(), &[expect0[t], expect1[t]], "tick {t}");
+        assert_eq!(
+            &*g.view(signal).to_contiguous(),
+            &[expect0[t], expect1[t]],
+            "tick {t}"
+        );
         fired += usize::from(expect0[t]) + usize::from(expect1[t]);
     }
     // The V-shaped prefix alone fires element 0 exactly once (tick 5); the
@@ -1365,8 +1375,8 @@ fn formula_change_and_growth() {
         let ctx = ts(i as i64 + 1);
         *g.state_mut(src) = Array::scalar(v);
         g.stabilize(&mut pool, &ctx);
-        let c = g.view(chg).data()[0];
-        let p = g.view(pct).data()[0];
+        let c = g.view(chg).to_contiguous()[0];
+        let p = g.view(pct).to_contiguous()[0];
         if i < 2 {
             assert!(c.is_nan() && p.is_nan(), "tick {i}: warm-up must be NaN");
         } else {
@@ -1396,7 +1406,7 @@ fn formula_ma_time_window() {
         g.stabilize(&mut pool, &ctx);
         let k = (i + 1).min(3); // ticks stamped within 2 days of the latest
         let want = vals[i + 1 - k..=i].iter().sum::<f64>() / k as f64;
-        assert_eq!(g.view(m).data(), &[want], "day {i}");
+        assert_eq!(&*g.view(m).to_contiguous(), &[want], "day {i}");
     }
 }
 
@@ -1419,7 +1429,10 @@ fn formula_mstd_matches_hoisted() {
         let ctx = ts(t as i64 + 1);
         *g.state_mut(src) = Array::from_parts([2], vec![p0[t], p1[t]].into());
         g.stabilize(&mut pool, &ctx);
-        let (f, h) = (g.view(fused).data(), g.view(hoisted).data());
+        let (f, h) = (
+            g.view(fused).to_contiguous(),
+            g.view(hoisted).to_contiguous(),
+        );
         for e in 0..2 {
             assert!(
                 f[e] == h[e] || (f[e].is_nan() && h[e].is_nan()),

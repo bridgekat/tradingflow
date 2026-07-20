@@ -17,7 +17,7 @@ pub fn apply_unary<T: Scalar, U: Scalar, const N: usize>(
             *dst = f(v.clone());
         }
     } else {
-        for (dst, i) in o.iter_mut().zip(a.offsets()) {
+        for (dst, i) in o.iter_mut().zip(a.layout().iter()) {
             *dst = f(a.data()[i].clone());
         }
     }
@@ -37,7 +37,8 @@ pub fn apply_binary<T: Scalar, U: Scalar, const N: usize>(
             *dst = f(va.clone(), vb.clone());
         }
     } else {
-        for (dst, (oa, ob)) in o.iter_mut().zip(a.offsets().zip(b.offsets())) {
+        let (al, bl) = (a.layout(), b.layout());
+        for (dst, (oa, ob)) in o.iter_mut().zip(al.iter().zip(bl.iter())) {
             *dst = f(a.data()[oa].clone(), b.data()[ob].clone());
         }
     }

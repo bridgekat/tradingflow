@@ -21,12 +21,12 @@ fn series_push_and_access() {
     assert_eq!(s.layout().len(), 2);
     assert_eq!(s.timestamps(), &[ts(100), ts(200), ts(300)]);
     assert_eq!(s.data(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    assert_eq!(s.at(0).unwrap().1.data(), &[1.0, 2.0]);
+    assert_eq!(&*s.at(0).unwrap().1.to_contiguous(), &[1.0, 2.0]);
     assert_eq!(
         s.at(1).unwrap(),
         (ts(200), ArrayView::from_slice([2], &[3.0, 4.0])),
     );
-    assert_eq!(s.at(2).unwrap().1.data(), &[5.0, 6.0]);
+    assert_eq!(&*s.at(2).unwrap().1.to_contiguous(), &[5.0, 6.0]);
     assert_eq!(s.at(3), None);
 }
 
@@ -51,13 +51,14 @@ fn series_asof() {
     s.push(ts(200), ArrayView::from_slice([], &[2.0]));
     s.push(ts(300), ArrayView::from_slice([], &[3.0]));
 
-    assert_eq!(s.asof(ts(50)).map(|v| v.data()), None);
-    assert_eq!(s.asof(ts(100)).map(|v| v.data()), Some([1.0].as_slice()));
-    assert_eq!(s.asof(ts(150)).map(|v| v.data()), Some([1.0].as_slice()));
-    assert_eq!(s.asof(ts(200)).map(|v| v.data()), Some([2.0].as_slice()));
-    assert_eq!(s.asof(ts(250)).map(|v| v.data()), Some([2.0].as_slice()));
-    assert_eq!(s.asof(ts(300)).map(|v| v.data()), Some([3.0].as_slice()));
-    assert_eq!(s.asof(ts(999)).map(|v| v.data()), Some([3.0].as_slice()));
+    // A rank-0 element holds its scalar at the empty index.
+    assert_eq!(s.asof(ts(50)).map(|v| v[[]]), None);
+    assert_eq!(s.asof(ts(100)).map(|v| v[[]]), Some(1.0));
+    assert_eq!(s.asof(ts(150)).map(|v| v[[]]), Some(1.0));
+    assert_eq!(s.asof(ts(200)).map(|v| v[[]]), Some(2.0));
+    assert_eq!(s.asof(ts(250)).map(|v| v[[]]), Some(2.0));
+    assert_eq!(s.asof(ts(300)).map(|v| v[[]]), Some(3.0));
+    assert_eq!(s.asof(ts(999)).map(|v| v[[]]), Some(3.0));
 }
 
 #[test]
@@ -71,7 +72,7 @@ fn push_wrong_extents() {
 #[test]
 fn element_layout() {
     let s = Series::<f64, 2>::new_unbounded([3, 4]);
-    assert_eq!(s.layout().extents(), [3, 4]);
+    assert_eq!(s.extents(), [3, 4]);
     assert_eq!(s.layout().len(), 12);
     assert!(s.layout().is_contiguous());
 }
@@ -86,7 +87,7 @@ fn from_parts_round_trips() {
     );
     assert_eq!(s.range(), 0..2);
     assert_eq!(s.timestamps().last(), Some(&ts(200)));
-    assert_eq!(s.at(1).unwrap().1.data(), &[3.0, 4.0]);
+    assert_eq!(&*s.at(1).unwrap().1.to_contiguous(), &[3.0, 4.0]);
 
     // `push` builds the same series.
     let mut p = Series::<f64, 1>::new_unbounded([2]);
@@ -145,8 +146,8 @@ fn view_window_and_elements() {
     assert!(!v.is_empty());
     assert_eq!(v.layout().len(), 2);
     assert_eq!(v.timestamps(), &[ts(100), ts(200), ts(300)]);
-    assert_eq!(v.data(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    assert_eq!(v.at(1).unwrap().1.data(), &[3.0, 4.0]);
+    assert_eq!(&*v.to_contiguous(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    assert_eq!(&*v.at(1).unwrap().1.to_contiguous(), &[3.0, 4.0]);
     assert_eq!(v.at(2).unwrap().0, ts(300));
     assert_eq!(v.at(3), None);
 
@@ -154,7 +155,7 @@ fn view_window_and_elements() {
     let w = v.window(1..3);
     assert_eq!(w.len(), 2);
     assert_eq!(w.timestamps(), &[ts(200), ts(300)]);
-    assert_eq!(w.data(), &[3.0, 4.0, 5.0, 6.0]);
+    assert_eq!(&*w.to_contiguous(), &[3.0, 4.0, 5.0, 6.0]);
 
     // The tail: the last n elements.
     let t = v.window(v.len() - 2..v.len());
@@ -170,8 +171,8 @@ fn view_asof_and_search() {
     s.push(ts(100), ArrayView::from_slice([], &[1.0]));
     s.push(ts(200), ArrayView::from_slice([], &[2.0]));
     let v = s.view();
-    assert_eq!(v.asof(ts(50)).map(|v| v.data()), None);
-    assert_eq!(v.asof(ts(150)).map(|v| v.data()), Some([1.0].as_slice()));
+    assert_eq!(v.asof(ts(50)).map(|v| v[[]]), None);
+    assert_eq!(v.asof(ts(150)).map(|v| v[[]]), Some(1.0));
     assert_eq!(v.search(ts(150)), 1);
     assert_eq!(v.search(ts(999)), 2);
 }
@@ -217,7 +218,7 @@ fn view_from_slice_checks_len() {
     let vals = [1.0, 2.0, 3.0, 4.0];
     let v = SeriesView::<f64, 1>::from_slice([2], &tss, &vals);
     assert_eq!(v.len(), 2);
-    assert_eq!(v.at(1).unwrap().1.data(), &[3.0, 4.0]);
+    assert_eq!(&*v.at(1).unwrap().1.to_contiguous(), &[3.0, 4.0]);
 }
 
 #[test]
@@ -248,11 +249,14 @@ fn view_from_parts_with_padding() {
 }
 
 #[test]
-#[should_panic(expected = "from_parts: shape spans 2 scalars, got 1")]
-fn view_from_parts_stride_too_small() {
-    let tss = [ts(1)];
-    let vals = [1.0];
-    let _ = SeriesView::<f64, 1>::from_parts(Strided::new([2], [1]), 1, &tss, &vals);
+#[should_panic(expected = "from_parts: 2 elements of stride 3 span 5 scalars, got 4")]
+fn view_from_parts_data_too_short() {
+    // Two elements of extent [2] laid 3 apart address up to offset 4, so the
+    // data must hold 5 scalars — the tail beyond that is what may be missing,
+    // never the space the elements themselves address.
+    let tss = [ts(1), ts(2)];
+    let vals = [1.0, 2.0, 9.0, 3.0];
+    let _ = SeriesView::<f64, 1>::from_parts(Strided::new([2], [1]), 3, &tss, &vals);
 }
 
 #[test]
@@ -268,7 +272,7 @@ fn view_to_series() {
 
     // A sub-window copies just its elements into a fresh, same-rank series.
     let sub = s.view().window(1..3).to_series(Retention::unbounded());
-    assert_eq!(sub.layout().extents(), [2]);
+    assert_eq!(sub.extents(), [2]);
     assert_eq!(sub.timestamps(), &[ts(200), ts(300)]);
     assert_eq!(sub.data(), &[3.0, 4.0, 5.0, 6.0]);
 }
@@ -290,8 +294,8 @@ fn count_retention_bounds_storage_and_preserves_logical_reads() {
     assert_eq!(s.range().start, 10 - s.len());
 
     // The required window [7, 10) reads identically to an unbounded series.
-    assert_eq!(s.at(7).unwrap().1.data(), &[7.0]);
-    assert_eq!(s.at(8).unwrap().1.data(), &[8.0]);
+    assert_eq!(&*s.at(7).unwrap().1.to_contiguous(), &[7.0]);
+    assert_eq!(&*s.at(8).unwrap().1.to_contiguous(), &[8.0]);
     assert_eq!(
         s.at(9).unwrap(),
         (ts(1000), ArrayView::from_slice([1], &[9.0])),
@@ -301,7 +305,7 @@ fn count_retention_bounds_storage_and_preserves_logical_reads() {
     // Logical windows through the view: local index = logical - range().start.
     let base = s.range().start;
     assert_eq!(
-        s.view().window(7 - base..10 - base).data(),
+        &*s.view().window(7 - base..10 - base).to_contiguous(),
         &[7.0, 8.0, 9.0]
     );
 }
@@ -315,9 +319,9 @@ fn duration_retention_keeps_time_window() {
     }
     // Latest ts = 1000; cutoff = 750 → keep ts in {800, 900, 1000} = indices 7, 8, 9.
     assert_eq!(s.range().end, 10);
-    assert_eq!(s.at(9).unwrap().1.data(), &[9.0]);
-    assert_eq!(s.at(8).unwrap().1.data(), &[8.0]);
-    assert_eq!(s.at(7).unwrap().1.data(), &[7.0]);
+    assert_eq!(&*s.at(9).unwrap().1.to_contiguous(), &[9.0]);
+    assert_eq!(&*s.at(8).unwrap().1.to_contiguous(), &[8.0]);
+    assert_eq!(&*s.at(7).unwrap().1.to_contiguous(), &[7.0]);
     assert!(
         s.range().start <= 7,
         "kept window too small: base {}",
@@ -335,10 +339,10 @@ fn asof_and_search_use_logical_indices_under_retention() {
     }
     assert!(s.range().start > 0, "retention must have evicted something");
 
-    assert_eq!(s.asof(ts(1000)).unwrap().data(), &[9.0]);
-    assert_eq!(s.asof(ts(850)).unwrap().data(), &[7.0]);
+    assert_eq!(&*s.asof(ts(1000)).unwrap().to_contiguous(), &[9.0]);
+    assert_eq!(&*s.asof(ts(850)).unwrap().to_contiguous(), &[7.0]);
     // Before the retained window: None, though older elements once matched.
-    assert_eq!(s.asof(ts(100)).map(|v| v.data()), None);
+    assert_eq!(s.asof(ts(100)).map(|v| v[[0]]), None);
 
     // `search` returns logical indices: the first ts >= 850 is t900,
     // logically element 8.
@@ -363,8 +367,8 @@ fn bounded_matches_unbounded_within_window() {
             assert_eq!(bounded.at(j), unbounded.at(j));
         }
         assert_eq!(
-            bounded.iter().next_back().unwrap(),
-            unbounded.iter().next_back().unwrap(),
+            bounded.iter().last().unwrap(),
+            unbounded.iter().last().unwrap()
         );
     }
 }
@@ -395,7 +399,7 @@ fn series_iter_yields_timestamp_element_pairs() {
     // `for (t, v) in &s` — the borrowing `IntoIterator`.
     let mut n = 0;
     for (t, v) in &s {
-        assert_eq!(v.len(), 2);
+        assert_eq!(v.layout().len(), 2);
         let _ = t;
         n += 1;
     }
@@ -403,7 +407,7 @@ fn series_iter_yields_timestamp_element_pairs() {
 }
 
 #[test]
-fn series_view_into_iter_and_reversed() {
+fn series_view_into_iter() {
     let mut s = Series::<f64, 0>::new_unbounded([]);
     s.push(ts(1), ArrayView::from_slice([], &[10.0]));
     s.push(ts(2), ArrayView::from_slice([], &[20.0]));
@@ -413,13 +417,9 @@ fn series_view_into_iter_and_reversed() {
     let fwd: Vec<f64> = s.view().into_iter().map(|(_, v)| v[[]]).collect();
     assert_eq!(fwd, vec![10.0, 20.0, 30.0]);
 
-    // Double-ended: reversed by timestamp.
-    let rev: Vec<i64> = s
-        .iter()
-        .rev()
-        .map(|(t, _)| t.as_offset().as_nanos())
-        .collect();
-    assert_eq!(rev, vec![3, 2, 1]);
+    // Timestamps come out in window order.
+    let times: Vec<i64> = s.iter().map(|(t, _)| t.as_offset().as_nanos()).collect();
+    assert_eq!(times, vec![1, 2, 3]);
 }
 
 #[test]
@@ -449,7 +449,7 @@ fn series_iter_empty() {
     let s = Series::<f64, 1>::new_unbounded([2]);
     assert_eq!(s.iter().count(), 0);
     assert!(s.iter().next().is_none());
-    assert!(s.view().into_iter().next_back().is_none());
+    assert!(s.view().into_iter().next().is_none());
 }
 
 #[test]
@@ -476,52 +476,18 @@ fn series_into_iter_yields_owned_arrays() {
 }
 
 #[test]
-fn series_into_iter_double_ended() {
-    // Rank-1 blocks so the scalar order within each element matters.
-    let mut s = Series::<f64, 1>::new_unbounded([2]);
-    s.push(ts(100), ArrayView::from_slice([2], &[1.0, 2.0]));
-    s.push(ts(200), ArrayView::from_slice([2], &[3.0, 4.0]));
-    s.push(ts(300), ArrayView::from_slice([2], &[5.0, 6.0]));
-
-    // Regression: stepping from the back must neither reverse the scalars
-    // within a block nor consume the elements still ahead of the front.
-    let mut it = s.clone().into_iter();
-    let (t, a) = it.next_back().unwrap();
-    assert_eq!((t, a.data()), (ts(300), [5.0, 6.0].as_slice()));
-    let (t, a) = it.next().unwrap();
-    assert_eq!((t, a.data()), (ts(100), [1.0, 2.0].as_slice()));
-    let (t, a) = it.next_back().unwrap();
-    assert_eq!((t, a.data()), (ts(200), [3.0, 4.0].as_slice()));
-    assert!(it.next().is_none());
-    assert!(it.next_back().is_none());
-
-    // A full reverse matches the forward order reversed.
-    let fwd: Vec<Vec<f64>> = s
-        .clone()
-        .into_iter()
-        .map(|(_, a)| a.data().to_vec())
-        .collect();
-    let mut rev: Vec<Vec<f64>> = s
-        .into_iter()
-        .rev()
-        .map(|(_, a)| a.data().to_vec())
-        .collect();
-    rev.reverse();
-    assert_eq!(rev, fwd);
-}
-
-#[test]
-fn series_into_iter_double_ended_over_retained_window() {
+fn series_into_iter_over_retained_window() {
     let mut s = Series::<f64, 1>::new([1], Retention::count(3));
     for i in 0..10i64 {
         s.push(ts((i + 1) * 100), ArrayView::from_slice([1], &[i as f64]));
     }
     let retained = s.len();
-    // Reversed owned iteration walks exactly the retained window, newest first.
-    let rev: Vec<f64> = s.into_iter().rev().map(|(_, a)| a.data()[0]).collect();
-    assert_eq!(rev.len(), retained);
-    for (k, v) in rev.iter().enumerate() {
-        assert_eq!(*v, 9.0 - k as f64);
+    let newest = s.range().end - 1;
+    // Owned iteration walks exactly the retained window, oldest first.
+    let vals: Vec<f64> = s.into_iter().map(|(_, a)| a.data()[0]).collect();
+    assert_eq!(vals.len(), retained);
+    for (k, v) in vals.iter().enumerate() {
+        assert_eq!(*v, (newest - retained + 1 + k) as f64);
     }
 }
 
@@ -537,4 +503,95 @@ fn series_into_iter_rank2_and_empty() {
 
     let empty = Series::<f64, 1>::new_unbounded([2]);
     assert_eq!(empty.into_iter().count(), 0);
+}
+
+#[test]
+fn view_slicing_selects_element_sub_regions() {
+    // Three elements of extent [2, 3], packed.
+    let tss = [ts(100), ts(200), ts(300)];
+    let vals: Vec<f64> = (0..18).map(f64::from).collect();
+    let v = SeriesView::<f64, 2>::from_slice([2, 3], &tss, &vals);
+
+    // Slicing the element axes keeps every timestamp.
+    let s = v.slice((1..2, 1..3));
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.timestamps(), &tss);
+    assert_eq!(s.extents(), [1, 2]);
+    // Element i now reads its own sub-block, from a re-based data slice.
+    assert_eq!(&*s.at(0).unwrap().1.to_contiguous(), &[4.0, 5.0]);
+    assert_eq!(&*s.at(1).unwrap().1.to_contiguous(), &[10.0, 11.0]);
+    assert_eq!(&*s.at(2).unwrap().1.to_contiguous(), &[16.0, 17.0]);
+    // Which agrees with slicing each element's view directly.
+    for (i, (_, e)) in v.iter().enumerate() {
+        assert_eq!(
+            &*s.at(i).unwrap().1.to_contiguous(),
+            &*e.slice((1..2, 1..3)).to_contiguous(),
+        );
+    }
+
+    // Iteration walks the same sliced elements as indexed access.
+    let walked: Vec<_> = s.iter().map(|(_, e)| e.to_contiguous().to_vec()).collect();
+    assert_eq!(
+        walked,
+        vec![vec![4.0, 5.0], vec![10.0, 11.0], vec![16.0, 17.0]]
+    );
+
+    // Windows of a sliced view still read correctly.
+    let w = s.window(1..3);
+    assert_eq!(w.len(), 2);
+    assert_eq!(&*w.at(1).unwrap().1.to_contiguous(), &[16.0, 17.0]);
+    assert_eq!(&*w.to_contiguous(), &[10.0, 11.0, 16.0, 17.0]);
+}
+
+#[test]
+fn view_slicing_reshapes_elements() {
+    let tss = [ts(100), ts(200)];
+    let vals: Vec<f64> = (0..12).map(f64::from).collect();
+    let v = SeriesView::<f64, 2>::from_slice([2, 3], &tss, &vals);
+
+    // An index drops an element axis: [2, 3] elements -> [3].
+    let s: SeriesView<f64, 1> = v.slice_reshape((1, ..));
+    assert_eq!(s.len(), 2);
+    assert_eq!(s.extents(), [3]);
+    assert_eq!(&*s.at(0).unwrap().1.to_contiguous(), &[3.0, 4.0, 5.0]);
+    assert_eq!(&*s.at(1).unwrap().1.to_contiguous(), &[9.0, 10.0, 11.0]);
+
+    // And `()` adds one: [2, 3] -> [2, 1, 3].
+    let s: SeriesView<f64, 3> = v.slice_reshape((.., (), ..));
+    assert_eq!(s.extents(), [2, 1, 3]);
+    assert_eq!(
+        &*s.at(1).unwrap().1.to_contiguous(),
+        &[6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
+    );
+
+    // A sliced series copies into an owned one with the sliced extents.
+    let owned = v
+        .slice_along_axis(1, 1..3)
+        .to_series(Retention::unbounded());
+    assert_eq!(owned.layout().extents(), [2, 2]);
+    assert_eq!(owned.data(), &[1.0, 2.0, 4.0, 5.0, 7.0, 8.0, 10.0, 11.0]);
+    assert_eq!(owned.timestamps(), &tss);
+}
+
+#[test]
+fn series_view_eq_compares_timestamps_and_elements() {
+    let tss = [ts(1), ts(2)];
+    let packed = SeriesView::<f64, 1>::from_slice([2], &tss, &[1.0, 2.0, 3.0, 4.0]);
+
+    // The same elements laid 3 apart, with a pad scalar after each and a
+    // trailing scalar the index space never reaches.
+    let padded_vals = [1.0, 2.0, 9.0, 3.0, 4.0, 9.0, 9.0];
+    let padded = SeriesView::from_parts(Strided::new([2], [1]), 3, &tss, &padded_vals);
+    assert_eq!(packed, padded);
+
+    // Differing timestamps, or differing elements, make them unequal.
+    let other_ts = [ts(1), ts(3)];
+    assert_ne!(
+        packed,
+        SeriesView::<f64, 1>::from_slice([2], &other_ts, &[1.0, 2.0, 3.0, 4.0]),
+    );
+    assert_ne!(
+        packed,
+        SeriesView::<f64, 1>::from_slice([2], &tss, &[1.0, 2.0, 3.0, 5.0]),
+    );
 }

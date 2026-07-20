@@ -8,7 +8,7 @@
 //! Multiple nodes can be fused together into a single node, or be scheduled
 //! independently to be run in parallel.
 //!
-//! # Full example with custom sources and segments
+//! # Examples
 //!
 //! Here is an example graph which takes in streams `s` and `t` of values,
 //! and computes `x := s + t` and `y := s + x` whenever `s` or `t` changes:

@@ -65,7 +65,11 @@ fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
 /// slots) / `Stack` (carry last-known) recombine into `[N]` panels. The financial
 /// reports align on the look-ahead-safe effective date `max(report, notice)`
 /// (`use_effective_date`, zero fallback).
-pub fn build_stacked(sc: &mut Builder<Instant, WallClock>, symbols: &[String], args: &CommonArgs) -> Stacked {
+pub fn build_stacked(
+    sc: &mut Builder<Instant, WallClock>,
+    symbols: &[String],
+    args: &CommonArgs,
+) -> Stacked {
     let dir = &args.data_dir;
     let start = Some(args.data_start());
     let end = Some(args.end());
@@ -78,12 +82,14 @@ pub fn build_stacked(sc: &mut Builder<Instant, WallClock>, symbols: &[String], a
     // look-ahead-safe point-in-time a backtest may use them (`use_effective_date`).
     // A panel source cell lends its `[N, K]` panel as an `ArrayPort<f64, 2>`
     // view edge, which feeds `Split` directly.
-    let daily_panel =
-        |sc: &mut Builder<Instant, WallClock>, kind: &str, cols: Vec<String>| -> ArrayPortHandle<f64, 2> {
-            let s = parquet_panel_source(format!("{dir}/{kind}.parquet"), cols, universe.clone())
-                .with_time_range(start, end);
-            sc.source(s)
-        };
+    let daily_panel = |sc: &mut Builder<Instant, WallClock>,
+                       kind: &str,
+                       cols: Vec<String>|
+     -> ArrayPortHandle<f64, 2> {
+        let s = parquet_panel_source(format!("{dir}/{kind}.parquet"), cols, universe.clone())
+            .with_time_range(start, end);
+        sc.source(s)
+    };
     let report_panel = |sc: &mut Builder<Instant, WallClock>,
                         kind: &str,
                         cols: Vec<String>,

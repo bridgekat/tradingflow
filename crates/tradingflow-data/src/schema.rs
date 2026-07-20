@@ -3,20 +3,6 @@
 use std::collections::HashMap;
 
 /// A bidirectional map between string labels and integer indices.
-///
-/// It is a construction-time helper, not carried by arrays at runtime.
-///
-/// # Example
-///
-/// ```
-/// use tradingflow::data::Schema;
-///
-/// let symbols = Schema::new(["000001.SZ", "000002.SZ", "600519.SH"]);
-///
-/// assert_eq!(symbols.name(0), "000001.SZ");
-/// assert_eq!(symbols.index("600519.SH"), 2);
-/// assert_eq!(symbols.indices(["600519.SH", "000001.SZ"]), vec![2, 0]);
-/// ```
 #[derive(Debug, Clone)]
 pub struct Schema {
     names: Vec<String>,
@@ -88,6 +74,10 @@ impl Schema {
     }
 
     /// Creates a sub-schema by selecting names at the given positions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any index is out of bounds or appears more than once.
     pub fn select(&self, indices: &[usize]) -> Self {
         let names: Vec<String> = indices.iter().map(|&i| self.names[i].clone()).collect();
         Self::new(names)

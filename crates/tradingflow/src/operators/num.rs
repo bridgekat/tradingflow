@@ -705,7 +705,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Diff<T, N> {
 
     fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
         DiffState {
-            prev: vec![T::nan(); x.len()],
+            prev: vec![T::nan(); x.layout().len()],
             out: Array::full(x.extents(), T::nan()),
         }
     }
@@ -769,7 +769,7 @@ impl<T: Scalar + Float, const N: usize> Operator for PctChange<T, N> {
 
     fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
         PctChangeState {
-            prev: vec![T::nan(); x.len()],
+            prev: vec![T::nan(); x.layout().len()],
             out: Array::full(x.extents(), T::nan()),
         }
     }
@@ -838,7 +838,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Gaussianize<T, N> {
 
     fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
         let mut state = GaussianizeState {
-            scratch: vec![0; x.len()],
+            scratch: vec![0; x.layout().len()],
             out: Array::zeros(x.extents()),
         };
         // Seed the output with the faithful transform of the build value; the
@@ -991,7 +991,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Percentile<T, N> {
 
     fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
         let mut state = PercentileState {
-            scratch: vec![0; x.len()],
+            scratch: vec![0; x.layout().len()],
             out: Array::zeros(x.extents()),
         };
         // Seed the output with the faithful transform of the build value; the
@@ -1205,7 +1205,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
     fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
         let mut state = WinsorizeState {
             p: self.p,
-            sort_buf: vec![T::zero(); x.len()],
+            sort_buf: vec![T::zero(); x.layout().len()],
             out: Array::zeros(x.extents()),
         };
         // Seed the output with the faithful transform of the build value; the

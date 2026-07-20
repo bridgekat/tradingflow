@@ -25,8 +25,8 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::data::Retention;
 use tradingflow::clock::WallClock;
+use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
 
 use common::models::{Mode, markowitz, ridge_mean, shrinkage_cov};

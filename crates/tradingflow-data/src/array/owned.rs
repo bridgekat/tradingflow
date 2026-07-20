@@ -1,4 +1,4 @@
-use std::ops::{Index, IndexMut};
+use std::ops::{Deref, DerefMut, Index, IndexMut};
 
 use super::{ArrayIntoIter, ArrayIter, ArrayView};
 use crate::{Layout, Scalar, layout};
@@ -68,6 +68,14 @@ impl<T: Scalar, const N: usize> Array<T, N> {
         self.layout
     }
 
+    pub fn ndim(&self) -> usize {
+        self.layout.ndim()
+    }
+
+    pub fn extents(&self) -> [usize; N] {
+        self.layout.extents()
+    }
+
     pub fn data(&self) -> &[T] {
         &self.data
     }
@@ -93,7 +101,7 @@ impl<T: Scalar, const N: usize> Array<T, N> {
             self.data.clone_from_slice(s);
             return;
         }
-        for (d, off) in self.data.iter_mut().zip(value.layout().offsets()) {
+        for (d, off) in self.data.iter_mut().zip(value.layout().iter()) {
             *d = value.data()[off].clone();
         }
     }
@@ -106,10 +114,10 @@ impl<T: Scalar, const N: usize> Array<T, N> {
     pub fn reshape<const M: usize>(self, extents: [usize; M]) -> Array<T, M> {
         let layout = layout::RowMajor::new(extents);
         assert_eq!(
-            self.len(),
+            self.layout.len(),
             layout.len(),
             "reshape: current len {} != new extents {:?} ({} scalars)",
-            self.len(),
+            self.layout.len(),
             extents,
             layout.len(),
         );
@@ -120,17 +128,17 @@ impl<T: Scalar, const N: usize> Array<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> Layout<N> for Array<T, N> {
-    fn extents(&self) -> [usize; N] {
-        self.layout.extents()
-    }
+impl<T: Scalar> Deref for Array<T, 0> {
+    type Target = T;
 
-    fn strides(&self) -> [usize; N] {
-        self.layout.strides()
+    fn deref(&self) -> &Self::Target {
+        &self.data[0]
     }
+}
 
-    fn is_contiguous(&self) -> bool {
-        self.layout.is_contiguous()
+impl<T: Scalar> DerefMut for Array<T, 0> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data[0]
     }
 }
 
@@ -138,13 +146,13 @@ impl<T: Scalar, const N: usize> Index<[usize; N]> for Array<T, N> {
     type Output = T;
 
     fn index(&self, index: [usize; N]) -> &T {
-        &self.data[self.offset(index)]
+        &self.data[self.layout.offset(index)]
     }
 }
 
 impl<T: Scalar, const N: usize> IndexMut<[usize; N]> for Array<T, N> {
     fn index_mut(&mut self, index: [usize; N]) -> &mut T {
-        &mut self.data[self.offset(index)]
+        &mut self.data[self.layout.offset(index)]
     }
 }
 

@@ -83,10 +83,10 @@ impl Operator for Benchmark {
     fn init(self, ((_, pos), ..): TraderValues<'_>) -> BenchmarkState {
         let n = self.num_stocks;
         assert_eq!(
-            pos.len(),
+            pos.layout().len(),
             n,
             "Benchmark: input length {} != num_stocks {n}",
-            pos.len(),
+            pos.layout().len(),
         );
         BenchmarkState {
             num_stocks: n,
@@ -505,10 +505,10 @@ impl Operator for SimpleTrader {
 
     fn init(self, ((_, pos), ..): TraderValues<'_>) -> SimpleTraderState {
         assert_eq!(
-            pos.len(),
+            pos.layout().len(),
             self.num_stocks,
             "trader: input length {} != num_stocks {}",
-            pos.len(),
+            pos.layout().len(),
             self.num_stocks,
         );
         SimpleTraderState {
@@ -586,10 +586,10 @@ impl Operator for RandomTrader {
 
     fn init(self, ((_, pos), ..): TraderValues<'_>) -> RandomTraderState {
         assert_eq!(
-            pos.len(),
+            pos.layout().len(),
             self.num_stocks,
             "trader: input length {} != num_stocks {}",
-            pos.len(),
+            pos.layout().len(),
             self.num_stocks,
         );
         RandomTraderState {

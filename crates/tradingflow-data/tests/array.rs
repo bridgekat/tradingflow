@@ -1,12 +1,12 @@
 use tradingflow_data::array::{apply_binary, apply_unary};
-use tradingflow_data::layout::Strided;
+use tradingflow_data::layout::{Slice, Strided};
 use tradingflow_data::{Array, ArrayView, Layout};
 
 #[test]
 fn full_and_zeros() {
     let a = Array::full([2, 3], 1.0_f64);
     assert_eq!(a.extents(), [2, 3]);
-    assert_eq!(a.len(), 6);
+    assert_eq!(a.layout().len(), 6);
     assert_eq!(a.data(), &[1.0; 6]);
 
     let b = Array::<f64, 1>::zeros([4]);
@@ -17,7 +17,7 @@ fn full_and_zeros() {
 fn scalar() {
     let a = Array::scalar(42.0_f64);
     assert_eq!(a.extents(), [] as [usize; 0]);
-    assert_eq!(a.len(), 1);
+    assert_eq!(a.layout().len(), 1);
     // A rank-0 array holds its one scalar at the empty index.
     assert_eq!(a[[]], 42.0);
 }
@@ -227,7 +227,7 @@ fn array_iter_borrows_and_clones() {
     // Borrowed: `a` is still usable, and `for x in &a` works.
     let sum: f64 = (&a).into_iter().sum();
     assert_eq!(sum, 10.0);
-    assert_eq!(a.len(), 4);
+    assert_eq!(a.layout().len(), 4);
 }
 
 #[test]
@@ -252,10 +252,92 @@ fn array_iter_rank0_yields_one_scalar() {
 }
 
 #[test]
-fn array_into_iter_double_ended() {
-    let a = Array::from_parts([4], vec![1.0, 2.0, 3.0, 4.0].into());
+fn view_slicing_selects_sub_regions() {
+    // A [3, 4] panel of 0..12.
+    let data: Vec<f64> = (0..12).map(f64::from).collect();
+    let v = ArrayView::from_slice([3, 4], &data);
+
+    // A rectangular sub-region reads the elements it selects.
+    let s = v.slice((1..3, 1..3));
+    assert_eq!(s.extents(), [2, 2]);
+    assert_eq!(s.iter().collect::<Vec<_>>(), vec![5.0, 6.0, 9.0, 10.0]);
+    assert_eq!(s[[0, 0]], 5.0);
+    assert_eq!(s[[1, 1]], 10.0);
+
+    // Stepping and open bounds compose in one call.
+    let s = v.slice(((.., 2), (1.., 2)));
+    assert_eq!(s.extents(), [2, 2]);
+    assert_eq!(s.iter().collect::<Vec<_>>(), vec![1.0, 3.0, 9.0, 11.0]);
+
+    // A single axis, the rest kept whole. An index keeps the axis here —
+    // only `slice_reshape` drops it — so the row stays rank 2.
+    let row = v.slice_along_axis(0, 2..3);
+    assert_eq!(row.extents(), [1, 4]);
+    assert_eq!(row.iter().collect::<Vec<_>>(), vec![8.0, 9.0, 10.0, 11.0]);
+
+    // Slices of slices compose.
     assert_eq!(
-        a.into_iter().rev().collect::<Vec<_>>(),
-        vec![4.0, 3.0, 2.0, 1.0]
+        v.slice((1.., ..))
+            .slice((..1, 2..))
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![6.0, 7.0]
     );
+}
+
+#[test]
+fn view_slicing_reshapes_and_broadcasts() {
+    let data: Vec<f64> = (0..12).map(f64::from).collect();
+    let v = ArrayView::from_slice([3, 4], &data);
+
+    // An index drops its axis, `()` adds one: [3, 4] -> [1, 2].
+    let s: ArrayView<f64, 2> = v.slice_reshape((1, (), 1..3));
+    assert_eq!(s.extents(), [1, 2]);
+    assert_eq!(s.iter().collect::<Vec<_>>(), vec![5.0, 6.0]);
+
+    // Indexing every axis leaves a rank-0 view of one scalar.
+    let s: ArrayView<f64, 0> = v.slice_reshape((2, 3));
+    assert_eq!(s[[]], 11.0);
+
+    // A new axis broadcast with step 0 repeats the row it was inserted over.
+    let b: ArrayView<f64, 3> = v.slice_reshape((.., (), ..));
+    let b = b.slice_along_axis(1, Slice::new(0, Some(2), 0));
+    assert_eq!(b.extents(), [3, 2, 4]);
+    assert_eq!(b[[1, 0, 0]], b[[1, 1, 0]]);
+    assert_eq!(b.to_array().data().len(), 24);
+
+    // An empty selection is a valid, empty view.
+    let e = v.slice((3.., ..));
+    assert_eq!(e.extents(), [0, 4]);
+    assert_eq!(e.iter().count(), 0);
+}
+
+#[test]
+fn view_eq_compares_only_the_index_space() {
+    let panel = Array::from_parts([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
+    // Column 1: extent 3, stride 2, from index 1 -> [2, 4, 6].
+    let col1 = ArrayView::from_parts(Strided::new([3], [2]), &panel.data()[1..]);
+
+    // A strided view equals a packed one presenting the same elements.
+    assert_eq!(col1, ArrayView::from_slice([3], &[2.0, 4.0, 6.0]));
+
+    // Scalars the index space never reaches do not participate — neither the
+    // stride gaps above nor the trailing scalar here.
+    let trailing = [2.0, 4.0, 6.0, 99.0];
+    assert_eq!(
+        col1,
+        ArrayView::from_parts(Strided::new([3], [1]), &trailing)
+    );
+
+    // Same scalars in the same order, different extents: unequal.
+    let wide = ArrayView::from_slice([2, 3], panel.data());
+    let tall = ArrayView::from_slice([3, 2], panel.data());
+    assert_ne!(wide, tall);
+    assert_eq!(
+        wide.iter().collect::<Vec<_>>(),
+        tall.iter().collect::<Vec<_>>()
+    );
+
+    // One differing element is enough.
+    assert_ne!(col1, ArrayView::from_slice([3], &[2.0, 4.0, 7.0]));
 }

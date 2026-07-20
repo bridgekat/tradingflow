@@ -227,7 +227,7 @@ impl NativeArrayView {
         let r = unsafe { &mut *arr };
         let view = NativeArrayView {
             data: r.data_mut().as_mut_ptr(),
-            len: r.len(),
+            len: r.layout().len(),
             extents: r.extents().to_vec(),
             writable,
             _backing: None,
@@ -422,13 +422,19 @@ impl NativeSeriesView {
         py: Python<'py>,
         s: SeriesView<'_, f64, N>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        // Python reads the buffer flat, at `base + i * stride + j`, so the
+        // window must be packed row-major — which is exactly when a series
+        // view yields one slice.
+        let values = s.as_slice().ok_or_else(|| {
+            PyValueError::new_err("bind: series window is not contiguous row-major")
+        })?;
         let view = NativeSeriesView {
-            values: s.data().as_ptr(),
+            values: values.as_ptr(),
             timestamps: s.timestamps().as_ptr(),
             retained: s.len(),
             base: 0,
             stride: s.layout().len(),
-            extents: s.layout().extents().to_vec(),
+            extents: s.extents().to_vec(),
         };
         Ok(Bound::new(py, view)?.into_any())
     }

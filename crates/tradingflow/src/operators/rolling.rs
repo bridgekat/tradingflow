@@ -111,7 +111,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
     type State = RollingState<A, NO>;
 
     fn init(self, (_, series): (bool, SeriesView<'_, A::Scalar, NI>)) -> Self::State {
-        let input_shape = series.layout().extents();
+        let input_shape = series.extents();
         let output_shape = A::output_shape(&input_shape);
         let output_stride: usize = output_shape.iter().product();
         RollingState {
@@ -135,7 +135,9 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
         // `len - count` — stable under retention trims of older rows.
         let len = series.len();
 
-        state.accumulator.add(series.at(len - 1).unwrap().1.data());
+        state
+            .accumulator
+            .add(&series.at(len - 1).unwrap().1.to_contiguous());
         state.count += 1;
 
         match state.window {
@@ -143,7 +145,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
                 while state.count > w {
                     state
                         .accumulator
-                        .remove(series.at(len - state.count).unwrap().1.data());
+                        .remove(&series.at(len - state.count).unwrap().1.to_contiguous());
                     state.count -= 1;
                 }
                 if state.count < w {
@@ -156,7 +158,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
                 while state.count > 0 && series.at(len - state.count).unwrap().0 < cutoff {
                     state
                         .accumulator
-                        .remove(series.at(len - state.count).unwrap().1.data());
+                        .remove(&series.at(len - state.count).unwrap().1.to_contiguous());
                     state.count -= 1;
                 }
                 if state.count == 0 {
@@ -573,7 +575,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
             weighted_sum: vec![T::zero(); stride],
             nonfinite_count: vec![0; stride],
             fill_decay: T::one(),
-            out: Array::from_parts(series.layout().extents(), vec![T::nan(); stride].into()),
+            out: Array::from_parts(series.extents(), vec![T::nan(); stride].into()),
         }
     }
 
@@ -587,8 +589,11 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
         _: &Instant,
     ) -> (bool, ArrayView<'a, T, NO>) {
         let len = series.len();
-        let row = series.at(len - 1).unwrap().1.data();
+        let row = series.at(len - 1).unwrap().1.to_contiguous();
         let stride = row.len();
+        // Materialized once: the evicted row is read on every column below.
+        let evicted = (len > state.window)
+            .then(|| series.at(len - 1 - state.window).unwrap().1.to_contiguous());
         let alpha = state.alpha;
         let one_minus_alpha = state.one_minus_alpha;
 
@@ -608,8 +613,8 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
             } else {
                 state.weighted_sum[i] = state.weighted_sum[i] + alpha * x;
             }
-            if len > state.window {
-                let x_old = series.at(len - 1 - state.window).unwrap().1.data()[i];
+            if let Some(evicted) = &evicted {
+                let x_old = evicted[i];
                 if !x_old.is_finite() {
                     state.nonfinite_count[i] -= 1;
                 } else {

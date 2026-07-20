@@ -546,7 +546,7 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
     type State = LastState<T, N>;
 
     fn init(self, (_, series): (bool, SeriesView<'_, T, N>)) -> Self::State {
-        let mut out = Array::full(series.layout().extents(), self.fill.clone());
+        let mut out = Array::full(series.extents(), self.fill.clone());
         if !series.is_empty() {
             out.assign(series.at(series.len() - 1).unwrap().1);
         }

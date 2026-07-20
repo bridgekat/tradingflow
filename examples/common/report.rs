@@ -95,8 +95,12 @@ pub fn read_scalar_series(
     h: SeriesPortHandle<f64, 0>,
 ) -> (Vec<i64>, Vec<f64>) {
     let s: SeriesView<f64, 0> = session.view(h);
-    let ts = s.timestamps().iter().map(|t| t.as_offset().as_nanos()).collect();
-    let vals = s.data().to_vec();
+    let ts = s
+        .timestamps()
+        .iter()
+        .map(|t| t.as_offset().as_nanos())
+        .collect();
+    let vals = s.to_contiguous().to_vec();
     (ts, vals)
 }
 
