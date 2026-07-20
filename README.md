@@ -11,11 +11,11 @@ This framework is structured into sub-packages in the `crates/` directory:
 - The `tradingflow-data` package, which provides generic N-dimensional arrays and time series;
 - The `tradingflow-graph` package, which provides abstractions and scheduling for generic computation graphs;
 - The `tradingflow-macros` package, which provides procedural macros for composing subgraphs;
-- The `tradingflow` package itself contains operator implementations for quantitative investment research. Operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
+- The `tradingflow` package itself contains data loaders and operator implementations for quantitative investment research. Operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
 
 ## Get started
 
-Prerequisites: Rust 1.95+ and Python 3.14+ (for the `python` feature).
+Prerequisites: Rust 1.95+ and Python 3.12+ (for the `python` feature).
 
 ```bash
 git clone https://github.com/bridgekat/tradingflow.git
@@ -46,5 +46,9 @@ The [`examples/`](examples/) directory contains end-to-end strategies that load 
 
 - [**Mean-only strategy**](examples/mean_strategy.rs) — fits a periodic linear regression to predict cross-sectional stock returns, picks the top-ranked names with rank-linear weights, simulates trading with transaction costs, and plots portfolio value, rolling Sharpe, and drawdown vs. a market-cap-weighted index.
 - [**Mean-variance strategy**](examples/mean_variance_strategy.rs) — extends the mean strategy with Ledoit-Wolf shrinkage covariance estimator and Markowitz portfolio optimization, comparing several risk-aversion levels.
+
+## Agents
+
+See the [`agents`](agents/) directory.
 
 [^1]: Currently LLM-generated.
