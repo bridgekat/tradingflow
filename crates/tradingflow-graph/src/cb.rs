@@ -11,7 +11,7 @@ pub struct Id<T, C>(pub PhantomData<(T, C)>);
 impl<T, C> Segment for Id<T, C>
 where
     T: Interface,
-    C: Send + Sync + 'static,
+    C: Sync + 'static,
 {
     type Inputs = T;
     type Outputs = T;
@@ -145,7 +145,7 @@ impl<T, U, C> Segment for Left<T, U, C>
 where
     T: Interface,
     U: Interface,
-    C: Send + Sync + 'static,
+    C: Sync + 'static,
 {
     type Inputs = (T, U);
     type Outputs = T;
@@ -184,7 +184,7 @@ impl<T, U, C> Segment for Right<T, U, C>
 where
     T: Interface,
     U: Interface,
-    C: Send + Sync + 'static,
+    C: Sync + 'static,
 {
     type Inputs = (T, U);
     type Outputs = U;
@@ -272,7 +272,7 @@ impl<T, U, F, C> Segment for Arr<T, U, F, C>
 where
     T: Interface,
     U: Interface,
-    C: Send + Sync + 'static,
+    C: Sync + 'static,
     F: for<'a> Fn(T::Values<'a>, &'a ()) -> U::Values<'a> + Send + 'static,
 {
     type Inputs = T;
@@ -304,7 +304,7 @@ impl<T, U, F, C> Arr<T, U, F, C>
 where
     T: Interface,
     U: Interface,
-    C: Send + Sync + 'static,
+    C: Sync + 'static,
     F: for<'a> Fn(T::Values<'a>, &'a ()) -> U::Values<'a> + Send + 'static,
 {
     pub fn new(f: F) -> Self {

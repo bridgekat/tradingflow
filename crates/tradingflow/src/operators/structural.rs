@@ -1195,7 +1195,7 @@ fn split_rows<'a, T: Scalar, const IN: usize, const OUT: usize>(
     let views = arena.alloc_slice_fill_iter(
         (0..n).map(|i| ArrayView::from_parts(row_shape, &data[i * strd[0]..])),
     );
-    (&*flags, &*views)
+    (flags, views)
 }
 
 // ===========================================================================

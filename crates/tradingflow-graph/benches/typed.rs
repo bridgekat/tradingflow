@@ -139,7 +139,7 @@ impl Operator for Record {
             state.clear();
         }
         state.push(x);
-        (true, &*state)
+        (true, state)
     }
 
     fn passthrough<'a, 'b: 'a>(_: (bool, f64), state: &'b mut Vec<f64>) -> (bool, &'a Vec<f64>) {
@@ -455,7 +455,11 @@ impl Operator for SumAll {
     fn passthrough<'a, 'b: 'a>((_, xs): (&'a [bool], &'a [f64]), _: &'b mut ()) -> (bool, f64) {
         (true, xs.iter().sum())
     }
-    fn compute<'a, 'b: 'a>(inputs: (&'a [bool], &'a [f64]), state: &'b mut (), _: &()) -> (bool, f64) {
+    fn compute<'a, 'b: 'a>(
+        inputs: (&'a [bool], &'a [f64]),
+        state: &'b mut (),
+        _: &(),
+    ) -> (bool, f64) {
         Self::passthrough(inputs, state)
     }
 }

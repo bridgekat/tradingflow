@@ -64,6 +64,7 @@
 //!         prices,
 //!     );
 //!
+//!     // Finalize the graph.
 //!     let mut g = b.build();
 //!
 //!     // Run the event loop until all sources are exhausted.

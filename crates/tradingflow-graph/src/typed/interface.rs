@@ -6,16 +6,10 @@ use super::{FlatRead, FlatWrite};
 ///
 /// # Safety
 ///
-/// - [`Pass::View<'a>`] must be covariant in `'a` - required by [`Interface`].
+/// - [`Pass::View<'a>`] must be covariant in `'a`.
 pub unsafe trait Pass: 'static {
-    /// The owned value: what a source node stores in state.
-    type Owned: Send + Sync + 'static;
-
     /// The view: what travels through ports.
     type View<'a>: Copy + Send + Sync + 'a;
-
-    /// Derives a view from an owned value.
-    fn view(owned: &Self::Owned) -> Self::View<'_>;
 
     /// Reborrows a view to a shorter lifetime.
     fn reborrow<'a, 'b: 'a>(view: Self::View<'b>) -> Self::View<'a> {
@@ -25,51 +19,33 @@ pub unsafe trait Pass: 'static {
 }
 
 /// The policy passing `T` by `T` (pass-by-value).
-pub struct Val<T>(PhantomData<T>);
+pub struct Val<T: Copy + Send + Sync + 'static>(PhantomData<T>);
 
 // # Safety
 //
 // `T: 'static` so it is trivially covariant in `'a`.
 unsafe impl<T: Copy + Send + Sync + 'static> Pass for Val<T> {
     type View<'a> = T;
-    type Owned = T;
-
-    #[inline]
-    fn view(owned: &T) -> T {
-        *owned
-    }
 }
 
 /// The policy passing `T` by `&T` (pass-by-reference).
-pub struct Ref<T>(PhantomData<T>);
+pub struct Ref<T: Sync + 'static>(PhantomData<T>);
 
 // # Safety
 //
 // `&'a T` is covariant in `'a` (`T: 'static`).
-unsafe impl<T: Send + Sync + 'static> Pass for Ref<T> {
+unsafe impl<T: Sync + 'static> Pass for Ref<T> {
     type View<'a> = &'a T;
-    type Owned = T;
-
-    #[inline]
-    fn view(owned: &T) -> &T {
-        owned
-    }
 }
 
 /// The policy passing `Box<[T]>` by `&[T]`.
-pub struct Slice<T>(PhantomData<T>);
+pub struct Slice<T: Sync + 'static>(PhantomData<T>);
 
 // # Safety
 //
 // `T: 'static` so `&'a [T]` is covariant in `'a`.
-unsafe impl<T: Send + Sync + 'static> Pass for Slice<T> {
+unsafe impl<T: Sync + 'static> Pass for Slice<T> {
     type View<'a> = &'a [T];
-    type Owned = Box<[T]>;
-
-    #[inline]
-    fn view(owned: &Box<[T]>) -> &[T] {
-        owned
-    }
 }
 
 /// Marks a single leaf in an [`Interface`] tree.

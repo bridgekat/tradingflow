@@ -1,6 +1,6 @@
 //! Integration tests for `core`'s typed graph (pointer-graph / Moore API).
 //!
-//! Every fixture here implements [`Operator`], the notify-aware interface, in
+//! Most fixture here implements [`Operator`], the notify-aware interface, in
 //! preference to the lower-level [`Segment`]. An `Operator` is
 //! `init + compute + passthrough`, and the blanket `impl Operator: Segment`
 //! supplies the auto-gate (`any_notify ? compute : passthrough`, with
@@ -22,7 +22,7 @@ use bumpalo::Bump;
 use tradingflow_graph::cb::*;
 use tradingflow_graph::pool::Pool;
 use tradingflow_graph::typed::{
-    Builder, Graph, NodeHandle, Operator, Pass, Port, PortHandle, Ports, Ref, Slice, Val,
+    Builder, Graph, NodeHandle, Operator, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val,
 };
 
 fn pool() -> Pool {
@@ -38,20 +38,57 @@ fn fresh(arena: &mut Bump) -> &Bump {
     arena
 }
 
-struct Source<V: Pass>(V::Owned);
-impl<V: Pass> Operator for Source<V> {
+/// A pass-by-value source node.
+struct Source<T>(T);
+impl<T: Copy + Send + Sync + 'static> Segment for Source<T> {
     type Inputs = ();
-    type Outputs = Port<V>;
+    type Outputs = Port<Val<T>>;
     type Context = ();
-    type State = V::Owned;
-    fn init(self, _: ()) -> V::Owned {
+    type State = T;
+    fn init(self, _: ()) -> T {
         self.0
     }
-    fn passthrough<'a, 'b: 'a>(_: (), state: &'b mut V::Owned) -> (bool, V::View<'a>) {
-        (true, V::view(state))
+    fn output<'a, 'b: 'a>(_: (), state: &'b mut T) -> (bool, T) {
+        (true, *state)
     }
-    fn compute<'a, 'b: 'a>(inputs: (), state: &'b mut V::Owned, _: &()) -> (bool, V::View<'a>) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(_: (), state: &'b mut T, _: &()) -> (bool, T) {
+        (true, *state)
+    }
+}
+
+/// A pass-by-reference source node.
+struct RefSource<T>(T);
+impl<T: Send + Sync + 'static> Segment for RefSource<T> {
+    type Inputs = ();
+    type Outputs = Port<Ref<T>>;
+    type Context = ();
+    type State = T;
+    fn init(self, _: ()) -> T {
+        self.0
+    }
+    fn output<'a, 'b: 'a>(_: (), state: &'b mut T) -> (bool, &'a T) {
+        (true, state)
+    }
+    fn compute<'a, 'b: 'a>(_: (), state: &'b mut T, _: &()) -> (bool, &'a T) {
+        (true, state)
+    }
+}
+
+/// A pass-by-slice source node.
+struct SliceSource<T>(Box<[T]>);
+impl<T: Send + Sync + 'static> Segment for SliceSource<T> {
+    type Inputs = ();
+    type Outputs = Port<Slice<T>>;
+    type Context = ();
+    type State = Box<[T]>;
+    fn init(self, _: ()) -> Box<[T]> {
+        self.0
+    }
+    fn output<'a, 'b: 'a>(_: (), state: &'b mut Box<[T]>) -> (bool, &'a [T]) {
+        (true, state)
+    }
+    fn compute<'a, 'b: 'a>(_: (), state: &'b mut Box<[T]>, _: &()) -> (bool, &'a [T]) {
+        (true, state)
     }
 }
 
@@ -118,7 +155,11 @@ impl Operator for SumAll {
     fn passthrough<'a, 'b: 'a>((_, xs): (&'a [bool], &'a [i64]), _: &'b mut ()) -> (bool, i64) {
         (true, xs.iter().sum())
     }
-    fn compute<'a, 'b: 'a>(inputs: (&'a [bool], &'a [i64]), state: &'b mut (), _: &()) -> (bool, i64) {
+    fn compute<'a, 'b: 'a>(
+        inputs: (&'a [bool], &'a [i64]),
+        state: &'b mut (),
+        _: &(),
+    ) -> (bool, i64) {
         Self::passthrough(inputs, state)
     }
 }
@@ -266,7 +307,7 @@ impl Operator for BufWrite {
         _: &(),
     ) -> (bool, &'a Vec<f64>) {
         state[0] = x;
-        (true, &*state)
+        (true, state)
     }
 }
 
@@ -860,7 +901,7 @@ impl Operator for Spread {
 #[should_panic(expected = "stabilize")]
 fn read_before_stabilize_after_poke_is_rejected() {
     let mut b = Builder::new();
-    let (s_cell, s) = b.source(Source(vec![10i64, 20, 30]));
+    let (s_cell, s) = b.source(RefSource(vec![10i64, 20, 30]));
     let out = b.segment(Spread, s);
     let mut g = b.build();
     assert_eq!(g.view(out[0]), 10); // stabilized read is fine
@@ -1497,7 +1538,7 @@ impl Operator for ViewStats {
 #[test]
 fn view_window_moves_and_resizes_per_generation() {
     let mut b = Builder::new();
-    let (data_cell, data) = b.source(Source(vec![1i64, 2, 3, 4, 5, 6, 7, 8]));
+    let (data_cell, data) = b.source(RefSource(vec![1i64, 2, 3, 4, 5, 6, 7, 8]));
     let (range_cell, range) = b.source(Source((0usize, 3usize)));
     let win = b.segment(WindowView, (data, range));
     // Forward the view through an extra node: the forwarder re-homes the fat
@@ -1537,11 +1578,6 @@ struct StridedF64;
 // mutability).
 unsafe impl Pass for StridedF64 {
     type View<'a> = Strided<'a>;
-    type Owned = (Vec<f64>, Vec<usize>);
-
-    fn view((data, shape): &Self::Owned) -> Strided<'_> {
-        Strided { data, shape }
-    }
 }
 
 /// Wraps its input buffer in a `Strided` view chosen by the stride input. The
@@ -1596,7 +1632,7 @@ impl Operator for StridedSum {
 #[test]
 fn custom_view_struct_through_the_wire() {
     let mut b = Builder::new();
-    let (_, v) = b.source(Source(vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0]));
+    let (_, v) = b.source(RefSource(vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0]));
     let (k_cell, k) = b.source(Source(2usize));
     let view = b.segment(MakeStrided, (v, k));
     let out = b.segment(StridedSum, view);
@@ -1640,7 +1676,7 @@ fn view_source_lends_borrowing_view_from_owned_cell() {
     // through `state_mut`, which dirties the node, so the view is re-derived
     // and re-homed before any consumer in the cone reads it.
     let mut b = Builder::new();
-    let (xs_cell, xs) = b.source(Source::<Slice<i64>>(vec![1, 2, 3].into()));
+    let (xs_cell, xs) = b.source(SliceSource(vec![1, 2, 3].into()));
     let (k_cell, k) = b.source(Source(100i64));
     let out = b.segment(SliceTotal, (xs, k));
     let mut g = b.build();
@@ -1820,11 +1856,11 @@ fn build_mesh(
         [PortHandle<Val<i64>>; 3],
     ) -> PortHandle<Val<i64>>,
 ) -> (
-    Vec<NodeHandle<Source<Val<i64>>>>,
+    Vec<NodeHandle<Source<i64>>>,
     Vec<Vec<PortHandle<Val<i64>>>>,
     Vec<PortHandle<Val<i64>>>,
 ) {
-    let (src, wires): (Vec<NodeHandle<Source<Val<i64>>>>, Vec<_>) =
+    let (src, wires): (Vec<NodeHandle<Source<i64>>>, Vec<_>) =
         srcs.iter().map(|&v| b.source(Source(v))).unzip();
     let mut layers: Vec<Vec<PortHandle<Val<i64>>>> = vec![wires];
     for layer in 1..=LM {
@@ -1958,7 +1994,10 @@ impl Operator for SumAllPorts {
     type Context = ();
     type State = ();
     fn init(self, _: (&[bool], &[i64])) {}
-    fn passthrough<'a, 'b: 'a>((notifies, xs): (&'a [bool], &'a [i64]), _: &'b mut ()) -> (bool, i64) {
+    fn passthrough<'a, 'b: 'a>(
+        (notifies, xs): (&'a [bool], &'a [i64]),
+        _: &'b mut (),
+    ) -> (bool, i64) {
         (notifies.iter().any(|&n| n), xs.iter().sum())
     }
     fn compute<'a, 'b: 'a>(
@@ -2013,7 +2052,10 @@ impl Operator for FanoutPorts3 {
     fn init(self, _: (bool, i64)) -> Bump {
         Bump::new()
     }
-    fn passthrough<'a, 'b: 'a>((_, x): (bool, i64), arena: &'b mut Bump) -> (&'a [bool], &'a [i64]) {
+    fn passthrough<'a, 'b: 'a>(
+        (_, x): (bool, i64),
+        arena: &'b mut Bump,
+    ) -> (&'a [bool], &'a [i64]) {
         let a = fresh(arena);
         (
             a.alloc_slice_fill_iter((0..3).map(|_| true)),
@@ -2116,10 +2158,10 @@ fn mixed_value_and_ref_variadic_groups() {
     let mut b = Builder::new();
     let (_, p0) = b.source(Source(1i64));
     let (p1_cell, p1) = b.source(Source(2i64));
-    let (_, k) = b.source(Source(10i64));
-    let (r0_cell, r0) = b.source(Source(100i64));
-    let (_, r1) = b.source(Source(200i64));
-    let (_, r2) = b.source(Source(300i64));
+    let (_, k) = b.source(RefSource(10i64));
+    let (r0_cell, r0) = b.source(RefSource(100i64));
+    let (_, r1) = b.source(RefSource(200i64));
+    let (_, r2) = b.source(RefSource(300i64));
     let out = b.segment(MixedGroups, (&[p0, p1], k, &[r0, r1, r2]));
     let mut g = b.build();
     let mut pool = pool();
@@ -2160,8 +2202,8 @@ impl Operator for ConcatLens {
 #[test]
 fn view_ports_group_of_slice_views() {
     let mut b = Builder::new();
-    let (_, d0) = b.source(Source(vec![1i64, 2, 3, 4]));
-    let (_, d1) = b.source(Source(vec![10i64, 20]));
+    let (_, d0) = b.source(RefSource(vec![1i64, 2, 3, 4]));
+    let (_, d1) = b.source(RefSource(vec![10i64, 20]));
     let (r0_cell, r0) = b.source(Source((0usize, 2usize)));
     let (_, r1) = b.source(Source((0usize, 2usize)));
     let w0 = b.segment(WindowView, (d0, r0));

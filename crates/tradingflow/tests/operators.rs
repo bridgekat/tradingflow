@@ -14,7 +14,7 @@
 
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Layout, Retention, SeriesView};
 use tradingflow::graph::pool::Pool;
-use tradingflow::graph::typed::{Builder, Val};
+use tradingflow::graph::typed::Builder;
 use tradingflow::operators::{
     constant::*, formula::*, metrics::*, num::*, rolling::*, stocks::*, structural::*, transform::*,
 };
@@ -200,7 +200,7 @@ fn bounded_record_feeds_rolling_and_lag() {
 fn clocked_periodic() {
     let mut b = Builder::new();
     let (data, datav) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (tick_cell, tick) = b.source(Constant::new(()));
+    let (tick_cell, tick) = b.source(const_val(()));
     let gated = b.segment(
         Clocked::new(filter(|_: ArrayView<f64, 0>| true)),
         (tick, datav),
@@ -434,7 +434,7 @@ fn structural_where_cast() {
     let w = b.segment(keep_where(|v: f64| v > 3.0, 0.0_f64), av);
     // `Id` is the whole-value `RefPort` identity — exercise it on a scalar
     // cell (array edges are always `ArrayPort` views, never `RefPort`).
-    let (k_cell, k) = b.source(Constant::<Val<_>>::new(7_i64));
+    let (k_cell, k) = b.source(const_val(7_i64));
     let (ci_cell, ci) = b.source(const_array(Array::from_parts(
         [3],
         vec![1_i32, 2, 3].into(),
@@ -667,7 +667,7 @@ fn concat_axis0() {
 fn metrics_clock_gated() {
     let mut b = Builder::new();
     let (data, datav) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (tick_cell, tick) = b.source(Constant::new(()));
+    let (tick_cell, tick) = b.source(const_val(()));
     let cr = b.segment(compound_return(), (tick, datav));
     let ar = b.segment(average_return(), (tick, datav));
     let vol = b.segment(volatility(), (tick, datav));

@@ -125,8 +125,8 @@
 //! # Creating sources
 //!
 //! Each source is a stream of [`Event`]s, associated onto a source node.
-//! It must implement [`Source`], which declares its timestamp type, its event
-//! payload type, and its stored value and passing policy.
+//! It must implement [`Source`], which declares its events and outputs,
+//! its timestamp type, its mutable state, and the following methods:
 //!
 //! - The [`Source::size_hint`] method should return the total number of
 //!   events in the stream, or `None` if unbounded or unknown.
@@ -141,7 +141,7 @@
 //!
 //! Each segment is a single node of scheduling. It must implement [`Segment`],
 //! which declares its inputs and outputs, its graph context (must be the
-//! timestamp type), its mutable state, and its compute function.
+//! timestamp type), its mutable state, and the following methods:
 //!
 //! - The [`Segment::init`] method is called once during graph construction,
 //!   to create the node's state.
@@ -168,24 +168,18 @@
 //!   carries `(&[bool], &[T])` where `T: Copy + Send + Sync`, and is
 //!   compatible with a group of [`Port<Val<T>>`]s.
 //! - [`Port<Ref<T>>`] — a single pass-by-reference port. It carries
-//!   `(bool, &T)` where `T: Send + Sync`.
+//!   `(bool, &T)` where `T: Sync`.
 //! - [`Ports<Ref<T>>`] — a dynamic-length group of pass-by-reference ports.
-//!   It carries `(&[bool], &[&T])` where `T: Send + Sync`, and is compatible
+//!   It carries `(&[bool], &[&T])` where `T: Sync`, and is compatible
 //!   with a group of [`Port<Ref<T>>`]s.
 //! - Arbitrarily nested tuples of the above (each branch up to arity 12).
 //!
 //! In fact, the [`Port<V>`] and [`Ports<V>`] markers can be used over any
 //! [`Pass`] policy `V`, which allow passing custom lifetime-carrying
 //! `Copy` views (e.g. slices or custom array views) to some underlying data.
-//!
-//! A [`Pass`] policy can be defined on any custom type by:
-//!
-//!   - An owned type [`Pass::Owned`], which is used for source storage;
-//!   - A view type [`Pass::View`], which is used on segment interfaces;
-//!   - A method [`Pass::view`], which derives a view from an owned value.
-//!
 //! The [`Val<T>`] and [`Ref<T>`] are built-in [`Pass`] policies, representing
-//! simple pass-by-value and pass-by-reference.
+//! simple pass-by-value and pass-by-reference. There is also [`Slice<T>`]
+//! allowing passing a slice across a single port.
 //!
 //! For dynamic-length [`Ports`] groups, the length must remain fixed after the
 //! first run, so that we have a well-defined static computation graph.
@@ -339,7 +333,7 @@
 //!         state: &'b mut i64
 //!     ) -> (bool, &'a i64) {
 //!         // A simple forwarding.
-//!         (false, &*state)
+//!         (false, state)
 //!     }
 //!
 //!     fn compute<'a, 'b: 'a>(
@@ -349,7 +343,7 @@
 //!     ) -> (bool, &'a i64) {
 //!         // Compute the sum.
 //!         *state = *a + *b;
-//!         (true, &*state)
+//!         (true, state)
 //!     }
 //! }
 //!

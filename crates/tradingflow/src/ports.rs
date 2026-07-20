@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::data::{Array, ArrayView, Scalar, Series, SeriesView};
+use crate::data::{ArrayView, Scalar, SeriesView};
 use crate::graph::{Interface, Pass, Port, PortHandle, Ports, Val};
 
 /// The [`Pass`] policy which passes borrowed [`ArrayView<'a, T, N>`]
@@ -13,12 +13,6 @@ pub struct ArrayPass<T, const N: usize>(PhantomData<T>);
 // which is covariant in `'a`.
 unsafe impl<T: Scalar, const N: usize> Pass for ArrayPass<T, N> {
     type View<'a> = ArrayView<'a, T, N>;
-    type Owned = Array<T, N>;
-
-    #[inline(always)]
-    fn view(owned: &Array<T, N>) -> ArrayView<'_, T, N> {
-        owned.view()
-    }
 }
 
 /// The [`Pass`] policy which passes borrowed [`SeriesView<'a, T, N>`]
@@ -29,12 +23,6 @@ pub struct SeriesPass<T, const N: usize>(PhantomData<T>);
 // which is covariant in `'a`.
 unsafe impl<T: Scalar, const N: usize> Pass for SeriesPass<T, N> {
     type View<'a> = SeriesView<'a, T, N>;
-    type Owned = Series<T, N>;
-
-    #[inline(always)]
-    fn view(owned: &Series<T, N>) -> SeriesView<'_, T, N> {
-        owned.view()
-    }
 }
 
 /// A single port carrying no payload.

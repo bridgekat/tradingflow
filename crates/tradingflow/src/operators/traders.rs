@@ -689,7 +689,7 @@ mod tests {
         b: &mut Builder<Instant>,
         v: &[f64],
     ) -> (
-        NodeHandle<Constant<ArrayPass<f64, 1>>>,
+        NodeHandle<ConstArray<f64, 1>>,
         PortHandle<ArrayPass<f64, 1>>,
     ) {
         b.source(const_array(arr(v)))
