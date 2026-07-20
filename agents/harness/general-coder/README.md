@@ -18,9 +18,7 @@ only `general_coder/agent.py` changes.
 
 ```console
 $ cd agents/harness/general-coder
-$ python -m venv .venv
-$ .venv\Scripts\activate       # Windows; `source .venv/bin/activate` elsewhere
-$ pip install -e .
+$ uv sync                      # or: python -m venv .venv && pip install -e .
 $ copy .env.example .env       # then put your real DEEPSEEK_API_KEY in .env
 ```
 
@@ -53,16 +51,30 @@ directory is loaded automatically):
 
 | Tool           | Purpose                                                    |
 | -------------- | ---------------------------------------------------------- |
+| `run_command`  | Shell command (asks for approval unless `-y`)              |
+| `list_dir`     | List directory entries                                     |
 | `read_file`    | Read a file with line numbers (paged via `offset`/`limit`) |
 | `write_file`   | Create/overwrite a file                                    |
 | `edit_file`    | Exact-string replacement (unique match required)           |
-| `list_dir`     | List directory entries                                     |
-| `glob_files`   | Find files by glob pattern                                 |
-| `search_files` | Regex search across files (grep-like)                      |
-| `run_command`  | Shell command (asks for approval unless `-y`)              |
+| `glob`         | Find files by glob (`rg --files`, .gitignore-aware)        |
+| `grep`         | Regex search via ripgrep (.gitignore-aware, context lines) |
+| `web_fetch`    | Fetch a page as plain text (paged via `offset`)            |
+| `web_search`   | Web search (keyless, DuckDuckGo via `ddgs`)                |
 
 All tools return errors as strings so the model can observe and recover;
 outputs are truncated at fixed caps to protect the context window.
+
+### Why not the SDK's built-in tools?
+
+The Agents SDK's built-in `WebSearchTool` / `FileSearchTool` /
+`CodeInterpreterTool` are *hosted* tools: they execute server-side on the
+OpenAI platform and require the Responses API backend, so they do not work
+against DeepSeek (or any Chat Completions provider). DeepSeek does offer
+server-side web search, but only on its Anthropic-compatible endpoint
+(`/anthropic`, via `server_tool_use`), which the OpenAI SDK does not speak.
+Hence `web_search` / `web_fetch` are plain function tools that run locally.
+If you point this harness at OpenAI itself one day, you can swap them for
+`WebSearchTool()`.
 
 ## Caveats
 

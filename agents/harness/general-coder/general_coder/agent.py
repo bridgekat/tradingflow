@@ -10,50 +10,66 @@ this module changes.
 
 from __future__ import annotations
 
+import platform
+from datetime import date
 from pathlib import Path
 
-from agents import Agent, OpenAIChatCompletionsModel, set_tracing_disabled
+from agents import ModelSettings, RunResultStreaming, Runner, Agent, OpenAIChatCompletionsModel, set_tracing_disabled
 from openai import AsyncOpenAI
+from openai.types import Reasoning
 
-from .tools import ALL_TOOLS
-
-DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-flash"
+from .tools import ALL_TOOLS, _shell_executable
 
 _INSTRUCTIONS = """\
-You are a general-purpose coding agent operating on the user's machine.
-The working directory is: {cwd}
+You are a data analyst and coding agent operating on the user's machine. You need to help the user with investment advices, and (crucially) perform experiments with Rust or Python code when necessary.
 
-Workflow:
-1. Explore before you act: use list_dir / glob_files / search_files / read_file
-   to understand the relevant code. Never guess file contents — read a file
-   before editing it.
-2. Make focused changes with edit_file (preferred for existing files) or
-   write_file (new files or full rewrites).
-3. Verify your work with run_command (build, tests, linters) when possible.
+# Environment
 
-Rules:
-- Paths may be absolute or relative to the working directory.
-- Keep changes minimal and consistent with the surrounding code style.
-- When done, summarize what you changed and how it was verified. If something
-  failed or was skipped, say so plainly.
+- Operating system: {os_info}
+- Shell for the `run_command` tool: {shell}
+- Working directory at the start of this conversation: {cwd}
+- Date at start of this conversation: {today}
+
+# Tips
+
+- Prefer objective, data-based analysis whenever possible. If there is a lack of data, try `web_search` and `web_fetch` to find a data source, then download and preprocess it.
+- Given a new data source, you can do descriptive statistics (and visualizations for the user) using custom Python scripts, if needed.
+- Keep consistent coding style.
+- When done, summarize what you changed and how it was verified. If something failed or was skipped, say so plainly.
+
+# Notes on TradingFlow (applies if the current working directory is in the `tradingflow` project)
+
+- The TradingFlow project is a quantitative trading backtesting framework written in Rust. Read the root `README.md` for an overview.
+- Its code should be self-documenting: read module-level docstrings, starting from crate roots `crates/tradingflow-*/src/lib.rs` and follow the doc links to get an idea of how everything works first.
+- Whenever there is a need to experiment with a complex trading strategy (where hand-written scripts are likely slow to run, or otherwise suboptimal), you can choose to use TradingFlow by writing a new example in `examples/` and build it with `cargo run --release --example <name>`.
+- Each experiment should not take too long: if a single run takes more than 10 minutes, consider reducing the data range or optimizing the implementation.
 """
 
 
-def build_agent(
-    *,
-    api_key: str,
-    model: str = DEFAULT_MODEL,
-    base_url: str = DEFAULT_BASE_URL,
-) -> Agent:
+def build_agent(base_url: str, api_key: str, model: str) -> Agent:
     """Construct the coding agent against a DeepSeek (or compatible) endpoint."""
+
     # The SDK's tracing exporter uploads to the OpenAI platform, which we are
     # not using; disable it so it does not warn about a missing OpenAI key.
     set_tracing_disabled(True)
     client = AsyncOpenAI(base_url=base_url, api_key=api_key)
-    return Agent(
+    agent = Agent(
         name="general-coding-agent",
-        instructions=_INSTRUCTIONS.format(cwd=Path.cwd()),
+        instructions=_INSTRUCTIONS.format(
+            os_info=f"{platform.system()} {platform.release()} ({platform.machine()})",
+            shell=_shell_executable(),
+            cwd=Path.cwd(),
+            today=date.today().isoformat(),
+        ),
         model=OpenAIChatCompletionsModel(model=model, openai_client=client),
+        model_settings=ModelSettings(reasoning=Reasoning(effort="high", summary="auto")),
         tools=ALL_TOOLS,
     )
+    return agent
+
+
+def run_agent(agent: Agent, items: list, max_turns: int) -> RunResultStreaming:
+    """Execute one run to completion, return the new history."""
+
+    result = Runner.run_streamed(agent, input=items, max_turns=max_turns)
+    return result

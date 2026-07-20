@@ -11,17 +11,16 @@ import asyncio
 import os
 import sys
 
-import openai
-from agents import Runner
 from agents.exceptions import AgentsException
+from openai import OpenAIError
+from openai.types.responses import ResponseTextDeltaEvent, ResponseInputItemParam
 from dotenv import load_dotenv
-from openai.types.responses import ResponseTextDeltaEvent
 
 from . import tools
-from .agent import DEFAULT_BASE_URL, DEFAULT_MODEL, build_agent
+from .agent import build_agent, run_agent
 
-_DIM = "\x1b[2m"
-_RESET = "\x1b[0m"
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEFAULT_MODEL = "deepseek-v4-flash"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -59,60 +58,97 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _oneline(text: str, limit: int = 200) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[:limit] + "…"
+def _short(text: str, limit: int = 200) -> str:
+    # text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
-async def _stream_turn(agent, items: list, max_turns: int) -> list:
-    """Run one task to completion, printing events; returns the new history."""
-    result = Runner.run_streamed(agent, input=items, max_turns=max_turns)
+async def _run_with_output(agent, items: list, max_turns: int) -> list[ResponseInputItemParam]:
+    _DIM = "\x1b[2m"
+    _RESET = "\x1b[0m"
+
+    result = run_agent(agent, items, max_turns)
+    text = False
+
     async for event in result.stream_events():
         if event.type == "raw_response_event":
             if isinstance(event.data, ResponseTextDeltaEvent):
                 print(event.data.delta, end="", flush=True)
-        elif event.type == "run_item_stream_event":
-            item = event.item
-            if item.type == "tool_call_item":
-                raw = item.raw_item
-                name = getattr(raw, "name", "?")
-                args = getattr(raw, "arguments", "")
-                print(f"\n{_DIM}[tool] {name} {_oneline(args)}{_RESET}", flush=True)
-            elif item.type == "tool_call_output_item":
-                print(
-                    f"{_DIM}[tool] -> {_oneline(str(item.output))}{_RESET}", flush=True
-                )
+                text = True
+        else:
+            if text:
+                print("\n", flush=True)
+                text = False
+
+            if event.type == "run_item_stream_event":
+                item = event.item
+                if item.type == "message_output_item":
+                    raw = item.raw_item
+                    for content in raw.content:
+                        if content.type == "output_text":
+                            pass
+                        elif content.type == "refusal":
+                            print(content.refusal, flush=True)
+
+                elif item.type == "reasoning_item":
+                    raw = item.raw_item
+                    for summary in raw.summary:
+                        print(f"{_DIM}[thinking] {summary.text}{_RESET}", flush=True)
+
+                elif item.type == "tool_call_item":
+                    raw = item.raw_item
+                    name = getattr(raw, "name", "?")
+                    args = getattr(raw, "arguments", "")
+                    print(f"\n{_DIM}[tool] {name} {_short(args)}{_RESET}", flush=True)
+
+                elif item.type == "tool_call_output_item":
+                    print(f"{_DIM}[tool] ->", flush=True)
+                    print(f"{_DIM}{_short(item.output)}{_RESET}", flush=True)
+
+                else:
+                    print(f"{_DIM}[other] {item.type}{_RESET}", flush=True)
+
+            elif event.type == "agent_updated_stream_event":
+                print(f"{_DIM}[agent] {event.new_agent.name}{_RESET}", flush=True)
+
     print()
     return result.to_input_list()
 
 
+async def _oneshot(agent, prompt: str, max_turns: int) -> None:
+    await _run_with_output(agent, [{"role": "user", "content": prompt}], max_turns)
+
+
 async def _repl(agent, max_turns: int) -> None:
-    print("general-coder — type a task, 'exit' to quit, '/clear' to reset history.")
+    print("general-coder — type a task, '/exit' to quit, '/clear' to reset history.")
     items: list = []
+
     while True:
         try:
             user = input("\n> ").strip()
+            print()
         except EOFError:
             break
+
         if not user:
             continue
-        if user in ("exit", "quit"):
+
+        if user == "/exit":
             break
+
         if user == "/clear":
             items = []
             print("(history cleared)")
+            print()
             continue
+
         items.append({"role": "user", "content": user})
         try:
-            items = await _stream_turn(agent, items, max_turns)
-        except (AgentsException, openai.OpenAIError) as e:
+            items = await _run_with_output(agent, items, max_turns)
+        except (AgentsException, OpenAIError) as e:
             # Drop the failed turn from history and keep the REPL alive.
             items.pop()
             print(f"\nerror: {e}", file=sys.stderr)
-
-
-async def _oneshot(agent, prompt: str, max_turns: int) -> None:
-    await _stream_turn(agent, [{"role": "user", "content": prompt}], max_turns)
 
 
 def main() -> None:
@@ -122,6 +158,7 @@ def main() -> None:
     if not api_key:
         sys.exit("error: DEEPSEEK_API_KEY is not set (see .env.example).")
     tools.AUTO_APPROVE = args.yes
+
     agent = build_agent(api_key=api_key, model=args.model, base_url=args.base_url)
     try:
         if args.prompt:

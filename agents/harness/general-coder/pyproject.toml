@@ -8,7 +8,13 @@ version = "0.1.0"
 description = "A simple general-purpose coding agent built on the OpenAI Agents SDK, pointed at the DeepSeek API."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["openai-agents>=0.18", "python-dotenv>=1.0"]
+dependencies = [
+    "openai-agents>=0.18",
+    "python-dotenv>=1.0",
+    "ripgrep>=14",
+    "ddgs>=9",
+    "httpx>=0.27",
+]
 
 [project.scripts]
 general-coder = "general_coder.cli:main"
