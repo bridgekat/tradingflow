@@ -49,18 +49,20 @@ directory is loaded automatically):
 
 ## Tool set
 
-| Tool           | Purpose                                                    |
-| -------------- | ---------------------------------------------------------- |
-| `wait`         | Wait for a specified duration or keypress                  |
-| `run_command`  | Shell command (asks for approval unless `-y`)              |
-| `list_dir`     | List directory entries                                     |
-| `read_file`    | Read a file with line numbers (paged via `offset`/`limit`) |
-| `write_file`   | Create/overwrite a file                                    |
-| `edit_file`    | Exact-string replacement (unique match required)           |
-| `glob`         | Find files by glob (`rg --files`, .gitignore-aware)        |
-| `grep`         | Regex search via ripgrep (.gitignore-aware, context lines) |
-| `web_fetch`    | Fetch a page as plain text (paged via `offset`)            |
-| `web_search`   | Web search (keyless, DuckDuckGo via `ddgs`)                |
+| Tool            | Purpose                                                    |
+| --------------- | ---------------------------------------------------------- |
+| `wait`          | Wait for a specified duration or keypress                  |
+| `run_command`   | Shell command (asks for approval unless `-y`); `background=true` starts a job and returns its id |
+| `check_command` | Status + incremental output of a background job            |
+| `kill_command`  | Kill a background job (and its process tree)               |
+| `list_dir`      | List directory entries                                     |
+| `read_file`     | Read a file with line numbers (paged via `offset`/`limit`) |
+| `write_file`    | Create/overwrite a file                                    |
+| `edit_file`     | Exact-string replacement (unique match required)           |
+| `glob`          | Find files by glob (`rg --files`, .gitignore-aware)        |
+| `grep`          | Regex search via ripgrep (.gitignore-aware, context lines) |
+| `web_fetch`     | Fetch a page as plain text (paged via `offset`)            |
+| `web_search`    | Web search (keyless, DuckDuckGo via `ddgs`)                |
 
 All tools return errors as strings so the model can observe and recover;
 outputs are truncated at fixed caps to protect the context window.

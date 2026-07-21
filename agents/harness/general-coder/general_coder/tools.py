@@ -14,11 +14,15 @@ server-side search exists only on its Anthropic-compatible endpoint.)
 from __future__ import annotations
 
 import asyncio
+import atexit
+import codecs
 import functools
+import itertools
 import locale
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -30,6 +34,7 @@ from agents import Tool, function_tool
 _MAX_READ_LINES = 2000
 _MAX_LINE_CHARS = 1000
 _MAX_OUTPUT_CHARS = 50_000
+_MAX_JOB_BUFFER_CHARS = 200_000
 _MAX_MATCHES = 200
 _MAX_GLOB_RESULTS = 500
 _MAX_WEB_RESULTS = 20
@@ -146,27 +151,132 @@ def _rg_executable() -> str | None:
     return str(bundled) if bundled.is_file() else None
 
 
+async def _spawn(argv: list[str], merge_stderr: bool = False) -> asyncio.subprocess.Process:
+    """Start a subprocess with its output captured in pipes.
+
+    On POSIX the child gets its own session, so its process group is `pid`
+    and `_kill_tree` can take out descendants with one killpg.
+    """
+
+    return await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT if merge_stderr else asyncio.subprocess.PIPE,
+        **({} if os.name == "nt" else {"start_new_session": True}),
+    )
+
+
+async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill a `_spawn`ed process and (best-effort) its descendants, then reap it."""
+
+    if proc.returncode is None:
+        if os.name == "nt":
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/F", "/T", "/PID", str(proc.pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )  # fmt: skip
+                await killer.wait()
+            except OSError:
+                pass
+        else:
+            import signal
+
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+    await proc.wait()
+
+
 async def _run_capture(argv: list[str], timeout_seconds: float) -> tuple[int, str, str]:
     """Run a subprocess without blocking the event loop and capture its output.
 
     Returns (returncode, stdout, stderr); raises TimeoutError (after killing
-    the process) or OSError.
+    the process and its descendants) or OSError.
     """
 
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    proc = await _spawn(argv)
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
     except (TimeoutError, asyncio.TimeoutError):
-        proc.kill()
-        await proc.wait()
+        await _kill_tree(proc)
         raise TimeoutError(f"timed out after {timeout_seconds:g} seconds") from None
 
     encoding = locale.getpreferredencoding(False)
     return proc.returncode or 0, stdout.decode(encoding, errors="replace"), stderr.decode(encoding, errors="replace")
+
+
+class _Job:
+    """A background command: its process plus a rolling buffer of its output.
+
+    stdout and stderr are merged into one stream so `check_command` can show
+    them in order. The buffer keeps only the most recent
+    `_MAX_JOB_BUFFER_CHARS` characters; `discarded` counts what was dropped
+    from the front so offsets stay absolute.
+    """
+
+    def __init__(self, job_id: int, command: str, proc: asyncio.subprocess.Process) -> None:
+        self.id = job_id
+        self.command = command
+        self.proc = proc
+        self.output = ""
+        self.discarded = 0
+        self._decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))(errors="replace")
+        self.pump_task: asyncio.Task[None] | None = None
+
+    def _append(self, text: str) -> None:
+        if not text:
+            return
+        self.output += text
+        overflow = len(self.output) - _MAX_JOB_BUFFER_CHARS
+        if overflow > 0:
+            self.output = self.output[overflow:]
+            self.discarded += overflow
+
+    async def pump(self) -> None:
+        """Drain the process's output into the buffer until it exits."""
+        assert self.proc.stdout is not None
+        while True:
+            chunk = await self.proc.stdout.read(65536)
+            if not chunk:
+                break
+            self._append(self._decoder.decode(chunk))
+        self._append(self._decoder.decode(b"", final=True))
+        await self.proc.wait()
+
+
+_jobs: dict[int, _Job] = {}
+_job_ids = itertools.count(1)
+
+
+@atexit.register
+def kill_remaining_jobs() -> None:
+    """Kill background jobs still running when the harness exits.
+
+    Runs after the event loop is gone, so it must use synchronous kills.
+    """
+
+    import signal
+
+    for job in _jobs.values():
+        if job.proc.returncode is not None:
+            continue
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(job.proc.pid)],
+                    capture_output=True,
+                )
+            else:
+                os.killpg(job.proc.pid, signal.SIGKILL)
+        except Exception:
+            pass
 
 
 @function_tool
@@ -202,16 +312,23 @@ def wait(seconds: float) -> str:
 
 
 @function_tool
-async def run_command(command: str, timeout_seconds: int = 120) -> str:
+async def run_command(command: str, timeout_seconds: int = 120, background: bool = False) -> str:
     """Run a shell command in the working directory and return its output.
 
     Use this to build, test, lint, or inspect things the other tools cannot.
     The command runs through the shell named in your environment information;
     the user may be asked to approve it first.
 
+    With `background=true` the command becomes a background job: this returns
+    a job id immediately, and the command keeps running while you do other
+    work. Poll it with `check_command` (use `wait` between polls); stop it
+    with `kill_command`. Use this for servers and for anything expected to
+    outlast `timeout_seconds`.
+
     Args:
         command: The shell command line to execute.
-        timeout_seconds: Kill the command after this many seconds.
+        timeout_seconds: Kill the command after this many seconds (ignored for background jobs).
+        background: Start the command as a background job instead of waiting for it to finish.
     """
 
     if not AUTO_APPROVE:
@@ -228,6 +345,16 @@ async def run_command(command: str, timeout_seconds: int = 120) -> str:
         if reply.strip().lower() not in ("y", "yes"):
             return "Error: command rejected by the user."
 
+    if background:
+        try:
+            proc = await _spawn(_shell_argv(command), merge_stderr=True)
+        except OSError as e:
+            return f"Error running command: {e}"
+        job = _Job(next(_job_ids), command, proc)
+        _jobs[job.id] = job
+        job.pump_task = asyncio.create_task(job.pump())
+        return f"Started background job {job.id} (pid {proc.pid}); poll it with check_command(job_id={job.id})."
+
     try:
         returncode, stdout, stderr = await _run_capture(_shell_argv(command), timeout_seconds)
     except TimeoutError:
@@ -243,6 +370,73 @@ async def run_command(command: str, timeout_seconds: int = 120) -> str:
         parts.append("--- stderr ---\n" + stderr)
 
     return _truncate("\n".join(parts))
+
+
+@function_tool
+async def check_command(job_id: int, offset: int = 0) -> str:
+    """Check on a background command: its status and its output so far.
+
+    Output offsets are absolute (character positions since the job started);
+    pass the offset from the previous check's continuation hint to read only
+    what is new. Note that a running job may produce more output after this
+    returns — poll again (using `wait` between polls) until it exits.
+
+    Args:
+        job_id: A job id returned by `run_command` with background=true.
+        offset: Character offset into the job's output to continue reading from.
+    """
+
+    job = _jobs.get(job_id)
+    if job is None:
+        return f"Error: no background job with id {job_id}."
+
+    if job.proc.returncode is None:
+        status = "running"
+    else:
+        status = f"exited with code {job.proc.returncode}"
+    parts = [f"job {job.id} ({status}): {job.command}"]
+
+    total = job.discarded + len(job.output)
+    offset = max(offset, 0)
+    if offset >= total:
+        parts.append(f"no output at offset {offset} (the job has produced {total} characters).")
+        return "\n".join(parts)
+    if offset < job.discarded:
+        parts.append(f"... [first {job.discarded} characters no longer buffered]")
+        offset = job.discarded
+
+    window = job.output[offset - job.discarded : offset - job.discarded + _MAX_OUTPUT_CHARS]
+    parts.append("--- output ---")
+    parts.append(window)
+    remaining = total - (offset + len(window))
+    if remaining > 0:
+        parts.append(f"... [{remaining} more characters; continue with offset={offset + len(window)}]")
+
+    return "\n".join(parts)
+
+
+@function_tool
+async def kill_command(job_id: int) -> str:
+    """Kill a background command that is no longer needed.
+
+    Args:
+        job_id: A job id returned by `run_command` with background=true.
+    """
+
+    job = _jobs.get(job_id)
+    if job is None:
+        return f"Error: no background job with id {job_id}."
+    if job.proc.returncode is not None:
+        return f"Job {job_id} already exited with code {job.proc.returncode}."
+
+    await _kill_tree(job.proc)
+    if job.pump_task is not None:
+        try:
+            await asyncio.wait_for(job.pump_task, timeout=5)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass  # an orphan holding the pipe open; the buffer is still readable
+
+    return f"Killed job {job_id}; its output remains available via check_command."
 
 
 @function_tool
@@ -587,6 +781,8 @@ async def web_search(query: str, max_results: int = 8) -> str:
 ALL_TOOLS: list[Tool] = [
     wait,
     run_command,
+    check_command,
+    kill_command,
     list_dir,
     read_file,
     write_file,
