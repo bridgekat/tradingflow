@@ -68,7 +68,7 @@ def build_agent(base_url: str, api_key: str, model: str) -> Agent:
     set_tracing_disabled(True)
     client = AsyncOpenAI(base_url=base_url, api_key=api_key)
     agent = Agent(
-        name="general-coder",
+        name="general-research",
         instructions=_INSTRUCTIONS.format(
             os_info=f"{platform.system()} {platform.release()} ({platform.machine()})",
             shell=_shell_executable(),

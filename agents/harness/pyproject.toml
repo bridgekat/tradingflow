@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "general-coder"
+name = "general-research"
 version = "0.1.0"
-description = "A simple general-purpose coding agent built on the OpenAI Agents SDK, pointed at the DeepSeek API."
+description = "A simple general-purpose quant research and coding agent built on the OpenAI Agents SDK, pointed at the DeepSeek API."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-general-coder = "general_coder.cli:main"
+general-research = "general_research.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["general_coder"]
+packages = ["general_research"]

@@ -25,8 +25,8 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="general-coder",
-        description="A simple general-purpose coding agent (OpenAI Agents SDK + DeepSeek).",
+        prog="general-research",
+        description="A simple general-purpose quant research and coding agent (OpenAI Agents SDK + DeepSeek).",
     )
     parser.add_argument(
         "-p",
@@ -114,7 +114,7 @@ async def _oneshot(agent, prompt: str) -> None:
 
 
 async def _repl(agent) -> None:
-    print("general-coder — type a task, '/exit' to quit, '/clear' to reset history.")
+    print("general-research — type a task, '/exit' to quit, '/clear' to reset history.")
     items: list = []
 
     while True:

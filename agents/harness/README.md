@@ -1,6 +1,6 @@
-# `general-coder`
+# `general-research`
 
-A simple general-purpose coding agent built on the
+A simple general-purpose quant research and coding agent built on the
 [OpenAI Agents SDK](https://openai.github.io/openai-agents-python/), pointed at
 the DeepSeek API. Self-contained; independent of the rest of the repository.
 
@@ -12,12 +12,12 @@ supported surface: agent-level code (tools, runner, streaming, sessions) is
 written once against the SDK, and the provider transport is swapped via
 `OpenAIChatCompletionsModel`, the SDK's documented adapter for third-party
 OpenAI-compatible providers. If DeepSeek ships a Responses endpoint later,
-only `general_coder/agent.py` changes.
+only `general_research/agent.py` changes.
 
 ## Setup
 
 ```console
-$ cd agents/harness/general-coder
+$ cd agents/harness
 $ uv sync                      # or: python -m venv .venv && pip install -e .
 $ copy .env.example .env       # then put your real DEEPSEEK_API_KEY in .env
 ```
@@ -28,10 +28,10 @@ Run from the directory you want the agent to work in (tools resolve relative
 paths against the current working directory):
 
 ```console
-$ general-coder                          # interactive REPL
-$ general-coder -p "add a --verbose flag to cli.py"   # one-shot task
-$ general-coder --model deepseek-v4-pro  # thinking model
-$ general-coder -y                       # don't ask before running shell commands
+$ general-research                                       # interactive REPL
+$ general-research -p "add a --verbose flag to cli.py"   # one-shot task
+$ general-research --model deepseek-v4-pro               # thinking model
+$ general-research -y                                    # don't ask before running shell commands
 ```
 
 In the REPL: `exit`/`quit` to leave, `/clear` to reset conversation history.
