@@ -13,11 +13,12 @@ server-side search exists only on its Anthropic-compatible endpoint.)
 
 from __future__ import annotations
 
+import asyncio
 import functools
+import locale
 import os
 import re
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -145,6 +146,29 @@ def _rg_executable() -> str | None:
     return str(bundled) if bundled.is_file() else None
 
 
+async def _run_capture(argv: list[str], timeout_seconds: float) -> tuple[int, str, str]:
+    """Run a subprocess without blocking the event loop and capture its output.
+
+    Returns (returncode, stdout, stderr); raises TimeoutError (after killing
+    the process) or OSError.
+    """
+
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+    except (TimeoutError, asyncio.TimeoutError):
+        proc.kill()
+        await proc.wait()
+        raise TimeoutError(f"timed out after {timeout_seconds:g} seconds") from None
+
+    encoding = locale.getpreferredencoding(False)
+    return proc.returncode or 0, stdout.decode(encoding, errors="replace"), stderr.decode(encoding, errors="replace")
+
+
 @function_tool
 def wait(seconds: float) -> str:
     """Wait for a given duration, e.g. for an external process or a rate limit.
@@ -178,7 +202,7 @@ def wait(seconds: float) -> str:
 
 
 @function_tool
-def run_command(command: str, timeout_seconds: int = 120) -> str:
+async def run_command(command: str, timeout_seconds: int = 120) -> str:
     """Run a shell command in the working directory and return its output.
 
     Use this to build, test, lint, or inspect things the other tools cannot.
@@ -197,33 +221,26 @@ def run_command(command: str, timeout_seconds: int = 120) -> str:
             )
 
         try:
-            reply = input(f"\n  approve command? [y/N] {command}\n  > ").strip().lower()
+            reply = await asyncio.to_thread(input, f"\n  approve command? [y/N] {command}\n  > ")
         except EOFError:
             return "Error: command not run — could not read approval from stdin (rerun the harness with --yes)."
 
-        if reply not in ("y", "yes"):
+        if reply.strip().lower() not in ("y", "yes"):
             return "Error: command rejected by the user."
 
     try:
-        proc = subprocess.run(
-            _shell_argv(command),
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout_seconds,
-            cwd=os.getcwd(),
-        )
-    except subprocess.TimeoutExpired:
+        returncode, stdout, stderr = await _run_capture(_shell_argv(command), timeout_seconds)
+    except TimeoutError:
         return f"Error: command timed out after {timeout_seconds} seconds."
     except OSError as e:
         return f"Error running command: {e}"
 
-    parts = [f"exit code: {proc.returncode}"]
+    parts = [f"exit code: {returncode}"]
 
-    if proc.stdout:
-        parts.append("--- stdout ---\n" + proc.stdout)
-    if proc.stderr:
-        parts.append("--- stderr ---\n" + proc.stderr)
+    if stdout:
+        parts.append("--- stdout ---\n" + stdout)
+    if stderr:
+        parts.append("--- stderr ---\n" + stderr)
 
     return _truncate("\n".join(parts))
 
@@ -353,7 +370,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
 
 
 @function_tool
-def glob(pattern: str, path: str = ".") -> str:
+async def glob(pattern: str, path: str = ".") -> str:
     """List files matching a glob pattern (gitignore-style semantics).
 
     Respects .gitignore and skips hidden files. A bare pattern like `*.py`
@@ -375,16 +392,16 @@ def glob(pattern: str, path: str = ".") -> str:
 
     cmd = [exe, "--files", "--glob", pattern, "--", str(root)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60)
-    except (subprocess.TimeoutExpired, OSError) as e:
+        returncode, stdout, stderr = await _run_capture(cmd, 60)
+    except (TimeoutError, OSError) as e:
         return f"Error: ripgrep failed to run: {e}"
 
-    if not proc.stdout:
-        if proc.returncode in (0, 1):  # rg --files exits 1 when nothing was listed
+    if not stdout:
+        if returncode in (0, 1):  # rg --files exits 1 when nothing was listed
             return f"No files match {pattern!r} in {root}."
-        return f"Error: ripgrep failed: {proc.stderr.strip() or f'exit code {proc.returncode}'}"
+        return f"Error: ripgrep failed: {stderr.strip() or f'exit code {returncode}'}"
 
-    matches = sorted(proc.stdout.splitlines())
+    matches = sorted(stdout.splitlines())
     shown = matches[:_MAX_GLOB_RESULTS]
     out = "\n".join(shown)
     if len(matches) > len(shown):
@@ -394,7 +411,7 @@ def glob(pattern: str, path: str = ".") -> str:
 
 
 @function_tool
-def grep(pattern: str, path: str = ".", glob: str = "", context: int = 0, ignore_case: bool = False) -> str:
+async def grep(pattern: str, path: str = ".", glob: str = "", context: int = 0, ignore_case: bool = False) -> str:
     """Search file contents with ripgrep, like grep -rn.
 
     Respects .gitignore and skips hidden and binary files. Output lines are
@@ -425,16 +442,16 @@ def grep(pattern: str, path: str = ".", glob: str = "", context: int = 0, ignore
         cmd.append("--ignore-case")
     cmd += ["--regexp", pattern, "--", str(root)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60)
-    except (subprocess.TimeoutExpired, OSError) as e:
+        returncode, stdout, stderr = await _run_capture(cmd, 60)
+    except (TimeoutError, OSError) as e:
         return f"Error: ripgrep failed to run: {e}"
 
-    if not proc.stdout:
-        if proc.returncode == 1:  # rg: 0 = matches, 1 = no matches, 2 = error
+    if not stdout:
+        if returncode == 1:  # rg: 0 = matches, 1 = no matches, 2 = error
             return f"No matches for {pattern!r} under {root}."
-        return f"Error: ripgrep failed: {proc.stderr.strip() or f'exit code {proc.returncode}'}"
+        return f"Error: ripgrep failed: {stderr.strip() or f'exit code {returncode}'}"
 
-    lines = proc.stdout.splitlines()
+    lines = stdout.splitlines()
     if len(lines) > _MAX_MATCHES:
         lines = lines[:_MAX_MATCHES] + [f"... [stopped at {_MAX_MATCHES} lines; narrow the search]"]
 
@@ -490,7 +507,7 @@ def _html_to_text(html: str) -> str:
 
 
 @function_tool
-def web_fetch(url: str, offset: int = 0) -> str:
+async def web_fetch(url: str, offset: int = 0) -> str:
     """Fetch a web page and return its visible text (HTML tags stripped).
 
     Args:
@@ -502,12 +519,8 @@ def web_fetch(url: str, offset: int = 0) -> str:
         return "Error: only http(s) URLs are supported."
 
     try:
-        resp = httpx.get(
-            url,
-            headers={"User-Agent": _USER_AGENT},
-            follow_redirects=True,
-            timeout=30.0,
-        )
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            resp = await client.get(url, headers={"User-Agent": _USER_AGENT})
     except httpx.HTTPError as e:
         return f"Error fetching {url}: {e}"
 
@@ -532,7 +545,7 @@ def web_fetch(url: str, offset: int = 0) -> str:
 
 
 @function_tool
-def web_search(query: str, max_results: int = 8) -> str:
+async def web_search(query: str, max_results: int = 8) -> str:
     """Search the web and return result titles, URLs, and snippets.
 
     Use `web_fetch` afterwards to read the full text of a promising result.
@@ -543,13 +556,17 @@ def web_search(query: str, max_results: int = 8) -> str:
     """
     from ddgs import DDGS  # imported lazily: constructing it opens an HTTP client
 
+    def search() -> list[dict]:
+        return list(DDGS(timeout=15).text(query, max_results=n))
+
     # ddgs rotates across search providers; a transient failure on one is
-    # common, and retrying usually lands on a different provider.
+    # common, and retrying usually lands on a different provider. The ddgs
+    # client is synchronous, so it runs in a thread to keep the loop free.
     n = max(1, min(max_results, _MAX_WEB_RESULTS))
     results = []
     for attempt in (1, 2):
         try:
-            results = list(DDGS(timeout=15).text(query, max_results=n))
+            results = await asyncio.to_thread(search)
             break
         except Exception as e:  # the backends raise assorted network errors
             if attempt == 2:

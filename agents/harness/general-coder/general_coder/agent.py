@@ -21,7 +21,7 @@ from openai.types import Reasoning
 from .tools import ALL_TOOLS, _shell_executable
 
 _INSTRUCTIONS = """\
-You are a quant researcher and coding agent operating on the user's machine. You need to help the user with investment advice, and (crucially) perform experiments with Rust or Python code when necessary.
+You are a quant researcher and coding agent operating on the user's machine. You need to help the user with investment advice, and (crucially) perform experiments with Rust and Python code when necessary.
 
 # Environment
 
