@@ -51,6 +51,7 @@ directory is loaded automatically):
 
 | Tool           | Purpose                                                    |
 | -------------- | ---------------------------------------------------------- |
+| `wait`         | Wait for a specified duration or keypress                  |
 | `run_command`  | Shell command (asks for approval unless `-y`)              |
 | `list_dir`     | List directory entries                                     |
 | `read_file`    | Read a file with line numbers (paged via `offset`/`limit`) |

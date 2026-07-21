@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from html.parser import HTMLParser
 import httpx
@@ -33,6 +34,7 @@ _MAX_GLOB_RESULTS = 500
 _MAX_WEB_RESULTS = 20
 _MAX_FETCH_CHARS = 20_000
 _MAX_FETCH_BYTES = 5_000_000
+_MAX_WAIT_SECONDS = 600
 
 # Some sites reject non-browser user agents outright.
 _USER_AGENT = (
@@ -53,6 +55,55 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n... [truncated; {len(text) - limit} more characters]"
+
+
+def _sleep_until_keypress(seconds: float) -> bool:
+    """Sleep for up to `seconds`; return True if a keypress ended it early.
+
+    Keypresses can only be observed when stdin is a terminal; otherwise this
+    is a plain uninterruptible sleep. Any keystrokes already buffered before
+    the wait starts are discarded so a stale key cannot cancel it instantly.
+    """
+
+    deadline = time.monotonic() + seconds
+
+    if not sys.stdin.isatty():
+        time.sleep(seconds)
+        return False
+
+    if os.name == "nt":
+        import msvcrt
+
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if msvcrt.kbhit():
+                msvcrt.getwch()
+                return True
+            time.sleep(min(0.05, remaining))
+
+    import select
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old_attrs = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)  # deliver single keystrokes without waiting for Enter
+        termios.tcflush(fd, termios.TCIFLUSH)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            readable, _, _ = select.select([fd], [], [], remaining)
+            if readable:
+                os.read(fd, 1)
+                return True
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 
 
 @functools.lru_cache(maxsize=1)
@@ -92,6 +143,38 @@ def _rg_executable() -> str | None:
         return exe
     bundled = Path(sys.executable).parent / ("rg.exe" if os.name == "nt" else "rg")
     return str(bundled) if bundled.is_file() else None
+
+
+@function_tool
+def wait(seconds: float) -> str:
+    """Wait for a given duration, e.g. for an external process or a rate limit.
+
+    While waiting, the user can press any key to end the wait immediately.
+    The result reports how long was actually waited and whether the wait ran
+    to completion or was cut short by the user.
+
+    Args:
+        seconds: How long to wait, in seconds (at most 600; wait repeatedly for longer pauses).
+    """
+
+    if not seconds > 0:
+        return "Error: seconds must be positive."
+    if seconds > _MAX_WAIT_SECONDS:
+        return f"Error: seconds must be at most {_MAX_WAIT_SECONDS}; wait repeatedly for longer pauses."
+
+    if sys.stdin.isatty():
+        print(f"\n  waiting {seconds:g}s - press any key to end the wait early", flush=True)
+
+    start = time.monotonic()
+    try:
+        stopped_by_user = _sleep_until_keypress(seconds)
+    except OSError as e:
+        return f"Error: {e}"
+    elapsed = time.monotonic() - start
+
+    if stopped_by_user:
+        return f"waited for {elapsed:.1f} seconds (user ended the wait)"
+    return f"waited for {elapsed:.1f} seconds"
 
 
 @function_tool
@@ -485,6 +568,7 @@ def web_search(query: str, max_results: int = 8) -> str:
 
 
 ALL_TOOLS: list[Tool] = [
+    wait,
     run_command,
     list_dir,
     read_file,
