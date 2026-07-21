@@ -18,7 +18,6 @@ import atexit
 import codecs
 import functools
 import itertools
-import locale
 import os
 import re
 import shutil
@@ -134,9 +133,36 @@ def _shell_argv(command: str) -> list[str]:
         case "pwsh" | "powershell":
             # -NoProfile: fast and reproducible startup; -NonInteractive: fail
             # instead of hanging when something prompts for input.
-            return [shell, "-NoProfile", "-NonInteractive", "-Command", command]
+            #
+            # `powershell -Command` exits with a bare 0/1, discarding a native
+            # command's exit code, so propagate $LASTEXITCODE ourselves: keep 1
+            # for failures with no native code (cmdlet errors), and let an
+            # explicit `exit` inside the command win by exiting earlier.
+            # NativeCommandError(-Message) is exempt from the cmdlet-failure
+            # fallback: it is how PowerShell 5.1 reports a `2>&1`-redirected
+            # native command's stderr, which flips $? even on success. The
+            # wrapper lines are joined with newlines, not `;`, so a trailing
+            # `#` comment in the command cannot swallow them.
+            #
+            # The encoding preamble makes PowerShell read native output, write
+            # its own output, and feed native stdin in UTF-8, and (via the
+            # console codepage) tells console-aware natives to emit UTF-8 too.
+            wrapped = "\n".join([
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+                "$OutputEncoding = [System.Text.Encoding]::UTF8",
+                "$LASTEXITCODE = 0",
+                command,
+                "if (-not $? -and $LASTEXITCODE -eq 0) {",
+                "  $eid = if ($Error.Count) { $Error[0].FullyQualifiedErrorId } else { '' }",
+                "  if ($eid -notin 'NativeCommandError', 'NativeCommandErrorMessage') { exit 1 }",
+                "}",
+                "exit $LASTEXITCODE",
+            ])  # fmt: skip
+            return [shell, "-NoProfile", "-NonInteractive", "-Command", wrapped]
         case "cmd":
-            return [shell, "/d", "/s", "/c", command]
+            # chcp 65001 switches the (private, see _spawn) console to UTF-8;
+            # errorlevel still comes from the user's command, not chcp.
+            return [shell, "/d", "/s", "/c", f"chcp 65001>nul & {command}"]
         case _:
             return [shell, "-c", command]
 
@@ -154,15 +180,26 @@ def _rg_executable() -> str | None:
 async def _spawn(argv: list[str], merge_stderr: bool = False) -> asyncio.subprocess.Process:
     """Start a subprocess with its output captured in pipes.
 
-    On POSIX the child gets its own session, so its process group is `pid`
-    and `_kill_tree` can take out descendants with one killpg.
+    All tool I/O is UTF-8, so children are nudged to produce it: Python
+    subprocesses via PYTHONIOENCODING/PYTHONUTF8 (piped Python otherwise
+    falls back to the ANSI codepage on Windows), the shells via _shell_argv's
+    preambles. On Windows the child gets its own invisible console
+    (CREATE_NO_WINDOW) so those preambles cannot reconfigure the codepage of
+    the terminal the harness runs in; on POSIX it gets its own session, so
+    its process group is `pid` and `_kill_tree` can take out descendants
+    with one killpg.
     """
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
 
     return await asyncio.create_subprocess_exec(
         *argv,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT if merge_stderr else asyncio.subprocess.PIPE,
-        **({} if os.name == "nt" else {"start_new_session": True}),
+        env=env,
+        **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}),
     )
 
 
@@ -208,8 +245,7 @@ async def _run_capture(argv: list[str], timeout_seconds: float) -> tuple[int, st
         await _kill_tree(proc)
         raise TimeoutError(f"timed out after {timeout_seconds:g} seconds") from None
 
-    encoding = locale.getpreferredencoding(False)
-    return proc.returncode or 0, stdout.decode(encoding, errors="replace"), stderr.decode(encoding, errors="replace")
+    return proc.returncode or 0, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
 
 
 class _Job:
@@ -227,7 +263,7 @@ class _Job:
         self.proc = proc
         self.output = ""
         self.discarded = 0
-        self._decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))(errors="replace")
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self.pump_task: asyncio.Task[None] | None = None
 
     def _append(self, text: str) -> None:

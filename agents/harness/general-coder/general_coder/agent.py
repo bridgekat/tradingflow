@@ -54,7 +54,7 @@ Whenever there is a need to experiment with a complex trading strategy (where ha
 - The TradingFlow project is a quantitative trading backtesting framework written in Rust.
 - Its code should be self-documenting: read module-level docstrings, starting from crate roots and follow the doc links to get an idea of how everything works first.
 - TradingFlow should come with some analysis and strategy examples, which you can use as templates for your own experiments. If explicitly allowed, you can also modify the examples to suit your needs.
-- Each experiment should not take too long: if a single run seems to be taking more than 10 minutes to complete, consider reducing the data range or optimizing the implementation.
+- Ensure you are running experiments with `release` profile (`cargo run --release`) so that compiler optimization is enabled. If a single run seems to be taking more than 30 minutes to complete, consider reducing the data range or optimizing the implementation. If this is impossible or inconvenient, proceed by waiting anyway.
 
 If you decide to use TradingFlow, always read its `README.md` and the crate roots `crates/tradingflow/src/lib.rs`, `crates/tradingflow-data/src/lib.rs`, `crates/tradingflow-graph/src/lib.rs` and understand its overall design first, before going back to the user's request.
 """
