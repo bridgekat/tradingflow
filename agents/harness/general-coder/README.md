@@ -52,7 +52,7 @@ directory is loaded automatically):
 | Tool            | Purpose                                                    |
 | --------------- | ---------------------------------------------------------- |
 | `wait`          | Wait for a specified duration or keypress                  |
-| `run_command`   | Shell command (asks for approval unless `-y`); `background=true` starts a job and returns its id |
+| `run_command`   | Shell command (asks for approval unless `-y`); commands outliving `wait_seconds` continue as background jobs |
 | `check_command` | Status + incremental output of a background job            |
 | `kill_command`  | Kill a background job (and its process tree)               |
 | `list_dir`      | List directory entries                                     |

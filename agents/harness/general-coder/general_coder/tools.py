@@ -40,7 +40,7 @@ _MAX_GLOB_RESULTS = 500
 _MAX_WEB_RESULTS = 20
 _MAX_FETCH_CHARS = 20_000
 _MAX_FETCH_BYTES = 5_000_000
-_MAX_WAIT_SECONDS = 600
+_MAX_WAIT_SECONDS = 60
 
 # Some sites reject non-browser user agents outright.
 _USER_AGENT = (
@@ -288,7 +288,7 @@ def wait(seconds: float) -> str:
     to completion or was cut short by the user.
 
     Args:
-        seconds: How long to wait, in seconds (at most 600; wait repeatedly for longer pauses).
+        seconds: How long to wait, in seconds (at most 60; wait repeatedly for longer pauses).
     """
 
     if not seconds > 0:
@@ -312,24 +312,27 @@ def wait(seconds: float) -> str:
 
 
 @function_tool
-async def run_command(command: str, timeout_seconds: int = 120, background: bool = False) -> str:
+async def run_command(command: str, wait_seconds: float = 10) -> str:
     """Run a shell command in the working directory and return its output.
 
     Use this to build, test, lint, or inspect things the other tools cannot.
     The command runs through the shell named in your environment information;
-    the user may be asked to approve it first.
+    the user may be asked to approve it first. stdout and stderr are merged.
 
-    With `background=true` the command becomes a background job: this returns
-    a job id immediately, and the command keeps running while you do other
-    work. Poll it with `check_command` (use `wait` between polls); stop it
-    with `kill_command`. Use this for servers and for anything expected to
-    outlast `timeout_seconds`.
+    If the command finishes within `wait_seconds` you get its exit code and
+    output directly. Otherwise it keeps running as a background job and you
+    get a job id plus the output so far: poll it with `check_command` (use
+    `wait` between polls) and stop it with `kill_command`. Commands are never
+    killed by a timeout. Set `wait_seconds` high to sit out something like a
+    long build in one call, or to 0 to launch e.g. a server and move on.
 
     Args:
         command: The shell command line to execute.
-        timeout_seconds: Kill the command after this many seconds (ignored for background jobs).
-        background: Start the command as a background job instead of waiting for it to finish.
+        wait_seconds: How long to wait before letting the command continue in the background (at most 60).
     """
+
+    if not 0 <= wait_seconds <= _MAX_WAIT_SECONDS:
+        return f"Error: wait_seconds must be between 0 and {_MAX_WAIT_SECONDS}."
 
     if not AUTO_APPROVE:
         if not sys.stdin.isatty():
@@ -345,31 +348,44 @@ async def run_command(command: str, timeout_seconds: int = 120, background: bool
         if reply.strip().lower() not in ("y", "yes"):
             return "Error: command rejected by the user."
 
-    if background:
-        try:
-            proc = await _spawn(_shell_argv(command), merge_stderr=True)
-        except OSError as e:
-            return f"Error running command: {e}"
-        job = _Job(next(_job_ids), command, proc)
-        _jobs[job.id] = job
-        job.pump_task = asyncio.create_task(job.pump())
-        return f"Started background job {job.id} (pid {proc.pid}); poll it with check_command(job_id={job.id})."
-
     try:
-        returncode, stdout, stderr = await _run_capture(_shell_argv(command), timeout_seconds)
-    except TimeoutError:
-        return f"Error: command timed out after {timeout_seconds} seconds."
+        proc = await _spawn(_shell_argv(command), merge_stderr=True)
     except OSError as e:
         return f"Error running command: {e}"
 
-    parts = [f"exit code: {returncode}"]
+    job = _Job(next(_job_ids), command, proc)
+    _jobs[job.id] = job
+    job.pump_task = asyncio.create_task(job.pump())
 
-    if stdout:
-        parts.append("--- stdout ---\n" + stdout)
-    if stderr:
-        parts.append("--- stderr ---\n" + stderr)
+    # `shield` so the grace-period timeout does not cancel the pump itself.
+    if wait_seconds > 0:
+        try:
+            await asyncio.wait_for(asyncio.shield(job.pump_task), timeout=wait_seconds)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
 
-    return _truncate("\n".join(parts))
+    if job.proc.returncode is not None:
+        del _jobs[job.id]
+        parts = [f"exit code: {job.proc.returncode}"]
+        if job.output or job.discarded:
+            parts.append("--- output ---")
+            if job.discarded:
+                parts.append(f"... [first {job.discarded} characters dropped; only the tail is kept]")
+            parts.append(job.output)
+        return _truncate("\n".join(parts))
+
+    shown = job.output[:_MAX_OUTPUT_CHARS]
+    parts = [
+        f"Still running after {wait_seconds:g} seconds; continuing as background job {job.id} (pid {proc.pid}).",
+        f"Poll new output with check_command(job_id={job.id}, offset={job.discarded + len(shown)})"
+        f" (use `wait` between polls); stop it with kill_command.",
+    ]
+    if shown:
+        parts.append("--- output so far ---")
+        parts.append(shown)
+        if len(job.output) > len(shown):
+            parts.append(f"... [{len(job.output) - len(shown)} more characters already produced]")
+    return "\n".join(parts)
 
 
 @function_tool
@@ -382,7 +398,7 @@ async def check_command(job_id: int, offset: int = 0) -> str:
     returns — poll again (using `wait` between polls) until it exits.
 
     Args:
-        job_id: A job id returned by `run_command` with background=true.
+        job_id: A job id reported by `run_command` when the command kept running.
         offset: Character offset into the job's output to continue reading from.
     """
 
@@ -420,7 +436,7 @@ async def kill_command(job_id: int) -> str:
     """Kill a background command that is no longer needed.
 
     Args:
-        job_id: A job id returned by `run_command` with background=true.
+        job_id: A job id reported by `run_command` when the command kept running.
     """
 
     job = _jobs.get(job_id)

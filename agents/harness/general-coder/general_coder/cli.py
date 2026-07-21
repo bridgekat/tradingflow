@@ -44,12 +44,6 @@ def _parse_args() -> argparse.Namespace:
         help="OpenAI-compatible endpoint (default: %(default)s)",
     )
     parser.add_argument(
-        "--max-turns",
-        type=int,
-        default=50,
-        help="maximum model turns per task (default: %(default)s)",
-    )
-    parser.add_argument(
         "-y",
         "--yes",
         action="store_true",
@@ -63,11 +57,11 @@ def _short(text: str, limit: int = 200) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
-async def _run_with_output(agent, items: list, max_turns: int) -> list[ResponseInputItemParam]:
+async def _run_with_output(agent, items: list) -> list[ResponseInputItemParam]:
     _DIM = "\x1b[2m"
     _RESET = "\x1b[0m"
 
-    result = run_agent(agent, items, max_turns)
+    result = run_agent(agent, items)
     text = False
 
     async for event in result.stream_events():
@@ -115,11 +109,11 @@ async def _run_with_output(agent, items: list, max_turns: int) -> list[ResponseI
     return result.to_input_list()
 
 
-async def _oneshot(agent, prompt: str, max_turns: int) -> None:
-    await _run_with_output(agent, [{"role": "user", "content": prompt}], max_turns)
+async def _oneshot(agent, prompt: str) -> None:
+    await _run_with_output(agent, [{"role": "user", "content": prompt}])
 
 
-async def _repl(agent, max_turns: int) -> None:
+async def _repl(agent) -> None:
     print("general-coder — type a task, '/exit' to quit, '/clear' to reset history.")
     items: list = []
 
@@ -144,7 +138,7 @@ async def _repl(agent, max_turns: int) -> None:
 
         items.append({"role": "user", "content": user})
         try:
-            items = await _run_with_output(agent, items, max_turns)
+            items = await _run_with_output(agent, items)
         except (AgentsException, OpenAIError) as e:
             # Drop the failed turn from history and keep the REPL alive.
             items.pop()
@@ -162,9 +156,9 @@ def main() -> None:
     agent = build_agent(api_key=api_key, model=args.model, base_url=args.base_url)
     try:
         if args.prompt:
-            asyncio.run(_oneshot(agent, args.prompt, args.max_turns))
+            asyncio.run(_oneshot(agent, args.prompt))
         else:
-            asyncio.run(_repl(agent, args.max_turns))
+            asyncio.run(_repl(agent))
     except KeyboardInterrupt:
         print()
 

@@ -32,9 +32,10 @@ You are a quant researcher and coding agent operating on the user's machine. You
 
 # General tips
 
+- If any link appears to lead to an important or information-dense piece of documentation (e.g. overview, tutorial, interface spec), follow it. More knowledge helps you take informed actions.
 - Make sure to read and understand any code you are trying to run: know its capabilities, limitations and estimate its performance. Make sure inputs are correct, and the logic is sound.
 - Keep consistent style in your code.
-- If a command can take more than a few seconds to run, you can use `run_command` with `background = True` to run it in the background, then use `check_command` to check for its outputs periodically. This also allows for running programs in parallel.
+- If a command can take more than a few seconds to run, you can use `run_command` with `wait_seconds = 0` to run it in the background, then use `check_command` to check for its outputs periodically. This also allows for running programs in parallel.
 - When something is running, you can `wait` for shorter periods of time (e.g., 5-30 seconds) to see if it is making progress at an expected pace. After that, you can repeatedly `wait` for longer periods of time.
 - When done, summarize what you changed and how it was verified. If something failed or was skipped, say so plainly.
 
@@ -50,12 +51,12 @@ You are a quant researcher and coding agent operating on the user's machine. You
 
 Whenever there is a need to experiment with a complex trading strategy (where hand-written scripts are likely slow to run, or otherwise suboptimal), you can choose to use TradingFlow. In which case, the following tips may help:
 
-- The TradingFlow project is a quantitative trading backtesting framework written in Rust. Read the root `README.md` for an overview.
-- Its code should be self-documenting: read module-level docstrings, starting from crate roots `crates/tradingflow-*/src/lib.rs` and follow the doc links to get an idea of how everything works first.
+- The TradingFlow project is a quantitative trading backtesting framework written in Rust.
+- Its code should be self-documenting: read module-level docstrings, starting from crate roots and follow the doc links to get an idea of how everything works first.
 - TradingFlow should come with some analysis and strategy examples, which you can use as templates for your own experiments. If explicitly allowed, you can also modify the examples to suit your needs.
 - Each experiment should not take too long: if a single run seems to be taking more than 10 minutes to complete, consider reducing the data range or optimizing the implementation.
 
-If you decide to use TradingFlow, always read its docs and understand its overall design first, before going back to the user's request.
+If you decide to use TradingFlow, always read its `README.md` and the crate roots `crates/tradingflow/src/lib.rs`, `crates/tradingflow-data/src/lib.rs`, `crates/tradingflow-graph/src/lib.rs` and understand its overall design first, before going back to the user's request.
 """
 
 
@@ -67,7 +68,7 @@ def build_agent(base_url: str, api_key: str, model: str) -> Agent:
     set_tracing_disabled(True)
     client = AsyncOpenAI(base_url=base_url, api_key=api_key)
     agent = Agent(
-        name="general-coding-agent",
+        name="general-coder",
         instructions=_INSTRUCTIONS.format(
             os_info=f"{platform.system()} {platform.release()} ({platform.machine()})",
             shell=_shell_executable(),
@@ -81,8 +82,8 @@ def build_agent(base_url: str, api_key: str, model: str) -> Agent:
     return agent
 
 
-def run_agent(agent: Agent, items: list, max_turns: int) -> RunResultStreaming:
+def run_agent(agent: Agent, items: list) -> RunResultStreaming:
     """Execute one run to completion, return the new history."""
 
-    result = Runner.run_streamed(agent, input=items, max_turns=max_turns)
+    result = Runner.run_streamed(agent, input=items, max_turns=None)
     return result
