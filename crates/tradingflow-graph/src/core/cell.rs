@@ -10,7 +10,6 @@ pub struct ErasedCell {
 }
 
 impl ErasedCell {
-    #[inline]
     pub fn new<T: Send + 'static>(value: T) -> Self {
         let boxed = Box::new(value);
         ErasedCell {
@@ -20,12 +19,10 @@ impl ErasedCell {
         }
     }
 
-    #[inline]
     pub fn type_id(&self) -> TypeId {
         self.type_id
     }
 
-    #[inline]
     pub fn get(&self) -> *mut () {
         self.data.as_ptr()
     }

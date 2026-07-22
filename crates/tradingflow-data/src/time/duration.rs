@@ -5,7 +5,7 @@ use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 /// `repr(transparent)`.
 ///
 /// This type is considered "naive" in that it does not assume a particular
-/// time scale: whether it stands for SI or UTC nanoseconds is up to the user.
+/// time scale. See [module-level documentation](crate) for more.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Duration(i64);

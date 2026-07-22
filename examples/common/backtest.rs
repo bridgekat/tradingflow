@@ -13,7 +13,7 @@
 //! benchmark), and execution is the native [`Benchmark`] trader (one-tick-delay
 //! mark-on-close, dividend reinvest, 涨跌停 limit blocking). No new operators.
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
@@ -41,7 +41,7 @@ pub struct DecileBacktest {
 /// turnover record)`. `low == 0 && high == 1` is the equal-weight benchmark.
 #[allow(clippy::too_many_arguments)]
 fn bucket_nav(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     universe: ArrayPortHandle<f64, 1>,
     factor: ArrayPortHandle<f64, 1>,
     close: ArrayPortHandle<f64, 1>,
@@ -77,7 +77,7 @@ fn bucket_nav(
 /// Build the 10-decile layered backtest for `factor` over `universe`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_decile_backtest(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     universe: ArrayPortHandle<f64, 1>,
     factor: ArrayPortHandle<f64, 1>,
     close: ArrayPortHandle<f64, 1>,

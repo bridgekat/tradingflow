@@ -96,7 +96,6 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::statistics::Statistics;
 use tokio::sync::mpsc;
 
-use super::receiver_stream;
 use crate::data::{Array, ArrayView, Duration, Instant};
 use crate::graph::{Event, Source};
 use crate::ports::ArrayPort;
@@ -215,6 +214,15 @@ pub struct RowUpdate {
 pub struct PanelState {
     last_ts: Option<Instant>,
     dirty: Vec<usize>,
+}
+
+fn receiver_stream<E: Send + 'static>(
+    rx: mpsc::Receiver<(E, Instant)>,
+) -> impl Stream<Item = Event<E, Instant>> + Send + 'static {
+    futures::stream::unfold(rx, |mut rx| async move {
+        let (ts, event) = rx.recv().await?;
+        Some((Event::at(ts, event), rx))
+    })
 }
 
 /// Shared writer body for both panel sources: apply one tick's batch.

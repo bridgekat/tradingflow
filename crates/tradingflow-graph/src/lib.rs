@@ -15,7 +15,7 @@
 //!
 //! ```rust
 //! use futures::Stream;
-//! use tradingflow::clock::WallClock;
+//! use tradingflow::clock::UnixClock;
 //! use tradingflow::data::*;
 //! use tradingflow::graph::*;
 //!
@@ -84,7 +84,7 @@
 //!     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
 //!
 //!     // Build the graph.
-//!     let mut b = Builder::new(WallClock);
+//!     let mut b = Builder::new(UnixClock);
 //!     let s = b.source(SeqSource(vec![1, 2, 3, 4, 5]));
 //!     let t = b.source(SeqSource(vec![10, 20, 30, 40, 50]));
 //!     let x = b.segment(Add, (s, t));
@@ -304,7 +304,7 @@
 //! that compiles down to combinators like the Arrow notation in Haskell[^1]:
 //!
 //! ```rust
-//! use tradingflow::clock::WallClock;
+//! use tradingflow::clock::UnixClock;
 //! use tradingflow::data::*;
 //! use tradingflow::graph::*;
 //! use tradingflow::segment;
@@ -347,7 +347,7 @@
 //!     }
 //! }
 //!
-//! let mut b = Builder::new(WallClock);
+//! let mut b = Builder::new(UnixClock);
 //! let s = b.source(vec_source(vec![(Instant::EPOCH, 1)]));
 //! let t = b.source(vec_source(vec![(Instant::EPOCH, 2)]));
 //!

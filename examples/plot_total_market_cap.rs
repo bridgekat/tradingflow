@@ -19,7 +19,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::num::multiply;
@@ -45,7 +45,7 @@ async fn main() {
     let n = symbols.len();
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);
 
-    let mut sc = Builder::new(WallClock);
+    let mut sc = Builder::new(UnixClock);
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));

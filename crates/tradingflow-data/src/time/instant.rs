@@ -7,7 +7,7 @@ use super::Duration;
 /// fixed epoch. Stored as an [`i64`] with `repr(transparent)`.
 ///
 /// This type is considered "naive" in that it does not assume a particular
-/// time scale: whether it stands for TAI or UTC timestamp is up to the user.
+/// time scale. See [module-level documentation](crate) for more.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Instant(i64);

@@ -173,21 +173,16 @@ unsafe impl Interface for () {
     type InScratch = ();
     type OutScratch = ();
 
-    #[inline]
     fn flat_len(_shape: &mut FlatRead<usize>) -> usize {
         0
     }
 
-    #[inline]
     fn type_ids_to_vec(_shape: &mut FlatRead<usize>, _writer: &mut Vec<TypeId>) {}
 
-    #[inline]
     fn in_scratch(_shape: &mut FlatRead<usize>) {}
 
-    #[inline]
     fn out_scratch() {}
 
-    #[inline]
     unsafe fn values_from_flat<'a>(
         _shape: &mut FlatRead<'a, usize>,
         _flags: &mut FlatRead<'a, bool>,
@@ -196,7 +191,6 @@ unsafe impl Interface for () {
     ) {
     }
 
-    #[inline]
     unsafe fn values_to_flat<'a>(
         _values: Self::Values<'a>,
         _flags: &mut FlatWrite<bool>,
@@ -205,7 +199,6 @@ unsafe impl Interface for () {
     ) {
     }
 
-    #[inline]
     unsafe fn values_to_vecs<'a>(
         _values: Self::Values<'a>,
         _shape: &mut Vec<usize>,
@@ -215,7 +208,6 @@ unsafe impl Interface for () {
     ) {
     }
 
-    #[inline]
     fn any_notify(_: &()) -> bool {
         false
     }
@@ -234,27 +226,22 @@ macro_rules! impl_interface_for_tuple {
             type InScratch = ($($T::InScratch,)+);
             type OutScratch = ($($T::OutScratch,)+);
 
-            #[inline]
             fn flat_len(shape: &mut FlatRead<usize>) -> usize {
                 0 $(+ $T::flat_len(shape))+
             }
 
-            #[inline]
             fn type_ids_to_vec(shape: &mut FlatRead<usize>, writer: &mut Vec<TypeId>) {
                 $( $T::type_ids_to_vec(shape, writer); )+
             }
 
-            #[inline]
             fn in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch {
                 ( $( $T::in_scratch(shape), )+ )
             }
 
-            #[inline]
             fn out_scratch() -> Self::OutScratch {
                 ( $( $T::out_scratch(), )+ )
             }
 
-            #[inline]
             unsafe fn values_from_flat<'a>(
                 shape: &mut FlatRead<'a, usize>,
                 flags: &mut FlatRead<'a, bool>,
@@ -264,7 +251,6 @@ macro_rules! impl_interface_for_tuple {
                 ( $( unsafe { $T::values_from_flat(shape, flags, ptrs, &mut scratch.$idx) }, )+ )
             }
 
-            #[inline]
             unsafe fn values_to_flat<'a>(
                 values: Self::Values<'a>,
                 flags: &mut FlatWrite<bool>,
@@ -274,7 +260,6 @@ macro_rules! impl_interface_for_tuple {
                 $( unsafe { $T::values_to_flat(values.$idx, flags, ptrs, &mut scratch.$idx); } )+
             }
 
-            #[inline]
             unsafe fn values_to_vecs<'a>(
                 values: Self::Values<'a>,
                 shape: &mut Vec<usize>,
@@ -285,7 +270,6 @@ macro_rules! impl_interface_for_tuple {
                 $( unsafe { $T::values_to_vecs(values.$idx, shape, flags, ptrs, &mut scratch.$idx); } )+
             }
 
-            #[inline]
             fn any_notify(values: &Self::Values<'_>) -> bool {
                 false $(|| $T::any_notify(&values.$idx))+
             }
@@ -311,25 +295,20 @@ unsafe impl<V: Pass> Interface for Port<V> {
     type InScratch = ();
     type OutScratch = MaybeUninit<V::View<'static>>;
 
-    #[inline]
     fn flat_len(_shape: &mut FlatRead<usize>) -> usize {
         1
     }
 
-    #[inline]
     fn type_ids_to_vec(_shape: &mut FlatRead<usize>, writer: &mut Vec<TypeId>) {
         writer.push(TypeId::of::<V>());
     }
 
-    #[inline]
     fn in_scratch(_shape: &mut FlatRead<usize>) -> Self::InScratch {}
 
-    #[inline]
     fn out_scratch() -> Self::OutScratch {
         MaybeUninit::uninit()
     }
 
-    #[inline]
     unsafe fn values_from_flat<'a>(
         _shape: &mut FlatRead<'a, usize>,
         flags: &mut FlatRead<'a, bool>,
@@ -343,7 +322,6 @@ unsafe impl<V: Pass> Interface for Port<V> {
         })
     }
 
-    #[inline]
     unsafe fn values_to_flat<'a>(
         values: Self::Values<'a>,
         flags: &mut FlatWrite<bool>,
@@ -358,7 +336,6 @@ unsafe impl<V: Pass> Interface for Port<V> {
         ptrs.push(scratch.as_ptr().cast());
     }
 
-    #[inline]
     unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
         _shape: &mut Vec<usize>,
@@ -372,7 +349,6 @@ unsafe impl<V: Pass> Interface for Port<V> {
         ptrs.push(scratch.as_ptr().cast());
     }
 
-    #[inline]
     fn any_notify(values: &Self::Values<'_>) -> bool {
         values.0
     }
@@ -383,26 +359,21 @@ unsafe impl<V: Pass> Interface for Ports<V> {
     type InScratch = Box<[MaybeUninit<V::View<'static>>]>;
     type OutScratch = ();
 
-    #[inline]
     fn flat_len(shape: &mut FlatRead<usize>) -> usize {
         *shape.pop()
     }
 
-    #[inline]
     fn type_ids_to_vec(shape: &mut FlatRead<usize>, writer: &mut Vec<TypeId>) {
         let n = *shape.pop();
         writer.extend(std::iter::repeat_n(TypeId::of::<V>(), n));
     }
 
-    #[inline]
     fn in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch {
         Box::new_uninit_slice(*shape.pop())
     }
 
-    #[inline]
     fn out_scratch() -> Self::OutScratch {}
 
-    #[inline]
     unsafe fn values_from_flat<'a>(
         shape: &mut FlatRead<'a, usize>,
         flags: &mut FlatRead<'a, bool>,
@@ -432,7 +403,6 @@ unsafe impl<V: Pass> Interface for Ports<V> {
         (f, v)
     }
 
-    #[inline]
     unsafe fn values_to_flat<'a>(
         values: Self::Values<'a>,
         flags: &mut FlatWrite<bool>,
@@ -447,7 +417,6 @@ unsafe impl<V: Pass> Interface for Ports<V> {
         }
     }
 
-    #[inline]
     unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
         shape: &mut Vec<usize>,
@@ -464,7 +433,6 @@ unsafe impl<V: Pass> Interface for Ports<V> {
         }
     }
 
-    #[inline]
     fn any_notify(values: &Self::Values<'_>) -> bool {
         values.0.iter().any(|&n| n)
     }

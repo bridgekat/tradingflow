@@ -21,7 +21,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::num::{divide, multiply, negate};
@@ -72,12 +72,12 @@ async fn main() {
         .position(|s| s == &symbol)
         .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
-    let mut sc = Builder::new(WallClock);
+    let mut sc = Builder::new(UnixClock);
 
     // ------------------------------------------------------------------
     // Panel sources → select the target stock.
     // ------------------------------------------------------------------
-    let daily = |sc: &mut Builder<Instant, WallClock>,
+    let daily = |sc: &mut Builder<Instant, UnixClock>,
                  kind: &str,
                  cols: Vec<String>|
      -> ArrayPortHandle<f64, 1> {
@@ -90,7 +90,7 @@ async fn main() {
         )
     };
 
-    let report = |sc: &mut Builder<Instant, WallClock>,
+    let report = |sc: &mut Builder<Instant, UnixClock>,
                   kind: &str,
                   cols: Vec<String>,
                   with_report_date: bool|

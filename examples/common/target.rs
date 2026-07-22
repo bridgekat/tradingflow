@@ -1,6 +1,6 @@
 //! Prediction targets and trading constraints derived from the market panel.
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant, Retention, Series};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{formula::*, num::*, structural::*, traders::*, transform::*};
@@ -35,7 +35,7 @@ fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
 /// [`Retention::UNBOUNDED`] when full history is needed.
 #[allow(clippy::type_complexity)]
 pub fn build_log_return_target(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     log_adj: ArrayPortHandle<f64, 1>,
     target_retention: Retention,
 ) -> (
@@ -54,7 +54,7 @@ pub fn build_log_return_target(
 /// Constant ±`limit_pct` daily price limits from the previous close, rounded to
 /// 0.01 yuan. Returns `(upper, lower)`; first tick is NaN (no prior close).
 pub fn build_price_limits(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     close: ArrayPortHandle<f64, 1>,
     limit_pct: f64,
 ) -> (ArrayPortHandle<f64, 1>, ArrayPortHandle<f64, 1>) {

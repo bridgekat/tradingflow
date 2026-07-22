@@ -15,7 +15,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::constant::const_array;
@@ -59,7 +59,7 @@ async fn main() {
         .position(|s| s == &symbol)
         .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
-    let mut sc = Builder::new(WallClock);
+    let mut sc = Builder::new(UnixClock);
 
     // Panel sources: close from prices, (share, cash) from dividends.
     let price_src = parquet_panel_source(prices_pq, vec!["prices.close".into()], symbols.clone());

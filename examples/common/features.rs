@@ -52,7 +52,7 @@
 //! `(N, F)` and recorded on the daily pulse — the model-ready panel the
 //! predictors regress on. See [`build_features`].
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::{
     Array, ArrayView, Duration, Instant, Layout, Retention, Series, SeriesView,
 };
@@ -87,7 +87,7 @@ pub struct FactorSet {
 /// years). Every factor is rank-transformed, so `0.5` is the common neutral fill.
 /// The rank → fill chain is fused into one node via `segment!`.
 pub(super) fn rank_impute(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     h: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
@@ -99,13 +99,13 @@ pub(super) fn rank_impute(
 }
 
 /// Total market cap = unadjusted close × total shares.
-pub fn market_cap(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> ArrayPortHandle<f64, 1> {
+pub fn market_cap(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> ArrayPortHandle<f64, 1> {
     sc.segment(multiply(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
 pub fn circ_market_cap(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     st: &Stacked,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(multiply(), (st.close, st.circ_shares))
@@ -115,7 +115,7 @@ pub fn circ_market_cap(
 /// annualized (effective-date-aligned) series, via the self-recording
 /// [`ma_time`] (record fused in, retention sized internally).
 fn ttm(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     h: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(ma_time(Duration::from_days(365)), h)
@@ -127,7 +127,7 @@ fn ttm(
 /// `level` block is computed once outside, so it is not recomputed here.
 /// The 次新 listing filter excludes names without a full prior year.
 fn delta(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     st: &Stacked,
     level: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
@@ -143,7 +143,7 @@ fn delta(
 /// self-recording [`growth`] over the same resampled daily pulse as
 /// [`delta`].
 fn yoy(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     st: &Stacked,
     level: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
@@ -157,7 +157,7 @@ fn yoy(
 
 /// Build the fundamental factor catalog. Each entry is `(name, raw_handle)`,
 /// added in category order.
-pub fn build_factor_catalog(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> FactorSet {
+pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
     let mut add = |name: &str, h: ArrayPortHandle<f64, 1>| {
@@ -283,7 +283,7 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, WallClock>, st: &Stacked) 
 /// the factor stored at `t-1` inside `InformationCoefficient`, it is the
 /// next-period return the factor is meant to predict.
 pub fn build_forward_return(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     log_adj: ArrayPortHandle<f64, 1>,
     rebalance_clock: UnitPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
@@ -305,14 +305,14 @@ pub struct Features {
 // ===========================================================================
 
 fn rsum(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     s: SeriesPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(rolling_sum(Window::Count(n)), s)
 }
 fn rmean(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     s: SeriesPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
@@ -320,7 +320,7 @@ fn rmean(
 }
 /// Elementwise map preserving shape and NaN.
 fn emap(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     h: ArrayPortHandle<f64, 1>,
     f: fn(f64) -> f64,
 ) -> ArrayPortHandle<f64, 1> {
@@ -334,7 +334,7 @@ fn emap(
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     s: SeriesPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
@@ -349,7 +349,7 @@ fn rstd(
 /// `cov(x,y) = mean(xy) − mean(x)·mean(y)`, normalized by `σx·σy`. Records each
 /// input internally (some redundancy across factors, but keeps call sites simple).
 fn rcorr(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     x: ArrayPortHandle<f64, 1>,
     y: ArrayPortHandle<f64, 1>,
     n: usize,
@@ -436,7 +436,7 @@ impl Operator for WindowReduce {
     }
 }
 fn window_reduce(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     s: SeriesPortHandle<f64, 1>,
     n: usize,
     f: fn(&[f64]) -> f64,
@@ -541,7 +541,7 @@ impl Operator for WindowReduce2 {
     }
 }
 fn window_reduce2(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     s: SeriesPortHandle<f64, 2>,
     n: usize,
     f: fn(&[f64], &[f64]) -> f64,
@@ -728,7 +728,7 @@ impl Operator for ChipDist {
 }
 
 /// Build the price-volume factor catalog (动量 & 反转 first pass).
-pub fn build_pv_catalog(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> FactorSet {
+pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
     let mut add = |name: &str, h: ArrayPortHandle<f64, 1>| {
@@ -1009,7 +1009,7 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, WallClock>, st: &Stacked) -> F
 /// by design and leans on the predictors' pool-standardized Ridge (`alpha`) to
 /// regularise.
 pub fn build_features(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     st: &Stacked,
     feature_retention: Retention,
 ) -> Features {

@@ -25,7 +25,7 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
 
@@ -55,7 +55,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Builder::new(WallClock);
+    let mut sc = Builder::new(UnixClock);
 
     // The shared panel / target feed the shrinkage covariance predictor too,
     // which fits over its last `COV_MAX_PERIODS` pairs — so the records must

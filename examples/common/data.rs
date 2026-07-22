@@ -1,7 +1,7 @@
 //! The stacked cross-sectional market panel: parquet sources → `[num_stocks]`
 //! per-field panels, via one fused per-stock segment.
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
@@ -66,7 +66,7 @@ fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
 /// reports align on the look-ahead-safe effective date `max(report, notice)`
 /// (`use_effective_date`, zero fallback).
 pub fn build_stacked(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     symbols: &[String],
     args: &CommonArgs,
 ) -> Stacked {
@@ -82,7 +82,7 @@ pub fn build_stacked(
     // look-ahead-safe point-in-time a backtest may use them (`use_effective_date`).
     // A panel source cell lends its `[N, K]` panel as an `ArrayPort<f64, 2>`
     // view edge, which feeds `Split` directly.
-    let daily_panel = |sc: &mut Builder<Instant, WallClock>,
+    let daily_panel = |sc: &mut Builder<Instant, UnixClock>,
                        kind: &str,
                        cols: Vec<String>|
      -> ArrayPortHandle<f64, 2> {
@@ -90,7 +90,7 @@ pub fn build_stacked(
             .with_time_range(start, end);
         sc.source(s)
     };
-    let report_panel = |sc: &mut Builder<Instant, WallClock>,
+    let report_panel = |sc: &mut Builder<Instant, UnixClock>,
                         kind: &str,
                         cols: Vec<String>,
                         with_report_date: bool|

@@ -20,7 +20,7 @@
 //! (limit-locked) screens are derivable and added in [`build_full_market_universe`]
 //! once wired; for now the full-market universe is "any stock with valid cap".
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{num::*, structural::*, transform::*};
@@ -33,7 +33,7 @@ use tradingflow::ports::{ArrayPort, ArrayPortHandle, UnitPortHandle};
 /// (it needs `passthrough` to re-present the last mask between ticks), whereas a
 /// fused `segment!` chain is a bare `Segment`.
 pub fn build_full_market_universe(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     market_cap: ArrayPortHandle<f64, 1>,
     rebalance_clock: UnitPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
@@ -60,7 +60,7 @@ pub fn build_full_market_universe(
 /// Cap-rank window mask: include stocks whose descending market-cap rank (0-based)
 /// falls in `[lo, hi)`. Approximates a size index without real constituents.
 pub fn build_caprank_universe(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     market_cap: ArrayPortHandle<f64, 1>,
     rebalance_clock: UnitPortHandle,
     lo: usize,
@@ -91,7 +91,7 @@ pub fn build_caprank_universe(
 /// returns that scramble fundamental-factor signals. Both inputs are on the
 /// rebalance clock.
 pub fn with_listing_filter(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     universe: ArrayPortHandle<f64, 1>,
     aged: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
@@ -111,7 +111,7 @@ pub fn with_listing_filter(
 /// is computed within the universe only. Multiplying by a `1.0 / NaN` indicator
 /// leaves in-universe values bit-exact (`x * 1.0 == x`, including `±0` and `±∞`).
 pub fn mask_to_universe(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     data: ArrayPortHandle<f64, 1>,
     universe: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
@@ -158,7 +158,7 @@ pub fn calculate_index_weights(mc: &[f64], k: usize) -> Box<[f64]> {
 /// market cap; `rebalance_clock` is the `UnitPortHandle` of a
 /// [`pulse`](tradingflow::sources::pulse) source.
 pub fn build_cap_weighted_universe(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     market_cap: ArrayPortHandle<f64, 1>,
     rebalance_clock: UnitPortHandle,
     index_size: usize,

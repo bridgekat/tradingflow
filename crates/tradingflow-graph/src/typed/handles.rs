@@ -79,7 +79,6 @@ impl InterfaceHandles for () {
     type Handles<'a> = ();
     type HandlesOwned = ();
 
-    #[inline(always)]
     fn handles_from_flat(_: &mut FlatRead<usize>, _: &mut FlatRead<usize>) {}
 }
 
@@ -89,7 +88,6 @@ macro_rules! impl_handles_for_tuple {
             type Handles<'a> = ($($T::Handles<'a>,)+);
             type HandlesOwned = ($($T::HandlesOwned,)+);
 
-            #[inline]
             fn handles_from_flat(shape: &mut FlatRead<usize>, indices: &mut FlatRead<usize>) -> Self::HandlesOwned {
                 ( $( <$T as InterfaceHandles>::handles_from_flat(shape, indices), )+ )
             }
@@ -114,7 +112,6 @@ impl<V: Pass> InterfaceHandles for Port<V> {
     type Handles<'a> = PortHandle<V>;
     type HandlesOwned = PortHandle<V>;
 
-    #[inline(always)]
     fn handles_from_flat(
         _shape: &mut FlatRead<usize>,
         indices: &mut FlatRead<usize>,
@@ -127,7 +124,6 @@ impl<V: Pass> InterfaceHandles for Ports<V> {
     type Handles<'a> = &'a [PortHandle<V>];
     type HandlesOwned = Box<[PortHandle<V>]>;
 
-    #[inline]
     fn handles_from_flat(
         shape: &mut FlatRead<usize>,
         indices: &mut FlatRead<usize>,
@@ -151,7 +147,6 @@ pub trait HandlesInterface {
 impl HandlesInterface for () {
     type Interface = ();
 
-    #[inline(always)]
     fn indices_to_vec(self, _shape: &mut Vec<usize>, _indices: &mut Vec<usize>) {}
 }
 
@@ -160,7 +155,6 @@ macro_rules! impl_handles_interface_for_tuple {
         impl<$($T: HandlesInterface,)+> HandlesInterface for ($($T,)+) {
             type Interface = ($($T::Interface,)+);
 
-            #[inline]
             fn indices_to_vec(self, shape: &mut Vec<usize>, indices: &mut Vec<usize>) {
                 $( self.$idx.indices_to_vec(shape, indices); )+
             }
@@ -184,7 +178,6 @@ impl_handles_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H
 impl<V: Pass> HandlesInterface for PortHandle<V> {
     type Interface = Port<V>;
 
-    #[inline(always)]
     fn indices_to_vec(self, _shape: &mut Vec<usize>, indices: &mut Vec<usize>) {
         indices.push(self.index);
     }
@@ -193,7 +186,6 @@ impl<V: Pass> HandlesInterface for PortHandle<V> {
 impl<V: Pass> HandlesInterface for &[PortHandle<V>] {
     type Interface = Ports<V>;
 
-    #[inline]
     fn indices_to_vec(self, shape: &mut Vec<usize>, indices: &mut Vec<usize>) {
         shape.push(self.len());
         indices.extend(self.iter().map(|h| h.index));
@@ -205,7 +197,6 @@ impl<V: Pass> HandlesInterface for &[PortHandle<V>] {
 impl<V: Pass, const M: usize> HandlesInterface for &[PortHandle<V>; M] {
     type Interface = Ports<V>;
 
-    #[inline]
     fn indices_to_vec(self, shape: &mut Vec<usize>, indices: &mut Vec<usize>) {
         shape.push(M);
         indices.extend(self.iter().map(|h| h.index));

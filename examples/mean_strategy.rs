@@ -25,7 +25,7 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::{Retention, SeriesView};
 use tradingflow::graph::Builder;
 use tradingflow::operators::metrics::{compound_return, drawdown, sharpe_ratio};
@@ -61,7 +61,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Builder::new(WallClock);
+    let mut sc = Builder::new(UnixClock);
 
     // ---- Data + features ------------------------------------------------
     // The incremental mean predictor folds one (feature, target) pair per tick,

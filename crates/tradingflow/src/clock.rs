@@ -1,23 +1,19 @@
-//! The wall clock source.
+//! Wall clock implementations.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::data::{Duration, Instant};
 use crate::graph::Clock;
 
-/// The system wall clock driving the event loop: `now()` reads system time as
-/// UNIX nanoseconds (fixing the naive [`Instant`] epoch at 1970-01-01), and
-/// `wait_until` sleeps on the tokio timer until the clock has moved strictly
-/// past the target.
+/// The default wall clock for use by the [`Graph`](super::graph::Graph) event
+/// loop. It assumes and outputs [`Instant`] as UNIX nanoseconds since
+/// `1970-01-01 00:00:00` UTC.
 ///
-/// Under the ingest merge rules this behaves uniformly for backtests and live
-/// runs: historical timestamps sit below `now` and replay at full speed,
-/// future-dated events are released only once their timestamp actually
-/// arrives, and implicit `Stamp::Now` events are stamped with the current
-/// wall-clock reading.
-pub struct WallClock;
+/// This clock is not leap-aware: during UTC leap seconds, a single "UNIX
+/// second" spans two SI seconds, by definition.
+pub struct UnixClock;
 
-impl Clock<Instant> for WallClock {
+impl Clock<Instant> for UnixClock {
     fn now(&self) -> Instant {
         let unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)

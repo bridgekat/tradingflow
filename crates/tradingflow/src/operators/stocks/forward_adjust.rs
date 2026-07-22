@@ -1,128 +1,15 @@
-//! Stock-specific operators: `Annualize` (YTD → annualized) and `ForwardAdjust`
-//! (corporate-action price adjustment, message-passing on price vs dividend
-//! inputs), over the strided [`ArrayView`] currency.
-
 use crate::data::{Array, ArrayView, Instant};
 use crate::graph::typed::Operator;
 use crate::ports::ArrayPort;
-
-// ---------------------------------------------------------------------------
-// Annualize
-// ---------------------------------------------------------------------------
-
-/// Convert a YTD cumulative vector `[year, day_of_year, ytd_1..ytd_N]` into
-/// annualized `[N]` values via days-based scaling (rank-1 in / rank-1 out).
-#[derive(Clone, Default)]
-pub struct Annualize;
-
-impl Annualize {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-/// Runtime state for [`Annualize`]: the previous-tick YTD snapshot plus the
-/// output buffer.
-pub struct AnnualizeState {
-    prev_ytd: Vec<f64>,
-    prev_year: i64,
-    prev_day: f64,
-    initialized: bool,
-    out: Array<f64, 1>,
-}
-
-impl Operator for Annualize {
-    type Inputs = ArrayPort<f64, 1>;
-    type Outputs = ArrayPort<f64, 1>;
-    type Context = Instant;
-    type State = AnnualizeState;
-
-    fn init(self, (_, view): (bool, ArrayView<'_, f64, 1>)) -> AnnualizeState {
-        // Only the build-time input's shape is read here, to size the buffers.
-        let input_len = view.to_contiguous().len();
-        assert!(
-            input_len >= 3,
-            "Annualize: input must have shape [2 + N] with N >= 1, got length {input_len}"
-        );
-        let n = input_len - 2;
-        AnnualizeState {
-            prev_ytd: vec![0.0; n],
-            prev_year: 0,
-            prev_day: 0.0,
-            initialized: false,
-            out: Array::zeros([n]),
-        }
-    }
-
-    fn compute<'a, 'b: 'a>(
-        (_, view): (bool, ArrayView<'a, f64, 1>),
-        state: &'b mut AnnualizeState,
-        _: &Instant,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
-        let xs = view.to_contiguous();
-        let input: &[f64] = &xs;
-        let year = input[0].floor() as i64;
-        let day = input[1];
-        let ytd = &input[2..];
-        let n = ytd.len();
-        let out = state.out.data_mut();
-
-        let (is_new_year, days_elapsed) = if !state.initialized || year != state.prev_year {
-            (true, day)
-        } else {
-            (false, day - state.prev_day)
-        };
-
-        if days_elapsed <= 0.0 {
-            for o in out.iter_mut() {
-                *o = f64::NAN;
-            }
-        } else {
-            let scale = 365.0 / days_elapsed;
-            for i in 0..n {
-                let delta = if is_new_year {
-                    ytd[i]
-                } else {
-                    ytd[i] - state.prev_ytd[i]
-                };
-                out[i] = delta * scale;
-            }
-        }
-
-        state.prev_ytd.copy_from_slice(ytd);
-        state.prev_year = year;
-        state.prev_day = day;
-        state.initialized = true;
-        (true, state.out.view())
-    }
-
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, f64, 1>),
-        state: &'b mut AnnualizeState,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
-        (false, state.out.view())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ForwardAdjust
-// ---------------------------------------------------------------------------
 
 /// Forward price adjustment for corporate actions. Inputs: `(price, dividend)`
 /// where `price` is a single value (rank `NP`, one element) and `dividend` is
 /// `[share_dividends, cash_dividends]` (rank `ND`). The output mirrors the price
 /// shape (rank `NP`). Message-passing on the two inputs via the notify flags
 /// (only notified input values are read).
+#[derive(Clone)]
 pub struct ForwardAdjust<const NP: usize, const ND: usize> {
     output_prices: bool,
-}
-
-impl<const NP: usize, const ND: usize> Clone for ForwardAdjust<NP, ND> {
-    fn clone(&self) -> Self {
-        Self {
-            output_prices: self.output_prices,
-        }
-    }
 }
 
 impl<const NP: usize, const ND: usize> ForwardAdjust<NP, ND> {
@@ -194,9 +81,8 @@ impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
         state: &'b mut Self::State,
         _: &Instant,
     ) -> (bool, ArrayView<'a, f64, NP>) {
-        let price = price_view.to_contiguous();
-        let dividend = div_view.to_contiguous();
         if div_notified {
+            let dividend = div_view.to_contiguous();
             let share_dividends = dividend[0];
             let cash_dividends = dividend[1];
             let prev_price = state.prev_price;
@@ -207,7 +93,7 @@ impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
             }
         }
         if price_notified {
-            let p = price[0];
+            let p = price_view.to_contiguous()[0];
             state.out.data_mut()[0] = if state.output_prices {
                 p * state.factor
             } else {
@@ -229,15 +115,6 @@ impl<const NP: usize, const ND: usize> Operator for ForwardAdjust<NP, ND> {
     ) -> (bool, ArrayView<'a, f64, NP>) {
         (false, state.out.view())
     }
-}
-
-// ===========================================================================
-// Constructors
-// ===========================================================================
-
-/// Annualize a periodic (report-cadence) flow.
-pub fn annualize() -> Annualize {
-    Annualize::new()
 }
 
 /// Forward price/dividend adjustment. Chain

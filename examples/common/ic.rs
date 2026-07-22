@@ -1,6 +1,6 @@
 //! Information-coefficient evaluation.
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
 use tradingflow::operators::structural::record;
@@ -11,7 +11,7 @@ use super::models::information_coefficient;
 /// Record the per-rebalance IC of `factor` against `target` — both ordinary
 /// `ArrayPort` views, wired straight into the Python metric.
 pub fn ic_series(
-    sc: &mut Builder<Instant, WallClock>,
+    sc: &mut Builder<Instant, UnixClock>,
     factor: ArrayPortHandle<f64, 1>,
     target: ArrayPortHandle<f64, 1>,
     num_stocks: usize,

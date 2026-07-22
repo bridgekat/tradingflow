@@ -17,7 +17,7 @@
 //! rolling mean, and prints the resulting series.
 //!
 //! ```rust
-//! use tradingflow::clock::WallClock;
+//! use tradingflow::clock::UnixClock;
 //! use tradingflow::data::*;
 //! use tradingflow::graph::*;
 //! use tradingflow::operators::{rolling::*, structural::*};
@@ -44,7 +44,7 @@
 //!     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
 //!
 //!     // Build the graph.
-//!     let mut b = Builder::new(WallClock);
+//!     let mut b = Builder::new(UnixClock);
 //!     let prices = b.source(array_source(Array::scalar(0.0), data));
 //!     let prices_series = b.segment(record(), prices);
 //!     let mean = b.segment(rolling_mean(Window::Count(10)), prices_series);

@@ -21,7 +21,7 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::clock::WallClock;
+use tradingflow::clock::UnixClock;
 use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
 use tradingflow::operators::structural::record;
@@ -49,7 +49,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Builder::new(WallClock);
+    let mut sc = Builder::new(UnixClock);
 
     let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
     let names = m.features.names.clone();
