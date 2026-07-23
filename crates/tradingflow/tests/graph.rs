@@ -1,7 +1,7 @@
 use tradingflow::clock::UnixClock;
-use tradingflow::data::{Array, ArrayView, Duration, Instant, Retention, Series, SeriesView};
+use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView};
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::{num::add, structural::filter, structural::record};
+use tradingflow::operators::{num::add, series::record_all, structural::filter};
 use tradingflow::sources::basic::*;
 
 fn pool() -> Pool {
@@ -18,22 +18,22 @@ fn tss(xs: &[i64]) -> Vec<Instant> {
 fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
     array_source(
         Array::scalar(0.0),
-        Series::from_parts([], tss(ts), vals.to_vec(), Retention::unbounded()),
+        Series::from_parts([], tss(ts), vals.to_vec(), 0),
     )
 }
 
 /// Replay [10,20,30] @ [1,2,3] into a Record.
 #[tokio::test]
-async fn run_single_source_record() {
+async fn run_single_source_record_all() {
     let mut sc = Builder::new(UnixClock);
     let h = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let hrec = sc.segment(record(), h);
+    let hrec = sc.segment(record_all(), h);
 
     let mut session = sc.build();
     session.run(&mut pool(), |_, _| {}).await;
 
     let s: SeriesView<f64, 0> = session.view(hrec);
-    assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
+    assert_eq!(s.instants(), tss(&[1, 2, 3]).as_slice());
     assert_eq!(&*s.to_contiguous(), &[10.0, 20.0, 30.0]);
 }
 
@@ -45,13 +45,13 @@ async fn run_two_sources_add() {
     let ha = sc.source(src(&[1, 3], &[10.0, 30.0]));
     let hb = sc.source(src(&[2, 3], &[20.0, 40.0]));
     let ho = sc.segment(add(), (ha, hb));
-    let hrec = sc.segment(record(), ho);
+    let hrec = sc.segment(record_all(), ho);
 
     let mut session = sc.build();
     session.run(&mut pool(), |_, _| {}).await;
 
     let s: SeriesView<f64, 0> = session.view(hrec);
-    assert_eq!(s.timestamps(), tss(&[1, 2, 3]).as_slice());
+    assert_eq!(s.instants(), tss(&[1, 2, 3]).as_slice());
     assert_eq!(&*s.to_contiguous(), &[10.0, 30.0, 70.0]);
 }
 
@@ -63,13 +63,13 @@ async fn run_coalescing() {
     let ha = sc.source(src(&[1, 2], &[10.0, 20.0]));
     let hb = sc.source(src(&[1, 2], &[100.0, 200.0]));
     let ho = sc.segment(add(), (ha, hb));
-    let hrec = sc.segment(record(), ho);
+    let hrec = sc.segment(record_all(), ho);
 
     let mut session = sc.build();
     session.run(&mut pool(), |_, _| {}).await;
 
     let s: SeriesView<f64, 0> = session.view(hrec);
-    assert_eq!(s.timestamps(), tss(&[1, 2]).as_slice());
+    assert_eq!(s.instants(), tss(&[1, 2]).as_slice());
     assert_eq!(&*s.to_contiguous(), &[110.0, 220.0]);
 }
 
@@ -80,14 +80,14 @@ async fn run_filter_cutoff() {
     let mut sc = Builder::new(UnixClock);
     let h = sc.source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
     let hf = sc.segment(filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), h);
-    let hrec = sc.segment(record(), hf);
+    let hrec = sc.segment(record_all(), hf);
 
     let mut session = sc.build();
     session.run(&mut pool(), |_, _| {}).await;
 
     let s: SeriesView<f64, 0> = session.view(hrec);
     assert_eq!(s.len(), 2);
-    assert_eq!(s.timestamps(), tss(&[2, 4]).as_slice());
+    assert_eq!(s.instants(), tss(&[2, 4]).as_slice());
     assert_eq!(&*s.to_contiguous(), &[5.0, 10.0]);
 }
 
@@ -98,7 +98,7 @@ async fn run_filter_cutoff() {
 async fn on_stable_per_batch() {
     let mut sc = Builder::new(UnixClock);
     let h = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let _ = sc.segment(record(), h);
+    let _ = sc.segment(record_all(), h);
 
     let mut session = sc.build();
     assert_eq!(session.size_hint(), Some(3));

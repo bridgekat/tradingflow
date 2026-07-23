@@ -17,7 +17,8 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
-    PyClassOperator, PyParams, metrics::*, py_class_operator, structural::*, traders::*,
+    PyClassOperator, PyParams, metrics::*, py_class_operator, series::record_all, structural::*,
+    traders::*,
 };
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle};
 
@@ -70,7 +71,10 @@ fn bucket_nav(
     );
     let nav = total_value(sc, trader);
     let turnover = sc.segment(turnover(), positions);
-    (sc.segment(record(), nav), sc.segment(record(), turnover))
+    (
+        sc.segment(record_all(), nav),
+        sc.segment(record_all(), turnover),
+    )
 }
 
 /// Build the 10-decile layered backtest for `factor` over `universe`.

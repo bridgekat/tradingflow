@@ -82,18 +82,20 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
         state: &'b mut Self::State,
         _: &Instant,
     ) -> (bool, ArrayView<'a, T, NO>) {
-        let len = series.len();
-        let row = series.at(len - 1).unwrap().1.to_contiguous();
+        // `end` is the total rows ever recorded (logical indices count trimmed
+        // rows), which is what the warm-up logic wants — not the retained len.
+        let end = series.range().end;
+        let row = series.at(end - 1).1.to_contiguous();
         let stride = row.len();
         // Materialized once: the evicted row is read on every column below.
-        let evicted = (len > state.window)
-            .then(|| series.at(len - 1 - state.window).unwrap().1.to_contiguous());
+        let evicted =
+            (end > state.window).then(|| series.at(end - 1 - state.window).1.to_contiguous());
         let alpha = state.alpha;
         let one_minus_alpha = state.one_minus_alpha;
 
         state.fill_decay = state.fill_decay * one_minus_alpha;
         let weight_sum = T::one()
-            - if len >= state.window {
+            - if end >= state.window {
                 state.decay_factor
             } else {
                 state.fill_decay
@@ -118,7 +120,7 @@ impl<T: Scalar + Float, const NO: usize> Operator for Ema<T, NO> {
             }
         }
 
-        if len < state.window {
+        if end < state.window {
             (false, state.out.view())
         } else {
             let out = state.out.data_mut();

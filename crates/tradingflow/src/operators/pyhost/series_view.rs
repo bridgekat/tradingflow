@@ -11,12 +11,14 @@ use numpy::{PyArray1, PyArrayDyn};
 use crate::data::{Instant, Layout, SeriesView};
 
 /// Read-only view over a recorded-history window (a [`SeriesView`] carried by
-/// a `SeriesPort` edge): positional history access with **window-local**
-/// indices (`0` is the oldest retained row). Valid only during the call that
-/// created it. Rank-erased like [`NativeArrayView`](super::NativeArrayView):
-/// the per-leaf [`PyArgs`](super::PyArgs) impl knows the concrete rank `N` at
-/// the bind site and captures the window's raw parts there, so a single
-/// non-generic pyclass serves every rank.
+/// a `SeriesPort` edge): positional history access with **logical** indices —
+/// index `base` is the oldest retained row, `len` counts every row ever
+/// recorded, and an index is stable across the record's trims. Valid only
+/// during the call that created it. Rank-erased like
+/// [`NativeArrayView`](super::NativeArrayView): the per-leaf
+/// [`PyArgs`](super::PyArgs) impl knows the concrete rank `N` at the bind site
+/// and captures the window's raw parts there, so a single non-generic pyclass
+/// serves every rank.
 #[pyclass]
 pub struct NativeSeriesView {
     /// Retained window: flat row-major values (`retained * stride` scalars).
@@ -147,14 +149,13 @@ impl NativeSeriesView {
     /// Bind a view over a recorded-history window ([`SeriesView`]). The
     /// concrete rank `N` is known at the call site, so the static extents and
     /// the window's raw parts are read here; the pyclass itself is
-    /// rank-erased. A `SeriesView` carries no logical bookkeeping, so indices
-    /// are **window-local** (`base` is always 0: index `0` is the oldest
-    /// retained row).
+    /// rank-erased. The view's logical frame carries through: Python sees the
+    /// same trim-stable indices as native consumers.
     pub(super) fn bind<'py, const N: usize>(
         py: Python<'py>,
         s: SeriesView<'_, f64, N>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // Python reads the buffer flat, at `base + i * stride + j`, so the
+        // Python reads the buffer flat, at `(i - base) * stride + j`, so the
         // window must be packed row-major — which is exactly when a series
         // view yields one slice.
         let values = s.as_slice().ok_or_else(|| {
@@ -162,9 +163,9 @@ impl NativeSeriesView {
         })?;
         let view = NativeSeriesView {
             values: values.as_ptr(),
-            timestamps: s.timestamps().as_ptr(),
+            timestamps: s.instants().as_ptr(),
             retained: s.len(),
-            base: 0,
+            base: s.range().start,
             stride: s.layout().len(),
             extents: s.extents().to_vec(),
         };

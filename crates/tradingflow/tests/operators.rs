@@ -12,9 +12,10 @@
 //! edges). Arithmetic uses the lowercase free constructors (`add`/`negate`/…);
 //! the rank-changers carry explicit out-rank generics.
 
-use tradingflow::data::{Array, ArrayView, Duration, Instant, Retention, SeriesView};
+use tradingflow::data::{Array, ArrayView, Duration, Instant, SeriesView};
 use tradingflow::graph::pool::Pool;
 use tradingflow::graph::typed::Builder;
+use tradingflow::operators::series::Retention;
 use tradingflow::operators::{
     array::{concat, map, map_binary, select, select_at, stack, unstack},
     constant::*,
@@ -22,6 +23,7 @@ use tradingflow::operators::{
     metrics::*,
     num::*,
     rolling::*,
+    series::{record, record_all},
     stocks::*,
     structural::*,
 };
@@ -78,7 +80,7 @@ fn record_series() {
     let (ha, hav) = b.source(const_array(Array::scalar(0.0_f64)));
     let (hb, hbv) = b.source(const_array(Array::scalar(0.0_f64)));
     let sum = b.segment(add(), (hav, hbv));
-    let rec = b.segment(record(), sum);
+    let rec = b.segment(record_all(), sum);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -94,21 +96,21 @@ fn record_series() {
 
     let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 2);
-    assert_eq!(s.timestamps(), &[ts(1), ts(2)]);
+    assert_eq!(s.instants(), &[ts(1), ts(2)]);
     assert_eq!(&*s.to_contiguous(), &[13.0, 27.0]);
 }
 
 /// `scenario_run_filter`: source [1,5,2,10]@[1,2,3,4], keep >3 → recorded
 /// (2,5),(4,10). THE cutoff proof: a dropped Filter must suppress Record.
 #[test]
-fn filter_gates_record() {
+fn filter_gates_record_all() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
     let flt = b.segment(
         filter(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0),
         srcv,
     );
-    let rec = b.segment(record(), flt);
+    let rec = b.segment(record_all(), flt);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -121,15 +123,15 @@ fn filter_gates_record() {
     let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 2);
     assert_eq!(&*s.to_contiguous(), &[5.0, 10.0]);
-    assert_eq!(s.timestamps(), &[ts(2), ts(4)]);
+    assert_eq!(s.instants(), &[ts(2), ts(4)]);
 }
 
 /// `Last(Record(x))` recovers the latest array value.
 #[test]
-fn last_of_record() {
+fn last_of_record_all() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record(), srcv);
+    let rec = b.segment(record_all(), srcv);
     let lst = b.segment(last(0.0_f64), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -153,7 +155,7 @@ fn bounded_record_feeds_rolling_and_lag() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
     // RollingMean(5) reads back 6 on eviction, Lag(3) back 4 → retain 8 covers both.
-    let rec = b.segment(record_bounded(Retention::count(8)), srcv);
+    let rec = b.segment(record(Retention::count(8)), srcv);
     let lag = b.segment(lag_series(3, f64::NAN), rec);
     let rmean = b.segment(rolling_mean(Window::Count(5)), rec);
     let mut g = b.build();
@@ -190,15 +192,11 @@ fn bounded_record_feeds_rolling_and_lag() {
     );
     assert!(s.len() <= 16, "physical storage unbounded: {}", s.len());
     assert_eq!(
-        &*s.at(s.len() - 1).unwrap().1.to_contiguous(),
+        &*s.at(s.range().end - 1).1.to_contiguous(),
         &[m as f64],
         "latest value intact"
     );
-    assert_eq!(
-        s.at(s.len() - 1).unwrap().0,
-        ts(m),
-        "latest timestamp intact"
-    );
+    assert_eq!(s.at(s.range().end - 1).0, ts(m), "latest timestamp intact");
 }
 
 /// `scenario_run_periodic_single_input`: data [10,20,30]@[1,2,3], clock @2 only
@@ -212,7 +210,7 @@ fn clocked_periodic() {
         Clocked::new(filter(|_: ArrayView<f64, 0>| true)),
         (tick, datav),
     );
-    let rec = b.segment(record(), gated);
+    let rec = b.segment(record_all(), gated);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -229,7 +227,7 @@ fn clocked_periodic() {
     let s: SeriesView<f64, 0> = g.view(rec);
     assert_eq!(s.len(), 1);
     assert_eq!(&*s.to_contiguous(), &[20.0]);
-    assert_eq!(s.timestamps(), &[ts(2)]);
+    assert_eq!(s.instants(), &[ts(2)]);
 }
 
 /// `scenario_run_coalescing`: two sources fire at the same timestamp → one
@@ -240,7 +238,7 @@ fn coalesced_two_source_add() {
     let (a, av) = b.source(const_array(Array::scalar(0.0_f64)));
     let (bb, bv) = b.source(const_array(Array::scalar(0.0_f64)));
     let sum = b.segment(add(), (av, bv));
-    let rec = b.segment(record(), sum);
+    let rec = b.segment(record_all(), sum);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -291,7 +289,7 @@ fn slice_stack_and_sync() {
 fn rolling_mean_count_warmup_and_value() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record(), srcv);
+    let rec = b.segment(record_all(), srcv);
     let rm = b.segment(rolling_mean(Window::Count(3)), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -369,7 +367,7 @@ fn arith_min_max_pow() {
 fn rolling_sum_and_variance() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record(), srcv);
+    let rec = b.segment(record_all(), srcv);
     let rsum = b.segment(rolling_sum(Window::Count(3)), rec);
     let rvar = b.segment(rolling_variance(Window::Count(3)), rec);
     let mut g = b.build();
@@ -394,7 +392,7 @@ fn rolling_sum_and_variance() {
 fn rolling_covariance_2d() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(const_array(Array::from_parts([2], vec![0.0_f64; 2].into())));
-    let rec = b.segment(record(), srcv);
+    let rec = b.segment(record_all(), srcv);
     let cov = b.segment(rolling_covariance(Window::Count(3)), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -416,7 +414,7 @@ fn rolling_covariance_2d() {
 fn ema_two_values() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record(), srcv);
+    let rec = b.segment(record_all(), srcv);
     let e = b.segment(ema_series(0.5, 2), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -616,7 +614,7 @@ fn apply_add_and_select() {
 fn lag_offset_two() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record(), srcv);
+    let rec = b.segment(record_all(), srcv);
     let lag = b.segment(lag_series(2, f64::NAN), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -816,7 +814,7 @@ fn parallel_fanout_matches_sequential() {
                 filter(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0),
                 srcv,
             );
-            b.segment(record(), f)
+            b.segment(record_all(), f)
         })
         .collect();
     let mut g = b.build();
@@ -906,7 +904,7 @@ fn split_rows_notify_with_panel() {
     // The rows feed a carry `stack` that rebuilds the `[3, 2]` panel; a `Record`
     // on the stacked output advances exactly once per recompute of the join.
     let stacked = b.segment(stack::<f64, 1, 2>(0), &rows[..]);
-    let rec = b.segment(record(), stacked);
+    let rec = b.segment(record_all(), stacked);
     let _sink = b.segment(Count::<0>, other); // unrelated cone
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -1253,16 +1251,14 @@ fn ma_crossover_signal_fuses_into_one_node() {
                 rolling_mean(Window::Count(slow)) @ xs,
             );
             let up = greater_than(0.0) @ d;
-            let prev = lag_series(1, f64::NAN)
-                @ record_bounded(ret)
-                @ d;
+            let prev = lag_series(1, f64::NAN) @ record(ret) @ d;
             and() @ (up, not() @ (greater_than(0.0) @ prev))
         }
     );
 
     let mut b = Builder::new();
     let (src, view) = b.source(const_array(Array::scalar(0.0_f64)));
-    let series = b.segment(record(), view);
+    let series = b.segment(record_all(), view);
     let signal = b.segment(seg, series);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -1452,7 +1448,7 @@ fn formula_mstd_matches_hoisted() {
     let mut b = Builder::new();
     let (src, xv) = b.source(const_array(Array::from_parts([2], vec![0.0, 0.0].into())));
     let fused = b.segment(mstd(4), xv);
-    let series = b.segment(record_bounded(Retention::count(16)), xv);
+    let series = b.segment(record(Retention::count(16)), xv);
     let var = b.segment(rolling_variance(Window::Count(4)), series);
     let hoisted = b.segment(sqrt(), var);
     let mut g = b.build();

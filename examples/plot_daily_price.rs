@@ -22,8 +22,9 @@ use tradingflow::operators::array::select_at;
 use tradingflow::operators::constant::const_array;
 use tradingflow::operators::num::{add, multiply, sqrt, subtract};
 use tradingflow::operators::rolling::{Window, rolling_mean, rolling_variance};
+use tradingflow::operators::series::record_all;
 use tradingflow::operators::stocks::forward_adjust;
-use tradingflow::operators::structural::{filter, record};
+use tradingflow::operators::structural::filter;
 use tradingflow::sources::panel::*;
 
 const WINDOW: usize = 252;
@@ -88,7 +89,7 @@ async fn main() {
     // Forward-adjusted close (scalar close `0`, dividends row `1`), recorded into
     // a Series for the rolling stats.
     let adj_closes = sc.segment(forward_adjust(), (closes, dividends));
-    let adj_series = sc.segment(record(), adj_closes);
+    let adj_series = sc.segment(record_all(), adj_closes);
 
     // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).
     let ma = sc.segment(rolling_mean(Window::Count(WINDOW)), adj_series);
@@ -100,10 +101,10 @@ async fn main() {
     let lower = sc.segment(subtract(), (ma, band));
 
     // Record the outputs.
-    let h_adj = sc.segment(record(), adj_closes);
-    let h_ma = sc.segment(record(), ma);
-    let h_upper = sc.segment(record(), upper);
-    let h_lower = sc.segment(record(), lower);
+    let h_adj = sc.segment(record_all(), adj_closes);
+    let h_ma = sc.segment(record_all(), ma);
+    let h_upper = sc.segment(record_all(), upper);
+    let h_lower = sc.segment(record_all(), lower);
 
     // Run the historical replay to completion.
     let mut session = sc.build();

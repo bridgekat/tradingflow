@@ -87,14 +87,12 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
         state: &'b mut Self::State,
         _: &Instant,
     ) -> (bool, ArrayView<'a, A::Scalar, NO>) {
-        // The accumulated rows are always the newest `count` rows of the
-        // window, so the oldest accumulated row sits at view-local index
-        // `len - count` — stable under retention trims of older rows.
-        let len = series.len();
+        // The accumulated rows are always the newest `count` rows, so the
+        // oldest accumulated row sits at logical index `end - count` — and
+        // logical indices are unaffected by the record's trims.
+        let end = series.range().end;
 
-        state
-            .accumulator
-            .add(&series.at(len - 1).unwrap().1.to_contiguous());
+        state.accumulator.add(&series.at(end - 1).1.to_contiguous());
         state.count += 1;
 
         match state.window {
@@ -102,7 +100,7 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
                 while state.count > w {
                     state
                         .accumulator
-                        .remove(&series.at(len - state.count).unwrap().1.to_contiguous());
+                        .remove(&series.at(end - state.count).1.to_contiguous());
                     state.count -= 1;
                 }
                 if state.count < w {
@@ -110,12 +108,12 @@ impl<A: Accumulator, const NI: usize, const NO: usize> Operator for Rolling<A, N
                 }
             }
             Window::TimeDelta(w) => {
-                let current_ts = series.at(len - 1).unwrap().0;
+                let current_ts = series.at(end - 1).0;
                 let cutoff = current_ts - w;
-                while state.count > 0 && series.at(len - state.count).unwrap().0 < cutoff {
+                while state.count > 0 && series.at(end - state.count).0 < cutoff {
                     state
                         .accumulator
-                        .remove(&series.at(len - state.count).unwrap().1.to_contiguous());
+                        .remove(&series.at(end - state.count).1.to_contiguous());
                     state.count -= 1;
                 }
                 if state.count == 0 {

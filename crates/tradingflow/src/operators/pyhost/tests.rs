@@ -6,7 +6,7 @@ use crate::data::{Array, Duration, Instant};
 use crate::graph::pool::Pool;
 use crate::graph::typed::Builder;
 use crate::operators::constant::const_array;
-use crate::operators::structural::Record;
+use crate::operators::series::record_all;
 use crate::ports::{ArrayPort, ArrayPorts, SeriesPort};
 
 /// A small stateful operator over one Array input (L1 turnover), used here
@@ -96,7 +96,7 @@ fn py_class_operator_heterogeneous_series() {
         [2],
         vec![0.0_f64, 0.0].into(),
     )));
-    let series = b.segment(Record::new(), feed);
+    let series = b.segment(record_all(), feed);
     let out = b.segment(
         // Scalar output (`vec![]`), so NO = 0.
         PyClassOperator::<(ArrayPort<f64, 1>, SeriesPort<f64, 1>), 0>::from_source(
@@ -191,8 +191,8 @@ fn pyhost_linear_regression_predictor() {
     let (feat_feed_cell, feat_feed) = b.source(const_array(Array::<f64, 2>::zeros([N, F])));
     let (tgt_feed_cell, tgt_feed) = b.source(const_array(Array::<f64, 1>::zeros([N])));
     // Sources lend the view currency directly — `Record` wires straight on.
-    let feat_series = b.segment(Record::new(), feat_feed);
-    let tgt_series = b.segment(Record::new(), tgt_feed);
+    let feat_series = b.segment(record_all(), feat_feed);
+    let tgt_series = b.segment(record_all(), tgt_feed);
     let pred = b.segment(
         // Output is the (N,) prediction → NO = 1 (the default).
         PyClassOperator::<(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)>::from_module(

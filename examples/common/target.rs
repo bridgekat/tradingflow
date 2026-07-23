@@ -1,8 +1,9 @@
 //! Prediction targets and trading constraints derived from the market panel.
 
 use tradingflow::clock::UnixClock;
-use tradingflow::data::{Array, ArrayView, Instant, Retention, Series};
+use tradingflow::data::{Array, ArrayView, Instant, Series};
 use tradingflow::graph::Builder;
+use tradingflow::operators::series::{Retention, record};
 use tradingflow::operators::{
     array::{map, map_array},
     formula::*,
@@ -38,7 +39,7 @@ fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
 /// recorded under `target_retention` — size it to the deepest consumer
 /// look-back (the incremental mean predictor reads a single trailing pair, the
 /// shrinkage covariance reads its `max_periods` window); pass
-/// [`Retention::UNBOUNDED`] when full history is needed.
+/// [`Retention::unbounded()`] when full history is needed.
 #[allow(clippy::type_complexity)]
 pub fn build_log_return_target(
     sc: &mut Builder<Instant, UnixClock>,
@@ -51,9 +52,9 @@ pub fn build_log_return_target(
 ) {
     let log_returns = sc.segment(diff(), log_adj);
     let target = sc.segment(winsorize(0.01), log_returns);
-    let target_series = sc.segment(record_bounded(target_retention), target);
+    let target_series = sc.segment(record(target_retention), target);
     let demeaned = sc.segment(map_array(demean), target);
-    let demeaned_series = sc.segment(record_bounded(target_retention), demeaned);
+    let demeaned_series = sc.segment(record(target_retention), demeaned);
     (target, target_series, demeaned_series)
 }
 

@@ -27,8 +27,9 @@ use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{map_array, select, select_at};
 use tradingflow::operators::num::{divide, multiply, negate};
 use tradingflow::operators::rolling::{Window, rolling_mean};
+use tradingflow::operators::series::record_all;
 use tradingflow::operators::stocks::annualize;
-use tradingflow::operators::structural::{filter, record};
+use tradingflow::operators::structural::filter;
 use tradingflow::ports::ArrayPortHandle;
 use tradingflow::sources::panel::*;
 
@@ -165,7 +166,7 @@ async fn main() {
     let cf_ann = sc.segment(annualize(), cf); // [change]
     let cash_flow = sc.segment(select_at(0, 0), cf_ann);
 
-    let net_profit_series = sc.segment(record(), net_profit);
+    let net_profit_series = sc.segment(record_all(), net_profit);
     let net_profit_ttm = sc.segment(
         rolling_mean(Window::TimeDelta(Duration::from_days(365))),
         net_profit_series,
@@ -176,16 +177,16 @@ async fn main() {
     let roe = sc.segment(divide(), (net_profit_ttm, parent_equity));
 
     let records = [
-        sc.segment(record(), market_cap),
-        sc.segment(record(), assets),
-        sc.segment(record(), equity_val),
-        sc.segment(record(), parent_equity),
-        sc.segment(record(), op_income),
-        sc.segment(record(), net_profit),
-        sc.segment(record(), cash_flow),
-        sc.segment(record(), ep),
-        sc.segment(record(), bp),
-        sc.segment(record(), roe),
+        sc.segment(record_all(), market_cap),
+        sc.segment(record_all(), assets),
+        sc.segment(record_all(), equity_val),
+        sc.segment(record_all(), parent_equity),
+        sc.segment(record_all(), op_income),
+        sc.segment(record_all(), net_profit),
+        sc.segment(record_all(), cash_flow),
+        sc.segment(record_all(), ep),
+        sc.segment(record_all(), bp),
+        sc.segment(record_all(), roe),
     ];
 
     // ------------------------------------------------------------------

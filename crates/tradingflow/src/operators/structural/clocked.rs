@@ -1,6 +1,6 @@
 //! `Clocked` — clock-gated wrapper.
 
-use crate::graph::typed::{Interface, Operator};
+use crate::graph::typed::{Interface, Segment};
 use crate::ports::UnitPort;
 
 /// Prepends a leading `UnitPort` clock input; runs the inner operator's compute
@@ -20,7 +20,7 @@ impl<O> Clocked<O> {
     }
 }
 
-impl<O: Operator> Operator for Clocked<O> {
+impl<O: Segment> Segment for Clocked<O> {
     type Inputs = (UnitPort, O::Inputs);
     type Outputs = O::Outputs;
     // Forwarded, not pinned: `Clocked` is a gate, so it stays as
@@ -32,11 +32,11 @@ impl<O: Operator> Operator for Clocked<O> {
         O::init(self.inner, rest)
     }
 
-    fn passthrough<'a, 'b: 'a>(
+    fn output<'a, 'b: 'a>(
         (_, rest): ((bool, ()), <O::Inputs as Interface>::Values<'a>),
         state: &'b mut O::State,
     ) -> <O::Outputs as Interface>::Values<'a> {
-        O::passthrough(rest, state)
+        O::output(rest, state)
     }
 
     fn compute<'a, 'b: 'a>(
@@ -47,7 +47,7 @@ impl<O: Operator> Operator for Clocked<O> {
         if clock_fired {
             O::compute(rest, state, context)
         } else {
-            O::passthrough(rest, state)
+            O::output(rest, state)
         }
     }
 }

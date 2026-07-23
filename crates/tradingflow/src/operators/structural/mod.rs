@@ -5,7 +5,8 @@
 //! * **Gating**: [`Filter`] (whole-array cutoff) and [`Gate`] (the carry-safe
 //!   view gate), plus the clock-driven [`Clocked`] / [`ResampleView`] /
 //!   [`ResampleClocked`].
-//! * **Recording**: [`Record`] appends an `Array` stream into a `Series`,
+//! * **Recording**: [`Record`](crate::operators::series::Record) appends an
+//!   `Array` stream into a `Series`,
 //!   stamping each row with event time — the bridge from the
 //!   [`ArrayPort`](crate::ports::ArrayPort) to the
 //!   [`SeriesPort`](crate::ports::SeriesPort) currency.
@@ -36,9 +37,6 @@ mod count;
 mod filter;
 mod gate;
 mod keep_where;
-mod lag;
-mod last;
-mod record;
 mod resample_clocked;
 mod resample_view;
 mod reshape;
@@ -51,9 +49,6 @@ pub use count::*;
 pub use filter::*;
 pub use gate::*;
 pub use keep_where::*;
-pub use lag::*;
-pub use last::*;
-pub use record::*;
 pub use resample_clocked::*;
 pub use resample_view::*;
 // Only the shared state type escapes `reshape`; the copy/extent helpers stay

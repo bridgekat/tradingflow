@@ -6,6 +6,7 @@ pub mod formula;
 pub mod metrics;
 pub mod num;
 pub mod rolling;
+pub mod series;
 pub mod stocks;
 pub mod structural;
 pub mod traders;

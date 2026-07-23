@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar, array};
-use crate::graph::Operator;
+use crate::graph::{Operator, Segment};
 use crate::ports::ArrayPort;
 
 /// Operator signature for [`map`], [`map_array`], [`map_array_inplace`] etc.
@@ -122,98 +122,74 @@ where
 }
 
 /// A closure applied to an array view and producing a new array.
-pub fn map_array_inplace<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F>(
-    init: I,
-    update: F,
-) -> MapArray<T, N, U, M, I, F>
-where
-    I: FnOnce(ArrayView<'_, T, N>) -> Array<U, M> + Send + 'static,
-    F: FnMut(&mut Array<U, M>, ArrayView<'_, T, N>) + Send + 'static,
-{
+pub fn map_array_inplace<T: Scalar, const N: usize, U: Scalar, const M: usize>(
+    init: impl FnOnce(ArrayView<'_, T, N>) -> Array<U, M> + Send + 'static,
+    update: impl FnMut(&mut Array<U, M>, ArrayView<'_, T, N>) + Send + 'static,
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<U, M>, Context = Instant> {
     MapArray::new(init, update)
 }
 
 /// A closure applied to an array view and producing a new array (reallocating).
 #[allow(clippy::type_complexity)]
-pub fn map_array<T: Scalar, const N: usize, U: Scalar, const M: usize, F>(
-    f: F,
-) -> MapArray<
-    T,
-    N,
-    U,
-    M,
-    impl FnOnce(ArrayView<'_, T, N>) -> Array<U, M> + Send + 'static,
-    impl FnMut(&mut Array<U, M>, ArrayView<'_, T, N>) + Send + 'static,
->
-where
-    F: Fn(ArrayView<'_, T, N>) -> Array<U, M> + Clone + Send + 'static,
-{
+pub fn map_array<T: Scalar, const N: usize, U: Scalar, const M: usize>(
+    f: impl FnMut(ArrayView<'_, T, N>) -> Array<U, M> + Clone + Send + 'static,
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<U, M>, Context = Instant> {
     let init = {
-        let f = f.clone();
+        let mut f = f.clone();
         move |a: ArrayView<'_, T, N>| f(a)
     };
-    let update = move |out: &mut Array<U, M>, a: ArrayView<'_, T, N>| {
-        *out = f(a);
+    let update = {
+        let mut f = f;
+        move |out: &mut Array<U, M>, a: ArrayView<'_, T, N>| {
+            *out = f(a);
+        }
     };
     MapArray::new(init, update)
 }
 
 /// A binary closure applied to two array views and producing a new array.
-pub fn map_array_binary_inplace<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F>(
-    init: I,
-    update: F,
-) -> MapArrayBinary<T, N, U, M, I, F>
-where
-    I: FnOnce(ArrayView<'_, T, N>, ArrayView<'_, T, N>) -> Array<U, M> + Send + 'static,
-    F: FnMut(&mut Array<U, M>, ArrayView<'_, T, N>, ArrayView<'_, T, N>) + Send + 'static,
-{
+pub fn map_array_binary_inplace<T: Scalar, const N: usize, U: Scalar, const M: usize>(
+    init: impl FnOnce(ArrayView<'_, T, N>, ArrayView<'_, T, N>) -> Array<U, M> + Send + 'static,
+    update: impl FnMut(&mut Array<U, M>, ArrayView<'_, T, N>, ArrayView<'_, T, N>) + Send + 'static,
+) -> impl Segment<
+    Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
+    Outputs = ArrayPort<U, M>,
+    Context = Instant,
+> {
     MapArrayBinary::new(init, update)
 }
 
 /// A binary closure applied to two array views and producing a new array
 /// (reallocating).
 #[allow(clippy::type_complexity)]
-pub fn map_array_binary<T: Scalar, const N: usize, U: Scalar, const M: usize, F>(
-    f: F,
-) -> MapArrayBinary<
-    T,
-    N,
-    U,
-    M,
-    impl FnOnce(ArrayView<'_, T, N>, ArrayView<'_, T, N>) -> Array<U, M> + Send + 'static,
-    impl FnMut(&mut Array<U, M>, ArrayView<'_, T, N>, ArrayView<'_, T, N>) + Send + 'static,
->
-where
-    F: Fn(ArrayView<'_, T, N>, ArrayView<'_, T, N>) -> Array<U, M> + Clone + Send + 'static,
-{
+pub fn map_array_binary<T: Scalar, const N: usize, U: Scalar, const M: usize>(
+    f: impl FnMut(ArrayView<'_, T, N>, ArrayView<'_, T, N>) -> Array<U, M> + Clone + Send + 'static,
+) -> impl Segment<
+    Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
+    Outputs = ArrayPort<U, M>,
+    Context = Instant,
+> {
     let init = {
-        let f = f.clone();
+        let mut f = f.clone();
         move |a: ArrayView<'_, T, N>, b: ArrayView<'_, T, N>| f(a, b)
     };
-    let update = move |out: &mut Array<U, M>, a: ArrayView<'_, T, N>, b: ArrayView<'_, T, N>| {
-        *out = f(a, b);
+    let update = {
+        let mut f = f;
+        move |out: &mut Array<U, M>, a: ArrayView<'_, T, N>, b: ArrayView<'_, T, N>| {
+            *out = f(a, b);
+        }
     };
     MapArrayBinary::new(init, update)
 }
 
 /// A closure applied elementwise: [`array::map`].
 #[allow(clippy::type_complexity)]
-pub fn map<T: Scalar, U: Scalar, const N: usize, F>(
-    f: F,
-) -> MapArray<
-    T,
-    N,
-    U,
-    N,
-    impl FnOnce(ArrayView<'_, T, N>) -> Array<U, N> + Send + 'static,
-    impl FnMut(&mut Array<U, N>, ArrayView<'_, T, N>) + Send + 'static,
->
-where
-    F: Fn(T) -> U + Clone + Send + 'static,
-{
+pub fn map<T: Scalar, U: Scalar, const N: usize>(
+    f: impl Fn(T) -> U + Clone + Send + 'static,
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<U, N>, Context = Instant> {
     let init = {
         let f = f.clone();
-        move |a: ArrayView<'_, T, N>| array::map(a, &f)
+        move |a: ArrayView<'_, T, N>| array::map(a, f)
     };
     let update = move |out: &mut Array<U, N>, a: ArrayView<'_, T, N>| {
         array::map_into(out.data_mut(), a, &f);
@@ -223,19 +199,13 @@ where
 
 /// A binary closure applied elementwise: [`array::map_binary`].
 #[allow(clippy::type_complexity)]
-pub fn map_binary<T: Scalar, U: Scalar, const N: usize, F>(
-    f: F,
-) -> MapArrayBinary<
-    T,
-    N,
-    U,
-    N,
-    impl FnOnce(ArrayView<'_, T, N>, ArrayView<'_, T, N>) -> Array<U, N> + Send + 'static,
-    impl FnMut(&mut Array<U, N>, ArrayView<'_, T, N>, ArrayView<'_, T, N>) + Send + 'static,
->
-where
-    F: Fn(T, T) -> U + Clone + Send + 'static,
-{
+pub fn map_binary<T: Scalar, U: Scalar, const N: usize>(
+    f: impl Fn(T, T) -> U + Clone + Send + 'static,
+) -> impl Segment<
+    Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
+    Outputs = ArrayPort<U, N>,
+    Context = Instant,
+> {
     let init = {
         let f = f.clone();
         move |a: ArrayView<'_, T, N>, b: ArrayView<'_, T, N>| array::map_binary(a, b, &f)

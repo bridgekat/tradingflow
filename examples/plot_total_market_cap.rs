@@ -24,7 +24,7 @@ use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{map_array, map_array_binary_inplace};
 use tradingflow::operators::num::multiply;
-use tradingflow::operators::structural::record;
+use tradingflow::operators::series::record_all;
 use tradingflow::operators::structural::resample_view;
 use tradingflow::operators::traders::benchmark;
 use tradingflow::sources::basic::*;
@@ -96,8 +96,8 @@ async fn main() {
         index,
     );
 
-    let h_mc = sc.segment(record(), index_circ_market_cap);
-    let h_nav = sc.segment(record(), index_value);
+    let h_mc = sc.segment(record_all(), index_circ_market_cap);
+    let h_nav = sc.segment(record_all(), index_value);
 
     let mut session = sc.build();
     let mut pool = Pool::new(args.threads);

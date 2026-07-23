@@ -1,3 +1,5 @@
+//! Iterators over array scalars.
+
 use crate::{Offsets, Scalar};
 
 /// Owned iterator over array scalars in row-major order.

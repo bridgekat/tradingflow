@@ -55,7 +55,7 @@ where
 
 /// Pass the input through iff `predicate` holds, else drop the tick (emitting
 /// `notify = false`). The cutoff operator: a dropped tick suppresses every
-/// downstream side effect, including a [`Record`](super::Record) append.
+/// downstream side effect, including a [`Record`](crate::operators::series::Record) append.
 pub fn filter<T: Scalar, F, const N: usize>(predicate: F) -> Filter<T, F, N> {
     Filter(predicate, PhantomData)
 }

@@ -1,10 +1,10 @@
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar, array};
-use crate::graph::Operator;
+use crate::graph::{Operator, Segment};
 use crate::ports::{ArrayPort, ArrayPorts};
 
-/// Operator signature for [`concat`](self::concat), [`stack`] etc.
+/// Operator signature for [`concat`](fn@concat), [`stack`] etc.
 pub struct CombineArray<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F>
 where
     I: FnOnce(&[ArrayView<'_, T, N>]) -> Array<U, M> + Send + 'static,
@@ -62,17 +62,9 @@ where
 }
 
 /// Concatenates the inputs along the existing axis `axis`: [`array::concat`].
-#[allow(clippy::type_complexity)]
 pub fn concat<T: Scalar, const N: usize>(
     axis: usize,
-) -> CombineArray<
-    T,
-    N,
-    T,
-    N,
-    impl FnOnce(&[ArrayView<'_, T, N>]) -> Array<T, N> + Send + 'static,
-    impl FnMut(&mut Array<T, N>, &[ArrayView<'_, T, N>]) + Send + 'static,
-> {
+) -> impl Segment<Inputs = ArrayPorts<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     let init = move |views: &[ArrayView<'_, T, N>]| array::concat(views, axis);
     let update = move |out: &mut Array<T, N>, views: &[ArrayView<'_, T, N>]| {
         array::concat_into(out.data_mut(), views, axis);
@@ -81,17 +73,9 @@ pub fn concat<T: Scalar, const N: usize>(
 }
 
 /// Stacks the inputs along a new axis inserted at `axis`: [`array::stack`].
-#[allow(clippy::type_complexity)]
 pub fn stack<T: Scalar, const N: usize, const M: usize>(
     axis: usize,
-) -> CombineArray<
-    T,
-    N,
-    T,
-    M,
-    impl FnOnce(&[ArrayView<'_, T, N>]) -> Array<T, M> + Send + 'static,
-    impl FnMut(&mut Array<T, M>, &[ArrayView<'_, T, N>]) + Send + 'static,
-> {
+) -> impl Segment<Inputs = ArrayPorts<T, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
     assert!(
         M == N + 1,
         "stack: output ndim ({M}) must be input ndim ({N}) plus one"

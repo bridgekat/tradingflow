@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::data::layout::{IntoSliceReshapes, IntoSlices};
 use crate::data::{ArrayView, Instant, Scalar};
-use crate::graph::Operator;
+use crate::graph::{Operator, Segment};
 use crate::ports::ArrayPort;
 
 /// Operator signature for [`derive_view`] etc.
@@ -56,20 +56,16 @@ where
 }
 
 /// A closure applied to an array view and producing an array view.
-pub fn derive_view<T: Scalar, const N: usize, U: Scalar, const M: usize, F>(
-    f: F,
-) -> DeriveView<T, N, U, M, F>
-where
-    F: FnMut(ArrayView<'_, T, N>) -> ArrayView<'_, U, M> + Send + 'static,
-{
+pub fn derive_view<T: Scalar, const N: usize, U: Scalar, const M: usize>(
+    f: impl FnMut(ArrayView<'_, T, N>) -> ArrayView<'_, U, M> + Send + 'static,
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<U, M>, Context = Instant> {
     DeriveView::new(f)
 }
 
 /// Takes a slice of an array view: [`ArrayView::slice`].
 pub fn slice<T: Scalar, const N: usize>(
     slices: impl IntoSlices<N>,
-) -> DeriveView<T, N, T, N, impl FnMut(ArrayView<'_, T, N>) -> ArrayView<'_, T, N> + Send + 'static>
-{
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     let slices = slices.into_slices();
     DeriveView::new(move |a| ArrayView::slice(&a, slices))
 }
@@ -77,8 +73,7 @@ pub fn slice<T: Scalar, const N: usize>(
 /// Takes a slice of an array view: [`ArrayView::slice_reshape`].
 pub fn slice_reshape<T: Scalar, const N: usize, const M: usize>(
     slices: impl IntoSliceReshapes<N>,
-) -> DeriveView<T, N, T, M, impl FnMut(ArrayView<'_, T, N>) -> ArrayView<'_, T, M> + Send + 'static>
-{
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
     let slices = slices.into_slice_reshapes();
     DeriveView::new(move |a| ArrayView::slice_reshape(&a, slices))
 }
@@ -86,7 +81,6 @@ pub fn slice_reshape<T: Scalar, const N: usize, const M: usize>(
 /// Permutes the axes of an array view: [`ArrayView::transpose`].
 pub fn transpose<T: Scalar, const N: usize>(
     perm: [usize; N],
-) -> DeriveView<T, N, T, N, impl FnMut(ArrayView<'_, T, N>) -> ArrayView<'_, T, N> + Send + 'static>
-{
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     DeriveView::new(move |a| ArrayView::transpose(&a, perm))
 }

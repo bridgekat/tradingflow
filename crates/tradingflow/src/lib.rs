@@ -20,7 +20,7 @@
 //! use tradingflow::clock::UnixClock;
 //! use tradingflow::data::*;
 //! use tradingflow::graph::*;
-//! use tradingflow::operators::{rolling::*, structural::*};
+//! use tradingflow::operators::{rolling::*, series::*, structural::*};
 //! use tradingflow::ports::*;
 //! use tradingflow::segment;
 //! use tradingflow::sources::basic::*;
@@ -38,7 +38,7 @@
 //!             Some(*sum)
 //!         })
 //!         .collect();
-//!     let data = Series::from_parts([], timestamps, values, Retention::unbounded());
+//!     let data = Series::from_parts([], timestamps, values, 0);
 //!
 //!     // Create the thread pool.
 //!     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
@@ -46,18 +46,18 @@
 //!     // Build the graph.
 //!     let mut b = Builder::new(UnixClock);
 //!     let prices = b.source(array_source(Array::scalar(0.0), data));
-//!     let prices_series = b.segment(record(), prices);
+//!     let prices_series = b.segment(record_all(), prices);
 //!     let mean = b.segment(rolling_mean(Window::Count(10)), prices_series);
-//!     let mean_series = b.segment(record(), mean);
+//!     let mean_series = b.segment(record_all(), mean);
 //!
 //!     // Alternatively, one can use `segment!` to fuse operators into a
 //!     // single segment.
 //!     let mean_series_fuse = b.segment(
 //!         segment!(
 //!             |prices: ArrayPort<f64, 0>| -> SeriesPort<f64, 0> {
-//!                 let prices_series = record() @ prices;
+//!                 let prices_series = record_all() @ prices;
 //!                 let mean = rolling_mean(Window::Count(10)) @ prices_series;
-//!                 let mean_series = record() @ mean;
+//!                 let mean_series = record_all() @ mean;
 //!                 mean_series
 //!             }
 //!         ),

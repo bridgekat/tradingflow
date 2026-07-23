@@ -57,6 +57,12 @@ impl AddAssign<Duration> for Instant {
     }
 }
 
+impl Instant {
+    pub fn saturating_add(self, rhs: Duration) -> Instant {
+        Instant(self.0.saturating_add(rhs.as_nanos()))
+    }
+}
+
 impl Sub<Duration> for Instant {
     type Output = Instant;
 
@@ -68,6 +74,12 @@ impl Sub<Duration> for Instant {
 impl SubAssign<Duration> for Instant {
     fn sub_assign(&mut self, rhs: Duration) {
         self.0 -= rhs.as_nanos();
+    }
+}
+
+impl Instant {
+    pub fn saturating_sub(self, rhs: Duration) -> Instant {
+        Instant(self.0.saturating_sub(rhs.as_nanos()))
     }
 }
 

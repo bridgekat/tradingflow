@@ -59,7 +59,7 @@
 //! use tradingflow::data::*;
 //!
 //! // Create a time series of owned row-major contiguous arrays.
-//! let mut a = Series::new_unbounded([2, 3]);
+//! let mut a = Series::new([2, 3]);
 //!
 //! // Add elements to the series.
 //! let ts = Instant::from_offset(Duration::from_nanos(0));
@@ -69,11 +69,11 @@
 //! a.push(ts, val.view());
 //!
 //! // Element indexing (direct assignment is not supported yet).
-//! assert_eq!(a.at(0), Some((ts, val.view())));
+//! assert_eq!(a.at(0), (ts, val.view()));
 //!
 //! // Element reshaping.
 //! let a = a.reshape([6]);
-//! assert_eq!(a.at(0).unwrap().1.extents(), [6]);
+//! assert_eq!(a.at(0).1.extents(), [6]);
 //!
 //! // Reshape back, create a view.
 //! let a = a.reshape([2, 3]);
@@ -135,11 +135,14 @@
 //! # Series
 //!
 //! A [`Series<T, N>`] is a time series whose elements are `N`-dimensional
-//! arrays of scalars `T`, which owns its data. Its history may be bounded by a
-//! [`Retention`] policy.
+//! arrays of scalars `T`, which owns its data.
 //!
 //! A [`SeriesView<'a, T, N>`] is a borrowed, possibly strided view of such a
 //! series (with lifetime `'a`).
+//!
+//! > Time series are append-only from the back, and trim-only from the front.
+//! > Elements are logically indexed: trimming front elements *does not change*
+//! > the logical indices of the remaining elements.
 //!
 //! # Timestamps
 //!
@@ -174,7 +177,7 @@ pub use array::{Array, ArrayView};
 pub use layout::{Layout, Offsets, Slice, SliceReshape};
 pub use scalar::Scalar;
 pub use schema::Schema;
-pub use series::{Retention, Series, SeriesView};
+pub use series::{Series, SeriesView};
 pub use time::{Duration, Instant};
 
 pub use SliceReshape::NewAxis;

@@ -1,9 +1,8 @@
+use bumpalo::Bump;
 use std::marker::PhantomData;
 
-use bumpalo::Bump;
-
 use crate::data::{ArrayView, Instant, Scalar, array};
-use crate::graph::Operator;
+use crate::graph::{Operator, Segment};
 use crate::ports::{ArrayPort, ArrayPorts};
 
 /// Operator signature for [`split`], [`unstack`] etc.
@@ -67,13 +66,7 @@ where
 pub fn split<T: Scalar, const N: usize>(
     lengths: Vec<usize>,
     axis: usize,
-) -> SplitView<
-    T,
-    N,
-    T,
-    N,
-    impl FnMut(ArrayView<'_, T, N>) -> Vec<ArrayView<'_, T, N>> + Send + 'static,
-> {
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPorts<T, N>, Context = Instant> {
     SplitView::new(move |a: ArrayView<'_, T, N>| array::split(a, &lengths, axis))
 }
 
@@ -81,13 +74,7 @@ pub fn split<T: Scalar, const N: usize>(
 /// axis: [`array::unstack`].
 pub fn unstack<T: Scalar, const N: usize, const M: usize>(
     axis: usize,
-) -> SplitView<
-    T,
-    N,
-    T,
-    M,
-    impl FnMut(ArrayView<'_, T, N>) -> Vec<ArrayView<'_, T, M>> + Send + 'static,
-> {
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPorts<T, M>, Context = Instant> {
     assert!(
         M + 1 == N,
         "unstack: output ndim ({M}) must be input ndim ({N}) minus one"

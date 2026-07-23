@@ -3,7 +3,7 @@
 use tradingflow::clock::UnixClock;
 use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
-use tradingflow::operators::structural::record;
+use tradingflow::operators::series::record_all;
 use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle};
 
 use super::models::information_coefficient;
@@ -17,7 +17,7 @@ pub fn ic_series(
     num_stocks: usize,
 ) -> SeriesPortHandle<f64, 0> {
     let ic = sc.segment(information_coefficient(num_stocks), (factor, target));
-    sc.segment(record(), ic)
+    sc.segment(record_all(), ic)
 }
 
 /// Summary of an IC series: its mean, dispersion, information ratio

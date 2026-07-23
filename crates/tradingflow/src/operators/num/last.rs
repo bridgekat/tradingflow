@@ -31,7 +31,7 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
     fn init(self, (_, series): (bool, SeriesView<'_, T, N>)) -> Self::State {
         let mut out = Array::full(series.extents(), self.fill.clone());
         if !series.is_empty() {
-            out.assign(series.at(series.len() - 1).unwrap().1);
+            out.assign(series.at(series.range().end - 1).1);
         }
         LastState {
             fill: self.fill,
@@ -48,7 +48,7 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
             let fill = state.fill.clone();
             state.out.data_mut().fill(fill);
         } else {
-            state.out.assign(series.at(series.len() - 1).unwrap().1);
+            state.out.assign(series.at(series.range().end - 1).1);
         }
         (true, state.out.view())
     }

@@ -4,7 +4,7 @@ use super::{ArrayIntoIter, ArrayIter, ArrayView};
 use crate::{Layout, Scalar, layout};
 
 /// An owned, row-major contiguous, rank-`N` array.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Array<T: Scalar, const N: usize> {
     layout: layout::RowMajor<N>,
     data: Box<[T]>,
@@ -86,8 +86,8 @@ impl<T: Scalar, const N: usize> Array<T, N> {
 
     /// Borrows the whole array as an [`ArrayView`].
     pub fn view(&self) -> ArrayView<'_, T, N> {
-        // SAFETY: `self.data.len() == self.layout.len() >= self.layout.span()`.
-        unsafe { ArrayView::from_parts_unchecked(self.layout.into(), &self.data) }
+        // SAFETY: `self.data.len() == self.layout.len()`.
+        unsafe { ArrayView::from_slice_unchecked(self.layout.extents(), &self.data) }
     }
 
     /// Borrow the whole array as an [`ArrayView`] with the specified extents.
@@ -105,8 +105,8 @@ impl<T: Scalar, const N: usize> Array<T, N> {
             extents,
             layout.len(),
         );
-        // SAFETY: `self.data.len() == self.layout.len() == layout.len() >= layout.span()`.
-        unsafe { ArrayView::from_parts_unchecked(layout.into(), &self.data) }
+        // SAFETY: `self.data.len() == self.layout.len() == layout.len()`.
+        unsafe { ArrayView::from_slice_unchecked(layout.extents(), &self.data) }
     }
 
     /// Returns a new array with the specified extents, without reallocating.
@@ -124,10 +124,8 @@ impl<T: Scalar, const N: usize> Array<T, N> {
             extents,
             layout.len(),
         );
-        Array {
-            layout,
-            data: self.data,
-        }
+        // SAFETY: `self.data.len() == self.layout.len() == layout.len()`.
+        unsafe { Array::from_parts_unchecked(extents, self.data) }
     }
 
     /// Writes data into the array.
@@ -203,3 +201,11 @@ impl<T: Scalar, const N: usize> IntoIterator for Array<T, N> {
         }
     }
 }
+
+impl<T: Scalar + PartialEq, const N: usize> PartialEq for Array<T, N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.extents() == other.extents() && self.data == other.data
+    }
+}
+
+impl<T: Scalar + Eq, const N: usize> Eq for Array<T, N> {}

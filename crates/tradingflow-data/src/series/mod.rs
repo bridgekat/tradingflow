@@ -2,10 +2,10 @@
 
 mod iter;
 mod owned;
-mod retention;
+mod shift;
 mod view;
 
 pub use iter::{SeriesIntoIter, SeriesIter};
 pub use owned::Series;
-pub use retention::Retention;
+pub use shift::shift;
 pub use view::SeriesView;

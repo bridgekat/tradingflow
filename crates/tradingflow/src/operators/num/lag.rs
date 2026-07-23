@@ -46,9 +46,11 @@ impl<T: Scalar, const N: usize> Operator for Lag<T, N> {
         state: &'b mut Self::State,
         _: &Instant,
     ) -> (bool, ArrayView<'a, T, N>) {
-        let len = series.len();
-        if len > state.offset {
-            let (_, lagged) = series.at(len - 1 - state.offset).unwrap();
+        // `end` counts every row ever recorded, so `end - 1 - offset` names
+        // the row `offset` pushes ago regardless of trimming.
+        let end = series.range().end;
+        if end > state.offset {
+            let (_, lagged) = series.at(end - 1 - state.offset);
             state.out.assign(lagged);
         } else {
             state.out.data_mut().fill(state.fill.clone());

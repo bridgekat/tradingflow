@@ -1,10 +1,10 @@
 use num_traits::Float;
 
-use super::WithLagged;
 use super::lag::lag;
 use crate::data::{Instant, Scalar};
+use crate::graph::Segment;
 use crate::graph::cb::{Comp, Fork, Id, Right};
-use crate::operators::num::{BinaryFn, divide, subtract};
+use crate::operators::num::{divide, subtract};
 use crate::ports::ArrayPort;
 
 /// `n`-tick relative change `(x − x₋ₙ) / x₋ₙ` (the YoY-growth shape):
@@ -16,11 +16,7 @@ use crate::ports::ArrayPort;
 #[allow(clippy::type_complexity)] // the combinator tree is the documentation
 pub fn growth<T: Scalar + Float, const N: usize>(
     n: usize,
-) -> WithLagged<
-    T,
-    N,
-    Comp<Fork<BinaryFn<T, N>, Right<ArrayPort<T, N>, ArrayPort<T, N>, Instant>>, BinaryFn<T, N>>,
-> {
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Comp(
         Fork(Id::default(), lag(n)),
         Comp(Fork(subtract(), Right::default()), divide()),

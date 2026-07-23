@@ -23,10 +23,10 @@ mod common;
 use clap::Parser;
 
 use tradingflow::clock::UnixClock;
-use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
 use tradingflow::operators::num::diff;
-use tradingflow::operators::structural::record;
+use tradingflow::operators::series::Retention;
+use tradingflow::operators::series::record_all;
 use tradingflow::ports::SeriesPortHandle;
 
 use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};
@@ -121,7 +121,7 @@ async fn main() {
                 name: e.name,
                 long: nav[0],
                 ls: nav[1],
-                mv: sc.segment(record(), mv),
+                mv: sc.segment(record_all(), mv),
             }
         })
         .collect();

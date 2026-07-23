@@ -7,8 +7,9 @@
 //! that actually differs: which predictor, which optimizer, which trader.
 
 use tradingflow::clock::UnixClock;
-use tradingflow::data::{Array, ArrayView, Instant, Retention};
+use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::graph::{Builder, Graph, Pool, Segment};
+use tradingflow::operators::series::{Retention, record_all};
 use tradingflow::operators::{array::map_array, num::*, structural::*, traders::*};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPortHandle, UnitPortHandle};
 use tradingflow::sources::basic::*;
@@ -160,7 +161,7 @@ impl Market {
         positions: ArrayPortHandle<f64, 1>,
     ) -> SeriesPortHandle<f64, 0> {
         let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions);
-        sc.segment(record(), value)
+        sc.segment(record_all(), value)
     }
 }
 

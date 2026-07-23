@@ -26,13 +26,14 @@ mod common;
 use clap::Parser;
 
 use tradingflow::clock::UnixClock;
-use tradingflow::data::{Retention, SeriesView};
+use tradingflow::data::SeriesView;
 use tradingflow::graph::Builder;
 use tradingflow::operators::array::stack;
 use tradingflow::operators::metrics::{compound_return, drawdown, sharpe_ratio};
 use tradingflow::operators::num::diff;
 use tradingflow::operators::num::log;
-use tradingflow::operators::structural::record;
+use tradingflow::operators::series::Retention;
+use tradingflow::operators::series::record_all;
 use tradingflow::operators::traders::{benchmark, random_trader};
 
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
@@ -99,23 +100,23 @@ async fn main() {
     let strat_logret = sc.segment(diff(), log_actual);
     let log_index = sc.segment(log(), index_value);
     let index_logret = sc.segment(diff(), log_index);
-    let strat_logret_series = sc.segment(record(), strat_logret);
+    let strat_logret_series = sc.segment(record_all(), strat_logret);
     // scalar -> (1,): stack the rank-0 view handle into a 1-vector.
     let index_logret_vec = sc.segment(stack(0), &[index_logret][..]);
-    let index_logret_series = sc.segment(record(), index_logret_vec);
+    let index_logret_series = sc.segment(record_all(), index_logret_vec);
     let beta_alpha = sc.segment(
         regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS),
         (m.rebalance_clock, strat_logret_series, index_logret_series),
     );
 
     // ---- Records --------------------------------------------------------
-    let h_index = sc.segment(record(), index_value);
-    let h_fric = sc.segment(record(), frictionless_value);
-    let h_actual = sc.segment(record(), actual_value);
-    let h_sharpe = sc.segment(record(), sharpe);
-    let h_compound = sc.segment(record(), compound);
-    let h_drawdown = sc.segment(record(), drawdown);
-    let h_beta_alpha = sc.segment(record(), beta_alpha);
+    let h_index = sc.segment(record_all(), index_value);
+    let h_fric = sc.segment(record_all(), frictionless_value);
+    let h_actual = sc.segment(record_all(), actual_value);
+    let h_sharpe = sc.segment(record_all(), sharpe);
+    let h_compound = sc.segment(record_all(), compound);
+    let h_drawdown = sc.segment(record_all(), drawdown);
+    let h_beta_alpha = sc.segment(record_all(), beta_alpha);
 
     let session = common::run(sc, &args).await;
 
@@ -152,10 +153,8 @@ async fn main() {
         .filter(|x| x.is_finite())
         .fold(0.0_f64, f64::min);
     let ba: SeriesView<f64, 1> = session.view(h_beta_alpha);
-    let (beta, alpha) = ba
-        .len()
-        .checked_sub(1)
-        .and_then(|last| ba.at(last))
+    let (beta, alpha) = (!ba.is_empty())
+        .then(|| ba.at(ba.range().end - 1))
         .map(|(_, v)| (v[[0]], v[[1]] * 252.0))
         .unwrap_or((f64::NAN, f64::NAN));
 
