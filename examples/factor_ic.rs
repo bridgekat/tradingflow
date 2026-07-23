@@ -24,9 +24,7 @@ use clap::Parser;
 use tradingflow::clock::UnixClock;
 use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
-use tradingflow::operators::structural::record;
-use tradingflow::operators::structural::resample_clocked;
-use tradingflow::operators::transform::lag_series;
+use tradingflow::operators::structural::{lag_series, record, resample_clocked};
 
 use common::ic::{ic_series, ic_stats};
 use common::strategy::Market;

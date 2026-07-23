@@ -62,7 +62,7 @@ fn series_asof() {
 }
 
 #[test]
-#[should_panic(expected = "push: extents mismatch")]
+#[should_panic(expected = "extents mismatch")]
 fn push_wrong_extents() {
     let mut s = Series::<f64, 1>::new_unbounded([2]);
     let row = Array::from_parts([3], vec![1.0, 2.0, 3.0].into());
@@ -97,7 +97,7 @@ fn from_parts_round_trips() {
 }
 
 #[test]
-#[should_panic(expected = "from_parts: 2 elements of stride 2 expect 4 scalars, got 3")]
+#[should_panic(expected = "expect 4 scalars, got 3")]
 fn from_parts_wrong_len() {
     let _ = Series::<f64, 1>::from_parts(
         [2],
@@ -205,7 +205,7 @@ fn view_to_array_view() {
 }
 
 #[test]
-#[should_panic(expected = "to_array_view: M (3) must be N + 1 (2)")]
+#[should_panic(expected = "M (3) must be N + 1 (2)")]
 fn view_to_array_view_wrong_rank() {
     let mut s = Series::<f64, 1>::new_unbounded([2]);
     s.push(ts(100), ArrayView::from_slice([2], &[1.0, 2.0]));
@@ -222,7 +222,7 @@ fn view_from_slice_checks_len() {
 }
 
 #[test]
-#[should_panic(expected = "from_slice: 2 elements of stride 2 expect 4 scalars, got 3")]
+#[should_panic(expected = "expect 4 scalars, got 3")]
 fn view_from_slice_wrong_len() {
     let tss = [ts(1), ts(2)];
     let vals = [1.0, 2.0, 3.0];
@@ -249,7 +249,7 @@ fn view_from_parts_with_padding() {
 }
 
 #[test]
-#[should_panic(expected = "from_parts: 2 elements of stride 3 span 5 scalars, got 4")]
+#[should_panic(expected = "span 5 scalars, got 4")]
 fn view_from_parts_data_too_short() {
     // Two elements of extent [2] laid 3 apart address up to offset 4, so the
     // data must hold 5 scalars — the tail beyond that is what may be missing,
@@ -565,9 +565,7 @@ fn view_slicing_reshapes_elements() {
     );
 
     // A sliced series copies into an owned one with the sliced extents.
-    let owned = v
-        .slice_along_axis(1, 1..3)
-        .to_series(Retention::unbounded());
+    let owned = v.slice((.., 1..3)).to_series(Retention::unbounded());
     assert_eq!(owned.layout().extents(), [2, 2]);
     assert_eq!(owned.data(), &[1.0, 2.0, 4.0, 5.0, 7.0, 8.0, 10.0, 11.0]);
     assert_eq!(owned.timestamps(), &tss);

@@ -3,7 +3,13 @@
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant, Retention, Series};
 use tradingflow::graph::Builder;
-use tradingflow::operators::{formula::*, num::*, structural::*, traders::*, transform::*};
+use tradingflow::operators::{
+    array::{map, map_array},
+    formula::*,
+    num::*,
+    structural::*,
+    traders::*,
+};
 use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle};
 
 /// Cross-sectional demean preserving NaN.
@@ -46,7 +52,7 @@ pub fn build_log_return_target(
     let log_returns = sc.segment(diff(), log_adj);
     let target = sc.segment(winsorize(0.01), log_returns);
     let target_series = sc.segment(record_bounded(target_retention), target);
-    let demeaned = sc.segment(map(demean), target);
+    let demeaned = sc.segment(map_array(demean), target);
     let demeaned_series = sc.segment(record_bounded(target_retention), demeaned);
     (target, target_series, demeaned_series)
 }
@@ -60,17 +66,7 @@ pub fn build_price_limits(
 ) -> (ArrayPortHandle<f64, 1>, ArrayPortHandle<f64, 1>) {
     // Self-recording 1-step lag (a tiny private trailing window).
     let prev_close = sc.segment(lag(1), close);
-    let limit = move |scale: f64| {
-        map(move |c: ArrayView<f64, 1>| {
-            let s = c.to_contiguous();
-            Array::from_parts(
-                [s.len()],
-                s.iter()
-                    .map(|&x| ((x * scale) * 100.0).round() / 100.0)
-                    .collect(),
-            )
-        })
-    };
+    let limit = move |scale: f64| map(move |x: f64| ((x * scale) * 100.0).round() / 100.0);
     let upper = sc.segment(limit(1.0 + limit_pct), prev_close);
     let lower = sc.segment(limit(1.0 - limit_pct), prev_close);
     (upper, lower)

@@ -83,8 +83,7 @@ pub use mstd::*;
 pub use msum::*;
 pub use mvar::*;
 
-use super::structural::Record;
-use super::transform::Lag;
+use super::structural::{Lag, Record};
 use crate::data::Instant;
 use crate::graph::cb::{Comp, Fork, Id};
 use crate::ports::ArrayPort;

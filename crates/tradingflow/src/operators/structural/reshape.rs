@@ -1,5 +1,5 @@
-//! Layout helpers shared by the reshape / combine family (`Stack`, `StackSync`,
-//! `Concat`, `ConcatSync`).
+//! Layout helpers shared by the `NaN`-fill combine family (`StackSync`,
+//! `ConcatSync`).
 //!
 //! Only [`ReshapeState`] is re-exported by the parent module; the copy and
 //! extent helpers stay private to `structural`.
@@ -15,25 +15,9 @@ pub struct ReshapeState<T: Scalar, const OUT: usize> {
     pub(super) out: Array<T, OUT>,
 }
 
-/// Interleave `inputs` (each materialized row-major) into `output` along the
-/// combine layout.
-pub(super) fn interleaved_copy_views<T: Scalar, const IN: usize>(
-    output: &mut [T],
-    inputs: &[ArrayView<T, IN>],
-    n_inputs: usize,
-    outer_count: usize,
-    chunk_size: usize,
-) {
-    interleaved_copy_views_selective(
-        output,
-        inputs,
-        0..inputs.len(),
-        n_inputs,
-        outer_count,
-        chunk_size,
-    );
-}
-
+/// Interleave the selected `positions` of `inputs` (each materialized
+/// row-major) into `output` along the combine layout, leaving the other
+/// positions untouched (the caller pre-fills them, e.g. with `NaN`).
 pub(super) fn interleaved_copy_views_selective<T: Scalar, const IN: usize>(
     output: &mut [T],
     inputs: &[ArrayView<T, IN>],

@@ -3,8 +3,7 @@ use num_traits::Float;
 use super::Windowed;
 use crate::data::Scalar;
 use crate::graph::cb::Comp;
-use crate::operators::structural::buffer;
-use crate::operators::transform::Lag;
+use crate::operators::structural::{Lag, buffer};
 
 /// The value from `n` ticks ago: `lag(n) @ x`. Self-recording; `NaN`
 /// until more than `n` values have been seen.

@@ -266,6 +266,9 @@ where
 
 /// Arrow `arr`: the arrow map of the `Port` functor.
 /// Applies the given closure to the input ports, producing output ports.
+///
+/// The closure takes an additional `&'a ()` argument due to limitations in
+/// the type system of Rust.
 pub struct Arr<T, U, F, C>(F, PhantomData<(T, U, C)>);
 
 impl<T, U, F, C> Segment for Arr<T, U, F, C>

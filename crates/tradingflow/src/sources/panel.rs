@@ -30,7 +30,7 @@
 //! are `NaN`); there is no carry-forward and no window-start seeding. This is the
 //! event-driven behaviour of the old per-symbol sources: a source ticks only on
 //! its own dates, and any "carry the last value" / "NaN-fill" is the job of the
-//! downstream [`Stack`](crate::operators::structural::Stack) / [`StackSync`](crate::operators::structural::StackSync)
+//! downstream [`stack`](crate::operators::array::stack) / [`StackSync`](crate::operators::structural::StackSync)
 //! operators — not the source. With `with_time_range`, rows before `start` are
 //! simply skipped (no last-value-before-`start` is carried in).
 //!
@@ -60,7 +60,7 @@
 //! Like [`ParquetPanelSource`] it pivots a long table
 //! into one wide `[N, R]` cross-section per event date (StackSync semantics — each
 //! cross-section reflects only that date's reports, `NaN` elsewhere; the
-//! carry-forward is the downstream [`Stack`](crate::operators::structural::Stack)'s job). It
+//! carry-forward is the downstream [`stack`](crate::operators::array::stack)'s job). It
 //! additionally understands the report layout — two date columns (`date` =
 //! period-end, `notice_date` = publication, nullable) — and point-in-time
 //! semantics:

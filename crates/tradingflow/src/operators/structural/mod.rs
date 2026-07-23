@@ -9,10 +9,13 @@
 //!   stamping each row with event time — the bridge from the
 //!   [`ArrayPort`](crate::ports::ArrayPort) to the
 //!   [`SeriesPort`](crate::ports::SeriesPort) currency.
-//! * **Reshape / combine**: [`Stack`] / [`StackSync`] (N → 1 along a **new**
-//!   axis, `OUT == IN + 1`), [`Concat`] / [`ConcatSync`] (N → 1 along an
-//!   **existing** axis, rank-preserving), and [`Split`] (1 → N row fan-out,
-//!   `OUT == IN - 1`).
+//! * **Reshape / combine (sync)**: [`StackSync`] / [`ConcatSync`] — the
+//!   `NaN`-fill variants of the carry combines. The pure-reshape family
+//!   (carry [`stack`](crate::operators::array::stack) /
+//!   [`concat`](fn@crate::operators::array::concat), the
+//!   [`unstack`](crate::operators::array::unstack) fan-out, plus `select`,
+//!   `slice` and friends) now lives in
+//!   [`operators::array`](crate::operators::array).
 //!
 //! In the view currency every multi-input combine takes `ArrayPorts<T, IN>`
 //! (a contiguous slice of by-value strided views, wired straight from a slice
@@ -21,36 +24,34 @@
 //! no value↔reference bridging exists anywhere. The combine into the output
 //! cross-section is the irreducible panel→cross-section data movement (each
 //! input materialized via `to_contiguous`); the per-stock selections upstream
-//! are [`select`](super::transform::select)s.
+//! are [`select`](fn@crate::operators::array::select)s.
 //!
 //! One operator per submodule; `reshape` holds the layout helpers the
-//! stack/concat family share.
+//! sync-combine family share.
 
 mod cast;
 mod clocked;
-mod concat;
 mod concat_sync;
 mod count;
 mod filter;
 mod gate;
 mod keep_where;
+mod lag;
 mod last;
 mod record;
 mod resample_clocked;
 mod resample_view;
 mod reshape;
-mod split;
-mod stack;
 mod stack_sync;
 
 pub use cast::*;
 pub use clocked::*;
-pub use concat::*;
 pub use concat_sync::*;
 pub use count::*;
 pub use filter::*;
 pub use gate::*;
 pub use keep_where::*;
+pub use lag::*;
 pub use last::*;
 pub use record::*;
 pub use resample_clocked::*;
@@ -58,6 +59,4 @@ pub use resample_view::*;
 // Only the shared state type escapes `reshape`; the copy/extent helpers stay
 // private to the module.
 pub use reshape::ReshapeState;
-pub use split::*;
-pub use stack::*;
 pub use stack_sync::*;

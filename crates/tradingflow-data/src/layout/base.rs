@@ -1,4 +1,4 @@
-use super::{IntoSliceReshapes, IntoSlices, Offsets, Slice, SliceReshape, Strided};
+use super::{IntoSliceReshapes, IntoSlices, Offsets, SliceReshape, Strided};
 
 /// A generic layout policy for a rank-`N` array.
 pub trait Layout<const N: usize> {
@@ -217,16 +217,27 @@ pub trait Layout<const N: usize> {
         })
     }
 
-    /// Base offset and layout with `axis` restricted to `slice`.
+    /// Layout with axes permuted: axis `d` of the result is axis `perm[d]`
+    /// of `self`.
     ///
     /// # Panics
     ///
-    /// Panics if `axis >= N` or `slice` is out of bounds.
-    fn slice_along_axis(&self, axis: usize, slice: impl Into<Slice>) -> (usize, Strided<N>) {
-        assert!(axis < N, "axis {axis} out of bounds for rank {N}");
-        let mut slices = [Slice::from(..); N];
-        slices[axis] = slice.into();
-        self.slice(slices)
+    /// Panics if `perm` is not a permutation of `0..N`.
+    fn transpose(&self, perm: [usize; N]) -> Strided<N> {
+        let mut seen = [false; N];
+        for &p in &perm {
+            assert!(
+                p < N && !seen[p],
+                "transpose: {perm:?} is not a permutation of 0..{N}",
+            );
+            seen[p] = true;
+        }
+        let extents = self.extents();
+        let strides = self.strides();
+        Strided::new(
+            std::array::from_fn(|d| extents[perm[d]]),
+            std::array::from_fn(|d| strides[perm[d]]),
+        )
     }
 
     /// Iterates over physical offsets.

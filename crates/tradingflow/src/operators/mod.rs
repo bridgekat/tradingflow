@@ -1,5 +1,6 @@
 //! Built-in operator segments.
 
+pub mod array;
 pub mod constant;
 pub mod formula;
 pub mod metrics;
@@ -8,7 +9,6 @@ pub mod rolling;
 pub mod stocks;
 pub mod structural;
 pub mod traders;
-pub mod transform;
 
 #[cfg(feature = "python")]
 mod pyhost;

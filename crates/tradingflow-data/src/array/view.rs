@@ -88,6 +88,44 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
         self.data
     }
 
+    /// A view of the sub-region selected by `slices`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `slices` is out of bounds on any axis.
+    pub fn slice(&self, slices: impl layout::IntoSlices<N>) -> Self {
+        let (offset, layout) = self.layout.slice(slices);
+        // SAFETY: `self.data.len() >= self.layout.span() >= offset + layout.span()`.
+        unsafe { ArrayView::from_parts_unchecked(layout, &self.data[offset..]) }
+    }
+
+    /// A view of the rank-`M` sub-region selected by `slices`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `slices` does not consume exactly `N` axes or produce
+    /// exactly `M` axes, or is out of bounds on any axis.
+    pub fn slice_reshape<const M: usize, const K: usize>(
+        &self,
+        slices: impl layout::IntoSliceReshapes<K>,
+    ) -> ArrayView<'a, T, M> {
+        let (offset, layout) = self.layout.slice_reshape(slices);
+        // SAFETY: `self.data.len() >= self.layout.span() >= offset + layout.span()`.
+        unsafe { ArrayView::from_parts_unchecked(layout, &self.data[offset..]) }
+    }
+
+    /// A zero-copy view with axes permuted: axis `d` of the result is axis
+    /// `perm[d]` of `self`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `perm` is not a permutation of `0..N`.
+    pub fn transpose(&self, perm: [usize; N]) -> Self {
+        let layout = self.layout.transpose(perm);
+        // SAFETY: `self.data.len() >= self.layout.span() == layout.span()`.
+        unsafe { ArrayView::from_parts_unchecked(layout, self.data) }
+    }
+
     /// Returns `Some(data)` if the view has row-major contiguous layout.
     pub fn as_slice(&self) -> Option<&'a [T]> {
         if self.layout.is_contiguous() {
@@ -115,40 +153,6 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
     pub fn to_array(&self) -> Array<T, N> {
         // SAFETY: `to_contiguous()` returns a slice of length `self.layout.len()`.
         unsafe { Array::from_parts_unchecked(self.layout.extents(), self.to_contiguous().into()) }
-    }
-
-    /// A view of the sub-region selected by `slices`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `slices` is out of bounds on any axis.
-    pub fn slice(&self, slices: impl layout::IntoSlices<N>) -> Self {
-        let (offset, layout) = self.layout.slice(slices);
-        Self::from_parts(layout, &self.data[offset..])
-    }
-
-    /// A view with `axis` restricted to `slice`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `axis >= N` or `slice` is out of bounds.
-    pub fn slice_along_axis(&self, axis: usize, slice: impl Into<layout::Slice>) -> Self {
-        let (offset, layout) = self.layout.slice_along_axis(axis, slice);
-        Self::from_parts(layout, &self.data[offset..])
-    }
-
-    /// A view of the rank-`M` sub-region selected by `slices`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `slices` does not consume exactly `N` axes or produce
-    /// exactly `M` axes, or is out of bounds on any axis.
-    pub fn slice_reshape<const M: usize, const K: usize>(
-        &self,
-        slices: impl layout::IntoSliceReshapes<K>,
-    ) -> ArrayView<'a, T, M> {
-        let (offset, layout) = self.layout.slice_reshape(slices);
-        ArrayView::from_parts(layout, &self.data[offset..])
     }
 }
 

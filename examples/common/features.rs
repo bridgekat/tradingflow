@@ -58,7 +58,14 @@ use tradingflow::data::{
 };
 use tradingflow::graph::{Builder, Operator};
 use tradingflow::operators::{
-    formula::*, metrics::*, num::*, rolling::*, stocks::*, structural::*, traders::*, transform::*,
+    array::{map, select, select_at, stack},
+    formula::*,
+    metrics::*,
+    num::*,
+    rolling::*,
+    stocks::*,
+    structural::*,
+    traders::*,
 };
 use tradingflow::ports::{
     ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle, UnitPortHandle,
@@ -324,13 +331,7 @@ fn emap(
     h: ArrayPortHandle<f64, 1>,
     f: fn(f64) -> f64,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(
-        map(move |a: ArrayView<f64, 1>| {
-            let s = a.to_contiguous();
-            Array::from_parts([s.len()], s.iter().map(|&x| f(x)).collect())
-        }),
-        h,
-    )
+    sc.segment(map(f), h)
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(
@@ -989,7 +990,7 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     .into_iter()
     .enumerate()
     {
-        add(name, sc.segment(select(vec![c], 1, true), chip));
+        add(name, sc.segment(select_at(c, 1), chip));
     }
 
     // Finalize each entry into its model-ready feature: rank + impute.

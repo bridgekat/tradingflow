@@ -72,8 +72,8 @@ impl<T: Scalar + Float, const N: usize> Operator for ConcatSync<T, N> {
     }
 }
 
-/// Like [`concat`](fn@super::concat), but emits `NaN` for inputs that have not
-/// notified.
+/// Like [`concat`](fn@crate::operators::array::concat), but emits `NaN` for
+/// inputs that have not notified.
 pub fn concat_sync<T: Scalar + Float, const N: usize>(axis: usize) -> ConcatSync<T, N> {
     ConcatSync::new(axis)
 }

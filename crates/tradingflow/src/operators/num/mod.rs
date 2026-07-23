@@ -8,7 +8,7 @@
 //! callable — [`UnaryMap<T, U, N, F>`] (`Fn(T) -> U`) and
 //! [`BinaryMap<T, U, N, F>`] (`Fn(T, T) -> U`) — sharing the one
 //! contiguous-fast / strided-slow elementwise core
-//! ([`apply_unary`] / `apply_binary`).
+//! ([`map`] / [`map_binary`] and their in-place `_into` variants).
 //!
 //! Fixing the output scalar `U` names the three sub-families:
 //!
@@ -56,7 +56,8 @@
 //!
 //! [`ArrayView`]: crate::data::ArrayView
 //! [`Array<T, N>`]: crate::data::Array
-//! [`apply_unary`]: crate::data::array::apply_unary
+//! [`map`]: crate::data::array::map
+//! [`map_binary`]: crate::data::array::map_binary
 
 mod arithmetic;
 mod choose;

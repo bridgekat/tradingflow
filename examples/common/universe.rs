@@ -23,7 +23,11 @@
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::graph::Builder;
-use tradingflow::operators::{num::*, structural::*, transform::*};
+use tradingflow::operators::{
+    array::{map, map_array},
+    num::*,
+    structural::*,
+};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, UnitPortHandle};
 
 /// Full-market mask: `1.0` for stocks with finite positive market cap this
@@ -38,20 +42,12 @@ pub fn build_full_market_universe(
     rebalance_clock: UnitPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        clocked(map(|m: ArrayView<f64, 1>| {
-            let s = m.to_contiguous();
-            Array::from_parts(
-                [s.len()],
-                s.iter()
-                    .map(|&c| {
-                        if c.is_finite() && c > 0.0 {
-                            1.0
-                        } else {
-                            f64::NAN
-                        }
-                    })
-                    .collect(),
-            )
+        clocked(map(|c: f64| {
+            if c.is_finite() && c > 0.0 {
+                1.0
+            } else {
+                f64::NAN
+            }
         })),
         (rebalance_clock, market_cap),
     )
@@ -67,7 +63,7 @@ pub fn build_caprank_universe(
     hi: usize,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        clocked(map(move |m: ArrayView<f64, 1>| {
+        clocked(map_array(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             let n = s.len();
             let mut idx: Vec<usize> = (0..n).filter(|&i| s[i].is_finite() && s[i] > 0.0).collect();
@@ -165,7 +161,7 @@ pub fn build_cap_weighted_universe(
 ) -> ArrayPortHandle<f64, 1> {
     let k = index_size;
     sc.segment(
-        clocked(map(move |m: ArrayView<f64, 1>| {
+        clocked(map_array(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             Array::from_parts([s.len()], calculate_index_weights(&s, k))
         })),

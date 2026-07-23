@@ -18,12 +18,12 @@ mod common;
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
+use tradingflow::operators::array::select_at;
 use tradingflow::operators::constant::const_array;
 use tradingflow::operators::num::{add, multiply, sqrt, subtract};
 use tradingflow::operators::rolling::{Window, rolling_mean, rolling_variance};
 use tradingflow::operators::stocks::forward_adjust;
 use tradingflow::operators::structural::{filter, record};
-use tradingflow::operators::transform::select_at;
 use tradingflow::sources::panel::*;
 
 const WINDOW: usize = 252;

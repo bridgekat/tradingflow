@@ -3,7 +3,7 @@
 
 use std::marker::PhantomData;
 
-use crate::data::array::{apply_binary, apply_unary};
+use crate::data::array::{map, map_binary, map_binary_into, map_into};
 use crate::data::{Array, ArrayView, Instant, Scalar};
 use crate::graph::typed::Operator;
 use crate::ports::ArrayPort;
@@ -42,13 +42,11 @@ impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T) -> U + Send + Sync + 'static
         // The build call seeds the output with the transformed build value (not
         // zeros — a fabricated finite observation would leak through carry
         // readers); the initial render does not notify.
-        let mut state = UnaryMapState {
+        UnaryMapState {
+            out: map(x, &self.f),
             f: self.f,
-            out: Array::zeros(x.extents()),
             _p: PhantomData,
-        };
-        apply_unary(&mut state.out, x, &state.f);
-        state
+        }
     }
 
     fn compute<'a, 'b: 'a>(
@@ -56,7 +54,7 @@ impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T) -> U + Send + Sync + 'static
         state: &'b mut Self::State,
         _: &Instant,
     ) -> (bool, ArrayView<'a, U, N>) {
-        apply_unary(&mut state.out, x, &state.f);
+        map_into(state.out.data_mut(), x, &state.f);
         (true, state.out.view())
     }
 
@@ -102,13 +100,11 @@ impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T, T) -> U + Send + Sync + 'sta
         self,
         ((_, a), (_, b)): ((bool, ArrayView<'_, T, N>), (bool, ArrayView<'_, T, N>)),
     ) -> Self::State {
-        let mut state = BinaryMapState {
+        BinaryMapState {
+            out: map_binary(a, b, &self.f),
             f: self.f,
-            out: Array::zeros(a.extents()),
             _p: PhantomData,
-        };
-        apply_binary(&mut state.out, a, b, &state.f);
-        state
+        }
     }
 
     fn compute<'a, 'b: 'a>(
@@ -116,7 +112,7 @@ impl<T: Scalar, U: Scalar, const N: usize, F: Fn(T, T) -> U + Send + Sync + 'sta
         state: &'b mut Self::State,
         _: &Instant,
     ) -> (bool, ArrayView<'a, U, N>) {
-        apply_binary(&mut state.out, a, b, &state.f);
+        map_binary_into(state.out.data_mut(), a, b, &state.f);
         (true, state.out.view())
     }
 

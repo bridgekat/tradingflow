@@ -9,7 +9,7 @@
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant, Retention};
 use tradingflow::graph::{Builder, Graph, Pool, Segment};
-use tradingflow::operators::{num::*, structural::*, traders::*, transform::*};
+use tradingflow::operators::{array::map_array, num::*, structural::*, traders::*};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPortHandle, UnitPortHandle};
 use tradingflow::sources::basic::*;
 
@@ -34,7 +34,9 @@ pub fn total_value(
     h: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 0> {
     sc.segment(
-        map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
+        map_array(|a: ArrayView<f64, 1>| {
+            Array::<f64, 0>::scalar(a.to_contiguous().iter().sum::<f64>())
+        }),
         h,
     )
 }

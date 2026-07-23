@@ -28,11 +28,11 @@ use clap::Parser;
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Retention, SeriesView};
 use tradingflow::graph::Builder;
+use tradingflow::operators::array::stack;
 use tradingflow::operators::metrics::{compound_return, drawdown, sharpe_ratio};
 use tradingflow::operators::num::diff;
 use tradingflow::operators::num::log;
 use tradingflow::operators::structural::record;
-use tradingflow::operators::structural::stack;
 use tradingflow::operators::traders::{benchmark, random_trader};
 
 use common::models::{rank_linear, regression_coefficients, ridge_mean};

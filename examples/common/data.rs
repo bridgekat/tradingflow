@@ -5,7 +5,12 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
-    metrics::*, num::*, stocks::*, structural::*, traders::*, transform::*,
+    array::{map_array, select, select_at, stack, unstack},
+    metrics::*,
+    num::*,
+    stocks::*,
+    structural::*,
+    traders::*,
 };
 use tradingflow::ports::{ArrayPort, ArrayPortHandle};
 use tradingflow::sources::panel::*;
@@ -170,14 +175,14 @@ pub fn build_stacked(
         true,
     );
 
-    // One `Split` per panel: the `1 → N` row fan-out as a single node each. The
-    // rank-2 `[N, K]` panel splits along axis 0 into `N` rank-1 `[K]` row views.
-    let prices_rows = sc.segment(split(n), prices_panel);
-    let div_rows = sc.segment(split(n), div_panel);
-    let equity_rows = sc.segment(split(n), equity_panel);
-    let balance_rows = sc.segment(split(n), balance_panel);
-    let income_rows = sc.segment(split(n), income_panel);
-    let cashflow_rows = sc.segment(split(n), cashflow_panel);
+    // One `unstack` per panel: the `1 → N` row fan-out as a single node each. The
+    // rank-2 `[N, K]` panel unstacks along axis 0 into `N` rank-1 `[K]` row views.
+    let prices_rows = sc.segment(unstack(0), prices_panel);
+    let div_rows = sc.segment(unstack(0), div_panel);
+    let equity_rows = sc.segment(unstack(0), equity_panel);
+    let balance_rows = sc.segment(unstack(0), balance_panel);
+    let income_rows = sc.segment(unstack(0), income_panel);
+    let cashflow_rows = sc.segment(unstack(0), cashflow_panel);
 
     let mut closes = Vec::with_capacity(n);
     let mut volumes = Vec::with_capacity(n);
@@ -247,22 +252,22 @@ pub fn build_stacked(
             let close = select_at(0, 0) @ prices;
             let volume = select_at(1, 0) @ prices;
             // [open, high, low, amount] as a contiguous rank-1 view of cols 2..6.
-            let prices_extras = select_many(vec![2, 3, 4, 5], 0) @ prices;
+            let prices_extras = select(vec![2, 3, 4, 5], 0) @ prices;
             let adjusts =
                 forward_adjust().with_output_prices(false) @ (close, dividends);
             let adjusted_close = multiply() @ (close, adjusts);
             let total_shares = select_at(0, 0) @ equity;
             let circ_shares = select_at(1, 0) @ equity;
             // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).
-            let parent_equity = apply::<ArrayPort<f64, 1>, f64, 0, _>(
-                |a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous()[..3].iter().sum::<f64>()),
-            ) @ balance;
+            let parent_equity = map_array(|a: ArrayView<f64, 1>| {
+                Array::<f64, 0>::scalar(-a.to_contiguous()[..3].iter().sum::<f64>())
+            }) @ balance;
             // Annualized income / cash flows (YTD → Annualize) and the balance
             // stocks [assets, liab, current_assets, current_liab, cash, inv, rec]
             // as a contiguous rank-1 view of cols 3..10.
             let income_ann = annualize() @ income;
             let cf_ann = annualize() @ cashflow;
-            let balance_extras = select_many(vec![3, 4, 5, 6, 7, 8, 9], 0) @ balance;
+            let balance_extras = select(vec![3, 4, 5, 6, 7, 8, 9], 0) @ balance;
             (
                 close,
                 volume,

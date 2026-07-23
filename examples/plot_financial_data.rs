@@ -24,11 +24,11 @@ mod common;
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::{Builder, Pool};
+use tradingflow::operators::array::{map_array, select, select_at};
 use tradingflow::operators::num::{divide, multiply, negate};
 use tradingflow::operators::rolling::{Window, rolling_mean};
 use tradingflow::operators::stocks::annualize;
 use tradingflow::operators::structural::{filter, record};
-use tradingflow::operators::transform::{map, select_at, select_many};
 use tradingflow::ports::ArrayPortHandle;
 use tradingflow::sources::panel::*;
 
@@ -151,9 +151,11 @@ async fn main() {
     let assets = sc.segment(select_at(0, 0), balance);
     let neg_equity = sc.segment(select_at(1, 0), balance);
     let equity_val = sc.segment(negate(), neg_equity);
-    let neg_peq = sc.segment(select_many(vec![2, 3, 4], 0), balance);
+    let neg_peq = sc.segment(select(vec![2, 3, 4], 0), balance);
     let parent_equity = sc.segment(
-        map(|a: ArrayView<f64, 1>| Array::scalar(-a.to_contiguous().iter().sum::<f64>())),
+        map_array(|a: ArrayView<f64, 1>| {
+            Array::<f64, 0>::scalar(-a.to_contiguous().iter().sum::<f64>())
+        }),
         neg_peq,
     );
 

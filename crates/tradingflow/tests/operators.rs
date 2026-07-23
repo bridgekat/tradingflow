@@ -16,7 +16,14 @@ use tradingflow::data::{Array, ArrayView, Duration, Instant, Retention, SeriesVi
 use tradingflow::graph::pool::Pool;
 use tradingflow::graph::typed::Builder;
 use tradingflow::operators::{
-    constant::*, formula::*, metrics::*, num::*, rolling::*, stocks::*, structural::*, transform::*,
+    array::{concat, map, map_binary, select, select_at, stack, unstack},
+    constant::*,
+    formula::*,
+    metrics::*,
+    num::*,
+    rolling::*,
+    stocks::*,
+    structural::*,
 };
 use tradingflow::ports::{ArrayPort, SeriesPort};
 
@@ -558,21 +565,14 @@ fn num_cross_sectional() {
     );
 }
 
-// -- Batch 4: transform / reshape (Map, Apply, Select, Lag, Concat) ---------
+// -- Batch 4: transform / reshape (map, map_binary, Select, Lag, Concat) ----
 
-/// `Map` (allocating SI→SO) doubling a scalar.
+/// Elementwise `array::map` doubling a scalar.
 #[test]
 fn map_doubles() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let m = b.segment(
-        map(|a: ArrayView<f64, 0>| {
-            let mut o = a.to_array();
-            o[[]] *= 2.0;
-            o
-        }),
-        srcv,
-    );
+    let m = b.segment(map(|x: f64| x * 2.0), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -581,7 +581,8 @@ fn map_doubles() {
     assert_eq!(g.view(m).as_slice().unwrap(), &[10.0]);
 }
 
-/// `Apply` (two-input add) and `Select` (flat index pick).
+/// Elementwise binary `array::map_binary` (two-input add) and `Select` (flat
+/// index pick).
 #[test]
 fn apply_add_and_select() {
     let mut b = Builder::new();
@@ -593,21 +594,12 @@ fn apply_add_and_select() {
         [3],
         vec![10.0_f64, 20.0, 30.0].into(),
     )));
-    let ap = b.segment(
-        apply(|(a, b): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
-            let mut out = a.to_array();
-            for (o, v) in out.data_mut().iter_mut().zip(b.to_contiguous().iter()) {
-                *o += *v;
-            }
-            out
-        }),
-        (av, bv),
-    );
+    let ap = b.segment(map_binary(|x: f64, y: f64| x + y), (av, bv));
     let (five, fivev) = b.source(const_array(Array::from_parts(
         [5],
         vec![10.0_f64, 20.0, 30.0, 40.0, 50.0].into(),
     )));
-    let sel = b.segment(select_many::<f64, 1, 1>(vec![1, 3], 0), fivev);
+    let sel = b.segment(select(vec![1, 3], 0), fivev);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -657,6 +649,61 @@ fn concat_axis0() {
     *g.state_mut(bb) = Array::from_parts([2], vec![3.0, 4.0].into());
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(cc).as_slice().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+}
+
+/// `array` data-helper wrappers: `concat` of `[2]` + `[3]` → `[5]`, `split`
+/// recovering the two chunks, and `stack` of three scalars → `[3]` with
+/// `unstack` recovering the rows. A second generation pokes one source to
+/// exercise the recompute-into paths with the other inputs carried.
+#[test]
+fn array_concat_stack_split_unstack() {
+    use tradingflow::operators::array;
+
+    let mut b = Builder::new();
+    let (a, av) = b.source(const_array(Array::from_parts(
+        [2],
+        vec![1.0_f64, 2.0].into(),
+    )));
+    let (bb, bv) = b.source(const_array(Array::from_parts(
+        [3],
+        vec![3.0_f64, 4.0, 5.0].into(),
+    )));
+    let (s0, s0v) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (s1, s1v) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (s2, s2v) = b.source(const_array(Array::scalar(0.0_f64)));
+    let cc = b.segment(array::concat(0), &[av, bv][..]);
+    let parts = b.segment(array::split(vec![2, 3], 0), cc);
+    let st = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
+    let rows = b.segment(array::unstack::<f64, 1, 0>(0), st);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(a) = Array::from_parts([2], vec![10.0, 20.0].into());
+    *g.state_mut(bb) = Array::from_parts([3], vec![30.0, 40.0, 50.0].into());
+    *g.state_mut(s0) = Array::scalar(1.0);
+    *g.state_mut(s1) = Array::scalar(2.0);
+    *g.state_mut(s2) = Array::scalar(3.0);
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(
+        g.view(cc).as_slice().unwrap(),
+        &[10.0, 20.0, 30.0, 40.0, 50.0]
+    );
+    assert_eq!(g.view(parts[0]).as_slice().unwrap(), &[10.0, 20.0]);
+    assert_eq!(g.view(parts[1]).as_slice().unwrap(), &[30.0, 40.0, 50.0]);
+    assert_eq!(g.view(st).as_slice().unwrap(), &[1.0, 2.0, 3.0]);
+    assert_eq!(g.view(rows[0]).as_slice().unwrap(), &[1.0]);
+    assert_eq!(g.view(rows[2]).as_slice().unwrap(), &[3.0]);
+
+    *g.state_mut(a) = Array::from_parts([2], vec![11.0, 21.0].into());
+    *g.state_mut(s1) = Array::scalar(20.0);
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(
+        g.view(cc).as_slice().unwrap(),
+        &[11.0, 21.0, 30.0, 40.0, 50.0]
+    );
+    assert_eq!(g.view(parts[0]).as_slice().unwrap(), &[11.0, 21.0]);
+    assert_eq!(g.view(st).as_slice().unwrap(), &[1.0, 20.0, 3.0]);
+    assert_eq!(g.view(rows[1]).as_slice().unwrap(), &[20.0]);
 }
 
 // -- Batch 5/6: metrics (clock-gated) + stocks -----------------------------
@@ -834,16 +881,16 @@ fn parallel_stress_stateful_counts() {
 // Split + segment fusion
 // ===========================================================================
 
-/// `Split` fans a `[3, 2]` panel into per-row **zero-copy view** ports holding
+/// `unstack` fans a `[3, 2]` panel into per-row **zero-copy view** ports holding
 /// the row values; rows notify exactly when the panel does. The rows feed a
-/// `Stack` that rebuilds the panel, and a `Record` on the stack counts how many
+/// `stack` that rebuilds the panel, and a `Record` on the stack counts how many
 /// times the carry join recomputed — it advances only on panel pokes, not on an
 /// unrelated generation.
 ///
-/// [array-view-refactor] Reinterpreted: a `Split` row is an ordinary by-value
+/// [array-view-refactor] Reinterpreted: an `unstack` row is an ordinary by-value
 /// `ArrayPort` (since the by-value group migration it feeds `Gate` / `Select` /
 /// `Count` directly again); this test keeps the notify-tracking formulation —
-/// counting `Stack` recomputes via a clock-stamped `Record` length — which
+/// counting `stack` recomputes via a clock-stamped `Record` length — which
 /// pins the same intent (rows recompute with the panel, not on unrelated
 /// pokes).
 #[test]
@@ -854,9 +901,9 @@ fn split_rows_notify_with_panel() {
         vec![0.0_f64; 6].into(),
     )));
     let (other_cell, other) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rows = b.segment(split(3), panel);
+    let rows = b.segment(unstack::<f64, 2, 1>(0), panel);
     assert_eq!(rows.len(), 3);
-    // The rows feed a carry `Stack` that rebuilds the `[3, 2]` panel; a `Record`
+    // The rows feed a carry `stack` that rebuilds the `[3, 2]` panel; a `Record`
     // on the stacked output advances exactly once per recompute of the join.
     let stacked = b.segment(stack::<f64, 1, 2>(0), &rows[..]);
     let rec = b.segment(record(), stacked);
@@ -892,19 +939,6 @@ fn split_rows_notify_with_panel() {
     );
 }
 
-/// The declared axis size is validated against the build-time input shape.
-#[test]
-#[should_panic(expected = "Split: input axis-0 size")]
-fn split_axis_size_mismatch_panics() {
-    let mut b = Builder::new();
-    let (_, panel) = b.source(const_array(Array::from_parts(
-        [3, 2],
-        vec![0.0_f64; 6].into(),
-    )));
-    let _ = b.segment(split::<f64, 2, 1>(2), panel);
-    let _g = b.build();
-}
-
 /// The view chain (retaining `Gate` -> view-input `Select` / `ForwardAdjust`)
 /// is tick-for-tick bit-identical to the owned chain (`Filter` -> owned `Select`
 /// / `ForwardAdjust`) over the same source pokes, including the NaN cutoff and
@@ -935,22 +969,22 @@ fn view_chain_matches_owned_chain() {
 
     // Owned reference chain (materializes at the row Selects).
     let p_f = {
-        let m = b.segment(select_many(vec![0, 1], 0), prices_view);
+        let m = b.segment(select(vec![0, 1], 0), prices_view);
         b.segment(filter(any_finite), m)
     };
     let d_f = {
-        let m = b.segment(select_many(vec![0, 1], 0), div_view);
+        let m = b.segment(select(vec![0, 1], 0), div_view);
         b.segment(filter(any_finite), m)
     };
     // Squeeze the single close out to a scalar (rank-0) price.
-    let close = b.segment(select(vec![0], 0, true), p_f);
+    let close = b.segment(select_at(0, 0), p_f);
     let adj = b.segment(forward_adjust().with_output_prices(false), (close, d_f));
     let adjusted = b.segment(multiply(), (close, adj));
 
     // View chain (materializes at `Select`).
     let p_g = b.segment(gate(any_finite), prices_view);
     let d_g = b.segment(gate(any_finite), div_view);
-    let v_close = b.segment(select(vec![0], 0, true), p_g);
+    let v_close = b.segment(select_at(0, 0), p_g);
     let v_adj = b.segment(
         ForwardAdjust::<0, 1>::default().with_output_prices(false),
         (v_close, d_g),
@@ -1010,10 +1044,10 @@ fn view_join_carry_matches_owned_join() {
         [n, 2],
         vec![0.0; n * 2].into(),
     )));
-    let rows = b.segment(split::<f64, 2, 1>(n), panel);
+    let rows = b.segment(unstack::<f64, 2, 1>(0), panel);
 
-    // Two equivalent carry joins over the same `Split` rows (the only buildable
-    // carry-join input): `Stack` and its `Stack` alias.
+    // Two equivalent carry joins over the same `unstack` rows (the only buildable
+    // carry-join input): two independent `stack` joins.
     let owned_join = b.segment(stack(0), &rows[..]);
     let view_join = b.segment(stack(0), &rows[..]);
 
@@ -1070,7 +1104,7 @@ fn fused_segment_matches_unfused_nodes() {
         |prices_row: ArrayPort<f64, 1>, div_row: ArrayPort<f64, 1>| -> (ArrayPort<f64, 0>, ArrayPort<f64, 0>) {
             let prices = filter(any_finite) @ prices_row;
             let dividends = filter(any_finite) @ div_row;
-            let close = select(vec![0], 0, true) @ prices;
+            let close = select_at(0, 0) @ prices;
             let adjusts = forward_adjust().with_output_prices(false) @ (close, dividends);
             let adjusted = multiply() @ (close, adjusts);
             (adjusted, adjusts)
@@ -1085,7 +1119,7 @@ fn fused_segment_matches_unfused_nodes() {
     // Reference: the same chain as separate nodes.
     let p_f = b.segment(filter(any_finite), pricesv);
     let d_f = b.segment(filter(any_finite), divv);
-    let close = b.segment(select(vec![0], 0, true), p_f);
+    let close = b.segment(select_at(0, 0), p_f);
     let adj = b.segment(forward_adjust().with_output_prices(false), (close, d_f));
     let adjusted = b.segment(multiply(), (close, adj));
 
@@ -1195,8 +1229,8 @@ fn comparison_of_two_arrays_and_strided_inputs() {
     )));
     // `Select`'s output rank is not determined by its input rank (`squeeze`
     // drops the sliced axis), so it is the one operator here that must be told.
-    let col0 = b.segment(select::<f64, 2, 1>(vec![0], 1, true), s); // [1, 4]
-    let col1 = b.segment(select::<f64, 2, 1>(vec![1], 1, true), s); // [5, 2]
+    let col0 = b.segment(select_at::<_, 2, 1>(0, 1), s); // [1, 4]
+    let col1 = b.segment(select_at::<_, 2, 1>(1, 1), s); // [5, 2]
     let lt = b.segment(less(), (col0, col1));
     let g = b.build();
     assert_eq!(&*g.view(lt).to_contiguous(), &[true, false]);

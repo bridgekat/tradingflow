@@ -12,8 +12,8 @@ use crate::ports::ArrayPort;
 ///
 /// The TradingFlow contract is that **an operator that does not notify must not
 /// change its output value** (so any consumer may treat a non-notifying input
-/// as its last notified value — the carry that [`Stack`](super::Stack) relies
-/// on). A naive forwarder would break it: gating out a *notified* all-NaN row
+/// as its last notified value — the carry that
+/// [`stack`](crate::operators::array::stack) relies on). A naive forwarder would break it: gating out a *notified* all-NaN row
 /// while forwarding that row changes the value under `notify = false`. So
 /// `Gate` retains the last passed row in owned state and re-presents a view of
 /// it whenever it gates out or its input is silent. The retained buffer is

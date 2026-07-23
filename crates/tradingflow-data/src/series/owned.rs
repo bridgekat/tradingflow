@@ -156,10 +156,20 @@ impl<T: Scalar, const N: usize> Series<T, N> {
         self.timestamps.is_empty()
     }
 
+    /// Returns the element at logical index `i`.
+    pub fn at(&self, i: usize) -> Option<(Instant, ArrayView<'_, T, N>)> {
+        let i = self.slot(i)?;
+        let ts = self.timestamps[i];
+        let data = &self.data[i * self.stride..];
+        // SAFETY: `data.len() >= self.stride == self.layout.len() >= self.layout.span()`.
+        let view = unsafe { ArrayView::from_parts_unchecked(self.layout.into(), data) };
+        Some((ts, view))
+    }
+
     /// Borrows the whole series as a [`SeriesView`].
     pub fn view(&self) -> SeriesView<'_, T, N> {
-        // SAFETY: `self.data.len() == self.timestamps.len() * self.stride`
-        // and `self.stride == self.layout.len() >= self.layout.span()`.
+        // SAFETY: `self.data.len() == self.timestamps.len() * self.stride` and
+        // `self.stride == self.layout.len() >= self.layout.span()`.
         unsafe {
             SeriesView::from_parts_unchecked(
                 self.layout.into(),
@@ -170,14 +180,57 @@ impl<T: Scalar, const N: usize> Series<T, N> {
         }
     }
 
-    /// Returns the element at logical index `i`.
-    pub fn at(&self, i: usize) -> Option<(Instant, ArrayView<'_, T, N>)> {
-        let i = self.slot(i)?;
-        let ts = self.timestamps[i];
-        let data = &self.data[i * self.stride..];
-        // SAFETY: `data.len() >= self.stride == self.layout.len() >= self.layout.span()`.
-        let view = unsafe { ArrayView::from_parts_unchecked(self.layout.into(), data) };
-        Some((ts, view))
+    /// Borrows the whole series as a [`SeriesView`] with the specified extents.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new extents have a different scalar count.
+    pub fn view_reshape<const M: usize>(&self, extents: [usize; M]) -> SeriesView<'_, T, M> {
+        let layout = layout::RowMajor::new(extents);
+        assert_eq!(
+            self.layout.len(),
+            layout.len(),
+            "view_reshape: current len {} != new extents {:?} ({} scalars)",
+            self.layout.len(),
+            extents,
+            layout.len(),
+        );
+        // SAFETY: `self.data.len() == self.timestamps.len() * self.stride` and
+        // `self.stride == self.layout.len() == layout.len() >= layout.span()`.
+        unsafe {
+            SeriesView::from_parts_unchecked(
+                layout.into(),
+                self.stride,
+                &self.timestamps,
+                &self.data,
+            )
+        }
+    }
+
+    /// Returns a new series with the specified element extents, without
+    /// reallocating.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new extents have a different scalar count.
+    pub fn reshape<const M: usize>(self, extents: [usize; M]) -> Series<T, M> {
+        let layout = layout::RowMajor::new(extents);
+        assert_eq!(
+            self.layout().len(),
+            layout.len(),
+            "reshape: current element len {} != new extents {:?} ({} scalars)",
+            self.layout().len(),
+            extents,
+            layout.len(),
+        );
+        Series {
+            layout,
+            stride: self.stride,
+            base: self.base,
+            timestamps: self.timestamps,
+            data: self.data,
+            retention: self.retention,
+        }
     }
 
     /// Appends an element to the series, possibly trimming the series.
@@ -217,32 +270,6 @@ impl<T: Scalar, const N: usize> Series<T, N> {
             self.data.drain(0..droppable * self.stride);
             self.timestamps.drain(0..droppable);
             self.base += droppable;
-        }
-    }
-
-    /// Returns a new series with the specified element extents, without
-    /// reallocating.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the new extents have a different scalar count.
-    pub fn reshape<const M: usize>(self, extents: [usize; M]) -> Series<T, M> {
-        let layout = layout::RowMajor::new(extents);
-        assert_eq!(
-            self.layout().len(),
-            layout.len(),
-            "reshape: current element len {} != new extents {:?} ({} scalars)",
-            self.layout().len(),
-            extents,
-            layout.len(),
-        );
-        Series {
-            layout,
-            stride: self.stride,
-            base: self.base,
-            timestamps: self.timestamps,
-            data: self.data,
-            retention: self.retention,
         }
     }
 

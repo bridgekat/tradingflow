@@ -136,20 +136,6 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
         self.timestamps.is_empty()
     }
 
-    /// A sub-window of the given element range.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `range.end > len()` or the range is inverted.
-    pub fn window(&self, range: Range<usize>) -> SeriesView<'a, T, N> {
-        SeriesView {
-            layout: self.layout,
-            stride: self.stride,
-            timestamps: &self.timestamps[range.clone()],
-            data: &self.data[range.start * self.stride..],
-        }
-    }
-
     /// Returns the element at index `i`.
     pub fn at(&self, i: usize) -> Option<(Instant, ArrayView<'a, T, N>)> {
         if i >= self.len() {
@@ -161,6 +147,82 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
         // `self.data.len() >= self.layout.span_ext(self.timestamps.len(), self.stride)`.
         let view = unsafe { ArrayView::from_parts_unchecked(self.layout, data) };
         Some((ts, view))
+    }
+
+    /// A sub-window of the given element range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `range.end > len()` or the range is inverted.
+    pub fn window(&self, range: Range<usize>) -> SeriesView<'a, T, N> {
+        assert!(
+            range.end <= self.len(),
+            "window: range {:?} out of bounds for len {}",
+            range,
+            self.len()
+        );
+        // SAFETY: `range.end <= self.len()` implies that
+        // `self.data.len() >= range.start * self.stride + self.layout.span_ext(range.len(), self.stride)`.
+        unsafe {
+            SeriesView::from_parts_unchecked(
+                self.layout,
+                self.stride,
+                &self.timestamps[range.clone()],
+                &self.data[range.start * self.stride..],
+            )
+        }
+    }
+
+    /// A view whose elements are the sub-regions selected by `slices`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `slices` is out of bounds on any element axis.
+    pub fn slice(&self, slices: impl layout::IntoSlices<N>) -> Self {
+        let (offset, layout) = self.layout.slice(slices);
+        // SAFETY: `self.data.len() >= self.layout.span_ext(...) >= offset + layout.span_ext(...)`.
+        unsafe {
+            SeriesView::from_parts_unchecked(
+                layout,
+                self.stride,
+                self.timestamps,
+                &self.data[offset..],
+            )
+        }
+    }
+
+    /// A view whose elements are the rank-`M` sub-regions selected by `slices`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `slices` does not consume exactly `N` axes or produce
+    /// exactly `M` axes, or is out of bounds on any element axis.
+    pub fn slice_reshape<const M: usize, const K: usize>(
+        &self,
+        slices: impl layout::IntoSliceReshapes<K>,
+    ) -> SeriesView<'a, T, M> {
+        let (offset, layout) = self.layout.slice_reshape(slices);
+        // SAFETY: `self.data.len() >= self.layout.span_ext(...) >= offset + layout.span_ext(...)`.
+        unsafe {
+            SeriesView::from_parts_unchecked(
+                layout,
+                self.stride,
+                self.timestamps,
+                &self.data[offset..],
+            )
+        }
+    }
+
+    /// A zero-copy view with element axes permuted: axis `d` of the result is
+    /// axis `perm[d]` of `self`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `perm` is not a permutation of `0..N`.
+    pub fn transpose(&self, perm: [usize; N]) -> Self {
+        let layout = self.layout.transpose(perm);
+        // SAFETY: `self.data.len() >= self.layout.span_ext(...) == layout.span_ext(...)`.
+        unsafe { SeriesView::from_parts_unchecked(layout, self.stride, self.timestamps, self.data) }
     }
 
     /// Returns `Some(data)` if the view has row-major contiguous packed layout,
@@ -222,40 +284,6 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
         let layout = layout::Strided::new(extents, strides);
         // SAFETY: `self.data.len() >= self.layout.span_ext(self.timestamps.len(), self.stride)`.
         unsafe { ArrayView::from_parts_unchecked(layout, self.data()) }
-    }
-
-    /// A view whose elements are the sub-regions selected by `slices`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `slices` is out of bounds on any element axis.
-    pub fn slice(&self, slices: impl layout::IntoSlices<N>) -> Self {
-        let (offset, layout) = self.layout.slice(slices);
-        Self::from_parts(layout, self.stride, self.timestamps, &self.data[offset..])
-    }
-
-    /// A view whose elements have `axis` restricted to `slice`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `axis >= N` or `slice` is out of bounds.
-    pub fn slice_along_axis(&self, axis: usize, slice: impl Into<layout::Slice>) -> Self {
-        let (offset, layout) = self.layout.slice_along_axis(axis, slice);
-        Self::from_parts(layout, self.stride, self.timestamps, &self.data[offset..])
-    }
-
-    /// A view whose elements are the rank-`M` sub-regions selected by `slices`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `slices` does not consume exactly `N` axes or produce
-    /// exactly `M` axes, or is out of bounds on any element axis.
-    pub fn slice_reshape<const M: usize, const K: usize>(
-        &self,
-        slices: impl layout::IntoSliceReshapes<K>,
-    ) -> SeriesView<'a, T, M> {
-        let (offset, layout) = self.layout.slice_reshape(slices);
-        SeriesView::from_parts(layout, self.stride, self.timestamps, &self.data[offset..])
     }
 }
 

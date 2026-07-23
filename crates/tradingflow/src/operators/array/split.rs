@@ -1,0 +1,96 @@
+use std::marker::PhantomData;
+
+use bumpalo::Bump;
+
+use crate::data::{ArrayView, Instant, Scalar, array};
+use crate::graph::Operator;
+use crate::ports::{ArrayPort, ArrayPorts};
+
+/// Operator signature for [`split`], [`unstack`] etc.
+pub struct SplitView<T: Scalar, const N: usize, U: Scalar, const M: usize, F>
+where
+    F: FnMut(ArrayView<'_, T, N>) -> Vec<ArrayView<'_, U, M>> + Send + 'static,
+{
+    derive: F,
+    _marker: PhantomData<fn() -> (T, U)>,
+}
+
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> SplitView<T, N, U, M, F>
+where
+    F: FnMut(ArrayView<'_, T, N>) -> Vec<ArrayView<'_, U, M>> + Send + 'static,
+{
+    pub fn new(derive: F) -> Self {
+        Self {
+            derive,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Operator for SplitView<T, N, U, M, F>
+where
+    F: FnMut(ArrayView<'_, T, N>) -> Vec<ArrayView<'_, U, M>> + Send + 'static,
+{
+    type Inputs = ArrayPort<T, N>;
+    type Outputs = ArrayPorts<U, M>;
+    type Context = Instant;
+    type State = (F, Bump);
+
+    fn init(self, _: (bool, ArrayView<'_, T, N>)) -> (F, Bump) {
+        (self.derive, Bump::new())
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        (_, a): (bool, ArrayView<'a, T, N>),
+        (derive, arena): &'b mut (F, Bump),
+    ) -> (&'a [bool], &'a [ArrayView<'a, U, M>]) {
+        arena.reset();
+        let views: &[_] = arena.alloc_slice_fill_iter(derive(a));
+        let flags: &[_] = arena.alloc_slice_fill_copy(views.len(), false);
+        (flags, views)
+    }
+
+    fn compute<'a, 'b: 'a>(
+        (_, a): (bool, ArrayView<'a, T, N>),
+        (derive, arena): &'b mut (F, Bump),
+        _: &Instant,
+    ) -> (&'a [bool], &'a [ArrayView<'a, U, M>]) {
+        arena.reset();
+        let views: &[_] = arena.alloc_slice_fill_iter(derive(a));
+        let flags: &[_] = arena.alloc_slice_fill_copy(views.len(), true);
+        (flags, views)
+    }
+}
+
+/// Splits the input into consecutive chunks of the given `lengths` along the
+/// existing axis `axis`: [`array::split`].
+pub fn split<T: Scalar, const N: usize>(
+    lengths: Vec<usize>,
+    axis: usize,
+) -> SplitView<
+    T,
+    N,
+    T,
+    N,
+    impl FnMut(ArrayView<'_, T, N>) -> Vec<ArrayView<'_, T, N>> + Send + 'static,
+> {
+    SplitView::new(move |a: ArrayView<'_, T, N>| array::split(a, &lengths, axis))
+}
+
+/// Splits the input into slices along the existing axis `axis`, squeezing that
+/// axis: [`array::unstack`].
+pub fn unstack<T: Scalar, const N: usize, const M: usize>(
+    axis: usize,
+) -> SplitView<
+    T,
+    N,
+    T,
+    M,
+    impl FnMut(ArrayView<'_, T, N>) -> Vec<ArrayView<'_, T, M>> + Send + 'static,
+> {
+    assert!(
+        M + 1 == N,
+        "unstack: output ndim ({M}) must be input ndim ({N}) minus one"
+    );
+    SplitView::new(move |a: ArrayView<'_, T, N>| array::unstack(a, axis))
+}

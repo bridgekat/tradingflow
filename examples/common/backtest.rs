@@ -18,7 +18,6 @@ use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
     PyClassOperator, PyParams, metrics::*, py_class_operator, structural::*, traders::*,
-    transform::*,
 };
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle};
 

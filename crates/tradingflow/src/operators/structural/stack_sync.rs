@@ -70,8 +70,8 @@ impl<T: Scalar + Float, const IN: usize, const OUT: usize> Operator for StackSyn
     }
 }
 
-/// Like [`stack`](fn@super::stack), but emits `NaN` for inputs that have not
-/// notified this tick.
+/// Like [`stack`](crate::operators::array::stack), but emits `NaN` for inputs
+/// that have not notified this tick.
 pub fn stack_sync<T: Scalar + Float, const IN: usize, const OUT: usize>(
     axis: usize,
 ) -> StackSync<T, IN, OUT> {

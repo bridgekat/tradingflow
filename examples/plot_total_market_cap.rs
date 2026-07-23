@@ -22,11 +22,11 @@ mod common;
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
+use tradingflow::operators::array::{map_array, map_array_binary_inplace};
 use tradingflow::operators::num::multiply;
 use tradingflow::operators::structural::record;
 use tradingflow::operators::structural::resample_view;
 use tradingflow::operators::traders::benchmark;
-use tradingflow::operators::transform::{apply, map};
 use tradingflow::sources::basic::*;
 
 use clap::Parser;
@@ -63,17 +63,23 @@ async fn main() {
     let daily_universe = sc.segment(resample_view(), (st.close, universe));
 
     // Summed circulating market cap of the current constituents.
-    let index_circ_market_cap = sc.segment(
-        apply(|(u, c): (ArrayView<f64, 1>, ArrayView<f64, 1>)| {
-            let (us, cs) = (u.to_contiguous(), c.to_contiguous());
-            let mut s = 0.0;
-            for i in 0..us.len() {
-                if us[i] > 0.0 && cs[i].is_finite() {
-                    s += cs[i];
-                }
+    let masked_circ_sum = |u: ArrayView<f64, 1>, c: ArrayView<f64, 1>| -> f64 {
+        let (us, cs) = (u.to_contiguous(), c.to_contiguous());
+        let mut s = 0.0;
+        for i in 0..us.len() {
+            if us[i] > 0.0 && cs[i].is_finite() {
+                s += cs[i];
             }
-            Array::scalar(s)
-        }),
+        }
+        s
+    };
+    let index_circ_market_cap = sc.segment(
+        map_array_binary_inplace(
+            move |u, c| Array::scalar(masked_circ_sum(u, c)),
+            move |out, u, c| {
+                out[[]] = masked_circ_sum(u, c);
+            },
+        ),
         (daily_universe, circ_market_cap),
     );
 
@@ -84,7 +90,9 @@ async fn main() {
         (universe, st.close, st.adjusts, upper, lower),
     );
     let index_value = sc.segment(
-        map(|a: ArrayView<f64, 1>| Array::scalar(a.to_contiguous().iter().sum::<f64>())),
+        map_array(|a: ArrayView<f64, 1>| {
+            Array::<f64, 0>::scalar(a.to_contiguous().iter().sum::<f64>())
+        }),
         index,
     );
 

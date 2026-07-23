@@ -90,20 +90,23 @@ impl<T: Scalar, const N: usize> Array<T, N> {
         unsafe { ArrayView::from_parts_unchecked(self.layout.into(), &self.data) }
     }
 
-    /// Writes data into the array.
+    /// Borrow the whole array as an [`ArrayView`] with the specified extents.
     ///
     /// # Panics
     ///
-    /// Panics if `value.extents() != self.extents()`.
-    pub fn assign(&mut self, value: ArrayView<'_, T, N>) {
-        assert_eq!(value.extents(), self.extents(), "assign: extents mismatch");
-        if let Some(s) = value.as_slice() {
-            self.data.clone_from_slice(s);
-            return;
-        }
-        for (d, off) in self.data.iter_mut().zip(value.layout().iter()) {
-            *d = value.data()[off].clone();
-        }
+    /// Panics if the new extents have a different scalar count.
+    pub fn view_reshape<const M: usize>(&self, extents: [usize; M]) -> ArrayView<'_, T, M> {
+        let layout = layout::RowMajor::new(extents);
+        assert_eq!(
+            self.layout.len(),
+            layout.len(),
+            "view_reshape: current len {} != new extents {:?} ({} scalars)",
+            self.layout.len(),
+            extents,
+            layout.len(),
+        );
+        // SAFETY: `self.data.len() == self.layout.len() == layout.len() >= layout.span()`.
+        unsafe { ArrayView::from_parts_unchecked(layout.into(), &self.data) }
     }
 
     /// Returns a new array with the specified extents, without reallocating.
@@ -124,6 +127,22 @@ impl<T: Scalar, const N: usize> Array<T, N> {
         Array {
             layout,
             data: self.data,
+        }
+    }
+
+    /// Writes data into the array.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value.extents() != self.extents()`.
+    pub fn assign(&mut self, value: ArrayView<'_, T, N>) {
+        assert_eq!(value.extents(), self.extents(), "assign: extents mismatch");
+        if let Some(s) = value.as_slice() {
+            self.data.clone_from_slice(s);
+            return;
+        }
+        for (d, off) in self.data.iter_mut().zip(value.layout().iter()) {
+            *d = value.data()[off].clone();
         }
     }
 }

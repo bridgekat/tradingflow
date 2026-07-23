@@ -207,34 +207,15 @@ fn slice_panics_out_of_bounds() {
 }
 
 #[test]
-fn slice_axis_keeps_other_axes_full() {
-    let l = ColMajor::new([4, 3]);
-    assert_eq!(l.slice_along_axis(0, 1..3), l.slice([1..3, 0..3]));
-    assert_eq!(l.slice_along_axis(1, 2..3), l.slice([0..4, 2..3]));
-}
-
-#[test]
-#[should_panic(expected = "out of bounds")]
-fn slice_axis_panics_out_of_bounds() {
-    let _ = RowMajor::new([2, 3]).slice_along_axis(2, 0..1);
-}
-
-#[test]
 fn slice_bounds_are_optional() {
     let l = RowMajor::new([4, 5]);
     // `..` keeps an axis in full; `a..` and `..b` default the other bound.
     assert_eq!(l.slice([.., ..]), (0, l.into()));
-    assert_eq!(l.slice_along_axis(0, 1..), l.slice([1..4, 0..5]));
-    assert_eq!(l.slice_along_axis(1, ..3), l.slice([0..4, 0..3]));
+    assert_eq!(l.slice((1.., ..)), l.slice([1..4, 0..5]));
+    assert_eq!(l.slice((.., ..3)), l.slice([0..4, 0..3]));
     // An unbounded end resolves to the axis extent, also under a step.
-    assert_eq!(
-        l.slice_along_axis(1, (.., 2)),
-        l.slice([(0..4, 1), (0..5, 2)])
-    );
-    assert_eq!(
-        l.slice_along_axis(1, (1.., 3)),
-        l.slice([(0..4, 1), (1..5, 3)])
-    );
+    assert_eq!(l.slice((.., (.., 2))), l.slice([(0..4, 1), (0..5, 2)]));
+    assert_eq!(l.slice((.., (1.., 3))), l.slice([(0..4, 1), (1..5, 3)]));
     // A start at the extent is an empty tail; past it is out of bounds.
     assert!(l.slice_checked([4.., 0..]).is_some());
     assert!(l.slice_checked([5.., 0..]).is_none());
@@ -252,7 +233,7 @@ fn stepped_slice_decimates_extents_and_scales_strides() {
     assert!(s.span() <= l.span());
 
     // A partial final step still counts its first element: 1, 4 below 6.
-    let (offset, s) = l.slice_along_axis(1, (1..6, 3));
+    let (offset, s) = l.slice((.., (1..6, 3)));
     assert_eq!(offset, 1);
     assert_eq!(s.extents(), [5, 2]);
 
@@ -291,7 +272,7 @@ fn stepped_slice_offsets_address_the_sub_region() {
 fn broadcast_axis_repeats_offsets() {
     // A step-0 slice pins an axis to one index, repeated `count` times.
     let l = RowMajor::new([2, 3]);
-    let (base, s) = l.slice_along_axis(0, Slice::new(1, Some(4), 0));
+    let (base, s) = l.slice((Slice::new(1, Some(4), 0), ..));
     assert_eq!(base, 3);
     assert_eq!(s, Strided::new([4, 3], [0, 1]));
     // The physical span does not grow with the broadcast count...
@@ -339,7 +320,7 @@ fn slice_reshape_agrees_with_the_single_axis_operations() {
     let l = RowMajor::new([2, 3, 4]);
     // A reshape built from one operation matches that operation alone.
     let sliced: (usize, Strided<3>) = l.slice_reshape((.., 1..3, ..));
-    assert_eq!(sliced, l.slice_along_axis(1, 1..3));
+    assert_eq!(sliced, l.slice((.., 1..3, ..)));
 
     // Offsets of a reshaped layout still address the selected elements.
     let (base, s): (usize, Strided<2>) = l.slice_reshape((1, .., (0..4, 2)));
@@ -388,6 +369,35 @@ fn slices_accept_tuples_and_arrays_alike() {
     );
     // The empty tuple slices a rank-0 layout.
     assert_eq!(RowMajor::new([]).slice(()), (0, Strided::new([], [])));
+}
+
+#[test]
+fn transpose_permutes_extents_and_strides() {
+    let l = RowMajor::new([2, 3, 4]);
+    // Axis d of the result is axis perm[d] of the input.
+    let t = l.transpose([2, 0, 1]);
+    assert_eq!(t, Strided::new([4, 2, 3], [1, 12, 4]));
+    // The transposed layout addresses the same element under the permuted
+    // index, and the span never changes.
+    assert_eq!(t.offset([3, 1, 2]), l.offset([1, 2, 3]));
+    assert_eq!(t.span(), l.span());
+    // The identity permutation is a no-op; the inverse roundtrips.
+    assert_eq!(l.transpose([0, 1, 2]), l.into());
+    assert_eq!(t.transpose([1, 2, 0]), l.into());
+    // A rank-0 layout has exactly one (empty) permutation: itself.
+    assert_eq!(RowMajor::new([]).transpose([]), Strided::new([], []));
+}
+
+#[test]
+#[should_panic(expected = "not a permutation")]
+fn transpose_rejects_repeated_axes() {
+    let _ = RowMajor::new([2, 3, 4]).transpose([1, 2, 1]);
+}
+
+#[test]
+#[should_panic(expected = "not a permutation")]
+fn transpose_rejects_out_of_range_axis() {
+    let _ = RowMajor::new([2, 3]).transpose([0, 3]);
 }
 
 #[test]

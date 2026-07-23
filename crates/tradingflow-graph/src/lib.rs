@@ -58,10 +58,10 @@
 //!     type Context = Instant;
 //!     type State = ();
 //!
-//!     fn init(self, _: ((bool, i64), (bool, i64))) {}
+//!     fn init(self, _inputs: ((bool, i64), (bool, i64))) {}
 //!
 //!     fn output<'a, 'b: 'a>(
-//!         ((_, a), (_, b)): ((bool, i64), (bool, i64)),
+//!         _inputs: ((bool, i64), (bool, i64)),
 //!         _state: &'b mut (),
 //!     ) -> (bool, i64) {
 //!         // The initial placeholder output.
@@ -221,12 +221,15 @@
 //!     type Context = Instant;
 //!     type State = i64;
 //!
-//!     fn init(self, (_, x): (bool, i64)) -> i64 {
+//!     fn init(self, _inputs: (bool, i64)) -> i64 {
 //!         // The initial state.
 //!         0
 //!     }
 //!
-//!     fn output<'a, 'b: 'a>(_: (bool, i64), state: &'b mut i64) -> (bool, i64) {
+//!     fn output<'a, 'b: 'a>(
+//!         _inputs: (bool, i64),
+//!         _state: &'b mut i64
+//!     ) -> (bool, i64) {
 //!         // The initial placeholder output.
 //!         (false, 0)
 //!     }
@@ -323,13 +326,13 @@
 //!     type Context = Instant;
 //!     type State = i64;
 //!
-//!     fn init(self, ((_, a), (_, b)): ((bool, &i64), (bool, &i64))) -> i64 {
+//!     fn init(self, _inputs: ((bool, &i64), (bool, &i64))) -> i64 {
 //!         // The initial state.
 //!         0
 //!     }
 //!
 //!     fn passthrough<'a, 'b: 'a>(
-//!         ((a_notify, a), (b_notify, b)): ((bool, &'a i64), (bool, &'a i64)),
+//!         _inputs: ((bool, &'a i64), (bool, &'a i64)),
 //!         state: &'b mut i64
 //!     ) -> (bool, &'a i64) {
 //!         // A simple forwarding.
@@ -337,7 +340,7 @@
 //!     }
 //!
 //!     fn compute<'a, 'b: 'a>(
-//!         ((a_notify, a), (b_notify, b)): ((bool, &'a i64), (bool, &'a i64)),
+//!         ((_, a), (_, b)): ((bool, &'a i64), (bool, &'a i64)),
 //!         state: &'b mut i64,
 //!         _instant: &Instant,
 //!     ) -> (bool, &'a i64) {
