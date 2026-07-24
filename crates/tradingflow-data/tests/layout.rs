@@ -1,5 +1,5 @@
-use tradingflow_data::Layout;
-use tradingflow_data::layout::{ColMajor, RowMajor, Slice, SliceReshape, Strided};
+use tradingflow_data::layout::{ColMajor, RowMajor, Strided};
+use tradingflow_data::{Layout, NewAxis, Slice, SliceReshape};
 
 #[test]
 fn row_major_strides_and_len() {
@@ -294,14 +294,14 @@ fn slice_reshape_mixes_slices_indices_and_new_axes() {
     let l = RowMajor::new([2, 3, 4]);
     // A tuple mixes specifier types: an index collapses its axis, a range
     // keeps it, and `()` adds one — [2, 3, 4] -> [3, 1, 2].
-    let (offset, s): (usize, Strided<3>) = l.slice_reshape((1, .., (), (0..4, 2)));
+    let (offset, s): (usize, Strided<3>) = l.slice_reshape((1, .., NewAxis, (0..4, 2)));
     assert_eq!(offset, l.offset([1, 0, 0]));
     // The new axis takes the row-major stride at its position (the product of
     // produced extents to its right), not 1.
     assert_eq!(s, Strided::new([3, 1, 2], [4, 2, 2]));
 
     // That stride choice makes purely rank-raising reshapes keep contiguity.
-    let (_, c): (usize, Strided<4>) = l.slice_reshape(((), .., .., ..));
+    let (_, c): (usize, Strided<4>) = l.slice_reshape((NewAxis, .., .., ..));
     assert!(c.is_contiguous());
     assert_eq!(c, l.pad_ndim());
 
@@ -313,7 +313,7 @@ fn slice_reshape_mixes_slices_indices_and_new_axes() {
     );
 
     // Only new axes: rank 0 rises to rank 2, still one element.
-    let (offset, up): (usize, Strided<2>) = RowMajor::new([]).slice_reshape(((), ()));
+    let (offset, up): (usize, Strided<2>) = RowMajor::new([]).slice_reshape((NewAxis, NewAxis));
     assert_eq!((offset, up), (0, Strided::new([1, 1], [1, 1])));
 
     // An array of one specifier type still works.

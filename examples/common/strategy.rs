@@ -7,10 +7,10 @@
 //! that actually differs: which predictor, which optimizer, which trader.
 
 use tradingflow::clock::UnixClock;
-use tradingflow::data::{Array, ArrayView, Instant};
+use tradingflow::data::{Array, ArrayView, Instant, Retention};
 use tradingflow::graph::{Builder, Graph, Pool, Segment};
-use tradingflow::operators::series::{Retention, record_all};
-use tradingflow::operators::{array::map_array, elem, num::*, structural::*, traders::*};
+use tradingflow::operators::series::record_all;
+use tradingflow::operators::{array::array_map, elem, stats::*, structural::*, traders::*};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPortHandle, UnitPortHandle};
 use tradingflow::sources::basic::*;
 
@@ -35,7 +35,7 @@ pub fn total_value(
     h: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 0> {
     sc.segment(
-        map_array(|a: ArrayView<f64, 1>| {
+        array_map(|a: ArrayView<f64, 1>| {
             Array::<f64, 0>::scalar(a.to_contiguous().iter().sum::<f64>())
         }),
         h,
@@ -80,7 +80,7 @@ impl Market {
         let n = symbols.len();
         let st = build_stacked(sc, symbols, args);
         let features = build_features(sc, &st, retention);
-        let circ_market_cap = sc.segment(elem::multiply(), (st.close, st.circ_shares));
+        let circ_market_cap = sc.segment(elem::mul(), (st.close, st.circ_shares));
         let log_adj = sc.segment(elem::ln(), st.adjusted_close);
         let (target, target_series, demeaned_series) =
             build_log_return_target(sc, log_adj, retention);

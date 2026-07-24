@@ -22,8 +22,8 @@ mod common;
 use clap::Parser;
 
 use tradingflow::clock::UnixClock;
+use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
-use tradingflow::operators::series::Retention;
 
 use common::models::{benchmark_relative, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable, TRADING_DAYS};

@@ -1,10 +1,9 @@
 use tradingflow_data::array::{
-    concat, concat_into, map, map_binary, map_binary_into, map_broadcast, map_broadcast_into,
-    map_into, select, select_into, select_mask, select_mask_into, split, stack, stack_into,
-    unstack,
+    binary_map, binary_map_into, concat, concat_into, map, map_into, select, select_into,
+    select_mask, select_mask_into, split, stack, stack_into, unstack,
 };
-use tradingflow_data::layout::{Slice, Strided};
-use tradingflow_data::{Array, ArrayView, Layout};
+use tradingflow_data::layout::Strided;
+use tradingflow_data::{Array, ArrayView, Layout, NewAxis, Slice};
 
 #[test]
 fn full_and_zeros() {
@@ -172,19 +171,22 @@ fn as_slice_and_strided_column() {
     // Column 1: extent 3, stride 4, from index 1 — strided.
     let col1 = ArrayView::from_parts(Strided::new([3], [4]), &panel.data()[1..]);
     assert!(col1.as_slice().is_none());
-    assert_eq!(col1.iter().collect::<Vec<_>>(), vec![1.0, 5.0, 9.0]);
+    assert_eq!(
+        col1.iter().copied().collect::<Vec<_>>(),
+        vec![1.0, 5.0, 9.0]
+    );
     assert_eq!(&*col1.to_contiguous(), &[1.0, 5.0, 9.0]);
 }
 
 #[test]
 fn unary_contiguous_and_strided_agree() {
     let x = Array::from_parts([3], vec![1.0, 4.0, 9.0].into());
-    let out = map(x.view(), |v: f64| v.sqrt());
+    let out = map(x.view(), |&v: &f64| v.sqrt());
     assert_eq!(out, Array::from_parts([3], vec![1.0, 2.0, 3.0].into()));
 
     let panel = Array::from_parts([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
     let col1 = ArrayView::from_parts(Strided::new([3], [2]), &panel.data()[1..]);
-    let out = map(col1, |v: f64| v * 10.0);
+    let out = map(col1, |&v: &f64| v * 10.0);
     assert_eq!(out, Array::from_parts([3], vec![20.0, 40.0, 60.0].into()));
 }
 
@@ -193,7 +195,7 @@ fn binary_mixed_contiguous_and_strided() {
     let a = Array::from_parts([3], vec![100.0, 200.0, 300.0].into());
     let panel = Array::from_parts([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
     let bcol = ArrayView::from_parts(Strided::new([3], [2]), &panel.data()[1..]);
-    let out = map_binary(a.view(), bcol, |x, y| x + y);
+    let out = binary_map(a.view(), bcol, |x, y| x + y);
     assert_eq!(
         out,
         Array::from_parts([3], vec![102.0, 204.0, 306.0].into())
@@ -204,18 +206,18 @@ fn binary_mixed_contiguous_and_strided() {
 fn apply_into_reuses_a_row_major_buffer() {
     let x = Array::from_parts([3], vec![1.0, 2.0, 3.0].into());
     let mut out = [0.0; 3];
-    map_into(&mut out, x.view(), |v: f64| v + 0.5);
+    map_into(&mut out, x.view(), |&v: &f64| v + 0.5);
     assert_eq!(out, [1.5, 2.5, 3.5]);
-    map_binary_into(&mut out, x.view(), x.view(), |a, b| a * b);
+    binary_map_into(&mut out, x.view(), x.view(), |a, b| a * b);
     assert_eq!(out, [1.0, 4.0, 9.0]);
 }
 
 #[test]
-#[should_panic(expected = "extents mismatch")]
+#[should_panic(expected = "not broadcast-compatible")]
 fn binary_extents_mismatch() {
     let a = Array::<f64, 1>::zeros([3]);
     let b = Array::<f64, 1>::zeros([2]);
-    let _ = map_binary(a.view(), b.view(), |x, y| x + y);
+    let _ = binary_map(a.view(), b.view(), |x, y| x + y);
 }
 
 #[test]
@@ -223,13 +225,13 @@ fn broadcast_row_against_column() {
     // [2, 1] + [1, 3] -> [2, 3], an outer sum.
     let a = Array::from_parts([2, 1], vec![10.0, 20.0].into());
     let b = Array::from_parts([1, 3], vec![1.0, 2.0, 3.0].into());
-    let out = map_broadcast(a.view(), b.view(), |x, y| x + y);
+    let out = binary_map(a.view(), b.view(), |x, y| x + y);
     assert_eq!(
         out,
         Array::from_parts([2, 3], vec![11.0, 12.0, 13.0, 21.0, 22.0, 23.0].into())
     );
     // Broadcasting is symmetric in the extents.
-    let out = map_broadcast(b.view(), a.view(), |x, y| x + y);
+    let out = binary_map(b.view(), a.view(), |x, y| x + y);
     assert_eq!(out.extents(), [2, 3]);
     assert_eq!(out.data(), &[11.0, 12.0, 13.0, 21.0, 22.0, 23.0]);
 }
@@ -238,8 +240,8 @@ fn broadcast_row_against_column() {
 fn broadcast_equal_extents_matches_map_binary() {
     let a = Array::from_parts([2, 2], vec![1.0, 2.0, 3.0, 4.0].into());
     let b = Array::from_parts([2, 2], vec![5.0, 6.0, 7.0, 8.0].into());
-    let out = map_broadcast(a.view(), b.view(), |x, y| x * y);
-    assert_eq!(out, map_binary(a.view(), b.view(), |x, y| x * y));
+    let out = binary_map(a.view(), b.view(), |x, y| x * y);
+    assert_eq!(out, binary_map(a.view(), b.view(), |x, y| x * y));
 }
 
 #[test]
@@ -249,7 +251,7 @@ fn broadcast_strided_operand() {
     let panel = Array::from_parts([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
     let col1 = ArrayView::from_parts(Strided::new([3, 1], [2, 1]), &panel.data()[1..]);
     let ones = Array::full([3, 3], 1.0);
-    let out = map_broadcast(col1, ones.view(), |x, y| x * y);
+    let out = binary_map(col1, ones.view(), |x, y| x * y);
     assert_eq!(
         out,
         Array::from_parts(
@@ -264,7 +266,7 @@ fn broadcast_into_reuses_a_row_major_buffer() {
     let a = Array::from_parts([2, 1], vec![1.0, 2.0].into());
     let b = Array::from_parts([2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
     let mut out = [0.0; 6];
-    map_broadcast_into(&mut out, a.view(), b.view(), |x, y| x + y);
+    binary_map_into(&mut out, a.view(), b.view(), |x, y| x + y);
     assert_eq!(out, [2.0, 3.0, 4.0, 6.0, 7.0, 8.0]);
 }
 
@@ -273,7 +275,7 @@ fn broadcast_zero_extent_is_empty() {
     // [1, 0] against [2, 1] -> [2, 0]: empty, no calls to `f`.
     let a = Array::<f64, 2>::zeros([1, 0]);
     let b = Array::from_parts([2, 1], vec![1.0, 2.0].into());
-    let out = map_broadcast(a.view(), b.view(), |_, _| -> f64 { unreachable!() });
+    let out = binary_map(a.view(), b.view(), |_, _| -> f64 { unreachable!() });
     assert_eq!(out.extents(), [2, 0]);
 }
 
@@ -282,7 +284,7 @@ fn broadcast_zero_extent_is_empty() {
 fn broadcast_incompatible_extents() {
     let a = Array::<f64, 2>::zeros([2, 3]);
     let b = Array::<f64, 2>::zeros([2, 2]);
-    let _ = map_broadcast(a.view(), b.view(), |x, y| x + y);
+    let _ = binary_map(a.view(), b.view(), |x, y| x + y);
 }
 
 #[test]
@@ -306,7 +308,7 @@ fn pad_ndim_strided_operand() {
     let v = col1.pad_ndim::<2>();
     assert_eq!(v.extents(), [1, 3]);
     assert!(v.as_slice().is_none());
-    assert_eq!(v.iter().collect::<Vec<_>>(), vec![2.0, 4.0, 6.0]);
+    assert_eq!(v.iter().copied().collect::<Vec<_>>(), vec![2.0, 4.0, 6.0]);
 }
 
 #[test]
@@ -315,7 +317,7 @@ fn pad_ndim_enables_cross_rank_broadcast() {
     // rank promotion opted into at the call site.
     let a = Array::from_parts([2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
     let b = Array::from_parts([3], vec![10.0, 20.0, 30.0].into());
-    let out = map_broadcast(a.view(), b.view().pad_ndim(), |x, y| x + y);
+    let out = binary_map(a.view(), b.view().pad_ndim(), |x, y| x + y);
     assert_eq!(
         out,
         Array::from_parts([2, 3], vec![11.0, 22.0, 33.0, 14.0, 25.0, 36.0].into())
@@ -748,7 +750,7 @@ fn transpose_view_is_zero_copy() {
     // ...and addresses the same element under the swapped index.
     assert_eq!(t[[2, 1]], a[[1, 2]]);
     assert_eq!(
-        t.iter().collect::<Vec<_>>(),
+        t.iter().copied().collect::<Vec<_>>(),
         vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0]
     );
     // The identity permutation keeps contiguity; a real swap loses it.
@@ -793,7 +795,10 @@ fn array_into_iter_moves_row_major() {
 fn array_iter_borrows_and_clones() {
     let a = Array::from_parts([2, 2], vec![1.0, 2.0, 3.0, 4.0].into());
     assert_eq!(a.iter().len(), 4);
-    assert_eq!(a.iter().collect::<Vec<_>>(), vec![1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(
+        a.iter().copied().collect::<Vec<_>>(),
+        vec![1.0, 2.0, 3.0, 4.0]
+    );
     // Borrowed: `a` is still usable, and `for x in &a` works.
     let sum: f64 = (&a).into_iter().sum();
     assert_eq!(sum, 10.0);
@@ -805,11 +810,14 @@ fn arrayview_iter_honours_strides() {
     let panel = Array::from_parts([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
     // Column 1: extent 3, stride 2, from index 1 -> {2, 4, 6}.
     let col1 = ArrayView::from_parts(Strided::new([3], [2]), &panel.data()[1..]);
-    assert_eq!(col1.iter().collect::<Vec<_>>(), vec![2.0, 4.0, 6.0]);
+    assert_eq!(
+        col1.iter().copied().collect::<Vec<_>>(),
+        vec![2.0, 4.0, 6.0]
+    );
     // The view is `Copy`, so `IntoIterator` consumes a copy; the strided walk
     // matches `to_contiguous`.
     assert_eq!(
-        col1.into_iter().collect::<Vec<_>>(),
+        col1.into_iter().copied().collect::<Vec<_>>(),
         col1.to_contiguous().into_owned(),
     );
 }
@@ -817,7 +825,7 @@ fn arrayview_iter_honours_strides() {
 #[test]
 fn array_iter_rank0_yields_one_scalar() {
     let s = Array::scalar(42.0_f64);
-    assert_eq!(s.iter().collect::<Vec<_>>(), vec![42.0]);
+    assert_eq!(s.iter().copied().collect::<Vec<_>>(), vec![42.0]);
     assert_eq!(s.into_iter().collect::<Vec<_>>(), vec![42.0]);
 }
 
@@ -830,26 +838,36 @@ fn view_slicing_selects_sub_regions() {
     // A rectangular sub-region reads the elements it selects.
     let s = v.slice((1..3, 1..3));
     assert_eq!(s.extents(), [2, 2]);
-    assert_eq!(s.iter().collect::<Vec<_>>(), vec![5.0, 6.0, 9.0, 10.0]);
+    assert_eq!(
+        s.iter().copied().collect::<Vec<_>>(),
+        vec![5.0, 6.0, 9.0, 10.0]
+    );
     assert_eq!(s[[0, 0]], 5.0);
     assert_eq!(s[[1, 1]], 10.0);
 
     // Stepping and open bounds compose in one call.
     let s = v.slice(((.., 2), (1.., 2)));
     assert_eq!(s.extents(), [2, 2]);
-    assert_eq!(s.iter().collect::<Vec<_>>(), vec![1.0, 3.0, 9.0, 11.0]);
+    assert_eq!(
+        s.iter().copied().collect::<Vec<_>>(),
+        vec![1.0, 3.0, 9.0, 11.0]
+    );
 
     // A single axis, the rest kept whole. An index keeps the axis here —
     // only `slice_reshape` drops it — so the row stays rank 2.
     let row = v.slice((2..3, ..));
     assert_eq!(row.extents(), [1, 4]);
-    assert_eq!(row.iter().collect::<Vec<_>>(), vec![8.0, 9.0, 10.0, 11.0]);
+    assert_eq!(
+        row.iter().copied().collect::<Vec<_>>(),
+        vec![8.0, 9.0, 10.0, 11.0]
+    );
 
     // Slices of slices compose.
     assert_eq!(
         v.slice((1.., ..))
             .slice((..1, 2..))
             .iter()
+            .copied()
             .collect::<Vec<_>>(),
         vec![6.0, 7.0]
     );
@@ -861,16 +879,16 @@ fn view_slicing_reshapes_and_broadcasts() {
     let v = ArrayView::from_slice([3, 4], &data);
 
     // An index drops its axis, `()` adds one: [3, 4] -> [1, 2].
-    let s: ArrayView<f64, 2> = v.slice_reshape((1, (), 1..3));
+    let s: ArrayView<f64, 2> = v.slice_reshape((1, NewAxis, 1..3));
     assert_eq!(s.extents(), [1, 2]);
-    assert_eq!(s.iter().collect::<Vec<_>>(), vec![5.0, 6.0]);
+    assert_eq!(s.iter().copied().collect::<Vec<_>>(), vec![5.0, 6.0]);
 
     // Indexing every axis leaves a rank-0 view of one scalar.
     let s: ArrayView<f64, 0> = v.slice_reshape((2, 3));
     assert_eq!(s[[]], 11.0);
 
     // A new axis broadcast with step 0 repeats the row it was inserted over.
-    let b: ArrayView<f64, 3> = v.slice_reshape((.., (), ..));
+    let b: ArrayView<f64, 3> = v.slice_reshape((.., NewAxis, ..));
     let b = b.slice((.., Slice::new(0, Some(2), 0), ..));
     assert_eq!(b.extents(), [3, 2, 4]);
     assert_eq!(b[[1, 0, 0]], b[[1, 1, 0]]);

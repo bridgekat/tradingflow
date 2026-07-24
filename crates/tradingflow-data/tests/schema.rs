@@ -1,4 +1,4 @@
-use tradingflow_data::schema::Schema;
+use tradingflow_data::utils::Schema;
 
 #[test]
 fn schema_basic() {

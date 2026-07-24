@@ -1,35 +1,24 @@
-//! [`Winsorize`] — cross-sectional percentile clipping.
-
-use std::cmp::Ordering;
-use std::marker::PhantomData;
-
 use num_traits::Float;
+use std::cmp::Ordering;
 
 use crate::data::{Array, ArrayView, Instant, Layout, Scalar};
-use crate::graph::typed::Operator;
+use crate::graph::{Operator, Segment};
 use crate::ports::ArrayPort;
 
-/// Cross-sectional winsorization: clip non-NaN values to the `[p, 1-p]`
-/// quantile range of the cross-section.
-#[derive(Clone)]
 pub struct Winsorize<T: Scalar + Float, const N: usize> {
     p: T,
-    _phantom: PhantomData<T>,
 }
 
 impl<T: Scalar + Float, const N: usize> Winsorize<T, N> {
     pub fn new(p: T) -> Self {
-        assert!(p >= T::zero(), "Winsorize requires p >= 0");
-        assert!(p < T::from(0.5).unwrap(), "Winsorize requires p < 0.5");
-        Self {
-            p,
-            _phantom: PhantomData,
-        }
+        assert!(
+            p >= T::zero() && p + p < T::one(),
+            "winsorize: p must be in [0, 0.5)"
+        );
+        Self { p }
     }
 }
 
-/// Runtime state for [`Winsorize`]: the quantile, a scratch sort buffer and the
-/// output buffer.
 pub struct WinsorizeState<T: Scalar + Float, const N: usize> {
     p: T,
     sort_buf: Vec<T>,
@@ -48,10 +37,15 @@ impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
             sort_buf: vec![T::zero(); x.layout().len()],
             out: Array::zeros(x.extents()),
         };
-        // Seed the output with the faithful transform of the build value; the
-        // initial render does not notify.
         winsorize_into(&mut state, x);
         state
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, ArrayView<'a, T, N>),
+        state: &'b mut Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, state.out.view())
     }
 
     fn compute<'a, 'b: 'a>(
@@ -62,17 +56,8 @@ impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
         winsorize_into(state, x);
         (true, state.out.view())
     }
-
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, T, N>),
-        state: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (false, state.out.view())
-    }
 }
 
-/// The per-call body of [`Winsorize`]: clip the cross-section of `x` to its
-/// `[p, 1-p]` quantile range into `state.out` (all NaN if nothing finite).
 fn winsorize_into<T: Scalar + Float, const N: usize>(
     state: &mut WinsorizeState<T, N>,
     x: ArrayView<'_, T, N>,
@@ -81,9 +66,12 @@ fn winsorize_into<T: Scalar + Float, const N: usize>(
     let src: &[T] = &xs;
     let n = src.len();
 
+    // Only finite values define the clip bounds; ±∞ inputs are the extreme
+    // outliers winsorization exists to tame, and are clamped to the finite
+    // bounds below rather than allowed to become a bound themselves.
     let mut n_valid = 0usize;
     for &v in src.iter() {
-        if !v.is_nan() {
+        if v.is_finite() {
             state.sort_buf[n_valid] = v;
             n_valid += 1;
         }
@@ -119,7 +107,8 @@ fn winsorize_into<T: Scalar + Float, const N: usize>(
     }
 }
 
-/// Cross-sectionally clip the tails at the `p` / `1 − p` quantiles.
-pub fn winsorize<T: Scalar + Float, const N: usize>(p: T) -> Winsorize<T, N> {
+pub fn winsorize<T: Scalar + Float, const N: usize>(
+    p: T,
+) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Winsorize::new(p)
 }

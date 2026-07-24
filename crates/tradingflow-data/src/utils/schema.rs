@@ -1,5 +1,3 @@
-//! The [`Schema`] helper for bookkeeping array axes.
-
 use std::collections::HashMap;
 
 /// A bidirectional map between string labels and integer indices.

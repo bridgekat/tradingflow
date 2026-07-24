@@ -25,9 +25,9 @@ use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
     array,
-    array::{map, map_array},
+    array::{array_map, map},
     elem,
-    num::*,
+    stats::*,
     structural::*,
 };
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, UnitPortHandle};
@@ -44,7 +44,7 @@ pub fn build_full_market_universe(
     rebalance_clock: UnitPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        clocked(map(|c: f64| {
+        clocked(map(|&c: &f64| {
             if c.is_finite() && c > 0.0 {
                 1.0
             } else {
@@ -65,7 +65,7 @@ pub fn build_caprank_universe(
     hi: usize,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        clocked(map_array(move |m: ArrayView<f64, 1>| {
+        clocked(array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             let n = s.len();
             let mut idx: Vec<usize> = (0..n).filter(|&i| s[i].is_finite() && s[i] > 0.0).collect();
@@ -119,7 +119,7 @@ pub fn mask_to_universe(
             |data: ArrayPort<f64, 1>, u: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
                 let zeros = array::zeros([1]) @ ();
                 let keep = elem::indicator(1.0, f64::NAN) @ (elem::gt() @ (u, zeros));
-                elem::multiply() @ (data, keep)
+                elem::mul() @ (data, keep)
             }
         ),
         (data, universe),
@@ -165,7 +165,7 @@ pub fn build_cap_weighted_universe(
 ) -> ArrayPortHandle<f64, 1> {
     let k = index_size;
     sc.segment(
-        clocked(map_array(move |m: ArrayView<f64, 1>| {
+        clocked(array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             Array::from_parts([s.len()], calculate_index_weights(&s, k))
         })),

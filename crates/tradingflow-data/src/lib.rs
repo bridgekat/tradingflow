@@ -169,15 +169,15 @@
 pub mod array;
 pub mod layout;
 pub mod scalar;
-pub mod schema;
 pub mod series;
 pub mod time;
+pub mod utils;
 
 pub use array::{Array, ArrayView};
 pub use layout::{Layout, Offsets, Slice, SliceReshape};
 pub use scalar::Scalar;
-pub use schema::Schema;
 pub use series::{Series, SeriesView};
 pub use time::{Duration, Instant};
+pub use utils::{Retention, Schema};
 
 pub use SliceReshape::NewAxis;

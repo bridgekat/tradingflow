@@ -9,7 +9,8 @@
 //! fundamentals, carried forward by the panel's `Stack`).
 //!
 //! TTM (trailing-twelve-month) flows are a 365-day rolling mean of the annualized
-//! quarterly flow (the self-recording [`ma_time`] constructor). Balance-sheet
+//! quarterly flow (the self-recording `rolling::ma` over a duration window
+//! constructor). Balance-sheet
 //! stocks (assets, equity, liabilities, cash) are used at their latest
 //! carried-forward value (no TTM). The parquet stores assets debit-positive and
 //! liabilities / expense items credit-**negative**; the formulas negate them
@@ -35,8 +36,8 @@
 //! # Price-volume catalog
 //!
 //! Windows are **count-based on the daily price pulse** (the recorded series only
-//! tick when prices change, so `Lag(21)` / `RollingSum::count(21)` ≈ one trading
-//! month and `252` ≈ one year — the same idiom as the 次新 filter). Close-to-close
+//! tick when prices change, so `Lag(21)` / `rolling::sum` over 21 ticks ≈ one
+//! trading month and `252` ≈ one year — the same idiom as the 次新 filter). Close-to-close
 //! returns use the forward-adjusted close; intraday (`close/open`) and overnight
 //! (`open/prev close`) use the raw OHLC the panel now exposes.
 //!
@@ -53,16 +54,17 @@
 //! predictors regress on. See [`build_features`].
 
 use tradingflow::clock::UnixClock;
-use tradingflow::data::{Array, ArrayView, Duration, Instant, Layout, Series, SeriesView};
+use tradingflow::data::{
+    Array, ArrayView, Duration, Instant, Layout, Retention, Series, SeriesView,
+};
 use tradingflow::graph::{Builder, Operator};
 use tradingflow::operators::{
     array::{map, select, select_at, stack},
     elem,
-    formula::*,
     metrics::*,
-    num::*,
-    rolling::*,
-    series::{Retention, buffer_n, record},
+    rolling,
+    series::{buffer, record},
+    stats::*,
     stocks::*,
     structural::*,
     traders::*,
@@ -75,7 +77,8 @@ use super::data::Stacked;
 
 /// Trading days a 变动/同比 level is lagged (the 次新 ~1-year idiom); the
 /// self-recording [`change`] / [`growth`] retain exactly this look-back.
-const LAG_YEAR: usize = 244;
+const LAG_YEAR: Retention = Retention::duration(Duration::from_days(365));
+const LAG_MONTH: Retention = Retention::duration(Duration::from_days(30));
 
 /// A named set of **model-ready feature** handles, in column order — each factor
 /// is already cross-sectionally ranked and its missing values imputed (see
@@ -99,7 +102,7 @@ pub(super) fn rank_impute(
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         tradingflow::segment!(|x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            fillna(0.5) @ percentile() @ x
+            elem::fill_nan(0.5) @ percentile() @ x
         }),
         h,
     )
@@ -107,7 +110,7 @@ pub(super) fn rank_impute(
 
 /// Total market cap = unadjusted close × total shares.
 pub fn market_cap(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> ArrayPortHandle<f64, 1> {
-    sc.segment(elem::multiply(), (st.close, st.total_shares))
+    sc.segment(elem::mul(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
@@ -115,17 +118,18 @@ pub fn circ_market_cap(
     sc: &mut Builder<Instant, UnixClock>,
     st: &Stacked,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(elem::multiply(), (st.close, st.circ_shares))
+    sc.segment(elem::mul(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
 /// annualized (effective-date-aligned) series, via the self-recording
-/// [`ma_time`] (record fused in, retention sized internally).
+/// [`rolling::ma`] over a duration window (record fused in, retention sized
+/// internally).
 fn ttm(
     sc: &mut Builder<Instant, UnixClock>,
     h: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(ma_time(Duration::from_days(365)), h)
+    sc.segment(rolling::mean(LAG_YEAR, 1), h)
 }
 
 /// 变动 (period-over-period delta): `level − level₋₁ᵧ`. The whole chain —
@@ -140,7 +144,7 @@ fn delta(
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            change(LAG_YEAR) @ resample_view() @ (adj, lvl)
+            rolling::diff(LAG_YEAR) @ resample_view() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -156,7 +160,7 @@ fn yoy(
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            growth(LAG_YEAR) @ resample_view() @ (adj, lvl)
+            rolling::pct_change(LAG_YEAR) @ resample_view() @ (adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -184,69 +188,66 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) 
     // (`operators::add` is fully qualified — the local `add` binding shadows it.)
     let gross_ttm = sc.segment(elem::add(), (rev_ttm, cost_ttm));
     // Positive-magnitude liabilities (parquet stores them credit-negative).
-    let debt = sc.segment(elem::negate(), st.total_liab);
-    let cur_liab = sc.segment(elem::negate(), st.current_liab);
-    let eps = sc.segment(elem::divide(), (np_ttm, st.total_shares)); // 每股收益 TTM
-    let cogs_ttm = sc.segment(elem::negate(), cost_ttm); // 营业成本 (positive magnitude)
+    let debt = sc.segment(elem::neg(), st.total_liab);
+    let cur_liab = sc.segment(elem::neg(), st.current_liab);
+    let eps = sc.segment(elem::div(), (np_ttm, st.total_shares)); // 每股收益 TTM
+    let cogs_ttm = sc.segment(elem::neg(), cost_ttm); // 营业成本 (positive magnitude)
     // 应计利润 = 净利润 − 经营现金流 (earnings not backed by cash).
-    let accruals_ttm = sc.segment(elem::subtract(), (np_ttm, ocf_ttm));
+    let accruals_ttm = sc.segment(elem::sub(), (np_ttm, ocf_ttm));
     // 投入资本 ≈ 总资产 − 流动负债 (net of non-interest-bearing current liabilities).
-    let invested_capital = sc.segment(elem::subtract(), (st.total_assets, cur_liab));
+    let invested_capital = sc.segment(elem::sub(), (st.total_assets, cur_liab));
 
     // ---- Profitability (盈利能力) ----
-    let roe = sc.segment(elem::divide(), (np_ttm, st.parent_equity)); // 净利润 TTM / 净资产
-    let roa = sc.segment(elem::divide(), (np_ttm, st.total_assets)); // 净利润 TTM / 总资产
-    let cfoa = sc.segment(elem::divide(), (ocf_ttm, st.total_assets)); // 经营现金流净额 TTM / 总资产
+    let roe = sc.segment(elem::div(), (np_ttm, st.parent_equity)); // 净利润 TTM / 净资产
+    let roa = sc.segment(elem::div(), (np_ttm, st.total_assets)); // 净利润 TTM / 总资产
+    let cfoa = sc.segment(elem::div(), (ocf_ttm, st.total_assets)); // 经营现金流净额 TTM / 总资产
     // 资本回报率 ≈ 营业利润 TTM / 投入资本 (constant-tax proxy for 息前税后经营利润).
-    let roic = sc.segment(elem::divide(), (op_ttm, invested_capital));
+    let roic = sc.segment(elem::div(), (op_ttm, invested_capital));
     add("ROE_TTM", roe);
     add("ROA_TTM", roa);
     add("CFOA", cfoa);
     add("ROIC_TTM", roic);
 
     // ---- Valuation (估值) ----
-    add("BP_LR", sc.segment(elem::divide(), (st.parent_equity, mc))); // 净资产 / 总市值
-    add("EP_TTM", sc.segment(elem::divide(), (np_ttm, mc))); // 净利润 TTM / 总市值
-    add("SP_TTM", sc.segment(elem::divide(), (rev_ttm, mc))); // 营业收入 TTM / 总市值
-    add("OCFP_TTM", sc.segment(elem::divide(), (ocf_ttm, mc))); // 经营现金流 TTM / 总市值
+    add("BP_LR", sc.segment(elem::div(), (st.parent_equity, mc))); // 净资产 / 总市值
+    add("EP_TTM", sc.segment(elem::div(), (np_ttm, mc))); // 净利润 TTM / 总市值
+    add("SP_TTM", sc.segment(elem::div(), (rev_ttm, mc))); // 营业收入 TTM / 总市值
+    add("OCFP_TTM", sc.segment(elem::div(), (ocf_ttm, mc))); // 经营现金流 TTM / 总市值
 
     // ---- Size (规模) ----
     add("Ln_MC", sc.segment(elem::ln(), mc)); // 总市值对数
     add("Ln_FC", sc.segment(elem::ln(), fc)); // 流通市值对数
-    add("FC_MC", sc.segment(elem::divide(), (fc, mc))); // 流通市值 / 总市值
+    add("FC_MC", sc.segment(elem::div(), (fc, mc))); // 流通市值 / 总市值
 
     // ---- Operating efficiency (营运效率) ----
-    let at = sc.segment(elem::divide(), (rev_ttm, st.total_assets)); // 营业收入 TTM / 总资产
-    let opm = sc.segment(elem::divide(), (op_ttm, rev_ttm)); // 营业利润率
-    let gpm = sc.segment(elem::divide(), (gross_ttm, rev_ttm)); // 毛利率
-    let invt = sc.segment(elem::divide(), (cogs_ttm, st.inventories)); // 存货周转率 = 营业成本 TTM / 存货
-    let rat = sc.segment(elem::divide(), (rev_ttm, st.receivables)); // 应收周转率 = 营业收入 TTM / 应收款
+    let at = sc.segment(elem::div(), (rev_ttm, st.total_assets)); // 营业收入 TTM / 总资产
+    let opm = sc.segment(elem::div(), (op_ttm, rev_ttm)); // 营业利润率
+    let gpm = sc.segment(elem::div(), (gross_ttm, rev_ttm)); // 毛利率
+    let invt = sc.segment(elem::div(), (cogs_ttm, st.inventories)); // 存货周转率 = 营业成本 TTM / 存货
+    let rat = sc.segment(elem::div(), (rev_ttm, st.receivables)); // 应收周转率 = 营业收入 TTM / 应收款
     add("AT", at);
-    add("NPM_TTM", sc.segment(elem::divide(), (np_ttm, rev_ttm))); // 净利率
+    add("NPM_TTM", sc.segment(elem::div(), (np_ttm, rev_ttm))); // 净利率
     add("OPM_TTM", opm);
     add("GPM_TTM", gpm);
-    add(
-        "OPtoGR_TTM",
-        sc.segment(elem::divide(), (op_ttm, gross_ttm)),
-    ); // 营业利润 / 毛利润
+    add("OPtoGR_TTM", sc.segment(elem::div(), (op_ttm, gross_ttm))); // 营业利润 / 毛利润
     add("INVT", invt);
     add("RAT", rat);
 
     // ---- Safety (安全性) ----
-    let debt_asset = sc.segment(elem::divide(), (debt, st.total_assets)); // 资产负债比
-    let cur = sc.segment(elem::divide(), (st.current_assets, cur_liab)); // 流动比率
-    let dte = sc.segment(elem::divide(), (debt, st.parent_equity)); // 产权比率
-    let ccr = sc.segment(elem::divide(), (ocf_ttm, cur_liab)); // 现金流动负债比率
+    let debt_asset = sc.segment(elem::div(), (debt, st.total_assets)); // 资产负债比
+    let cur = sc.segment(elem::div(), (st.current_assets, cur_liab)); // 流动比率
+    let dte = sc.segment(elem::div(), (debt, st.parent_equity)); // 产权比率
+    let ccr = sc.segment(elem::div(), (ocf_ttm, cur_liab)); // 现金流动负债比率
     add("Debt_Asset", debt_asset);
     add("CUR", cur);
     add("DTE", dte);
     add("CCR", ccr);
 
     // ---- Earnings quality (盈余质量) ----
-    let csr = sc.segment(elem::divide(), (st.cash, cur_liab)); // 现金比率
+    let csr = sc.segment(elem::div(), (st.cash, cur_liab)); // 现金比率
     // 应计利润占比 = 应计利润 / 总资产 (Sloan accruals; expect a NEGATIVE forward
     // IC — the accruals anomaly). Handbook may scale by operating profit instead.
-    let apr = sc.segment(elem::divide(), (accruals_ttm, st.total_assets));
+    let apr = sc.segment(elem::div(), (accruals_ttm, st.total_assets));
     add("CSR", csr);
     add("APR_TTM", apr);
 
@@ -280,7 +281,7 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) 
     // IC (short-term reversal); a contemporaneous (non-lagged) wiring bug would
     // instead make this strongly POSITIVE (the factor overlapping the return).
     let log_adj = sc.segment(elem::ln(), st.adjusted_close);
-    add("REV_1M", sc.segment(change(21), log_adj));
+    add("REV_1M", sc.segment(rolling::diff(LAG_MONTH), log_adj));
 
     // Each catalog entry is finalized into its model-ready feature: rank + impute.
     let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();
@@ -298,7 +299,7 @@ pub fn build_forward_return(
     rebalance_clock: UnitPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
     let resampled = sc.segment(resample_clocked(), (rebalance_clock, log_adj));
-    sc.segment(diff(), resampled)
+    sc.segment(rolling::diff(1), resampled)
 }
 
 /// A cross-sectional feature panel.
@@ -319,14 +320,14 @@ fn rsum(
     s: SeriesPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(rolling_sum(Window::Count(n)), s)
+    sc.segment(rolling::series_sum(n, 1), s)
 }
 fn rmean(
     sc: &mut Builder<Instant, UnixClock>,
     s: SeriesPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(rolling_mean(Window::Count(n)), s)
+    sc.segment(rolling::series_mean(n, 1), s)
 }
 /// Elementwise map preserving shape and NaN.
 fn emap(
@@ -334,7 +335,7 @@ fn emap(
     h: ArrayPortHandle<f64, 1>,
     f: fn(f64) -> f64,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(map(f), h)
+    sc.segment(map(move |&x| f(x)), h)
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(
@@ -344,7 +345,7 @@ fn rstd(
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         tradingflow::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
-            elem::sqrt() @ rolling_variance(Window::Count(n)) @ x
+            elem::sqrt() @ rolling::series_var(n, 1) @ x
         }),
         s,
     )
@@ -358,19 +359,19 @@ fn rcorr(
     y: ArrayPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
-    let xs = sc.segment(buffer_n(n), x);
-    let ys = sc.segment(buffer_n(n), y);
-    let xy = sc.segment(elem::multiply(), (x, y));
-    let xys = sc.segment(buffer_n(n), xy);
+    let xs = sc.segment(buffer(n), x);
+    let ys = sc.segment(buffer(n), y);
+    let xy = sc.segment(elem::mul(), (x, y));
+    let xys = sc.segment(buffer(n), xy);
     let mx = rmean(sc, xs, n);
     let my = rmean(sc, ys, n);
     let mxy = rmean(sc, xys, n);
-    let mxmy = sc.segment(elem::multiply(), (mx, my));
-    let cov = sc.segment(elem::subtract(), (mxy, mxmy));
+    let mxmy = sc.segment(elem::mul(), (mx, my));
+    let cov = sc.segment(elem::sub(), (mxy, mxmy));
     let sx = rstd(sc, xs, n);
     let sy = rstd(sc, ys, n);
-    let sxsy = sc.segment(elem::multiply(), (sx, sy));
-    sc.segment(elem::divide(), (cov, sxsy))
+    let sxsy = sc.segment(elem::mul(), (sx, sy));
+    sc.segment(elem::div(), (cov, sxsy))
 }
 
 const M: usize = 21; // ~1 trading month
@@ -742,28 +743,28 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
 
     // --- daily building blocks (recorded on the price pulse) ---
     let lc = sc.segment(elem::ln(), st.adjusted_close); // adjusted log close
-    let lc_s = sc.segment(buffer_n(Y), lc);
-    let adjclose_s = sc.segment(buffer_n(Y), st.adjusted_close);
+    let lc_s = sc.segment(buffer(Y), lc);
+    let adjclose_s = sc.segment(buffer(Y), st.adjusted_close);
     let lo = sc.segment(elem::ln(), st.open); // raw log open
     let lcr = sc.segment(elem::ln(), st.close); // raw log close
-    let lcr_s = sc.segment(buffer_n(Y), lcr);
+    let lcr_s = sc.segment(buffer(Y), lcr);
 
-    let daily_ret = sc.segment(diff(), lc); // adjusted close-to-close log return
-    let dret_s = sc.segment(buffer_n(Y), daily_ret);
-    let intraday = sc.segment(elem::subtract(), (lcr, lo)); // log(close/open)
-    let intra_s = sc.segment(buffer_n(Y), intraday);
-    let prev_lcr = sc.segment(lag_series(1, f64::NAN), lcr_s);
-    let overnight = sc.segment(elem::subtract(), (lo, prev_lcr)); // log(open / prev close)
-    let over_s = sc.segment(buffer_n(Y), overnight);
+    let daily_ret = sc.segment(rolling::diff(1), lc); // adjusted close-to-close log return
+    let dret_s = sc.segment(buffer(Y), daily_ret);
+    let intraday = sc.segment(elem::sub(), (lcr, lo)); // log(close/open)
+    let intra_s = sc.segment(buffer(Y), intraday);
+    let prev_lcr = sc.segment(rolling::series_lag(1), lcr_s);
+    let overnight = sc.segment(elem::sub(), (lo, prev_lcr)); // log(open / prev close)
+    let over_s = sc.segment(buffer(Y), overnight);
 
     let abs_ret = emap(sc, daily_ret, f64::abs);
-    let absret_s = sc.segment(buffer_n(Y), abs_ret);
+    let absret_s = sc.segment(buffer(Y), abs_ret);
     let sign_ret = emap(sc, daily_ret, |x| {
         if x.is_finite() { x.signum() } else { f64::NAN }
     });
-    let sign_s = sc.segment(buffer_n(Y), sign_ret);
+    let sign_s = sc.segment(buffer(Y), sign_ret);
     let xs_rank = sc.segment(percentile(), daily_ret); // daily cross-sectional rank
-    let xsr_s = sc.segment(buffer_n(Y), xs_rank);
+    let xsr_s = sc.segment(buffer(Y), xs_rank);
 
     // shared rolling sums (reused by the _M / _A pairs)
     let rs_intra_m = rsum(sc, intra_s, M);
@@ -772,50 +773,44 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     let rs_over_y = rsum(sc, over_s, Y);
 
     // ---- 月度反转 / 年度动量 (close-return based) ----
-    let lc_lag_m = sc.segment(lag_series(M, f64::NAN), lc_s);
-    let lc_lag_y = sc.segment(lag_series(Y, f64::NAN), lc_s);
-    let ret_1m = sc.segment(elem::subtract(), (lc, lc_lag_m)); // past 1-month return
-    let ret_1y = sc.segment(elem::subtract(), (lc, lc_lag_y)); // past 1-year return
+    let lc_lag_m = sc.segment(rolling::series_lag(M), lc_s);
+    let lc_lag_y = sc.segment(rolling::series_lag(Y), lc_s);
+    let ret_1m = sc.segment(elem::sub(), (lc, lc_lag_m)); // past 1-month return
+    let ret_1y = sc.segment(elem::sub(), (lc, lc_lag_y)); // past 1-year return
     add("mmt_normal_M", ret_1m); // 1个月收益率
     add(
         "mmt_normal_A",
-        sc.segment(elem::subtract(), (lc_lag_m, lc_lag_y)),
+        sc.segment(elem::sub(), (lc_lag_m, lc_lag_y)),
     ); // 12个月收益率 − 1个月收益率
     let ma20 = rmean(sc, adjclose_s, 20);
     add(
         "mmt_avg_M",
-        sc.segment(elem::divide(), (st.adjusted_close, ma20)),
+        sc.segment(elem::div(), (st.adjusted_close, ma20)),
     ); // 收盘价 / 20日均价
-    let prev_close_m = sc.segment(lag_series(M, f64::NAN), adjclose_s);
+    let prev_close_m = sc.segment(rolling::series_lag(M), adjclose_s);
     let ma_year = rmean(sc, adjclose_s, Y);
     add(
         "mmt_avg_A",
-        sc.segment(elem::divide(), (prev_close_m, ma_year)),
+        sc.segment(elem::div(), (prev_close_m, ma_year)),
     ); // 1月前收盘 / 1年均价
 
     // ---- 日内 / 隔夜动量 ----
     add("mmt_intraday_M", rs_intra_m); // 过去1月日内涨跌幅之和
     add(
         "mmt_intraday_A",
-        sc.segment(elem::subtract(), (rs_intra_y, rs_intra_m)),
+        sc.segment(elem::sub(), (rs_intra_y, rs_intra_m)),
     );
     add("mmt_overnight_M", rs_over_m); // 过去1月隔夜涨跌幅之和
     add(
         "mmt_overnight_A",
-        sc.segment(elem::subtract(), (rs_over_y, rs_over_m)),
+        sc.segment(elem::sub(), (rs_over_y, rs_over_m)),
     );
 
     // ---- 路径调整动量 (return / Σ|daily return|) ----
     let sum_abs_m = rsum(sc, absret_s, M);
-    add(
-        "mmt_route_M",
-        sc.segment(elem::divide(), (ret_1m, sum_abs_m)),
-    );
+    add("mmt_route_M", sc.segment(elem::div(), (ret_1m, sum_abs_m)));
     let sum_abs_y = rsum(sc, absret_s, Y);
-    add(
-        "mmt_route_A",
-        sc.segment(elem::divide(), (ret_1y, sum_abs_y)),
-    );
+    add("mmt_route_A", sc.segment(elem::div(), (ret_1y, sum_abs_y)));
 
     // ---- 信息离散度 (up% − down% = mean of sign) ----
     add("mmt_discrete_M", rmean(sc, sign_s, M));
@@ -835,14 +830,14 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
             f64::NAN
         }
     });
-    let masked_s = sc.segment(buffer_n(Y), masked_ret);
+    let masked_s = sc.segment(buffer(Y), masked_ret);
     add("mmt_off_limit_M", rsum(sc, masked_s, M));
     add("mmt_off_limit_A", rsum(sc, masked_s, Y));
 
     // 时序 rank 动量: daily time-series percentile of the log price within 1 year,
     // averaged over 20 days. 最高价距今天数: ticks since the 1-year high.
     let trank = window_reduce(sc, lc_s, Y, ts_rank);
-    let trank_s = sc.segment(buffer_n(Y), trank);
+    let trank_s = sc.segment(buffer(Y), trank);
     add("mmt_time_rank_M", rmean(sc, trank_s, 20));
     add(
         "mmt_highest_days_A",
@@ -850,19 +845,19 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     );
 
     // ============ 流动性 (liquidity) — 图表28 ============
-    let turnover = sc.segment(elem::divide(), (st.volume, st.circ_shares)); // daily turnover 换手率
-    let turnover_s = sc.segment(buffer_n(Y), turnover);
-    let amount_s = sc.segment(buffer_n(Y), st.amount);
-    let amihud = sc.segment(elem::divide(), (abs_ret, st.amount)); // |日收益率| / 成交额
-    let amihud_s = sc.segment(buffer_n(Y), amihud);
+    let turnover = sc.segment(elem::div(), (st.volume, st.circ_shares)); // daily turnover 换手率
+    let turnover_s = sc.segment(buffer(Y), turnover);
+    let amount_s = sc.segment(buffer(Y), st.amount);
+    let amihud = sc.segment(elem::div(), (abs_ret, st.amount)); // |日收益率| / 成交额
+    let amihud_s = sc.segment(buffer(Y), amihud);
     // 日K线最短路径 = 2*(最高-最低) − |开盘−收盘|; shortcut 非流动 = 路径 / 成交额.
-    let hl = sc.segment(elem::subtract(), (st.high, st.low));
+    let hl = sc.segment(elem::sub(), (st.high, st.low));
     let two_hl = emap(sc, hl, |x| 2.0 * x);
-    let oc = sc.segment(elem::subtract(), (st.open, st.close));
+    let oc = sc.segment(elem::sub(), (st.open, st.close));
     let abs_oc = emap(sc, oc, f64::abs);
-    let path = sc.segment(elem::subtract(), (two_hl, abs_oc));
-    let shortcut = sc.segment(elem::divide(), (path, st.amount));
-    let shortcut_s = sc.segment(buffer_n(Y), shortcut);
+    let path = sc.segment(elem::sub(), (two_hl, abs_oc));
+    let shortcut = sc.segment(elem::div(), (path, st.amount));
+    let shortcut_s = sc.segment(buffer(Y), shortcut);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
         add(&format!("liq_turn_avg_{tag}"), rmean(sc, turnover_s, w)); // 换手率均值
@@ -871,7 +866,7 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
         let ret_std = rstd(sc, dret_s, w);
         add(
             &format!("liq_vstd_{tag}"),
-            sc.segment(elem::divide(), (sum_amt, ret_std)),
+            sc.segment(elem::div(), (sum_amt, ret_std)),
         ); // 成交波动比 = Σ成交额 / σ(ret)
         add(&format!("liq_amihud_avg_{tag}"), rmean(sc, amihud_s, w));
         add(&format!("liq_amihud_std_{tag}"), rstd(sc, amihud_s, w));
@@ -882,12 +877,12 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     // ============ 量价相关性 (price-volume correlation, 20-day) — 图表40 ============
     // sync = corr(turn_t, x_t); post (量领先) = corr(turn_t, x_{t+1}) = corr(lag(turn,1), x);
     // prior (价领先) = corr(turn_t, x_{t-1}) = corr(turn, lag(x,1)).
-    let turnover_change = sc.segment(diff(), turnover);
-    let turnchg_s = sc.segment(buffer_n(Y), turnover_change);
-    let lag_turn1 = sc.segment(lag_series(1, f64::NAN), turnover_s);
-    let lag_turnd1 = sc.segment(lag_series(1, f64::NAN), turnchg_s);
-    let lag_price1 = sc.segment(lag_series(1, f64::NAN), adjclose_s);
-    let lag_ret1 = sc.segment(lag_series(1, f64::NAN), dret_s);
+    let turnover_change = sc.segment(rolling::diff(1), turnover);
+    let turnchg_s = sc.segment(buffer(Y), turnover_change);
+    let lag_turn1 = sc.segment(rolling::series_lag(1), turnover_s);
+    let lag_turnd1 = sc.segment(rolling::series_lag(1), turnchg_s);
+    let lag_price1 = sc.segment(rolling::series_lag(1), adjclose_s);
+    let lag_ret1 = sc.segment(rolling::series_lag(1), dret_s);
     const WC: usize = 20;
     add(
         "corr_price_turn_1M",
@@ -922,28 +917,28 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     let downside = emap(sc, daily_ret, |x| {
         if x.is_finite() { x.min(0.0) } else { f64::NAN }
     });
-    let downside_s = sc.segment(buffer_n(Y), downside);
+    let downside_s = sc.segment(buffer(Y), downside);
     let upside = emap(sc, daily_ret, |x| {
         if x.is_finite() { x.max(0.0) } else { f64::NAN }
     });
-    let upside_s = sc.segment(buffer_n(Y), upside);
-    let highlow = sc.segment(elem::divide(), (st.high, st.low)); // 日内振幅 = 最高/最低
-    let highlow_s = sc.segment(buffer_n(Y), highlow);
+    let upside_s = sc.segment(buffer(Y), upside);
+    let highlow = sc.segment(elem::div(), (st.high, st.low)); // 日内振幅 = 最高/最低
+    let highlow_s = sc.segment(buffer(Y), highlow);
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
     let max_oc = sc.segment(elem::maxf(), (st.open, st.close));
     let min_oc = sc.segment(elem::minf(), (st.open, st.close));
-    let up_num = sc.segment(elem::subtract(), (st.high, max_oc)); // 上影线 = 最高 − max(开,收)
-    let upshadow = sc.segment(elem::divide(), (up_num, st.low));
-    let upshadow_s = sc.segment(buffer_n(Y), upshadow);
-    let down_num = sc.segment(elem::subtract(), (min_oc, st.low)); // 下影线 = min(开,收) − 最低
-    let downshadow = sc.segment(elem::divide(), (down_num, st.low));
-    let downshadow_s = sc.segment(buffer_n(Y), downshadow);
-    let wup_num = sc.segment(elem::subtract(), (st.high, st.close)); // 威廉上影线 = 最高 − 收
-    let w_upshadow = sc.segment(elem::divide(), (wup_num, st.low));
-    let w_upshadow_s = sc.segment(buffer_n(Y), w_upshadow);
-    let wdown_num = sc.segment(elem::subtract(), (st.close, st.low)); // 威廉下影线 = 收 − 最低
-    let w_downshadow = sc.segment(elem::divide(), (wdown_num, st.low));
-    let w_downshadow_s = sc.segment(buffer_n(Y), w_downshadow);
+    let up_num = sc.segment(elem::sub(), (st.high, max_oc)); // 上影线 = 最高 − max(开,收)
+    let upshadow = sc.segment(elem::div(), (up_num, st.low));
+    let upshadow_s = sc.segment(buffer(Y), upshadow);
+    let down_num = sc.segment(elem::sub(), (min_oc, st.low)); // 下影线 = min(开,收) − 最低
+    let downshadow = sc.segment(elem::div(), (down_num, st.low));
+    let downshadow_s = sc.segment(buffer(Y), downshadow);
+    let wup_num = sc.segment(elem::sub(), (st.high, st.close)); // 威廉上影线 = 最高 − 收
+    let w_upshadow = sc.segment(elem::div(), (wup_num, st.low));
+    let w_upshadow_s = sc.segment(buffer(Y), w_upshadow);
+    let wdown_num = sc.segment(elem::sub(), (st.close, st.low)); // 威廉下影线 = 收 − 最低
+    let w_downshadow = sc.segment(elem::div(), (wdown_num, st.low));
+    let w_downshadow_s = sc.segment(buffer(Y), w_downshadow);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
         add(&format!("vol_std_{tag}"), rstd(sc, dret_s, w)); // 波动率
@@ -984,14 +979,14 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     // `Stack` along axis 1 wires the two by-value view handles into an (N, 2)
     // cross-section, so `WindowReduce2` reads `[amp_i, ret_i]` pairs per element.
     let amp_ret = sc.segment(stack::<f64, 1, 2>(1), &[highlow, daily_ret]); // (N, 2)
-    let amp_ret_s = sc.segment(buffer_n(Y), amp_ret);
+    let amp_ret_s = sc.segment(buffer(Y), amp_ret);
     add("mmt_range_M", window_reduce2(sc, amp_ret_s, M, range_mom));
     add("mmt_range_A", window_reduce2(sc, amp_ret_s, Y, range_mom));
 
     // ============ 筹码分布 (chip distribution) — 图表52 ============
     // (adjusted close, turnover) -> ChipDist -> (N, 10); column-select each factor.
     let chip_in = sc.segment(stack::<f64, 1, 2>(1), &[st.adjusted_close, turnover]); // (N, 2)
-    let chip_in_s = sc.segment(buffer_n(Y), chip_in);
+    let chip_in_s = sc.segment(buffer(Y), chip_in);
     let chip = sc.segment(ChipDist { window: 250 }, chip_in_s); // (N, 10)
     for (c, name) in [
         "distribution_ret_avg",
@@ -1041,7 +1036,7 @@ pub fn build_features(
 
     let stacked = sc.segment(stack(1), &handles[..]);
     let sampled = sc.segment(resample_view(), (st.adjusted_close, stacked));
-    let series = sc.segment(record(feature_retention), sampled);
+    let series = sc.segment(record(feature_retention, false), sampled);
     Features {
         names,
         handles,

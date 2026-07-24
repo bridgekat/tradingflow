@@ -22,8 +22,8 @@ mod common;
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::array::{map_array, map_array_binary_inplace};
-use tradingflow::operators::elem::multiply;
+use tradingflow::operators::array::{array_binary_map, array_map};
+use tradingflow::operators::elem::mul;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::structural::resample_view;
 use tradingflow::operators::traders::benchmark;
@@ -48,7 +48,7 @@ async fn main() {
     let mut sc = Builder::new(UnixClock);
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
-    let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));
+    let circ_market_cap = sc.segment(mul(), (st.close, st.circ_shares));
 
     let rebalance_clock = sc.source(pulse(args.rebalance_instants()));
     let universe = common::build_cap_weighted_universe(
@@ -74,12 +74,7 @@ async fn main() {
         s
     };
     let index_circ_market_cap = sc.segment(
-        map_array_binary_inplace(
-            move |u, c| Array::scalar(masked_circ_sum(u, c)),
-            move |out, u, c| {
-                out[[]] = masked_circ_sum(u, c);
-            },
-        ),
+        array_binary_map(move |u, c| Array::scalar(masked_circ_sum(u, c))),
         (daily_universe, circ_market_cap),
     );
 
@@ -90,7 +85,7 @@ async fn main() {
         (universe, st.close, st.adjusts, upper, lower),
     );
     let index_value = sc.segment(
-        map_array(|a: ArrayView<f64, 1>| {
+        array_map(|a: ArrayView<f64, 1>| {
             Array::<f64, 0>::scalar(a.to_contiguous().iter().sum::<f64>())
         }),
         index,

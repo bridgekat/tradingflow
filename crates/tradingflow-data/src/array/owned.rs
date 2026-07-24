@@ -181,7 +181,7 @@ impl<T: Scalar, const N: usize> Array<T, N> {
 }
 
 impl<'a, T: Scalar, const N: usize> IntoIterator for &'a Array<T, N> {
-    type Item = T;
+    type Item = &'a T;
     type IntoIter = ArrayIter<'a, T, N>;
 
     /// Iterates over the scalars in row-major order.

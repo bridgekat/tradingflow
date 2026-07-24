@@ -1,23 +1,18 @@
-//! [`Standardize`] — the cross-sectional z-score.
-
+use num_traits::Float;
 use std::marker::PhantomData;
 
-use num_traits::Float;
-
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::typed::Operator;
+use crate::graph::{Operator, Segment};
 use crate::ports::ArrayPort;
 
-/// Cross-sectional z-score (population std; NaN if < 2 finite or σ = 0).
-#[derive(Clone)]
 pub struct Standardize<T: Scalar + Float, const N: usize> {
-    _phantom: PhantomData<T>,
+    _marker: PhantomData<fn() -> T>,
 }
 
 impl<T: Scalar + Float, const N: usize> Standardize<T, N> {
     pub fn new() -> Self {
         Self {
-            _phantom: PhantomData,
+            _marker: PhantomData,
         }
     }
 }
@@ -36,10 +31,15 @@ impl<T: Scalar + Float, const N: usize> Operator for Standardize<T, N> {
 
     fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
         let mut out = Array::zeros(x.extents());
-        // Seed the output with the faithful transform of the build value; the
-        // initial render does not notify.
         standardize_into(&mut out, x);
         out
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, ArrayView<'a, T, N>),
+        out: &'b mut Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, out.view())
     }
 
     fn compute<'a, 'b: 'a>(
@@ -50,17 +50,8 @@ impl<T: Scalar + Float, const N: usize> Operator for Standardize<T, N> {
         standardize_into(out, x);
         (true, out.view())
     }
-
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, T, N>),
-        out: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (false, out.view())
-    }
 }
 
-/// The per-call body of [`Standardize`]: z-score the cross-section of `x` into
-/// `out` (all NaN if < 2 finite or σ = 0).
 fn standardize_into<T: Scalar + Float, const N: usize>(
     out: &mut Array<T, N>,
     x: ArrayView<'_, T, N>,
@@ -73,7 +64,7 @@ fn standardize_into<T: Scalar + Float, const N: usize>(
     let mut n_valid = 0usize;
     let mut sum = T::zero();
     for &v in src.iter() {
-        if !v.is_nan() {
+        if v.is_finite() {
             n_valid += 1;
             sum = sum + v;
         }
@@ -91,7 +82,7 @@ fn standardize_into<T: Scalar + Float, const N: usize>(
 
     let mut ssd = T::zero();
     for &v in src.iter() {
-        if !v.is_nan() {
+        if v.is_finite() {
             let d = v - mean;
             ssd = ssd + d * d;
         }
@@ -108,11 +99,35 @@ fn standardize_into<T: Scalar + Float, const N: usize>(
 
     for i in 0..n {
         let v = src[i];
-        dst[i] = if v.is_nan() { nan } else { (v - mean) / std };
+        dst[i] = if v.is_finite() { (v - mean) / std } else { nan };
     }
 }
 
-/// Cross-sectional z-score: `(x − mean) / std`.
-pub fn standardize<T: Scalar + Float, const N: usize>() -> Standardize<T, N> {
+/// Cross-sectional z-score: `(x − mean) / std` (population std). Non-finite
+/// entries (NaN or ±∞) are treated as missing and map to NaN; the whole
+/// cross-section is NaN if fewer than two finite values remain or σ = 0.
+pub fn standardize<T: Scalar + Float, const N: usize>()
+-> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Standardize::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infinity_is_treated_as_missing() {
+        // ±∞ must not poison the mean/variance; only the finite entries count,
+        // and the infinite slots come back as NaN.
+        let x = Array::from_parts([4], vec![1.0_f64, 2.0, 3.0, f64::INFINITY].into());
+        let mut out = Array::zeros([4]);
+        standardize_into(&mut out, x.view());
+        let z = out.data();
+        // Finite [1,2,3]: mean 2, pop σ = sqrt(2/3).
+        let s = (2.0_f64 / 3.0).sqrt();
+        assert!((z[0] - (1.0 - 2.0) / s).abs() < 1e-12);
+        assert!((z[1] - 0.0).abs() < 1e-12);
+        assert!((z[2] - (3.0 - 2.0) / s).abs() < 1e-12);
+        assert!(z[3].is_nan());
+    }
 }

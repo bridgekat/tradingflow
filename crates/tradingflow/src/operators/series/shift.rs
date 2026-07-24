@@ -1,4 +1,4 @@
-use super::DeriveView;
+use super::view::DeriveView;
 use crate::data::{Instant, Scalar, series};
 use crate::graph::Segment;
 use crate::ports::SeriesPort;

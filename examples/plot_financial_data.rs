@@ -24,9 +24,9 @@ mod common;
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::array::{map_array, select, select_at};
-use tradingflow::operators::elem::{divide, multiply, negate};
-use tradingflow::operators::rolling::{Window, rolling_mean};
+use tradingflow::operators::array::{array_map, select, select_at};
+use tradingflow::operators::elem::{div, mul, neg};
+use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::stocks::annualize;
 use tradingflow::operators::structural::filter;
@@ -147,14 +147,14 @@ async fn main() {
     // ------------------------------------------------------------------
     let close = sc.segment(select_at(0, 0), prices);
     let total_shares = sc.segment(select_at(0, 0), equity);
-    let market_cap = sc.segment(multiply(), (close, total_shares));
+    let market_cap = sc.segment(mul(), (close, total_shares));
 
     let assets = sc.segment(select_at(0, 0), balance);
     let neg_equity = sc.segment(select_at(1, 0), balance);
-    let equity_val = sc.segment(negate(), neg_equity);
+    let equity_val = sc.segment(neg(), neg_equity);
     let neg_peq = sc.segment(select(vec![2, 3, 4], 0), balance);
     let parent_equity = sc.segment(
-        map_array(|a: ArrayView<f64, 1>| {
+        array_map(|a: ArrayView<f64, 1>| {
             Array::<f64, 0>::scalar(-a.to_contiguous().iter().sum::<f64>())
         }),
         neg_peq,
@@ -168,13 +168,13 @@ async fn main() {
 
     let net_profit_series = sc.segment(record_all(), net_profit);
     let net_profit_ttm = sc.segment(
-        rolling_mean(Window::TimeDelta(Duration::from_days(365))),
+        rolling::series_mean(Duration::from_days(365), 1),
         net_profit_series,
     );
 
-    let ep = sc.segment(divide(), (net_profit_ttm, market_cap));
-    let bp = sc.segment(divide(), (parent_equity, market_cap));
-    let roe = sc.segment(divide(), (net_profit_ttm, parent_equity));
+    let ep = sc.segment(div(), (net_profit_ttm, market_cap));
+    let bp = sc.segment(div(), (parent_equity, market_cap));
+    let roe = sc.segment(div(), (net_profit_ttm, parent_equity));
 
     let records = [
         sc.segment(record_all(), market_cap),

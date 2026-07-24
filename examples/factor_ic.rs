@@ -22,9 +22,10 @@ mod common;
 use clap::Parser;
 
 use tradingflow::clock::UnixClock;
+use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
-use tradingflow::operators::num::lag_series;
-use tradingflow::operators::series::{Retention, record_all};
+use tradingflow::operators::rolling::series_lag;
+use tradingflow::operators::series::record_all;
 use tradingflow::operators::structural::resample_clocked;
 
 use common::ic::{ic_series, ic_stats};
@@ -60,7 +61,7 @@ async fn main() {
             // Lag one trading day, resample onto the rebalance clock, then NaN out
             // the stocks outside the universe so they don't dilute the correlation.
             let feature_series = sc.segment(record_all(), feature);
-            let lagged = sc.segment(lag_series(1, f64::NAN), feature_series);
+            let lagged = sc.segment(series_lag(1), feature_series);
             let aligned = sc.segment(resample_clocked(), (m.rebalance_clock, lagged));
             let masked = mask_to_universe(&mut sc, aligned, m.universe);
             ic_series(&mut sc, masked, m.target, m.n)

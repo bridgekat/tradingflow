@@ -1,13 +1,13 @@
 //! Prediction targets and trading constraints derived from the market panel.
 
 use tradingflow::clock::UnixClock;
-use tradingflow::data::{Array, ArrayView, Instant, Series};
+use tradingflow::data::{Array, ArrayView, Instant, Retention, Series};
 use tradingflow::graph::Builder;
-use tradingflow::operators::series::{Retention, record};
+use tradingflow::operators::series::record;
 use tradingflow::operators::{
-    array::{map, map_array},
-    formula::*,
-    num::*,
+    array::{array_map, map},
+    rolling,
+    stats::*,
     structural::*,
     traders::*,
 };
@@ -50,11 +50,11 @@ pub fn build_log_return_target(
     SeriesPortHandle<f64, 1>,
     SeriesPortHandle<f64, 1>,
 ) {
-    let log_returns = sc.segment(diff(), log_adj);
+    let log_returns = sc.segment(rolling::diff(1), log_adj);
     let target = sc.segment(winsorize(0.01), log_returns);
-    let target_series = sc.segment(record(target_retention), target);
-    let demeaned = sc.segment(map_array(demean), target);
-    let demeaned_series = sc.segment(record(target_retention), demeaned);
+    let target_series = sc.segment(record(target_retention, false), target);
+    let demeaned = sc.segment(array_map(demean), target);
+    let demeaned_series = sc.segment(record(target_retention, false), demeaned);
     (target, target_series, demeaned_series)
 }
 
@@ -66,8 +66,8 @@ pub fn build_price_limits(
     limit_pct: f64,
 ) -> (ArrayPortHandle<f64, 1>, ArrayPortHandle<f64, 1>) {
     // Self-recording 1-step lag (a tiny private trailing window).
-    let prev_close = sc.segment(lag(1), close);
-    let limit = move |scale: f64| map(move |x: f64| ((x * scale) * 100.0).round() / 100.0);
+    let prev_close = sc.segment(rolling::lag(1), close);
+    let limit = move |scale: f64| map(move |&x: &f64| ((x * scale) * 100.0).round() / 100.0);
     let upper = sc.segment(limit(1.0 + limit_pct), prev_close);
     let lower = sc.segment(limit(1.0 - limit_pct), prev_close);
     (upper, lower)

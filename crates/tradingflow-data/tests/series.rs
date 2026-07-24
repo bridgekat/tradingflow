@@ -1,5 +1,5 @@
 use tradingflow_data::layout::Strided;
-use tradingflow_data::{Array, ArrayView, Duration, Instant, Layout, Series, SeriesView};
+use tradingflow_data::{Array, ArrayView, Duration, Instant, Layout, NewAxis, Series, SeriesView};
 
 fn ts(n: i64) -> Instant {
     Instant::from_offset(Duration::from_nanos(n))
@@ -446,7 +446,7 @@ fn series_iter_yields_instant_element_pairs() {
     assert_eq!(s.iter().len(), 3);
     let collected: Vec<(i64, Vec<f64>)> = s
         .iter()
-        .map(|(t, v)| (t.as_offset().as_nanos(), v.iter().collect()))
+        .map(|(t, v)| (t.as_offset().as_nanos(), v.iter().copied().collect()))
         .collect();
     assert_eq!(
         collected,
@@ -615,7 +615,7 @@ fn view_slicing_reshapes_elements() {
     assert_eq!(&*s.at(1).1.to_contiguous(), &[9.0, 10.0, 11.0]);
 
     // And `()` adds one: [2, 3] -> [2, 1, 3].
-    let s: SeriesView<f64, 3> = v.slice_reshape((.., (), ..));
+    let s: SeriesView<f64, 3> = v.slice_reshape((.., NewAxis, ..));
     assert_eq!(s.extents(), [2, 1, 3]);
     assert_eq!(
         &*s.at(1).1.to_contiguous(),

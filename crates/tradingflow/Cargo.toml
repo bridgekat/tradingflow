@@ -31,6 +31,7 @@ tradingflow-graph = { path = "../tradingflow-graph" }
 tradingflow-macros = { path = "../tradingflow-macros" }
 arrow = "59.1.0"
 parquet = { version = "59.1.0", features = ["arrow", "zstd"] }
+statrs = "0.19.0"
 
 [dev-dependencies]
 tempfile = "3"

@@ -157,12 +157,6 @@ impl From<usize> for SliceReshape {
     }
 }
 
-impl From<()> for SliceReshape {
-    fn from(_: ()) -> Self {
-        SliceReshape::NewAxis
-    }
-}
-
 /// Converting into slicing specifiers on `N` axes.
 pub trait IntoSlices<const N: usize> {
     fn into_slices(self) -> [Slice; N];

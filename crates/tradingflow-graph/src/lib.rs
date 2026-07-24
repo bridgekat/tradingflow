@@ -403,6 +403,7 @@ pub mod driver;
 pub mod pool;
 pub mod typed;
 
+pub use cb::SegmentExt;
 pub use driver::{Builder, Clock, Event, Graph, Source, Stamp};
 pub use pool::Pool;
 pub use typed::{

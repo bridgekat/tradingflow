@@ -5,10 +5,10 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
-    array::{map_array, select, select_at, stack, unstack},
+    array::{array_map, select, select_at, stack, unstack},
     elem,
     metrics::*,
-    num::*,
+    stats::*,
     stocks::*,
     structural::*,
     traders::*,
@@ -240,12 +240,12 @@ pub fn build_stacked(
             ArrayPort<f64, 1>, // cf_ann [3]
             ArrayPort<f64, 1>  // prices_extras [4]
         ) {
-            let prices = gate(any_finite) @ prices_row; // [close, volume, open, high, low, amount]
-            let dividends = gate(any_finite) @ div_row; // [share, cash]
-            let equity = gate(any_finite) @ equity_row; // [total, circulating]
-            let balance = gate(any_finite) @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
-            let income = gate(any_finite) @ income_row; // [year, doy, profit, operating, revenue, cost]
-            let cashflow = gate(any_finite) @ cashflow_row; // [year, doy, operating, investing, financing]
+            let prices = filter(any_finite) @ prices_row; // [close, volume, open, high, low, amount]
+            let dividends = filter(any_finite) @ div_row; // [share, cash]
+            let equity = filter(any_finite) @ equity_row; // [total, circulating]
+            let balance = filter(any_finite) @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
+            let income = filter(any_finite) @ income_row; // [year, doy, profit, operating, revenue, cost]
+            let cashflow = filter(any_finite) @ cashflow_row; // [year, doy, operating, investing, financing]
             // Terminal column picks `Select` out of the retaining `Gate`'s stable
             // storage; squeezing one index drops the
             // axis (rank-1 row → rank-0 scalar). `close` feeds `ForwardAdjust` /
@@ -256,11 +256,11 @@ pub fn build_stacked(
             let prices_extras = select(vec![2, 3, 4, 5], 0) @ prices;
             let adjusts =
                 forward_adjust().with_output_prices(false) @ (close, dividends);
-            let adjusted_close = elem::multiply() @ (close, adjusts);
+            let adjusted_close = elem::mul() @ (close, adjusts);
             let total_shares = select_at(0, 0) @ equity;
             let circ_shares = select_at(1, 0) @ equity;
             // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).
-            let parent_equity = map_array(|a: ArrayView<f64, 1>| {
+            let parent_equity = array_map(|a: ArrayView<f64, 1>| {
                 Array::<f64, 0>::scalar(-a.to_contiguous()[..3].iter().sum::<f64>())
             }) @ balance;
             // Annualized income / cash flows (YTD → Annualize) and the balance

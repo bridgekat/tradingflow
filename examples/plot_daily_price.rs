@@ -20,8 +20,8 @@ use tradingflow::data::ArrayView;
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array;
 use tradingflow::operators::array::select_at;
-use tradingflow::operators::elem::{add, multiply, sqrt, subtract};
-use tradingflow::operators::rolling::{Window, rolling_mean, rolling_variance};
+use tradingflow::operators::elem::{add, mul, sqrt, sub};
+use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::stocks::forward_adjust;
 use tradingflow::operators::structural::filter;
@@ -92,13 +92,13 @@ async fn main() {
     let adj_series = sc.segment(record_all(), adj_closes);
 
     // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).
-    let ma = sc.segment(rolling_mean(Window::Count(WINDOW)), adj_series);
-    let var = sc.segment(rolling_variance(Window::Count(WINDOW)), adj_series);
+    let ma = sc.segment(rolling::series_mean(WINDOW, 1), adj_series);
+    let var = sc.segment(rolling::series_var(WINDOW, 1), adj_series);
     let std = sc.segment(sqrt(), var);
     let multiple = sc.segment(array::scalar(MULTIPLE), ());
-    let band = sc.segment(multiply(), (std, multiple));
+    let band = sc.segment(mul(), (std, multiple));
     let upper = sc.segment(add(), (ma, band));
-    let lower = sc.segment(subtract(), (ma, band));
+    let lower = sc.segment(sub(), (ma, band));
 
     // Record the outputs.
     let h_adj = sc.segment(record_all(), adj_closes);

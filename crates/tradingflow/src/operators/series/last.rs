@@ -1,0 +1,69 @@
+use num_traits::Float;
+
+use crate::data::{Array, ArrayView, Instant, Scalar, SeriesView};
+use crate::graph::{Operator, Segment};
+use crate::ports::{ArrayPort, SeriesPort};
+
+/// Operator signature for [`last_or`] and [`last`].
+pub struct Last<T: Scalar, const N: usize> {
+    fill: T,
+}
+
+impl<T: Scalar, const N: usize> Last<T, N> {
+    pub fn new(fill: T) -> Self {
+        Self { fill }
+    }
+}
+
+impl<T: Scalar, const N: usize> Operator for Last<T, N> {
+    type Inputs = SeriesPort<T, N>;
+    type Outputs = ArrayPort<T, N>;
+    type Context = Instant;
+    type State = (T, Array<T, N>);
+
+    fn init(self, (_, series): (bool, SeriesView<'_, T, N>)) -> Self::State {
+        let out = if series.is_empty() {
+            Array::full(series.extents(), self.fill.clone())
+        } else {
+            let (_, a) = series.at(series.range().end - 1);
+            a.to_array()
+        };
+        (self.fill, out)
+    }
+
+    fn passthrough<'a, 'b: 'a>(
+        _: (bool, SeriesView<'a, T, N>),
+        (_, out): &'b mut Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, out.view())
+    }
+
+    fn compute<'a, 'b: 'a>(
+        (_, series): (bool, SeriesView<'a, T, N>),
+        (fill, out): &'b mut Self::State,
+        _: &Instant,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        if series.is_empty() {
+            out.data_mut().fill(fill.clone());
+        } else {
+            let (_, a) = series.at(series.range().end - 1);
+            out.assign(a);
+        }
+        (true, out.view())
+    }
+}
+
+/// The most recent element of a series view as an array view. Filled with
+/// `fill` if the series is empty.
+pub fn last_or<T: Scalar, const N: usize>(
+    fill: T,
+) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+    Last::new(fill)
+}
+
+/// The most recent element of a series view as an array view. Filled with
+/// NaN if the series is empty.
+pub fn last<T: Scalar + Float, const N: usize>()
+-> impl Segment<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+    Last::new(T::nan())
+}

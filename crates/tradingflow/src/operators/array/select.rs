@@ -1,4 +1,4 @@
-use super::map::MapArray;
+use super::map::ArrayMap;
 use super::view::DeriveView;
 use crate::data::{Array, ArrayView, Instant, Scalar, SliceReshape, array};
 use crate::graph::Segment;
@@ -32,7 +32,7 @@ pub fn select<T: Scalar, const N: usize>(
     let update = move |out: &mut Array<T, N>, x: ArrayView<'_, T, N>| {
         array::select_into(out.data_mut(), x, &indices, axis);
     };
-    MapArray::new(init, update)
+    ArrayMap::new(init, update)
 }
 
 /// Selects indices by mask along an axis: [`array::select_mask`].
@@ -48,5 +48,5 @@ pub fn select_mask<T: Scalar, const N: usize>(
     let update = move |out: &mut Array<T, N>, x: ArrayView<'_, T, N>| {
         array::select_mask_into(out.data_mut(), x, &mask, axis);
     };
-    MapArray::new(init, update)
+    ArrayMap::new(init, update)
 }

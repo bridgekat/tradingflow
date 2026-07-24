@@ -30,11 +30,11 @@ pub struct ArrayIter<'a, T: Scalar, const N: usize> {
     pub(super) data: &'a [T],
 }
 
-impl<T: Scalar, const N: usize> Iterator for ArrayIter<'_, T, N> {
-    type Item = T;
+impl<'a, T: Scalar, const N: usize> Iterator for ArrayIter<'a, T, N> {
+    type Item = &'a T;
 
-    fn next(&mut self) -> Option<T> {
-        self.offsets.next().map(|off| self.data[off].clone())
+    fn next(&mut self) -> Option<&'a T> {
+        self.offsets.next().map(|off| &self.data[off])
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

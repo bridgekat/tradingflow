@@ -6,99 +6,158 @@ use crate::layout::Strided;
 use crate::{Layout, Scalar};
 
 /// Applies a unary function on elements of `a`, returning a new array.
-pub fn map<T: Scalar, U: Scalar, const N: usize>(
-    a: ArrayView<T, N>,
-    f: impl Fn(T) -> U,
-) -> Array<U, N> {
+pub fn map<A: Scalar, T: Scalar, const N: usize>(
+    a: ArrayView<A, N>,
+    f: impl FnMut(&A) -> T,
+) -> Array<T, N> {
     let mut out = Array::zeros(a.extents());
     map_into(out.data_mut(), a, f);
     out
 }
 
 /// Applies a unary function on elements of `a`, writing into the row-major
-/// buffer `out`. The buffer and `a` are assumed to have the same extents.
-pub fn map_into<T: Scalar, U: Scalar, const N: usize>(
-    out: &mut [U],
-    a: ArrayView<T, N>,
-    f: impl Fn(T) -> U,
+/// buffer `out`. The array view `a` is assumed to have extents matching `out`.
+pub fn map_into<A: Scalar, T: Scalar, const N: usize>(
+    out: &mut [T],
+    a: ArrayView<A, N>,
+    f: impl FnMut(&A) -> T,
 ) {
-    if let Some(sa) = a.as_slice() {
-        for (dst, v) in out.iter_mut().zip(sa) {
-            *dst = f(v.clone());
-        }
-    } else {
-        for (dst, i) in out.iter_mut().zip(a.layout().iter()) {
-            *dst = f(a.data()[i].clone());
-        }
-    }
+    let mut f = f;
+    for_each(a, |i, v| out[i] = f(v));
 }
 
-/// Applies a binary function on elements of `a` and `b`, returning a new
-/// array.
+/// Applies a binary function on elements of `a` and `b`, broadcasting each
+/// extent-1 axis, and returning a new array with the broadcast extents.
 ///
 /// # Panics
 ///
-/// Panics if `a.extents() != b.extents()`.
-pub fn map_binary<S: Scalar, T: Scalar, U: Scalar, const N: usize>(
-    a: ArrayView<S, N>,
-    b: ArrayView<T, N>,
-    f: impl Fn(S, T) -> U,
-) -> Array<U, N> {
-    assert_eq!(a.extents(), b.extents(), "apply_binary: extents mismatch");
-    let mut out = Array::zeros(a.extents());
-    map_binary_into(out.data_mut(), a, b, f);
+/// Panics if `a` and `b` do not have broadcast-compatible extents.
+pub fn binary_map<A: Scalar, B: Scalar, T: Scalar, const N: usize>(
+    a: ArrayView<A, N>,
+    b: ArrayView<B, N>,
+    f: impl FnMut(&A, &B) -> T,
+) -> Array<T, N> {
+    let extents = broadcast_extents(a.extents(), b.extents());
+    let mut out = Array::zeros(extents);
+    binary_map_into(out.data_mut(), a, b, f);
     out
 }
 
-/// Applies a binary function on elements of `a` and `b`, writing into the
-/// row-major buffer `out`. The buffer, `a` and `b` are assumed to have the
-/// same extents.
-pub fn map_binary_into<S: Scalar, T: Scalar, U: Scalar, const N: usize>(
-    out: &mut [U],
-    a: ArrayView<S, N>,
-    b: ArrayView<T, N>,
-    f: impl Fn(S, T) -> U,
+/// Iterates over the scalars of `a` and `b` in row-major order, broadcasting
+/// each extent-1 axis, and writing into the row-major buffer `out`.
+/// The array views `a` and `b` are assumed to have broadcast-compatible
+/// extents, with the broadcast extents matching `out`.
+pub fn binary_map_into<A: Scalar, B: Scalar, T: Scalar, const N: usize>(
+    out: &mut [T],
+    a: ArrayView<A, N>,
+    b: ArrayView<B, N>,
+    f: impl FnMut(&A, &B) -> T,
 ) {
-    if let (Some(sa), Some(sb)) = (a.as_slice(), b.as_slice()) {
-        for (dst, (va, vb)) in out.iter_mut().zip(sa.iter().zip(sb)) {
-            *dst = f(va.clone(), vb.clone());
+    let mut f = f;
+    binary_for_each(a, b, |i, x, y| out[i] = f(x, y));
+}
+
+/// Applies a ternary function on elements of `a`, `b` and `c`, broadcasting
+/// each extent-1 axis, and returning a new array with the broadcast extents.
+///
+/// # Panics
+///
+/// Panics if `a`, `b` and `c` do not have broadcast-compatible extents.
+pub fn ternary_map<A: Scalar, B: Scalar, C: Scalar, T: Scalar, const N: usize>(
+    a: ArrayView<A, N>,
+    b: ArrayView<B, N>,
+    c: ArrayView<C, N>,
+    f: impl FnMut(&A, &B, &C) -> T,
+) -> Array<T, N> {
+    let extents = broadcast_extents(a.extents(), broadcast_extents(b.extents(), c.extents()));
+    let mut out = Array::zeros(extents);
+    ternary_map_into(out.data_mut(), a, b, c, f);
+    out
+}
+
+/// Iterates over the scalars of `a`, `b`, `c` in row-major order, broadcasting
+/// each extent-1 axis, and writing into the row-major buffer `out`.
+/// The array views `a`, `b`, `c` are assumed to have broadcast-compatible
+/// extents, with the broadcast extents matching `out`.
+pub fn ternary_map_into<A: Scalar, B: Scalar, C: Scalar, T: Scalar, const N: usize>(
+    out: &mut [T],
+    a: ArrayView<A, N>,
+    b: ArrayView<B, N>,
+    c: ArrayView<C, N>,
+    f: impl FnMut(&A, &B, &C) -> T,
+) {
+    let mut f = f;
+    ternary_for_each(a, b, c, |i, x, y, z| out[i] = f(x, y, z));
+}
+
+/// Iterates over the scalars of `a` in row-major order.
+pub fn for_each<A: Scalar, const N: usize>(a: ArrayView<A, N>, f: impl FnMut(usize, &A)) {
+    let mut f = f;
+    match a.as_slice() {
+        Some(a) => {
+            for (i, x) in a.iter().enumerate() {
+                f(i, x);
+            }
         }
-    } else {
-        let (al, bl) = (a.layout(), b.layout());
-        for (dst, (oa, ob)) in out.iter_mut().zip(al.iter().zip(bl.iter())) {
-            *dst = f(a.data()[oa].clone(), b.data()[ob].clone());
+        None => {
+            for (i, x) in a.iter().enumerate() {
+                f(i, x);
+            }
         }
     }
 }
 
-/// Applies a binary function on elements of `a` and `b`, broadcasting each
-/// extent-1 axis to the other operand's extent on that axis, and returning a
-/// new array with the broadcast extents.
-///
-/// # Panics
-///
-/// Panics if `a` and `b` differ in extent on an axis where neither is `1`.
-pub fn map_broadcast<S: Scalar, T: Scalar, U: Scalar, const N: usize>(
-    a: ArrayView<S, N>,
-    b: ArrayView<T, N>,
-    f: impl Fn(S, T) -> U,
-) -> Array<U, N> {
-    let extents = broadcast_extents(a.extents(), b.extents());
-    map_binary(broadcast_to(a, extents), broadcast_to(b, extents), f)
-}
-
-/// Applies a binary function on elements of `a` and `b`, broadcasting each
-/// extent-1 axis to the other operand's extent on that axis, writing into the
-/// row-major buffer `out`. The buffer is assumed to have the broadcast
-/// extents.
-pub fn map_broadcast_into<S: Scalar, T: Scalar, U: Scalar, const N: usize>(
-    out: &mut [U],
-    a: ArrayView<S, N>,
-    b: ArrayView<T, N>,
-    f: impl Fn(S, T) -> U,
+/// Iterates over the scalars of `a` and `b` in row-major order, broadcasting
+/// each extent-1 axis.
+pub fn binary_for_each<A: Scalar, B: Scalar, const N: usize>(
+    a: ArrayView<A, N>,
+    b: ArrayView<B, N>,
+    f: impl FnMut(usize, &A, &B),
 ) {
     let extents = broadcast_extents(a.extents(), b.extents());
-    map_binary_into(out, broadcast_to(a, extents), broadcast_to(b, extents), f);
+    let a = broadcast_to(a, extents);
+    let b = broadcast_to(b, extents);
+    let mut f = f;
+    match (a.as_slice(), b.as_slice()) {
+        (Some(a), Some(b)) => {
+            for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                f(i, x, y);
+            }
+        }
+        (Some(a), None) => {
+            for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                f(i, x, y);
+            }
+        }
+        (None, Some(b)) => {
+            for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                f(i, x, y);
+            }
+        }
+        (None, None) => {
+            for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                f(i, x, y);
+            }
+        }
+    }
+}
+
+/// Iterates over the scalars of `a`, `b`, `c` in row-major order, broadcasting
+/// each extent-1 axis.
+pub fn ternary_for_each<A: Scalar, B: Scalar, C: Scalar, const N: usize>(
+    a: ArrayView<A, N>,
+    b: ArrayView<B, N>,
+    c: ArrayView<C, N>,
+    f: impl FnMut(usize, &A, &B, &C),
+) {
+    let extents = broadcast_extents(a.extents(), broadcast_extents(b.extents(), c.extents()));
+    let a = broadcast_to(a, extents);
+    let b = broadcast_to(b, extents);
+    let c = broadcast_to(c, extents);
+    let mut f = f;
+    for (i, (x, (y, z))) in a.iter().zip(b.iter().zip(c.iter())).enumerate() {
+        f(i, x, y, z);
+    }
 }
 
 /// The broadcast extents of `a` and `b`: per axis, the two extents must be

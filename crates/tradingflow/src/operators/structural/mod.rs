@@ -33,8 +33,6 @@
 mod clocked;
 mod concat_sync;
 mod filter;
-mod gate;
-mod keep_where;
 mod resample_clocked;
 mod resample_view;
 mod reshape;
@@ -43,8 +41,6 @@ mod stack_sync;
 pub use clocked::*;
 pub use concat_sync::*;
 pub use filter::*;
-pub use gate::*;
-pub use keep_where::*;
 pub use resample_clocked::*;
 pub use resample_view::*;
 // Only the shared state type escapes `reshape`; the copy/extent helpers stay

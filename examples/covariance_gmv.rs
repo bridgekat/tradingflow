@@ -23,9 +23,9 @@ mod common;
 use clap::Parser;
 
 use tradingflow::clock::UnixClock;
+use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
-use tradingflow::operators::num::diff;
-use tradingflow::operators::series::Retention;
+use tradingflow::operators::rolling::diff;
 use tradingflow::operators::series::record_all;
 use tradingflow::ports::SeriesPortHandle;
 
@@ -76,7 +76,7 @@ async fn main() {
     let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
     // Raw daily log returns for the realized-variance metric (an ordinary
     // `ArrayPort` view — the Python metric consumes it directly).
-    let log_returns = sc.segment(diff(), m.log_adj);
+    let log_returns = sc.segment(diff(1), m.log_adj);
 
     let predicted_returns = sc.segment(
         linear_regression_mean(m.dims, MIN_PERIODS),

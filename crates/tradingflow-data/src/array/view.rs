@@ -203,7 +203,7 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
 }
 
 impl<'a, T: Scalar, const N: usize> IntoIterator for ArrayView<'a, T, N> {
-    type Item = T;
+    type Item = &'a T;
     type IntoIter = ArrayIter<'a, T, N>;
 
     /// Iterates over the scalars in row-major order.

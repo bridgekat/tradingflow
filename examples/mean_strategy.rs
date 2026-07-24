@@ -26,13 +26,12 @@ mod common;
 use clap::Parser;
 
 use tradingflow::clock::UnixClock;
-use tradingflow::data::SeriesView;
+use tradingflow::data::{Retention, SeriesView};
 use tradingflow::graph::Builder;
 use tradingflow::operators::array::stack;
 use tradingflow::operators::elem::ln;
 use tradingflow::operators::metrics::{compound_return, drawdown, sharpe_ratio};
-use tradingflow::operators::num::diff;
-use tradingflow::operators::series::Retention;
+use tradingflow::operators::rolling::diff;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::traders::{benchmark, random_trader};
 
@@ -97,9 +96,9 @@ async fn main() {
     // Rolling market beta / alpha vs the cap-weighted index, on daily log
     // returns of total value (regressor adds the intercept → output [beta, alpha]).
     let log_actual = sc.segment(ln(), actual_value);
-    let strat_logret = sc.segment(diff(), log_actual);
+    let strat_logret = sc.segment(diff(1), log_actual);
     let log_index = sc.segment(ln(), index_value);
-    let index_logret = sc.segment(diff(), log_index);
+    let index_logret = sc.segment(diff(1), log_index);
     let strat_logret_series = sc.segment(record_all(), strat_logret);
     // scalar -> (1,): stack the rank-0 view handle into a 1-vector.
     let index_logret_vec = sc.segment(stack(0), &[index_logret][..]);

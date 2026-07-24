@@ -13,12 +13,10 @@
 //! the rank-changers carry explicit out-rank generics.
 
 use tradingflow::data::{Array, ArrayView, Duration, Instant, SeriesView};
-use tradingflow::graph::pool::Pool;
+use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::series::Retention;
 use tradingflow::operators::{
-    array, elem::*, formula::*, generic, metrics::*, num::*, rolling::*, series, stocks::*,
-    structural::*,
+    array, elem::*, generic, metrics::*, rolling, series, stats::*, stocks::*, structural::*,
 };
 use tradingflow::ports::{ArrayPort, SeriesPort};
 
@@ -55,7 +53,7 @@ fn chain_add_then_mul() {
     let (a, av) = b.source(array::scalar(0.0_f64));
     let (bb, bv) = b.source(array::scalar(0.0_f64));
     let ab = b.segment(add(), (av, bv));
-    let out = b.segment(multiply(), (ab, av));
+    let out = b.segment(mul(), (ab, av));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -125,7 +123,7 @@ fn last_of_record_all() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
-    let lst = b.segment(last(0.0_f64), rec);
+    let lst = b.segment(series::last_or(0.0_f64), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -147,10 +145,10 @@ fn last_of_record_all() {
 fn bounded_record_feeds_rolling_and_lag() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
-    // RollingMean(5) reads back 6 on eviction, Lag(3) back 4 → retain 8 covers both.
-    let rec = b.segment(series::record(Retention::count(8)), srcv);
-    let lag = b.segment(lag_series(3, f64::NAN), rec);
-    let rmean = b.segment(rolling_mean(Window::Count(5)), rec);
+    // rolling::mean(5) reads back 6 on eviction, Lag(3) back 4 → retain 8 covers both.
+    let rec = b.segment(series::record(8, false), srcv);
+    let lag = b.segment(rolling::series_lag(3), rec);
+    let rmean = b.segment(rolling::series_mean(5, 1), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -275,15 +273,15 @@ fn slice_stack_and_sync() {
     assert!(v[2].is_nan());
 }
 
-/// `rolling::mean_basic`: window 3 over [1,2,3,6] → false,false, mean 2.0,
-/// mean 11/3. Validates Series-input rolling + warm-up gating (returns false
-/// until the window is full, suppressing downstream).
+/// `rolling::mean_basic`: window 3 over [1,2,3,6] → mean 2.0 once the window
+/// fills, mean 11/3 as it slides. (Short windows emit the mean of the ticks
+/// seen so far — no warm-up gating.)
 #[test]
 fn rolling_mean_count_warmup_and_value() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
-    let rm = b.segment(rolling_mean(Window::Count(3)), rec);
+    let rm = b.segment(rolling::series_mean(3, 1), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -307,11 +305,11 @@ fn rolling_mean_count_warmup_and_value() {
 fn arith_unary_and_binary() {
     let mut b = Builder::new();
     let (a, av) = b.source(array::from_parts([3], vec![1.0_f64, -2.0, 3.0].into()));
-    let neg = b.segment(negate(), av);
+    let neg = b.segment(neg(), av);
     let (x, xv) = b.source(array::scalar(20.0_f64));
     let (y, yv) = b.source(array::scalar(4.0_f64));
-    let sub = b.segment(subtract(), (xv, yv));
-    let div = b.segment(divide(), (xv, yv));
+    let sub = b.segment(sub(), (xv, yv));
+    let div = b.segment(div(), (xv, yv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -346,14 +344,14 @@ fn arith_min_max_pow() {
     assert_eq!(g.view(p).as_slice().unwrap(), &[1.0, 25.0, 9.0]);
 }
 
-/// `RollingSum`/`RollingVariance` window-3 (values from rolling tests).
+/// `rolling::sum`/`rolling::variance` window-3 (values from rolling tests).
 #[test]
 fn rolling_sum_and_variance() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
-    let rsum = b.segment(rolling_sum(Window::Count(3)), rec);
-    let rvar = b.segment(rolling_variance(Window::Count(3)), rec);
+    let rsum = b.segment(rolling::series_sum(3, 1), rec);
+    let rvar = b.segment(rolling::series_var(3, 1), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -371,13 +369,13 @@ fn rolling_sum_and_variance() {
     assert_eq!(g.view(rsum).as_slice().unwrap(), &[9.0]); // 2+3+4
 }
 
-/// `RollingCovariance` on a `[2]` vector with `y = 2x` (values from cov tests).
+/// `rolling::covariance` on a `[2]` vector with `y = 2x` (values from cov tests).
 #[test]
 fn rolling_covariance_2d() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
     let rec = b.segment(series::record_all(), srcv);
-    let cov = b.segment(rolling_covariance(Window::Count(3)), rec);
+    let cov = b.segment(rolling::series_cov(3, 1), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -399,7 +397,7 @@ fn ema_two_values() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
-    let e = b.segment(ema_series(0.5, 2), rec);
+    let e = b.segment(rolling::series_mean_exp(0.5, 2, 1), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -410,6 +408,14 @@ fn ema_two_values() {
     }
     let expected = (0.5 * 20.0 + 0.25 * 10.0) / (0.5 + 0.25);
     assert!((g.view(e).as_slice().unwrap()[0] - expected).abs() < 1e-10);
+
+    // A third tick slides the window: 10.0 is evicted at age 2 (weight
+    // `alpha * (1 - alpha)^2`), leaving weights {0.25, 0.5} on {20, 30}.
+    let ctx = ts(3);
+    *g.state_mut(src) = Array::scalar(30.0);
+    g.stabilize(&mut pool, &ctx);
+    let expected = (0.5 * 30.0 + 0.25 * 20.0) / (0.5 + 0.25);
+    assert!((g.view(e).as_slice().unwrap()[0] - expected).abs() < 1e-10);
 }
 
 /// `Where` / `Cast` (values from their legacy tests).
@@ -417,7 +423,7 @@ fn ema_two_values() {
 fn structural_where_cast() {
     let mut b = Builder::new();
     let (a, av) = b.source(array::from_parts([3], vec![1.0_f64, 5.0, 2.0].into()));
-    let w = b.segment(keep_where(|v: f64| v > 3.0, 0.0_f64), av);
+    let w = b.segment(fill_where(|v: f64| v <= 3.0, 0.0_f64), av);
     // `Id` is the whole-value `RefPort` identity — exercise it on a scalar
     // cell (array edges are always `ArrayPort` views, never `RefPort`).
     let (k_cell, k) = b.source(generic::const_val(7_i64));
@@ -445,7 +451,7 @@ fn num_clamp_fillna_ffill() {
     let (a, av) = b.source(array::from_parts([3], vec![1.0_f64, 3.0, 7.0].into()));
     let clamp = b.segment(clampf(2.0, 5.0), av);
     let (na, nav) = b.source(array::from_parts([3], vec![1.0_f64, f64::NAN, 3.0].into()));
-    let fill = b.segment(fillna(0.0), nav);
+    let fill = b.segment(fill_nan(0.0), nav);
     let ff = b.segment(forward_fill(), nav);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -467,8 +473,8 @@ fn num_clamp_fillna_ffill() {
 fn num_diff_and_pct_change() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let d = b.segment(diff(), srcv);
-    let pc = b.segment(pct_change(), srcv);
+    let d = b.segment(rolling::diff(1), srcv);
+    let pc = b.segment(rolling::pct_change(1), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -539,7 +545,7 @@ fn num_cross_sectional() {
 fn map_doubles() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let m = b.segment(array::map(|x: f64| x * 2.0), srcv);
+    let m = b.segment(array::map(|&x| x * 2.0), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -555,7 +561,7 @@ fn apply_add_and_select() {
     let mut b = Builder::new();
     let (a, av) = b.source(array::from_parts([3], vec![1.0_f64, 2.0, 3.0].into()));
     let (bb, bv) = b.source(array::from_parts([3], vec![10.0_f64, 20.0, 30.0].into()));
-    let ap = b.segment(array::map_binary(|x: f64, y: f64| x + y), (av, bv));
+    let ap = b.segment(array::binary_map(|&x, &y| x + y), (av, bv));
     let (five, fivev) = b.source(array::from_parts(
         [5],
         vec![10.0_f64, 20.0, 30.0, 40.0, 50.0].into(),
@@ -578,7 +584,7 @@ fn lag_offset_two() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
-    let lag = b.segment(lag_series(2, f64::NAN), rec);
+    let lag = b.segment(rolling::series_lag(2), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -922,17 +928,17 @@ fn view_chain_matches_owned_chain() {
     // Squeeze the single close out to a scalar (rank-0) price.
     let close = b.segment(array::select_at(0, 0), p_f);
     let adj = b.segment(forward_adjust().with_output_prices(false), (close, d_f));
-    let adjusted = b.segment(multiply(), (close, adj));
+    let adjusted = b.segment(mul(), (close, adj));
 
     // View chain (materializes at `Select`).
-    let p_g = b.segment(gate(any_finite), prices_view);
-    let d_g = b.segment(gate(any_finite), div_view);
+    let p_g = b.segment(filter(any_finite), prices_view);
+    let d_g = b.segment(filter(any_finite), div_view);
     let v_close = b.segment(array::select_at(0, 0), p_g);
     let v_adj = b.segment(
         ForwardAdjust::<0, 1>::default().with_output_prices(false),
         (v_close, d_g),
     );
-    let v_adjusted = b.segment(multiply(), (v_close, v_adj));
+    let v_adjusted = b.segment(mul(), (v_close, v_adj));
 
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -1046,7 +1052,7 @@ fn fused_segment_matches_unfused_nodes() {
             let dividends = filter(any_finite) @ div_row;
             let close = array::select_at(0, 0) @ prices;
             let adjusts = forward_adjust().with_output_prices(false) @ (close, dividends);
-            let adjusted = multiply() @ (close, adjusts);
+            let adjusted = mul() @ (close, adjusts);
             (adjusted, adjusts)
         }
     );
@@ -1061,7 +1067,7 @@ fn fused_segment_matches_unfused_nodes() {
     let d_f = b.segment(filter(any_finite), divv);
     let close = b.segment(array::select_at(0, 0), p_f);
     let adj = b.segment(forward_adjust().with_output_prices(false), (close, d_f));
-    let adjusted = b.segment(multiply(), (close, adj));
+    let adjusted = b.segment(mul(), (close, adj));
 
     let (f_adjusted, f_adj) = b.segment(fused, (pricesv, divv));
     let mut g = b.build();
@@ -1128,7 +1134,7 @@ fn logical_connectives_and_mask_readout() {
     let either = b.segment(or(), (am, bm));
     let neither = b.segment(not(), either);
     let onehot = b.segment(bitxor(), (am, bm));
-    let pick = b.segment(Choose::<f64, 1>::new(), (onehot, a, bb));
+    let pick = b.segment(choose(), (onehot, a, bb));
     let g = b.build();
 
     assert_eq!(&*g.view(both).to_contiguous(), &[true, false, false, false]);
@@ -1169,7 +1175,7 @@ fn comparison_of_two_arrays_and_strided_inputs() {
 /// i.e. the crossover *event* — the spread is positive now and was not before.
 #[test]
 fn ma_crossover_signal_fuses_into_one_node() {
-    let ret = Retention::count(4);
+    let ret = 4;
     let (fast, slow) = (2usize, 3usize);
 
     // The result is a single application in tail position; the crossover is a
@@ -1177,12 +1183,12 @@ fn ma_crossover_signal_fuses_into_one_node() {
     let seg = tradingflow::segment!(
         |xs: SeriesPort<f64, 0>| -> ArrayPort<bool, 0> {
             let zero = array::scalar(0.0_f64) @ ();
-            let d = subtract() @ (
-                rolling_mean(Window::Count(fast)) @ xs,
-                rolling_mean(Window::Count(slow)) @ xs,
+            let d = sub() @ (
+                rolling::series_mean(fast, 1) @ xs,
+                rolling::series_mean(slow, 1) @ xs,
             );
             let up = gt() @ (d, zero);
-            let prev = lag_series(1, f64::NAN) @ series::record(ret) @ d;
+            let prev = rolling::series_lag(1) @ series::record(ret, false) @ d;
             and() @ (up, not() @ (gt() @ (prev, zero)))
         }
     );
@@ -1204,8 +1210,9 @@ fn ma_crossover_signal_fuses_into_one_node() {
         g.stabilize(&mut pool, &ctx);
         fired.push(g.view(signal).to_contiguous()[0]);
     }
-    // Warm-up (windows not full) yields no signal; the crossover fires once,
-    // and stays quiet while the spread merely remains positive.
+    // On the falling prefix the spread (over partial windows at first) stays
+    // ≤ 0, so no signal; the crossover fires once, and stays quiet while the
+    // spread merely remains positive.
     assert_eq!(
         fired,
         vec![false, false, false, false, true, false, false],
@@ -1217,30 +1224,22 @@ fn ma_crossover_signal_fuses_into_one_node() {
 // Formula constructors (self-recording windowed segments)
 // ===========================================================================
 
-/// Reference model for the crossover signal, mirroring the fused graph's
-/// notify semantics: the spread `d` first computes when the shorter window
-/// fills (the longer MA still reads `NaN`), and its 1-tick lag reads the
-/// previously *computed* spread.
+/// Reference model for the crossover signal: each MA is the mean of the ticks
+/// seen so far, capped at its window (partial windows are emitted, no warm-up
+/// gating), and the spread's 1-tick lag reads the previously computed spread.
 // `!(prev > 0.0)` is the `NOT LAG(..) > 0` of the formula, and the negation is
-// load-bearing: `prev` is `NaN` before the spread first computes, and
+// load-bearing: `prev` is `NaN` on the first tick (the lag's fill), and
 // `!(NaN > 0.0)` is `true` (matching `not() @ gt(0.0)` on a NaN input)
 // whereas `prev <= 0.0` would be `false`.
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn crossover_reference(path: &[f64], fast: usize, slow: usize) -> Vec<bool> {
     let mean = |t: usize, w: usize| -> f64 {
-        if t >= w {
-            path[t - w..t].iter().sum::<f64>() / w as f64
-        } else {
-            f64::NAN
-        }
+        let w = w.min(t);
+        path[t - w..t].iter().sum::<f64>() / w as f64
     };
     let mut d_hist: Vec<f64> = Vec::new();
     let mut out = Vec::new();
     for t in 1..=path.len() {
-        if t < fast.min(slow) {
-            out.push(false); // the spread has never been computed
-            continue;
-        }
         let d = mean(t, fast) - mean(t, slow);
         let prev = d_hist.last().copied().unwrap_or(f64::NAN);
         d_hist.push(d);
@@ -1284,10 +1283,13 @@ fn formula_ma_crossover_signal() {
         tradingflow::segment!(
             |x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
                 let zeros = array::from_parts([2], vec![0.0, 0.0].into()) @ ();
-                let d = subtract() @ (ma(fast) @ x, ma(slow) @ x);
+                let d = sub() @ (
+                    rolling::mean(fast, 1) @ x,
+                    rolling::mean(slow, 1) @ x,
+                );
                 and() @ (
                     gt() @ (d, zeros),
-                    not() @ (gt() @ (lag(1) @ d, zeros)),
+                    not() @ (gt() @ (rolling::lag(1) @ d, zeros)),
                 )
             }
         ),
@@ -1326,8 +1328,8 @@ fn formula_ma_crossover_signal() {
 fn formula_change_and_growth() {
     let mut b = Builder::new();
     let (src, xv) = b.source(array::scalar(0.0_f64));
-    let chg = b.segment(change(2), xv);
-    let pct = b.segment(growth(2), xv);
+    let chg = b.segment(rolling::diff(2), xv);
+    let pct = b.segment(rolling::pct_change(2), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -1349,14 +1351,14 @@ fn formula_change_and_growth() {
     }
 }
 
-/// [`ma_time`] means all ticks within the trailing time window (daily ticks,
-/// 2-day window → the last 3 ticks), across 50 days of duration-bounded
-/// compaction.
+/// [`rolling::ma`] over a *duration* window means all ticks within the
+/// trailing time window (daily ticks, 3-day window → the last 3 ticks),
+/// across 50 days of duration-bounded compaction.
 #[test]
 fn formula_ma_time_window() {
     let mut b = Builder::new();
     let (src, xv) = b.source(array::scalar(0.0_f64));
-    let m = b.segment(ma_time(Duration::from_days(2)), xv);
+    let m = b.segment(rolling::mean(Duration::from_days(3), 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -1372,16 +1374,16 @@ fn formula_ma_time_window() {
     }
 }
 
-/// [`mstd`] (self-recording, variance → sqrt fused) matches the hoisted
-/// spelling — a shared bounded [`Record`] feeding [`RollingVariance`] then
-/// [`sqrt`] — tick for tick.
+/// [`rolling::mstd`] (self-recording, variance → sqrt fused) matches the
+/// hoisted spelling — a shared bounded `Record` feeding [`rolling::variance`]
+/// then [`sqrt`] — tick for tick.
 #[test]
 fn formula_mstd_matches_hoisted() {
     let mut b = Builder::new();
     let (src, xv) = b.source(array::from_parts([2], vec![0.0, 0.0].into()));
-    let fused = b.segment(mstd(4), xv);
-    let series = b.segment(series::record(Retention::count(16)), xv);
-    let var = b.segment(rolling_variance(Window::Count(4)), series);
+    let fused = b.segment(rolling::std_dev(4, 1), xv);
+    let series = b.segment(series::record(16, false), xv);
+    let var = b.segment(rolling::series_var(4, 1), series);
     let hoisted = b.segment(sqrt(), var);
     let mut g = b.build();
     let mut pool = Pool::new(0);
