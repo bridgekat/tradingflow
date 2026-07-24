@@ -16,11 +16,11 @@
 mod common;
 
 use tradingflow::clock::UnixClock;
-use tradingflow::data::{Array, ArrayView};
+use tradingflow::data::ArrayView;
 use tradingflow::graph::{Builder, Pool};
+use tradingflow::operators::array;
 use tradingflow::operators::array::select_at;
-use tradingflow::operators::constant::const_array;
-use tradingflow::operators::num::{add, multiply, sqrt, subtract};
+use tradingflow::operators::elem::{add, multiply, sqrt, subtract};
 use tradingflow::operators::rolling::{Window, rolling_mean, rolling_variance};
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::stocks::forward_adjust;
@@ -95,7 +95,7 @@ async fn main() {
     let ma = sc.segment(rolling_mean(Window::Count(WINDOW)), adj_series);
     let var = sc.segment(rolling_variance(Window::Count(WINDOW)), adj_series);
     let std = sc.segment(sqrt(), var);
-    let multiple = sc.segment(const_array(Array::scalar(MULTIPLE)), ());
+    let multiple = sc.segment(array::scalar(MULTIPLE), ());
     let band = sc.segment(multiply(), (std, multiple));
     let upper = sc.segment(add(), (ma, band));
     let lower = sc.segment(subtract(), (ma, band));

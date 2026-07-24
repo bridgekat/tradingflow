@@ -78,6 +78,12 @@ pub fn slice_reshape<T: Scalar, const N: usize, const M: usize>(
     DeriveView::new(move |a| ArrayView::slice_reshape(&a, slices))
 }
 
+/// Pads leading new axes to an array view: [`ArrayView::pad_ndim`].
+pub fn pad_ndim<T: Scalar, const N: usize>()
+-> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+    DeriveView::new(move |a| ArrayView::pad_ndim(&a))
+}
+
 /// Permutes the axes of an array view: [`ArrayView::transpose`].
 pub fn transpose<T: Scalar, const N: usize>(
     perm: [usize; N],

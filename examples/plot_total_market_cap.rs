@@ -23,7 +23,7 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{map_array, map_array_binary_inplace};
-use tradingflow::operators::num::multiply;
+use tradingflow::operators::elem::multiply;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::structural::resample_view;
 use tradingflow::operators::traders::benchmark;

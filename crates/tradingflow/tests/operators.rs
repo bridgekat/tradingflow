@@ -17,14 +17,7 @@ use tradingflow::graph::pool::Pool;
 use tradingflow::graph::typed::Builder;
 use tradingflow::operators::series::Retention;
 use tradingflow::operators::{
-    array::{concat, map, map_binary, select, select_at, stack, unstack},
-    constant::*,
-    formula::*,
-    metrics::*,
-    num::*,
-    rolling::*,
-    series::{record, record_all},
-    stocks::*,
+    array, elem::*, formula::*, generic, metrics::*, num::*, rolling::*, series, stocks::*,
     structural::*,
 };
 use tradingflow::ports::{ArrayPort, SeriesPort};
@@ -41,8 +34,8 @@ fn ts(n: i64) -> Instant {
 #[test]
 fn simple_add() {
     let mut b = Builder::new();
-    let (ha, hav) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (hb, hbv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (ha, hav) = b.source(array::scalar(0.0_f64));
+    let (hb, hbv) = b.source(array::scalar(0.0_f64));
     let hc = b.segment(add(), (hav, hbv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -59,8 +52,8 @@ fn simple_add() {
 #[test]
 fn chain_add_then_mul() {
     let mut b = Builder::new();
-    let (a, av) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (bb, bv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (a, av) = b.source(array::scalar(0.0_f64));
+    let (bb, bv) = b.source(array::scalar(0.0_f64));
     let ab = b.segment(add(), (av, bv));
     let out = b.segment(multiply(), (ab, av));
     let mut g = b.build();
@@ -77,10 +70,10 @@ fn chain_add_then_mul() {
 #[test]
 fn record_series() {
     let mut b = Builder::new();
-    let (ha, hav) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (hb, hbv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (ha, hav) = b.source(array::scalar(0.0_f64));
+    let (hb, hbv) = b.source(array::scalar(0.0_f64));
     let sum = b.segment(add(), (hav, hbv));
-    let rec = b.segment(record_all(), sum);
+    let rec = b.segment(series::record_all(), sum);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -105,12 +98,12 @@ fn record_series() {
 #[test]
 fn filter_gates_record_all() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
     let flt = b.segment(
         filter(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0),
         srcv,
     );
-    let rec = b.segment(record_all(), flt);
+    let rec = b.segment(series::record_all(), flt);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -130,8 +123,8 @@ fn filter_gates_record_all() {
 #[test]
 fn last_of_record_all() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record_all(), srcv);
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let rec = b.segment(series::record_all(), srcv);
     let lst = b.segment(last(0.0_f64), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -153,9 +146,9 @@ fn last_of_record_all() {
 #[test]
 fn bounded_record_feeds_rolling_and_lag() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
     // RollingMean(5) reads back 6 on eviction, Lag(3) back 4 → retain 8 covers both.
-    let rec = b.segment(record(Retention::count(8)), srcv);
+    let rec = b.segment(series::record(Retention::count(8)), srcv);
     let lag = b.segment(lag_series(3, f64::NAN), rec);
     let rmean = b.segment(rolling_mean(Window::Count(5)), rec);
     let mut g = b.build();
@@ -204,13 +197,13 @@ fn bounded_record_feeds_rolling_and_lag() {
 #[test]
 fn clocked_periodic() {
     let mut b = Builder::new();
-    let (data, datav) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (tick_cell, tick) = b.source(const_val(()));
+    let (data, datav) = b.source(array::scalar(0.0_f64));
+    let (tick_cell, tick) = b.source(generic::const_val(()));
     let gated = b.segment(
         Clocked::new(filter(|_: ArrayView<f64, 0>| true)),
         (tick, datav),
     );
-    let rec = b.segment(record_all(), gated);
+    let rec = b.segment(series::record_all(), gated);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -235,10 +228,10 @@ fn clocked_periodic() {
 #[test]
 fn coalesced_two_source_add() {
     let mut b = Builder::new();
-    let (a, av) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (bb, bv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (a, av) = b.source(array::scalar(0.0_f64));
+    let (bb, bv) = b.source(array::scalar(0.0_f64));
     let sum = b.segment(add(), (av, bv));
-    let rec = b.segment(record_all(), sum);
+    let rec = b.segment(series::record_all(), sum);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -258,10 +251,10 @@ fn coalesced_two_source_add() {
 #[test]
 fn slice_stack_and_sync() {
     let mut b = Builder::new();
-    let (s0, s0v) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (s1, s1v) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (s2, s2v) = b.source(const_array(Array::scalar(0.0_f64)));
-    let stacked = b.segment(stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
+    let (s0, s0v) = b.source(array::scalar(0.0_f64));
+    let (s1, s1v) = b.source(array::scalar(0.0_f64));
+    let (s2, s2v) = b.source(array::scalar(0.0_f64));
+    let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let synced = b.segment(stack_sync::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -288,8 +281,8 @@ fn slice_stack_and_sync() {
 #[test]
 fn rolling_mean_count_warmup_and_value() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record_all(), srcv);
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let rec = b.segment(series::record_all(), srcv);
     let rm = b.segment(rolling_mean(Window::Count(3)), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -313,13 +306,10 @@ fn rolling_mean_count_warmup_and_value() {
 #[test]
 fn arith_unary_and_binary() {
     let mut b = Builder::new();
-    let (a, av) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![1.0_f64, -2.0, 3.0].into(),
-    )));
+    let (a, av) = b.source(array::from_parts([3], vec![1.0_f64, -2.0, 3.0].into()));
     let neg = b.segment(negate(), av);
-    let (x, xv) = b.source(const_array(Array::scalar(20.0_f64)));
-    let (y, yv) = b.source(const_array(Array::scalar(4.0_f64)));
+    let (x, xv) = b.source(array::scalar(20.0_f64));
+    let (y, yv) = b.source(array::scalar(4.0_f64));
     let sub = b.segment(subtract(), (xv, yv));
     let div = b.segment(divide(), (xv, yv));
     let mut g = b.build();
@@ -339,17 +329,11 @@ fn arith_unary_and_binary() {
 #[test]
 fn arith_min_max_pow() {
     let mut b = Builder::new();
-    let (a, av) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![1.0_f64, 5.0, 3.0].into(),
-    )));
-    let (bb, bv) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![2.0_f64, 4.0, 6.0].into(),
-    )));
-    let mn = b.segment(min(), (av, bv));
-    let mx = b.segment(max(), (av, bv));
-    let p = b.segment(pow(2.0), av);
+    let (a, av) = b.source(array::from_parts([3], vec![1.0_f64, 5.0, 3.0].into()));
+    let (bb, bv) = b.source(array::from_parts([3], vec![2.0_f64, 4.0, 6.0].into()));
+    let mn = b.segment(minf(), (av, bv));
+    let mx = b.segment(maxf(), (av, bv));
+    let p = b.segment(powf(2.0), av);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -366,8 +350,8 @@ fn arith_min_max_pow() {
 #[test]
 fn rolling_sum_and_variance() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record_all(), srcv);
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let rec = b.segment(series::record_all(), srcv);
     let rsum = b.segment(rolling_sum(Window::Count(3)), rec);
     let rvar = b.segment(rolling_variance(Window::Count(3)), rec);
     let mut g = b.build();
@@ -391,8 +375,8 @@ fn rolling_sum_and_variance() {
 #[test]
 fn rolling_covariance_2d() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::from_parts([2], vec![0.0_f64; 2].into())));
-    let rec = b.segment(record_all(), srcv);
+    let (src, srcv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let rec = b.segment(series::record_all(), srcv);
     let cov = b.segment(rolling_covariance(Window::Count(3)), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -413,8 +397,8 @@ fn rolling_covariance_2d() {
 #[test]
 fn ema_two_values() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record_all(), srcv);
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let rec = b.segment(series::record_all(), srcv);
     let e = b.segment(ema_series(0.5, 2), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -432,19 +416,13 @@ fn ema_two_values() {
 #[test]
 fn structural_where_cast() {
     let mut b = Builder::new();
-    let (a, av) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![1.0_f64, 5.0, 2.0].into(),
-    )));
+    let (a, av) = b.source(array::from_parts([3], vec![1.0_f64, 5.0, 2.0].into()));
     let w = b.segment(keep_where(|v: f64| v > 3.0, 0.0_f64), av);
     // `Id` is the whole-value `RefPort` identity — exercise it on a scalar
     // cell (array edges are always `ArrayPort` views, never `RefPort`).
-    let (k_cell, k) = b.source(const_val(7_i64));
-    let (ci_cell, ci) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![1_i32, 2, 3].into(),
-    )));
-    let c = b.segment(cast::<i32, f64, 1>(), ci);
+    let (k_cell, k) = b.source(generic::const_val(7_i64));
+    let (ci_cell, ci) = b.source(array::from_parts([3], vec![1_i32, 2, 3].into()));
+    let c = b.segment(into::<i32, f64, 1>(), ci);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -464,15 +442,9 @@ fn structural_where_cast() {
 #[test]
 fn num_clamp_fillna_ffill() {
     let mut b = Builder::new();
-    let (a, av) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![1.0_f64, 3.0, 7.0].into(),
-    )));
-    let clamp = b.segment(clamp(2.0, 5.0), av);
-    let (na, nav) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![1.0_f64, f64::NAN, 3.0].into(),
-    )));
+    let (a, av) = b.source(array::from_parts([3], vec![1.0_f64, 3.0, 7.0].into()));
+    let clamp = b.segment(clampf(2.0, 5.0), av);
+    let (na, nav) = b.source(array::from_parts([3], vec![1.0_f64, f64::NAN, 3.0].into()));
     let fill = b.segment(fillna(0.0), nav);
     let ff = b.segment(forward_fill(), nav);
     let mut g = b.build();
@@ -494,7 +466,7 @@ fn num_clamp_fillna_ffill() {
 #[test]
 fn num_diff_and_pct_change() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
     let d = b.segment(diff(), srcv);
     let pc = b.segment(pct_change(), srcv);
     let mut g = b.build();
@@ -516,21 +488,18 @@ fn num_diff_and_pct_change() {
 #[test]
 fn num_cross_sectional() {
     let mut b = Builder::new();
-    let (five, fivev) = b.source(const_array(Array::from_parts(
+    let (five, fivev) = b.source(array::from_parts(
         [5],
         vec![30.0_f64, 10.0, 50.0, 20.0, 40.0].into(),
-    )));
+    ));
     let gau = b.segment(gaussianize(), fivev);
     let pct = b.segment(percentile(), fivev);
-    let (std_in, std_inv) = b.source(const_array(Array::from_parts(
+    let (std_in, std_inv) = b.source(array::from_parts(
         [5],
         vec![10.0_f64, 20.0, 30.0, 40.0, 50.0].into(),
-    )));
+    ));
     let zsc = b.segment(standardize(), std_inv);
-    let (win_in, win_inv) = b.source(const_array(Array::from_parts(
-        [10],
-        (0..10).map(|i| i as f64).collect(),
-    )));
+    let (win_in, win_inv) = b.source(array::from_parts([10], (0..10).map(|i| i as f64).collect()));
     let win = b.segment(winsorize(0.1), win_inv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -569,8 +538,8 @@ fn num_cross_sectional() {
 #[test]
 fn map_doubles() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let m = b.segment(map(|x: f64| x * 2.0), srcv);
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let m = b.segment(array::map(|x: f64| x * 2.0), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -584,20 +553,14 @@ fn map_doubles() {
 #[test]
 fn apply_add_and_select() {
     let mut b = Builder::new();
-    let (a, av) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![1.0_f64, 2.0, 3.0].into(),
-    )));
-    let (bb, bv) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![10.0_f64, 20.0, 30.0].into(),
-    )));
-    let ap = b.segment(map_binary(|x: f64, y: f64| x + y), (av, bv));
-    let (five, fivev) = b.source(const_array(Array::from_parts(
+    let (a, av) = b.source(array::from_parts([3], vec![1.0_f64, 2.0, 3.0].into()));
+    let (bb, bv) = b.source(array::from_parts([3], vec![10.0_f64, 20.0, 30.0].into()));
+    let ap = b.segment(array::map_binary(|x: f64, y: f64| x + y), (av, bv));
+    let (five, fivev) = b.source(array::from_parts(
         [5],
         vec![10.0_f64, 20.0, 30.0, 40.0, 50.0].into(),
-    )));
-    let sel = b.segment(select(vec![1, 3], 0), fivev);
+    ));
+    let sel = b.segment(array::select(vec![1, 3], 0), fivev);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -613,8 +576,8 @@ fn apply_add_and_select() {
 #[test]
 fn lag_offset_two() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rec = b.segment(record_all(), srcv);
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let rec = b.segment(series::record_all(), srcv);
     let lag = b.segment(lag_series(2, f64::NAN), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -631,15 +594,9 @@ fn lag_offset_two() {
 #[test]
 fn concat_axis0() {
     let mut b = Builder::new();
-    let (a, av) = b.source(const_array(Array::from_parts(
-        [2],
-        vec![1.0_f64, 2.0].into(),
-    )));
-    let (bb, bv) = b.source(const_array(Array::from_parts(
-        [2],
-        vec![3.0_f64, 4.0].into(),
-    )));
-    let cc = b.segment(concat(0), &[av, bv][..]);
+    let (a, av) = b.source(array::from_parts([2], vec![1.0_f64, 2.0].into()));
+    let (bb, bv) = b.source(array::from_parts([2], vec![3.0_f64, 4.0].into()));
+    let cc = b.segment(array::concat(0), &[av, bv][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -658,17 +615,11 @@ fn array_concat_stack_split_unstack() {
     use tradingflow::operators::array;
 
     let mut b = Builder::new();
-    let (a, av) = b.source(const_array(Array::from_parts(
-        [2],
-        vec![1.0_f64, 2.0].into(),
-    )));
-    let (bb, bv) = b.source(const_array(Array::from_parts(
-        [3],
-        vec![3.0_f64, 4.0, 5.0].into(),
-    )));
-    let (s0, s0v) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (s1, s1v) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (s2, s2v) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (a, av) = b.source(array::from_parts([2], vec![1.0_f64, 2.0].into()));
+    let (bb, bv) = b.source(array::from_parts([3], vec![3.0_f64, 4.0, 5.0].into()));
+    let (s0, s0v) = b.source(array::scalar(0.0_f64));
+    let (s1, s1v) = b.source(array::scalar(0.0_f64));
+    let (s2, s2v) = b.source(array::scalar(0.0_f64));
     let cc = b.segment(array::concat(0), &[av, bv][..]);
     let parts = b.segment(array::split(vec![2, 3], 0), cc);
     let st = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
@@ -711,8 +662,8 @@ fn array_concat_stack_split_unstack() {
 #[test]
 fn metrics_clock_gated() {
     let mut b = Builder::new();
-    let (data, datav) = b.source(const_array(Array::scalar(0.0_f64)));
-    let (tick_cell, tick) = b.source(const_val(()));
+    let (data, datav) = b.source(array::scalar(0.0_f64));
+    let (tick_cell, tick) = b.source(generic::const_val(()));
     let cr = b.segment(compound_return(), (tick, datav));
     let ar = b.segment(average_return(), (tick, datav));
     let vol = b.segment(volatility(), (tick, datav));
@@ -740,7 +691,7 @@ fn metrics_clock_gated() {
 #[test]
 fn metrics_drawdown() {
     let mut b = Builder::new();
-    let (data, datav) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (data, datav) = b.source(array::scalar(0.0_f64));
     let dd = b.segment(drawdown(), datav);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -756,10 +707,10 @@ fn metrics_drawdown() {
 #[test]
 fn stocks_annualize() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::from_parts(
+    let (src, srcv) = b.source(array::from_parts(
         [4],
         vec![2024.0_f64, 91.0, 100.0, 20.0].into(),
-    )));
+    ));
     let ann = b.segment(annualize(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -776,11 +727,8 @@ fn stocks_annualize() {
 #[test]
 fn stocks_forward_adjust() {
     let mut b = Builder::new();
-    let (price, pricev) = b.source(const_array(Array::scalar(10.0_f64)));
-    let (divd, divdv) = b.source(const_array(Array::from_parts(
-        [2],
-        vec![0.0_f64, 0.0].into(),
-    )));
+    let (price, pricev) = b.source(array::scalar(10.0_f64));
+    let (divd, divdv) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
     let fa = b.segment(forward_adjust(), (pricev, divdv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -807,14 +755,14 @@ fn stocks_forward_adjust() {
 fn parallel_fanout_matches_sequential() {
     const K: usize = 16;
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
     let recs: Vec<_> = (0..K)
         .map(|_| {
             let f = b.segment(
                 filter(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 3.0),
                 srcv,
             );
-            b.segment(record_all(), f)
+            b.segment(series::record_all(), f)
         })
         .collect();
     let mut g = b.build();
@@ -843,14 +791,14 @@ fn parallel_stress_stateful_counts() {
     const K: usize = 12;
     const GENS: usize = 500;
     let mut b = Builder::new();
-    let (src, srcv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (src, srcv) = b.source(array::scalar(0.0_f64));
     let cnts: Vec<_> = (0..K)
         .map(|_| {
             let f = b.segment(
                 filter(|a: ArrayView<f64, 0>| a.to_contiguous()[0] > 0.0),
                 srcv,
             );
-            b.segment(Count::<0>, f)
+            b.segment(generic::count::<0>(), f)
         })
         .collect();
     let mut g = b.build();
@@ -870,7 +818,7 @@ fn parallel_stress_stateful_counts() {
         assert_eq!(
             g.view(c).as_slice().unwrap(),
             &[passes],
-            "a parallel Count raced"
+            "a parallel count raced"
         );
     }
 }
@@ -894,18 +842,15 @@ fn parallel_stress_stateful_counts() {
 #[test]
 fn split_rows_notify_with_panel() {
     let mut b = Builder::new();
-    let (panel_cell, panel) = b.source(const_array(Array::from_parts(
-        [3, 2],
-        vec![0.0_f64; 6].into(),
-    )));
-    let (other_cell, other) = b.source(const_array(Array::scalar(0.0_f64)));
-    let rows = b.segment(unstack::<f64, 2, 1>(0), panel);
+    let (panel_cell, panel) = b.source(array::from_parts([3, 2], vec![0.0_f64; 6].into()));
+    let (other_cell, other) = b.source(array::scalar(0.0_f64));
+    let rows = b.segment(array::unstack::<f64, 2, 1>(0), panel);
     assert_eq!(rows.len(), 3);
     // The rows feed a carry `stack` that rebuilds the `[3, 2]` panel; a `Record`
     // on the stacked output advances exactly once per recompute of the join.
-    let stacked = b.segment(stack::<f64, 1, 2>(0), &rows[..]);
-    let rec = b.segment(record_all(), stacked);
-    let _sink = b.segment(Count::<0>, other); // unrelated cone
+    let stacked = b.segment(array::stack::<f64, 1, 2>(0), &rows[..]);
+    let rec = b.segment(series::record_all(), stacked);
+    let _sink = b.segment(generic::count::<0>(), other); // unrelated cone
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -962,27 +907,27 @@ fn view_chain_matches_owned_chain() {
     let nan = f64::NAN;
     let mut b = Builder::new();
     // Stock 0's price/dividend rows as direct `[2]` view sources.
-    let (prices, prices_view) = b.source(const_array(Array::from_parts([2], vec![nan; 2].into())));
-    let (div, div_view) = b.source(const_array(Array::from_parts([2], vec![nan; 2].into())));
+    let (prices, prices_view) = b.source(array::from_parts([2], vec![nan; 2].into()));
+    let (div, div_view) = b.source(array::from_parts([2], vec![nan; 2].into()));
 
     // Owned reference chain (materializes at the row Selects).
     let p_f = {
-        let m = b.segment(select(vec![0, 1], 0), prices_view);
+        let m = b.segment(array::select(vec![0, 1], 0), prices_view);
         b.segment(filter(any_finite), m)
     };
     let d_f = {
-        let m = b.segment(select(vec![0, 1], 0), div_view);
+        let m = b.segment(array::select(vec![0, 1], 0), div_view);
         b.segment(filter(any_finite), m)
     };
     // Squeeze the single close out to a scalar (rank-0) price.
-    let close = b.segment(select_at(0, 0), p_f);
+    let close = b.segment(array::select_at(0, 0), p_f);
     let adj = b.segment(forward_adjust().with_output_prices(false), (close, d_f));
     let adjusted = b.segment(multiply(), (close, adj));
 
     // View chain (materializes at `Select`).
     let p_g = b.segment(gate(any_finite), prices_view);
     let d_g = b.segment(gate(any_finite), div_view);
-    let v_close = b.segment(select_at(0, 0), p_g);
+    let v_close = b.segment(array::select_at(0, 0), p_g);
     let v_adj = b.segment(
         ForwardAdjust::<0, 1>::default().with_output_prices(false),
         (v_close, d_g),
@@ -1038,16 +983,13 @@ fn view_join_carry_matches_owned_join() {
 
     let n = 3usize;
     let mut b = Builder::new();
-    let (panel_cell, panel) = b.source(const_array(Array::from_parts(
-        [n, 2],
-        vec![0.0; n * 2].into(),
-    )));
-    let rows = b.segment(unstack::<f64, 2, 1>(0), panel);
+    let (panel_cell, panel) = b.source(array::from_parts([n, 2], vec![0.0; n * 2].into()));
+    let rows = b.segment(array::unstack::<f64, 2, 1>(0), panel);
 
     // Two equivalent carry joins over the same `unstack` rows (the only buildable
     // carry-join input): two independent `stack` joins.
-    let owned_join = b.segment(stack(0), &rows[..]);
-    let view_join = b.segment(stack(0), &rows[..]);
+    let owned_join = b.segment(array::stack(0), &rows[..]);
+    let view_join = b.segment(array::stack(0), &rows[..]);
 
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -1102,7 +1044,7 @@ fn fused_segment_matches_unfused_nodes() {
         |prices_row: ArrayPort<f64, 1>, div_row: ArrayPort<f64, 1>| -> (ArrayPort<f64, 0>, ArrayPort<f64, 0>) {
             let prices = filter(any_finite) @ prices_row;
             let dividends = filter(any_finite) @ div_row;
-            let close = select_at(0, 0) @ prices;
+            let close = array::select_at(0, 0) @ prices;
             let adjusts = forward_adjust().with_output_prices(false) @ (close, dividends);
             let adjusted = multiply() @ (close, adjusts);
             (adjusted, adjusts)
@@ -1111,13 +1053,13 @@ fn fused_segment_matches_unfused_nodes() {
 
     let nan = f64::NAN;
     let mut b = Builder::new();
-    let (prices, pricesv) = b.source(const_array(Array::from_parts([2], vec![nan; 2].into())));
-    let (div, divv) = b.source(const_array(Array::from_parts([2], vec![nan; 2].into())));
+    let (prices, pricesv) = b.source(array::from_parts([2], vec![nan; 2].into()));
+    let (div, divv) = b.source(array::from_parts([2], vec![nan; 2].into()));
 
     // Reference: the same chain as separate nodes.
     let p_f = b.segment(filter(any_finite), pricesv);
     let d_f = b.segment(filter(any_finite), divv);
-    let close = b.segment(select_at(0, 0), p_f);
+    let close = b.segment(array::select_at(0, 0), p_f);
     let adj = b.segment(forward_adjust().with_output_prices(false), (close, d_f));
     let adjusted = b.segment(multiply(), (close, adj));
 
@@ -1162,12 +1104,10 @@ fn comparisons_follow_ieee_nan_semantics() {
     // explicit missing-data test.
     let nan = f64::NAN;
     let mut b = Builder::new();
-    let (_s, x) = b.source(const_array(Array::from_parts(
-        [4],
-        vec![1.0, -1.0, 0.0, nan].into(),
-    )));
-    let gt0 = b.segment(greater_than(0.0), x);
-    let ne0 = b.segment(not_equal_to(0.0), x);
+    let (_s, x) = b.source(array::from_parts([4], vec![1.0, -1.0, 0.0, nan].into()));
+    let zeros = b.value(array::from_parts([4], vec![0.0, 0.0, 0.0, 0.0].into()));
+    let gt0 = b.segment(gt(), (x, zeros));
+    let ne0 = b.segment(ne(), (x, zeros));
     let fin = b.segment(is_finite(), x);
     let g = b.build();
 
@@ -1179,22 +1119,15 @@ fn comparisons_follow_ieee_nan_semantics() {
 #[test]
 fn logical_connectives_and_mask_readout() {
     let mut b = Builder::new();
-    let (_sa, a) = b.source(const_array(Array::from_parts(
-        [4],
-        vec![1.0, 1.0, 0.0, 0.0].into(),
-    )));
-    let (_sb, bb) = b.source(const_array(Array::from_parts(
-        [4],
-        vec![1.0, 0.0, 1.0, 0.0].into(),
-    )));
-    let am = b.segment(greater_than(0.5), a);
-    let bm = b.segment(greater_than(0.5), bb);
+    let (_sa, a) = b.source(array::from_parts([4], vec![1.0, 1.0, 0.0, 0.0].into()));
+    let (_sb, bb) = b.source(array::from_parts([4], vec![1.0, 0.0, 1.0, 0.0].into()));
+    let halves = b.value(array::from_parts([4], vec![0.5, 0.5, 0.5, 0.5].into()));
+    let am = b.segment(gt(), (a, halves));
+    let bm = b.segment(gt(), (bb, halves));
     let both = b.segment(and(), (am, bm));
     let either = b.segment(or(), (am, bm));
     let neither = b.segment(not(), either);
-    let onehot = b.segment(xor(), (am, bm));
-    // Mask -> numeric currency, and the three-input selector.
-    let ind = b.segment(indicator(1.0, f64::NAN), both);
+    let onehot = b.segment(bitxor(), (am, bm));
     let pick = b.segment(Choose::<f64, 1>::new(), (onehot, a, bb));
     let g = b.build();
 
@@ -1208,9 +1141,6 @@ fn logical_connectives_and_mask_readout() {
         &*g.view(onehot).to_contiguous(),
         &[false, true, true, false]
     );
-    let iv = g.view(ind).to_contiguous();
-    assert_eq!(iv[0], 1.0);
-    assert!(iv[1..].iter().all(|x| x.is_nan()));
     // `onehot` selects from `a` where exactly one mask is set, else from `bb`:
     // [bb[0], a[1], a[2], bb[3]] = [1, 1, 0, 0].
     assert_eq!(&*g.view(pick).to_contiguous(), &[1.0, 1.0, 0.0, 0.0]);
@@ -1221,15 +1151,15 @@ fn comparison_of_two_arrays_and_strided_inputs() {
     // `Compare` over a strided (column) view exercises the strided-slow path of
     // the shared elementwise core at a bool output type.
     let mut b = Builder::new();
-    let (_, s) = b.source(const_array(Array::from_parts(
+    let (_, s) = b.source(array::from_parts(
         [2, 2],
         vec![1.0, 5.0, 4.0, 2.0].into(), // rows: [1,5], [4,2]
-    )));
+    ));
     // `Select`'s output rank is not determined by its input rank (`squeeze`
     // drops the sliced axis), so it is the one operator here that must be told.
-    let col0 = b.segment(select_at::<_, 2, 1>(0, 1), s); // [1, 4]
-    let col1 = b.segment(select_at::<_, 2, 1>(1, 1), s); // [5, 2]
-    let lt = b.segment(less(), (col0, col1));
+    let col0 = b.segment(array::select_at::<_, 2, 1>(0, 1), s); // [1, 4]
+    let col1 = b.segment(array::select_at::<_, 2, 1>(1, 1), s); // [5, 2]
+    let lt = b.segment(lt(), (col0, col1));
     let g = b.build();
     assert_eq!(&*g.view(lt).to_contiguous(), &[true, false]);
 }
@@ -1246,19 +1176,20 @@ fn ma_crossover_signal_fuses_into_one_node() {
     // rank-0 boolean edge.
     let seg = tradingflow::segment!(
         |xs: SeriesPort<f64, 0>| -> ArrayPort<bool, 0> {
+            let zero = array::scalar(0.0_f64) @ ();
             let d = subtract() @ (
                 rolling_mean(Window::Count(fast)) @ xs,
                 rolling_mean(Window::Count(slow)) @ xs,
             );
-            let up = greater_than(0.0) @ d;
-            let prev = lag_series(1, f64::NAN) @ record(ret) @ d;
-            and() @ (up, not() @ (greater_than(0.0) @ prev))
+            let up = gt() @ (d, zero);
+            let prev = lag_series(1, f64::NAN) @ series::record(ret) @ d;
+            and() @ (up, not() @ (gt() @ (prev, zero)))
         }
     );
 
     let mut b = Builder::new();
-    let (src, view) = b.source(const_array(Array::scalar(0.0_f64)));
-    let series = b.segment(record_all(), view);
+    let (src, view) = b.source(array::scalar(0.0_f64));
+    let series = b.segment(series::record_all(), view);
     let signal = b.segment(seg, series);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -1292,7 +1223,7 @@ fn ma_crossover_signal_fuses_into_one_node() {
 /// previously *computed* spread.
 // `!(prev > 0.0)` is the `NOT LAG(..) > 0` of the formula, and the negation is
 // load-bearing: `prev` is `NaN` before the spread first computes, and
-// `!(NaN > 0.0)` is `true` (matching `not() @ greater_than(0.0)` on a NaN input)
+// `!(NaN > 0.0)` is `true` (matching `not() @ gt(0.0)` on a NaN input)
 // whereas `prev <= 0.0` would be `false`.
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn crossover_reference(path: &[f64], fast: usize, slow: usize) -> Vec<bool> {
@@ -1348,14 +1279,15 @@ fn formula_ma_crossover_signal() {
     let path1: Vec<f64> = path0.iter().map(|&x| 200.25 - x).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(const_array(Array::from_parts([2], vec![0.0, 0.0].into())));
+    let (src, xv) = b.source(array::from_parts([2], vec![0.0, 0.0].into()));
     let signal = b.segment(
         tradingflow::segment!(
             |x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
+                let zeros = array::from_parts([2], vec![0.0, 0.0].into()) @ ();
                 let d = subtract() @ (ma(fast) @ x, ma(slow) @ x);
                 and() @ (
-                    greater_than(0.0) @ d,
-                    not() @ (greater_than(0.0) @ lag(1) @ d),
+                    gt() @ (d, zeros),
+                    not() @ (gt() @ (lag(1) @ d, zeros)),
                 )
             }
         ),
@@ -1393,7 +1325,7 @@ fn formula_ma_crossover_signal() {
 #[test]
 fn formula_change_and_growth() {
     let mut b = Builder::new();
-    let (src, xv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (src, xv) = b.source(array::scalar(0.0_f64));
     let chg = b.segment(change(2), xv);
     let pct = b.segment(growth(2), xv);
     let mut g = b.build();
@@ -1423,7 +1355,7 @@ fn formula_change_and_growth() {
 #[test]
 fn formula_ma_time_window() {
     let mut b = Builder::new();
-    let (src, xv) = b.source(const_array(Array::scalar(0.0_f64)));
+    let (src, xv) = b.source(array::scalar(0.0_f64));
     let m = b.segment(ma_time(Duration::from_days(2)), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -1446,9 +1378,9 @@ fn formula_ma_time_window() {
 #[test]
 fn formula_mstd_matches_hoisted() {
     let mut b = Builder::new();
-    let (src, xv) = b.source(const_array(Array::from_parts([2], vec![0.0, 0.0].into())));
+    let (src, xv) = b.source(array::from_parts([2], vec![0.0, 0.0].into()));
     let fused = b.segment(mstd(4), xv);
-    let series = b.segment(record(Retention::count(16)), xv);
+    let series = b.segment(series::record(Retention::count(16)), xv);
     let var = b.segment(rolling_variance(Window::Count(4)), series);
     let hoisted = b.segment(sqrt(), var);
     let mut g = b.build();

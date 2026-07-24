@@ -177,6 +177,15 @@ impl<C: Sync> Builder<C> {
         self.push(source, ())
     }
 
+    /// Adds a constant node to the graph.
+    pub fn value<T>(&mut self, value: T) -> <T::Outputs as InterfaceHandles>::HandlesOwned
+    where
+        T: Segment<Inputs = (), Context = C>,
+        T::Outputs: InterfaceHandles,
+    {
+        self.push(value, ()).1
+    }
+
     /// Adds a segment node to the graph.
     pub fn segment<T, H>(
         &mut self,

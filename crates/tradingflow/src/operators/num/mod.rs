@@ -59,36 +59,24 @@
 //! [`map`]: crate::data::array::map
 //! [`map_binary`]: crate::data::array::map_binary
 
-mod arithmetic;
-mod choose;
-mod clamp;
-mod compare;
 mod diff;
 mod fillna;
 mod forward_fill;
 mod gaussianize;
 mod lag;
 mod last;
-mod logic;
-mod map;
 mod pct_change;
 mod percentile;
 mod rank;
 mod standardize;
 mod winsorize;
 
-pub use arithmetic::*;
-pub use choose::*;
-pub use clamp::*;
-pub use compare::*;
 pub use diff::*;
 pub use fillna::*;
 pub use forward_fill::*;
 pub use gaussianize::*;
 pub use lag::*;
 pub use last::*;
-pub use logic::*;
-pub use map::*;
 pub use pct_change::*;
 pub use percentile::*;
 pub use standardize::*;

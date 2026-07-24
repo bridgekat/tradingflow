@@ -30,10 +30,8 @@
 //! One operator per submodule; `reshape` holds the layout helpers the
 //! sync-combine family share.
 
-mod cast;
 mod clocked;
 mod concat_sync;
-mod count;
 mod filter;
 mod gate;
 mod keep_where;
@@ -42,10 +40,8 @@ mod resample_view;
 mod reshape;
 mod stack_sync;
 
-pub use cast::*;
 pub use clocked::*;
 pub use concat_sync::*;
-pub use count::*;
 pub use filter::*;
 pub use gate::*;
 pub use keep_where::*;

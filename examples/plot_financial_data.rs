@@ -25,7 +25,7 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{map_array, select, select_at};
-use tradingflow::operators::num::{divide, multiply, negate};
+use tradingflow::operators::elem::{divide, multiply, negate};
 use tradingflow::operators::rolling::{Window, rolling_mean};
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::stocks::annualize;

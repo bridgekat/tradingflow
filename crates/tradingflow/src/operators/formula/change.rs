@@ -4,7 +4,7 @@ use super::lag::lag;
 use crate::data::{Instant, Scalar};
 use crate::graph::Segment;
 use crate::graph::cb::{Comp, Fork, Id};
-use crate::operators::num::subtract;
+use crate::operators::elem;
 use crate::ports::ArrayPort;
 
 /// `n`-tick change `x − x₋ₙ` (the momentum shape): `change(n) @ x`.
@@ -13,5 +13,5 @@ use crate::ports::ArrayPort;
 pub fn change<T: Scalar + Float, const N: usize>(
     n: usize,
 ) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    Comp(Fork(Id::default(), lag(n)), subtract())
+    Comp(Fork(Id::default(), lag(n)), elem::subtract())
 }

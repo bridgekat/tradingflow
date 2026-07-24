@@ -57,6 +57,7 @@ use tradingflow::data::{Array, ArrayView, Duration, Instant, Layout, Series, Ser
 use tradingflow::graph::{Builder, Operator};
 use tradingflow::operators::{
     array::{map, select, select_at, stack},
+    elem,
     formula::*,
     metrics::*,
     num::*,
@@ -106,7 +107,7 @@ pub(super) fn rank_impute(
 
 /// Total market cap = unadjusted close × total shares.
 pub fn market_cap(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> ArrayPortHandle<f64, 1> {
-    sc.segment(multiply(), (st.close, st.total_shares))
+    sc.segment(elem::multiply(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
@@ -114,7 +115,7 @@ pub fn circ_market_cap(
     sc: &mut Builder<Instant, UnixClock>,
     st: &Stacked,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(multiply(), (st.close, st.circ_shares))
+    sc.segment(elem::multiply(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
@@ -181,68 +182,71 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) 
     let cost_ttm = ttm(sc, st.operating_cost); // negative (a deduction)
     // Gross profit = revenue − COGS = revenue + cost_ttm (cost stored negative).
     // (`operators::add` is fully qualified — the local `add` binding shadows it.)
-    let gross_ttm = sc.segment(tradingflow::operators::num::add(), (rev_ttm, cost_ttm));
+    let gross_ttm = sc.segment(elem::add(), (rev_ttm, cost_ttm));
     // Positive-magnitude liabilities (parquet stores them credit-negative).
-    let debt = sc.segment(negate(), st.total_liab);
-    let cur_liab = sc.segment(negate(), st.current_liab);
-    let eps = sc.segment(divide(), (np_ttm, st.total_shares)); // 每股收益 TTM
-    let cogs_ttm = sc.segment(negate(), cost_ttm); // 营业成本 (positive magnitude)
+    let debt = sc.segment(elem::negate(), st.total_liab);
+    let cur_liab = sc.segment(elem::negate(), st.current_liab);
+    let eps = sc.segment(elem::divide(), (np_ttm, st.total_shares)); // 每股收益 TTM
+    let cogs_ttm = sc.segment(elem::negate(), cost_ttm); // 营业成本 (positive magnitude)
     // 应计利润 = 净利润 − 经营现金流 (earnings not backed by cash).
-    let accruals_ttm = sc.segment(subtract(), (np_ttm, ocf_ttm));
+    let accruals_ttm = sc.segment(elem::subtract(), (np_ttm, ocf_ttm));
     // 投入资本 ≈ 总资产 − 流动负债 (net of non-interest-bearing current liabilities).
-    let invested_capital = sc.segment(subtract(), (st.total_assets, cur_liab));
+    let invested_capital = sc.segment(elem::subtract(), (st.total_assets, cur_liab));
 
     // ---- Profitability (盈利能力) ----
-    let roe = sc.segment(divide(), (np_ttm, st.parent_equity)); // 净利润 TTM / 净资产
-    let roa = sc.segment(divide(), (np_ttm, st.total_assets)); // 净利润 TTM / 总资产
-    let cfoa = sc.segment(divide(), (ocf_ttm, st.total_assets)); // 经营现金流净额 TTM / 总资产
+    let roe = sc.segment(elem::divide(), (np_ttm, st.parent_equity)); // 净利润 TTM / 净资产
+    let roa = sc.segment(elem::divide(), (np_ttm, st.total_assets)); // 净利润 TTM / 总资产
+    let cfoa = sc.segment(elem::divide(), (ocf_ttm, st.total_assets)); // 经营现金流净额 TTM / 总资产
     // 资本回报率 ≈ 营业利润 TTM / 投入资本 (constant-tax proxy for 息前税后经营利润).
-    let roic = sc.segment(divide(), (op_ttm, invested_capital));
+    let roic = sc.segment(elem::divide(), (op_ttm, invested_capital));
     add("ROE_TTM", roe);
     add("ROA_TTM", roa);
     add("CFOA", cfoa);
     add("ROIC_TTM", roic);
 
     // ---- Valuation (估值) ----
-    add("BP_LR", sc.segment(divide(), (st.parent_equity, mc))); // 净资产 / 总市值
-    add("EP_TTM", sc.segment(divide(), (np_ttm, mc))); // 净利润 TTM / 总市值
-    add("SP_TTM", sc.segment(divide(), (rev_ttm, mc))); // 营业收入 TTM / 总市值
-    add("OCFP_TTM", sc.segment(divide(), (ocf_ttm, mc))); // 经营现金流 TTM / 总市值
+    add("BP_LR", sc.segment(elem::divide(), (st.parent_equity, mc))); // 净资产 / 总市值
+    add("EP_TTM", sc.segment(elem::divide(), (np_ttm, mc))); // 净利润 TTM / 总市值
+    add("SP_TTM", sc.segment(elem::divide(), (rev_ttm, mc))); // 营业收入 TTM / 总市值
+    add("OCFP_TTM", sc.segment(elem::divide(), (ocf_ttm, mc))); // 经营现金流 TTM / 总市值
 
     // ---- Size (规模) ----
-    add("Ln_MC", sc.segment(log(), mc)); // 总市值对数
-    add("Ln_FC", sc.segment(log(), fc)); // 流通市值对数
-    add("FC_MC", sc.segment(divide(), (fc, mc))); // 流通市值 / 总市值
+    add("Ln_MC", sc.segment(elem::ln(), mc)); // 总市值对数
+    add("Ln_FC", sc.segment(elem::ln(), fc)); // 流通市值对数
+    add("FC_MC", sc.segment(elem::divide(), (fc, mc))); // 流通市值 / 总市值
 
     // ---- Operating efficiency (营运效率) ----
-    let at = sc.segment(divide(), (rev_ttm, st.total_assets)); // 营业收入 TTM / 总资产
-    let opm = sc.segment(divide(), (op_ttm, rev_ttm)); // 营业利润率
-    let gpm = sc.segment(divide(), (gross_ttm, rev_ttm)); // 毛利率
-    let invt = sc.segment(divide(), (cogs_ttm, st.inventories)); // 存货周转率 = 营业成本 TTM / 存货
-    let rat = sc.segment(divide(), (rev_ttm, st.receivables)); // 应收周转率 = 营业收入 TTM / 应收款
+    let at = sc.segment(elem::divide(), (rev_ttm, st.total_assets)); // 营业收入 TTM / 总资产
+    let opm = sc.segment(elem::divide(), (op_ttm, rev_ttm)); // 营业利润率
+    let gpm = sc.segment(elem::divide(), (gross_ttm, rev_ttm)); // 毛利率
+    let invt = sc.segment(elem::divide(), (cogs_ttm, st.inventories)); // 存货周转率 = 营业成本 TTM / 存货
+    let rat = sc.segment(elem::divide(), (rev_ttm, st.receivables)); // 应收周转率 = 营业收入 TTM / 应收款
     add("AT", at);
-    add("NPM_TTM", sc.segment(divide(), (np_ttm, rev_ttm))); // 净利率
+    add("NPM_TTM", sc.segment(elem::divide(), (np_ttm, rev_ttm))); // 净利率
     add("OPM_TTM", opm);
     add("GPM_TTM", gpm);
-    add("OPtoGR_TTM", sc.segment(divide(), (op_ttm, gross_ttm))); // 营业利润 / 毛利润
+    add(
+        "OPtoGR_TTM",
+        sc.segment(elem::divide(), (op_ttm, gross_ttm)),
+    ); // 营业利润 / 毛利润
     add("INVT", invt);
     add("RAT", rat);
 
     // ---- Safety (安全性) ----
-    let debt_asset = sc.segment(divide(), (debt, st.total_assets)); // 资产负债比
-    let cur = sc.segment(divide(), (st.current_assets, cur_liab)); // 流动比率
-    let dte = sc.segment(divide(), (debt, st.parent_equity)); // 产权比率
-    let ccr = sc.segment(divide(), (ocf_ttm, cur_liab)); // 现金流动负债比率
+    let debt_asset = sc.segment(elem::divide(), (debt, st.total_assets)); // 资产负债比
+    let cur = sc.segment(elem::divide(), (st.current_assets, cur_liab)); // 流动比率
+    let dte = sc.segment(elem::divide(), (debt, st.parent_equity)); // 产权比率
+    let ccr = sc.segment(elem::divide(), (ocf_ttm, cur_liab)); // 现金流动负债比率
     add("Debt_Asset", debt_asset);
     add("CUR", cur);
     add("DTE", dte);
     add("CCR", ccr);
 
     // ---- Earnings quality (盈余质量) ----
-    let csr = sc.segment(divide(), (st.cash, cur_liab)); // 现金比率
+    let csr = sc.segment(elem::divide(), (st.cash, cur_liab)); // 现金比率
     // 应计利润占比 = 应计利润 / 总资产 (Sloan accruals; expect a NEGATIVE forward
     // IC — the accruals anomaly). Handbook may scale by operating profit instead.
-    let apr = sc.segment(divide(), (accruals_ttm, st.total_assets));
+    let apr = sc.segment(elem::divide(), (accruals_ttm, st.total_assets));
     add("CSR", csr);
     add("APR_TTM", apr);
 
@@ -275,7 +279,7 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) 
     // Trailing ~1-month log return of adjusted close. Expect a NEGATIVE forward
     // IC (short-term reversal); a contemporaneous (non-lagged) wiring bug would
     // instead make this strongly POSITIVE (the factor overlapping the return).
-    let log_adj = sc.segment(log(), st.adjusted_close);
+    let log_adj = sc.segment(elem::ln(), st.adjusted_close);
     add("REV_1M", sc.segment(change(21), log_adj));
 
     // Each catalog entry is finalized into its model-ready feature: rank + impute.
@@ -340,7 +344,7 @@ fn rstd(
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         tradingflow::segment!(|x: SeriesPort<f64, 1>| -> ArrayPort<f64, 1> {
-            sqrt() @ rolling_variance(Window::Count(n)) @ x
+            elem::sqrt() @ rolling_variance(Window::Count(n)) @ x
         }),
         s,
     )
@@ -356,17 +360,17 @@ fn rcorr(
 ) -> ArrayPortHandle<f64, 1> {
     let xs = sc.segment(buffer_n(n), x);
     let ys = sc.segment(buffer_n(n), y);
-    let xy = sc.segment(multiply(), (x, y));
+    let xy = sc.segment(elem::multiply(), (x, y));
     let xys = sc.segment(buffer_n(n), xy);
     let mx = rmean(sc, xs, n);
     let my = rmean(sc, ys, n);
     let mxy = rmean(sc, xys, n);
-    let mxmy = sc.segment(multiply(), (mx, my));
-    let cov = sc.segment(subtract(), (mxy, mxmy));
+    let mxmy = sc.segment(elem::multiply(), (mx, my));
+    let cov = sc.segment(elem::subtract(), (mxy, mxmy));
     let sx = rstd(sc, xs, n);
     let sy = rstd(sc, ys, n);
-    let sxsy = sc.segment(multiply(), (sx, sy));
-    sc.segment(divide(), (cov, sxsy))
+    let sxsy = sc.segment(elem::multiply(), (sx, sy));
+    sc.segment(elem::divide(), (cov, sxsy))
 }
 
 const M: usize = 21; // ~1 trading month
@@ -737,19 +741,19 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     };
 
     // --- daily building blocks (recorded on the price pulse) ---
-    let lc = sc.segment(log(), st.adjusted_close); // adjusted log close
+    let lc = sc.segment(elem::ln(), st.adjusted_close); // adjusted log close
     let lc_s = sc.segment(buffer_n(Y), lc);
     let adjclose_s = sc.segment(buffer_n(Y), st.adjusted_close);
-    let lo = sc.segment(log(), st.open); // raw log open
-    let lcr = sc.segment(log(), st.close); // raw log close
+    let lo = sc.segment(elem::ln(), st.open); // raw log open
+    let lcr = sc.segment(elem::ln(), st.close); // raw log close
     let lcr_s = sc.segment(buffer_n(Y), lcr);
 
     let daily_ret = sc.segment(diff(), lc); // adjusted close-to-close log return
     let dret_s = sc.segment(buffer_n(Y), daily_ret);
-    let intraday = sc.segment(subtract(), (lcr, lo)); // log(close/open)
+    let intraday = sc.segment(elem::subtract(), (lcr, lo)); // log(close/open)
     let intra_s = sc.segment(buffer_n(Y), intraday);
     let prev_lcr = sc.segment(lag_series(1, f64::NAN), lcr_s);
-    let overnight = sc.segment(subtract(), (lo, prev_lcr)); // log(open / prev close)
+    let overnight = sc.segment(elem::subtract(), (lo, prev_lcr)); // log(open / prev close)
     let over_s = sc.segment(buffer_n(Y), overnight);
 
     let abs_ret = emap(sc, daily_ret, f64::abs);
@@ -770,33 +774,48 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     // ---- 月度反转 / 年度动量 (close-return based) ----
     let lc_lag_m = sc.segment(lag_series(M, f64::NAN), lc_s);
     let lc_lag_y = sc.segment(lag_series(Y, f64::NAN), lc_s);
-    let ret_1m = sc.segment(subtract(), (lc, lc_lag_m)); // past 1-month return
-    let ret_1y = sc.segment(subtract(), (lc, lc_lag_y)); // past 1-year return
+    let ret_1m = sc.segment(elem::subtract(), (lc, lc_lag_m)); // past 1-month return
+    let ret_1y = sc.segment(elem::subtract(), (lc, lc_lag_y)); // past 1-year return
     add("mmt_normal_M", ret_1m); // 1个月收益率
-    add("mmt_normal_A", sc.segment(subtract(), (lc_lag_m, lc_lag_y))); // 12个月收益率 − 1个月收益率
+    add(
+        "mmt_normal_A",
+        sc.segment(elem::subtract(), (lc_lag_m, lc_lag_y)),
+    ); // 12个月收益率 − 1个月收益率
     let ma20 = rmean(sc, adjclose_s, 20);
-    add("mmt_avg_M", sc.segment(divide(), (st.adjusted_close, ma20))); // 收盘价 / 20日均价
+    add(
+        "mmt_avg_M",
+        sc.segment(elem::divide(), (st.adjusted_close, ma20)),
+    ); // 收盘价 / 20日均价
     let prev_close_m = sc.segment(lag_series(M, f64::NAN), adjclose_s);
     let ma_year = rmean(sc, adjclose_s, Y);
-    add("mmt_avg_A", sc.segment(divide(), (prev_close_m, ma_year))); // 1月前收盘 / 1年均价
+    add(
+        "mmt_avg_A",
+        sc.segment(elem::divide(), (prev_close_m, ma_year)),
+    ); // 1月前收盘 / 1年均价
 
     // ---- 日内 / 隔夜动量 ----
     add("mmt_intraday_M", rs_intra_m); // 过去1月日内涨跌幅之和
     add(
         "mmt_intraday_A",
-        sc.segment(subtract(), (rs_intra_y, rs_intra_m)),
+        sc.segment(elem::subtract(), (rs_intra_y, rs_intra_m)),
     );
     add("mmt_overnight_M", rs_over_m); // 过去1月隔夜涨跌幅之和
     add(
         "mmt_overnight_A",
-        sc.segment(subtract(), (rs_over_y, rs_over_m)),
+        sc.segment(elem::subtract(), (rs_over_y, rs_over_m)),
     );
 
     // ---- 路径调整动量 (return / Σ|daily return|) ----
     let sum_abs_m = rsum(sc, absret_s, M);
-    add("mmt_route_M", sc.segment(divide(), (ret_1m, sum_abs_m)));
+    add(
+        "mmt_route_M",
+        sc.segment(elem::divide(), (ret_1m, sum_abs_m)),
+    );
     let sum_abs_y = rsum(sc, absret_s, Y);
-    add("mmt_route_A", sc.segment(divide(), (ret_1y, sum_abs_y)));
+    add(
+        "mmt_route_A",
+        sc.segment(elem::divide(), (ret_1y, sum_abs_y)),
+    );
 
     // ---- 信息离散度 (up% − down% = mean of sign) ----
     add("mmt_discrete_M", rmean(sc, sign_s, M));
@@ -831,18 +850,18 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     );
 
     // ============ 流动性 (liquidity) — 图表28 ============
-    let turnover = sc.segment(divide(), (st.volume, st.circ_shares)); // daily turnover 换手率
+    let turnover = sc.segment(elem::divide(), (st.volume, st.circ_shares)); // daily turnover 换手率
     let turnover_s = sc.segment(buffer_n(Y), turnover);
     let amount_s = sc.segment(buffer_n(Y), st.amount);
-    let amihud = sc.segment(divide(), (abs_ret, st.amount)); // |日收益率| / 成交额
+    let amihud = sc.segment(elem::divide(), (abs_ret, st.amount)); // |日收益率| / 成交额
     let amihud_s = sc.segment(buffer_n(Y), amihud);
     // 日K线最短路径 = 2*(最高-最低) − |开盘−收盘|; shortcut 非流动 = 路径 / 成交额.
-    let hl = sc.segment(subtract(), (st.high, st.low));
+    let hl = sc.segment(elem::subtract(), (st.high, st.low));
     let two_hl = emap(sc, hl, |x| 2.0 * x);
-    let oc = sc.segment(subtract(), (st.open, st.close));
+    let oc = sc.segment(elem::subtract(), (st.open, st.close));
     let abs_oc = emap(sc, oc, f64::abs);
-    let path = sc.segment(subtract(), (two_hl, abs_oc));
-    let shortcut = sc.segment(divide(), (path, st.amount));
+    let path = sc.segment(elem::subtract(), (two_hl, abs_oc));
+    let shortcut = sc.segment(elem::divide(), (path, st.amount));
     let shortcut_s = sc.segment(buffer_n(Y), shortcut);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
@@ -852,7 +871,7 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
         let ret_std = rstd(sc, dret_s, w);
         add(
             &format!("liq_vstd_{tag}"),
-            sc.segment(divide(), (sum_amt, ret_std)),
+            sc.segment(elem::divide(), (sum_amt, ret_std)),
         ); // 成交波动比 = Σ成交额 / σ(ret)
         add(&format!("liq_amihud_avg_{tag}"), rmean(sc, amihud_s, w));
         add(&format!("liq_amihud_std_{tag}"), rstd(sc, amihud_s, w));
@@ -908,22 +927,22 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
         if x.is_finite() { x.max(0.0) } else { f64::NAN }
     });
     let upside_s = sc.segment(buffer_n(Y), upside);
-    let highlow = sc.segment(divide(), (st.high, st.low)); // 日内振幅 = 最高/最低
+    let highlow = sc.segment(elem::divide(), (st.high, st.low)); // 日内振幅 = 最高/最低
     let highlow_s = sc.segment(buffer_n(Y), highlow);
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
-    let max_oc = sc.segment(max(), (st.open, st.close));
-    let min_oc = sc.segment(min(), (st.open, st.close));
-    let up_num = sc.segment(subtract(), (st.high, max_oc)); // 上影线 = 最高 − max(开,收)
-    let upshadow = sc.segment(divide(), (up_num, st.low));
+    let max_oc = sc.segment(elem::maxf(), (st.open, st.close));
+    let min_oc = sc.segment(elem::minf(), (st.open, st.close));
+    let up_num = sc.segment(elem::subtract(), (st.high, max_oc)); // 上影线 = 最高 − max(开,收)
+    let upshadow = sc.segment(elem::divide(), (up_num, st.low));
     let upshadow_s = sc.segment(buffer_n(Y), upshadow);
-    let down_num = sc.segment(subtract(), (min_oc, st.low)); // 下影线 = min(开,收) − 最低
-    let downshadow = sc.segment(divide(), (down_num, st.low));
+    let down_num = sc.segment(elem::subtract(), (min_oc, st.low)); // 下影线 = min(开,收) − 最低
+    let downshadow = sc.segment(elem::divide(), (down_num, st.low));
     let downshadow_s = sc.segment(buffer_n(Y), downshadow);
-    let wup_num = sc.segment(subtract(), (st.high, st.close)); // 威廉上影线 = 最高 − 收
-    let w_upshadow = sc.segment(divide(), (wup_num, st.low));
+    let wup_num = sc.segment(elem::subtract(), (st.high, st.close)); // 威廉上影线 = 最高 − 收
+    let w_upshadow = sc.segment(elem::divide(), (wup_num, st.low));
     let w_upshadow_s = sc.segment(buffer_n(Y), w_upshadow);
-    let wdown_num = sc.segment(subtract(), (st.close, st.low)); // 威廉下影线 = 收 − 最低
-    let w_downshadow = sc.segment(divide(), (wdown_num, st.low));
+    let wdown_num = sc.segment(elem::subtract(), (st.close, st.low)); // 威廉下影线 = 收 − 最低
+    let w_downshadow = sc.segment(elem::divide(), (wdown_num, st.low));
     let w_downshadow_s = sc.segment(buffer_n(Y), w_downshadow);
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {

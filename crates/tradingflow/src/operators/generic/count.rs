@@ -1,7 +1,7 @@
 //! `Count` — stateful per-tick counter (anti-corruption demonstrator).
 
 use crate::data::{Array, ArrayView, Instant};
-use crate::graph::typed::Operator;
+use crate::graph::typed::{Operator, Segment};
 use crate::ports::ArrayPort;
 
 /// Increments a counter every time it runs and emits the running count (a
@@ -47,6 +47,7 @@ impl<const N: usize> Operator for Count<N> {
 }
 
 /// Count the notified ticks seen so far.
-pub fn count<const N: usize>() -> Count<N> {
+pub fn count<const N: usize>()
+-> impl Segment<Inputs = ArrayPort<f64, N>, Outputs = ArrayPort<f64, 0>, Context = Instant> {
     Count
 }

@@ -6,6 +6,7 @@ use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
     array::{map_array, select, select_at, stack, unstack},
+    elem,
     metrics::*,
     num::*,
     stocks::*,
@@ -255,7 +256,7 @@ pub fn build_stacked(
             let prices_extras = select(vec![2, 3, 4, 5], 0) @ prices;
             let adjusts =
                 forward_adjust().with_output_prices(false) @ (close, dividends);
-            let adjusted_close = multiply() @ (close, adjusts);
+            let adjusted_close = elem::multiply() @ (close, adjusts);
             let total_shares = select_at(0, 0) @ equity;
             let circ_shares = select_at(1, 0) @ equity;
             // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).

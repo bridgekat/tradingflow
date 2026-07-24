@@ -11,6 +11,16 @@ pub struct ArrayView<'a, T: Scalar, const N: usize> {
     data: &'a [T],
 }
 
+impl<'a, T: Scalar> ArrayView<'a, T, 0> {
+    /// Creates a rank-0 array view holding one scalar.
+    pub fn scalar(value: &'a T) -> Self {
+        Self {
+            layout: layout::Strided::new([], []),
+            data: std::slice::from_ref(value),
+        }
+    }
+}
+
 impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
     /// Creates an array view from a row-major contiguous slice.
     ///
@@ -112,6 +122,16 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
         let (offset, layout) = self.layout.slice_reshape(slices);
         // SAFETY: `self.data.len() >= self.layout.span() >= offset + layout.span()`.
         unsafe { ArrayView::from_parts_unchecked(layout, &self.data[offset..]) }
+    }
+
+    /// A view of rank-`M` with `M - N` leading new axes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `M < N`.
+    pub fn pad_ndim<const M: usize>(&self) -> ArrayView<'a, T, M> {
+        // SAFETY: `self.layout.pad_ndim().span() <= self.layout.span()`.
+        unsafe { ArrayView::from_parts_unchecked(self.layout.pad_ndim(), self.data) }
     }
 
     /// A zero-copy view with axes permuted: axis `d` of the result is axis

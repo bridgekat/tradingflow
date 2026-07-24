@@ -405,4 +405,6 @@ pub mod typed;
 
 pub use driver::{Builder, Clock, Event, Graph, Source, Stamp};
 pub use pool::Pool;
-pub use typed::{Interface, Operator, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val};
+pub use typed::{
+    Interface, NodeHandle, Operator, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val,
+};

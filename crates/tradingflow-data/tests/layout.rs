@@ -296,7 +296,14 @@ fn slice_reshape_mixes_slices_indices_and_new_axes() {
     // keeps it, and `()` adds one — [2, 3, 4] -> [3, 1, 2].
     let (offset, s): (usize, Strided<3>) = l.slice_reshape((1, .., (), (0..4, 2)));
     assert_eq!(offset, l.offset([1, 0, 0]));
-    assert_eq!(s, Strided::new([3, 1, 2], [4, 1, 2]));
+    // The new axis takes the row-major stride at its position (the product of
+    // produced extents to its right), not 1.
+    assert_eq!(s, Strided::new([3, 1, 2], [4, 2, 2]));
+
+    // That stride choice makes purely rank-raising reshapes keep contiguity.
+    let (_, c): (usize, Strided<4>) = l.slice_reshape(((), .., .., ..));
+    assert!(c.is_contiguous());
+    assert_eq!(c, l.pad_ndim());
 
     // All-index specifiers collapse to rank 0, addressing a single element.
     let (offset, scalar): (usize, Strided<0>) = l.slice_reshape((1, 2, 3));

@@ -254,6 +254,24 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
         }
     }
 
+    /// A view whose elements are rank-`M` with `M - N` leading new axes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `M < N`.
+    pub fn pad_ndim<const M: usize>(&self) -> SeriesView<'a, T, M> {
+        // SAFETY: `self.layout.pad_ndim().span_ext(...) <= self.layout.span_ext(...)`.
+        unsafe {
+            SeriesView::from_parts_unchecked(
+                self.layout.pad_ndim(),
+                self.stride,
+                self.instants,
+                self.data,
+                self.base,
+            )
+        }
+    }
+
     /// A zero-copy view with element axes permuted: axis `d` of the result is
     /// axis `perm[d]` of `self`.
     ///

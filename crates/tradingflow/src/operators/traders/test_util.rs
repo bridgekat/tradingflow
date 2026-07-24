@@ -1,8 +1,8 @@
 //! Graph fixtures shared by the per-operator trader tests.
 
 use crate::data::{Array, Instant};
-use crate::graph::typed::{Builder, NodeHandle, PortHandle};
-use crate::operators::constant::*;
+use crate::graph::typed::{Builder, NodeHandle, PortHandle, Segment};
+use crate::operators::array;
 use crate::ports::ArrayPass;
 
 pub(super) fn arr(v: &[f64]) -> Array<f64, 1> {
@@ -16,8 +16,8 @@ pub(super) fn src(
     b: &mut Builder<Instant>,
     v: &[f64],
 ) -> (
-    NodeHandle<ConstArray<f64, 1>>,
+    NodeHandle<impl Segment<State = Array<f64, 1>> + 'static>,
     PortHandle<ArrayPass<f64, 1>>,
 ) {
-    b.source(const_array(arr(v)))
+    b.source(array::constant(arr(v)))
 }

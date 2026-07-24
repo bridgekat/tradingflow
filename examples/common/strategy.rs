@@ -10,7 +10,7 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::graph::{Builder, Graph, Pool, Segment};
 use tradingflow::operators::series::{Retention, record_all};
-use tradingflow::operators::{array::map_array, num::*, structural::*, traders::*};
+use tradingflow::operators::{array::map_array, elem, num::*, structural::*, traders::*};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPortHandle, UnitPortHandle};
 use tradingflow::sources::basic::*;
 
@@ -80,8 +80,8 @@ impl Market {
         let n = symbols.len();
         let st = build_stacked(sc, symbols, args);
         let features = build_features(sc, &st, retention);
-        let circ_market_cap = sc.segment(multiply(), (st.close, st.circ_shares));
-        let log_adj = sc.segment(log(), st.adjusted_close);
+        let circ_market_cap = sc.segment(elem::multiply(), (st.close, st.circ_shares));
+        let log_adj = sc.segment(elem::ln(), st.adjusted_close);
         let (target, target_series, demeaned_series) =
             build_log_return_target(sc, log_adj, retention);
         let (upper, lower) = build_price_limits(sc, st.close, PRICE_LIMIT);

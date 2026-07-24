@@ -1,12 +1,14 @@
 //! Basic array operators.
 
-pub mod concat;
-pub mod map;
-pub mod select;
-pub mod split;
-pub mod view;
+mod concat;
+mod constant;
+mod map;
+mod select;
+mod split;
+mod view;
 
 pub use concat::*;
+pub use constant::*;
 pub use map::*;
 pub use select::*;
 pub use split::*;

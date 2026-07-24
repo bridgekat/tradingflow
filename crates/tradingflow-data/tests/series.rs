@@ -651,3 +651,30 @@ fn series_view_eq_compares_instants_and_elements() {
         SeriesView::<f64, 1>::from_slice([2], &tss, &[1.0, 2.0, 3.0, 5.0], 0),
     );
 }
+
+#[test]
+fn view_pad_ndim_prepends_extent_1_element_axes() {
+    let mut s = Series::<f64, 1>::new([2]);
+    s.push(ts(100), ArrayView::from_slice([2], &[1.0, 2.0]));
+    s.push(ts(200), ArrayView::from_slice([2], &[3.0, 4.0]));
+
+    let v = s.view().pad_ndim::<3>();
+    assert_eq!(v.extents(), [1, 1, 2]);
+    // The time axis, window and packing are untouched.
+    assert_eq!(v.range(), 0..2);
+    assert_eq!(v.instants(), s.instants());
+    assert_eq!(v.as_slice(), s.view().as_slice());
+    // Elements come out as rank-3 views of the same scalars.
+    assert_eq!(v.at(1).0, ts(200));
+    assert_eq!(v.at(1).1[[0, 0, 1]], 4.0);
+    // Padding to the same rank is the identity.
+    assert_eq!(s.view().pad_ndim::<1>(), s.view());
+}
+
+#[test]
+#[should_panic(expected = "must be at least")]
+fn view_pad_ndim_below_rank() {
+    let mut s = Series::<f64, 1>::new([2]);
+    s.push(ts(100), ArrayView::from_slice([2], &[1.0, 2.0]));
+    let _ = s.view().pad_ndim::<0>();
+}

@@ -163,10 +163,13 @@ pub trait Layout<const N: usize> {
         let mut offset = 0;
         let mut new_extents = [0; M];
         let mut new_strides = [0; M];
-        let (mut src, mut dst) = (0, 0);
-        for spec in slices {
+        let (mut src, mut dst) = (N, M);
+        let mut acc = 1;
+        for spec in slices.into_iter().rev() {
             match spec {
                 SliceReshape::Slice(s) => {
+                    src -= 1;
+                    dst -= 1;
                     let in_bounds = match s.count() {
                         Some(c) if c > 0 => s.start() + (c - 1) * s.step() < extents[src],
                         _ => s.start() <= extents[src],
@@ -177,20 +180,19 @@ pub trait Layout<const N: usize> {
                     offset += s.start() * strides[src];
                     new_extents[dst] = s.len(extents[src]);
                     new_strides[dst] = strides[src] * s.step();
-                    src += 1;
-                    dst += 1;
+                    acc *= new_extents[dst];
                 }
                 SliceReshape::Index(i) => {
+                    src -= 1;
                     if i >= extents[src] {
                         return None;
                     }
                     offset += i * strides[src];
-                    src += 1;
                 }
                 SliceReshape::NewAxis => {
+                    dst -= 1;
                     new_extents[dst] = 1;
-                    new_strides[dst] = 1;
-                    dst += 1;
+                    new_strides[dst] = acc;
                 }
             }
         }
@@ -215,6 +217,23 @@ pub trait Layout<const N: usize> {
                 self.extents()
             )
         })
+    }
+
+    /// The layout produced by [`slice_reshape`](Self::slice_reshape) with
+    /// `M - N` leading [`NewAxis`](SliceReshape::NewAxis).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `M < N`.
+    fn pad_ndim<const M: usize>(&self) -> Strided<M> {
+        assert!(M >= N, "pad_ndim: M ({M}) must be at least N ({N})");
+        let k = M - N;
+        let len = self.len();
+        let (extents, strides) = (self.extents(), self.strides());
+        Strided::new(
+            std::array::from_fn(|d| if d < k { 1 } else { extents[d - k] }),
+            std::array::from_fn(|d| if d < k { len } else { strides[d - k] }),
+        )
     }
 
     /// Layout with axes permuted: axis `d` of the result is axis `perm[d]`

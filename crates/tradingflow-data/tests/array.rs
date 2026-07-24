@@ -1,6 +1,7 @@
 use tradingflow_data::array::{
-    concat, concat_into, map, map_binary, map_binary_into, map_into, select, select_into,
-    select_mask, select_mask_into, split, stack, stack_into, unstack,
+    concat, concat_into, map, map_binary, map_binary_into, map_broadcast, map_broadcast_into,
+    map_into, select, select_into, select_mask, select_mask_into, split, stack, stack_into,
+    unstack,
 };
 use tradingflow_data::layout::{Slice, Strided};
 use tradingflow_data::{Array, ArrayView, Layout};
@@ -215,6 +216,117 @@ fn binary_extents_mismatch() {
     let a = Array::<f64, 1>::zeros([3]);
     let b = Array::<f64, 1>::zeros([2]);
     let _ = map_binary(a.view(), b.view(), |x, y| x + y);
+}
+
+#[test]
+fn broadcast_row_against_column() {
+    // [2, 1] + [1, 3] -> [2, 3], an outer sum.
+    let a = Array::from_parts([2, 1], vec![10.0, 20.0].into());
+    let b = Array::from_parts([1, 3], vec![1.0, 2.0, 3.0].into());
+    let out = map_broadcast(a.view(), b.view(), |x, y| x + y);
+    assert_eq!(
+        out,
+        Array::from_parts([2, 3], vec![11.0, 12.0, 13.0, 21.0, 22.0, 23.0].into())
+    );
+    // Broadcasting is symmetric in the extents.
+    let out = map_broadcast(b.view(), a.view(), |x, y| x + y);
+    assert_eq!(out.extents(), [2, 3]);
+    assert_eq!(out.data(), &[11.0, 12.0, 13.0, 21.0, 22.0, 23.0]);
+}
+
+#[test]
+fn broadcast_equal_extents_matches_map_binary() {
+    let a = Array::from_parts([2, 2], vec![1.0, 2.0, 3.0, 4.0].into());
+    let b = Array::from_parts([2, 2], vec![5.0, 6.0, 7.0, 8.0].into());
+    let out = map_broadcast(a.view(), b.view(), |x, y| x * y);
+    assert_eq!(out, map_binary(a.view(), b.view(), |x, y| x * y));
+}
+
+#[test]
+fn broadcast_strided_operand() {
+    // Column 1 of a [3, 2] panel as a [3, 1] view (extent 3 stride 2, then a
+    // dangling extent-1 axis), broadcast against a [3, 3] panel.
+    let panel = Array::from_parts([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
+    let col1 = ArrayView::from_parts(Strided::new([3, 1], [2, 1]), &panel.data()[1..]);
+    let ones = Array::full([3, 3], 1.0);
+    let out = map_broadcast(col1, ones.view(), |x, y| x * y);
+    assert_eq!(
+        out,
+        Array::from_parts(
+            [3, 3],
+            vec![2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 6.0, 6.0, 6.0].into()
+        )
+    );
+}
+
+#[test]
+fn broadcast_into_reuses_a_row_major_buffer() {
+    let a = Array::from_parts([2, 1], vec![1.0, 2.0].into());
+    let b = Array::from_parts([2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
+    let mut out = [0.0; 6];
+    map_broadcast_into(&mut out, a.view(), b.view(), |x, y| x + y);
+    assert_eq!(out, [2.0, 3.0, 4.0, 6.0, 7.0, 8.0]);
+}
+
+#[test]
+fn broadcast_zero_extent_is_empty() {
+    // [1, 0] against [2, 1] -> [2, 0]: empty, no calls to `f`.
+    let a = Array::<f64, 2>::zeros([1, 0]);
+    let b = Array::from_parts([2, 1], vec![1.0, 2.0].into());
+    let out = map_broadcast(a.view(), b.view(), |_, _| -> f64 { unreachable!() });
+    assert_eq!(out.extents(), [2, 0]);
+}
+
+#[test]
+#[should_panic(expected = "not broadcast-compatible")]
+fn broadcast_incompatible_extents() {
+    let a = Array::<f64, 2>::zeros([2, 3]);
+    let b = Array::<f64, 2>::zeros([2, 2]);
+    let _ = map_broadcast(a.view(), b.view(), |x, y| x + y);
+}
+
+#[test]
+fn pad_ndim_prepends_extent_1_axes() {
+    let a = Array::from_parts([2, 3], vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0].into());
+    let v = a.view().pad_ndim::<4>();
+    assert_eq!(v.extents(), [1, 1, 2, 3]);
+    // Contiguity (and thus the elementwise fast path) is preserved.
+    assert!(v.layout().is_contiguous());
+    assert_eq!(v.as_slice(), a.view().as_slice());
+    assert_eq!(v[[0, 0, 1, 2]], 5.0);
+    // Padding to the same rank is the identity.
+    assert_eq!(a.view().pad_ndim::<2>(), a.view());
+}
+
+#[test]
+fn pad_ndim_strided_operand() {
+    // Column 1 of a [3, 2] panel: extent 3, stride 2 — not contiguous.
+    let panel = Array::from_parts([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
+    let col1 = ArrayView::from_parts(Strided::new([3], [2]), &panel.data()[1..]);
+    let v = col1.pad_ndim::<2>();
+    assert_eq!(v.extents(), [1, 3]);
+    assert!(v.as_slice().is_none());
+    assert_eq!(v.iter().collect::<Vec<_>>(), vec![2.0, 4.0, 6.0]);
+}
+
+#[test]
+fn pad_ndim_enables_cross_rank_broadcast() {
+    // Full NumPy alignment: a rank-1 [3] against a rank-2 [2, 3], with the
+    // rank promotion opted into at the call site.
+    let a = Array::from_parts([2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
+    let b = Array::from_parts([3], vec![10.0, 20.0, 30.0].into());
+    let out = map_broadcast(a.view(), b.view().pad_ndim(), |x, y| x + y);
+    assert_eq!(
+        out,
+        Array::from_parts([2, 3], vec![11.0, 22.0, 33.0, 14.0, 25.0, 36.0].into())
+    );
+}
+
+#[test]
+#[should_panic(expected = "must be at least")]
+fn pad_ndim_below_rank() {
+    let a = Array::<f64, 2>::zeros([2, 3]);
+    let _ = a.view().pad_ndim::<1>();
 }
 
 #[test]

@@ -1,19 +1,21 @@
-//! [`Choose`] — the three-input element-wise selector.
-
 use std::marker::PhantomData;
 
-use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::typed::Operator;
+use crate::data::array::{Array, ArrayView};
+use crate::data::{Instant, Scalar};
+use crate::graph::typed::{Operator, Segment};
+use crate::operators::array;
 use crate::ports::ArrayPort;
 
-/// Element-wise `if cond[i] { a[i] } else { b[i] }` — the three-input selector.
+/// Operator signature for [`choose`].
 pub struct Choose<T: Scalar, const N: usize> {
-    _p: PhantomData<T>,
+    _marker: PhantomData<fn() -> T>,
 }
 
 impl<T: Scalar, const N: usize> Choose<T, N> {
     pub fn new() -> Self {
-        Self { _p: PhantomData }
+        Self {
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -42,6 +44,17 @@ impl<T: Scalar, const N: usize> Operator for Choose<T, N> {
         out
     }
 
+    fn passthrough<'a, 'b: 'a>(
+        _: (
+            (bool, ArrayView<'a, bool, N>),
+            (bool, ArrayView<'a, T, N>),
+            (bool, ArrayView<'a, T, N>),
+        ),
+        out: &'b mut Self::State,
+    ) -> (bool, ArrayView<'a, T, N>) {
+        (false, out.view())
+    }
+
     fn compute<'a, 'b: 'a>(
         ((_, cond), (_, a), (_, b)): (
             (bool, ArrayView<'a, bool, N>),
@@ -54,21 +67,8 @@ impl<T: Scalar, const N: usize> Operator for Choose<T, N> {
         choose_into(out, cond, a, b);
         (true, out.view())
     }
-
-    fn passthrough<'a, 'b: 'a>(
-        _: (
-            (bool, ArrayView<'a, bool, N>),
-            (bool, ArrayView<'a, T, N>),
-            (bool, ArrayView<'a, T, N>),
-        ),
-        out: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (false, out.view())
-    }
 }
 
-/// The per-call body of [`Choose`]: select element-wise between `a` and `b`
-/// under the mask `cond` into `out`.
 fn choose_into<T: Scalar, const N: usize>(
     out: &mut Array<T, N>,
     cond: ArrayView<'_, bool, N>,
@@ -82,7 +82,37 @@ fn choose_into<T: Scalar, const N: usize>(
     }
 }
 
-/// Element-wise `if cond[i] { a[i] } else { b[i] }` — the three-input selector.
-pub fn choose<T: Scalar, const N: usize>() -> Choose<T, N> {
+/// Elementwise AND.
+pub fn and<const N: usize>() -> impl Segment<
+    Inputs = (ArrayPort<bool, N>, ArrayPort<bool, N>),
+    Outputs = ArrayPort<bool, N>,
+    Context = Instant,
+> {
+    array::map_broadcast(|a, b| a && b)
+}
+
+/// Elementwise OR.
+pub fn or<const N: usize>() -> impl Segment<
+    Inputs = (ArrayPort<bool, N>, ArrayPort<bool, N>),
+    Outputs = ArrayPort<bool, N>,
+    Context = Instant,
+> {
+    array::map_broadcast(|a, b| a || b)
+}
+
+/// Elementwise choice: select between two arrays under a boolean mask.
+pub fn choose<T: Scalar, const N: usize>() -> impl Segment<
+    Inputs = (ArrayPort<bool, N>, ArrayPort<T, N>, ArrayPort<T, N>),
+    Outputs = ArrayPort<T, N>,
+    Context = Instant,
+> {
     Choose::new()
+}
+
+/// Elementwise indicator: select between two constants under a boolean mask.
+pub fn indicator<T: Scalar, const N: usize>(
+    a: T,
+    b: T,
+) -> impl Segment<Inputs = ArrayPort<bool, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+    array::map(move |cond| if cond { a.clone() } else { b.clone() })
 }

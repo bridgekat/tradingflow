@@ -24,7 +24,9 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
+    array,
     array::{map, map_array},
+    elem,
     num::*,
     structural::*,
 };
@@ -94,8 +96,9 @@ pub fn with_listing_filter(
     sc.segment(
         tradingflow::segment!(
             |u: ArrayPort<f64, 1>, aged: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-                let keep = and() @ (greater_than(0.0) @ u, is_finite() @ aged);
-                indicator(1.0, f64::NAN) @ keep
+                let zeros = array::zeros([1]) @ ();
+                let keep = elem::and() @ (elem::gt() @ (u, zeros), elem::is_finite() @ aged);
+                elem::indicator(1.0, f64::NAN) @ keep
             }
         ),
         (universe, aged),
@@ -114,8 +117,9 @@ pub fn mask_to_universe(
     sc.segment(
         tradingflow::segment!(
             |data: ArrayPort<f64, 1>, u: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-                let keep = indicator(1.0, f64::NAN) @ (greater_than(0.0) @ u);
-                multiply() @ (data, keep)
+                let zeros = array::zeros([1]) @ ();
+                let keep = elem::indicator(1.0, f64::NAN) @ (elem::gt() @ (u, zeros));
+                elem::multiply() @ (data, keep)
             }
         ),
         (data, universe),

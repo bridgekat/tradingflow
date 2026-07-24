@@ -1,7 +1,7 @@
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView};
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::{num::add, series::record_all, structural::filter};
+use tradingflow::operators::{elem::add, series::record_all, structural::filter};
 use tradingflow::sources::basic::*;
 
 fn pool() -> Pool {

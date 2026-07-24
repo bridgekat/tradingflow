@@ -4,7 +4,7 @@ use super::lag::lag;
 use crate::data::{Instant, Scalar};
 use crate::graph::Segment;
 use crate::graph::cb::{Comp, Fork, Id, Right};
-use crate::operators::num::{divide, subtract};
+use crate::operators::elem;
 use crate::ports::ArrayPort;
 
 /// `n`-tick relative change `(x − x₋ₙ) / x₋ₙ` (the YoY-growth shape):
@@ -19,6 +19,6 @@ pub fn growth<T: Scalar + Float, const N: usize>(
 ) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Comp(
         Fork(Id::default(), lag(n)),
-        Comp(Fork(subtract(), Right::default()), divide()),
+        Comp(Fork(elem::subtract(), Right::default()), elem::divide()),
     )
 }

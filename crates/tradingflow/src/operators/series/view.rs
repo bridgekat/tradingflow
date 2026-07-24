@@ -78,6 +78,12 @@ pub fn slice_reshape<T: Scalar, const N: usize, const M: usize>(
     DeriveView::new(move |a| SeriesView::slice_reshape(&a, slices))
 }
 
+/// Pads leading new axes to a series view: [`SeriesView::pad_ndim`].
+pub fn pad_ndim<T: Scalar, const N: usize>()
+-> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
+    DeriveView::new(move |a| SeriesView::pad_ndim(&a))
+}
+
 /// Permutes the axes of a series view: [`SeriesView::transpose`].
 pub fn transpose<T: Scalar, const N: usize>(
     perm: [usize; N],
