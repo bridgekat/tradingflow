@@ -71,16 +71,16 @@ pub fn slice<T: Scalar, const N: usize>(
 }
 
 /// Takes a slice of an array view: [`ArrayView::slice_reshape`].
-pub fn slice_reshape<T: Scalar, const N: usize, const M: usize>(
-    slices: impl IntoSliceReshapes<N>,
+pub fn slice_reshape<T: Scalar, const N: usize, const M: usize, const K: usize>(
+    slices: impl IntoSliceReshapes<K>,
 ) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
     let slices = slices.into_slice_reshapes();
     DeriveView::new(move |a| ArrayView::slice_reshape(&a, slices))
 }
 
 /// Pads leading new axes to an array view: [`ArrayView::pad_ndim`].
-pub fn pad_ndim<T: Scalar, const N: usize>()
--> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+pub fn pad_ndim<T: Scalar, const N: usize, const M: usize>()
+-> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
     DeriveView::new(move |a| ArrayView::pad_ndim(&a))
 }
 

@@ -6,11 +6,10 @@ use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
     array::{array_map, select, select_at, stack, unstack},
-    elem,
+    elem, event,
     metrics::*,
     stats::*,
     stocks::*,
-    structural::*,
     traders::*,
 };
 use tradingflow::ports::{ArrayPort, ArrayPortHandle};
@@ -240,12 +239,12 @@ pub fn build_stacked(
             ArrayPort<f64, 1>, // cf_ann [3]
             ArrayPort<f64, 1>  // prices_extras [4]
         ) {
-            let prices = filter(any_finite) @ prices_row; // [close, volume, open, high, low, amount]
-            let dividends = filter(any_finite) @ div_row; // [share, cash]
-            let equity = filter(any_finite) @ equity_row; // [total, circulating]
-            let balance = filter(any_finite) @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
-            let income = filter(any_finite) @ income_row; // [year, doy, profit, operating, revenue, cost]
-            let cashflow = filter(any_finite) @ cashflow_row; // [year, doy, operating, investing, financing]
+            let prices = event::filter(any_finite) @ prices_row; // [close, volume, open, high, low, amount]
+            let dividends = event::filter(any_finite) @ div_row; // [share, cash]
+            let equity = event::filter(any_finite) @ equity_row; // [total, circulating]
+            let balance = event::filter(any_finite) @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
+            let income = event::filter(any_finite) @ income_row; // [year, doy, profit, operating, revenue, cost]
+            let cashflow = event::filter(any_finite) @ cashflow_row; // [year, doy, operating, investing, financing]
             // Terminal column picks `Select` out of the retaining `Gate`'s stable
             // storage; squeezing one index drops the
             // axis (rank-1 row → rank-0 scalar). `close` feeds `ForwardAdjust` /
@@ -328,13 +327,13 @@ pub fn build_stacked(
     let income_xs = sc.segment(stack::<f64, 1, 2>(0), &incomes[..]); // (N, 4)
     let balance_xs = sc.segment(stack::<f64, 1, 2>(0), &balances[..]); // (N, 7)
     let cf_xs = sc.segment(stack::<f64, 1, 2>(0), &cashflows[..]); // (N, 3)
-    let px_xs = sc.segment(stack_sync::<f64, 1, 2>(0), &price_extras[..]); // (N, 4) [open, high, low, amount]
+    let px_xs = sc.segment(event::stack_sync::<f64, 1, 2>(0), &price_extras[..]); // (N, 4) [open, high, low, amount]
 
     Stacked {
         // Per-stock scalars (rank-0) → rank-1 `[N]` cross-sections.
-        close: sc.segment(stack_sync(0), &closes[..]),
-        volume: sc.segment(stack_sync(0), &volumes[..]),
-        adjusted_close: sc.segment(stack_sync(0), &adjusted_closes[..]),
+        close: sc.segment(event::stack_sync(0), &closes[..]),
+        volume: sc.segment(event::stack_sync(0), &volumes[..]),
+        adjusted_close: sc.segment(event::stack_sync(0), &adjusted_closes[..]),
         adjusts: sc.segment(stack(0), &adjust_factors[..]),
         total_shares: sc.segment(stack(0), &totals[..]),
         circ_shares: sc.segment(stack(0), &circs[..]),

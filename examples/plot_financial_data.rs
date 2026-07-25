@@ -26,10 +26,10 @@ use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{array_map, select, select_at};
 use tradingflow::operators::elem::{div, mul, neg};
+use tradingflow::operators::event::filter;
 use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::stocks::annualize;
-use tradingflow::operators::structural::filter;
 use tradingflow::ports::ArrayPortHandle;
 use tradingflow::sources::panel::*;
 

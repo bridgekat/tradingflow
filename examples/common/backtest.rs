@@ -16,7 +16,7 @@
 use tradingflow::clock::UnixClock;
 use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
-use tradingflow::operators::{metrics::*, series::record_all, structural::*, traders::*};
+use tradingflow::operators::{event, metrics::*, series::record_all, traders::*};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle};
 use tradingflow::python::{PyClassOperator, PyParams, py_class_operator};
 

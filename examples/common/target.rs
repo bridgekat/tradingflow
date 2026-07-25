@@ -6,9 +6,8 @@ use tradingflow::graph::Builder;
 use tradingflow::operators::series::record;
 use tradingflow::operators::{
     array::{array_map, map},
-    rolling,
+    event, rolling,
     stats::*,
-    structural::*,
     traders::*,
 };
 use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle};

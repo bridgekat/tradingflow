@@ -26,11 +26,10 @@ use tradingflow::graph::Builder;
 use tradingflow::operators::{
     array,
     array::{array_map, map},
-    elem,
+    elem, event,
     stats::*,
-    structural::*,
 };
-use tradingflow::ports::{ArrayPort, ArrayPortHandle, UnitPortHandle};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, UnitPort, UnitPortHandle};
 
 /// Full-market mask: `1.0` for stocks with finite positive market cap this
 /// rebalance, else `NaN`.
@@ -43,15 +42,16 @@ pub fn build_full_market_universe(
     market_cap: ArrayPortHandle<f64, 1>,
     rebalance_clock: UnitPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
+    let market_cap = sc.segment(event::resample(), (rebalance_clock, market_cap));
     sc.segment(
-        clocked(map(|&c: &f64| {
+        map(|&c: &f64| {
             if c.is_finite() && c > 0.0 {
                 1.0
             } else {
                 f64::NAN
             }
-        })),
-        (rebalance_clock, market_cap),
+        }),
+        market_cap,
     )
 }
 
@@ -64,8 +64,9 @@ pub fn build_caprank_universe(
     lo: usize,
     hi: usize,
 ) -> ArrayPortHandle<f64, 1> {
+    let market_cap = sc.segment(event::resample(), (rebalance_clock, market_cap));
     sc.segment(
-        clocked(array_map(move |m: ArrayView<f64, 1>| {
+        array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             let n = s.len();
             let mut idx: Vec<usize> = (0..n).filter(|&i| s[i].is_finite() && s[i] > 0.0).collect();
@@ -77,8 +78,8 @@ pub fn build_caprank_universe(
                 }
             }
             Array::from_parts([n], mask)
-        })),
-        (rebalance_clock, market_cap),
+        }),
+        market_cap,
     )
 }
 
@@ -164,11 +165,12 @@ pub fn build_cap_weighted_universe(
     index_size: usize,
 ) -> ArrayPortHandle<f64, 1> {
     let k = index_size;
+    let market_cap = sc.segment(event::resample(), (rebalance_clock, market_cap));
     sc.segment(
-        clocked(array_map(move |m: ArrayView<f64, 1>| {
+        array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             Array::from_parts([s.len()], calculate_index_weights(&s, k))
-        })),
-        (rebalance_clock, market_cap),
+        }),
+        market_cap,
     )
 }

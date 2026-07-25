@@ -239,12 +239,17 @@ pub fn maxf<T: Scalar + Float, const N: usize>() -> impl Segment<
     array::binary_map(|&x: &T, &y: &T| x.max(y))
 }
 
-/// Elementwise floating-point clamping: [`Float::min`] and then [`Float::max`].
+/// Elementwise floating-point clamping to `[min, max]`, propagating `NaN`.
+///
+/// Unlike [`minf`] and [`maxf`], which follow [`Float::min`] / [`Float::max`]
+/// in preferring the present operand, a `NaN` input is passed through: it
+/// marks missing data, and silently reporting it as a bound would fabricate an
+/// extreme observation.
 pub fn clampf<T: Scalar + Float, const N: usize>(
     min: T,
     max: T,
 ) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    array::map(move |x: &T| x.min(max).max(min))
+    array::map(move |&x: &T| if x.is_nan() { x } else { x.min(max).max(min) })
 }
 
 /// Elementwise replacement of non-finite values.

@@ -71,16 +71,16 @@ pub fn slice<T: Scalar, const N: usize>(
 }
 
 /// Takes a slice of a series view: [`SeriesView::slice_reshape`].
-pub fn slice_reshape<T: Scalar, const N: usize, const M: usize>(
-    slices: impl IntoSliceReshapes<N>,
+pub fn slice_reshape<T: Scalar, const N: usize, const M: usize, const K: usize>(
+    slices: impl IntoSliceReshapes<K>,
 ) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, M>, Context = Instant> {
     let slices = slices.into_slice_reshapes();
     DeriveView::new(move |a| SeriesView::slice_reshape(&a, slices))
 }
 
 /// Pads leading new axes to a series view: [`SeriesView::pad_ndim`].
-pub fn pad_ndim<T: Scalar, const N: usize>()
--> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
+pub fn pad_ndim<T: Scalar, const N: usize, const M: usize>()
+-> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, M>, Context = Instant> {
     DeriveView::new(move |a| SeriesView::pad_ndim(&a))
 }
 

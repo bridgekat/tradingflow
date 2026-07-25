@@ -21,10 +21,10 @@ use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array;
 use tradingflow::operators::array::select_at;
 use tradingflow::operators::elem::{add, mul, sqrt, sub};
+use tradingflow::operators::event::filter;
 use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::stocks::forward_adjust;
-use tradingflow::operators::structural::filter;
 use tradingflow::sources::panel::*;
 
 const WINDOW: usize = 252;

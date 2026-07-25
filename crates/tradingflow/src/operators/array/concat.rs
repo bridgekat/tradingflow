@@ -5,7 +5,7 @@ use crate::graph::{Operator, Segment};
 use crate::ports::{ArrayPort, ArrayPorts};
 
 /// Operator signature for [`concat`](fn@concat), [`stack`] etc.
-pub struct CombineArray<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F>
+pub struct Combine<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F>
 where
     I: FnOnce(&[ArrayView<'_, T, N>]) -> Array<U, M> + Send + 'static,
     F: FnMut(&mut Array<U, M>, &[ArrayView<'_, T, N>]) + Send + 'static,
@@ -15,7 +15,7 @@ where
     _marker: PhantomData<fn() -> (T, U)>,
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F> CombineArray<T, N, U, M, I, F>
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F> Combine<T, N, U, M, I, F>
 where
     I: FnOnce(&[ArrayView<'_, T, N>]) -> Array<U, M> + Send + 'static,
     F: FnMut(&mut Array<U, M>, &[ArrayView<'_, T, N>]) + Send + 'static,
@@ -30,7 +30,7 @@ where
 }
 
 impl<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F> Operator
-    for CombineArray<T, N, U, M, I, F>
+    for Combine<T, N, U, M, I, F>
 where
     I: FnOnce(&[ArrayView<'_, T, N>]) -> Array<U, M> + Send + 'static,
     F: FnMut(&mut Array<U, M>, &[ArrayView<'_, T, N>]) + Send + 'static,
@@ -69,7 +69,7 @@ pub fn concat<T: Scalar, const N: usize>(
     let update = move |out: &mut Array<T, N>, views: &[ArrayView<'_, T, N>]| {
         array::concat_into(out.data_mut(), views, axis);
     };
-    CombineArray::new(init, update)
+    Combine::new(init, update)
 }
 
 /// Stacks the inputs along a new axis inserted at `axis`: [`array::stack`].
@@ -84,5 +84,5 @@ pub fn stack<T: Scalar, const N: usize, const M: usize>(
     let update = move |out: &mut Array<T, M>, views: &[ArrayView<'_, T, N>]| {
         array::stack_into(out.data_mut(), views, axis);
     };
-    CombineArray::new(init, update)
+    Combine::new(init, update)
 }

@@ -219,13 +219,18 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
     /// Panics if `slices` is out of bounds on any element axis.
     pub fn slice(&self, slices: impl layout::IntoSlices<N>) -> Self {
         let (offset, layout) = self.layout.slice(slices);
-        // SAFETY: `self.data.len() >= self.layout.span_ext(...) >= offset + layout.span_ext(...)`.
+        // SAFETY: `self.data.len() >= self.layout.span_ext(...) >= offset + layout.span_ext(...)`
+        // unless `self.is_empty()`, in which case `layout.span_ext(...) == 0`.
         unsafe {
             SeriesView::from_parts_unchecked(
                 layout,
                 self.stride,
                 self.instants,
-                &self.data[offset..],
+                if self.is_empty() {
+                    &[]
+                } else {
+                    &self.data[offset..]
+                },
                 self.base,
             )
         }
@@ -242,13 +247,18 @@ impl<'a, T: Scalar, const N: usize> SeriesView<'a, T, N> {
         slices: impl layout::IntoSliceReshapes<K>,
     ) -> SeriesView<'a, T, M> {
         let (offset, layout) = self.layout.slice_reshape(slices);
-        // SAFETY: `self.data.len() >= self.layout.span_ext(...) >= offset + layout.span_ext(...)`.
+        // SAFETY: `self.data.len() >= self.layout.span_ext(...) >= offset + layout.span_ext(...)`
+        // unless `self.is_empty()`, in which case `layout.span_ext(...) == 0`.
         unsafe {
             SeriesView::from_parts_unchecked(
                 layout,
                 self.stride,
                 self.instants,
-                &self.data[offset..],
+                if self.is_empty() {
+                    &[]
+                } else {
+                    &self.data[offset..]
+                },
                 self.base,
             )
         }

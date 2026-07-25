@@ -24,8 +24,8 @@ use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{array_binary_map, array_map};
 use tradingflow::operators::elem::mul;
+use tradingflow::operators::event;
 use tradingflow::operators::series::record_all;
-use tradingflow::operators::structural::resample_view;
 use tradingflow::operators::traders::benchmark;
 use tradingflow::sources::basic::*;
 
@@ -60,7 +60,8 @@ async fn main() {
 
     // Hold the rebalance-day universe fixed between rebalances by re-emitting it
     // on the daily close pulse (clock = the close view, data = the universe).
-    let daily_universe = sc.segment(resample_view(), (st.close, universe));
+    let daily = sc.segment(event::clock(), st.close);
+    let daily_universe = sc.segment(event::resample(), (daily, universe));
 
     // Summed circulating market cap of the current constituents.
     let masked_circ_sum = |u: ArrayView<f64, 1>, c: ArrayView<f64, 1>| -> f64 {

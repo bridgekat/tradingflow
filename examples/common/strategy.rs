@@ -10,7 +10,7 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant, Retention};
 use tradingflow::graph::{Builder, Graph, Pool, Segment};
 use tradingflow::operators::series::record_all;
-use tradingflow::operators::{array::array_map, elem, stats::*, structural::*, traders::*};
+use tradingflow::operators::{array::array_map, elem, event, stats::*, traders::*};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPortHandle, UnitPortHandle};
 use tradingflow::sources::basic::*;
 

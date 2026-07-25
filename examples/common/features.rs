@@ -60,13 +60,12 @@ use tradingflow::data::{
 use tradingflow::graph::{Builder, Operator};
 use tradingflow::operators::{
     array::{map, select, select_at, stack},
-    elem,
+    elem, event,
     metrics::*,
     rolling,
     series::{buffer, record},
     stats::*,
     stocks::*,
-    structural::*,
     traders::*,
 };
 use tradingflow::ports::{
@@ -144,7 +143,7 @@ fn delta(
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            rolling::diff(LAG_YEAR) @ resample_view() @ (adj, lvl)
+            rolling::diff(LAG_YEAR) @ event::resample() @ (event::clock() @ adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -160,7 +159,7 @@ fn yoy(
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            rolling::pct_change(LAG_YEAR) @ resample_view() @ (adj, lvl)
+            rolling::pct_change(LAG_YEAR) @ event::resample() @ (event::clock() @ adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -298,7 +297,7 @@ pub fn build_forward_return(
     log_adj: ArrayPortHandle<f64, 1>,
     rebalance_clock: UnitPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
-    let resampled = sc.segment(resample_clocked(), (rebalance_clock, log_adj));
+    let resampled = sc.segment(event::resample(), (rebalance_clock, log_adj));
     sc.segment(rolling::diff(1), resampled)
 }
 
@@ -1035,7 +1034,8 @@ pub fn build_features(
     handles.extend(pv.feature);
 
     let stacked = sc.segment(stack(1), &handles[..]);
-    let sampled = sc.segment(resample_view(), (st.adjusted_close, stacked));
+    let daily = sc.segment(event::clock(), st.adjusted_close);
+    let sampled = sc.segment(event::resample(), (daily, stacked));
     let series = sc.segment(record(feature_retention, false), sampled);
     Features {
         names,
