@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::ops::{Deref, Index};
 
-use super::{Array, ArrayIter};
+use super::{Array, ArrayIter, ArrayOuterIter};
 use crate::{Layout, Scalar, layout};
 
 /// A borrowed, strided view of an [`Array`].
@@ -22,6 +22,14 @@ impl<'a, T: Scalar> ArrayView<'a, T, 0> {
 }
 
 impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
+    /// Creates an array view filled with `value`.
+    pub fn full(extents: [usize; N], value: &'a T) -> Self {
+        Self {
+            layout: layout::Strided::new(extents, [0; N]),
+            data: std::slice::from_ref(value),
+        }
+    }
+
     /// Creates an array view from a row-major contiguous slice.
     ///
     /// # Panics
@@ -197,6 +205,35 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
     pub fn iter(&self) -> ArrayIter<'a, T, N> {
         ArrayIter {
             offsets: self.layout().iter(),
+            data: self.data(),
+        }
+    }
+
+    /// Iterates over rank-`N - K` sub-regions in row-major order of the first
+    /// `K` axes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `K > N` or `K + M < N`.
+    pub fn split_iter<const K: usize, const M: usize>(&self) -> ArrayOuterIter<'a, T, K, M> {
+        let (offsets, layout) = self.layout().split_iter();
+        ArrayOuterIter {
+            offsets,
+            layout,
+            data: self.data(),
+        }
+    }
+
+    /// Like [`split_iter`](Self::split_iter) but with dynamic `k`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k > N`.
+    pub fn split_iter_dyn(&self, k: usize) -> ArrayOuterIter<'a, T, N, N> {
+        let (offsets, layout) = self.layout().split_iter_dyn(k);
+        ArrayOuterIter {
+            offsets,
+            layout,
             data: self.data(),
         }
     }

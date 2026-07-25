@@ -22,9 +22,9 @@ use tradingflow::operators::array;
 use tradingflow::operators::array::select_at;
 use tradingflow::operators::elem::{add, mul, sqrt, sub};
 use tradingflow::operators::event::filter;
+use tradingflow::operators::feature::stock::forward_adjust;
 use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
-use tradingflow::operators::stocks::forward_adjust;
 use tradingflow::sources::panel::*;
 
 const WINDOW: usize = 252;
@@ -86,9 +86,12 @@ async fn main() {
     );
     let closes = sc.segment(select_at(0, 0), prices);
 
-    // Forward-adjusted close (scalar close `0`, dividends row `1`), recorded into
-    // a Series for the rolling stats.
-    let adj_closes = sc.segment(forward_adjust(), (closes, dividends));
+    // Forward-adjusted close (scalar close plus the two scalar dividend legs
+    // split out of the `[share, cash]` row), recorded into a Series for the
+    // rolling stats.
+    let share_divs = sc.segment(select_at(0, 0), dividends);
+    let cash_divs = sc.segment(select_at(1, 0), dividends);
+    let (_multipliers, adj_closes) = sc.segment(forward_adjust(), (closes, share_divs, cash_divs));
     let adj_series = sc.segment(record_all(), adj_closes);
 
     // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).

@@ -1,10 +1,16 @@
-//! Basic event-semantics operators.
+//! Basic event-semantics operators on arrays.
 //!
 //! These are operators with non-trivial behavior in terms of the notification
-//! flags of their inputs or outputs: a wire with `notify = true` is considered
-//! as carrying a one-time "event", and a wire with `notify = false` is
-//! typically ignored. See module-level docs of [`crate::graph`] for an
-//! overview of notification flags.
+//! flags or NaN status of their inputs or outputs:
+//!
+//! - A non-NaN element in an array with `notify = true` is considered
+//!   as carrying a one-time "event";
+//! - A NaN element or an element in an array with `notify = false` is
+//!   typically ignored.
+//!
+//! For non-floating scalar types inside arrays, `Option<T>` is used to
+//! represent the presence or absence of an event, where `None` has the same
+//! meaning as NaN.
 
 mod clock;
 mod concat;

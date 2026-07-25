@@ -30,7 +30,7 @@
 //! are `NaN`); there is no carry-forward and no window-start seeding. This is the
 //! event-driven behaviour of the old per-symbol sources: a source ticks only on
 //! its own dates, and any "carry the last value" / "NaN-fill" is the job of the
-//! downstream [`stack`](crate::operators::array::stack) / [`StackSync`](crate::operators::structural::StackSync)
+//! downstream [`stack`](crate::operators::array::stack) / [`stack_sync`](crate::operators::event::stack_sync)
 //! operators — not the source. With `with_time_range`, rows before `start` are
 //! simply skipped (no last-value-before-`start` is carried in).
 //!
@@ -40,9 +40,9 @@
 //! dense. For **irregular** kinds (dividends, financial reports) the panel emits
 //! at the *union* of all symbols' event dates — which need not include every
 //! trading day. A per-stock `Select` therefore still fires on that union cadence
-//! with `NaN` where the stock had no row; a [`Filter`](crate::operators::structural::Filter) that
+//! with `NaN` where the stock had no row; a [`filter`](crate::operators::event::filter) that
 //! drops the all-`NaN` ("no data") rows recovers that stock's true event stream,
-//! so message-passing operators (e.g. [`ForwardAdjust`](crate::operators::stocks::ForwardAdjust))
+//! so message-passing operators (e.g. [`ForwardAdjust`](crate::operators::feature::stock::ForwardAdjust))
 //! see each real event exactly once — reproducing the per-symbol stream.
 //!
 //! # Timestamps
@@ -80,7 +80,7 @@
 //!
 //! [`with_report_date`](ParquetFinancialReportPanelSource::with_report_date) prepends
 //! `[year, day_of_year]` of the **report** date (for
-//! [`Annualize`](crate::operators::stocks::Annualize)). A per-stock pipeline is recovered
+//! [`Annualize`](crate::operators::feature::stock::Annualize)). A per-stock pipeline is recovered
 //! downstream by `Select` + a NaN `Filter`.
 
 use std::collections::HashMap;
@@ -187,7 +187,7 @@ fn instant_from_days(days: i32) -> Instant {
 }
 
 /// `(year, day_of_year)` (1-based) for a report date via hifitime
-/// (`Epoch::year_days_of_year() + 1`), so [`Annualize`](crate::operators::stocks::Annualize)
+/// (`Epoch::year_days_of_year() + 1`), so [`Annualize`](crate::operators::feature::stocks::Annualize)
 /// consumes it directly. Used by [`ParquetFinancialReportPanelSource`](super::ParquetFinancialReportPanelSource).
 fn report_year_and_doy(days: i32) -> (f64, f64) {
     let (year, day_of_year) = epoch_from_days(days).year_days_of_year();
@@ -679,7 +679,7 @@ impl ParquetFinancialReportPanelSource {
 /// for point-in-time alignment,
 /// [`with_report_date`](ParquetFinancialReportPanelSource::with_report_date) to
 /// prepend `[year, day_of_year]` (for
-/// [`annualize`](crate::operators::stocks::annualize)), or
+/// [`annualize`](crate::operators::feature::stock::annualize)), or
 /// [`with_time_range`](ParquetFinancialReportPanelSource::with_time_range) /
 /// [`with_columns`](ParquetFinancialReportPanelSource::with_columns).
 pub fn parquet_financial_report_panel_source(

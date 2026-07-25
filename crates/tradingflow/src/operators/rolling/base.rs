@@ -73,7 +73,7 @@ impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, 
     fn init(self, (_, series): (bool, SeriesView<'_, T, N>)) -> Self::State {
         assert!(
             series.range().is_empty(),
-            "rolling operator must be initialized with an empty input series (got range {:?})",
+            "rolling: operator must be initialized with an empty input series (got range {:?})",
             series.range()
         );
         let mut acc = self.acc;
@@ -101,21 +101,21 @@ impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, 
     ) -> (bool, ArrayView<'a, U, M>) {
         assert!(
             series.range().start <= state.range.start,
-            "input series dropped elements before rolling operator can drop them (last window {:?}, got range {:?})",
+            "rolling: input series dropped elements before operator can drop them (last window {:?}, got range {:?})",
             state.range,
             series.range()
         );
         let start = series.range().start + state.window.trim_count(series, instant);
         assert!(
             state.range.start <= start,
-            "rolling operator window start must be monotonic (last window {:?}, got new start {})",
+            "rolling: window start must be monotonic (last window {:?}, got new start {})",
             state.range,
             start
         );
         let end = series.range().end;
         assert!(
             state.range.end <= end,
-            "input series range end must be monotonic (last window {:?}, got new end {})",
+            "rolling: input series range end must be monotonic (last window {:?}, got new end {})",
             state.range,
             end
         );

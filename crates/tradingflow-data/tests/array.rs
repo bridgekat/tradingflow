@@ -775,7 +775,7 @@ fn transpose_rank3_permutation() {
 }
 
 #[test]
-#[should_panic(expected = "not a permutation")]
+#[should_panic(expected = "transpose: duplicate axis 0")]
 fn transpose_rejects_non_permutation() {
     let a = Array::<f64, 2>::zeros([2, 3]);
     let _ = a.view().transpose([0, 0]);
@@ -928,4 +928,126 @@ fn view_eq_compares_only_the_index_space() {
 
     // One differing element is enough.
     assert_ne!(col1, ArrayView::from_slice([3], &[2.0, 4.0, 7.0]));
+}
+
+#[test]
+fn split_iter_rows_and_columns() {
+    // [[0, 1, 2], [3, 4, 5]]
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+
+    // Splitting at axis 1 walks axis 0: the sub-views are the rows.
+    let rows: Vec<ArrayView<f64, 1>> = v.split_iter::<1, 1>().collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], ArrayView::from_slice([3], &[0.0, 1.0, 2.0]));
+    assert_eq!(rows[1], ArrayView::from_slice([3], &[3.0, 4.0, 5.0]));
+
+    // Transposing first yields the (strided) columns instead.
+    let cols: Vec<ArrayView<f64, 1>> = v.transpose([1, 0]).split_iter::<1, 1>().collect();
+    assert_eq!(cols.len(), 3);
+    assert_eq!(cols[0], ArrayView::from_slice([2], &[0.0, 3.0]));
+    assert_eq!(cols[2], ArrayView::from_slice([2], &[2.0, 5.0]));
+}
+
+#[test]
+fn split_iter_rank0_walks_row_major() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+
+    // A rank-0 split: one scalar sub-view per element of the index space.
+    let scalars: Vec<f64> = v.split_iter::<2, 0>().map(|s| s[[]]).collect();
+    assert_eq!(scalars, data);
+
+    // The leading-axis walk matches `iter()` even for a strided view.
+    let t = v.transpose([1, 0]);
+    let scalars: Vec<f64> = t.split_iter::<2, 0>().map(|s| s[[]]).collect();
+    assert_eq!(scalars, t.iter().copied().collect::<Vec<_>>());
+}
+
+#[test]
+fn split_iter_whole_split_is_identity() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+
+    // Splitting at axis 0: a single sub-view, the whole array.
+    let whole: Vec<ArrayView<f64, 2>> = v.split_iter::<0, 2>().collect();
+    assert_eq!(whole.len(), 1);
+    assert_eq!(whole[0], v);
+    // Composes with `transpose` like every other split.
+    let flipped: Vec<ArrayView<f64, 2>> = v.transpose([1, 0]).split_iter::<0, 2>().collect();
+    assert_eq!(flipped[0], v.transpose([1, 0]));
+}
+
+#[test]
+fn split_iter_zip_aligns_across_ranks() {
+    // Prices [3] zip with dividend rows [3, 2] over the shared stock axis.
+    let prices = ArrayView::from_slice([3], &[10.0, 20.0, 30.0][..]);
+    let divs: Vec<f64> = (0..6).map(f64::from).collect();
+    let divs = ArrayView::from_slice([3, 2], &divs);
+    let pairs: Vec<(f64, f64)> = prices
+        .split_iter::<1, 0>()
+        .zip(divs.split_iter::<1, 1>())
+        .map(|(p, d)| (p[[]], d[[1]]))
+        .collect();
+    assert_eq!(pairs, vec![(10.0, 1.0), (20.0, 3.0), (30.0, 5.0)]);
+}
+
+#[test]
+fn split_iter_middle_axis_via_transpose() {
+    // [2, 3, 2]: lanes along the middle axis. Transposing it to the back
+    // walks the remaining (i, k) in row-major order.
+    let data: Vec<f64> = (0..12).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3, 2], &data);
+    let lanes: Vec<Vec<f64>> = v
+        .transpose([0, 2, 1])
+        .split_iter::<2, 1>()
+        .map(|l| l.iter().copied().collect())
+        .collect();
+    assert_eq!(lanes.len(), 4);
+    assert_eq!(lanes[0], vec![0.0, 2.0, 4.0]); // (i, k) = (0, 0)
+    assert_eq!(lanes[1], vec![1.0, 3.0, 5.0]); // (i, k) = (0, 1)
+    assert_eq!(lanes[3], vec![7.0, 9.0, 11.0]); // (i, k) = (1, 1)
+}
+
+#[test]
+fn split_iter_empty_axes() {
+    // Empty walked axis: no sub-views.
+    let v = ArrayView::<f64, 2>::from_slice([0, 4], &[]);
+    assert_eq!(v.split_iter::<1, 1>().count(), 0);
+
+    // Empty sub-view axis: one empty lane per walked index, safely yielded
+    // even though the backing slice holds no scalars.
+    let v = ArrayView::<f64, 2>::from_slice([3, 0], &[]);
+    let lanes: Vec<ArrayView<f64, 1>> = v.split_iter::<1, 1>().collect();
+    assert_eq!(lanes.len(), 3);
+    assert!(lanes.iter().all(|l| l.extents() == [0]));
+}
+
+#[test]
+fn split_iter_is_exact_size() {
+    let data: Vec<f64> = (0..24).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3, 4], &data);
+    let mut it = v.split_iter::<2, 1>();
+    assert_eq!(it.len(), 6);
+    it.next();
+    assert_eq!(it.len(), 5);
+}
+
+#[test]
+fn split_iter_padded_to_full_rank() {
+    // The `M = N` shorthand: sub-views keep the input rank, with the walked
+    // axes replaced by leading extent-1 axes — no need to name `N - K`.
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+    let rows: Vec<ArrayView<f64, 2>> = v.split_iter::<1, 2>().collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], ArrayView::from_slice([1, 3], &[0.0, 1.0, 2.0]));
+    assert_eq!(rows[1], ArrayView::from_slice([1, 3], &[3.0, 4.0, 5.0]));
+}
+
+#[test]
+#[should_panic(expected = "K (1) + M (0) must cover rank (2)")]
+fn split_iter_rank_not_covered() {
+    let v = ArrayView::<f64, 2>::from_slice([2, 3], &[0.0; 6]);
+    let _ = v.split_iter::<1, 0>();
 }

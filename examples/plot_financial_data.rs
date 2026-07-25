@@ -25,11 +25,11 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{array_map, select, select_at};
-use tradingflow::operators::elem::{div, mul, neg};
+use tradingflow::operators::elem::{as_, div, mul, neg};
 use tradingflow::operators::event::filter;
+use tradingflow::operators::feature::stock::annualize;
 use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
-use tradingflow::operators::stocks::annualize;
 use tradingflow::ports::ArrayPortHandle;
 use tradingflow::sources::panel::*;
 
@@ -160,10 +160,22 @@ async fn main() {
         neg_peq,
     );
 
-    let income_ann = sc.segment(annualize(), income); // [op_income, net_profit]
+    // Split the panel's leading [year, day_of_year] f64 columns off each report
+    // row and cast them to the i32 calendar inputs (broadcast `[1]` → `[K]`).
+    let income_year_f = sc.segment(select(vec![0], 0), income);
+    let income_year = sc.segment(as_(), income_year_f);
+    let income_doy_f = sc.segment(select(vec![1], 0), income);
+    let income_doy = sc.segment(as_(), income_doy_f);
+    let income_ytd = sc.segment(select(vec![2, 3], 0), income);
+    let income_ann = sc.segment(annualize(), (income_ytd, income_year, income_doy)); // [op_income, net_profit]
     let op_income = sc.segment(select_at(0, 0), income_ann);
     let net_profit = sc.segment(select_at(1, 0), income_ann);
-    let cf_ann = sc.segment(annualize(), cf); // [change]
+    let cf_year_f = sc.segment(select(vec![0], 0), cf);
+    let cf_year = sc.segment(as_(), cf_year_f);
+    let cf_doy_f = sc.segment(select(vec![1], 0), cf);
+    let cf_doy = sc.segment(as_(), cf_doy_f);
+    let cf_ytd = sc.segment(select(vec![2], 0), cf);
+    let cf_ann = sc.segment(annualize(), (cf_ytd, cf_year, cf_doy)); // [change]
     let cash_flow = sc.segment(select_at(0, 0), cf_ann);
 
     let net_profit_series = sc.segment(record_all(), net_profit);

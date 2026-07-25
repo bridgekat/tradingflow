@@ -1,5 +1,4 @@
-//! Trader (execution) operators, implemented directly on
-//! [`Operator`](crate::graph::typed::Operator).
+//! Trader operators (order execution and simulation).
 //!
 //! A trader turns a strategy's target weights into a simulated portfolio NAV: it
 //! reinvests dividends, executes rebalances against close prices, marks the book

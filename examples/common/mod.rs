@@ -37,8 +37,6 @@
 #![allow(unused_imports)] // the re-exports below serve all examples, not each one
 
 #[cfg(feature = "python")]
-pub mod backtest;
-#[cfg(feature = "python")]
 pub mod ic;
 #[cfg(feature = "python")]
 pub mod models;

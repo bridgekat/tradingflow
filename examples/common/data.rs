@@ -7,9 +7,9 @@ use tradingflow::graph::Builder;
 use tradingflow::operators::{
     array::{array_map, select, select_at, stack, unstack},
     elem, event,
-    metrics::*,
+    feature::stock::*,
+    metric::*,
     stats::*,
-    stocks::*,
     traders::*,
 };
 use tradingflow::ports::{ArrayPort, ArrayPortHandle};
@@ -253,20 +253,29 @@ pub fn build_stacked(
             let volume = select_at(1, 0) @ prices;
             // [open, high, low, amount] as a contiguous rank-1 view of cols 2..6.
             let prices_extras = select(vec![2, 3, 4, 5], 0) @ prices;
-            let adjusts =
-                forward_adjust().with_output_prices(false) @ (close, dividends);
-            let adjusted_close = elem::mul() @ (close, adjusts);
+            let share_divs = select_at(0, 0) @ dividends;
+            let cash_divs = select_at(1, 0) @ dividends;
+            let (adjusts, adjusted_close) =
+                forward_adjust() @ (close, share_divs, cash_divs);
             let total_shares = select_at(0, 0) @ equity;
             let circ_shares = select_at(1, 0) @ equity;
             // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).
             let parent_equity = array_map(|a: ArrayView<f64, 1>| {
                 Array::<f64, 0>::scalar(-a.to_contiguous()[..3].iter().sum::<f64>())
             }) @ balance;
-            // Annualized income / cash flows (YTD → Annualize) and the balance
+            // Annualized income / cash flows (YTD → Annualize; the panel's
+            // leading [year, day_of_year] f64 columns split off and cast to the
+            // i32 calendar inputs, broadcast `[1]` → `[K]`) and the balance
             // stocks [assets, liab, current_assets, current_liab, cash, inv, rec]
             // as a contiguous rank-1 view of cols 3..10.
-            let income_ann = annualize() @ income;
-            let cf_ann = annualize() @ cashflow;
+            let income_year = elem::as_() @ select(vec![0], 0) @ income;
+            let income_doy = elem::as_() @ select(vec![1], 0) @ income;
+            let income_ytd = select(vec![2, 3, 4, 5], 0) @ income;
+            let income_ann = annualize() @ (income_ytd, income_year, income_doy);
+            let cf_year = elem::as_() @ select(vec![0], 0) @ cashflow;
+            let cf_doy = elem::as_() @ select(vec![1], 0) @ cashflow;
+            let cf_ytd = select(vec![2, 3, 4], 0) @ cashflow;
+            let cf_ann = annualize() @ (cf_ytd, cf_year, cf_doy);
             let balance_extras = select(vec![3, 4, 5, 6, 7, 8, 9], 0) @ balance;
             (
                 close,

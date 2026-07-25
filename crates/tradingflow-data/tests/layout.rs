@@ -141,6 +141,100 @@ fn offsets_are_exhausted_once() {
 }
 
 #[test]
+fn split_iter_split_extents() {
+    let l = RowMajor::new([2, 3, 4]); // strides [12, 4, 1]
+
+    // The trailing axes form the sub-layout; the leading ones are walked.
+    let (offsets, sub) = l.split_iter::<1, 2>();
+    assert_eq!((sub.extents(), sub.strides()), ([3, 4], [4, 1]));
+    assert_eq!(offsets.collect::<Vec<_>>(), vec![0, 12]);
+
+    let (offsets, sub) = l.split_iter::<2, 1>();
+    assert_eq!((sub.extents(), sub.strides()), ([4], [1]));
+    assert_eq!(offsets.collect::<Vec<_>>(), vec![0, 4, 8, 12, 16, 20]);
+
+    // Split at axis 0: the whole layout, walked once.
+    let (offsets, sub) = l.split_iter::<0, 3>();
+    assert_eq!((sub.extents(), sub.strides()), (l.extents(), l.strides()));
+    assert_eq!(offsets.collect::<Vec<_>>(), vec![0]);
+
+    // Split at axis 3: a rank-0 sub-layout over every element.
+    let (offsets, sub) = l.split_iter::<3, 0>();
+    assert_eq!(sub.len(), 1);
+    assert_eq!(offsets.collect::<Vec<_>>(), l.iter().collect::<Vec<_>>());
+
+    // Other axis selections: transpose the wanted axes to the back first.
+    let (offsets, sub) = l.transpose([1, 2, 0]).split_iter::<2, 1>();
+    assert_eq!((sub.extents(), sub.strides()), ([2], [12]));
+    assert_eq!(offsets.count(), 12);
+
+    // M > N - K: leading extent-1 padding, strided like `pad_ndim` so a
+    // contiguous sub-layout stays detected as contiguous.
+    let (offsets, sub) = l.split_iter::<1, 3>();
+    assert_eq!((sub.extents(), sub.strides()), ([1, 3, 4], [12, 4, 1]));
+    assert!(sub.is_contiguous());
+    assert_eq!(offsets.collect::<Vec<_>>(), vec![0, 12]);
+
+    // The `M = N` shorthand at the scalar end: rank-3 unit sub-layouts.
+    let (offsets, sub) = l.split_iter::<3, 3>();
+    assert_eq!(sub.extents(), [1, 1, 1]);
+    assert_eq!(sub.len(), 1);
+    assert_eq!(offsets.count(), 24);
+}
+
+#[test]
+fn split_iter_offsets_stay_within_span() {
+    // The invariant `offset + sub.span() <= self.span()` is what makes the
+    // array-level sub-view construction sound: no lane addresses a scalar
+    // beyond the parent's own reach.
+    fn check<const K: usize, const M: usize>(l: impl Layout<3>) {
+        let span = l.span();
+        let (offsets, sub) = l.split_iter::<K, M>();
+        for off in offsets {
+            assert!(
+                off + sub.span() <= span,
+                "split {K}+{M}: offset {off} + sub span {} overruns {span}",
+                sub.span(),
+            );
+        }
+    }
+    fn check_all(l: impl Layout<3> + Copy) {
+        check::<0, 3>(l);
+        check::<1, 2>(l);
+        check::<2, 1>(l);
+        check::<3, 0>(l);
+        check::<2, 1>(l.transpose([2, 0, 1]));
+        // Padded splits keep the invariant (unit axes span nothing extra).
+        check::<1, 3>(l);
+        check::<3, 3>(l);
+    }
+    check_all(RowMajor::new([2, 3, 4]));
+    check_all(ColMajor::new([2, 3, 4]));
+    check_all(Strided::new([2, 3, 4], [1, 8, 2]));
+    // Empty layouts: offsets collapse onto the base rather than overrunning
+    // a span that is itself 0.
+    check_all(RowMajor::new([3, 0, 4]));
+    check_all(RowMajor::new([0, 0, 0]));
+
+    // The bound is tight — the last lane ends exactly at the parent's span.
+    let l = RowMajor::new([2, 3, 4]);
+    let (offsets, sub) = l.split_iter::<1, 2>();
+    assert_eq!(offsets.max().unwrap() + sub.span(), l.span());
+}
+
+#[test]
+#[should_panic(expected = "K (2) + M (0) must cover rank (3)")]
+fn split_iter_rank_not_covered() {
+    let _ = RowMajor::new([2, 3, 4]).split_iter::<2, 0>();
+}
+
+#[test]
+#[should_panic(expected = "K (4) exceeds rank (3)")]
+fn split_iter_split_beyond_rank() {
+    let _ = RowMajor::new([2, 3, 4]).split_iter::<4, 0>();
+}
+
+#[test]
 fn slice_restricts_extents_and_keeps_strides() {
     let l = RowMajor::new([4, 5]);
     let (offset, s) = l.slice([1..3, 2..5]);
@@ -396,13 +490,13 @@ fn transpose_permutes_extents_and_strides() {
 }
 
 #[test]
-#[should_panic(expected = "not a permutation")]
+#[should_panic(expected = "transpose: duplicate axis 1")]
 fn transpose_rejects_repeated_axes() {
     let _ = RowMajor::new([2, 3, 4]).transpose([1, 2, 1]);
 }
 
 #[test]
-#[should_panic(expected = "not a permutation")]
+#[should_panic(expected = "transpose: axis 3 out of bounds for rank 2")]
 fn transpose_rejects_out_of_range_axis() {
     let _ = RowMajor::new([2, 3]).transpose([0, 3]);
 }

@@ -61,11 +61,10 @@ use tradingflow::graph::{Builder, Operator};
 use tradingflow::operators::{
     array::{map, select, select_at, stack},
     elem, event,
-    metrics::*,
+    metric::*,
     rolling,
     series::{buffer, record},
     stats::*,
-    stocks::*,
     traders::*,
 };
 use tradingflow::ports::{

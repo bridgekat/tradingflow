@@ -30,7 +30,7 @@ use tradingflow::data::{Retention, SeriesView};
 use tradingflow::graph::Builder;
 use tradingflow::operators::array::stack;
 use tradingflow::operators::elem::ln;
-use tradingflow::operators::metrics::{compound_return, drawdown, sharpe_ratio};
+use tradingflow::operators::metric::{comp_return, drawdown, return_sharpe};
 use tradingflow::operators::rolling::diff;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::traders::{benchmark, random_trader};
@@ -89,8 +89,8 @@ async fn main() {
     );
 
     // ---- Metrics (clock-gated, since inception) -------------------------
-    let sharpe = sc.segment(sharpe_ratio(), (m.rebalance_clock, actual_value));
-    let compound = sc.segment(compound_return(), (m.rebalance_clock, actual_value));
+    let sharpe = sc.segment(return_sharpe(), (m.rebalance_clock, actual_value));
+    let compound = sc.segment(comp_return(), (m.rebalance_clock, actual_value));
     let drawdown = sc.segment(drawdown(), actual_value);
 
     // Rolling market beta / alpha vs the cap-weighted index, on daily log

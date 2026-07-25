@@ -75,9 +75,9 @@
 //! ```
 //!
 //! This is the whole pattern. An actual strategy can contain many more
-//! operators — [`forward_adjust`](operators::stocks::forward_adjust),
+//! operators — [`forward_adjust`](operators::feature::stock::forward_adjust),
 //! [`random_trader`](operators::traders::random_trader),
-//! [`sharpe_ratio`](operators::metrics::sharpe_ratio)
+//! [`return_sharpe`](operators::metric::return_sharpe)
 //! — but the overall structure stays the same.
 //!
 //! # Arrays and series

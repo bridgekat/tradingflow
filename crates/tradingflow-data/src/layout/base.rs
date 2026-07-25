@@ -245,10 +245,8 @@ pub trait Layout<const N: usize> {
     fn transpose(&self, perm: [usize; N]) -> Strided<N> {
         let mut seen = [false; N];
         for &p in &perm {
-            assert!(
-                p < N && !seen[p],
-                "transpose: {perm:?} is not a permutation of 0..{N}",
-            );
+            assert!(p < N, "transpose: axis {p} out of bounds for rank {N}");
+            assert!(!seen[p], "transpose: duplicate axis {p}");
             seen[p] = true;
         }
         let extents = self.extents();
@@ -259,7 +257,7 @@ pub trait Layout<const N: usize> {
         )
     }
 
-    /// Iterates over physical offsets.
+    /// Iterates over physical offsets in row-major order.
     fn iter(&self) -> Offsets<N> {
         Offsets {
             extents: self.extents(),
@@ -268,5 +266,59 @@ pub trait Layout<const N: usize> {
             offset: 0,
             remaining: self.len(),
         }
+    }
+
+    /// Iterates over physical base offsets in row-major order of the first
+    /// `K` axes, returning a rank-`N - K` layout of the remaining axes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `M != N - K`.
+    fn split_iter<const K: usize, const M: usize>(&self) -> (Offsets<K>, Strided<M>) {
+        assert!(
+            M == N - K,
+            "split_iter: M ({M}) must be equal to N - K ({N} - {K})"
+        );
+        let extents = self.extents();
+        let strides = self.strides();
+        let mut outer = Strided::new(
+            std::array::from_fn(|d| extents[d]),
+            std::array::from_fn(|d| strides[d]),
+        );
+        let inner = Strided::new(
+            std::array::from_fn(|d| extents[K + d]),
+            std::array::from_fn(|d| strides[K + d]),
+        );
+        if inner.is_empty() {
+            outer = Strided::new(outer.extents(), [0; K]);
+        }
+        (outer.iter(), inner)
+    }
+
+    /// Like [`split_iter`](Self::split_iter) but with dynamic `k`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k > N`.
+    fn split_iter_dyn(&self, k: usize) -> (Offsets<N>, Strided<N>) {
+        assert!(
+            k <= N,
+            "split_iter_dyn: rank {k} out of bounds for rank {N}"
+        );
+        let extents = self.extents();
+        let strides = self.strides();
+        let mut outer = Strided::new(
+            std::array::from_fn(|d| if d < k { extents[d] } else { 1 }),
+            std::array::from_fn(|d| if d < k { strides[d] } else { 0 }),
+        );
+        let len = extents[k..].iter().product();
+        let inner = Strided::new(
+            std::array::from_fn(|d| if d < k { 1 } else { extents[d] }),
+            std::array::from_fn(|d| if d < k { len } else { strides[d] }),
+        );
+        if inner.is_empty() {
+            outer = Strided::new(outer.extents(), [0; N]);
+        }
+        (outer.iter(), inner)
     }
 }

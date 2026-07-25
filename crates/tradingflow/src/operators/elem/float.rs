@@ -1,6 +1,6 @@
 use num_traits::Float;
 
-use crate::data::{Array, ArrayView, Instant, Scalar};
+use crate::data::{Instant, Scalar};
 use crate::graph::Segment;
 use crate::operators::array;
 use crate::ports::ArrayPort;
@@ -239,45 +239,10 @@ pub fn maxf<T: Scalar + Float, const N: usize>() -> impl Segment<
     array::binary_map(|&x: &T, &y: &T| x.max(y))
 }
 
-/// Elementwise floating-point clamping to `[min, max]`, propagating `NaN`.
-///
-/// Unlike [`minf`] and [`maxf`], which follow [`Float::min`] / [`Float::max`]
-/// in preferring the present operand, a `NaN` input is passed through: it
-/// marks missing data, and silently reporting it as a bound would fabricate an
-/// extreme observation.
+/// Elementwise floating-point clamping, propagating `NaN`.
 pub fn clampf<T: Scalar + Float, const N: usize>(
     min: T,
     max: T,
 ) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     array::map(move |&x: &T| if x.is_nan() { x } else { x.min(max).max(min) })
-}
-
-/// Elementwise replacement of non-finite values.
-pub fn fill_nan<T: Scalar + Float, const N: usize>(
-    fill: T,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    array::map(move |&x: &T| if x.is_finite() { x } else { fill })
-}
-
-/// Elementwise replacement of selected values.
-pub fn fill_where<T: Scalar + Float, const N: usize>(
-    predicate: impl Fn(T) -> bool + Clone + Send + 'static,
-    fill: T,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    array::map(move |&x: &T| if predicate(x) { fill } else { x })
-}
-
-/// Elementwise forward fill of non-finite values.
-pub fn forward_fill<T: Scalar + Float, const N: usize>()
--> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    let init = |a: ArrayView<'_, T, N>| a.to_array();
-    let update = |out: &mut Array<T, N>, a: ArrayView<'_, T, N>| {
-        let out = out.data_mut();
-        crate::data::array::for_each(a, |j, &x| {
-            if x.is_finite() {
-                out[j] = x;
-            }
-        });
-    };
-    array::array_map_inplace(init, update)
 }

@@ -1,4 +1,4 @@
-//! Rolling window operators on arrays or recorded series.
+//! Basic rolling window operators on arrays or recorded series.
 
 mod base;
 mod cov;

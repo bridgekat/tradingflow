@@ -166,7 +166,7 @@ pub fn ternary_for_each<A: Scalar, B: Scalar, C: Scalar, const N: usize>(
 /// # Panics
 ///
 /// Panics if the extents differ on an axis where neither is `1`.
-fn broadcast_extents<const N: usize>(a: [usize; N], b: [usize; N]) -> [usize; N] {
+pub fn broadcast_extents<const N: usize>(a: [usize; N], b: [usize; N]) -> [usize; N] {
     std::array::from_fn(|d| match (a[d], b[d]) {
         (x, y) if x == y => x,
         (1, y) => y,
@@ -179,7 +179,7 @@ fn broadcast_extents<const N: usize>(a: [usize; N], b: [usize; N]) -> [usize; N]
 /// [`broadcast_extents`]) by giving them stride 0, so every index along such
 /// an axis reads the one element. A view already at `extents` is returned
 /// unchanged, preserving contiguity.
-fn broadcast_to<'a, T: Scalar, const N: usize>(
+pub fn broadcast_to<'a, T: Scalar, const N: usize>(
     v: ArrayView<'a, T, N>,
     extents: [usize; N],
 ) -> ArrayView<'a, T, N> {

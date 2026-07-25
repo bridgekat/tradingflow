@@ -535,17 +535,16 @@ fn float_min_max_clamp_nan_handling() {
     );
 }
 
-/// `fill_nan` and `fill_where`. Despite its name `fill_nan` replaces every
-/// **non-finite** value, infinities included. `fill_where` selects by an
-/// arbitrary predicate, and that predicate is false for `NaN` under any
-/// ordering comparison — so `fill_where(|v| v <= 1.0, _)` leaves `NaN` alone
-/// while replacing `-inf`.
+/// `fill_nan` replaces exactly the `NaN`s — infinities are real values and
+/// survive. `fill_where` generalizes it to an arbitrary predicate, and that
+/// predicate is false for `NaN` under any ordering comparison, so
+/// `fill_where(|v| v <= 1.0, _)` leaves `NaN` alone while replacing `-inf`.
 #[test]
 fn float_missing_data_fill_family() {
     let mut b = Builder::new();
     let (xs, x) = b.source(array::from_parts([5], vec![0.0_f64; 5].into()));
     let filled = b.segment(elem::fill_nan(0.0), x);
-    let replaced = b.segment(elem::fill_where(|v: f64| v <= 1.0, -1.0), x);
+    let replaced = b.segment(elem::fill_where(|v: &f64| *v <= 1.0, -1.0), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -555,7 +554,11 @@ fn float_missing_data_fill_family() {
     );
     g.stabilize(&mut pool, &Instant::MIN);
 
-    assert_eq!(vals(g.view(filled)), vec![1.0, 0.0, 0.0, 0.0, 3.0]);
+    assert_close(
+        &vals(g.view(filled)),
+        &[1.0, 0.0, f64::INFINITY, f64::NEG_INFINITY, 3.0],
+        "fill_nan",
+    );
     assert_close(
         &vals(g.view(replaced)),
         &[-1.0, f64::NAN, f64::INFINITY, -1.0, 3.0],
@@ -563,17 +566,33 @@ fn float_missing_data_fill_family() {
     );
 }
 
-/// `forward_fill` is the one stateful operator in `elem`: it carries the last
-/// finite value *per element* across generations, so it needs a multi-tick
-/// test. An element that has never been finite stays `NaN` (there is nothing
-/// to carry), and "finite" is again the criterion — an infinity counts as
-/// missing and does not overwrite the carried value.
+/// `fill_where` is not restricted to floats: the predicate is `Fn(&T) -> bool`
+/// over any scalar, so it doubles as an elementwise conditional replace.
 #[test]
-fn float_forward_fill_carries_last_finite_across_generations() {
+fn fill_where_selects_over_any_scalar() {
+    let mut b = Builder::new();
+    let (xs, x) = b.source(array::from_parts([5], vec![0_i32; 5].into()));
+    let clipped = b.segment(elem::fill_where(|v: &i32| *v < 0, 0), x);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(xs) = arr([5], vec![3_i32, -1, 0, -7, 5]);
+    g.stabilize(&mut pool, &Instant::MIN);
+
+    assert_eq!(vals(g.view(clipped)), vec![3, 0, 0, 0, 5]);
+}
+
+/// `forward_fill_nan` is the stateful member of the family: it carries the
+/// last non-`NaN` value *per element* across generations, so it needs a
+/// multi-tick test. An element that has never been present stays `NaN` — there
+/// is nothing to carry — and an infinity is a real value, so it overwrites the
+/// carry rather than being skipped as missing.
+#[test]
+fn forward_fill_nan_carries_the_last_present_value_across_generations() {
     let nan = f64::NAN;
     let mut b = Builder::new();
     let (xs, x) = b.source(array::from_parts([3], vec![nan; 3].into()));
-    let filled = b.segment(elem::forward_fill(), x);
+    let filled = b.segment(elem::forward_fill_nan(), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -590,11 +609,34 @@ fn float_forward_fill_carries_last_finite_across_generations() {
 
     *g.state_mut(xs) = arr([3], vec![f64::INFINITY, nan, 30.0]);
     g.stabilize(&mut pool, &Instant::MIN);
-    assert_eq!(
-        vals(g.view(filled)),
-        vec![1.0, 2.0, 30.0],
-        "gen 3: an infinity counts as missing"
+    assert_close(
+        &vals(g.view(filled)),
+        &[f64::INFINITY, 2.0, 30.0],
+        "gen 3: an infinity is present, not missing",
     );
+}
+
+/// `forward_fill_where` is the general form: any predicate marks the elements
+/// to carry over instead of accepting. It is generic over the scalar, so it
+/// forward-fills a sentinel in integer data just as well.
+#[test]
+fn forward_fill_where_carries_over_the_selected_elements() {
+    let mut b = Builder::new();
+    let (xs, x) = b.source(array::from_parts([3], vec![-1_i32; 3].into()));
+    let filled = b.segment(elem::forward_fill_where(|v: &i32| *v < 0), x);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    // Seeded from the build value, sentinels and all.
+    assert_eq!(vals(g.view(filled)), vec![-1, -1, -1], "gen 0");
+
+    *g.state_mut(xs) = arr([3], vec![10_i32, -1, 30]);
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(vals(g.view(filled)), vec![10, -1, 30], "gen 1");
+
+    *g.state_mut(xs) = arr([3], vec![-1_i32, 20, -1]);
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(vals(g.view(filled)), vec![10, 20, 30], "gen 2: carried");
 }
 
 // ---------------------------------------------------------------------------
