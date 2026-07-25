@@ -13,8 +13,8 @@
 //! shape is fixed by the return type, and the module path appears exactly once.
 //! Swapping an optimizer is swapping a call.
 
-use tradingflow::operators::{PyClassOperator, PyParams, py_class_operator};
 use tradingflow::ports::{ArrayPort, SeriesPort, UnitPort};
+use tradingflow::python::{PyClassOperator, PyParams, py_class_operator};
 
 // ===========================================================================
 // Port shapes (all array edges are `ArrayPort` views — the one currency)

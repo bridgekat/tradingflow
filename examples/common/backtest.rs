@@ -16,11 +16,9 @@
 use tradingflow::clock::UnixClock;
 use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
-use tradingflow::operators::{
-    PyClassOperator, PyParams, metrics::*, py_class_operator, series::record_all, structural::*,
-    traders::*,
-};
+use tradingflow::operators::{metrics::*, series::record_all, structural::*, traders::*};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle};
+use tradingflow::python::{PyClassOperator, PyParams, py_class_operator};
 
 use super::strategy::total_value;
 
