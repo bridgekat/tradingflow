@@ -5,7 +5,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 use crate::data::{ArrayView, Instant, Layout};
-use crate::graph::typed::Operator;
+use crate::graph::Segment;
 
 use super::core::{TraderCore, TraderInputs, TraderValues, Vp, run_trader};
 
@@ -107,13 +107,13 @@ pub struct RandomTraderState {
     portfolio_size: usize,
 }
 
-impl Operator for RandomTrader {
+impl Segment for RandomTrader {
     type Inputs = TraderInputs;
     type Outputs = Vp;
     type Context = Instant;
     type State = RandomTraderState;
 
-    fn init(self, ((_, pos), ..): TraderValues<'_>) -> RandomTraderState {
+    fn init(self, (pos, ..): TraderValues<'_>) -> RandomTraderState {
         assert_eq!(
             pos.layout().len(),
             self.num_stocks,
@@ -138,7 +138,7 @@ impl Operator for RandomTrader {
         values: TraderValues<'a>,
         state: &'b mut RandomTraderState,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
+    ) -> ArrayView<'a, f64, 1> {
         let RandomTraderState {
             core,
             rng,
@@ -150,11 +150,11 @@ impl Operator for RandomTrader {
         })
     }
 
-    fn passthrough<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         _: TraderValues<'a>,
         state: &'b mut RandomTraderState,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
-        (false, state.core.out.view())
+    ) -> ArrayView<'a, f64, 1> {
+        state.core.out.view()
     }
 }
 

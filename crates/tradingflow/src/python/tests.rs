@@ -2,11 +2,22 @@
 //! embedded interpreter (spans the views, [`PyParams`] and [`PyClassOperator`]).
 
 use super::{PyClassOperator, PyParams};
+use crate::data::SeriesView;
 use crate::data::{Array, Duration, Instant};
 use crate::graph::pool::Pool;
 use crate::graph::typed::Builder;
 use crate::operators::{array, series};
 use crate::ports::{ArrayPort, ArrayPorts, SeriesPort};
+
+/// The last row of a recorded event stream — the python operators emit event
+/// arrays, whose wires reset to `NaN` after every generation, so the value an
+/// assertion wants is the newest row of a record behind the operator.
+fn last_row<const N: usize>(v: SeriesView<'_, f64, N>) -> Vec<f64> {
+    let rows = v.to_contiguous();
+    let width = v.extents().iter().product::<usize>().max(1);
+    assert!(!rows.is_empty(), "no event has been recorded yet");
+    rows[rows.len() - width..].to_vec()
+}
 
 /// A small stateful operator over one Array input (L1 turnover), used here
 /// purely as a from_source `PyClassOperator` fixture. Raw string at column 0
@@ -44,20 +55,27 @@ fn py_class_operator_turnover() {
         PyClassOperator::<ArrayPorts<f64, 1>, 0>::from_source(TURNOVER, PyParams::new(), vec![]),
         &[src][..],
     );
+    let rec = b.segment(series::record_all(), out);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(src_cell) = Array::from_parts([2], vec![0.5, 0.5].into());
     g.stabilize(&mut pool, &Instant::MIN);
-    assert_eq!(g.view(out).as_slice().unwrap(), &[0.0]); // warmup
+    // Warmup: the Python side returns `False`, i.e. produced no event, so
+    // nothing is recorded at all (the old model published a 0.0 placeholder).
+    assert_eq!(
+        g.view(rec).to_contiguous().len(),
+        0,
+        "warmup emits no event"
+    );
 
     *g.state_mut(src_cell) = Array::from_parts([2], vec![0.3, 0.7].into());
     g.stabilize(&mut pool, &Instant::MIN);
-    assert!((g.view(out).as_slice().unwrap()[0] - 0.4).abs() < 1e-12);
+    assert!((&last_row(g.view(rec))[..][0] - 0.4).abs() < 1e-12);
 
     *g.state_mut(src_cell) = Array::from_parts([2], vec![1.0, 0.0].into());
     g.stabilize(&mut pool, &Instant::MIN);
-    assert!((g.view(out).as_slice().unwrap()[0] - 1.4).abs() < 1e-12);
+    assert!((&last_row(g.view(rec))[..][0] - 1.4).abs() < 1e-12);
 }
 
 /// Heterogeneous inputs: an (Array, Series) operator that reads Series
@@ -96,6 +114,7 @@ fn py_class_operator_heterogeneous_series() {
         ),
         (weights, series),
     );
+    let rec = b.segment(series::record_all(), out);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -104,13 +123,13 @@ fn py_class_operator_heterogeneous_series() {
     *g.state_mut(weights_cell) = Array::from_parts([2], vec![1.0, 1.0].into());
     *g.state_mut(feed_cell) = Array::from_parts([2], vec![1.0, 2.0].into());
     g.stabilize(&mut pool, &ctx);
-    assert!((g.view(out).as_slice().unwrap()[0] - 3.0).abs() < 1e-12);
+    assert!((&last_row(g.view(rec))[..][0] - 3.0).abs() < 1e-12);
 
     // Tick 2 @ t=200: feed [3,4]; series=[[1,2],[3,4]]; dots=3,7; mean=5.
     let ctx = Instant::from_offset(Duration::from_nanos(200));
     *g.state_mut(feed_cell) = Array::from_parts([2], vec![3.0, 4.0].into());
     g.stabilize(&mut pool, &ctx);
-    assert!((g.view(out).as_slice().unwrap()[0] - 5.0).abs() < 1e-12);
+    assert!((&last_row(g.view(rec))[..][0] - 5.0).abs() < 1e-12);
 }
 
 /// Loading an operator from a plain `.py` file via a `build(**kwargs)`
@@ -152,13 +171,14 @@ def build(scale=1.0):
         ),
         &[src][..],
     );
+    let rec = b.segment(series::record_all(), out);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(src_cell) = Array::from_parts([4], vec![1.0, 2.0, 3.0, 4.0].into());
     g.stabilize(&mut pool, &Instant::MIN);
     // sum(1..4)=10 * 3
-    assert!((g.view(out).as_slice().unwrap()[0] - 30.0).abs() < 1e-12);
+    assert!((&last_row(g.view(rec))[..][0] - 30.0).abs() < 1e-12);
 }
 
 // -- Integration with the real `tradingflow` Python package (needs python/ --
@@ -192,6 +212,7 @@ fn pyhost_linear_regression_predictor() {
         ),
         (universe, feat_series, tgt_series),
     );
+    let rec = b.segment(series::record_all(), pred);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -207,7 +228,7 @@ fn pyhost_linear_regression_predictor() {
         g.stabilize(&mut pool, &ctx);
     }
 
-    let mu = g.view(pred).as_slice().unwrap();
+    let mu = last_row(g.view(rec));
     assert_eq!(mu.len(), N);
     assert!(
         mu.iter().all(|v| v.is_finite()),

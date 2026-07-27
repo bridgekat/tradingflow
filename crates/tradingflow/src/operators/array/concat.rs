@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar, array};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::{ArrayPort, ArrayPorts};
 
 /// Operator signature for [`concat`](fn@concat), [`stack`] etc.
@@ -29,7 +29,7 @@ where
     }
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F> Operator
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F> Segment
     for Combine<T, N, U, M, I, F>
 where
     I: FnOnce(&[ArrayView<'_, T, N>]) -> Array<U, M> + Send + 'static,
@@ -40,24 +40,24 @@ where
     type Context = Instant;
     type State = (F, Array<U, M>);
 
-    fn init(self, (_, views): (&[bool], &[ArrayView<'_, T, N>])) -> (F, Array<U, M>) {
+    fn init(self, views: &[ArrayView<'_, T, N>]) -> (F, Array<U, M>) {
         (self.update, (self.init)(views))
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (&'a [bool], &'a [ArrayView<'a, T, N>]),
+    fn reset<'a, 'b: 'a>(
+        _: &'a [ArrayView<'a, T, N>],
         (_, out): &'b mut (F, Array<U, M>),
-    ) -> (bool, ArrayView<'a, U, M>) {
-        (false, out.view())
+    ) -> ArrayView<'a, U, M> {
+        out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, views): (&'a [bool], &'a [ArrayView<'a, T, N>]),
+        views: &'a [ArrayView<'a, T, N>],
         (update, out): &'b mut (F, Array<U, M>),
         _: &Instant,
-    ) -> (bool, ArrayView<'a, U, M>) {
+    ) -> ArrayView<'a, U, M> {
         update(out, views);
-        (true, out.view())
+        out.view()
     }
 }
 

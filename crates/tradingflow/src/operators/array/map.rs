@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar, array};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::ArrayPort;
 
 /// Operator signature for [`array_map`] etc.
@@ -30,7 +30,7 @@ where
     }
 }
 
-impl<A: Scalar, const N: usize, T: Scalar, const M: usize, I, F> Operator
+impl<A: Scalar, const N: usize, T: Scalar, const M: usize, I, F> Segment
     for ArrayMap<A, N, T, M, I, F>
 where
     I: FnOnce(ArrayView<'_, A, N>) -> Array<T, M> + Send + 'static,
@@ -41,24 +41,24 @@ where
     type Context = Instant;
     type State = (F, Array<T, M>);
 
-    fn init(self, (_, a): (bool, ArrayView<'_, A, N>)) -> (F, Array<T, M>) {
+    fn init(self, a: ArrayView<'_, A, N>) -> (F, Array<T, M>) {
         (self.update, (self.init)(a))
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, A, N>),
+    fn reset<'a, 'b: 'a>(
+        _: ArrayView<'a, A, N>,
         (_, out): &'b mut (F, Array<T, M>),
-    ) -> (bool, ArrayView<'a, T, M>) {
-        (false, out.view())
+    ) -> ArrayView<'a, T, M> {
+        out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, ArrayView<'a, A, N>),
+        a: ArrayView<'a, A, N>,
         (update, out): &'b mut (F, Array<T, M>),
         _: &Instant,
-    ) -> (bool, ArrayView<'a, T, M>) {
+    ) -> ArrayView<'a, T, M> {
         update(out, a);
-        (true, out.view())
+        out.view()
     }
 }
 
@@ -97,7 +97,7 @@ where
     }
 }
 
-impl<A: Scalar, const L: usize, B: Scalar, const N: usize, T: Scalar, const M: usize, I, F> Operator
+impl<A: Scalar, const L: usize, B: Scalar, const N: usize, T: Scalar, const M: usize, I, F> Segment
     for ArrayBinaryMap<A, L, B, N, T, M, I, F>
 where
     I: FnOnce(ArrayView<'_, A, L>, ArrayView<'_, B, N>) -> Array<T, M> + Send + 'static,
@@ -108,27 +108,24 @@ where
     type Context = Instant;
     type State = (F, Array<T, M>);
 
-    fn init(
-        self,
-        ((_, a), (_, b)): ((bool, ArrayView<'_, A, L>), (bool, ArrayView<'_, B, N>)),
-    ) -> (F, Array<T, M>) {
+    fn init(self, (a, b): (ArrayView<'_, A, L>, ArrayView<'_, B, N>)) -> (F, Array<T, M>) {
         (self.update, (self.init)(a, b))
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: ((bool, ArrayView<'a, A, L>), (bool, ArrayView<'a, B, N>)),
+    fn reset<'a, 'b: 'a>(
+        _: (ArrayView<'a, A, L>, ArrayView<'a, B, N>),
         (_, out): &'b mut (F, Array<T, M>),
-    ) -> (bool, ArrayView<'a, T, M>) {
-        (false, out.view())
+    ) -> ArrayView<'a, T, M> {
+        out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, a), (_, b)): ((bool, ArrayView<'a, A, L>), (bool, ArrayView<'a, B, N>)),
+        (a, b): (ArrayView<'a, A, L>, ArrayView<'a, B, N>),
         (update, out): &'b mut (F, Array<T, M>),
         _: &Instant,
-    ) -> (bool, ArrayView<'a, T, M>) {
+    ) -> ArrayView<'a, T, M> {
         update(out, a, b);
-        (true, out.view())
+        out.view()
     }
 }
 
@@ -198,7 +195,7 @@ impl<
     const N: usize,
     I,
     F,
-> Operator for ArrayTernaryMap<A, K, B, L, C, M, T, N, I, F>
+> Segment for ArrayTernaryMap<A, K, B, L, C, M, T, N, I, F>
 where
     I: FnOnce(ArrayView<'_, A, K>, ArrayView<'_, B, L>, ArrayView<'_, C, M>) -> Array<T, N>
         + Send
@@ -214,37 +211,37 @@ where
 
     fn init(
         self,
-        ((_, a), (_, b), (_, c)): (
-            (bool, ArrayView<'_, A, K>),
-            (bool, ArrayView<'_, B, L>),
-            (bool, ArrayView<'_, C, M>),
+        (a, b, c): (
+            ArrayView<'_, A, K>,
+            ArrayView<'_, B, L>,
+            ArrayView<'_, C, M>,
         ),
     ) -> (F, Array<T, N>) {
         (self.update, (self.init)(a, b, c))
     }
 
-    fn passthrough<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         _: (
-            (bool, ArrayView<'a, A, K>),
-            (bool, ArrayView<'a, B, L>),
-            (bool, ArrayView<'a, C, M>),
+            ArrayView<'a, A, K>,
+            ArrayView<'a, B, L>,
+            ArrayView<'a, C, M>,
         ),
         (_, out): &'b mut (F, Array<T, N>),
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (false, out.view())
+    ) -> ArrayView<'a, T, N> {
+        out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        ((_, a), (_, b), (_, c)): (
-            (bool, ArrayView<'a, A, K>),
-            (bool, ArrayView<'a, B, L>),
-            (bool, ArrayView<'a, C, M>),
+        (a, b, c): (
+            ArrayView<'a, A, K>,
+            ArrayView<'a, B, L>,
+            ArrayView<'a, C, M>,
         ),
         (update, out): &'b mut (F, Array<T, N>),
         _: &Instant,
-    ) -> (bool, ArrayView<'a, T, N>) {
+    ) -> ArrayView<'a, T, N> {
         update(out, a, b, c);
-        (true, out.view())
+        out.view()
     }
 }
 

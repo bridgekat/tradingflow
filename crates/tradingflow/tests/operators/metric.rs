@@ -19,7 +19,7 @@ use tradingflow::data::Instant;
 use tradingflow::graph::typed::Builder;
 use tradingflow::graph::{Pool, Segment};
 use tradingflow::operators::{array, metric};
-use tradingflow::ports::{ArrayPort, UnitPort};
+use tradingflow::ports::{ArrayPort, ClockPort};
 
 use crate::harness::*;
 
@@ -32,14 +32,14 @@ use crate::harness::*;
 fn gated<S>(metric: S, path: &[f64]) -> Vec<f64>
 where
     S: Segment<
-            Inputs = (UnitPort, ArrayPort<f64, 0>),
+            Inputs = (ClockPort, ArrayPort<f64, 0>),
             Outputs = ArrayPort<f64, 0>,
             Context = Instant,
         >,
 {
     let mut b = Builder::new();
     let (data, datav) = b.source(array::scalar(0.0_f64));
-    let (tick, tickv) = b.source(const_val(()));
+    let (tick, tickv) = b.source(clock());
     let out = b.segment(metric, (tickv, datav));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -574,9 +574,8 @@ fn turnover_rejects_a_non_finite_weight() {
 fn an_off_clock_move_closes_no_period() {
     let mut b = Builder::new();
     let (data, datav) = b.source(array::scalar(0.0_f64));
-    let (tick, tickv) = b.source(const_val(()));
+    let (tick, tickv) = b.source(clock());
     let mean = b.segment(metric::return_mean(), (tickv, datav));
-    let folds = b.segment(count::<0>(), mean);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -585,14 +584,12 @@ fn an_off_clock_move_closes_no_period() {
     let _ = g.state_mut(tick);
     g.stabilize(&mut pool, &nano(1));
     assert_eq!(vals(g.view(mean))[0], 0.0);
-    assert_eq!(g.view(folds), 1);
 
     // The level moves twice with no pulse: nothing folds, nothing notifies.
     for (i, v) in [110.0, 130.0].into_iter().enumerate() {
         *g.state_mut(data) = scalar(v);
         g.stabilize(&mut pool, &nano(i as i64 + 2));
         assert_eq!(vals(g.view(mean))[0], 0.0, "held through the quiet tick");
-        assert_eq!(g.view(folds), 1, "no downstream notification");
     }
 
     // The next pulse closes one period against the level standing now (130),
@@ -600,7 +597,6 @@ fn an_off_clock_move_closes_no_period() {
     let _ = g.state_mut(tick);
     g.stabilize(&mut pool, &nano(4));
     assert_close(&vals(g.view(mean)), &[0.3], "one period, 100 -> 130");
-    assert_eq!(g.view(folds), 2);
 }
 
 /// A pulse on an unchanged level still closes a period: it folds a zero

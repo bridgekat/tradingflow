@@ -1,9 +1,3 @@
-//! Stress tests for the work-stealing [`Pool`]: every seeded or spawned task
-//! must run **exactly once**, and `run` must always return (no lost wakeups, no
-//! hangs), across serial / wide / fan-out / mixed shapes with the pool reused
-//! many times. These hammer the lazy-recruit + nap/unpark transitions that the
-//! graph-level tests only exercise incidentally.
-//!
 //! Excluded under Miri: the reuse loops spend nearly all interpreted time
 //! inside crossbeam's deque/epoch internals (whose reports are third-party
 //! noise), and the schedule fuzzing these tests exist for needs real

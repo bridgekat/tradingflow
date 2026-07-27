@@ -3,7 +3,7 @@ use num_traits::Float;
 use super::base::{Accumulator, LogReturn, Return};
 use crate::data::{Instant, Scalar};
 use crate::graph::Segment;
-use crate::ports::{ArrayPort, UnitPort};
+use crate::ports::{ArrayPort, ClockPort};
 
 /// Accumulator for [`return_vol`].
 pub struct ReturnVolAccumulator<T: Scalar + Float> {
@@ -43,7 +43,7 @@ impl<T: Scalar + Float> Accumulator<T> for ReturnVolAccumulator<T> {
 /// Volatility (standard deviation) of per-period percentage return of a
 /// net-asset-value scalar, where each period is specified by a clock pulse.
 pub fn return_vol<T: Scalar + Float>()
--> impl Segment<Inputs = (UnitPort, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
+-> impl Segment<Inputs = (ClockPort, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
     Return::new(ReturnVolAccumulator::new())
 }
@@ -51,7 +51,7 @@ pub fn return_vol<T: Scalar + Float>()
 /// Volatility (standard deviation) of per-period log return of a
 /// net-asset-value scalar, where each period is specified by a clock pulse.
 pub fn log_return_vol<T: Scalar + Float>()
--> impl Segment<Inputs = (UnitPort, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
+-> impl Segment<Inputs = (ClockPort, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
     LogReturn::new(ReturnVolAccumulator::new())
 }

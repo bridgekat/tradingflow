@@ -27,8 +27,8 @@ impl<T: Source> Segment for Store<T> {
         self.state
     }
 
-    fn output<'a, 'b: 'a>(_: (), state: &'b mut T::State) -> <T::Outputs as Interface>::Values<'a> {
-        T::output(state)
+    fn reset<'a, 'b: 'a>(_: (), state: &'b mut T::State) -> <T::Outputs as Interface>::Values<'a> {
+        T::reset(state)
     }
 
     fn compute<'a, 'b: 'a>(

@@ -2,8 +2,8 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::Operator;
-use crate::ports::{ArrayPort, UnitPort};
+use crate::graph::Segment;
+use crate::ports::{ArrayPort, ClockPort};
 
 /// Base trait for return operator accumulators.
 ///
@@ -40,13 +40,13 @@ pub struct ReturnState<T: Scalar + Float, A: Accumulator<T>> {
     out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float, A: Accumulator<T>> Operator for Return<T, A> {
-    type Inputs = (UnitPort, ArrayPort<T, 0>);
+impl<T: Scalar + Float, A: Accumulator<T>> Segment for Return<T, A> {
+    type Inputs = (ClockPort, ArrayPort<T, 0>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = ReturnState<T, A>;
 
-    fn init(self, _: ((bool, ()), (bool, ArrayView<'_, T, 0>))) -> Self::State {
+    fn init(self, _: (bool, ArrayView<'_, T, 0>)) -> Self::State {
         ReturnState {
             acc: self.acc,
             prev: T::nan(),
@@ -55,20 +55,20 @@ impl<T: Scalar + Float, A: Accumulator<T>> Operator for Return<T, A> {
         }
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: ((bool, ()), (bool, ArrayView<'a, T, 0>)),
+    fn reset<'a, 'b: 'a>(
+        _: (bool, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, 0>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, T, 0> {
+        state.out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        ((clock_notify, _), (_, value)): ((bool, ()), (bool, ArrayView<'a, T, 0>)),
+        (clock, value): (bool, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
         _: &Self::Context,
-    ) -> (bool, ArrayView<'a, T, 0>) {
-        if !clock_notify {
-            return (false, state.out.view());
+    ) -> ArrayView<'a, T, 0> {
+        if !clock {
+            return state.out.view();
         }
         assert!(value.is_finite(), "return: input value must be finite");
         assert!(*value > T::zero(), "return: input value must be positive");
@@ -82,7 +82,7 @@ impl<T: Scalar + Float, A: Accumulator<T>> Operator for Return<T, A> {
             state.count += 1;
             *state.out = state.acc.output(state.count);
         }
-        (true, state.out.view())
+        state.out.view()
     }
 }
 
@@ -109,13 +109,13 @@ pub struct LogReturnState<T: Scalar + Float, A: Accumulator<T>> {
     out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float, A: Accumulator<T>> Operator for LogReturn<T, A> {
-    type Inputs = (UnitPort, ArrayPort<T, 0>);
+impl<T: Scalar + Float, A: Accumulator<T>> Segment for LogReturn<T, A> {
+    type Inputs = (ClockPort, ArrayPort<T, 0>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = LogReturnState<T, A>;
 
-    fn init(self, _: ((bool, ()), (bool, ArrayView<'_, T, 0>))) -> Self::State {
+    fn init(self, _: (bool, ArrayView<'_, T, 0>)) -> Self::State {
         LogReturnState {
             acc: self.acc,
             prev: T::nan(),
@@ -124,20 +124,20 @@ impl<T: Scalar + Float, A: Accumulator<T>> Operator for LogReturn<T, A> {
         }
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: ((bool, ()), (bool, ArrayView<'a, T, 0>)),
+    fn reset<'a, 'b: 'a>(
+        _: (bool, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, 0>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, T, 0> {
+        state.out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        ((clock_notify, _), (_, value)): ((bool, ()), (bool, ArrayView<'a, T, 0>)),
+        (clock, value): (bool, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
         _: &Self::Context,
-    ) -> (bool, ArrayView<'a, T, 0>) {
-        if !clock_notify {
-            return (false, state.out.view());
+    ) -> ArrayView<'a, T, 0> {
+        if !clock {
+            return state.out.view();
         }
         assert!(value.is_finite(), "log_return: input value must be finite");
         assert!(
@@ -154,6 +154,6 @@ impl<T: Scalar + Float, A: Accumulator<T>> Operator for LogReturn<T, A> {
             state.count += 1;
             *state.out = state.acc.output(state.count);
         }
-        (true, state.out.view())
+        state.out.view()
     }
 }

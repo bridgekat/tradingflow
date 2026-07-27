@@ -3,8 +3,9 @@
 
 use pyo3::prelude::*;
 
-use crate::graph::typed::{Interface, InterfaceHandles};
-use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, SeriesPorts, UnitPort};
+use crate::graph::Interface;
+use crate::graph::typed::InterfaceHandles;
+use crate::ports::{ArrayPort, ArrayPorts, ClockPort, SeriesPort, SeriesPorts, is_eventful};
 
 use super::{NativeArrayView, NativeSeriesView};
 
@@ -29,9 +30,8 @@ impl<const N: usize> PyArgs for ArrayPort<f64, N> {
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
-        let (notify, value) = refs;
-        views.push(NativeArrayView::bind_view::<N>(py, value)?);
-        produced.push(notify);
+        views.push(NativeArrayView::bind_view::<N>(py, refs)?);
+        produced.push(is_eventful(refs));
         Ok(())
     }
 }
@@ -43,31 +43,27 @@ impl<const N: usize> PyArgs for SeriesPort<f64, N> {
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
-        let (notify, value) = refs;
-        views.push(NativeSeriesView::bind::<N>(py, value)?);
-        produced.push(notify);
+        // A series is a behavior (always current), so its bit is always set.
+        views.push(NativeSeriesView::bind::<N>(py, refs)?);
+        produced.push(true);
         Ok(())
     }
 }
 
-impl PyArgs for UnitPort {
+impl PyArgs for ClockPort {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
-        let (notify, _) = refs;
         views.push(py.None().into_bound(py));
-        produced.push(notify);
+        produced.push(refs);
         Ok(())
     }
 }
 
-/// A runtime-length group appends one view + bit per element. (Concrete per
-/// leaf type — a generic `ViewPorts<V> where ViewPort<V>: PyArgs` impl cannot
-/// pass a `(bool, View)` tuple where the unnormalized
-/// `<ViewPort<V> as Interface>::Values` projection is expected.)
+/// A runtime-length group appends one view + bit per element.
 impl<const N: usize> PyArgs for ArrayPorts<f64, N> {
     fn append_views<'py>(
         py: Python<'py>,
@@ -75,13 +71,8 @@ impl<const N: usize> PyArgs for ArrayPorts<f64, N> {
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
-        let (flags, values) = refs;
-        debug_assert!(
-            flags.len() == values.len(),
-            "ArrayPorts payload planes disagree on length"
-        );
-        for (i, &value) in values.iter().enumerate() {
-            <ArrayPort<f64, N> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
+        for &value in refs {
+            <ArrayPort<f64, N> as PyArgs>::append_views(py, value, views, produced)?;
         }
         Ok(())
     }
@@ -94,13 +85,8 @@ impl<const N: usize> PyArgs for SeriesPorts<f64, N> {
         views: &mut Vec<Bound<'py, PyAny>>,
         produced: &mut Vec<bool>,
     ) -> PyResult<()> {
-        let (flags, values) = refs;
-        debug_assert!(
-            flags.len() == values.len(),
-            "SeriesPorts refs planes disagree on length"
-        );
-        for (i, &value) in values.iter().enumerate() {
-            <SeriesPort<f64, N> as PyArgs>::append_views(py, (flags[i], value), views, produced)?;
+        for &value in refs {
+            <SeriesPort<f64, N> as PyArgs>::append_views(py, value, views, produced)?;
         }
         Ok(())
     }

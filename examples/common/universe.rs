@@ -29,7 +29,7 @@ use tradingflow::operators::{
     elem, event,
     stats::*,
 };
-use tradingflow::ports::{ArrayPort, ArrayPortHandle, UnitPort, UnitPortHandle};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, ClockPort, ClockPortHandle};
 
 /// Full-market mask: `1.0` for stocks with finite positive market cap this
 /// rebalance, else `NaN`.
@@ -40,9 +40,9 @@ use tradingflow::ports::{ArrayPort, ArrayPortHandle, UnitPort, UnitPortHandle};
 pub fn build_full_market_universe(
     sc: &mut Builder<Instant, UnixClock>,
     market_cap: ArrayPortHandle<f64, 1>,
-    rebalance_clock: UnitPortHandle,
+    rebalance_clock: ClockPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
-    let market_cap = sc.segment(event::resample(), (rebalance_clock, market_cap));
+    let market_cap = sc.segment(event::sample(), (rebalance_clock, market_cap));
     sc.segment(
         map(|&c: &f64| {
             if c.is_finite() && c > 0.0 {
@@ -60,11 +60,11 @@ pub fn build_full_market_universe(
 pub fn build_caprank_universe(
     sc: &mut Builder<Instant, UnixClock>,
     market_cap: ArrayPortHandle<f64, 1>,
-    rebalance_clock: UnitPortHandle,
+    rebalance_clock: ClockPortHandle,
     lo: usize,
     hi: usize,
 ) -> ArrayPortHandle<f64, 1> {
-    let market_cap = sc.segment(event::resample(), (rebalance_clock, market_cap));
+    let market_cap = sc.segment(event::sample(), (rebalance_clock, market_cap));
     sc.segment(
         array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
@@ -161,11 +161,11 @@ pub fn calculate_index_weights(mc: &[f64], k: usize) -> Box<[f64]> {
 pub fn build_cap_weighted_universe(
     sc: &mut Builder<Instant, UnixClock>,
     market_cap: ArrayPortHandle<f64, 1>,
-    rebalance_clock: UnitPortHandle,
+    rebalance_clock: ClockPortHandle,
     index_size: usize,
 ) -> ArrayPortHandle<f64, 1> {
     let k = index_size;
-    let market_cap = sc.segment(event::resample(), (rebalance_clock, market_cap));
+    let market_cap = sc.segment(event::sample(), (rebalance_clock, market_cap));
     sc.segment(
         array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();

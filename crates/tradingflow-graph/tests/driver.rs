@@ -1,12 +1,3 @@
-//! Integration tests for `tradingflow::ingest` — the async timestamp-ordered
-//! merge driving a typed computation graph.
-//!
-//! Feeds are in-memory `Stream`s of [`Event`]s; the clock is a deterministic
-//! [`SimClock`] whose `wait_until` jumps simulated time forward (so a single
-//! `pollster::block_on` replays a whole Builder without a real timer). One test
-//! drives an async channel from a background thread to show real cross-thread
-//! wakeups under a lightweight executor.
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -16,7 +7,7 @@ use std::thread;
 use futures::stream::{self, Stream};
 use tradingflow_graph::driver::{Builder, Clock, Event, Queue, Source, StreamFeed};
 use tradingflow_graph::pool::Pool;
-use tradingflow_graph::typed::{Operator, Port, Ref, Val};
+use tradingflow_graph::typed::{Port, Ref, Segment, Val};
 
 fn pool() -> Pool {
     Pool::new(thread::available_parallelism().unwrap().get())
@@ -74,49 +65,38 @@ fn live(batches: impl IntoIterator<Item = Batch>) -> impl Stream<Item = Event<Ba
 
 /// Sums each notified delta batch into a running total.
 struct Sum;
-impl Operator for Sum {
+impl Segment for Sum {
     type Inputs = Port<Ref<Batch>>;
     type Outputs = Port<Val<i64>>;
     type Context = Instant;
     type State = i64;
-    fn init(self, _: (bool, &Batch)) -> i64 {
+    fn init(self, _: &Batch) -> i64 {
         0
     }
-    fn passthrough<'a, 'b: 'a>(_: (bool, &'a Batch), sum: &'b mut i64) -> (bool, i64) {
-        (true, *sum)
+    fn reset<'a, 'b: 'a>(_: &'a Batch, sum: &'b mut i64) -> i64 {
+        *sum
     }
-    fn compute<'a, 'b: 'a>(
-        (_, batch): (bool, &'a Batch),
-        sum: &'b mut i64,
-        _: &Instant,
-    ) -> (bool, i64) {
+    fn compute<'a, 'b: 'a>(batch: &'a Batch, sum: &'b mut i64, _: &Instant) -> i64 {
         // The auto-gate only calls `compute` on a notified batch; unchanged
         // generations re-lend the running total through `passthrough`.
         *sum += batch.iter().sum::<i64>();
-        (true, *sum)
+        *sum
     }
 }
 
 /// A stateless adder over two by-reference `i64` cells.
 struct Add;
-impl Operator for Add {
+impl Segment for Add {
     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = Instant;
     type State = ();
-    fn init(self, _: ((bool, &i64), (bool, &i64))) {}
-    fn passthrough<'a, 'b: 'a>(
-        ((na, a), (nb, b)): ((bool, &'a i64), (bool, &'a i64)),
-        _: &'b mut (),
-    ) -> (bool, i64) {
-        (na || nb, a + b)
+    fn init(self, _: (&i64, &i64)) {}
+    fn reset<'a, 'b: 'a>((a, b): (&'a i64, &'a i64), _: &'b mut ()) -> i64 {
+        a + b
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: ((bool, &'a i64), (bool, &'a i64)),
-        state: &'b mut (),
-        _: &Instant,
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: (&'a i64, &'a i64), state: &'b mut (), _: &Instant) -> i64 {
+        Self::reset(inputs, state)
     }
 }
 
@@ -139,8 +119,12 @@ impl Source for Replay {
         (default, stream::iter(it))
     }
 
-    fn output(state: &mut i64) -> (bool, &i64) {
-        (true, state)
+    fn reset(state: &mut i64) -> &i64 {
+        state
+    }
+
+    fn output(state: &mut i64) -> &i64 {
+        state
     }
 
     fn write(payload: i64, _: Instant, state: &mut i64) -> usize {
@@ -189,8 +173,12 @@ impl<S: Stream<Item = Event<Batch, Instant>> + Send + 'static> Source for VecFee
         (state, stream)
     }
 
-    fn output(state: &mut Self::State) -> (bool, &Batch) {
-        (true, &state.1)
+    fn reset(state: &mut Self::State) -> &Batch {
+        &state.1
+    }
+
+    fn output(state: &mut Self::State) -> &Batch {
+        &state.1
     }
 
     fn write(payload: Batch, ts: Instant, state: &mut Self::State) -> usize {
@@ -226,19 +214,19 @@ fn feed_logged<S>(stream: S, log: FeedLog) -> VecFeed<S> {
 /// records nothing), and the auto-gate only calls `compute` on a notified
 /// input, so `compute` always has a real timestamp.
 struct Recorder(Arc<Mutex<Vec<(Instant, i64)>>>);
-impl Operator for Recorder {
+impl Segment for Recorder {
     type Inputs = Port<Ref<i64>>;
     type Outputs = ();
     type Context = Instant;
     type State = Arc<Mutex<Vec<(Instant, i64)>>>;
 
-    fn init(self, _: (bool, &i64)) -> Self::State {
+    fn init(self, _: &i64) -> Self::State {
         self.0
     }
 
-    fn passthrough<'a, 'b: 'a>(_: (bool, &'a i64), _: &'b mut Self::State) {}
+    fn reset<'a, 'b: 'a>(_: &'a i64, _: &'b mut Self::State) {}
 
-    fn compute<'a, 'b: 'a>((_, x): (bool, &'a i64), state: &'b mut Self::State, time: &Instant) {
+    fn compute<'a, 'b: 'a>(x: &'a i64, state: &'b mut Self::State, time: &Instant) {
         state.lock().unwrap().push((*time, *x));
     }
 }

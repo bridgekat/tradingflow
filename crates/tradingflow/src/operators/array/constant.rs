@@ -23,16 +23,12 @@ impl<T: Scalar, const N: usize> Segment for Constant<T, N> {
         self.value
     }
 
-    fn output<'a, 'b: 'a>(_: (), state: &'b mut Array<T, N>) -> (bool, ArrayView<'a, T, N>) {
-        (true, state.view())
+    fn reset<'a, 'b: 'a>(_: (), state: &'b mut Array<T, N>) -> ArrayView<'a, T, N> {
+        state.view()
     }
 
-    fn compute<'a, 'b: 'a>(
-        _: (),
-        state: &'b mut Array<T, N>,
-        _: &Instant,
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (true, state.view())
+    fn compute<'a, 'b: 'a>(_: (), state: &'b mut Array<T, N>, _: &Instant) -> ArrayView<'a, T, N> {
+        state.view()
     }
 }
 

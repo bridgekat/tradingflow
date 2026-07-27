@@ -1,7 +1,7 @@
 use num_traits::Float;
 
 use crate::data::{Array, ArrayView, Instant, Scalar, SeriesView};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::{ArrayPort, SeriesPort};
 
 /// Operator signature for [`last_or`] and [`last`].
@@ -15,13 +15,13 @@ impl<T: Scalar, const N: usize> Last<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> Operator for Last<T, N> {
+impl<T: Scalar, const N: usize> Segment for Last<T, N> {
     type Inputs = SeriesPort<T, N>;
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = (T, Array<T, N>);
 
-    fn init(self, (_, series): (bool, SeriesView<'_, T, N>)) -> Self::State {
+    fn init(self, series: SeriesView<'_, T, N>) -> Self::State {
         let out = if series.is_empty() {
             Array::full(series.extents(), self.fill.clone())
         } else {
@@ -31,25 +31,25 @@ impl<T: Scalar, const N: usize> Operator for Last<T, N> {
         (self.fill, out)
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, SeriesView<'a, T, N>),
+    fn reset<'a, 'b: 'a>(
+        _: SeriesView<'a, T, N>,
         (_, out): &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (false, out.view())
+    ) -> ArrayView<'a, T, N> {
+        out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, SeriesView<'a, T, N>),
+        series: SeriesView<'a, T, N>,
         (fill, out): &'b mut Self::State,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, T, N>) {
+    ) -> ArrayView<'a, T, N> {
         if series.is_empty() {
             out.data_mut().fill(fill.clone());
         } else {
             let (_, a) = series.at(series.range().end - 1);
             out.assign(a);
         }
-        (true, out.view())
+        out.view()
     }
 }
 

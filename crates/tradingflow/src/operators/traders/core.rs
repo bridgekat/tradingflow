@@ -3,21 +3,22 @@
 //! [`RandomTrader`](super::RandomTrader). Private: nothing here is re-exported.
 
 use crate::data::{Array, ArrayView};
-use crate::ports::ArrayPort;
+use crate::ports::{ArrayPort, is_eventful};
 
 /// A single `[num_stocks]` view port — the per-input edge of every trader.
 pub(super) type Vp = ArrayPort<f64, 1>;
 
-/// The five trader inputs `(positions, close, adjusts, upper, lower)`.
+/// The five trader inputs `(positions, close, adjusts, upper, lower)`, all
+/// event arrays (a NaN element carries no event this tick).
 pub(super) type TraderInputs = (Vp, Vp, Vp, Vp, Vp);
 
-/// The five trader input values as `(notify, view)` pairs.
+/// The five trader input views.
 pub(super) type TraderValues<'a> = (
-    (bool, ArrayView<'a, f64, 1>),
-    (bool, ArrayView<'a, f64, 1>),
-    (bool, ArrayView<'a, f64, 1>),
-    (bool, ArrayView<'a, f64, 1>),
-    (bool, ArrayView<'a, f64, 1>),
+    ArrayView<'a, f64, 1>,
+    ArrayView<'a, f64, 1>,
+    ArrayView<'a, f64, 1>,
+    ArrayView<'a, f64, 1>,
+    ArrayView<'a, f64, 1>,
 );
 
 /// Shared realistic-execution state for [`SimpleTrader`](super::SimpleTrader) /
@@ -63,15 +64,24 @@ impl TraderCore {
 
 /// One realistic-execution tick, shared by both traders. `cols` are the five
 /// materialized `[positions, close, adjusts, upper, lower]` slices;
-/// `pos_notified` is the positions notify flag; `lots` computes the per-stock
-/// net trade in *lots*. Writes `[holdings, cash]` into `s.out`.
+/// `pos_eventful` is whether the positions batch carries events; `can_exec`
+/// is whether the close batch carries events (a pending rebalance is only
+/// executed against an eventful close batch — on a generation with no close
+/// events there is no market to trade in, and the pending signal is held).
+/// `lots` computes the per-stock net trade in *lots*. Writes
+/// `[holdings, cash]` into `s.out`.
 #[allow(clippy::too_many_arguments)]
 #[expect(
     clippy::needless_range_loop,
     reason = "i walks the per-stock book arrays (shares/last_close/last_adjust) in lockstep with the price inputs"
 )]
-fn run_tick<L>(s: &mut TraderCore, pos_notified: bool, cols: [&[f64]; 5], mut lots: L) -> bool
-where
+fn run_tick<L>(
+    s: &mut TraderCore,
+    pos_eventful: bool,
+    can_exec: bool,
+    cols: [&[f64]; 5],
+    mut lots: L,
+) where
     L: FnMut(f64, &[f64], &[f64], f64, &[f64], &mut [f64]),
 {
     let [soft, closes, adjusts, upper, lower] = cols;
@@ -94,7 +104,7 @@ where
         }
     }
 
-    if let Some(pending) = s.pending.take() {
+    if can_exec && let Some(pending) = s.pending.take() {
         // Step 1: force-liquidate suspended holdings at last_close, each charged
         // a fee like a normal trade.
         for i in 0..n {
@@ -148,7 +158,7 @@ where
         }
     }
 
-    if pos_notified {
+    if pos_eventful {
         s.pending = Some(soft.to_vec());
     }
 
@@ -170,20 +180,21 @@ where
     let out = s.out.data_mut();
     out[0] = holdings_value;
     out[1] = s.cash;
-    true
 }
 
 /// Materialize the five trader inputs into contiguous slices, run `lots`, and
-/// return `(positions_notify, holdings_view)`.
+/// return the `[holdings_value, cash]` state view.
 pub(super) fn run_trader<'a, 'b: 'a, L>(
     core: &'b mut TraderCore,
     values: TraderValues<'a>,
     lots: L,
-) -> (bool, ArrayView<'a, f64, 1>)
+) -> ArrayView<'a, f64, 1>
 where
     L: FnMut(f64, &[f64], &[f64], f64, &[f64], &mut [f64]),
 {
-    let ((pn, pos), (_, close), (_, adj), (_, up), (_, lo)) = values;
+    let (pos, close, adj, up, lo) = values;
+    let pos_eventful = is_eventful(pos);
+    let can_exec = is_eventful(close);
     let (a, b, c, d, e) = (
         pos.to_contiguous(),
         close.to_contiguous(),
@@ -191,6 +202,6 @@ where
         up.to_contiguous(),
         lo.to_contiguous(),
     );
-    let notify = run_tick(core, pn, [&a, &b, &c, &d, &e], lots);
-    (notify, core.out.view())
+    run_tick(core, pos_eventful, can_exec, [&a, &b, &c, &d, &e], lots);
+    core.out.view()
 }

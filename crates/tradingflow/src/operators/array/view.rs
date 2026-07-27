@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::data::layout::{IntoSliceReshapes, IntoSlices};
 use crate::data::{ArrayView, Instant, Scalar};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::ArrayPort;
 
 /// Operator signature for [`derive_view`] etc.
@@ -26,7 +26,7 @@ where
     }
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Operator for DeriveView<T, N, U, M, F>
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Segment for DeriveView<T, N, U, M, F>
 where
     F: FnMut(ArrayView<'_, T, N>) -> ArrayView<'_, U, M> + Send + 'static,
 {
@@ -35,23 +35,20 @@ where
     type Context = Instant;
     type State = F;
 
-    fn init(self, _: (bool, ArrayView<'_, T, N>)) -> F {
+    fn init(self, _: ArrayView<'_, T, N>) -> F {
         self.derive
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        (_, a): (bool, ArrayView<'a, T, N>),
-        derive: &'b mut F,
-    ) -> (bool, ArrayView<'a, U, M>) {
-        (false, derive(a))
+    fn reset<'a, 'b: 'a>(a: ArrayView<'a, T, N>, derive: &'b mut F) -> ArrayView<'a, U, M> {
+        derive(a)
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, ArrayView<'a, T, N>),
+        a: ArrayView<'a, T, N>,
         derive: &'b mut F,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, U, M>) {
-        (true, derive(a))
+    ) -> ArrayView<'a, U, M> {
+        derive(a)
     }
 }
 

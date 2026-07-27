@@ -99,10 +99,6 @@ impl<C: Sync> Builder<C> {
         let (input_shape, in_scratch, out_scratch, state_mut) =
             unsafe { state_cell.get().cast::<NodeState<T>>().as_mut_unchecked() };
 
-        let input_flags = input_indices
-            .iter()
-            .map(|&i| self.inner.slot_flag(i))
-            .collect::<Box<_>>();
         let input_ptrs = input_indices
             .iter()
             .map(|&i| self.inner.slot_ptr(i))
@@ -111,23 +107,20 @@ impl<C: Sync> Builder<C> {
         let inputs = unsafe {
             <T::Inputs as Interface>::values_from_flat(
                 &mut FlatRead::new(input_shape),
-                &mut FlatRead::new(&input_flags),
                 &mut FlatRead::new(&input_ptrs),
                 in_scratch,
             )
         };
-        let outputs = T::output(inputs, state_mut.insert(T::init(segment, inputs)));
+        let outputs = T::reset(inputs, state_mut.insert(T::init(segment, inputs)));
 
         // Serialize the outputs, homing by-value views into the output
         // scratch (this build call also sizes variadic leaves' scratch).
         let mut output_shape = Vec::new();
-        let mut output_flags = Vec::new();
         let mut output_ptrs = Vec::new();
         unsafe {
             <T::Outputs as Interface>::values_to_vecs(
                 outputs,
                 &mut output_shape,
-                &mut output_flags,
                 &mut output_ptrs,
                 out_scratch,
             )
@@ -145,8 +138,8 @@ impl<C: Sync> Builder<C> {
                 input_type_ids.into_boxed_slice(),
                 output_type_ids.into_boxed_slice(),
                 compute_fn_for::<T>,
+                reset_fn_for::<T>,
                 state_cell,
-                output_flags.into_boxed_slice(),
                 output_ptrs.into_boxed_slice(),
             )
         };
@@ -216,9 +209,7 @@ impl<C: Sync> Default for Builder<C> {
 }
 
 unsafe fn compute_fn_for<T: Segment>(
-    in_flags: *const [bool],
     in_ptrs: *const [*const ()],
-    out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
     state: *mut (),
     context: *const (),
@@ -229,7 +220,6 @@ unsafe fn compute_fn_for<T: Segment>(
     let inputs = unsafe {
         <T::Inputs as Interface>::values_from_flat(
             &mut FlatRead::new(input_shape.as_ref()),
-            &mut FlatRead::new(in_flags.as_ref_unchecked()),
             &mut FlatRead::new(in_ptrs.as_ref_unchecked()),
             in_scratch,
         )
@@ -238,21 +228,39 @@ unsafe fn compute_fn_for<T: Segment>(
     let context = unsafe { &*context.cast::<T::Context>() };
     let outputs = T::compute(inputs, state_mut, context);
 
-    let mut flags_writer = FlatWrite::new(unsafe { out_flags.as_mut_unchecked() });
     let mut ptrs_writer = FlatWrite::new(unsafe { out_ptrs.as_mut_unchecked() });
-    unsafe {
-        <T::Outputs as Interface>::values_to_flat(
-            outputs,
-            &mut flags_writer,
-            &mut ptrs_writer,
-            out_scratch,
+    unsafe { <T::Outputs as Interface>::values_to_flat(outputs, &mut ptrs_writer, out_scratch) };
+
+    assert!(
+        ptrs_writer.remaining() == 0,
+        "output shape changed since build (operator wrote fewer leaves than allocated)"
+    );
+}
+
+unsafe fn reset_fn_for<T: Segment>(
+    in_ptrs: *const [*const ()],
+    out_ptrs: *mut [*const ()],
+    state: *mut (),
+    _: *const (),
+) {
+    let (input_shape, in_scratch, out_scratch, state_mut) =
+        unsafe { state.cast::<NodeState<T>>().as_mut_unchecked() };
+
+    let inputs = unsafe {
+        <T::Inputs as Interface>::values_from_flat(
+            &mut FlatRead::new(input_shape.as_ref()),
+            &mut FlatRead::new(in_ptrs.as_ref_unchecked()),
+            in_scratch,
         )
     };
+    let state_mut = unsafe { state_mut.as_mut().unwrap_unchecked() };
+    let outputs = T::reset(inputs, state_mut);
 
-    // A changed output shape should panic, instead of leaving old dangling
-    // pointers in the output cells.
+    let mut ptrs_writer = FlatWrite::new(unsafe { out_ptrs.as_mut_unchecked() });
+    unsafe { <T::Outputs as Interface>::values_to_flat(outputs, &mut ptrs_writer, out_scratch) };
+
     assert!(
-        flags_writer.remaining() == 0 && ptrs_writer.remaining() == 0,
+        ptrs_writer.remaining() == 0,
         "output shape changed since build (operator wrote fewer leaves than allocated)"
     );
 }

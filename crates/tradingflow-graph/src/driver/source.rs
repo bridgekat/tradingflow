@@ -20,8 +20,7 @@ pub trait Source {
         None
     }
 
-    /// Typed initialization function.
-    /// Returns the initial state and the event stream.
+    /// Typed state initialization function.
     fn init(
         self,
     ) -> (
@@ -29,11 +28,12 @@ pub trait Source {
         impl Stream<Item = Event<Self::Payload, Self::Instant>> + 'static,
     );
 
-    /// Typed output function.
-    /// Returns an output derived from the current state.
-    fn output(state: &mut Self::State) -> <Self::Outputs as Interface>::Values<'_>;
+    /// Typed reset function.
+    fn reset(state: &mut Self::State) -> <Self::Outputs as Interface>::Values<'_>;
 
     /// Typed state update function.
-    /// Returns the number of events processed.
     fn write(payload: Self::Payload, instant: Self::Instant, state: &mut Self::State) -> usize;
+
+    /// Typed output function.
+    fn output(state: &mut Self::State) -> <Self::Outputs as Interface>::Values<'_>;
 }

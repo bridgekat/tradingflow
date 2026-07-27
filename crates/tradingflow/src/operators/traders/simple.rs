@@ -1,7 +1,7 @@
 //! The realistic-cost, value-weighted [`SimpleTrader`] executor.
 
 use crate::data::{ArrayView, Instant, Layout};
-use crate::graph::typed::Operator;
+use crate::graph::Segment;
 
 use super::core::{TraderCore, TraderInputs, TraderValues, Vp, run_trader};
 
@@ -57,13 +57,13 @@ pub struct SimpleTraderState {
     core: TraderCore,
 }
 
-impl Operator for SimpleTrader {
+impl Segment for SimpleTrader {
     type Inputs = TraderInputs;
     type Outputs = Vp;
     type Context = Instant;
     type State = SimpleTraderState;
 
-    fn init(self, ((_, pos), ..): TraderValues<'_>) -> SimpleTraderState {
+    fn init(self, (pos, ..): TraderValues<'_>) -> SimpleTraderState {
         assert_eq!(
             pos.layout().len(),
             self.num_stocks,
@@ -86,15 +86,15 @@ impl Operator for SimpleTrader {
         values: TraderValues<'a>,
         state: &'b mut SimpleTraderState,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
+    ) -> ArrayView<'a, f64, 1> {
         run_trader(&mut state.core, values, value_weight_lots)
     }
 
-    fn passthrough<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         _: TraderValues<'a>,
         state: &'b mut SimpleTraderState,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
-        (false, state.core.out.view())
+    ) -> ArrayView<'a, f64, 1> {
+        state.core.out.view()
     }
 }
 

@@ -1,10 +1,3 @@
-//! Integration tests for `core`'s untyped graph (pointer-graph API).
-//!
-//! Each node's output VALUE lives in its erased state; its output slot holds a
-//! pointer to that value. A `ComputeFn` reads its input slots, writes the value
-//! into state, and points the output slot at it. `source_fn` re-exposes the
-//! state value (the value itself is poked via `state_mut`).
-
 use std::any::TypeId;
 use std::thread;
 
@@ -16,23 +9,18 @@ fn pool() -> Pool {
 }
 
 unsafe fn source_fn(
-    _: *const [bool],
     _: *const [*const ()],
-    out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
     state: *mut (),
     _context: *const (),
 ) {
     unsafe {
-        out_flags.as_mut_unchecked()[0] = true;
         out_ptrs.as_mut_unchecked()[0] = state.cast_const();
     }
 }
 
 unsafe fn inc(
-    _: *const [bool],
     in_ptrs: *const [*const ()],
-    out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
     state: *mut (),
     _context: *const (),
@@ -41,15 +29,12 @@ unsafe fn inc(
     let s = unsafe { &mut *(state as *mut i64) };
     *s = unsafe { *(in_ptrs[0] as *const i64) } + 1;
     unsafe {
-        out_flags.as_mut_unchecked()[0] = true;
         out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
     }
 }
 
 unsafe fn times10(
-    _: *const [bool],
     in_ptrs: *const [*const ()],
-    out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
     state: *mut (),
     _context: *const (),
@@ -58,15 +43,12 @@ unsafe fn times10(
     let s = unsafe { &mut *(state as *mut i64) };
     *s = unsafe { *(in_ptrs[0] as *const i64) } * 10;
     unsafe {
-        out_flags.as_mut_unchecked()[0] = true;
         out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
     }
 }
 
 unsafe fn add(
-    _: *const [bool],
     in_ptrs: *const [*const ()],
-    out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
     state: *mut (),
     _context: *const (),
@@ -75,15 +57,12 @@ unsafe fn add(
     let s = unsafe { &mut *(state as *mut i64) };
     *s = unsafe { *(in_ptrs[0] as *const i64) + *(in_ptrs[1] as *const i64) };
     unsafe {
-        out_flags.as_mut_unchecked()[0] = true;
         out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
     }
 }
 
 unsafe fn sum_all(
-    _: *const [bool],
     in_ptrs: *const [*const ()],
-    out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
     state: *mut (),
     _context: *const (),
@@ -92,7 +71,6 @@ unsafe fn sum_all(
     let s = unsafe { &mut *(state as *mut i64) };
     *s = in_ptrs.iter().map(|&p| unsafe { *(p as *const i64) }).sum();
     unsafe {
-        out_flags.as_mut_unchecked()[0] = true;
         out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
     }
 }
@@ -100,9 +78,7 @@ unsafe fn sum_all(
 /// Passes its input through, but panics on a negative value (for the
 /// poison test).
 unsafe fn panic_if_negative(
-    _: *const [bool],
     in_ptrs: *const [*const ()],
-    out_flags: *mut [bool],
     out_ptrs: *mut [*const ()],
     state: *mut (),
     _context: *const (),
@@ -113,9 +89,19 @@ unsafe fn panic_if_negative(
     let s = unsafe { &mut *(state as *mut i64) };
     *s = x;
     unsafe {
-        out_flags.as_mut_unchecked()[0] = true;
         out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
     }
+}
+
+/// The shared reset: every node here is state-style, so its quiescent form is
+/// the value already in state — just re-point the output slot at it.
+unsafe fn reset_fn(
+    _: *const [*const ()],
+    out_ptrs: *mut [*const ()],
+    state: *mut (),
+    _context: *const (),
+) {
+    unsafe { out_ptrs.as_mut_unchecked()[0] = state.cast_const() };
 }
 
 /// An `i64`-output segment: state holds the output value, slot points at it.
@@ -127,8 +113,8 @@ fn seg(input_types: Box<[TypeId]>, f: ComputeFn) -> Segment {
             input_types,
             Box::new([TypeId::of::<i64>()]),
             f,
+            reset_fn,
             state,
-            Box::new([false]),
             Box::new([ptr]),
         )
     }
@@ -281,8 +267,8 @@ fn push_rejects_type_mismatch() {
                 Box::new([]),
                 Box::new([TypeId::of::<f64>()]),
                 source_fn,
+                reset_fn,
                 state,
-                Box::new([false]),
                 Box::new([ptr]),
             )
         }

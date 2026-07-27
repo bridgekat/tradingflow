@@ -17,7 +17,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 use tradingflow_graph::pool::Pool;
 use tradingflow_graph::typed::{
-    Builder, Graph, NodeHandle, Operator, Port, PortHandle, Ports, Ref, Val,
+    Builder, Graph, NodeHandle, Port, PortHandle, Ports, Ref, Segment, Val,
 };
 
 const DATA_LEN: usize = 1 << 16;
@@ -50,7 +50,7 @@ fn pool() -> Pool {
 /// A generic source node.
 struct Source(f64);
 
-impl Operator for Source {
+impl Segment for Source {
     type Inputs = ();
     type Outputs = Port<Val<f64>>;
     type Context = ();
@@ -58,92 +58,81 @@ impl Operator for Source {
     fn init(self, _: ()) -> f64 {
         self.0
     }
-    fn passthrough<'a, 'b: 'a>(_: (), state: &'b mut f64) -> (bool, f64) {
-        (true, *state)
+    fn reset<'a, 'b: 'a>(_: (), state: &'b mut f64) -> f64 {
+        *state
     }
-    fn compute<'a, 'b: 'a>(inputs: (), state: &'b mut f64, _: &()) -> (bool, f64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: (), state: &'b mut f64, _: &()) -> f64 {
+        Self::reset(inputs, state)
     }
 }
 
 /// An adder with two inputs.
 struct Add;
 
-impl Operator for Add {
+impl Segment for Add {
     type Inputs = (Port<Val<f64>>, Port<Val<f64>>);
     type Outputs = Port<Val<f64>>;
     type Context = ();
     type State = f64; // holds the last sum, to re-emit by value on passthrough
 
-    fn init(self, ((_, a), (_, b)): ((bool, f64), (bool, f64))) -> f64 {
+    fn init(self, (a, b): (f64, f64)) -> f64 {
         a + b
     }
 
-    fn compute<'a, 'b: 'a>(
-        ((_, a), (_, b)): ((bool, f64), (bool, f64)),
-        state: &'b mut f64,
-        _: &(),
-    ) -> (bool, f64) {
+    fn compute<'a, 'b: 'a>((a, b): (f64, f64), state: &'b mut f64, _: &()) -> f64 {
         *state = a + b;
-        (true, *state)
+        *state
     }
 
-    fn passthrough<'a, 'b: 'a>(_: ((bool, f64), (bool, f64)), state: &'b mut f64) -> (bool, f64) {
-        (false, *state)
+    fn reset<'a, 'b: 'a>(_: (f64, f64), state: &'b mut f64) -> f64 {
+        *state
     }
 }
 
 /// A CPU-heavy single-input kernel; `iters` lives in `State`.
 struct Heavy(usize);
 
-impl Operator for Heavy {
+impl Segment for Heavy {
     type Inputs = Port<Val<f64>>;
     type Outputs = Port<Val<()>>;
     type Context = ();
     type State = usize;
 
-    fn init(self, _: (bool, f64)) -> usize {
+    fn init(self, _: f64) -> usize {
         self.0
     }
 
-    fn compute<'a, 'b: 'a>((_, x): (bool, f64), state: &'b mut usize, _: &()) -> (bool, ()) {
+    fn compute<'a, 'b: 'a>(x: f64, state: &'b mut usize, _: &()) {
         heavy_work(x, *state);
-        (true, ())
     }
 
-    fn passthrough<'a, 'b: 'a>(_: (bool, f64), _: &'b mut usize) -> (bool, ()) {
-        (false, ())
-    }
+    fn reset<'a, 'b: 'a>(_: f64, _: &'b mut usize) {}
 }
 
 /// Appends each input to a growing `Vec`, mutated in place (state owns it).
 struct Record;
 
-impl Operator for Record {
+impl Segment for Record {
     type Inputs = Port<Val<f64>>; // scalar in by value, `Vec` out by reference
     type Outputs = Port<Ref<Vec<f64>>>;
     type Context = ();
     type State = Vec<f64>;
 
-    fn init(self, (_, x): (bool, f64)) -> Vec<f64> {
+    fn init(self, x: f64) -> Vec<f64> {
         vec![x]
     }
 
-    fn compute<'a, 'b: 'a>(
-        (_, x): (bool, f64),
-        state: &'b mut Vec<f64>,
-        _: &(),
-    ) -> (bool, &'a Vec<f64>) {
+    fn compute<'a, 'b: 'a>(x: f64, state: &'b mut Vec<f64>, _: &()) -> &'a Vec<f64> {
         if state.len() >= SERIES_LEN {
             black_box(state.last());
             state.clear();
         }
         state.push(x);
-        (true, state)
+        state
     }
 
-    fn passthrough<'a, 'b: 'a>(_: (bool, f64), state: &'b mut Vec<f64>) -> (bool, &'a Vec<f64>) {
-        (false, state)
+    fn reset<'a, 'b: 'a>(_: f64, state: &'b mut Vec<f64>) -> &'a Vec<f64> {
+        state
     }
 }
 
@@ -396,46 +385,39 @@ fn iters_of(layer: usize, j: usize) -> u32 {
 struct Work {
     iters: u32,
 }
-impl Operator for Work {
+impl Segment for Work {
     type Inputs = (Port<Val<f64>>, Port<Val<f64>>, Port<Val<f64>>);
     type Outputs = Port<Val<f64>>;
     type State = u32; // iters
     type Context = ();
-    fn init(self, _: ((bool, f64), (bool, f64), (bool, f64))) -> Self::State {
+    fn init(self, _: (f64, f64, f64)) -> Self::State {
         self.iters
     }
-    fn passthrough<'a, 'b: 'a>(
-        ((_, a), (_, b), (_, c)): ((bool, f64), (bool, f64), (bool, f64)),
-        iters: &'b mut Self::State,
-    ) -> (bool, f64) {
-        (true, work(a as i64, b as i64, c as i64, *iters) as f64)
+    fn reset<'a, 'b: 'a>((a, b, c): (f64, f64, f64), iters: &'b mut Self::State) -> f64 {
+        work(a as i64, b as i64, c as i64, *iters) as f64
     }
-    fn compute<'a, 'b: 'a>(
-        ((_, a), (_, b), (_, c)): ((bool, f64), (bool, f64), (bool, f64)),
-        iters: &'b mut Self::State,
-        _: &(),
-    ) -> (bool, f64) {
+    fn compute<'a, 'b: 'a>((a, b, c): (f64, f64, f64), iters: &'b mut Self::State, _: &()) -> f64 {
         let out = work(a as i64, b as i64, c as i64, *iters);
-        (true, out as f64)
+        out as f64
     }
 }
 
 /// Stateless unary map `x -> f(x)`; `passthrough` and `compute` are identical
 /// (it recomputes from the input every generation, gate or no gate).
 struct UnaryMap(fn(f64) -> f64);
-impl Operator for UnaryMap {
+impl Segment for UnaryMap {
     type Inputs = Port<Val<f64>>;
     type Outputs = Port<Val<f64>>;
     type State = fn(f64) -> f64;
     type Context = ();
-    fn init(self, _: (bool, f64)) -> Self::State {
+    fn init(self, _: f64) -> Self::State {
         self.0
     }
-    fn passthrough<'a, 'b: 'a>((_, x): (bool, f64), f: &'b mut Self::State) -> (bool, f64) {
-        (true, f(x))
+    fn reset<'a, 'b: 'a>(x: f64, f: &'b mut Self::State) -> f64 {
+        f(x)
     }
-    fn compute<'a, 'b: 'a>(inputs: (bool, f64), f: &'b mut Self::State, _: &()) -> (bool, f64) {
-        Self::passthrough(inputs, f)
+    fn compute<'a, 'b: 'a>(inputs: f64, f: &'b mut Self::State, _: &()) -> f64 {
+        Self::reset(inputs, f)
     }
 }
 fn inc() -> UnaryMap {
@@ -446,21 +428,17 @@ fn double() -> UnaryMap {
 }
 
 struct SumAll;
-impl Operator for SumAll {
+impl Segment for SumAll {
     type Inputs = Ports<Val<f64>>;
     type Outputs = Port<Val<f64>>;
     type State = ();
     type Context = ();
-    fn init(self, _: (&[bool], &[f64])) {}
-    fn passthrough<'a, 'b: 'a>((_, xs): (&'a [bool], &'a [f64]), _: &'b mut ()) -> (bool, f64) {
-        (true, xs.iter().sum())
+    fn init(self, _: &[f64]) {}
+    fn reset<'a, 'b: 'a>(xs: &'a [f64], _: &'b mut ()) -> f64 {
+        xs.iter().sum()
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (&'a [bool], &'a [f64]),
-        state: &'b mut (),
-        _: &(),
-    ) -> (bool, f64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: &'a [f64], state: &'b mut (), _: &()) -> f64 {
+        Self::reset(inputs, state)
     }
 }
 

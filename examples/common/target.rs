@@ -3,14 +3,14 @@
 use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant, Retention, Series};
 use tradingflow::graph::Builder;
-use tradingflow::operators::series::record;
+use tradingflow::operators::series::record_clocked;
 use tradingflow::operators::{
     array::{array_map, map},
     event, rolling,
     stats::*,
     traders::*,
 };
-use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle};
+use tradingflow::ports::{ArrayPortHandle, ClockPortHandle, SeriesPortHandle};
 
 /// Cross-sectional demean preserving NaN.
 fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
@@ -43,6 +43,7 @@ fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
 pub fn build_log_return_target(
     sc: &mut Builder<Instant, UnixClock>,
     log_adj: ArrayPortHandle<f64, 1>,
+    daily: ClockPortHandle,
     target_retention: Retention,
 ) -> (
     ArrayPortHandle<f64, 1>,
@@ -51,9 +52,12 @@ pub fn build_log_return_target(
 ) {
     let log_returns = sc.segment(rolling::diff(1), log_adj);
     let target = sc.segment(winsorize(0.01), log_returns);
-    let target_series = sc.segment(record(target_retention, false), target);
+    // Clock-sampled, so the leading all-NaN row (the first close has no prior
+    // close to difference against) is kept and the panel stays index-aligned
+    // with the feature panel recorded on the same clock.
+    let target_series = sc.segment(record_clocked(target_retention, false), (daily, target));
     let demeaned = sc.segment(array_map(demean), target);
-    let demeaned_series = sc.segment(record(target_retention, false), demeaned);
+    let demeaned_series = sc.segment(record_clocked(target_retention, false), (daily, demeaned));
     (target, target_series, demeaned_series)
 }
 

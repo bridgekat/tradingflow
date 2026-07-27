@@ -89,6 +89,10 @@ fn fused_rolling_chain_matches_unfused_nodes() {
     let mut b = Builder::new();
     let (sx, xv) = b.source(array::from_parts([2], vec![nan; 2].into()));
     let (sy, yv) = b.source(array::from_parts([2], vec![nan; 2].into()));
+    // Badge both inputs as event arrays: fused/unfused equivalence holds on
+    // event edges, where "the source did not fire" reads NaN in both wirings.
+    let xv = b.segment(event::as_event(), xv);
+    let yv = b.segment(event::as_event(), yv);
 
     // Reference: the same chain as separate nodes.
     let fast = b.segment(rolling::mean(3, 1), xv);
@@ -172,6 +176,8 @@ fn fused_gated_multi_output_matches_unfused_nodes() {
     let mut b = Builder::new();
     let (sp, pv) = b.source(array::from_parts([2], vec![nan; 2].into()));
     let (sq, qv) = b.source(array::from_parts([2], vec![nan; 2].into()));
+    let pv = b.segment(event::as_event(), pv);
+    let qv = b.segment(event::as_event(), qv);
 
     // Reference: the same chain as separate nodes.
     let gp = b.segment(event::filter(any_finite), pv);
@@ -542,8 +548,10 @@ fn run_stateful_stress(workers: usize, branches: usize, gens: usize) -> Vec<usiz
                 }),
                 srcv,
             );
-            let smoothed = b.segment(rolling::mean(3, 1), gate);
-            b.segment(count::<0>(), smoothed)
+            let _smoothed = b.segment(rolling::mean(3, 1), gate);
+            // The eventful-batch probe sits on the gate's event edge: the
+            // smoothed output is a state array, which is always current.
+            b.segment(count::<0>(), gate)
         })
         .collect();
     let mut g = b.build();

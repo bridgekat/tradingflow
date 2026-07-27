@@ -89,7 +89,7 @@
 //! See module-level docs of [`graph`].
 //!
 //! The [`ports`] module provides type aliases for common port types
-//! (`()`, arrays, series).
+//! (booleans, arrays, series).
 //!
 //! # Built-in sources and operators
 //!

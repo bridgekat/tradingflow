@@ -80,7 +80,6 @@ pub struct Ports<V>(PhantomData<fn() -> V>);
 ///   reads (this is what the wiring check is matched against).
 pub unsafe trait Interface {
     /// The payload type across this interface.
-    /// Each leaf is a `(notify, value)` pair.
     type Values<'a>: Copy + Send + 'a;
 
     /// The deserialization scratch buffer type (optional).
@@ -107,7 +106,7 @@ pub unsafe trait Interface {
     /// Called once per node at build.
     fn out_scratch() -> Self::OutScratch;
 
-    /// Constructs the payload by consuming pointer slots (`flags` and `ptrs`).
+    /// Constructs the payload by consuming pointer slots (`ptrs`).
     /// Consumes `shape` exactly as [`flat_len`](Self::flat_len) does.
     /// The scratch buffer is assumed uninitialized and can be overwritten.
     ///
@@ -120,12 +119,11 @@ pub unsafe trait Interface {
     /// [`in_scratch`](Self::in_scratch) for the same `shape`.
     unsafe fn values_from_flat<'a>(
         shape: &mut FlatRead<'a, usize>,
-        flags: &mut FlatRead<'a, bool>,
         ptrs: &mut FlatRead<'a, *const ()>,
         scratch: &'a mut Self::InScratch,
     ) -> Self::Values<'a>;
 
-    /// Serializes the payload into pointer slots (`flags` and `ptrs`).
+    /// Serializes the payload into pointer slots (`ptrs`).
     /// The scratch buffer is assumed uninitialized and can be overwritten.
     ///
     /// # Safety
@@ -133,12 +131,11 @@ pub unsafe trait Interface {
     /// The result must agree with [`values_to_vecs`](Self::values_to_vecs).
     unsafe fn values_to_flat<'a>(
         values: Self::Values<'a>,
-        flags: &mut FlatWrite<bool>,
         ptrs: &mut FlatWrite<*const ()>,
         scratch: &mut Self::OutScratch,
     );
 
-    /// Serializes the payload into pointer slots (`flags` and `ptrs`).
+    /// Serializes the payload into pointer slots (`ptrs`).
     /// Writes to `shape` in the exact same format as how
     /// [`flat_len`](Self::flat_len) reads.
     /// The scratch buffer is assumed uninitialized and can be overwritten.
@@ -153,13 +150,9 @@ pub unsafe trait Interface {
     unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
         shape: &mut Vec<usize>,
-        flags: &mut Vec<bool>,
         ptrs: &mut Vec<*const ()>,
         scratch: &mut Self::OutScratch,
     );
-
-    /// Returns whether any leaf's notify flag is set.
-    fn any_notify(values: &Self::Values<'_>) -> bool;
 
     /// Reborrows an interface to a shorter lifetime.
     fn reborrow<'a, 'b: 'a>(values: Self::Values<'b>) -> Self::Values<'a> {
@@ -185,7 +178,6 @@ unsafe impl Interface for () {
 
     unsafe fn values_from_flat<'a>(
         _shape: &mut FlatRead<'a, usize>,
-        _flags: &mut FlatRead<'a, bool>,
         _ptrs: &mut FlatRead<'a, *const ()>,
         _scratch: &'a mut Self::InScratch,
     ) {
@@ -193,7 +185,6 @@ unsafe impl Interface for () {
 
     unsafe fn values_to_flat<'a>(
         _values: Self::Values<'a>,
-        _flags: &mut FlatWrite<bool>,
         _ptrs: &mut FlatWrite<*const ()>,
         _scratch: &mut Self::OutScratch,
     ) {
@@ -202,14 +193,9 @@ unsafe impl Interface for () {
     unsafe fn values_to_vecs<'a>(
         _values: Self::Values<'a>,
         _shape: &mut Vec<usize>,
-        _flags: &mut Vec<bool>,
         _ptrs: &mut Vec<*const ()>,
         _scratch: &mut Self::OutScratch,
     ) {
-    }
-
-    fn any_notify(_: &()) -> bool {
-        false
     }
 }
 
@@ -244,34 +230,27 @@ macro_rules! impl_interface_for_tuple {
 
             unsafe fn values_from_flat<'a>(
                 shape: &mut FlatRead<'a, usize>,
-                flags: &mut FlatRead<'a, bool>,
                 ptrs: &mut FlatRead<'a, *const ()>,
                 scratch: &'a mut Self::InScratch,
             ) -> Self::Values<'a> {
-                ( $( unsafe { $T::values_from_flat(shape, flags, ptrs, &mut scratch.$idx) }, )+ )
+                ( $( unsafe { $T::values_from_flat(shape, ptrs, &mut scratch.$idx) }, )+ )
             }
 
             unsafe fn values_to_flat<'a>(
                 values: Self::Values<'a>,
-                flags: &mut FlatWrite<bool>,
                 ptrs: &mut FlatWrite<*const ()>,
                 scratch: &mut Self::OutScratch,
             ) {
-                $( unsafe { $T::values_to_flat(values.$idx, flags, ptrs, &mut scratch.$idx); } )+
+                $( unsafe { $T::values_to_flat(values.$idx, ptrs, &mut scratch.$idx); } )+
             }
 
             unsafe fn values_to_vecs<'a>(
                 values: Self::Values<'a>,
                 shape: &mut Vec<usize>,
-                flags: &mut Vec<bool>,
                 ptrs: &mut Vec<*const ()>,
                 scratch: &mut Self::OutScratch,
             ) {
-                $( unsafe { $T::values_to_vecs(values.$idx, shape, flags, ptrs, &mut scratch.$idx); } )+
-            }
-
-            fn any_notify(values: &Self::Values<'_>) -> bool {
-                false $(|| $T::any_notify(&values.$idx))+
+                $( unsafe { $T::values_to_vecs(values.$idx, shape, ptrs, &mut scratch.$idx); } )+
             }
         }
     };
@@ -291,7 +270,7 @@ impl_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 
 impl_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);
 
 unsafe impl<V: Pass> Interface for Port<V> {
-    type Values<'a> = (bool, V::View<'a>);
+    type Values<'a> = V::View<'a>;
     type InScratch = ();
     type OutScratch = MaybeUninit<V::View<'static>>;
 
@@ -311,51 +290,40 @@ unsafe impl<V: Pass> Interface for Port<V> {
 
     unsafe fn values_from_flat<'a>(
         _shape: &mut FlatRead<'a, usize>,
-        flags: &mut FlatRead<'a, bool>,
         ptrs: &mut FlatRead<'a, *const ()>,
         _scratch: &'a mut Self::InScratch,
     ) -> Self::Values<'a> {
         // Copy the view out of the producer's scratch: the payload owns its
         // copy, so a forwarding consumer re-homes it on its own output side.
-        (*flags.pop(), unsafe {
-            ptrs.pop().cast::<V::View<'a>>().read()
-        })
+        unsafe { ptrs.pop().cast::<V::View<'a>>().read() }
     }
 
     unsafe fn values_to_flat<'a>(
         values: Self::Values<'a>,
-        flags: &mut FlatWrite<bool>,
         ptrs: &mut FlatWrite<*const ()>,
         scratch: &mut Self::OutScratch,
     ) {
-        flags.push(values.0);
         // SAFETY: storage-only lifetime erasure -- layout is lifetime-invariant
         // by the [`Value`] covariance contract; consumers re-type the slot
         // back at their (shorter) generation lifetime.
-        unsafe { scratch.as_mut_ptr().cast::<V::View<'a>>().write(values.1) };
+        unsafe { scratch.as_mut_ptr().cast::<V::View<'a>>().write(values) };
         ptrs.push(scratch.as_ptr().cast());
     }
 
     unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
         _shape: &mut Vec<usize>,
-        flags: &mut Vec<bool>,
         ptrs: &mut Vec<*const ()>,
         scratch: &mut Self::OutScratch,
     ) {
-        flags.push(values.0);
         // SAFETY: as in `values_to_flat`.
-        unsafe { scratch.as_mut_ptr().cast::<V::View<'a>>().write(values.1) };
+        unsafe { scratch.as_mut_ptr().cast::<V::View<'a>>().write(values) };
         ptrs.push(scratch.as_ptr().cast());
-    }
-
-    fn any_notify(values: &Self::Values<'_>) -> bool {
-        values.0
     }
 }
 
 unsafe impl<V: Pass> Interface for Ports<V> {
-    type Values<'a> = (&'a [bool], &'a [V::View<'a>]);
+    type Values<'a> = &'a [V::View<'a>];
     type InScratch = Box<[MaybeUninit<V::View<'static>>]>;
     type OutScratch = ();
 
@@ -376,12 +344,10 @@ unsafe impl<V: Pass> Interface for Ports<V> {
 
     unsafe fn values_from_flat<'a>(
         shape: &mut FlatRead<'a, usize>,
-        flags: &mut FlatRead<'a, bool>,
         ptrs: &mut FlatRead<'a, *const ()>,
         scratch: &'a mut Self::InScratch,
     ) -> Self::Values<'a> {
         let n = *shape.pop();
-        let f = flags.take(n);
         let p = ptrs.take(n);
         let dst: &'a mut [MaybeUninit<V::View<'static>>] = scratch;
         debug_assert!(dst.len() == n, "ports scratch disagrees with shape");
@@ -397,43 +363,30 @@ unsafe impl<V: Pass> Interface for Ports<V> {
         }
         // SAFETY: all `n` slots were initialized above; `[MaybeUninit<T>]` is
         // layout-identical to `[T]`, re-typed back at the generation lifetime.
-        let v = unsafe {
+        unsafe {
             &*(std::ptr::from_ref::<[MaybeUninit<V::View<'static>>]>(dst) as *const [V::View<'a>])
-        };
-        (f, v)
+        }
     }
 
     unsafe fn values_to_flat<'a>(
         values: Self::Values<'a>,
-        flags: &mut FlatWrite<bool>,
         ptrs: &mut FlatWrite<*const ()>,
         _scratch: &mut Self::OutScratch,
     ) {
-        let (f, v) = values;
-        debug_assert!(f.len() == v.len(), "ports planes disagree on length");
-        flags.extend(f);
-        for view in v {
-            ptrs.push(std::ptr::from_ref(view).cast());
+        for value in values {
+            ptrs.push(std::ptr::from_ref(value).cast());
         }
     }
 
     unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
         shape: &mut Vec<usize>,
-        flags: &mut Vec<bool>,
         ptrs: &mut Vec<*const ()>,
         _scratch: &mut Self::OutScratch,
     ) {
-        let (f, v) = values;
-        debug_assert!(f.len() == v.len(), "ports planes disagree on length");
-        shape.push(v.len());
-        flags.extend_from_slice(f);
-        for view in v {
-            ptrs.push(std::ptr::from_ref(view).cast());
+        shape.push(values.len());
+        for value in values {
+            ptrs.push(std::ptr::from_ref(value).cast());
         }
-    }
-
-    fn any_notify(values: &Self::Values<'_>) -> bool {
-        values.0.iter().any(|&n| n)
     }
 }

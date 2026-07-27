@@ -2,8 +2,8 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{self, Array, ArrayView, Instant, Scalar};
-use crate::graph::{Operator, Segment};
-use crate::ports::{ArrayPort, event_or};
+use crate::graph::Segment;
+use crate::ports::ArrayPort;
 
 /// Operator signature for [`forward_adjust`].
 pub struct ForwardAdjust<T: Scalar + Float, const N: usize> {
@@ -31,7 +31,7 @@ pub struct ForwardAdjustState<T: Scalar + Float, const N: usize> {
     adj_closes: Array<T, N>,
 }
 
-impl<T: Scalar + Float, const N: usize> Operator for ForwardAdjust<T, N> {
+impl<T: Scalar + Float, const N: usize> Segment for ForwardAdjust<T, N> {
     type Inputs = (ArrayPort<T, N>, ArrayPort<T, N>, ArrayPort<T, N>);
     type Outputs = (ArrayPort<T, N>, ArrayPort<T, N>);
     type Context = Instant;
@@ -40,15 +40,13 @@ impl<T: Scalar + Float, const N: usize> Operator for ForwardAdjust<T, N> {
     fn init(
         self,
         (closes, share_divs, cash_divs): (
-            (bool, ArrayView<'_, T, N>),
-            (bool, ArrayView<'_, T, N>),
-            (bool, ArrayView<'_, T, N>),
+            ArrayView<'_, T, N>,
+            ArrayView<'_, T, N>,
+            ArrayView<'_, T, N>,
         ),
     ) -> Self::State {
-        let nan = T::nan();
-        let closes = event_or(closes, &nan);
-        let _ = data::array::broadcast_to(event_or(share_divs, &nan), closes.extents());
-        let _ = data::array::broadcast_to(event_or(cash_divs, &nan), closes.extents());
+        let _ = data::array::broadcast_to(share_divs, closes.extents());
+        let _ = data::array::broadcast_to(cash_divs, closes.extents());
         ForwardAdjustState {
             prev_closes: Array::full(closes.extents(), T::nan()),
             multipliers: Array::full(closes.extents(), T::one()),
@@ -56,33 +54,28 @@ impl<T: Scalar + Float, const N: usize> Operator for ForwardAdjust<T, N> {
         }
     }
 
-    fn passthrough<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         _: (
-            (bool, ArrayView<'_, T, N>),
-            (bool, ArrayView<'_, T, N>),
-            (bool, ArrayView<'_, T, N>),
+            ArrayView<'_, T, N>,
+            ArrayView<'_, T, N>,
+            ArrayView<'_, T, N>,
         ),
         state: &'b mut Self::State,
-    ) -> ((bool, ArrayView<'a, T, N>), (bool, ArrayView<'a, T, N>)) {
-        (
-            (false, state.multipliers.view()),
-            (false, state.adj_closes.view()),
-        )
+    ) -> (ArrayView<'a, T, N>, ArrayView<'a, T, N>) {
+        (state.multipliers.view(), state.adj_closes.view())
     }
 
     fn compute<'a, 'b: 'a>(
         (closes, share_divs, cash_divs): (
-            (bool, ArrayView<'_, T, N>),
-            (bool, ArrayView<'_, T, N>),
-            (bool, ArrayView<'_, T, N>),
+            ArrayView<'_, T, N>,
+            ArrayView<'_, T, N>,
+            ArrayView<'_, T, N>,
         ),
         state: &'b mut Self::State,
         _: &Instant,
-    ) -> ((bool, ArrayView<'a, T, N>), (bool, ArrayView<'a, T, N>)) {
-        let nan = T::nan();
-        let closes = event_or(closes, &nan);
-        let share_divs = data::array::broadcast_to(event_or(share_divs, &nan), closes.extents());
-        let cash_divs = data::array::broadcast_to(event_or(cash_divs, &nan), closes.extents());
+    ) -> (ArrayView<'a, T, N>, ArrayView<'a, T, N>) {
+        let share_divs = data::array::broadcast_to(share_divs, closes.extents());
+        let cash_divs = data::array::broadcast_to(cash_divs, closes.extents());
         for ((((&close, &share_div), &cash_div), prev_close), multiplier) in closes
             .iter()
             .zip(share_divs.iter())
@@ -112,13 +105,10 @@ impl<T: Scalar + Float, const N: usize> Operator for ForwardAdjust<T, N> {
             if !close.is_nan() {
                 *adj_close = close * multiplier;
             } else {
-                *adj_close = nan;
+                *adj_close = T::nan();
             }
         }
-        (
-            (true, state.multipliers.view()),
-            (true, state.adj_closes.view()),
-        )
+        (state.multipliers.view(), state.adj_closes.view())
     }
 }
 
@@ -126,18 +116,18 @@ impl<T: Scalar + Float, const N: usize> Operator for ForwardAdjust<T, N> {
 ///
 /// Inputs:
 ///
-/// - `closes`: the closing prices of each stock. Notifies once per trading day.
-/// - `share_divs`: share dividends per stock. Extents must be broadcastable to
-///   `closes`. Notifies once per dividend event (extra zeros are allowed).
-/// - `cash_divs`: cash dividends per stock. Extents must be broadcastable to
-///   `closes`. Notifies once per dividend event (extra zeros are allowed).
+/// - `closes` (event, one per trading day): the closing prices of each stock.
+/// - `share_divs` (event, one per dividend event): share dividends per stock.
+///   Extents must be broadcastable to `closes`.
+/// - `cash_divs` (event, one per dividend event): cash dividends per stock.
+///   Extents must be broadcastable to `closes`.
 ///
 /// Outputs:
 ///
-/// - `multipliers`: cumulative forward-adjustment multipliers for each stock.
-///   Extents are the same as `closes`. Notifies on change.
-/// - `adj_closes`: forward-adjusted closing prices for each stock. Extents are
-///   the same as `closes`. Notifies once per trading day.
+/// - `multipliers` (state): cumulative forward-adjustment multipliers for each
+///   stock. Extents are the same as `closes`.
+/// - `adj_closes` (event, one per trading day): forward-adjusted closing prices
+///   for each stock. Extents are the same as `closes`.
 #[allow(clippy::type_complexity)]
 pub fn forward_adjust<T: Scalar + Float, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>, ArrayPort<T, N>),

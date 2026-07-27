@@ -1,9 +1,9 @@
 //! The frictionless [`Benchmark`] executor.
 
-use crate::data::{Array, ArrayView, Instant, Layout};
-use crate::graph::typed::Operator;
-
 use super::core::{TraderInputs, TraderValues, Vp};
+use crate::data::{Array, ArrayView, Instant, Layout};
+use crate::graph::Segment;
+use crate::ports::is_eventful;
 
 /// Frictionless benchmark executor: replicates target weights exactly, with
 /// dividend reinvestment, one-tick-delayed mark-on-close execution, idealised
@@ -42,13 +42,13 @@ pub struct BenchmarkState {
     out: Array<f64, 1>,
 }
 
-impl Operator for Benchmark {
+impl Segment for Benchmark {
     type Inputs = TraderInputs;
     type Outputs = Vp;
     type Context = Instant;
     type State = BenchmarkState;
 
-    fn init(self, ((_, pos), ..): TraderValues<'_>) -> BenchmarkState {
+    fn init(self, (pos, ..): TraderValues<'_>) -> BenchmarkState {
         let n = self.num_stocks;
         assert_eq!(
             pos.layout().len(),
@@ -69,11 +69,13 @@ impl Operator for Benchmark {
     }
 
     fn compute<'a, 'b: 'a>(
-        ((pos_notified, pos), (_, close), (_, adj), (_, up), (_, lo)): TraderValues<'a>,
+        (pos, close, adj, up, lo): TraderValues<'a>,
         state: &'b mut BenchmarkState,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
+    ) -> ArrayView<'a, f64, 1> {
         let n = state.num_stocks;
+        let pos_eventful = is_eventful(pos);
+        let can_exec = is_eventful(close);
         let positions = pos.to_contiguous();
         let closes = close.to_contiguous();
         let adjusts = adj.to_contiguous();
@@ -103,7 +105,9 @@ impl Operator for Benchmark {
         }
 
         // Execute the rebalance signalled one tick ago, at today's close.
-        if let Some(pending) = state.pending.take() {
+        // Only an eventful close batch can execute: with no close events there
+        // is no market to trade in, and the pending signal is held.
+        if can_exec && let Some(pending) = state.pending.take() {
             // Step 1: idealised force-liquidation of held stocks with no valid
             // exec price today (suspended/delisted), at their last valid close.
             for i in 0..n {
@@ -140,8 +144,8 @@ impl Operator for Benchmark {
             }
         }
 
-        // Capture a new target for execution on the NEXT tick.
-        if pos_notified {
+        // Capture a new target for execution on the NEXT eventful close.
+        if pos_eventful {
             state.pending = Some(positions.to_vec());
         }
 
@@ -166,14 +170,14 @@ impl Operator for Benchmark {
         let out = state.out.data_mut();
         out[0] = holdings_value;
         out[1] = state.cash;
-        (true, state.out.view())
+        state.out.view()
     }
 
-    fn passthrough<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         _: TraderValues<'a>,
         state: &'b mut BenchmarkState,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, f64, 1> {
+        state.out.view()
     }
 }
 

@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::data::layout::{IntoSliceReshapes, IntoSlices};
 use crate::data::{Instant, Scalar, SeriesView};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::SeriesPort;
 
 /// Operator signature for [`derive_view`] etc.
@@ -26,7 +26,7 @@ where
     }
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Operator for DeriveView<T, N, U, M, F>
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Segment for DeriveView<T, N, U, M, F>
 where
     F: FnMut(SeriesView<'_, T, N>) -> SeriesView<'_, U, M> + Send + 'static,
 {
@@ -35,23 +35,20 @@ where
     type Context = Instant;
     type State = F;
 
-    fn init(self, _: (bool, SeriesView<'_, T, N>)) -> F {
+    fn init(self, _: SeriesView<'_, T, N>) -> F {
         self.derive
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        (_, a): (bool, SeriesView<'a, T, N>),
-        derive: &'b mut F,
-    ) -> (bool, SeriesView<'a, U, M>) {
-        (false, derive(a))
+    fn reset<'a, 'b: 'a>(a: SeriesView<'a, T, N>, derive: &'b mut F) -> SeriesView<'a, U, M> {
+        derive(a)
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, SeriesView<'a, T, N>),
+        a: SeriesView<'a, T, N>,
         derive: &'b mut F,
         _: &Instant,
-    ) -> (bool, SeriesView<'a, U, M>) {
-        (true, derive(a))
+    ) -> SeriesView<'a, U, M> {
+        derive(a)
     }
 }
 

@@ -336,13 +336,13 @@ pub fn build_stacked(
     let income_xs = sc.segment(stack::<f64, 1, 2>(0), &incomes[..]); // (N, 4)
     let balance_xs = sc.segment(stack::<f64, 1, 2>(0), &balances[..]); // (N, 7)
     let cf_xs = sc.segment(stack::<f64, 1, 2>(0), &cashflows[..]); // (N, 3)
-    let px_xs = sc.segment(event::stack_sync::<f64, 1, 2>(0), &price_extras[..]); // (N, 4) [open, high, low, amount]
+    let px_xs = sc.segment(event::eventify(stack::<f64, 1, 2>(0)), &price_extras[..]); // (N, 4) [open, high, low, amount]
 
     Stacked {
         // Per-stock scalars (rank-0) → rank-1 `[N]` cross-sections.
-        close: sc.segment(event::stack_sync(0), &closes[..]),
-        volume: sc.segment(event::stack_sync(0), &volumes[..]),
-        adjusted_close: sc.segment(event::stack_sync(0), &adjusted_closes[..]),
+        close: sc.segment(event::eventify(stack(0)), &closes[..]),
+        volume: sc.segment(event::eventify(stack(0)), &volumes[..]),
+        adjusted_close: sc.segment(event::eventify(stack(0)), &adjusted_closes[..]),
         adjusts: sc.segment(stack(0), &adjust_factors[..]),
         total_shares: sc.segment(stack(0), &totals[..]),
         circ_shares: sc.segment(stack(0), &circs[..]),

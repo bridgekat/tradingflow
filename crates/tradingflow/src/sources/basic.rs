@@ -2,7 +2,7 @@ use futures::stream::Stream;
 
 use crate::data::{Array, ArrayView, Instant, Scalar, Series};
 use crate::graph::{Event, Port, Ref, Source};
-use crate::ports::{ArrayPort, UnitPort};
+use crate::ports::{ArrayPort, ClockPort};
 
 #[derive(Clone)]
 pub struct ArraySource<T: Scalar, const N: usize> {
@@ -42,8 +42,12 @@ impl<T: Scalar, const N: usize> Source for ArraySource<T, N> {
         (self.default, futures::stream::iter(it))
     }
 
-    fn output(state: &mut Array<T, N>) -> (bool, ArrayView<'_, T, N>) {
-        (true, state.view())
+    fn reset(state: &mut Array<T, N>) -> ArrayView<'_, T, N> {
+        state.view()
+    }
+
+    fn output(state: &mut Array<T, N>) -> ArrayView<'_, T, N> {
+        state.view()
     }
 
     fn write(payload: Self::Payload, _: Self::Instant, state: &mut Array<T, N>) -> usize {
@@ -90,8 +94,12 @@ where
         (self.default, futures::stream::iter(it))
     }
 
-    fn output(state: &mut T) -> (bool, &T) {
-        (true, state)
+    fn reset(state: &mut T) -> &T {
+        state
+    }
+
+    fn output(state: &mut T) -> &T {
+        state
     }
 
     fn write(payload: Self::Payload, _: Self::Instant, state: &mut T) -> usize {
@@ -108,7 +116,7 @@ pub struct PulseSource {
 impl Source for PulseSource {
     type Instant = Instant;
     type Payload = ();
-    type Outputs = UnitPort;
+    type Outputs = ClockPort;
     type State = ();
 
     fn size_hint(&self) -> Option<usize> {
@@ -120,8 +128,12 @@ impl Source for PulseSource {
         ((), futures::stream::iter(it))
     }
 
-    fn output(_: &mut Self::State) -> (bool, ()) {
-        (true, ())
+    fn reset(_: &mut Self::State) -> bool {
+        false
+    }
+
+    fn output(_: &mut Self::State) -> bool {
+        true
     }
 
     fn write(_: Self::Payload, _: Self::Instant, _: &mut ()) -> usize {

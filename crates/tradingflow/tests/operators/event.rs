@@ -102,39 +102,26 @@ fn filter_suppression_does_not_advance_downstream() {
     }
 }
 
-/// The other half of the flag contract: `notify == false` promises the value is
-/// *unchanged*, so a suppressed `filter` must keep publishing the last value
-/// that passed — never the value that was rejected, and never garbage. Before
-/// anything has passed it publishes the value its state was initialised with.
-/// Downstream nodes that do read the port while it is quiet (a join, say) then
-/// see a coherent last-known payload.
+/// The flip side of the cutoff under value-level events: a suppressed (or
+/// merely scheduled-but-quiet) `filter` presents the quiescent all-NaN form,
+/// never the rejected value and never a stale copy of the last passing one —
+/// the port-level "carry the last passing value" contract of the old flag
+/// model is gone by design, and holding a last-known value is an explicit
+/// downstream `hold`/record now.
 #[test]
-fn filter_carries_its_last_passing_value_while_suppressed() {
+fn filter_is_quiescent_between_passing_events() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let kept = b.segment(event::filter(over_three), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // (poked value — `None` leaves the source untouched, expected port value)
-    let ticks: &[(Option<f64>, f64)] = &[
-        (Some(1.0), 0.0), // rejected before anything passed → the init value
-        (Some(5.0), 5.0),
-        (Some(2.0), 5.0), // rejected → carry, *not* 2.0
-        (None, 5.0),      // idle generation → passthrough, still 5.0
-        (Some(10.0), 10.0),
-        (Some(-1.0), 10.0),
-        (None, 10.0),
-    ];
-    for (i, &(poke, expected)) in ticks.iter().enumerate() {
-        if let Some(v) = poke {
-            *g.state_mut(src) = scalar(v);
-        }
+    for (i, v) in [1.0, 5.0, 2.0, 10.0].into_iter().enumerate() {
+        *g.state_mut(src) = scalar(v);
         g.stabilize(&mut pool, &nano(i as i64 + 1));
-        assert_eq!(
-            bits(g.view(kept)),
-            vec![expected.to_bits()],
-            "tick {i}: poked {poke:?}"
+        assert!(
+            vals(g.view(kept))[0].is_nan(),
+            "tick {i}: the wire is quiescent after every generation"
         );
     }
 }
@@ -154,13 +141,14 @@ fn clock_pulses_exactly_when_its_input_notifies() {
     let mut b = Builder::new();
     let (beat, beatv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
     let (data, datav) = b.source(array::scalar(0.0_f64));
-    let pulse = b.segment(event::clock(), beatv);
-    let sampled = b.segment(event::resample(), (pulse, datav));
+    let pulse = b.segment(event::as_clock(), beatv);
+    let sampled = b.segment(event::sample(), (pulse, datav));
     let probe = b.segment(count::<0>(), sampled);
+    let rec = b.segment(series::record_all(), sampled);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // (beat poke, data poke, expected pulses so far, expected sampled value)
+    // (beat poke, data poke, expected pulses so far, expected last sample)
     type Tick = (Option<[f64; 3]>, Option<f64>, usize, f64);
     let ticks: &[Tick] = &[
         (Some([1.0, 1.0, 1.0]), Some(10.0), 1, 10.0),
@@ -178,7 +166,11 @@ fn clock_pulses_exactly_when_its_input_notifies() {
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(g.view(probe), pulses, "tick {i}: pulse count");
-        assert_close(&vals(g.view(sampled)), &[value], &format!("tick {i}"));
+        // The sampled wire itself is quiescent (NaN) after every generation;
+        // the gated record holds the event history, so its last row is the
+        // latest sampled value.
+        let last = series_vals(g.view(rec)).last().copied().unwrap_or(f64::NAN);
+        assert_close(&[last], &[value], &format!("tick {i}"));
     }
 }
 
@@ -193,15 +185,17 @@ fn clock_relays_a_filters_suppression() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let kept = b.segment(event::filter(over_three), srcv);
-    let pulse = b.segment(event::clock(), kept);
-    let sampled = b.segment(event::resample(), (pulse, srcv));
+    let pulse = b.segment(event::as_clock(), kept);
+    let sampled = b.segment(event::sample(), (pulse, srcv));
     let probe = b.segment(count::<0>(), sampled);
+    let rec = b.segment(series::record_all(), sampled);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // (poked value, expected pulses so far, expected sampled value)
+    // (poked value, expected pulses so far, expected last sample)
+    let nan = f64::NAN;
     let ticks: &[(f64, usize, f64)] = &[
-        (1.0, 0, 0.0), // rejected: no pulse, the sampler never ran
+        (1.0, 0, nan), // rejected: no pulse, the sampler never ran
         (5.0, 1, 5.0),
         (2.0, 1, 5.0),
         (10.0, 2, 10.0),
@@ -212,7 +206,8 @@ fn clock_relays_a_filters_suppression() {
         *g.state_mut(src) = scalar(v);
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(g.view(probe), pulses, "tick {i}: poked {v}");
-        assert_close(&vals(g.view(sampled)), &[value], &format!("tick {i}"));
+        let last = series_vals(g.view(rec)).last().copied().unwrap_or(f64::NAN);
+        assert_close(&[last], &[value], &format!("tick {i}"));
     }
 }
 
@@ -229,16 +224,18 @@ fn clock_relays_a_filters_suppression() {
 fn resample_emits_only_on_a_clock_pulse() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let (tick, tickv) = b.source(const_val(()));
-    let sampled = b.segment(event::resample(), (tickv, srcv));
+    let (tick, tickv) = b.source(clock());
+    let sampled = b.segment(event::sample(), (tickv, srcv));
     let probe = b.segment(count::<0>(), sampled);
+    let rec = b.segment(series::record_all(), sampled);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // (pulse?, data poke, expected emissions so far, expected sampled value)
+    // (pulse?, data poke, expected emissions so far, expected last sample)
+    let nan = f64::NAN;
     type Tick = (bool, Option<f64>, usize, f64);
     let ticks: &[Tick] = &[
-        (false, Some(1.0), 0, 0.0), // data alone: silent, still the init value
+        (false, Some(1.0), 0, nan), // data alone: silent, nothing sampled yet
         (true, None, 1, 1.0),       // pulse alone: emits the data from tick 0
         (true, Some(2.0), 2, 2.0),  // pulse + data: emits the fresh value
         (false, None, 2, 2.0),      // idle
@@ -256,23 +253,23 @@ fn resample_emits_only_on_a_clock_pulse() {
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(g.view(probe), emissions, "tick {i}: emission count");
-        assert_close(&vals(g.view(sampled)), &[value], &format!("tick {i}"));
+        let last = series_vals(g.view(rec)).last().copied().unwrap_or(f64::NAN);
+        assert_close(&[last], &[value], &format!("tick {i}"));
     }
 }
 
 /// Regression, pinned on its own because it was a real bug: a data arrival with
 /// no clock pulse must be *completely* silent. The node is scheduled (its cone
 /// is dirty, so `Resample::compute` does run) — the silence has to come from
-/// the operator returning a cleared flag, not from the scheduler skipping it,
-/// which is why the plain `Operator` auto-gate on `any_notify` is not enough
-/// here and `Resample` implements `Segment` directly. The trailing pulse keeps
-/// the test honest: without it a disconnected graph would also "pass".
+/// the operator emitting the quiescent all-NaN form, not from the scheduler
+/// skipping it. The trailing pulse keeps the test honest: without it a
+/// disconnected graph would also "pass".
 #[test]
 fn resample_stays_silent_without_a_clock_pulse() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let (tick, tickv) = b.source(const_val(()));
-    let sampled = b.segment(event::resample(), (tickv, srcv));
+    let (tick, tickv) = b.source(clock());
+    let sampled = b.segment(event::sample(), (tickv, srcv));
     let probe = b.segment(count::<0>(), sampled);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -285,21 +282,15 @@ fn resample_stays_silent_without_a_clock_pulse() {
             0,
             "tick {i}: data without a pulse propagated"
         );
-        assert_close(
-            &vals(g.view(sampled)),
-            &[0.0],
-            &format!("tick {i}: output moved without a pulse"),
+        assert!(
+            vals(g.view(sampled))[0].is_nan(),
+            "tick {i}: output moved without a pulse",
         );
     }
 
     let _ = g.state_mut(tick);
     g.stabilize(&mut pool, &nano(5));
     assert_eq!(g.view(probe), 1, "the sampler is actually wired up");
-    assert_close(
-        &vals(g.view(sampled)),
-        &[4.0],
-        "pulse emits the latest data",
-    );
 }
 
 /// A pulse emits the latest data value even though that value arrived in an
@@ -313,8 +304,8 @@ fn resample_stays_silent_without_a_clock_pulse() {
 fn resample_emits_the_latest_value_from_an_earlier_generation() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let (tick, tickv) = b.source(const_val(()));
-    let sampled = b.segment(event::resample(), (tickv, srcv));
+    let (tick, tickv) = b.source(clock());
+    let sampled = b.segment(event::sample(), (tickv, srcv));
     let rec = b.segment(series::record_all(), sampled);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -344,31 +335,33 @@ fn resample_emits_the_latest_value_from_an_earlier_generation() {
 }
 
 // ---------------------------------------------------------------------------
-// stack_sync / concat_sync — NaN-filling the inputs that did not notify
+// joins over state vs. event edges — NaN-filling the inputs with no events
 // ---------------------------------------------------------------------------
 
-/// `stack_sync` differs from `array::stack` in exactly one way, and this is it:
-/// where the plain join carries the last known value of an input that did not
-/// notify, the `_sync` join writes `NaN` into that input's slice. Running both
-/// over the same three sources makes the contrast the subject of the test.
-/// Which one you want depends on the question: `stack` answers "what is the
-/// latest value of each element" (a state), `stack_sync` answers "what arrived
-/// on this tick" (an event), and silently getting the first when you meant the
-/// second is a stale-data bug that a value assertion on a single generation
-/// cannot see.
+/// There is one join operator now, and the carry/sync contrast lives in the
+/// *wiring*: a join over state cells reads each input's retained value (the
+/// carry), while the same join over `as_event`-badged edges reads NaN for
+/// every input whose source did not fire (the sync fill). Which one you want
+/// depends on the question: the state join answers "what is the latest value
+/// of each element", the event join answers "what arrived on this tick", and
+/// silently getting the first when you meant the second is a stale-data bug
+/// that a value assertion on a single generation cannot see.
 #[test]
-fn stack_sync_nan_fills_unnotified_inputs_while_stack_carries() {
+fn a_join_over_event_edges_nan_fills_while_a_state_join_carries() {
     let nan = f64::NAN;
     let mut b = Builder::new();
     let (s0, s0v) = b.source(array::scalar(0.0_f64));
     let (s1, s1v) = b.source(array::scalar(0.0_f64));
     let (s2, s2v) = b.source(array::scalar(0.0_f64));
+    let e0 = b.segment(event::as_event(), s0v);
+    let e1 = b.segment(event::as_event(), s1v);
+    let e2 = b.segment(event::as_event(), s2v);
     let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
-    let synced = b.segment(event::stack_sync::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
+    let synced = b.segment(array::stack::<f64, 0, 1>(0), &[e0, e1, e2][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // (per-source poke, expected `stack`, expected `stack_sync`)
+    // (per-source poke, expected state join, expected event join)
     type Tick = ([Option<f64>; 3], [f64; 3], [f64; 3]);
     let ticks: &[Tick] = &[
         (
@@ -413,23 +406,24 @@ fn stack_sync_nan_fills_unnotified_inputs_while_stack_carries() {
     }
 }
 
-/// The same contrast for `concat_sync` against `array::concat`, on rank-1
-/// inputs joined along an existing axis: the NaN fill covers the whole
-/// contribution of a quiet input (both of its elements), not just a scalar
-/// slot, so the fill is expressed in terms of each input's chunk of the output
-/// rather than element-by-element.
+/// The same contrast for `concat`, on rank-1 inputs joined along an existing
+/// axis: the NaN fill covers the whole contribution of a quiet input (both of
+/// its elements), not just a scalar slot, so the fill is expressed in terms of
+/// each input's chunk of the output rather than element-by-element.
 #[test]
-fn concat_sync_nan_fills_unnotified_inputs_while_concat_carries() {
+fn a_concat_over_event_edges_nan_fills_while_a_state_concat_carries() {
     let nan = f64::NAN;
     let mut b = Builder::new();
     let (a, av) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
     let (c, cv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let ea = b.segment(event::as_event(), av);
+    let ec = b.segment(event::as_event(), cv);
     let joined = b.segment(array::concat::<f64, 1>(0), &[av, cv][..]);
-    let synced = b.segment(event::concat_sync::<f64, 1>(0), &[av, cv][..]);
+    let synced = b.segment(array::concat::<f64, 1>(0), &[ea, ec][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // (poke of a, poke of c, expected `concat`, expected `concat_sync`)
+    // (poke of a, poke of c, expected state join, expected event join)
     type Tick = (Option<[f64; 2]>, Option<[f64; 2]>, [f64; 4], [f64; 4]);
     let ticks: &[Tick] = &[
         (
@@ -481,10 +475,10 @@ fn concat_sync_nan_fills_unnotified_inputs_while_concat_carries() {
 /// buffer, and because a join that quietly recomputed from stale inputs would
 /// still produce equal-looking floats.
 ///
-/// The second half also pins the one thing about `stack_sync` that is easy to
-/// get backwards: it NaN-fills per *input notification*, not per generation, so
-/// an idle generation carries its previous output (NaNs included) rather than
-/// blanking the whole cross-section.
+/// The second half also pins the one thing about the event join that is easy
+/// to get backwards: it NaN-fills per *input*, not per generation, so an idle
+/// generation (the join never scheduled) carries its previous output (NaNs
+/// included) rather than blanking the whole cross-section.
 #[test]
 fn a_join_carries_unnotified_inputs_and_freezes_when_idle() {
     let nan = f64::NAN;
@@ -492,8 +486,11 @@ fn a_join_carries_unnotified_inputs_and_freezes_when_idle() {
     let (s0, s0v) = b.source(array::scalar(0.0_f64));
     let (s1, s1v) = b.source(array::scalar(0.0_f64));
     let (s2, s2v) = b.source(array::scalar(0.0_f64));
+    let e0 = b.segment(event::as_event(), s0v);
+    let e1 = b.segment(event::as_event(), s1v);
+    let e2 = b.segment(event::as_event(), s2v);
     let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
-    let synced = b.segment(event::stack_sync::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
+    let synced = b.segment(array::stack::<f64, 0, 1>(0), &[e0, e1, e2][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 

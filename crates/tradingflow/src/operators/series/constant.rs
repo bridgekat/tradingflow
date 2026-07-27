@@ -23,16 +23,16 @@ impl<T: Scalar, const N: usize> Segment for Constant<T, N> {
         self.value
     }
 
-    fn output<'a, 'b: 'a>(_: (), state: &'b mut Series<T, N>) -> (bool, SeriesView<'a, T, N>) {
-        (true, state.view())
+    fn reset<'a, 'b: 'a>(_: (), state: &'b mut Series<T, N>) -> SeriesView<'a, T, N> {
+        state.view()
     }
 
     fn compute<'a, 'b: 'a>(
         _: (),
         state: &'b mut Series<T, N>,
         _: &Instant,
-    ) -> (bool, SeriesView<'a, T, N>) {
-        (true, state.view())
+    ) -> SeriesView<'a, T, N> {
+        state.view()
     }
 }
 

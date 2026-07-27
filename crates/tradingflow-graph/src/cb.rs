@@ -20,7 +20,7 @@ where
 
     fn init(self, _: T::Values<'_>) -> Self::State {}
 
-    fn output<'a, 'b: 'a>(inputs: T::Values<'a>, _: &'b mut Self::State) -> T::Values<'a> {
+    fn reset<'a, 'b: 'a>(inputs: T::Values<'a>, _: &'b mut Self::State) -> T::Values<'a> {
         inputs
     }
 
@@ -54,16 +54,16 @@ where
 
     fn init(self, inputs: <F::Inputs as Interface>::Values<'_>) -> Self::State {
         let mut fs = self.0.init(inputs);
-        let mid = F::output(<F::Inputs as Interface>::reborrow(inputs), &mut fs);
+        let mid = F::reset(<F::Inputs as Interface>::reborrow(inputs), &mut fs);
         let gs = self.1.init(mid);
         (fs, gs)
     }
 
-    fn output<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         inputs: <F::Inputs as Interface>::Values<'a>,
         state: &'b mut Self::State,
     ) -> <G::Outputs as Interface>::Values<'a> {
-        G::output(F::output(inputs, &mut state.0), &mut state.1)
+        G::reset(F::reset(inputs, &mut state.0), &mut state.1)
     }
 
     fn compute<'a, 'b: 'a>(
@@ -104,13 +104,13 @@ where
         (self.0.init(inputs), self.1.init(inputs))
     }
 
-    fn output<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         inputs: <F::Inputs as Interface>::Values<'a>,
         state: &'b mut Self::State,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         (
-            F::output(inputs, &mut state.0),
-            G::output(inputs, &mut state.1),
+            F::reset(inputs, &mut state.0),
+            G::reset(inputs, &mut state.1),
         )
     }
 
@@ -154,7 +154,7 @@ where
 
     fn init(self, _: <Self::Inputs as Interface>::Values<'_>) -> Self::State {}
 
-    fn output<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
         _: &'b mut Self::State,
     ) -> <Self::Outputs as Interface>::Values<'a> {
@@ -193,7 +193,7 @@ where
 
     fn init(self, _: <Self::Inputs as Interface>::Values<'_>) -> Self::State {}
 
-    fn output<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
         _: &'b mut Self::State,
     ) -> <Self::Outputs as Interface>::Values<'a> {
@@ -235,12 +235,12 @@ where
         (self.0.init(a), self.1.init(b))
     }
 
-    fn output<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
         state: &'b mut Self::State,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let (a, b) = inputs;
-        (F::output(a, &mut state.0), G::output(b, &mut state.1))
+        (F::reset(a, &mut state.0), G::reset(b, &mut state.1))
     }
 
     fn compute<'a, 'b: 'a>(
@@ -287,7 +287,7 @@ where
         self.0
     }
 
-    fn output<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
         state: &'b mut Self::State,
     ) -> <Self::Outputs as Interface>::Values<'a> {
@@ -337,18 +337,18 @@ where
 
     fn init(self, inputs: <Self::Inputs as Interface>::Values<'_>) -> Self::State {
         let mut fs = self.0.init(inputs);
-        let env = F::output(<F::Inputs as Interface>::reborrow(inputs), &mut fs);
+        let env = F::reset(<F::Inputs as Interface>::reborrow(inputs), &mut fs);
         let gs = self.1.init((self.2)(env, &()));
         (fs, gs, self.2)
     }
 
-    fn output<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
         state: &'b mut Self::State,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let (fs, gs, f) = state;
-        let env = F::output(inputs, fs);
-        (env, G::output(f(env, &()), gs))
+        let env = F::reset(inputs, fs);
+        (env, G::reset(f(env, &()), gs))
     }
 
     fn compute<'a, 'b: 'a>(
@@ -380,12 +380,12 @@ where
         (self.0.init(inputs), self.1)
     }
 
-    fn output<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         inputs: <Self::Inputs as Interface>::Values<'a>,
         state: &'b mut Self::State,
     ) -> <Self::Outputs as Interface>::Values<'a> {
         let (fs, f) = state;
-        f(F::output(inputs, fs), &())
+        f(F::reset(inputs, fs), &())
     }
 
     fn compute<'a, 'b: 'a>(

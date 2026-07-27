@@ -1,38 +1,16 @@
-//! Integration tests for `core`'s typed graph (pointer-graph / Moore API).
-//!
-//! Most fixture here implements [`Operator`], the notify-aware interface, in
-//! preference to the lower-level [`Segment`]. An `Operator` is
-//! `init + compute + passthrough`, and the blanket `impl Operator: Segment`
-//! supplies the auto-gate (`any_notify ? compute : passthrough`, with
-//! `passthrough` also serving as the one-time build-time output):
-//!
-//! - `init(self, inputs) -> State` allocates output storage, seeing the
-//!   build-time input views.
-//! - `compute(inputs, &mut state, &context) -> Values` runs on the generations
-//!   in which some input notified; it fills the state and returns a payload tree
-//!   of refs into state, refs forwarded from the inputs, or by-value views.
-//! - `passthrough(inputs, &mut state) -> Values` runs on the build call and
-//!   whenever no input notified: a stateful gate re-lends its retained output
-//!   here rather than advancing, while a stateless op just re-derives it (so
-//!   the gate is a harmless no-op for it).
-
 use std::thread;
 
 use bumpalo::Bump;
 use tradingflow_graph::cb::*;
 use tradingflow_graph::pool::Pool;
 use tradingflow_graph::typed::{
-    Builder, Graph, NodeHandle, Operator, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val,
+    Builder, Graph, NodeHandle, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val,
 };
 
 fn pool() -> Pool {
     Pool::new(thread::available_parallelism().unwrap().get())
 }
 
-/// Rewind a per-node bump arena and lend it back as the generation's shared
-/// allocator handle (`bumpalo` resets through `&mut`, then allocations ride a
-/// shared `&Bump`). Mirrors the old `Arena::reset` shape so each producer below
-/// reads the same: `let a = fresh(arena); a.alloc_slice_fill_iter(..)`.
 fn fresh(arena: &mut Bump) -> &Bump {
     arena.reset();
     arena
@@ -48,11 +26,48 @@ impl<T: Copy + Send + Sync + 'static> Segment for Source<T> {
     fn init(self, _: ()) -> T {
         self.0
     }
-    fn output<'a, 'b: 'a>(_: (), state: &'b mut T) -> (bool, T) {
-        (true, *state)
+    fn reset<'a, 'b: 'a>(_: (), state: &'b mut T) -> T {
+        *state
     }
-    fn compute<'a, 'b: 'a>(_: (), state: &'b mut T, _: &()) -> (bool, T) {
-        (true, *state)
+    fn compute<'a, 'b: 'a>(_: (), state: &'b mut T, _: &()) -> T {
+        *state
+    }
+}
+
+/// A pokeable **event** source: each poke is one event (`Some`), and the wire
+/// resets to the quiescent `None` in between, so a downstream consumer can
+/// tell "a value arrived this generation" from "the same value is still here".
+struct EventSource<T>(T);
+impl<T: Copy + Send + Sync + 'static> Segment for EventSource<T> {
+    type Inputs = ();
+    type Outputs = Port<Val<Option<T>>>;
+    type Context = ();
+    type State = T;
+    fn init(self, _: ()) -> T {
+        self.0
+    }
+    fn reset<'a, 'b: 'a>(_: (), _: &'b mut T) -> Option<T> {
+        None
+    }
+    fn compute<'a, 'b: 'a>(_: (), state: &'b mut T, _: &()) -> Option<T> {
+        Some(*state)
+    }
+}
+
+/// Maps an event through `x -> x + 1`, preserving quiescence — the event
+/// analogue of [`inc`].
+struct IncEvent;
+impl Segment for IncEvent {
+    type Inputs = Port<Val<Option<i64>>>;
+    type Outputs = Port<Val<Option<i64>>>;
+    type Context = ();
+    type State = ();
+    fn init(self, _: Option<i64>) {}
+    fn reset<'a, 'b: 'a>(_: Option<i64>, _: &'b mut ()) -> Option<i64> {
+        None
+    }
+    fn compute<'a, 'b: 'a>(x: Option<i64>, _: &'b mut (), _: &()) -> Option<i64> {
+        x.map(|v| v + 1)
     }
 }
 
@@ -66,11 +81,11 @@ impl<T: Send + Sync + 'static> Segment for RefSource<T> {
     fn init(self, _: ()) -> T {
         self.0
     }
-    fn output<'a, 'b: 'a>(_: (), state: &'b mut T) -> (bool, &'a T) {
-        (true, state)
+    fn reset<'a, 'b: 'a>(_: (), state: &'b mut T) -> &'a T {
+        state
     }
-    fn compute<'a, 'b: 'a>(_: (), state: &'b mut T, _: &()) -> (bool, &'a T) {
-        (true, state)
+    fn compute<'a, 'b: 'a>(_: (), state: &'b mut T, _: &()) -> &'a T {
+        state
     }
 }
 
@@ -84,54 +99,47 @@ impl<T: Send + Sync + 'static> Segment for SliceSource<T> {
     fn init(self, _: ()) -> Box<[T]> {
         self.0
     }
-    fn output<'a, 'b: 'a>(_: (), state: &'b mut Box<[T]>) -> (bool, &'a [T]) {
-        (true, state)
+    fn reset<'a, 'b: 'a>(_: (), state: &'b mut Box<[T]>) -> &'a [T] {
+        state
     }
-    fn compute<'a, 'b: 'a>(_: (), state: &'b mut Box<[T]>, _: &()) -> (bool, &'a [T]) {
-        (true, state)
+    fn compute<'a, 'b: 'a>(_: (), state: &'b mut Box<[T]>, _: &()) -> &'a [T] {
+        state
     }
 }
 
 /// Stateless unary map `x -> f(x)`; `passthrough` and `compute` are identical
 /// (it recomputes from the input every generation, gate or no gate).
 struct UnaryMap(fn(i64) -> i64);
-impl Operator for UnaryMap {
+impl Segment for UnaryMap {
     type Inputs = Port<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = fn(i64) -> i64;
-    fn init(self, _: (bool, i64)) -> Self::State {
+    fn init(self, _: i64) -> Self::State {
         self.0
     }
-    fn passthrough<'a, 'b: 'a>((_, x): (bool, i64), f: &'b mut Self::State) -> (bool, i64) {
-        (true, f(x))
+    fn reset<'a, 'b: 'a>(x: i64, f: &'b mut Self::State) -> i64 {
+        f(x)
     }
-    fn compute<'a, 'b: 'a>(inputs: (bool, i64), f: &'b mut Self::State, _: &()) -> (bool, i64) {
-        Self::passthrough(inputs, f)
+    fn compute<'a, 'b: 'a>(inputs: i64, f: &'b mut Self::State, _: &()) -> i64 {
+        Self::reset(inputs, f)
     }
 }
 /// Stateless binary map `(a, b) -> f(a, b)`.
 struct BinaryMap(fn(i64, i64) -> i64);
-impl Operator for BinaryMap {
+impl Segment for BinaryMap {
     type Inputs = (Port<Val<i64>>, Port<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = fn(i64, i64) -> i64;
-    fn init(self, _: ((bool, i64), (bool, i64))) -> Self::State {
+    fn init(self, _: (i64, i64)) -> Self::State {
         self.0
     }
-    fn passthrough<'a, 'b: 'a>(
-        ((_, a), (_, b)): ((bool, i64), (bool, i64)),
-        f: &'b mut Self::State,
-    ) -> (bool, i64) {
-        (true, f(a, b))
+    fn reset<'a, 'b: 'a>((a, b): (i64, i64), f: &'b mut Self::State) -> i64 {
+        f(a, b)
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: ((bool, i64), (bool, i64)),
-        f: &'b mut Self::State,
-        _: &(),
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, f)
+    fn compute<'a, 'b: 'a>(inputs: (i64, i64), f: &'b mut Self::State, _: &()) -> i64 {
+        Self::reset(inputs, f)
     }
 }
 fn inc() -> UnaryMap {
@@ -146,168 +154,145 @@ fn add() -> BinaryMap {
 
 /// Sum over a runtime-sized list of inputs.
 struct SumAll;
-impl Operator for SumAll {
+impl Segment for SumAll {
     type Inputs = Ports<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: (&[bool], &[i64])) {}
-    fn passthrough<'a, 'b: 'a>((_, xs): (&'a [bool], &'a [i64]), _: &'b mut ()) -> (bool, i64) {
-        (true, xs.iter().sum())
+    fn init(self, _: &[i64]) {}
+    fn reset<'a, 'b: 'a>(xs: &'a [i64], _: &'b mut ()) -> i64 {
+        xs.iter().sum()
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (&'a [bool], &'a [i64]),
-        state: &'b mut (),
-        _: &(),
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: &'a [i64], state: &'b mut (), _: &()) -> i64 {
+        Self::reset(inputs, state)
     }
 }
 
-/// Output is `1` iff input 0's notify flag was set this generation, else `0`.
+/// Output is `1` iff input 0 carried an event this generation, else `0`.
+/// Under value-level event semantics the presence bit lives *in* the payload,
+/// so input 0 is an `Option` event port rather than a flagged `i64`.
 struct DidFirstNotify;
-impl Operator for DidFirstNotify {
-    type Inputs = (Port<Val<i64>>, Port<Val<i64>>);
+impl Segment for DidFirstNotify {
+    type Inputs = (Port<Val<Option<i64>>>, Port<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
-    type State = ();
-    fn init(self, _: ((bool, i64), (bool, i64))) {}
-    fn passthrough<'a, 'b: 'a>(
-        ((n0, _), (_, _)): ((bool, i64), (bool, i64)),
-        _: &'b mut (),
-    ) -> (bool, i64) {
-        (true, if n0 { 1 } else { 0 })
+    type State = i64;
+    fn init(self, _: (Option<i64>, i64)) -> i64 {
+        0
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: ((bool, i64), (bool, i64)),
-        state: &'b mut (),
-        _: &(),
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, state)
+    fn reset<'a, 'b: 'a>(_: (Option<i64>, i64), state: &'b mut i64) -> i64 {
+        *state
+    }
+    fn compute<'a, 'b: 'a>((e0, _): (Option<i64>, i64), state: &'b mut i64, _: &()) -> i64 {
+        *state = i64::from(e0.is_some());
+        *state
     }
 }
 
 /// Two outputs from one segment: `(a, b) -> (a + b, a - b)`.
 struct AddSub;
-impl Operator for AddSub {
+impl Segment for AddSub {
     type Inputs = (Port<Val<i64>>, Port<Val<i64>>);
     type Outputs = (Port<Val<i64>>, Port<Val<i64>>);
     type Context = ();
     type State = ();
-    fn init(self, _: ((bool, i64), (bool, i64))) {}
-    fn passthrough<'a, 'b: 'a>(
-        ((_, a), (_, b)): ((bool, i64), (bool, i64)),
-        _: &'b mut (),
-    ) -> ((bool, i64), (bool, i64)) {
-        ((true, a + b), (true, a - b))
+    fn init(self, _: (i64, i64)) {}
+    fn reset<'a, 'b: 'a>((a, b): (i64, i64), _: &'b mut ()) -> (i64, i64) {
+        ((a + b), (a - b))
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: ((bool, i64), (bool, i64)),
-        state: &'b mut (),
-        _: &(),
-    ) -> ((bool, i64), (bool, i64)) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: (i64, i64), state: &'b mut (), _: &()) -> (i64, i64) {
+        Self::reset(inputs, state)
     }
 }
 
 /// A runtime-sized output list: `x -> [x, x+1, x+2]` (fixed arity 3). Both
 /// the values and the output planes live in the node's arena.
 struct Fanout3;
-impl Operator for Fanout3 {
+impl Segment for Fanout3 {
     type Inputs = Port<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
     type State = Bump;
-    fn init(self, _: (bool, i64)) -> Self::State {
+    fn init(self, _: i64) -> Self::State {
         Bump::new()
     }
-    fn passthrough<'a, 'b: 'a>(
-        (_, x): (bool, i64),
-        arena: &'b mut Self::State,
-    ) -> (&'a [bool], &'a [i64]) {
+    fn reset<'a, 'b: 'a>(x: i64, arena: &'b mut Self::State) -> &'a [i64] {
         let a = fresh(arena);
-        let flags: &[bool] = a.alloc_slice_fill_iter((0..3usize).map(|_| true));
         let vals: &[i64] = a.alloc_slice_fill_iter((0..3usize).map(|i| x + i as i64));
-        (flags, vals)
+        vals
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (bool, i64),
-        arena: &'b mut Self::State,
-        _: &(),
-    ) -> (&'a [bool], &'a [i64]) {
-        Self::passthrough(inputs, arena)
+    fn compute<'a, 'b: 'a>(inputs: i64, arena: &'b mut Self::State, _: &()) -> &'a [i64] {
+        Self::reset(inputs, arena)
     }
 }
 
 // ===== stateful / value-cutoff behaviors =====
 
-/// `|x|`, notifying downstream only when the value actually changes. The cutoff
-/// is the `notify` its `compute` returns; because it gates the *downstream*
-/// consumer (not itself), its `passthrough` just re-lends the retained `|x|`.
+/// `|x|` as a change-cutoff: it emits an *event* (`Some`) only when the value
+/// actually changes, and the quiescent `None` otherwise. The cutoff now lives
+/// in the payload rather than in a side-channel flag, so `reset` emits `None`.
 struct Abs;
-impl Operator for Abs {
+impl Segment for Abs {
     type Inputs = Port<Val<i64>>;
-    type Outputs = Port<Val<i64>>;
+    type Outputs = Port<Val<Option<i64>>>;
     type Context = ();
     type State = i64;
-    fn init(self, (_, x): (bool, i64)) -> i64 {
+    fn init(self, x: i64) -> i64 {
         x.abs()
     }
-    fn passthrough<'a, 'b: 'a>(_: (bool, i64), state: &'b mut i64) -> (bool, i64) {
-        (true, *state)
+    fn reset<'a, 'b: 'a>(_: i64, _: &'b mut i64) -> Option<i64> {
+        None
     }
-    fn compute<'a, 'b: 'a>((_, x): (bool, i64), state: &'b mut i64, _: &()) -> (bool, i64) {
+    fn compute<'a, 'b: 'a>(x: i64, state: &'b mut i64, _: &()) -> Option<i64> {
         let new = x.abs();
         let changed = new != *state;
         *state = new;
-        (changed, *state)
+        changed.then_some(new)
     }
 }
 
-/// Counts generations in which its input notified: it must NOT advance when the
-/// input did not notify, so it needs the gate and is an `Operator`. Doubling as
-/// a change-counter, it reports how many times an upstream value-cutoff producer
-/// actually notified.
+/// Counts the generations in which its input carried an event: it must NOT
+/// advance on a quiescent (`None`) input. Doubling as a change-counter, it
+/// reports how many times an upstream value-cutoff producer actually fired.
+/// Its own output is a *state* (the running count), so `reset` re-lends it.
 struct GatedCounter;
-impl Operator for GatedCounter {
-    type Inputs = Port<Val<i64>>;
+impl Segment for GatedCounter {
+    type Inputs = Port<Val<Option<i64>>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = i64;
-    fn init(self, _: (bool, i64)) -> i64 {
+    fn init(self, _: Option<i64>) -> i64 {
         0
     }
-    fn compute<'a, 'b: 'a>(_: (bool, i64), state: &'b mut i64, _: &()) -> (bool, i64) {
-        *state += 1;
-        (true, *state)
+    fn compute<'a, 'b: 'a>(x: Option<i64>, state: &'b mut i64, _: &()) -> i64 {
+        if x.is_some() {
+            *state += 1;
+        }
+        *state
     }
-    fn passthrough<'a, 'b: 'a>(_: (bool, i64), state: &'b mut i64) -> (bool, i64) {
-        (false, *state)
+    fn reset<'a, 'b: 'a>(_: Option<i64>, state: &'b mut i64) -> i64 {
+        *state
     }
 }
 
 /// Writes input into a 4-element buffer, in place (allocated once).
 struct BufWrite;
-impl Operator for BufWrite {
+impl Segment for BufWrite {
     type Inputs = Port<Val<f64>>;
     type Outputs = Port<Ref<Vec<f64>>>;
     type Context = ();
     type State = Vec<f64>;
-    fn init(self, (_, x): (bool, f64)) -> Vec<f64> {
+    fn init(self, x: f64) -> Vec<f64> {
         let mut v = vec![0.0; 4];
         v[0] = x;
         v
     }
-    fn passthrough<'a, 'b: 'a>(_: (bool, f64), state: &'b mut Vec<f64>) -> (bool, &'a Vec<f64>) {
-        (true, state)
+    fn reset<'a, 'b: 'a>(_: f64, state: &'b mut Vec<f64>) -> &'a Vec<f64> {
+        state
     }
-    fn compute<'a, 'b: 'a>(
-        (_, x): (bool, f64),
-        state: &'b mut Vec<f64>,
-        _: &(),
-    ) -> (bool, &'a Vec<f64>) {
+    fn compute<'a, 'b: 'a>(x: f64, state: &'b mut Vec<f64>, _: &()) -> &'a Vec<f64> {
         state[0] = x;
-        (true, state)
+        state
     }
 }
 
@@ -315,179 +300,135 @@ impl Operator for BufWrite {
 /// input notifies. As a stateful accumulator it must NOT re-add an un-notified
 /// (unchanged) input, so it is an `Operator`; `passthrough` retains the sum.
 struct Fold;
-impl Operator for Fold {
+impl Segment for Fold {
     type Inputs = Port<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = i64;
-    fn init(self, (_, x): (bool, i64)) -> i64 {
+    fn init(self, x: i64) -> i64 {
         x
     }
-    fn compute<'a, 'b: 'a>((_, x): (bool, i64), state: &'b mut i64, _: &()) -> (bool, i64) {
+    fn compute<'a, 'b: 'a>(x: i64, state: &'b mut i64, _: &()) -> i64 {
         *state += x;
-        (true, *state)
+        *state
     }
-    fn passthrough<'a, 'b: 'a>(_: (bool, i64), state: &'b mut i64) -> (bool, i64) {
-        (false, *state)
+    fn reset<'a, 'b: 'a>(_: i64, state: &'b mut i64) -> i64 {
+        *state
     }
 }
 
 /// A typed DAG fused into one operator body: `x=a+b; y=x*c; z=x+a; out=y*z`.
 struct FusedDag;
-impl Operator for FusedDag {
+impl Segment for FusedDag {
     type Inputs = (Port<Val<f64>>, Port<Val<f64>>, Port<Val<f64>>);
     type Outputs = Port<Val<f64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: ((bool, f64), (bool, f64), (bool, f64))) {}
-    fn passthrough<'a, 'b: 'a>(
-        ((_, a), (_, b), (_, c)): ((bool, f64), (bool, f64), (bool, f64)),
-        _: &'b mut (),
-    ) -> (bool, f64) {
+    fn init(self, _: (f64, f64, f64)) {}
+    fn reset<'a, 'b: 'a>((a, b, c): (f64, f64, f64), _: &'b mut ()) -> f64 {
         let x = a + b;
         let y = x * c;
         let z = x + a;
-        (true, y * z)
+        y * z
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: ((bool, f64), (bool, f64), (bool, f64)),
-        state: &'b mut (),
-        _: &(),
-    ) -> (bool, f64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: (f64, f64, f64), state: &'b mut (), _: &()) -> f64 {
+        Self::reset(inputs, state)
     }
 }
 
 /// Heterogeneous inputs `(f64, i32)`, two outputs `(sum, calls)`, carried counter.
 struct HeteroState;
-impl Operator for HeteroState {
+impl Segment for HeteroState {
     type Inputs = (Port<Val<f64>>, Port<Val<i32>>);
     type Outputs = (Port<Val<f64>>, Port<Val<u64>>);
     type Context = ();
-    type State = ();
-    fn init(self, _: ((bool, f64), (bool, i32))) {}
-    fn passthrough<'a, 'b: 'a>(
-        ((_, a), (_, b)): ((bool, f64), (bool, i32)),
-        _: &'b mut (),
-    ) -> ((bool, f64), (bool, u64)) {
-        ((true, a + b as f64), (true, 0))
+    type State = u64;
+    fn init(self, _: (f64, i32)) -> u64 {
+        0
     }
-    fn compute<'a, 'b: 'a>(
-        ((_, a), (_, b)): ((bool, f64), (bool, i32)),
-        _: &'b mut (),
-        _: &(),
-    ) -> ((bool, f64), (bool, u64)) {
-        ((true, a + b as f64), (true, 1))
+    fn reset<'a, 'b: 'a>((a, b): (f64, i32), calls: &'b mut u64) -> (f64, u64) {
+        (a + b as f64, *calls)
+    }
+    fn compute<'a, 'b: 'a>((a, b): (f64, i32), calls: &'b mut u64, _: &()) -> (f64, u64) {
+        *calls += 1;
+        (a + b as f64, *calls)
     }
 }
 
 /// Homogeneous slice input, two outputs: `(sum, max)`.
 struct SumMax;
-impl Operator for SumMax {
+impl Segment for SumMax {
     type Inputs = Ports<Val<f64>>;
     type Outputs = (Port<Val<f64>>, Port<Val<f64>>);
     type Context = ();
     type State = ();
-    fn init(self, _: (&[bool], &[f64])) {}
-    fn passthrough<'a, 'b: 'a>(
-        (_, xs): (&'a [bool], &'a [f64]),
-        _: &'b mut (),
-    ) -> ((bool, f64), (bool, f64)) {
+    fn init(self, _: &[f64]) {}
+    fn reset<'a, 'b: 'a>(xs: &'a [f64], _: &'b mut ()) -> (f64, f64) {
         let sum = xs.iter().sum();
         let max = xs.iter().copied().fold(f64::MIN, f64::max);
-        ((true, sum), (true, max))
+        ((sum), (max))
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (&'a [bool], &'a [f64]),
-        state: &'b mut (),
-        _: &(),
-    ) -> ((bool, f64), (bool, f64)) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: &'a [f64], state: &'b mut (), _: &()) -> (f64, f64) {
+        Self::reset(inputs, state)
     }
 }
 
 /// Dot product over two zipped `Ports`. (`Ports` is a *leaf*: "many of pairs"
 /// is spelled as a pair of `Ports`, zipped in `compute`.)
 struct DotPairs;
-impl Operator for DotPairs {
+impl Segment for DotPairs {
     type Inputs = (Ports<Val<i64>>, Ports<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: ((&[bool], &[i64]), (&[bool], &[i64]))) {}
-    fn passthrough<'a, 'b: 'a>(
-        ((_, xs), (_, ys)): ((&'a [bool], &'a [i64]), (&'a [bool], &'a [i64])),
-        _: &'b mut (),
-    ) -> (bool, i64) {
-        (true, xs.iter().zip(ys).map(|(&x, &y)| x * y).sum())
+    fn init(self, _: (&[i64], &[i64])) {}
+    fn reset<'a, 'b: 'a>((xs, ys): (&'a [i64], &'a [i64]), _: &'b mut ()) -> i64 {
+        xs.iter().zip(ys).map(|(&x, &y)| x * y).sum()
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: ((&'a [bool], &'a [i64]), (&'a [bool], &'a [i64])),
-        state: &'b mut (),
-        _: &(),
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: (&'a [i64], &'a [i64]), state: &'b mut (), _: &()) -> i64 {
+        Self::reset(inputs, state)
     }
 }
 
 /// Two variadic input groups around a scalar: `sum(a)*k + sum(c)`.
 struct TwoArrays;
-impl Operator for TwoArrays {
+impl Segment for TwoArrays {
     type Inputs = (Ports<Val<i64>>, Port<Val<i64>>, Ports<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: ((&[bool], &[i64]), (bool, i64), (&[bool], &[i64]))) {}
-    fn passthrough<'a, 'b: 'a>(
-        (a, (_, k), c): (
-            (&'a [bool], &'a [i64]),
-            (bool, i64),
-            (&'a [bool], &'a [i64]),
-        ),
-        _: &'b mut (),
-    ) -> (bool, i64) {
-        (true, a.1.iter().sum::<i64>() * k + c.1.iter().sum::<i64>())
+    fn init(self, _: (&[i64], i64, &[i64])) {}
+    fn reset<'a, 'b: 'a>((a, k, c): (&'a [i64], i64, &'a [i64]), _: &'b mut ()) -> i64 {
+        a.iter().sum::<i64>() * k + c.iter().sum::<i64>()
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (
-            (&'a [bool], &'a [i64]),
-            (bool, i64),
-            (&'a [bool], &'a [i64]),
-        ),
-        state: &'b mut (),
-        _: &(),
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: (&'a [i64], i64, &'a [i64]), state: &'b mut (), _: &()) -> i64 {
+        Self::reset(inputs, state)
     }
 }
 
 /// Two variadic OUTPUT groups: `x -> (k copies of x, k copies of -x)`. ONE
 /// arena serves both groups' values and all four planes.
 struct SplitTwo(usize);
-impl Operator for SplitTwo {
+impl Segment for SplitTwo {
     type Inputs = Port<Val<i64>>;
     type Outputs = (Ports<Val<i64>>, Ports<Val<i64>>);
     type Context = ();
     type State = (usize, Bump); // (k, per-gen storage)
-    fn init(self, _: (bool, i64)) -> Self::State {
+    fn init(self, _: i64) -> Self::State {
         (self.0, Bump::new())
     }
-    fn passthrough<'a, 'b: 'a>(
-        (_, x): (bool, i64),
-        (k, arena): &'b mut Self::State,
-    ) -> ((&'a [bool], &'a [i64]), (&'a [bool], &'a [i64])) {
+    fn reset<'a, 'b: 'a>(x: i64, (k, arena): &'b mut Self::State) -> (&'a [i64], &'a [i64]) {
         let a = fresh(arena);
         let pos: &[i64] = a.alloc_slice_fill_iter((0..*k).map(|_| x));
         let neg: &[i64] = a.alloc_slice_fill_iter((0..*k).map(|_| -x));
-        let flags: &[bool] = a.alloc_slice_fill_iter((0..*k).map(|_| true));
-        ((flags, pos), (flags, neg))
+        (pos, neg)
     }
     fn compute<'a, 'b: 'a>(
-        inputs: (bool, i64),
+        inputs: i64,
         state: &'b mut Self::State,
         _: &(),
-    ) -> ((&'a [bool], &'a [i64]), (&'a [bool], &'a [i64])) {
-        Self::passthrough(inputs, state)
+    ) -> (&'a [i64], &'a [i64]) {
+        Self::reset(inputs, state)
     }
 }
 
@@ -495,27 +436,19 @@ impl Operator for SplitTwo {
 /// window `[start, start+W)` of the input array as a plain subslice (zero
 /// copy, no state buffer); the window's addresses move as `start` changes.
 struct Window(usize); // W
-impl Operator for Window {
+impl Segment for Window {
     type Inputs = (Ports<Val<i64>>, Port<Val<usize>>);
     type Outputs = Ports<Val<i64>>;
     type Context = ();
     type State = usize; // W
-    fn init(self, _: ((&[bool], &[i64]), (bool, usize))) -> usize {
+    fn init(self, _: (&[i64], usize)) -> usize {
         self.0
     }
-    fn passthrough<'a, 'b: 'a>(
-        (arr, (_, start)): ((&'a [bool], &'a [i64]), (bool, usize)),
-        w: &'b mut usize,
-    ) -> (&'a [bool], &'a [i64]) {
-        let window = start..start + *w;
-        (&arr.0[window.clone()], &arr.1[window])
+    fn reset<'a, 'b: 'a>((arr, start): (&'a [i64], usize), w: &'b mut usize) -> &'a [i64] {
+        &arr[start..start + *w]
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: ((&'a [bool], &'a [i64]), (bool, usize)),
-        w: &'b mut usize,
-        _: &(),
-    ) -> (&'a [bool], &'a [i64]) {
-        Self::passthrough(inputs, w)
+    fn compute<'a, 'b: 'a>(inputs: (&'a [i64], usize), w: &'b mut usize, _: &()) -> &'a [i64] {
+        Self::reset(inputs, w)
     }
 }
 
@@ -523,30 +456,27 @@ impl Operator for Window {
 /// input arity, which `init` sees at build: it allocates a buffer sized from
 /// the input and every call fills it in place, returning refs into it.
 struct MapScale(i64); // k
-impl Operator for MapScale {
+impl Segment for MapScale {
     type Inputs = Ports<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
     type State = (i64, Vec<i64>, Vec<bool>); // (k, output buffer, flags)
-    fn init(self, (_, xs): (&[bool], &[i64])) -> Self::State {
+    fn init(self, xs: &[i64]) -> Self::State {
         let k = self.0;
         (k, xs.iter().map(|&e| e * k).collect(), vec![true; xs.len()])
     }
-    fn passthrough<'a, 'b: 'a>(
-        _: (&'a [bool], &'a [i64]),
-        (_, vals, flags): &'b mut Self::State,
-    ) -> (&'a [bool], &'a [i64]) {
-        (flags, vals)
+    fn reset<'a, 'b: 'a>(_: &'a [i64], (_, vals, _flags): &'b mut Self::State) -> &'a [i64] {
+        vals
     }
     fn compute<'a, 'b: 'a>(
-        (_, xs): (&'a [bool], &'a [i64]),
-        (k, vals, flags): &'b mut Self::State,
+        xs: &'a [i64],
+        (k, vals, _flags): &'b mut Self::State,
         _: &(),
-    ) -> (&'a [bool], &'a [i64]) {
+    ) -> &'a [i64] {
         for (slot, &e) in vals.iter_mut().zip(xs.iter()) {
             *slot = e * *k;
         }
-        (flags, vals)
+        vals
     }
 }
 
@@ -573,9 +503,9 @@ fn diamond_recomputes_on_source_change() {
 }
 
 #[test]
-fn notify_flag_is_per_generation() {
+fn an_event_input_carries_its_event_for_exactly_one_generation() {
     let mut b = Builder::new();
-    let (s_cell, s) = b.source(Source(0));
+    let (s_cell, s) = b.source(EventSource(0));
     let (s2_cell, s2) = b.source(Source(0));
     let a = b.segment(DidFirstNotify, (s, s2));
     let mut g = b.build();
@@ -611,8 +541,8 @@ fn multi_output_tuple() {
 #[test]
 fn independent_branch_not_recomputed() {
     let mut b = Builder::new();
-    let (s1_cell, s1) = b.source(Source(0i64));
-    let (_, s2) = b.source(Source(0i64));
+    let (s1_cell, s1) = b.source(EventSource(0i64));
+    let (_, s2) = b.source(EventSource(0i64));
     let a = b.segment(GatedCounter, s1);
     let c = b.segment(GatedCounter, s2);
     let mut g = b.build();
@@ -874,26 +804,19 @@ fn two_stage_init_allocates_from_input() {
 /// dangling-read repro): the output points into the source's buffer, so poking
 /// the source to a fresh `Vec` frees the memory the output slots point at.
 struct Spread;
-impl Operator for Spread {
+impl Segment for Spread {
     type Inputs = Port<Ref<Vec<i64>>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
     type State = Vec<bool>;
-    fn init(self, (_, v): (bool, &Vec<i64>)) -> Self::State {
+    fn init(self, v: &Vec<i64>) -> Self::State {
         vec![true; v.len()]
     }
-    fn passthrough<'a, 'b: 'a>(
-        (_, v): (bool, &'a Vec<i64>),
-        flags: &'b mut Self::State,
-    ) -> (&'a [bool], &'a [i64]) {
-        (flags, v)
+    fn reset<'a, 'b: 'a>(v: &'a Vec<i64>, _flags: &'b mut Self::State) -> &'a [i64] {
+        v
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (bool, &'a Vec<i64>),
-        flags: &'b mut Self::State,
-        _: &(),
-    ) -> (&'a [bool], &'a [i64]) {
-        Self::passthrough(inputs, flags)
+    fn compute<'a, 'b: 'a>(inputs: &'a Vec<i64>, flags: &'b mut Self::State, _: &()) -> &'a [i64] {
+        Self::reset(inputs, flags)
     }
 }
 
@@ -917,29 +840,22 @@ fn read_before_stabilize_after_poke_is_rejected() {
 /// realloc frees the buffer its (build-set) output slots point into, so without
 /// poisoning a later read would dangle.
 struct ReallocPanic;
-impl Operator for ReallocPanic {
+impl Segment for ReallocPanic {
     type Inputs = Port<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
     type State = (Vec<i64>, Vec<bool>);
-    fn init(self, (_, x): (bool, i64)) -> Self::State {
+    fn init(self, x: i64) -> Self::State {
         (vec![x, x], vec![true, true])
     }
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, i64),
-        (vals, flags): &'b mut Self::State,
-    ) -> (&'a [bool], &'a [i64]) {
-        (flags, vals)
+    fn reset<'a, 'b: 'a>(_: i64, (vals, _flags): &'b mut Self::State) -> &'a [i64] {
+        vals
     }
-    fn compute<'a, 'b: 'a>(
-        (_, x): (bool, i64),
-        (vals, flags): &'b mut Self::State,
-        _: &(),
-    ) -> (&'a [bool], &'a [i64]) {
+    fn compute<'a, 'b: 'a>(x: i64, (vals, flags): &'b mut Self::State, _: &()) -> &'a [i64] {
         *flags = vec![true, true];
         *vals = vec![x, x]; // realloc: frees the buffer the output slots point into
         assert!(x >= 0, "negative input"); // panic *after* the realloc
-        (flags, vals)
+        vals
     }
 }
 
@@ -1084,9 +1000,9 @@ fn composed_with_id() {
 #[test]
 fn operator_gate_blocks_unnotified_branch() {
     // `GatedCounter *** Inc`. Change only the second input: Inc reruns, but
-    // GatedCounter's input did not notify, so its gate skips the increment.
+    // GatedCounter's input carried no event, so its gate skips the increment.
     let mut gb = Builder::new();
-    let (a_cell, a) = gb.source(Source(0));
+    let (a_cell, a) = gb.source(EventSource(0));
     let (bh_cell, bh) = gb.source(Source(0));
     let (count, inc) = gb.segment(GatedCounter.par(inc()), (a, bh));
     let mut g = gb.build();
@@ -1283,58 +1199,57 @@ fn segment_notation_ports_wire() {
 /// advances the counter and lights the notify plane, `passthrough` re-lends the
 /// retained values with the plane cleared.
 struct GatedFanout;
-impl Operator for GatedFanout {
-    type Inputs = Port<Val<i64>>;
+impl Segment for GatedFanout {
+    type Inputs = Port<Val<Option<i64>>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
     type State = (i64, Vec<i64>, Bump); // (compute count, values, planes)
-    fn init(self, (_, x): (bool, i64)) -> Self::State {
-        (0, vec![x, 0], Bump::new())
+    fn init(self, x: Option<i64>) -> Self::State {
+        (0, vec![x.unwrap_or(0), 0], Bump::new())
     }
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, i64),
-        (_, vals, arena): &'b mut Self::State,
-    ) -> (&'a [bool], &'a [i64]) {
-        let a = fresh(arena);
-        (a.alloc_slice_fill_iter((0..2).map(|_| false)), vals)
+    fn reset<'a, 'b: 'a>(_: Option<i64>, (_, vals, arena): &'b mut Self::State) -> &'a [i64] {
+        let _ = fresh(arena);
+        vals
     }
     fn compute<'a, 'b: 'a>(
-        (_, x): (bool, i64),
+        x: Option<i64>,
         (count, vals, arena): &'b mut Self::State,
         _: &(),
-    ) -> (&'a [bool], &'a [i64]) {
-        *count += 1;
-        (vals[0], vals[1]) = (x, *count);
-        let a = fresh(arena);
-        (a.alloc_slice_fill_iter((0..2).map(|_| true)), vals)
+    ) -> &'a [i64] {
+        // The gate is explicit now: a quiescent input recomputes nothing.
+        if let Some(x) = x {
+            *count += 1;
+            (vals[0], vals[1]) = (x, *count);
+        }
+        let _ = fresh(arena);
+        vals
     }
 }
 
 #[test]
 fn gated_ports_producer_rederives_each_generation() {
-    // Src -> Abs (value cutoff) -> GatedFanout (auto-gated, Ports out) -> counter.
+    // Src -> Abs (value cutoff, event out) -> GatedFanout (gates on the event,
+    // Ports out). `out[1]` is the recompute count, so it is the probe itself.
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(5i64));
     let a = b.segment(Abs, s);
     let out = b.segment(GatedFanout, a);
-    let notified = b.segment(GatedCounter, out[1]);
     let mut g = b.build();
     let mut pool = pool();
 
-    assert_eq!(g.view(out[0]), 5);
+    // The build render of an event producer is quiescent, so the fanout has
+    // seen no event yet.
+    assert_eq!(g.view(out[0]), 0);
     assert_eq!(g.view(out[1]), 0); // build call: count = 0
-    assert_eq!(g.view(notified), 0);
 
-    *g.state_mut(s_cell) = -5; // |x| unchanged: Abs does not notify
+    *g.state_mut(s_cell) = -5; // |x| unchanged: Abs emits no event
     g.stabilize(&mut pool, &());
     assert_eq!(g.view(out[1]), 0); // gated: no recount
-    assert_eq!(g.view(notified), 0); // and the re-derived flags were off
 
-    *g.state_mut(s_cell) = 7; // |x| changes: notifies
+    *g.state_mut(s_cell) = 7; // |x| changes: Abs emits an event
     g.stabilize(&mut pool, &());
     assert_eq!(g.view(out[0]), 7);
     assert_eq!(g.view(out[1]), 1);
-    assert_eq!(g.view(notified), 1);
 }
 
 #[test]
@@ -1428,8 +1343,8 @@ fn out_of_cone_producer_does_not_spuriously_notify() {
     // leaves notify=true), so on D's first participating generation it read
     // input 0 as notified and returned 1.
     let mut b = Builder::new();
-    let (_, s0) = b.source(Source(0));
-    let p = b.segment(inc(), s0);
+    let (_, s0) = b.source(EventSource(0));
+    let p = b.segment(IncEvent, s0);
     let (s1_cell, s1) = b.source(Source(0));
     let d = b.segment(DidFirstNotify, (p, s1));
     let mut g = b.build();
@@ -1445,28 +1360,21 @@ fn out_of_cone_producer_does_not_spuriously_notify() {
 /// build-time pointer in the tail output slot, so the engine must poison rather
 /// than scatter it (a dangling read in a release build).
 struct ShrinkPorts;
-impl Operator for ShrinkPorts {
+impl Segment for ShrinkPorts {
     type Inputs = Port<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
     type State = (Vec<i64>, Vec<bool>);
-    fn init(self, (_, x): (bool, i64)) -> Self::State {
+    fn init(self, x: i64) -> Self::State {
         (vec![x, x], vec![true, true])
     }
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, i64),
-        (vals, flags): &'b mut Self::State,
-    ) -> (&'a [bool], &'a [i64]) {
-        (flags, vals)
+    fn reset<'a, 'b: 'a>(_: i64, (vals, _flags): &'b mut Self::State) -> &'a [i64] {
+        vals
     }
-    fn compute<'a, 'b: 'a>(
-        (_, x): (bool, i64),
-        (vals, flags): &'b mut Self::State,
-        _: &(),
-    ) -> (&'a [bool], &'a [i64]) {
+    fn compute<'a, 'b: 'a>(x: i64, (vals, flags): &'b mut Self::State, _: &()) -> &'a [i64] {
         *vals = vec![x]; // 2 -> 1, reallocates
         *flags = vec![true; vals.len()];
-        (flags, vals)
+        vals
     }
 }
 
@@ -1491,47 +1399,40 @@ fn shrinking_ports_output_poisons_instead_of_dangling() {
 /// Views travel BY VALUE: the engine homes them in the node's output scratch,
 /// so this producer is completely stateless.
 struct WindowView;
-impl Operator for WindowView {
+impl Segment for WindowView {
     type Inputs = (Port<Ref<Vec<i64>>>, Port<Val<(usize, usize)>>);
     type Outputs = Port<Slice<i64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: ((bool, &Vec<i64>), (bool, (usize, usize)))) {}
-    fn passthrough<'a, 'b: 'a>(
-        ((_, data), (_, (start, len))): ((bool, &'a Vec<i64>), (bool, (usize, usize))),
+    fn init(self, _: (&Vec<i64>, (usize, usize))) {}
+    fn reset<'a, 'b: 'a>(
+        (data, (start, len)): (&'a Vec<i64>, (usize, usize)),
         _: &'b mut (),
-    ) -> (bool, &'a [i64]) {
-        (true, &data[start..start + len])
+    ) -> &'a [i64] {
+        &data[start..start + len]
     }
     fn compute<'a, 'b: 'a>(
-        inputs: ((bool, &'a Vec<i64>), (bool, (usize, usize))),
+        inputs: (&'a Vec<i64>, (usize, usize)),
         state: &'b mut (),
         _: &(),
-    ) -> (bool, &'a [i64]) {
-        Self::passthrough(inputs, state)
+    ) -> &'a [i64] {
+        Self::reset(inputs, state)
     }
 }
 
 /// Consumes the window view: `(sum, len)`.
 struct ViewStats;
-impl Operator for ViewStats {
+impl Segment for ViewStats {
     type Inputs = Port<Slice<i64>>;
     type Outputs = (Port<Val<i64>>, Port<Val<usize>>);
     type Context = ();
     type State = ();
-    fn init(self, _: (bool, &[i64])) {}
-    fn passthrough<'a, 'b: 'a>(
-        (_, view): (bool, &'a [i64]),
-        _: &'b mut (),
-    ) -> ((bool, i64), (bool, usize)) {
-        ((true, view.iter().sum()), (true, view.len()))
+    fn init(self, _: &[i64]) {}
+    fn reset<'a, 'b: 'a>(view: &'a [i64], _: &'b mut ()) -> (i64, usize) {
+        ((view.iter().sum()), (view.len()))
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (bool, &'a [i64]),
-        state: &'b mut Self::State,
-        _: &(),
-    ) -> ((bool, i64), (bool, usize)) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: &'a [i64], state: &'b mut Self::State, _: &()) -> (i64, usize) {
+        Self::reset(inputs, state)
     }
 }
 
@@ -1584,48 +1485,42 @@ unsafe impl Pass for StridedF64 {
 /// view itself travels by value; only its variable-length metadata needs the
 /// arena in state.
 struct MakeStrided;
-impl Operator for MakeStrided {
+impl Segment for MakeStrided {
     type Inputs = (Port<Ref<Vec<f64>>>, Port<Val<usize>>);
     type Outputs = Port<StridedF64>;
     type Context = ();
     type State = Bump;
-    fn init(self, _: ((bool, &Vec<f64>), (bool, usize))) -> Bump {
+    fn init(self, _: (&Vec<f64>, usize)) -> Bump {
         Bump::new()
     }
-    fn passthrough<'a, 'b: 'a>(
-        ((_, v), (_, stride)): ((bool, &'a Vec<f64>), (bool, usize)),
-        arena: &'b mut Bump,
-    ) -> (bool, Strided<'a>) {
+    fn reset<'a, 'b: 'a>((v, stride): (&'a Vec<f64>, usize), arena: &'b mut Bump) -> Strided<'a> {
         let shape = fresh(arena).alloc_slice_fill_iter([v.len().div_ceil(stride), stride]);
-        (true, Strided { data: v, shape })
+        Strided { data: v, shape }
     }
     fn compute<'a, 'b: 'a>(
-        inputs: ((bool, &'a Vec<f64>), (bool, usize)),
+        inputs: (&'a Vec<f64>, usize),
         arena: &'b mut Bump,
         _: &(),
-    ) -> (bool, Strided<'a>) {
-        Self::passthrough(inputs, arena)
+    ) -> Strided<'a> {
+        Self::reset(inputs, arena)
     }
 }
 
 /// Sums every `stride`-th element of the view, walking its metadata.
 struct StridedSum;
-impl Operator for StridedSum {
+impl Segment for StridedSum {
     type Inputs = Port<StridedF64>;
     type Outputs = Port<Val<f64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: (bool, Strided<'_>)) {}
-    fn passthrough<'a, 'b: 'a>((_, view): (bool, Strided<'a>), _: &'b mut ()) -> (bool, f64) {
-        (
-            true,
-            (0..view.shape[0])
-                .map(|i| view.data[i * view.shape[1]])
-                .sum(),
-        )
+    fn init(self, _: Strided<'_>) {}
+    fn reset<'a, 'b: 'a>(view: Strided<'a>, _: &'b mut ()) -> f64 {
+        (0..view.shape[0])
+            .map(|i| view.data[i * view.shape[1]])
+            .sum()
     }
-    fn compute<'a, 'b: 'a>(inputs: (bool, Strided<'a>), state: &'b mut (), _: &()) -> (bool, f64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: Strided<'a>, state: &'b mut (), _: &()) -> f64 {
+        Self::reset(inputs, state)
     }
 }
 
@@ -1648,24 +1543,17 @@ fn custom_view_struct_through_the_wire() {
 
 /// Sums a borrowed slice view plus a scalar into owned state.
 struct SliceTotal;
-impl Operator for SliceTotal {
+impl Segment for SliceTotal {
     type Inputs = (Port<Slice<i64>>, Port<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: ((bool, &[i64]), (bool, i64))) {}
-    fn passthrough<'a, 'b: 'a>(
-        ((_, xs), (_, k)): ((bool, &'a [i64]), (bool, i64)),
-        _: &'b mut (),
-    ) -> (bool, i64) {
-        (true, xs.iter().sum::<i64>() + k)
+    fn init(self, _: (&[i64], i64)) {}
+    fn reset<'a, 'b: 'a>((xs, k): (&'a [i64], i64), _: &'b mut ()) -> i64 {
+        xs.iter().sum::<i64>() + k
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: ((bool, &'a [i64]), (bool, i64)),
-        state: &'b mut (),
-        _: &(),
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: (&'a [i64], i64), state: &'b mut (), _: &()) -> i64 {
+        Self::reset(inputs, state)
     }
 }
 
@@ -1703,20 +1591,20 @@ fn view_source_lends_borrowing_view_from_owned_cell() {
 /// node's state off exclusively between workers, never sharing it; only the
 /// *exposed* output value (the `i64` second field) must be `Sync`.
 struct CellCounter;
-impl Operator for CellCounter {
+impl Segment for CellCounter {
     type Inputs = Port<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = std::cell::Cell<i64>;
-    fn init(self, _: (bool, i64)) -> Self::State {
+    fn init(self, _: i64) -> Self::State {
         std::cell::Cell::new(0)
     }
-    fn passthrough<'a, 'b: 'a>((_, x): (bool, i64), calls: &'b mut Self::State) -> (bool, i64) {
-        (true, x + calls.get())
+    fn reset<'a, 'b: 'a>(x: i64, calls: &'b mut Self::State) -> i64 {
+        x + calls.get()
     }
-    fn compute<'a, 'b: 'a>((_, x): (bool, i64), calls: &'b mut Self::State, _: &()) -> (bool, i64) {
+    fn compute<'a, 'b: 'a>(x: i64, calls: &'b mut Self::State, _: &()) -> i64 {
         calls.set(calls.get() + 1);
-        (true, x + calls.get())
+        x + calls.get()
     }
 }
 
@@ -1793,27 +1681,19 @@ fn src_val(gn: usize, j: usize) -> i64 {
 struct Work {
     iters: u32,
 }
-impl Operator for Work {
+impl Segment for Work {
     type Inputs = (Port<Val<i64>>, Port<Val<i64>>, Port<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = u32;
-    fn init(self, _: ((bool, i64), (bool, i64), (bool, i64))) -> Self::State {
+    fn init(self, _: (i64, i64, i64)) -> Self::State {
         self.iters
     }
-    fn passthrough<'a, 'b: 'a>(
-        ((_, a), (_, b), (_, c)): ((bool, i64), (bool, i64), (bool, i64)),
-        iters: &'b mut Self::State,
-    ) -> (bool, i64) {
-        (true, work(a, b, c, *iters))
+    fn reset<'a, 'b: 'a>((a, b, c): (i64, i64, i64), iters: &'b mut Self::State) -> i64 {
+        work(a, b, c, *iters)
     }
-    fn compute<'a, 'b: 'a>(
-        ((_, a), (_, b), (_, c)): ((bool, i64), (bool, i64), (bool, i64)),
-        iters: &'b mut Self::State,
-        _: &(),
-    ) -> (bool, i64) {
-        let out = work(a, b, c, *iters);
-        (true, out)
+    fn compute<'a, 'b: 'a>((a, b, c): (i64, i64, i64), iters: &'b mut Self::State, _: &()) -> i64 {
+        work(a, b, c, *iters)
     }
 }
 
@@ -1988,24 +1868,17 @@ fn complex_mesh_with_fused_nodes() {
 /// values into the node's input scratch, so the payload arrives as ONE
 /// contiguous `&[i64]`. Both sides by value: completely stateless.
 struct SumAllPorts;
-impl Operator for SumAllPorts {
+impl Segment for SumAllPorts {
     type Inputs = Ports<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: (&[bool], &[i64])) {}
-    fn passthrough<'a, 'b: 'a>(
-        (notifies, xs): (&'a [bool], &'a [i64]),
-        _: &'b mut (),
-    ) -> (bool, i64) {
-        (notifies.iter().any(|&n| n), xs.iter().sum())
+    fn init(self, _: &[i64]) {}
+    fn reset<'a, 'b: 'a>(xs: &'a [i64], _: &'b mut ()) -> i64 {
+        xs.iter().sum()
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (&'a [bool], &'a [i64]),
-        state: &'b mut (),
-        _: &(),
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: &'a [i64], state: &'b mut (), _: &()) -> i64 {
+        Self::reset(inputs, state)
     }
 }
 
@@ -2044,30 +1917,20 @@ fn empty_ports_group_builds_and_sums_zero() {
 /// each element in the node's output scratch, slot by slot -- so each slot
 /// then feeds single-`Port` consumers and `Ports` groups alike.
 struct FanoutPorts3;
-impl Operator for FanoutPorts3 {
+impl Segment for FanoutPorts3 {
     type Inputs = Port<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
     type State = Bump;
-    fn init(self, _: (bool, i64)) -> Bump {
+    fn init(self, _: i64) -> Bump {
         Bump::new()
     }
-    fn passthrough<'a, 'b: 'a>(
-        (_, x): (bool, i64),
-        arena: &'b mut Bump,
-    ) -> (&'a [bool], &'a [i64]) {
+    fn reset<'a, 'b: 'a>(x: i64, arena: &'b mut Bump) -> &'a [i64] {
         let a = fresh(arena);
-        (
-            a.alloc_slice_fill_iter((0..3).map(|_| true)),
-            a.alloc_slice_fill_iter((0..3).map(|i| x + i as i64)),
-        )
+        a.alloc_slice_fill_iter((0..3).map(|i| x + i as i64))
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (bool, i64),
-        arena: &'b mut Bump,
-        _: &(),
-    ) -> (&'a [bool], &'a [i64]) {
-        Self::passthrough(inputs, arena)
+    fn compute<'a, 'b: 'a>(inputs: i64, arena: &'b mut Bump, _: &()) -> &'a [i64] {
+        Self::reset(inputs, arena)
     }
 }
 
@@ -2121,35 +1984,21 @@ fn ports_group_forwarded_through_id() {
 /// group in one input tuple. Checks the shape cursor stays aligned across
 /// value/ref variadic leaves: `sum(ports) * k + sum(ports)`.
 struct MixedGroups;
-impl Operator for MixedGroups {
+impl Segment for MixedGroups {
     type Inputs = (Ports<Val<i64>>, Port<Ref<i64>>, Ports<Ref<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: ((&[bool], &[i64]), (bool, &i64), (&[bool], &[&i64]))) {}
-    fn passthrough<'a, 'b: 'a>(
-        ((_, xs), (_, k), (_, ys)): (
-            (&'a [bool], &'a [i64]),
-            (bool, &'a i64),
-            (&'a [bool], &'a [&'a i64]),
-        ),
-        _: &'b mut (),
-    ) -> (bool, i64) {
-        (
-            true,
-            xs.iter().sum::<i64>() * k + ys.iter().map(|&v| *v).sum::<i64>(),
-        )
+    fn init(self, _: (&[i64], &i64, &[&i64])) {}
+    fn reset<'a, 'b: 'a>((xs, k, ys): (&'a [i64], &'a i64, &'a [&'a i64]), _: &'b mut ()) -> i64 {
+        xs.iter().sum::<i64>() * k + ys.iter().map(|&v| *v).sum::<i64>()
     }
     fn compute<'a, 'b: 'a>(
-        inputs: (
-            (&'a [bool], &'a [i64]),
-            (bool, &'a i64),
-            (&'a [bool], &'a [&'a i64]),
-        ),
+        inputs: (&'a [i64], &'a i64, &'a [&'a i64]),
         state: &'b mut (),
         _: &(),
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, state)
+    ) -> i64 {
+        Self::reset(inputs, state)
     }
 }
 
@@ -2178,24 +2027,17 @@ fn mixed_value_and_ref_variadic_groups() {
 /// `&[i64]` window into a different source's data, gathered into one
 /// contiguous slice-of-windows payload (views by value).
 struct ConcatLens;
-impl Operator for ConcatLens {
+impl Segment for ConcatLens {
     type Inputs = Ports<Slice<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
     type State = ();
-    fn init(self, _: (&[bool], &[&[i64]])) {}
-    fn passthrough<'a, 'b: 'a>(
-        (_, windows): (&'a [bool], &'a [&'a [i64]]),
-        _: &'b mut (),
-    ) -> (bool, i64) {
-        (true, windows.iter().map(|w| w.iter().sum::<i64>()).sum())
+    fn init(self, _: &[&[i64]]) {}
+    fn reset<'a, 'b: 'a>(windows: &'a [&'a [i64]], _: &'b mut ()) -> i64 {
+        windows.iter().map(|w| w.iter().sum::<i64>()).sum()
     }
-    fn compute<'a, 'b: 'a>(
-        inputs: (&'a [bool], &'a [&'a [i64]]),
-        state: &'b mut (),
-        _: &(),
-    ) -> (bool, i64) {
-        Self::passthrough(inputs, state)
+    fn compute<'a, 'b: 'a>(inputs: &'a [&'a [i64]], state: &'b mut (), _: &()) -> i64 {
+        Self::reset(inputs, state)
     }
 }
 

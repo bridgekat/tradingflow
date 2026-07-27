@@ -1,11 +1,11 @@
 //! Shared fixtures for the operator integration tests: instant/array
 //! constructors, NaN-aware assertions, deterministic data paths, and the two
-//! auxiliary segments (a pokeable unit clock and a recompute counter) that the
-//! event-semantics tests wire in as probes.
+//! auxiliary segments (a pokeable clock and an eventful-batch counter) that
+//! the event-semantics tests wire in as probes.
 
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Scalar, SeriesView};
-use tradingflow::graph::{Operator, Port, Segment, Val};
-use tradingflow::ports::ArrayPort;
+use tradingflow::graph::{Port, Segment, Val};
+use tradingflow::ports::{ArrayPort, ClockPort, is_eventful};
 
 /// Default tolerance for [`assert_close`]. Loose enough for the accumulators'
 /// incremental arithmetic, tight enough that a wrong formula never passes.
@@ -146,72 +146,62 @@ pub fn quarter_path(seed: u64, len: usize) -> Vec<f64> {
 // Probe segments
 // ---------------------------------------------------------------------------
 
-/// Operator signature for [`const_val`].
-pub struct ConstVal<T: Copy + Send + Sync + 'static> {
-    value: T,
-}
-
-impl<T: Copy + Send + Sync + 'static> Segment for ConstVal<T> {
-    type Inputs = ();
-    type Outputs = Port<Val<T>>;
-    type Context = Instant;
-    type State = T;
-
-    fn init(self, _: ()) -> T {
-        self.value
-    }
-
-    fn output<'a, 'b: 'a>(_: (), state: &'b mut T) -> (bool, T) {
-        (true, *state)
-    }
-
-    fn compute<'a, 'b: 'a>(_: (), state: &'b mut T, _: &Instant) -> (bool, T) {
-        (true, *state)
-    }
-}
-
-/// A pokeable constant cell. Wired as a source it doubles as a manual clock:
-/// touching its state via `state_mut` marks it dirty, so it notifies for
-/// exactly the generations the test chooses.
-pub fn const_val<T: Copy + Send + Sync + 'static>(
-    value: T,
-) -> impl Segment<Inputs = (), Outputs = Port<Val<T>>, Context = Instant, State = T> {
-    ConstVal { value }
-}
-
 /// Operator signature for [`count`].
 pub struct Count<const N: usize>;
 
-impl<const N: usize> Operator for Count<N> {
+impl<const N: usize> Segment for Count<N> {
     type Inputs = ArrayPort<f64, N>;
     type Outputs = Port<Val<usize>>;
     type Context = Instant;
     type State = usize;
 
-    fn init(self, _: (bool, ArrayView<'_, f64, N>)) -> usize {
+    fn init(self, _: ArrayView<'_, f64, N>) -> usize {
         0
     }
 
-    fn compute<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, f64, N>),
-        state: &'b mut usize,
-        _: &Instant,
-    ) -> (bool, usize) {
-        *state += 1;
-        (true, *state)
+    fn compute<'a, 'b: 'a>(a: ArrayView<'a, f64, N>, state: &'b mut usize, _: &Instant) -> usize {
+        if is_eventful(a) {
+            *state += 1;
+        }
+        *state
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, f64, N>),
-        state: &'b mut usize,
-    ) -> (bool, usize) {
-        (false, *state)
+    fn reset<'a, 'b: 'a>(_: ArrayView<'a, f64, N>, state: &'b mut usize) -> usize {
+        *state
     }
 }
 
-/// Counts how many generations actually recomputed this node — the probe for
-/// notification-propagation assertions.
+/// Counts how many *eventful* input batches this node has seen — the probe
+/// for event-propagation assertions (a scheduled generation whose input is
+/// quiescent does not count).
 pub fn count<const N: usize>()
 -> impl Segment<Inputs = ArrayPort<f64, N>, Outputs = Port<Val<usize>>, Context = Instant> {
     Count
+}
+
+/// Operator signature for [`clock`].
+pub struct ManualClock;
+
+impl Segment for ManualClock {
+    type Inputs = ();
+    type Outputs = ClockPort;
+    type Context = Instant;
+    type State = ();
+
+    fn init(self, _: ()) {}
+
+    fn reset<'a, 'b: 'a>(_: (), _: &'b mut ()) -> bool {
+        false
+    }
+
+    fn compute<'a, 'b: 'a>(_: (), _: &'b mut (), _: &Instant) -> bool {
+        true
+    }
+}
+
+/// A pokeable manual clock: wired as a source, touching its state via
+/// `state_mut` marks it dirty, so it pulses (`true`) for exactly the
+/// generations the test chooses and resets to `false` in between.
+pub fn clock() -> impl Segment<Inputs = (), Outputs = ClockPort, Context = Instant, State = ()> {
+    ManualClock
 }

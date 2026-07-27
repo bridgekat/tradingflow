@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::ArrayPort;
 
 pub struct Standardize<T: Scalar + Float, const N: usize> {
@@ -23,32 +23,29 @@ impl<T: Scalar + Float, const N: usize> Default for Standardize<T, N> {
     }
 }
 
-impl<T: Scalar + Float, const N: usize> Operator for Standardize<T, N> {
+impl<T: Scalar + Float, const N: usize> Segment for Standardize<T, N> {
     type Inputs = ArrayPort<T, N>;
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = Array<T, N>;
 
-    fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
+    fn init(self, x: ArrayView<'_, T, N>) -> Self::State {
         let mut out = Array::zeros(x.extents());
         standardize_into(&mut out, x);
         out
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, T, N>),
-        out: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (false, out.view())
+    fn reset<'a, 'b: 'a>(_: ArrayView<'a, T, N>, out: &'b mut Self::State) -> ArrayView<'a, T, N> {
+        out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, x): (bool, ArrayView<'a, T, N>),
+        x: ArrayView<'a, T, N>,
         out: &'b mut Self::State,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, T, N>) {
+    ) -> ArrayView<'a, T, N> {
         standardize_into(out, x);
-        (true, out.view())
+        out.view()
     }
 }
 

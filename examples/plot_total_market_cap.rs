@@ -60,8 +60,8 @@ async fn main() {
 
     // Hold the rebalance-day universe fixed between rebalances by re-emitting it
     // on the daily close pulse (clock = the close view, data = the universe).
-    let daily = sc.segment(event::clock(), st.close);
-    let daily_universe = sc.segment(event::resample(), (daily, universe));
+    let daily = sc.segment(event::as_clock(), st.close);
+    let daily_universe = sc.segment(event::sample(), (daily, universe));
 
     // Summed circulating market cap of the current constituents.
     let masked_circ_sum = |u: ArrayView<f64, 1>, c: ArrayView<f64, 1>| -> f64 {

@@ -11,7 +11,7 @@ use tradingflow::data::{Array, ArrayView, Instant, Retention};
 use tradingflow::graph::{Builder, Graph, Pool, Segment};
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::{array::array_map, elem, event, stats::*, traders::*};
-use tradingflow::ports::{ArrayPort, ArrayPortHandle, SeriesPortHandle, UnitPortHandle};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, ClockPortHandle, SeriesPortHandle};
 use tradingflow::sources::basic::*;
 
 use super::args::CommonArgs;
@@ -51,7 +51,7 @@ pub struct Market {
     /// The cap-weighted universe as a view (also the benchmark weights, and
     /// what the Python operators consume directly).
     pub universe: ArrayPortHandle<f64, 1>,
-    pub rebalance_clock: UnitPortHandle,
+    pub rebalance_clock: ClockPortHandle,
     pub upper: ArrayPortHandle<f64, 1>,
     pub lower: ArrayPortHandle<f64, 1>,
     /// Log adjusted close — the source of returns.
@@ -82,8 +82,9 @@ impl Market {
         let features = build_features(sc, &st, retention);
         let circ_market_cap = sc.segment(elem::mul(), (st.close, st.circ_shares));
         let log_adj = sc.segment(elem::ln(), st.adjusted_close);
+        let daily = sc.segment(event::as_clock(), st.adjusted_close);
         let (target, target_series, demeaned_series) =
-            build_log_return_target(sc, log_adj, retention);
+            build_log_return_target(sc, log_adj, daily, retention);
         let (upper, lower) = build_price_limits(sc, st.close, PRICE_LIMIT);
 
         let rebalance_clock = sc.source(pulse(args.rebalance_instants()));

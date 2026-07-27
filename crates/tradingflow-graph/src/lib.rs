@@ -43,13 +43,18 @@
 //!         1
 //!     }
 //!
-//!     fn output(state: &mut i64) -> (bool, i64) {
+//!     fn output(state: &mut i64) -> i64 {
 //!         // Output current stored value.
-//!         (true, *state)
+//!         *state
+//!     }
+//!
+//!     fn reset(state: &mut i64) -> i64 {
+//!         // The stored value is retained on reset.
+//!         *state
 //!     }
 //! }
 //!
-//! /// A stateless adder with two inputs.
+//! /// An adder with two inputs.
 //! struct Add;
 //!
 //! impl Segment for Add {
@@ -58,23 +63,23 @@
 //!     type Context = Instant;
 //!     type State = ();
 //!
-//!     fn init(self, _inputs: ((bool, i64), (bool, i64))) {}
-//!
-//!     fn output<'a, 'b: 'a>(
-//!         _inputs: ((bool, i64), (bool, i64)),
-//!         _state: &'b mut (),
-//!     ) -> (bool, i64) {
-//!         // The initial placeholder output.
-//!         (false, 0)
-//!     }
+//!     fn init(self, _inputs: (i64, i64)) {}
 //!
 //!     fn compute<'a, 'b: 'a>(
-//!         ((a_notify, a), (b_notify, b)): ((bool, i64), (bool, i64)),
+//!         (a, b): (i64, i64),
 //!         _state: &'b mut (),
 //!         _instant: &Instant,
-//!     ) -> (bool, i64) {
+//!     ) -> i64 {
 //!         // Compute the sum.
-//!         (a_notify || b_notify, a + b)
+//!         a + b
+//!     }
+//!
+//!     fn reset<'a, 'b: 'a>(
+//!         (a, b): (i64, i64),
+//!         _state: &'b mut (),
+//!     ) -> i64 {
+//!         // The sum is retained on reset.
+//!         a + b
 //!     }
 //! }
 //!
@@ -145,18 +150,16 @@
 //!
 //! - The [`Segment::init`] method is called once during graph construction,
 //!   to create the node's state.
-//! - The [`Segment::output`] method is called immediately after (possibly
-//!   multiple times), to obtain initial output values (typically placeholders).
+//! - The [`Segment::reset`] method is called immediately after, to obtain the
+//!   node's initial output values, and again after every [`Graph::stabilize`]
+//!   to reset its outputs to quiescent states (either retained or `None`,
+//!   depending on semantics).
 //! - The [`Segment::compute`] method will be called on each subsequent
 //!   [`Graph::stabilize`] with new inputs, to obtain updated output values.
 //!   It can also access the graph context (typically the current timestamp)
 //!   or mutate the node's state.
 //!
-//! Most users should implement the similar [`Operator`] trait instead,
-//! which provides a more natural semantics (see below). [`Segment`] is mainly
-//! used for composition; [`Operator`] is used for individual operations.
-//!
-//! # Interfaces and passing policies
+//! # Interfaces and passing protocols
 //!
 //! The associated types [`Segment::Inputs`] and [`Segment::Outputs`] define
 //! the [`Interface`] of a segment. They can be constructed from the following
@@ -175,9 +178,9 @@
 //! - Arbitrarily nested tuples of the above (each branch up to arity 12).
 //!
 //! In fact, the [`Port<V>`] and [`Ports<V>`] markers can be used over any
-//! [`Pass`] policy `V`, which allow passing custom lifetime-carrying
+//! [`Pass`] protocol `V`, which allow passing custom lifetime-carrying
 //! `Copy` views (e.g. slices or custom array views) to some underlying data.
-//! The [`Val<T>`] and [`Ref<T>`] are built-in [`Pass`] policies, representing
+//! The [`Val<T>`] and [`Ref<T>`] are built-in [`Pass`] protocols, representing
 //! simple pass-by-value and pass-by-reference. There is also [`Slice<T>`]
 //! allowing passing a slice across a single port.
 //!
@@ -202,93 +205,13 @@
 //! > complex data types and simplifies the internal implementation, but may be
 //! > less ergonomic in some cases.
 //!
-//! # Notification flags
-//!
-//! Each port carries a `bool` flag alongside the value or reference, indicating
-//! whether the value is a *notification*. At each generation, an unmodified
-//! output value can have its flag set to `false` (no notify), so a downstream
-//! node can choose to skip heavy computation.
-//!
-//! ```rust
-//! use tradingflow::data::*;
-//! use tradingflow::graph::*;
-//!
-//! struct Abs;
-//!
-//! impl Segment for Abs {
-//!     type Inputs = Port<Val<i64>>;
-//!     type Outputs = Port<Val<i64>>;
-//!     type Context = Instant;
-//!     type State = i64;
-//!
-//!     fn init(self, _inputs: (bool, i64)) -> i64 {
-//!         // The initial state.
-//!         0
-//!     }
-//!
-//!     fn output<'a, 'b: 'a>(
-//!         _inputs: (bool, i64),
-//!         _state: &'b mut i64
-//!     ) -> (bool, i64) {
-//!         // The initial placeholder output.
-//!         (false, 0)
-//!     }
-//!
-//!     fn compute<'a, 'b: 'a>(
-//!         (x_notify, x): (bool, i64),
-//!         state: &'b mut i64,
-//!         _instant: &Instant,
-//!     ) -> (bool, i64) {
-//!         if x_notify {
-//!             // Input notified, recompute.
-//!             let output = x.abs();
-//!             let changed = output != *state; // Notify downstream only when |x| actually changed.
-//!             *state = output;
-//!             (changed, *state)
-//!         } else {
-//!             // Input did not notify, simply pass through.
-//!             (false, *state)
-//!         }
-//!     }
-//! }
-//! ```
-//!
-//! Treat the flag as a contract that every well-behaved segment upholds:
-//! whenever an output flag is `false`, the value at that port is equal (by
-//! [`Eq`]) to the value it held in the previous generation. Therefore:
-//!
-//! - A port with `notify == true` indicates a possible change in its value;
-//! - A port with `notify == false` indicates no change in its value.
-//!
-//! The flag can be interpreted in an alternative way:
-//!
-//! - A port with `notify == true` indicates a new event has arrived, with its
-//!   value being the payload of the event;
-//! - A port with `notify == false` indicates no event has arrived, with its
-//!   value being the payload of the last known event.
-//!
-//! The two interpretations are compatible: a new event *is* a change in the
-//! event payload's conceptual identity, and a value change *is* a new event.
-//!
-//! The notification flags also help in scheduling. Each generation, the graph
-//! executor sets the flags of modified source nodes, and skips a node
-//! completely if none of its upstream source nodes were modified. This makes
-//! stabilization after a sparse update touches only a fraction of the graph.
-//!
-//! The [`Operator`] trait supports fine-grained skipping. It splits the
-//! compute function of [`Segment`] into two branches:
-//!
-//! - [`Operator::compute`] is called only when at least one input is notified;
-//! - [`Operator::passthrough`] is called otherwise. One can cache the previous
-//!   output value in the node state, and return it directly on passthrough.
-//!
-//! # Segment fusion
+//! # Operator fusion
 //!
 //! Multi-threaded execution has a cost: every unit of work is a thread-pool
 //! task, and waking a worker to run a trivial node can take much longer time
-//! than the actual computation inside the node itself. Therefore, it is
-//! desirable to fuse tiny segments together into a single node. *(Fusing heavy
-//! nodes is equally possible, but fusing prevents parallel execution.)*
+//! than the actual computation inside the node itself. Therefore, it is often
+//! desirable to fuse small operators together into a single segment node,
+//! to be executed on a single thread.
 //!
 //! The library provides combinator methods to fuse segments into larger
 //! segments:
@@ -314,39 +237,35 @@
 //! use tradingflow::sources::basic::*;
 //!
 //! /// An adder which passes inputs and outputs by reference.
-//! ///
-//! /// The `Operator` trait is a convenience wrapper around `Segment`, which
-//! /// calls `compute` only when at least one input has notified, and calls
-//! /// `passthrough` otherwise. This is a common pattern.
 //! struct Add;
 //!
-//! impl Operator for Add {
+//! impl Segment for Add {
 //!     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
 //!     type Outputs = Port<Ref<i64>>;
 //!     type Context = Instant;
 //!     type State = i64;
 //!
-//!     fn init(self, _inputs: ((bool, &i64), (bool, &i64))) -> i64 {
+//!     fn init(self, _inputs: (&i64, &i64)) -> i64 {
 //!         // The initial state.
 //!         0
 //!     }
 //!
-//!     fn passthrough<'a, 'b: 'a>(
-//!         _inputs: ((bool, &'a i64), (bool, &'a i64)),
-//!         state: &'b mut i64
-//!     ) -> (bool, &'a i64) {
-//!         // A simple forwarding.
-//!         (false, state)
-//!     }
-//!
 //!     fn compute<'a, 'b: 'a>(
-//!         ((_, a), (_, b)): ((bool, &'a i64), (bool, &'a i64)),
+//!         (a, b): (&'a i64, &'a i64),
 //!         state: &'b mut i64,
 //!         _instant: &Instant,
-//!     ) -> (bool, &'a i64) {
+//!     ) -> &'a i64 {
 //!         // Compute the sum.
 //!         *state = *a + *b;
-//!         (true, state)
+//!         state
+//!     }
+//!
+//!     fn reset<'a, 'b: 'a>(
+//!         _inputs: (&'a i64, &'a i64),
+//!         state: &'b mut i64
+//!     ) -> &'a i64 {
+//!         // The sum is retained on reset.
+//!         state
 //!     }
 //! }
 //!
@@ -406,6 +325,4 @@ pub mod typed;
 pub use cb::SegmentExt;
 pub use driver::{Builder, Clock, Event, Graph, Source, Stamp};
 pub use pool::Pool;
-pub use typed::{
-    Interface, NodeHandle, Operator, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val,
-};
+pub use typed::{Interface, NodeHandle, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val};

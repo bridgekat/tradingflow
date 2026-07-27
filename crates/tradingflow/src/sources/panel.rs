@@ -30,7 +30,7 @@
 //! are `NaN`); there is no carry-forward and no window-start seeding. This is the
 //! event-driven behaviour of the old per-symbol sources: a source ticks only on
 //! its own dates, and any "carry the last value" / "NaN-fill" is the job of the
-//! downstream [`stack`](crate::operators::array::stack) / [`stack_sync`](crate::operators::event::stack_sync)
+//! downstream [`stack`](crate::operators::array::stack) / [`eventify`](crate::operators::event::eventify)
 //! operators — not the source. With `with_time_range`, rows before `start` are
 //! simply skipped (no last-value-before-`start` is carried in).
 //!
@@ -302,8 +302,14 @@ impl Source for ParquetPanelSource {
         (state, receiver_stream(hist_rx))
     }
 
-    fn output(state: &mut Self::State) -> (bool, ArrayView<'_, f64, 2>) {
-        (true, state.1.view())
+    fn reset(state: &mut Self::State) -> ArrayView<'_, f64, 2> {
+        // Event source: the quiescent panel carries no events (all-NaN
+        // broadcast preserving the cross-section extents).
+        ArrayView::full(state.1.view().extents(), &f64::NAN)
+    }
+
+    fn output(state: &mut Self::State) -> ArrayView<'_, f64, 2> {
+        state.1.view()
     }
 
     fn write(payload: Vec<RowUpdate>, instant: Instant, state: &mut Self::State) -> usize {
@@ -735,8 +741,14 @@ impl Source for ParquetFinancialReportPanelSource {
         (state, receiver_stream(hist_rx))
     }
 
-    fn output(state: &mut Self::State) -> (bool, ArrayView<'_, f64, 2>) {
-        (true, state.1.view())
+    fn reset(state: &mut Self::State) -> ArrayView<'_, f64, 2> {
+        // Event source: the quiescent panel carries no events (all-NaN
+        // broadcast preserving the cross-section extents).
+        ArrayView::full(state.1.view().extents(), &f64::NAN)
+    }
+
+    fn output(state: &mut Self::State) -> ArrayView<'_, f64, 2> {
+        state.1.view()
     }
 
     fn write(payload: Vec<RowUpdate>, instant: Instant, state: &mut Self::State) -> usize {

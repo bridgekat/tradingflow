@@ -194,7 +194,10 @@ fn sum_min_count_gates_on_the_finite_sample_count() {
     let path = [1.0, nan, 2.0, nan, nan, 4.0, 5.0, 6.0];
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    // A NaN sample must ride along an eventful batch to be recorded at all (a
+    // bare all-NaN poke is "no event"), so the path shares its rows with an
+    // always-finite carrier element.
+    let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
     let rec = b.segment(series::record_all(), xv);
     let s = b.segment(rolling::series_sum(W, MIN), rec);
     let mut g = b.build();
@@ -202,10 +205,10 @@ fn sum_min_count_gates_on_the_finite_sample_count() {
 
     let (mut gated, mut emitted) = (0, 0);
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = arr1([v, 0.0]);
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         let want = ref_sum(count_window(&path, t, W), MIN);
-        assert_close(&vals(g.view(s)), &[want], &format!("tick {t}"));
+        assert_close(&[vals(g.view(s))[0]], &[want], &format!("tick {t}"));
         if want.is_nan() {
             gated += 1;
         } else {
@@ -579,10 +582,20 @@ fn cov_gates_each_matrix_entry_on_its_own_pairwise_complete_count() {
     let mut pool = Pool::new(0);
 
     let mut mixed_gates = 0;
+    // An all-NaN cross row carries no events and is never recorded, so the
+    // reference drops those ticks before windowing.
+    let kept: Vec<usize> = (0..base.len())
+        .filter(|&t| paths.iter().any(|p| !p[t].is_nan()))
+        .collect();
+    let kept_paths: Vec<Vec<f64>> = paths
+        .iter()
+        .map(|p| kept.iter().map(|&t| p[t]).collect())
+        .collect();
     for t in 0..base.len() {
         *g.state_mut(src) = cross(&paths, t);
         g.stabilize(&mut pool, &nano(t as i64 + 1));
-        let want = ref_cov_matrix(&paths, t, W, MIN);
+        let last_kept = kept.iter().take_while(|&&k| k <= t).count() - 1;
+        let want = ref_cov_matrix(&kept_paths, last_kept, W, MIN);
         assert_close(&vals(g.view(c)), &want, &format!("tick {t}"));
         if want.iter().any(|v| v.is_nan()) && want.iter().any(|v| v.is_finite()) {
             mixed_gates += 1;

@@ -24,7 +24,7 @@ use clap::Parser;
 use tradingflow::clock::UnixClock;
 use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
-use tradingflow::operators::event::resample;
+use tradingflow::operators::event::sample;
 use tradingflow::operators::rolling::series_lag;
 use tradingflow::operators::series::record_all;
 
@@ -62,7 +62,7 @@ async fn main() {
             // the stocks outside the universe so they don't dilute the correlation.
             let feature_series = sc.segment(record_all(), feature);
             let lagged = sc.segment(series_lag(1), feature_series);
-            let aligned = sc.segment(resample(), (m.rebalance_clock, lagged));
+            let aligned = sc.segment(sample(), (m.rebalance_clock, lagged));
             let masked = mask_to_universe(&mut sc, aligned, m.universe);
             ic_series(&mut sc, masked, m.target, m.n)
         })

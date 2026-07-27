@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::ArrayPort;
 
 /// Operator signature for [`drawdown`].
@@ -30,31 +30,31 @@ pub struct DrawdownState<T: Scalar + Float> {
     out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Operator for Drawdown<T> {
+impl<T: Scalar + Float> Segment for Drawdown<T> {
     type Inputs = ArrayPort<T, 0>;
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = DrawdownState<T>;
 
-    fn init(self, _: (bool, ArrayView<'_, T, 0>)) -> Self::State {
+    fn init(self, _: ArrayView<'_, T, 0>) -> Self::State {
         DrawdownState {
             max: T::nan(),
             out: Array::scalar(T::nan()),
         }
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, T, 0>),
+    fn reset<'a, 'b: 'a>(
+        _: ArrayView<'a, T, 0>,
         state: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, 0>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, T, 0> {
+        state.out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, value): (bool, ArrayView<'a, T, 0>),
+        value: ArrayView<'a, T, 0>,
         state: &'b mut Self::State,
         _: &Self::Context,
-    ) -> (bool, ArrayView<'a, T, 0>) {
+    ) -> ArrayView<'a, T, 0> {
         assert!(value.is_finite(), "drawdown: input value must be finite");
         assert!(*value > T::zero(), "drawdown: input value must be positive");
         if state.max.is_nan() {
@@ -64,7 +64,7 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
             state.max = state.max.max(*value);
             *state.out = (*value - state.max) / state.max;
         }
-        (true, state.out.view())
+        state.out.view()
     }
 }
 

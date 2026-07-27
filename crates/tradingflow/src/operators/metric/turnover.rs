@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use tradingflow_data::Layout;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::ArrayPort;
 
 /// Operator signature for [`turnover`].
@@ -31,13 +31,13 @@ pub struct TurnoverState<T: Scalar + Float> {
     out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Operator for Turnover<T> {
+impl<T: Scalar + Float> Segment for Turnover<T> {
     type Inputs = ArrayPort<T, 1>;
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = TurnoverState<T>;
 
-    fn init(self, (_, weights): (bool, ArrayView<'_, T, 1>)) -> Self::State {
+    fn init(self, weights: ArrayView<'_, T, 1>) -> Self::State {
         let len = weights.layout().len();
         TurnoverState {
             prev: vec![T::zero(); len],
@@ -45,18 +45,18 @@ impl<T: Scalar + Float> Operator for Turnover<T> {
         }
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, T, 1>),
+    fn reset<'a, 'b: 'a>(
+        _: ArrayView<'a, T, 1>,
         state: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, 0>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, T, 0> {
+        state.out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, weights): (bool, ArrayView<'a, T, 1>),
+        weights: ArrayView<'a, T, 1>,
         state: &'b mut Self::State,
         _: &Self::Context,
-    ) -> (bool, ArrayView<'a, T, 0>) {
+    ) -> ArrayView<'a, T, 0> {
         assert!(
             weights.layout().len() == state.prev.len(),
             "turnover: input length mismatch"
@@ -68,7 +68,7 @@ impl<T: Scalar + Float> Operator for Turnover<T> {
             *state.out = *state.out + (w - state.prev[j]).abs();
             state.prev[j] = w;
         });
-        (true, state.out.view())
+        state.out.view()
     }
 }
 

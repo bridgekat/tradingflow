@@ -5,7 +5,7 @@ use std::sync::atomic::{self, AtomicUsize, Ordering};
 
 use super::cell::ErasedCell;
 use super::error::Error;
-use super::segment::{ComputeFn, Segment};
+use super::segment::{ComputeFn, ResetFn, Segment};
 
 /// Adjacency matrix stored in compressed sparse row format.
 pub struct Adjacency {
@@ -107,6 +107,7 @@ unsafe impl<T> Sync for SyncCell<T> {}
 
 struct Node {
     compute_fn: ComputeFn,
+    reset_fn: ResetFn,
     input_range: Range<usize>,
     output_range: Range<usize>,
     state: ErasedCell,
@@ -114,9 +115,7 @@ struct Node {
 
 /// Builder for the core layer [`Graph`].
 pub struct Builder {
-    input_flags: Vec<SyncCell<bool>>,
     input_ptrs: Vec<SyncCell<*const ()>>,
-    output_flags: Vec<SyncCell<bool>>,
     output_ptrs: Vec<SyncCell<*const ()>>,
     output_type_ids: Vec<TypeId>,
     input_from_outputs: Adjacency,
@@ -126,9 +125,7 @@ pub struct Builder {
 impl Builder {
     pub fn new() -> Self {
         Self {
-            input_flags: Vec::new(),
             input_ptrs: Vec::new(),
-            output_flags: Vec::new(),
             output_ptrs: Vec::new(),
             output_type_ids: Vec::new(),
             input_from_outputs: Adjacency::new(),
@@ -140,10 +137,6 @@ impl Builder {
         self.output_type_ids[index]
     }
 
-    pub fn slot_flag(&self, index: usize) -> bool {
-        unsafe { *self.output_flags[index].get() }
-    }
-
     pub fn slot_ptr(&self, index: usize) -> *const () {
         unsafe { *self.output_ptrs[index].get() }
     }
@@ -153,7 +146,7 @@ impl Builder {
         segment: Segment,
         input_indices: &[usize],
     ) -> Result<(usize, Range<usize>), Error> {
-        let (input_types, output_types, compute_fn, state, output_flags, output_ptrs) =
+        let (input_types, output_types, compute_fn, reset_fn, state, output_ptrs) =
             segment.into_parts();
 
         let input_arity = input_types.len();
@@ -182,7 +175,7 @@ impl Builder {
             }
         }
         let output_arity = output_types.len();
-        if output_arity != output_ptrs.len() || output_arity != output_flags.len() {
+        if output_arity != output_ptrs.len() {
             return Err(Error::OutputArity {
                 expected: output_arity,
                 actual: output_ptrs.len(),
@@ -193,12 +186,9 @@ impl Builder {
         let input_begin = self.input_ptrs.len();
         let output_begin = self.output_ptrs.len();
         for &s in input_indices {
-            self.input_flags.push(self.slot_flag(s).into());
             self.input_ptrs.push(self.slot_ptr(s).into());
             self.input_from_outputs.push(&[s]);
         }
-        self.output_flags
-            .extend(output_flags.iter().map(|&f| f.into()));
         self.output_ptrs
             .extend(output_ptrs.iter().map(|&p| p.into()));
         let input_range = input_begin..self.input_ptrs.len();
@@ -207,6 +197,7 @@ impl Builder {
         let node_index = self.nodes.len();
         self.nodes.push(Node {
             compute_fn,
+            reset_fn,
             input_range,
             output_range: output_range.clone(),
             state,
@@ -216,28 +207,17 @@ impl Builder {
 
     pub fn build(self) -> Graph {
         let Builder {
-            input_flags,
             input_ptrs,
-            output_flags,
             output_ptrs,
             output_type_ids,
             input_from_outputs,
             nodes,
         } = self;
 
-        let input_flags = input_flags.into_boxed_slice();
         let input_ptrs = input_ptrs.into_boxed_slice();
-        let output_flags = output_flags.into_boxed_slice();
         let output_ptrs = output_ptrs.into_boxed_slice();
         let output_type_ids = output_type_ids.into_boxed_slice();
         let nodes = nodes.into_boxed_slice();
-
-        for f in &input_flags {
-            unsafe { *f.get() = false };
-        }
-        for f in &output_flags {
-            unsafe { *f.get() = false };
-        }
 
         let mut input_owners = vec![usize::MAX; input_ptrs.len()].into_boxed_slice();
         for (i, node) in nodes.iter().enumerate() {
@@ -268,9 +248,7 @@ impl Builder {
         let is_dirty = (0..nodes.len()).map(|_| false).collect();
 
         Graph {
-            input_flags,
             input_ptrs,
-            output_flags,
             output_ptrs,
             output_type_ids,
             output_to_inputs,
@@ -280,6 +258,7 @@ impl Builder {
             roots: Vec::new(),
             dirty: Vec::new(),
             is_dirty,
+            stack: Vec::new(),
             poisoned: false,
         }
     }
@@ -293,9 +272,7 @@ impl Default for Builder {
 
 /// The type-erased core of a graph.
 pub struct Graph {
-    input_flags: Box<[SyncCell<bool>]>,
     input_ptrs: Box<[SyncCell<*const ()>]>,
-    output_flags: Box<[SyncCell<bool>]>,
     output_ptrs: Box<[SyncCell<*const ()>]>,
     output_type_ids: Box<[TypeId]>,
     output_to_inputs: Adjacency,
@@ -305,18 +282,13 @@ pub struct Graph {
     roots: Vec<usize>,
     dirty: Vec<usize>,
     is_dirty: Box<[bool]>,
+    stack: Vec<(usize, usize)>,
     poisoned: bool,
 }
 
 impl Graph {
     pub fn slot_type_id(&self, index: usize) -> TypeId {
         self.output_type_ids[index]
-    }
-
-    pub fn slot_flag(&self, index: usize) -> bool {
-        assert!(!self.poisoned, "cannot access poisoned graph.");
-        assert!(self.dirty.is_empty(), "cannot read unstabilized graph.");
-        unsafe { *self.output_flags[index].get() }
     }
 
     pub fn slot_ptr(&self, index: usize) -> *const () {
@@ -327,6 +299,10 @@ impl Graph {
 
     pub fn state_mut(&mut self, index: usize) -> &mut ErasedCell {
         assert!(!self.poisoned, "cannot access poisoned graph.");
+        assert!(
+            self.nodes[index].input_range.is_empty(),
+            "cannot mutate non-source node."
+        );
         if !self.is_dirty[index] {
             self.is_dirty[index] = true;
             self.dirty.push(index);
@@ -338,27 +314,29 @@ impl Graph {
         assert!(!self.poisoned, "cannot access poisoned graph.");
         self.poisoned = true;
 
-        // Discover the dirty cone using breadth-first search, accumulating in
-        // `counter` each cone node's number of dirty predecessors.
-        let mut cursor = 0;
-        while cursor < self.dirty.len() {
-            let i = self.dirty[cursor];
-            for &j in self.node_to_nodes.get(i) {
-                if !self.is_dirty[j] {
-                    self.is_dirty[j] = true;
-                    self.dirty.push(j);
-                }
-                *self.counters[j].get_mut() += 1;
-            }
-            cursor += 1;
-        }
+        // Record the root nodes. The only source of dirty nodes, `state_mut`,
+        // can be applied only on source nodes (nodes with no predecessors).
+        std::mem::swap(&mut self.roots, &mut self.dirty);
 
-        // A cone node with no dirty predecessor (`counter == 0` -- only ever a
-        // poked source) is a *root*: the only kind of node that may run
-        // immediately. Scanning `dirty` keeps this proportional to the cone.
-        for &i in &self.dirty {
-            if *self.counters[i].get_mut() == 0 {
-                self.roots.push(i);
+        // Discover the dirty cone using depth-first search, accumulating in
+        // `counter` each cone node's number of dirty predecessors. After this,
+        // `self.dirty` stores all cone nodes in exit order (a reverse
+        // topological order).
+        for &i in self.roots.iter() {
+            self.stack.push((i, 0));
+            while let Some((i, k)) = self.stack.last_mut() {
+                let i = *i;
+                if let Some(&j) = self.node_to_nodes.get(i).get(*k) {
+                    *k += 1;
+                    *self.counters[j].get_mut() += 1;
+                    if !self.is_dirty[j] {
+                        self.is_dirty[j] = true;
+                        self.stack.push((j, 0));
+                    }
+                } else {
+                    self.stack.pop();
+                    self.dirty.push(i);
+                }
             }
         }
 
@@ -370,28 +348,21 @@ impl Graph {
         pool.run(self.roots.iter().copied(), |i, scope| {
             // Run node `i` compute function.
             let compute_fn = self.nodes[i].compute_fn;
-            let in_range = self.nodes[i].input_range.clone();
-            let out_range = self.nodes[i].output_range.clone();
-            let in_flags = cell_slice(&self.input_flags[in_range.clone()]);
-            let in_ptrs = cell_slice(&self.input_ptrs[in_range]);
-            let out_flags = cell_slice_mut(&self.output_flags[out_range.clone()]);
-            let out_ptrs = cell_slice_mut(&self.output_ptrs[out_range]);
+            let input_range = self.nodes[i].input_range.clone();
+            let output_range = self.nodes[i].output_range.clone();
+            let input_ptrs = cell_slice(&self.input_ptrs[input_range]);
+            let output_ptrs = cell_slice_mut(&self.output_ptrs[output_range]);
             let state = self.nodes[i].state.get();
             let context = context as *const _ as *const ();
-            unsafe { compute_fn(in_flags, in_ptrs, out_flags, out_ptrs, state, context) };
-
+            unsafe { compute_fn(input_ptrs, output_ptrs, state, context) };
             // Scatter this node's fresh output slots into every consumer's
             // input slot unconditionally. Load-bearing for pointer/reference
             // safety on data inside slots.
             for s in self.nodes[i].output_range.clone() {
                 for &t in self.output_to_inputs.get(s) {
-                    unsafe {
-                        *self.input_flags[t].get() = *self.output_flags[s].get();
-                        *self.input_ptrs[t].get() = *self.output_ptrs[s].get();
-                    }
+                    unsafe { *self.input_ptrs[t].get() = *self.output_ptrs[s].get() };
                 }
             }
-
             // Report each successor whose last dirty predecessor was `i` --
             // i.e. whose counter reached 0. The writes above happens-before
             // the atomic decrement, so a successor reported ready has observed
@@ -409,16 +380,26 @@ impl Graph {
         });
         self.roots.clear();
 
-        // Reset the per-generation notify flags and cone membership for the next
-        // round. (Counters already returned to 0 as the cone drained.)
-        for i in self.dirty.iter().copied() {
-            self.is_dirty[i] = false;
-            for s in self.nodes[i].input_range.clone() {
-                unsafe { *self.input_flags[s].get() = false };
-            }
+        // Call reset functions and reset cone membership for the next round,
+        // in topological order.
+        for i in self.dirty.iter().rev().copied() {
+            // Run node `i` reset function.
+            let reset_fn = self.nodes[i].reset_fn;
+            let input_range = self.nodes[i].input_range.clone();
+            let output_range = self.nodes[i].output_range.clone();
+            let input_ptrs = cell_slice(&self.input_ptrs[input_range]);
+            let output_ptrs = cell_slice_mut(&self.output_ptrs[output_range]);
+            let state = self.nodes[i].state.get();
+            let context = context as *const _ as *const ();
+            unsafe { reset_fn(input_ptrs, output_ptrs, state, context) };
+            // Scatter this node's output slots.
             for s in self.nodes[i].output_range.clone() {
-                unsafe { *self.output_flags[s].get() = false };
+                for &t in self.output_to_inputs.get(s) {
+                    unsafe { *self.input_ptrs[t].get() = *self.output_ptrs[s].get() };
+                }
             }
+            // Reset dirty flag.
+            self.is_dirty[i] = false;
         }
         self.dirty.clear();
 

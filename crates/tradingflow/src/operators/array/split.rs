@@ -2,7 +2,7 @@ use bumpalo::Bump;
 use std::marker::PhantomData;
 
 use crate::data::{ArrayView, Instant, Scalar, array};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::{ArrayPort, ArrayPorts};
 
 /// Operator signature for [`split`], [`unstack`] etc.
@@ -26,7 +26,7 @@ where
     }
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Operator for SplitView<T, N, U, M, F>
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Segment for SplitView<T, N, U, M, F>
 where
     F: FnMut(ArrayView<'_, T, N>) -> Vec<ArrayView<'_, U, M>> + Send + 'static,
 {
@@ -35,29 +35,25 @@ where
     type Context = Instant;
     type State = (F, Bump);
 
-    fn init(self, _: (bool, ArrayView<'_, T, N>)) -> (F, Bump) {
+    fn init(self, _: ArrayView<'_, T, N>) -> (F, Bump) {
         (self.derive, Bump::new())
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        (_, a): (bool, ArrayView<'a, T, N>),
+    fn reset<'a, 'b: 'a>(
+        a: ArrayView<'a, T, N>,
         (derive, arena): &'b mut (F, Bump),
-    ) -> (&'a [bool], &'a [ArrayView<'a, U, M>]) {
+    ) -> &'a [ArrayView<'a, U, M>] {
         arena.reset();
-        let views: &[_] = arena.alloc_slice_fill_iter(derive(a));
-        let flags: &[_] = arena.alloc_slice_fill_copy(views.len(), false);
-        (flags, views)
+        arena.alloc_slice_fill_iter(derive(a))
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, a): (bool, ArrayView<'a, T, N>),
+        a: ArrayView<'a, T, N>,
         (derive, arena): &'b mut (F, Bump),
         _: &Instant,
-    ) -> (&'a [bool], &'a [ArrayView<'a, U, M>]) {
+    ) -> &'a [ArrayView<'a, U, M>] {
         arena.reset();
-        let views: &[_] = arena.alloc_slice_fill_iter(derive(a));
-        let flags: &[_] = arena.alloc_slice_fill_copy(views.len(), true);
-        (flags, views)
+        arena.alloc_slice_fill_iter(derive(a))
     }
 }
 

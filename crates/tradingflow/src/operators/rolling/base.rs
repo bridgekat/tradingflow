@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::ops::Range;
 
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, SeriesView};
-use crate::graph::Operator;
+use crate::graph::Segment;
 use crate::ports::{ArrayPort, SeriesPort};
 
 /// Base trait for rolling window operator accumulators.
@@ -62,7 +62,7 @@ pub struct RollingState<
     _marker: PhantomData<fn() -> T>,
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, U, M>> Operator
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, U, M>> Segment
     for Rolling<T, N, U, M, A>
 {
     type Inputs = SeriesPort<T, N>;
@@ -70,7 +70,7 @@ impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, 
     type Context = Instant;
     type State = RollingState<T, N, U, M, A>;
 
-    fn init(self, (_, series): (bool, SeriesView<'_, T, N>)) -> Self::State {
+    fn init(self, series: SeriesView<'_, T, N>) -> Self::State {
         assert!(
             series.range().is_empty(),
             "rolling: operator must be initialized with an empty input series (got range {:?})",
@@ -87,18 +87,18 @@ impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, 
         }
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, SeriesView<'a, T, N>),
+    fn reset<'a, 'b: 'a>(
+        _: SeriesView<'a, T, N>,
         state: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, U, M>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, U, M> {
+        state.out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, SeriesView<'a, T, N>),
+        series: SeriesView<'a, T, N>,
         state: &'b mut Self::State,
         instant: &Self::Context,
-    ) -> (bool, ArrayView<'a, U, M>) {
+    ) -> ArrayView<'a, U, M> {
         assert!(
             series.range().start <= state.range.start,
             "rolling: input series dropped elements before operator can drop them (last window {:?}, got range {:?})",
@@ -127,6 +127,6 @@ impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, 
         }
         state.range = start..end;
         state.acc.write(&mut state.out, state.range.len());
-        (true, state.out.view())
+        state.out.view()
     }
 }

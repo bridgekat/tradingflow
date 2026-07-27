@@ -1,23 +1,19 @@
 //! Basic event-semantics operators on arrays.
 //!
-//! These are operators with non-trivial behavior in terms of the notification
-//! flags or NaN status of their inputs or outputs:
-//!
-//! - A non-NaN element in an array with `notify = true` is considered
-//!   as carrying a one-time "event";
-//! - A NaN element or an element in an array with `notify = false` is
-//!   typically ignored.
-//!
-//! For non-floating scalar types inside arrays, `Option<T>` is used to
-//! represent the presence or absence of an event, where `None` has the same
-//! meaning as NaN.
+//! These are operators which treats a non-NaN array element as carrying a
+//! one-time "event", and resets all outputs to NaN in their reset methods
+//! so that each "event" cannot be processed multiple times by downstream
+//! operators. Arrays with such interpretation are called "event arrays"
+//! in contrast with "state arrays".
 
-mod clock;
-mod concat;
+mod as_clock;
+mod as_event;
+mod eventify;
 mod filter;
-mod resample;
+mod sample;
 
-pub use clock::clock;
-pub use concat::{concat_sync, stack_sync};
+pub use as_clock::as_clock;
+pub use as_event::as_event;
+pub use eventify::eventify;
 pub use filter::filter;
-pub use resample::resample;
+pub use sample::sample;

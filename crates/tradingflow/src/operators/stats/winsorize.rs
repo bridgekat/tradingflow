@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::cmp::Ordering;
 
 use crate::data::{Array, ArrayView, Instant, Layout, Scalar};
-use crate::graph::{Operator, Segment};
+use crate::graph::Segment;
 use crate::ports::ArrayPort;
 
 pub struct Winsorize<T: Scalar + Float, const N: usize> {
@@ -25,13 +25,13 @@ pub struct WinsorizeState<T: Scalar + Float, const N: usize> {
     out: Array<T, N>,
 }
 
-impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
+impl<T: Scalar + Float, const N: usize> Segment for Winsorize<T, N> {
     type Inputs = ArrayPort<T, N>;
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = WinsorizeState<T, N>;
 
-    fn init(self, (_, x): (bool, ArrayView<'_, T, N>)) -> Self::State {
+    fn init(self, x: ArrayView<'_, T, N>) -> Self::State {
         let mut state = WinsorizeState {
             p: self.p,
             sort_buf: vec![T::zero(); x.layout().len()],
@@ -41,20 +41,20 @@ impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
         state
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, T, N>),
+    fn reset<'a, 'b: 'a>(
+        _: ArrayView<'a, T, N>,
         state: &'b mut Self::State,
-    ) -> (bool, ArrayView<'a, T, N>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, T, N> {
+        state.out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, x): (bool, ArrayView<'a, T, N>),
+        x: ArrayView<'a, T, N>,
         state: &'b mut Self::State,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, T, N>) {
+    ) -> ArrayView<'a, T, N> {
         winsorize_into(state, x);
-        (true, state.out.view())
+        state.out.view()
     }
 }
 

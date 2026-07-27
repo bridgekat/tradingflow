@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
 use crate::data::{Array, ArrayView, Instant};
-use crate::graph::typed::{Interface, Operator};
+use crate::graph::{Interface, Segment};
 use crate::ports::{ArrayPort, ArrayPorts};
 
 use super::{NativeArrayView, PyArgs, PyParams};
@@ -119,7 +119,7 @@ pub struct PyClassState<const NO: usize> {
     out: Array<f64, NO>,
 }
 
-impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
+impl<I: PyArgs + 'static, const NO: usize> Segment for PyClassOperator<I, NO> {
     type Inputs = I;
     type Outputs = ArrayPort<f64, NO>;
     type Context = Instant;
@@ -158,7 +158,7 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
         inputs: <I as Interface>::Values<'a>,
         state: &'b mut PyClassState<NO>,
         time: &Instant,
-    ) -> (bool, ArrayView<'a, f64, NO>) {
+    ) -> ArrayView<'a, f64, NO> {
         // The batch's event time, straight from the graph context.
         let ts = time.as_offset().as_nanos();
 
@@ -192,14 +192,21 @@ impl<I: PyArgs + 'static, const NO: usize> Operator for PyClassOperator<I, NO> {
         });
         let notify = result
             .unwrap_or_else(|()| panic!("python operator compute failed (see traceback above)"));
-        (notify, out.view())
+        // The output is an event array: a compute that produced nothing (the
+        // Python side returned `False`) emits the quiescent all-NaN form so
+        // stale values cannot be re-consumed as fresh events downstream.
+        if notify {
+            out.view()
+        } else {
+            ArrayView::full(out.view().extents(), &f64::NAN)
+        }
     }
 
-    fn passthrough<'a, 'b: 'a>(
+    fn reset<'a, 'b: 'a>(
         _: <I as Interface>::Values<'a>,
         state: &'b mut PyClassState<NO>,
-    ) -> (bool, ArrayView<'a, f64, NO>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, f64, NO> {
+        ArrayView::full(state.out.view().extents(), &f64::NAN)
     }
 }
 

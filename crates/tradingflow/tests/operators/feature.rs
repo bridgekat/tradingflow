@@ -15,7 +15,7 @@
 
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::{array, feature::stock};
+use tradingflow::operators::{array, event, feature::stock};
 
 use crate::harness::*;
 
@@ -37,6 +37,7 @@ fn annualize_ticks(width: usize, ticks: &[ReportTick]) -> Vec<Vec<f64>> {
     let (values, valuesv) = b.source(array::constant(arr([width], vec![f64::NAN; width])));
     let (year, yearv) = b.source(array::constant(arr([1], vec![0_i32])));
     let (day, dayv) = b.source(array::constant(arr([1], vec![0_i32])));
+    let valuesv = b.segment(event::as_event(), valuesv);
     let out = b.segment(stock::annualize(), (valuesv, yearv, dayv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -218,6 +219,7 @@ fn annualize_value_silence_yields_an_all_nan_notification() {
     let (values, valuesv) = b.source(array::constant(arr([1], vec![f64::NAN])));
     let (year, yearv) = b.source(array::constant(arr([1], vec![0_i32])));
     let (day, dayv) = b.source(array::constant(arr([1], vec![0_i32])));
+    let valuesv = b.segment(event::as_event(), valuesv);
     let out = b.segment(stock::annualize(), (valuesv, yearv, dayv));
     let notified = b.segment(count::<1>(), out);
     let mut g = b.build();
@@ -237,7 +239,9 @@ fn annualize_value_silence_yields_an_all_nan_notification() {
         vals(g.view(out))[0].is_nan(),
         "calendar-only tick carries no events"
     );
-    assert_eq!(g.view(notified), 2, "but the output still notifies");
+    // The all-NaN emission carries no events, so the eventful-batch probe
+    // does not advance.
+    assert_eq!(g.view(notified), 1, "an all-NaN batch is not an event");
 }
 
 // ===========================================================================
@@ -257,6 +261,9 @@ fn run_forward_adjust(ticks: &[AdjustTick]) -> Vec<(f64, f64, usize)> {
     let (close, closev) = b.source(array::scalar(f64::NAN));
     let (share, sharev) = b.source(array::scalar(f64::NAN));
     let (cash, cashv) = b.source(array::scalar(f64::NAN));
+    let closev = b.segment(event::as_event(), closev);
+    let sharev = b.segment(event::as_event(), sharev);
+    let cashv = b.segment(event::as_event(), cashv);
     let (mult, adj) = b.segment(stock::forward_adjust(), (closev, sharev, cashv));
     let notified = b.segment(count::<0>(), adj);
     let mut g = b.build();
@@ -405,7 +412,7 @@ fn forward_adjust_dividend_without_a_close_banks_the_multiplier() {
     assert_eq!(out[0], (1.0, 10.0, 1));
     assert_close(&[out[1].0], &[10.0 / 9.5], "multiplier banks immediately");
     assert!(out[1].1.is_nan(), "no close event → NaN adjusted close");
-    assert_eq!(out[1].2, 2, "the all-NaN generation still notifies");
+    assert_eq!(out[1].2, 1, "an all-NaN batch carries no events");
     assert_close(
         &[out[2].1],
         &[10.0],
@@ -448,6 +455,9 @@ fn forward_adjust_elements_carry_events_independently() {
     let (close, closev) = b.source(array::constant(arr1([f64::NAN, f64::NAN])));
     let (_, sharev) = b.source(array::constant(arr1([f64::NAN, f64::NAN])));
     let (cash, cashv) = b.source(array::constant(arr1([f64::NAN, f64::NAN])));
+    let closev = b.segment(event::as_event(), closev);
+    let sharev = b.segment(event::as_event(), sharev);
+    let cashv = b.segment(event::as_event(), cashv);
     let (mult, adj) = b.segment(stock::forward_adjust(), (closev, sharev, cashv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -480,6 +490,9 @@ fn forward_adjust_broadcasts_the_dividend_legs() {
     let (close, closev) = b.source(array::constant(arr1([f64::NAN, f64::NAN])));
     let (share, sharev) = b.source(array::constant(arr([1], vec![f64::NAN])));
     let (_, cashv) = b.source(array::constant(arr([1], vec![f64::NAN])));
+    let closev = b.segment(event::as_event(), closev);
+    let sharev = b.segment(event::as_event(), sharev);
+    let cashv = b.segment(event::as_event(), cashv);
     let (mult, adj) = b.segment(stock::forward_adjust(), (closev, sharev, cashv));
     let mut g = b.build();
     let mut pool = Pool::new(0);

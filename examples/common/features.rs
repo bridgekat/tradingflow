@@ -57,18 +57,18 @@ use tradingflow::clock::UnixClock;
 use tradingflow::data::{
     Array, ArrayView, Duration, Instant, Layout, Retention, Series, SeriesView,
 };
-use tradingflow::graph::{Builder, Operator};
+use tradingflow::graph::{Builder, Segment};
 use tradingflow::operators::{
     array::{map, select, select_at, stack},
     elem, event,
     metric::*,
     rolling,
-    series::{buffer, record},
+    series::{buffer, record, record_clocked},
     stats::*,
     traders::*,
 };
 use tradingflow::ports::{
-    ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle, UnitPortHandle,
+    ArrayPort, ArrayPortHandle, ClockPortHandle, SeriesPort, SeriesPortHandle,
 };
 
 use super::data::Stacked;
@@ -142,7 +142,7 @@ fn delta(
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            rolling::diff(LAG_YEAR) @ event::resample() @ (event::clock() @ adj, lvl)
+            rolling::diff(LAG_YEAR) @ event::sample() @ (event::as_clock() @ adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -158,7 +158,7 @@ fn yoy(
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
         tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            rolling::pct_change(LAG_YEAR) @ event::resample() @ (event::clock() @ adj, lvl)
+            rolling::pct_change(LAG_YEAR) @ event::sample() @ (event::as_clock() @ adj, lvl)
         }),
         (st.adjusted_close, level),
     )
@@ -294,9 +294,9 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) 
 pub fn build_forward_return(
     sc: &mut Builder<Instant, UnixClock>,
     log_adj: ArrayPortHandle<f64, 1>,
-    rebalance_clock: UnitPortHandle,
+    rebalance_clock: ClockPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
-    let resampled = sc.segment(event::resample(), (rebalance_clock, log_adj));
+    let resampled = sc.segment(event::sample(), (rebalance_clock, log_adj));
     sc.segment(rolling::diff(1), resampled)
 }
 
@@ -390,13 +390,13 @@ struct WindowReduceState {
     f: fn(&[f64]) -> f64,
     out: Array<f64, 1>,
 }
-impl Operator for WindowReduce {
+impl Segment for WindowReduce {
     type Inputs = SeriesPort<f64, 1>;
     type Outputs = ArrayPort<f64, 1>;
     type Context = Instant;
     type State = WindowReduceState;
 
-    fn init(self, (_, series): (bool, SeriesView<'_, f64, 1>)) -> WindowReduceState {
+    fn init(self, series: SeriesView<'_, f64, 1>) -> WindowReduceState {
         let n = series.layout().len();
         WindowReduceState {
             window: self.window,
@@ -406,14 +406,14 @@ impl Operator for WindowReduce {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, SeriesView<'a, f64, 1>),
+        series: SeriesView<'a, f64, 1>,
         state: &'b mut WindowReduceState,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
+    ) -> ArrayView<'a, f64, 1> {
         let w = state.window;
         let end = series.range().end;
         if end < w {
-            return (false, state.out.view());
+            return state.out.view();
         }
         let f = state.f;
         let n = series.layout().len();
@@ -428,14 +428,14 @@ impl Operator for WindowReduce {
             }
             out[j] = f(&buf);
         }
-        (true, state.out.view())
+        state.out.view()
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, SeriesView<'a, f64, 1>),
+    fn reset<'a, 'b: 'a>(
+        _: SeriesView<'a, f64, 1>,
         state: &'b mut WindowReduceState,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, f64, 1> {
+        state.out.view()
     }
 }
 fn window_reduce(
@@ -494,13 +494,13 @@ struct WindowReduce2State {
     f: fn(&[f64], &[f64]) -> f64,
     out: Array<f64, 1>,
 }
-impl Operator for WindowReduce2 {
+impl Segment for WindowReduce2 {
     type Inputs = SeriesPort<f64, 2>;
     type Outputs = ArrayPort<f64, 1>;
     type Context = Instant;
     type State = WindowReduce2State;
 
-    fn init(self, (_, series): (bool, SeriesView<'_, f64, 2>)) -> WindowReduce2State {
+    fn init(self, series: SeriesView<'_, f64, 2>) -> WindowReduce2State {
         let n = series.extents()[0]; // (N, 2) -> N
         WindowReduce2State {
             window: self.window,
@@ -510,15 +510,15 @@ impl Operator for WindowReduce2 {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, SeriesView<'a, f64, 2>),
+        series: SeriesView<'a, f64, 2>,
         state: &'b mut WindowReduce2State,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
+    ) -> ArrayView<'a, f64, 1> {
         let n = series.extents()[0]; // (N, 2) -> N
         let w = state.window;
         let end = series.range().end;
         if end < w {
-            return (false, state.out.view());
+            return state.out.view();
         }
         let f = state.f;
         let slices: Vec<_> = (0..w)
@@ -533,14 +533,14 @@ impl Operator for WindowReduce2 {
             }
             out[j] = f(&c0, &c1);
         }
-        (true, state.out.view())
+        state.out.view()
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, SeriesView<'a, f64, 2>),
+    fn reset<'a, 'b: 'a>(
+        _: SeriesView<'a, f64, 2>,
         state: &'b mut WindowReduce2State,
-    ) -> (bool, ArrayView<'a, f64, 1>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, f64, 1> {
+        state.out.view()
     }
 }
 fn window_reduce2(
@@ -588,13 +588,13 @@ struct ChipDistState {
     window: usize,
     out: Array<f64, 2>,
 }
-impl Operator for ChipDist {
+impl Segment for ChipDist {
     type Inputs = SeriesPort<f64, 2>;
     type Outputs = ArrayPort<f64, 2>;
     type Context = Instant;
     type State = ChipDistState;
 
-    fn init(self, (_, series): (bool, SeriesView<'_, f64, 2>)) -> ChipDistState {
+    fn init(self, series: SeriesView<'_, f64, 2>) -> ChipDistState {
         let n = series.extents()[0];
         ChipDistState {
             window: self.window,
@@ -603,15 +603,15 @@ impl Operator for ChipDist {
     }
 
     fn compute<'a, 'b: 'a>(
-        (_, series): (bool, SeriesView<'a, f64, 2>),
+        series: SeriesView<'a, f64, 2>,
         state: &'b mut ChipDistState,
         _: &Instant,
-    ) -> (bool, ArrayView<'a, f64, 2>) {
+    ) -> ArrayView<'a, f64, 2> {
         let n = series.extents()[0];
         let w = state.window;
         let end = series.range().end;
         if end < w {
-            return (false, state.out.view());
+            return state.out.view();
         }
         let slices: Vec<_> = (0..w)
             .map(|k| series.at(end - w + k).1.to_contiguous())
@@ -719,14 +719,14 @@ impl Operator for ChipDist {
                 ll,
             ]);
         }
-        (true, state.out.view())
+        state.out.view()
     }
 
-    fn passthrough<'a, 'b: 'a>(
-        _: (bool, SeriesView<'a, f64, 2>),
+    fn reset<'a, 'b: 'a>(
+        _: SeriesView<'a, f64, 2>,
         state: &'b mut ChipDistState,
-    ) -> (bool, ArrayView<'a, f64, 2>) {
-        (false, state.out.view())
+    ) -> ArrayView<'a, f64, 2> {
+        state.out.view()
     }
 }
 
@@ -1033,9 +1033,11 @@ pub fn build_features(
     handles.extend(pv.feature);
 
     let stacked = sc.segment(stack(1), &handles[..]);
-    let daily = sc.segment(event::clock(), st.adjusted_close);
-    let sampled = sc.segment(event::resample(), (daily, stacked));
-    let series = sc.segment(record(feature_retention, false), sampled);
+    let daily = sc.segment(event::as_clock(), st.adjusted_close);
+    // Sampled on the daily close clock, not gated on the values: the target
+    // panel is recorded on the same clock, and the predictor pairs the two by
+    // row index, so neither series may silently drop a row.
+    let series = sc.segment(record_clocked(feature_retention, false), (daily, stacked));
     Features {
         names,
         handles,
