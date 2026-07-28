@@ -21,12 +21,11 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
-use tradingflow::operators::event::sample;
 use tradingflow::operators::rolling::series_lag;
 use tradingflow::operators::series::record_all;
+use tradingflow::time::UnixTime;
 
 use common::ic::{ic_series, ic_stats};
 use common::strategy::Market;
@@ -49,7 +48,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
 
     let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
     let names = m.features.names.clone();
@@ -58,13 +57,18 @@ async fn main() {
         .handles
         .iter()
         .map(|&feature| {
-            // Lag one trading day, resample onto the rebalance clock, then NaN out
-            // the stocks outside the universe so they don't dilute the correlation.
-            let feature_series = sc.segment(record_all(), feature);
+            // Lag one trading day, then NaN out the stocks outside the
+            // universe so they don't dilute the correlation; the IC metric
+            // reads the masked factor on the rebalance clock.
+            let feature_series = sc.segment(record_all(), (m.daily, feature));
             let lagged = sc.segment(series_lag(1), feature_series);
-            let aligned = sc.segment(sample(), (m.rebalance_clock, lagged));
-            let masked = mask_to_universe(&mut sc, aligned, m.universe);
-            ic_series(&mut sc, masked, m.target, m.n)
+            let masked = mask_to_universe(&mut sc, lagged, m.universe);
+            ic_series(
+                &mut sc,
+                (m.rebalance_clock, masked),
+                (m.daily, m.target),
+                m.n,
+            )
         })
         .collect();
 

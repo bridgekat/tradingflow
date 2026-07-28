@@ -2,8 +2,8 @@
 //! currency of the graph.
 //!
 //! A `Series<T, N>` is a growable ring of `(Instant, Array<T, N>)` rows that
-//! operators read as a `SeriesView<T, N>`. Rows are appended by `record` at the
-//! graph's event time, dropped from the front by a `Retention` bound, and read
+//! operators read as a `SeriesView<T, N>`. Rows are appended by `record_on` at
+//! the graph's event time, dropped from the front by a `Retention` bound, and read
 //! back by `last` / `shift` / the view derivations. Every row keeps its
 //! *logical* index across front compaction (`range()` is `base..base + len`),
 //! which is what lets a downstream reader address a window whose front is being
@@ -13,7 +13,7 @@
 use tradingflow::data::{Array, ArrayView, Duration, Instant, NewAxis, Series, SeriesView};
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::{Builder, Graph};
-use tradingflow::operators::{array, event, series};
+use tradingflow::operators::{clock, series};
 use tradingflow::ports::SeriesPortHandle;
 
 use crate::harness::*;
@@ -22,12 +22,12 @@ use crate::harness::*;
 // record.rs — appending an array stream into a series
 // ---------------------------------------------------------------------------
 
-/// A row is appended per notifying tick, stamped with the `Instant` handed to
+/// A row is appended per clock signal, stamped with the `Instant` handed to
 /// `stabilize` (not with a tick counter), oldest row first.
 #[test]
 fn record_stamps_rows_with_the_event_time() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -55,14 +55,14 @@ fn record_stamps_rows_with_the_event_time() {
     assert_eq!(vals(s.at(1).1), vec![20.0]);
 }
 
-/// A generation in which the input does not notify appends nothing: `record`
-/// takes the `passthrough` path and re-lends the series unchanged.
+/// A generation without a clock signal appends nothing: the record re-lends
+/// the series unchanged.
 #[test]
 fn record_appends_nothing_when_the_input_does_not_notify() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let gate = b.segment(event::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
-    let rec = b.segment(series::record_all(), gate);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let gate = b.segment(clock::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
+    let rec = b.segment(series::record_all(), (gate, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -85,7 +85,7 @@ fn record_all_keeps_every_row() {
     const TICKS: i64 = 40;
 
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -111,7 +111,7 @@ fn record_all_keeps_every_row() {
 #[test]
 fn record_keeps_the_element_extents_of_its_input() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let (src, srcv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
     let rec = b.segment(series::record_all(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -134,13 +134,13 @@ fn record_keeps_the_element_extents_of_its_input() {
 
 /// `delayed` moves trimming from *after* the push to *before the next* push,
 /// so the rows a bounded record is about to drop stay readable for one more
-/// tick. `buffer(r)` is exactly `record(r, true)`.
+/// tick. `buffer(r)` is exactly `record_on(r, true)`.
 #[test]
 fn record_delayed_defers_trimming_by_one_tick() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let eager = b.segment(series::record(2usize, false), srcv);
-    let delayed = b.segment(series::record(2usize, true), srcv);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let eager = b.segment(series::record_on(2usize, false), srcv);
+    let delayed = b.segment(series::record_on(2usize, true), srcv);
     let buffered = b.segment(series::buffer(2usize), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -170,7 +170,7 @@ fn record_delayed_defers_trimming_by_one_tick() {
             want(want_delayed[t as usize - 1]),
             "delayed @{t}"
         );
-        // `buffer(r)` is a shorthand for `record(r, true)`, row for row.
+        // `buffer(r)` is a shorthand for `record_on(r, true)`, row for row.
         assert_eq!(f.instants(), d.instants(), "buffer @{t}");
         assert_eq!(series_vals(f), series_vals(d), "buffer @{t}");
         // Whichever way it trims, the newest row is always the current tick.
@@ -196,8 +196,8 @@ fn bounded_record_compacts_the_front_and_bounds_storage() {
     const TICKS: i64 = 30;
 
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let rec = b.segment(series::record(RETAIN, false), srcv);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let rec = b.segment(series::record_on(RETAIN, false), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -252,8 +252,8 @@ fn duration_bounded_record_keeps_the_trailing_time_window() {
     const DAYS: i64 = 12;
 
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let rec = b.segment(series::record(Duration::from_days(WINDOW), false), srcv);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let rec = b.segment(series::record_on(Duration::from_days(WINDOW), false), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -331,18 +331,18 @@ fn last_and_last_or_differ_only_on_an_empty_series() {
 }
 
 /// `last_or` tracks the newest recorded row, and holds it across generations
-/// in which the series does not notify.
+/// in which the record appends nothing.
 #[test]
 fn last_or_tracks_the_newest_row_and_holds_it_across_idle_ticks() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let gate = b.segment(event::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
-    let rec = b.segment(series::record_all(), gate);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let gate = b.segment(clock::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
+    let rec = b.segment(series::record_all(), (gate, srcv.1));
     let lst = b.segment(series::last_or(0.0_f64), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // The gate drops ticks 1 and 3, so the record does not notify there and
+    // The gate drops ticks 1 and 3, so the record appends nothing there and
     // `last_or` must carry its previous output.
     for (t, v, want) in [
         (1_i64, 1.0, 0.0), // dropped: no row yet, so still the empty fill
@@ -361,8 +361,8 @@ fn last_or_tracks_the_newest_row_and_holds_it_across_idle_ticks() {
 #[test]
 fn last_reads_the_newest_row_of_a_compacted_record() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let rec = b.segment(series::record(2usize, false), srcv);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let rec = b.segment(series::record_on(2usize, false), srcv);
     let lst = b.segment(series::last(), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -385,7 +385,7 @@ fn last_reads_the_newest_row_of_a_compacted_record() {
 #[test]
 fn shift_positive_lags_values_behind_their_instants() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
     let by1 = b.segment(series::shift(1), rec);
     let by2 = b.segment(series::shift(2), rec);
@@ -419,7 +419,7 @@ fn shift_positive_lags_values_behind_their_instants() {
 #[test]
 fn shift_negative_leads_values_ahead_of_their_instants() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
     let by1 = b.segment(series::shift(-1), rec);
     let by2 = b.segment(series::shift(-2), rec);
@@ -449,7 +449,7 @@ fn shift_negative_leads_values_ahead_of_their_instants() {
 #[test]
 fn shift_by_zero_is_the_identity() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
     let by0 = b.segment(series::shift(0), rec);
     let mut g = b.build();
@@ -471,7 +471,7 @@ fn shift_by_zero_is_the_identity() {
 #[test]
 fn shift_past_the_window_yields_an_empty_series() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
     let rec = b.segment(series::record_all(), srcv);
     let ahead = b.segment(series::shift(9), rec);
     let behind = b.segment(series::shift(-9), rec);
@@ -596,7 +596,7 @@ fn panels_recorded<H>(
     wire: impl FnOnce(&mut Builder<Instant>, SeriesPortHandle<f64, 2>) -> H,
 ) -> (Graph<Instant>, H) {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = event_src(&mut b, arr([2, 3], vec![0.0_f64; 6]));
     let rec = b.segment(series::record_all(), srcv);
     let out = wire(&mut b, rec);
     let mut g = b.build();
@@ -696,7 +696,7 @@ fn slicing_an_empty_series_is_empty() {
 #[test]
 fn slicing_a_record_survives_the_empty_build() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = event_src(&mut b, arr([2, 3], vec![0.0_f64; 6]));
     let rec = b.segment(series::record_all(), srcv);
     let sliced = b.segment(series::slice((.., 1..3)), rec);
     let mut g = b.build();

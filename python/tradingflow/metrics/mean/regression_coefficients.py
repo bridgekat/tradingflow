@@ -82,7 +82,7 @@ class RegressionCoefficients:
         self._max_periods = max_periods
         self._min_periods = min_periods
 
-    def init(self, inputs, timestamp: int) -> RegressionCoefficientsState:
+    def init(self, inputs) -> RegressionCoefficientsState:
         return RegressionCoefficientsState(
             num_features=self._num_features,
             max_periods=self._max_periods,
@@ -91,17 +91,14 @@ class RegressionCoefficients:
 
     @staticmethod
     def compute(
-        state: RegressionCoefficientsState,
         inputs,
-        output,
+        state: RegressionCoefficientsState,
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        # Refit only when the clock ticks.
-        if not produced[0]:
-            return False
-
-        _, target_view, baseline_view = inputs
+    ) -> np.ndarray | None:
+        # Refit only when the leading clock ticks.
+        clock, target_view, baseline_view = inputs
+        if not clock:
+            return None
 
         n_target = len(target_view)
         n_baseline = len(baseline_view)
@@ -128,11 +125,10 @@ class RegressionCoefficients:
         # min_periods firing gate: when set, hold off entirely until
         # enough valid observations have accumulated.
         if state.min_periods is not None and valid_count < state.min_periods:
-            return False
+            return None
 
         if valid_count < n_params:
-            output.write(nan_out)
-            return True
+            return nan_out
 
         # Append intercept column at the right edge - intercept lands in
         # the last position of the coefficient vector.
@@ -141,11 +137,9 @@ class RegressionCoefficients:
         coef, _, rank, _ = np.linalg.lstsq(x_panel, y, rcond=None)
 
         if rank < n_params or not np.all(np.isfinite(coef)):
-            output.write(nan_out)
-            return True
+            return nan_out
 
-        output.write(coef)
-        return True
+        return coef
 
 
 def build(**kwargs) -> RegressionCoefficients:

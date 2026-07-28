@@ -4,7 +4,7 @@ use super::base::{Accumulator, Rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, array};
 use crate::graph::{Segment, SegmentExt};
 use crate::operators::series::buffer;
-use crate::ports::{ArrayPort, SeriesPort};
+use crate::ports::{ArrayPort, ClockPort, SeriesPort};
 
 /// Accumulator for [`sum`].
 pub struct SumAccumulator<T: Scalar + Float> {
@@ -69,12 +69,13 @@ pub fn series_sum<T: Scalar + Float, const N: usize>(
     Rolling::new(window.into(), SumAccumulator::new(min_count))
 }
 
-/// Elementwise rolling sum over a specified window. Non-finite values are
-/// skipped.
+/// Elementwise rolling sum over a specified window, ingesting one sample per
+/// clock signal. Non-finite values are skipped.
 pub fn sum<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+{
     let window = window.into();
     buffer(window).then(series_sum(window, min_count))
 }

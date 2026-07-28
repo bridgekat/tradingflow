@@ -1,31 +1,27 @@
-//! Integration tests for [`tradingflow::operators::event`] — the operators
-//! whose behaviour is defined in terms of the *notification flags* rather than
-//! the values on their edges.
+//! Integration tests for [`tradingflow::operators::event`] — the clock
+//! derivation operators, and the wiring idioms of the clock + state event
+//! model.
 //!
-//! A wire carries `(notify, value)`. `notify == true` means "a new event
-//! arrived this generation, and `value` is its payload"; `notify == false`
-//! means "nothing arrived, and `value` is still the payload of the last event".
-//! Everything in this module is an assertion about which of those two a node
-//! produces, so the tests here mostly probe *whether a node recomputed*, not
-//! what it computed. The [`count`] probe answers exactly that question: it is
-//! an [`Operator`](tradingflow::graph::Operator), so the blanket
-//! `Operator -> Segment` impl only calls its `compute` when at least one input
-//! notified — its value is the number of notifications it has received, and it
-//! is a far sharper instrument than inferring recomputation from output values
-//! (which are *carried*, not cleared, when a node does not run).
+//! An event stream is a `(clock, values)` pair of wires. The clock marks the
+//! generations on which the values wire carries a new batch; between pulses
+//! the values wire retains its last batch, so a consumer that ignores the
+//! clock reads a held state value. Sampling a wire onto another cadence is
+//! *pairing* it with a different clock — there is no sampling operator —
+//! and stateful consumers (`record_on` and friends) take the clock as an
+//! explicit input and append once per pulse.
 //!
 //! Two graph-level facts the tests below lean on:
 //!
 //! * A node whose upstream cone contains no poked source is never scheduled at
-//!   all, so its output value stays byte-identical and its flag stays clear.
-//! * All notify flags are cleared when the graph is built, so the first
-//!   generation is not special: an unpoked source does not "notify" just
-//!   because its initial output was published at build time.
+//!   all, so its output value stays byte-identical; a scheduled clock node
+//!   emits its pulse for that generation and resets to `false` afterwards.
+//! * The reset pass runs after every generation, so `g.view` on a clock edge
+//!   always reads `false` — pulse assertions go through a downstream counter.
 
 use tradingflow::data::ArrayView;
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::{array, elem, event, series};
+use tradingflow::operators::{array, clock, elem, series};
 
 use crate::harness::*;
 
@@ -36,21 +32,21 @@ fn over_three(a: ArrayView<'_, f64, 0>) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// filter — suppressing a notification
+// filter — suppressing a pulse
 // ---------------------------------------------------------------------------
 
-/// The load-bearing cutoff proof: `filter` suppresses the notification when its
-/// predicate fails, and a suppressed tick must not advance anything downstream.
-/// A `series::record_all` behind the filter therefore records the passing
-/// values *only*, each stamped with its own tick — if a suppressed tick leaked
-/// a notification the record would grow an extra row and the whole event model
-/// (filter as a stream cutoff, not a value mask) would be broken.
+/// The load-bearing cutoff proof: `filter` suppresses the clock signal when its
+/// predicate fails, and a suppressed tick must not advance anything
+/// downstream. A `series::record_all` on the filtered clock therefore records
+/// the passing values *only*, each stamped with its own tick — if a suppressed
+/// tick leaked a pulse the record would grow an extra row and the whole event
+/// model (filter as a stream cutoff, not a value mask) would be broken.
 #[test]
 fn filter_records_only_passing_values() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let kept = b.segment(event::filter(over_three), srcv);
-    let rec = b.segment(series::record_all(), kept);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let kept = b.segment(clock::filter(over_three), srcv);
+    let rec = b.segment(series::record_all(), (kept, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -71,21 +67,20 @@ fn filter_records_only_passing_values() {
     );
 }
 
-/// The same cutoff seen through a recompute probe rather than through values:
+/// The same cutoff seen through a pulse counter rather than through values:
 /// the `count` behind the filter advances on passing ticks and *only* on
 /// passing ticks. This is the precise statement of "a suppressed tick does not
-/// advance anything downstream" — a stateful consumer that merely ignored the
-/// suppressed value (rather than never running) would still fail here.
+/// advance anything downstream" for every pulse-gated consumer.
 #[test]
 fn filter_suppression_does_not_advance_downstream() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let kept = b.segment(event::filter(over_three), srcv);
-    let probe = b.segment(count::<0>(), kept);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let kept = b.segment(clock::filter(over_three), srcv);
+    let probe = b.segment(count::<0>(), (kept, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // (poked value, expected number of downstream recomputes so far)
+    // (poked value, expected number of passing pulses so far)
     let ticks: &[(f64, usize)] = &[
         (1.0, 0),
         (5.0, 1),
@@ -102,49 +97,42 @@ fn filter_suppression_does_not_advance_downstream() {
     }
 }
 
-/// The flip side of the cutoff under value-level events: a suppressed (or
-/// merely scheduled-but-quiet) `filter` presents the quiescent all-NaN form,
-/// never the rejected value and never a stale copy of the last passing one —
-/// the port-level "carry the last passing value" contract of the old flag
-/// model is gone by design, and holding a last-known value is an explicit
-/// downstream `hold`/record now.
+/// A clock edge is quiescent between generations: the reset pass lowers it, so
+/// `g.view` reads `false` after every stabilize — passing tick or not. The
+/// pulse is consumed in-generation by scheduled consumers only.
 #[test]
-fn filter_is_quiescent_between_passing_events() {
+fn a_clock_edge_reads_low_after_every_generation() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let kept = b.segment(event::filter(over_three), srcv);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let kept = b.segment(clock::filter(over_three), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (i, v) in [1.0, 5.0, 2.0, 10.0].into_iter().enumerate() {
         *g.state_mut(src) = scalar(v);
         g.stabilize(&mut pool, &nano(i as i64 + 1));
-        assert!(
-            vals(g.view(kept))[0].is_nan(),
-            "tick {i}: the wire is quiescent after every generation"
-        );
+        assert!(!*g.view(srcv.0), "tick {i}: the source clock reads low");
+        assert!(!*g.view(kept), "tick {i}: the filtered clock reads low");
     }
 }
 
 // ---------------------------------------------------------------------------
-// clock — forwarding a notification as a bare pulse
+// clock — deriving a cadence from a wire
 // ---------------------------------------------------------------------------
 
-/// `clock` forwards its input's notification as a `UnitPort` pulse and drops
-/// the payload — including the payload's *shape*: a rank-1 `[3]` array source
-/// here drives a clock that gates a rank-0 stream, which only type-checks
-/// because nothing but the edge survives the conversion. The pulse fires
-/// exactly on the generations the beat source was poked: not when an unrelated
-/// source moves, not on an idle generation.
+/// `clock` pulses exactly on the generations its input's producer ran — not
+/// when an unrelated source moves, not on an idle generation. Pairing that
+/// pulse with an unrelated data wire *is* sampling: the record gets the data
+/// wire's current value once per beat, and the payload's shape is dropped
+/// entirely (a rank-1 beat source drives a rank-0 sample here).
 #[test]
 fn clock_pulses_exactly_when_its_input_notifies() {
     let mut b = Builder::new();
     let (beat, beatv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
     let (data, datav) = b.source(array::scalar(0.0_f64));
-    let pulse = b.segment(event::as_clock(), beatv);
-    let sampled = b.segment(event::sample(), (pulse, datav));
-    let probe = b.segment(count::<0>(), sampled);
-    let rec = b.segment(series::record_all(), sampled);
+    let pulse = b.segment(clock::always(), beatv);
+    let probe = b.segment(count::<0>(), (pulse, datav));
+    let rec = b.segment(series::record_all(), (pulse, datav));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -166,36 +154,28 @@ fn clock_pulses_exactly_when_its_input_notifies() {
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(g.view(probe), pulses, "tick {i}: pulse count");
-        // The sampled wire itself is quiescent (NaN) after every generation;
-        // the gated record holds the event history, so its last row is the
-        // latest sampled value.
         let last = series_vals(g.view(rec)).last().copied().unwrap_or(f64::NAN);
         assert_close(&[last], &[value], &format!("tick {i}"));
     }
 }
 
-/// `clock` forwards the *flag*, so a suppression upstream of it is a
-/// suppression downstream of it: a `filter -> clock -> resample` chain samples
-/// only on the ticks the predicate accepted. This is the composition that makes
-/// the event operators useful — "resample stream `x` whenever `y` passes a
-/// test" is spelled by putting a clock between the two — and it only works if
-/// `clock` refuses to invent a pulse for a quiet input.
+/// A filtered clock composes: "sample stream `x` whenever `y` passes a test"
+/// is spelled by pairing `x`'s values with the filtered clock of `y`. It only
+/// works because `filter` refuses to invent a pulse for a rejected tick.
 #[test]
-fn clock_relays_a_filters_suppression() {
+fn a_filtered_clock_samples_another_wire() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
-    let kept = b.segment(event::filter(over_three), srcv);
-    let pulse = b.segment(event::as_clock(), kept);
-    let sampled = b.segment(event::sample(), (pulse, srcv));
-    let probe = b.segment(count::<0>(), sampled);
-    let rec = b.segment(series::record_all(), sampled);
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let kept = b.segment(clock::filter(over_three), srcv);
+    let probe = b.segment(count::<0>(), (kept, srcv.1));
+    let rec = b.segment(series::record_all(), (kept, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     // (poked value, expected pulses so far, expected last sample)
     let nan = f64::NAN;
     let ticks: &[(f64, usize, f64)] = &[
-        (1.0, 0, nan), // rejected: no pulse, the sampler never ran
+        (1.0, 0, nan), // rejected: no pulse, nothing recorded
         (5.0, 1, 5.0),
         (2.0, 1, 5.0),
         (10.0, 2, 10.0),
@@ -212,35 +192,34 @@ fn clock_relays_a_filters_suppression() {
 }
 
 // ---------------------------------------------------------------------------
-// resample — emitting on a clock pulse only
+// pairing with a foreign clock — the sampling idiom
 // ---------------------------------------------------------------------------
 
-/// `resample` emits its data input when — and only when — the leading clock
-/// port notifies. Both directions matter: a pulse emits even though the data
-/// port is quiet (the point of resampling: lift a slow stream onto a fast
-/// grid), and a data arrival is silent without a pulse (the data stream must
-/// not smuggle its own tick onto the output).
+/// A record driven by a manual clock appends when — and only when — the clock
+/// pulses. Both directions matter: a pulse appends even though the data wire
+/// was quiet that generation (the point of sampling: lift a slow stream onto a
+/// fast grid), and a data arrival is silent without a pulse (the data stream
+/// must not smuggle its own tick onto the output).
 #[test]
-fn resample_emits_only_on_a_clock_pulse() {
+fn a_paired_clock_gates_the_record() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let (tick, tickv) = b.source(clock());
-    let sampled = b.segment(event::sample(), (tickv, srcv));
-    let probe = b.segment(count::<0>(), sampled);
-    let rec = b.segment(series::record_all(), sampled);
+    let probe = b.segment(count::<0>(), (tickv, srcv));
+    let rec = b.segment(series::record_all(), (tickv, srcv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // (pulse?, data poke, expected emissions so far, expected last sample)
+    // (pulse?, data poke, expected rows so far, expected last sample)
     let nan = f64::NAN;
     type Tick = (bool, Option<f64>, usize, f64);
     let ticks: &[Tick] = &[
         (false, Some(1.0), 0, nan), // data alone: silent, nothing sampled yet
-        (true, None, 1, 1.0),       // pulse alone: emits the data from tick 0
-        (true, Some(2.0), 2, 2.0),  // pulse + data: emits the fresh value
+        (true, None, 1, 1.0),       // pulse alone: samples the data from tick 0
+        (true, Some(2.0), 2, 2.0),  // pulse + data: samples the fresh value
         (false, None, 2, 2.0),      // idle
         (false, Some(3.0), 2, 2.0), // data alone again: still silent
-        (true, None, 3, 3.0),       // pulse: emits the value from tick 4
+        (true, None, 3, 3.0),       // pulse: samples the value from tick 4
     ];
     for (i, &(pulse, poke, emissions, value)) in ticks.iter().enumerate() {
         if let Some(v) = poke {
@@ -248,29 +227,29 @@ fn resample_emits_only_on_a_clock_pulse() {
         }
         if pulse {
             // Touching the clock cell's state marks it dirty; the value is
-            // irrelevant, the notification is the whole payload.
+            // irrelevant, the pulse is the whole payload.
             let _ = g.state_mut(tick);
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
-        assert_eq!(g.view(probe), emissions, "tick {i}: emission count");
+        assert_eq!(g.view(probe), emissions, "tick {i}: pulse count");
         let last = series_vals(g.view(rec)).last().copied().unwrap_or(f64::NAN);
         assert_close(&[last], &[value], &format!("tick {i}"));
     }
 }
 
-/// Regression, pinned on its own because it was a real bug: a data arrival with
-/// no clock pulse must be *completely* silent. The node is scheduled (its cone
-/// is dirty, so `Resample::compute` does run) — the silence has to come from
-/// the operator emitting the quiescent all-NaN form, not from the scheduler
+/// Regression, pinned on its own because its ancestor was a real bug: a data
+/// arrival with no clock signal must be *completely* silent. The consumers are
+/// scheduled (their cone is dirty, so their `compute` does run) — the silence
+/// has to come from the pulse-gate inside the consumer, not from the scheduler
 /// skipping it. The trailing pulse keeps the test honest: without it a
 /// disconnected graph would also "pass".
 #[test]
-fn resample_stays_silent_without_a_clock_pulse() {
+fn data_without_a_pulse_is_completely_silent() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let (tick, tickv) = b.source(clock());
-    let sampled = b.segment(event::sample(), (tickv, srcv));
-    let probe = b.segment(count::<0>(), sampled);
+    let probe = b.segment(count::<0>(), (tickv, srcv));
+    let rec = b.segment(series::record_all(), (tickv, srcv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -282,42 +261,38 @@ fn resample_stays_silent_without_a_clock_pulse() {
             0,
             "tick {i}: data without a pulse propagated"
         );
-        assert!(
-            vals(g.view(sampled))[0].is_nan(),
-            "tick {i}: output moved without a pulse",
-        );
+        assert_eq!(g.view(rec).len(), 0, "tick {i}: row appended without pulse");
     }
 
     let _ = g.state_mut(tick);
     g.stabilize(&mut pool, &nano(5));
-    assert_eq!(g.view(probe), 1, "the sampler is actually wired up");
+    assert_eq!(g.view(probe), 1, "the consumers are actually wired up");
 }
 
-/// A pulse emits the latest data value even though that value arrived in an
-/// earlier generation, and it emits on *every* pulse — including when the data
-/// has not changed since the last one. That is what makes `resample` a
-/// grid-builder rather than a change-detector: the downstream record gets one
-/// row per pulse, stamped with the pulse's instant (not the instant the data
-/// arrived), so a slow stream sampled on a fast clock produces a dense series
-/// with repeated values.
+/// A pulse samples the latest data value even though that value arrived in an
+/// earlier generation, and it samples on *every* pulse — including when the
+/// data has not changed since the last one. That is what makes clock pairing a
+/// grid-builder rather than a change-detector: the record gets one row per
+/// pulse, stamped with the pulse's instant (not the instant the data arrived),
+/// so a slow stream sampled on a fast clock produces a dense series with
+/// repeated values.
 #[test]
-fn resample_emits_the_latest_value_from_an_earlier_generation() {
+fn a_pulse_samples_the_latest_value_from_an_earlier_generation() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::scalar(0.0_f64));
     let (tick, tickv) = b.source(clock());
-    let sampled = b.segment(event::sample(), (tickv, srcv));
-    let rec = b.segment(series::record_all(), sampled);
+    let rec = b.segment(series::record_all(), (tickv, srcv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // Two data-only generations: nothing is emitted, nothing is recorded.
+    // Two data-only generations: nothing is sampled, nothing is recorded.
     for (i, v) in [1.0, 2.0].into_iter().enumerate() {
         *g.state_mut(src) = scalar(v);
         g.stabilize(&mut pool, &nano(i as i64 + 1));
     }
     assert_eq!(g.view(rec).len(), 0, "data alone must not record");
 
-    // Two pulse-only generations: both emit the value from generation 2.
+    // Two pulse-only generations: both sample the value from generation 2.
     for t in 3..=4 {
         let _ = g.state_mut(tick);
         g.stabilize(&mut pool, &nano(t));
@@ -325,7 +300,7 @@ fn resample_emits_the_latest_value_from_an_earlier_generation() {
     assert_eq!(
         series_vals(g.view(rec)),
         vec![2.0, 2.0],
-        "every pulse re-emits the latest data"
+        "every pulse re-samples the latest data"
     );
     assert_eq!(
         g.view(rec).instants(),
@@ -335,29 +310,103 @@ fn resample_emits_the_latest_value_from_an_earlier_generation() {
 }
 
 // ---------------------------------------------------------------------------
-// joins over state vs. event edges — NaN-filling the inputs with no events
+// The carry contract and coalescing
 // ---------------------------------------------------------------------------
 
-/// There is one join operator now, and the carry/sync contrast lives in the
-/// *wiring*: a join over state cells reads each input's retained value (the
-/// carry), while the same join over `as_event`-badged edges reads NaN for
-/// every input whose source did not fire (the sync fill). Which one you want
-/// depends on the question: the state join answers "what is the latest value
-/// of each element", the event join answers "what arrived on this tick", and
-/// silently getting the first when you meant the second is a stale-data bug
-/// that a value assertion on a single generation cannot see.
+/// The carry contract, in both halves. A join reads *every* input each
+/// generation, including the ones whose sources did not fire, so poking one
+/// source produces an output that mixes the fresh value with the carried ones
+/// — "which inputs are fresh" lives on the clocks, not in the values. And an
+/// idle generation — no source poked at all — never schedules the join, so
+/// its output stays byte-identical to the previous one: the assertion is on
+/// raw bit patterns because "unchanged" has to include *which* `NaN` is
+/// sitting in the buffer.
 #[test]
-fn a_join_over_event_edges_nan_fills_while_a_state_join_carries() {
+fn a_join_carries_unfired_inputs_and_freezes_when_idle() {
     let nan = f64::NAN;
     let mut b = Builder::new();
     let (s0, s0v) = b.source(array::scalar(0.0_f64));
     let (s1, s1v) = b.source(array::scalar(0.0_f64));
     let (s2, s2v) = b.source(array::scalar(0.0_f64));
-    let e0 = b.segment(event::as_event(), s0v);
-    let e1 = b.segment(event::as_event(), s1v);
-    let e2 = b.segment(event::as_event(), s2v);
+    let c0 = b.segment(clock::always(), s0v);
+    let c2 = b.segment(clock::always(), s2v);
     let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
-    let synced = b.segment(array::stack::<f64, 0, 1>(0), &[e0, e1, e2][..]);
+    let pulses0 = b.segment(count::<0>(), (c0, s0v));
+    let pulses2 = b.segment(count::<0>(), (c2, s2v));
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    // Generation 1: all three fire, and one of them carries a NaN payload of
+    // its own so the byte-identity assertion below has a NaN to preserve.
+    *g.state_mut(s0) = scalar(1.0);
+    *g.state_mut(s1) = scalar(nan);
+    *g.state_mut(s2) = scalar(3.0);
+    g.stabilize(&mut pool, &nano(1));
+    assert_close(&vals(g.view(stacked)), &[1.0, nan, 3.0], "gen 1: stack");
+    assert_eq!((g.view(pulses0), g.view(pulses2)), (1, 1), "gen 1: pulses");
+
+    // Generation 2: only `s2` fires. The join still reads `s0` and `s1` and
+    // carries both (including the NaN that is a genuine payload); only `s2`'s
+    // clock signals.
+    *g.state_mut(s2) = scalar(7.0);
+    g.stabilize(&mut pool, &nano(2));
+    assert_close(
+        &vals(g.view(stacked)),
+        &[1.0, nan, 7.0],
+        "gen 2: stack carries the quiet inputs",
+    );
+    assert_eq!((g.view(pulses0), g.view(pulses2)), (1, 2), "gen 2: pulses");
+
+    // Generations 3 and 4 are idle: the join is not scheduled at all, so its
+    // output must be byte-for-byte what generation 2 left behind.
+    let frozen_stack = bits(g.view(stacked));
+    for t in 3..=4 {
+        g.stabilize(&mut pool, &nano(t));
+        assert_eq!(
+            bits(g.view(stacked)),
+            frozen_stack,
+            "gen {t}: stack drifted"
+        );
+        assert_eq!(
+            (g.view(pulses0), g.view(pulses2)),
+            (1, 2),
+            "gen {t}: pulses drifted"
+        );
+    }
+
+    // And the graph is still live afterwards — the freeze is idleness, not a
+    // node that fell out of the schedule permanently.
+    *g.state_mut(s0) = scalar(9.0);
+    g.stabilize(&mut pool, &nano(5));
+    assert_close(&vals(g.view(stacked)), &[9.0, nan, 7.0], "gen 5: stack");
+    assert_eq!((g.view(pulses0), g.view(pulses2)), (2, 2), "gen 5: pulses");
+}
+
+/// The synchronized join in the factored model: `stack` over the value wires
+/// carries the quiet legs' retained values, while `clock_stack` over the same
+/// legs' clocks says *which* slots actually fired this generation — the
+/// event-granular batch face (values where the clock element pulsed, NaN
+/// elsewhere) is their pairing. Which one you want depends on the question:
+/// the state join answers "what is the latest value of each leg", the batch
+/// face answers "what arrived on this tick", and silently getting the first
+/// when you meant the second is a stale-data bug a single-generation value
+/// assertion cannot see.
+#[test]
+fn a_clock_stack_join_nan_fills_while_a_state_join_carries() {
+    let nan = f64::NAN;
+    let mut b = Builder::new();
+    let (s0, s0v) = b.source(array::scalar(0.0_f64));
+    let s0v_clock = b.segment(clock::always(), s0v);
+    let (s1, s1v) = b.source(array::scalar(0.0_f64));
+    let s1v_clock = b.segment(clock::always(), s1v);
+    let (s2, s2v) = b.source(array::scalar(0.0_f64));
+    let s2v_clock = b.segment(clock::always(), s2v);
+    let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
+    let clocks = b.segment(
+        clock::as_clock_map(array::stack::<bool, 0, 1>(0)),
+        &[s0v_clock, s1v_clock, s2v_clock][..],
+    );
+    let synced = b.segment(batch_face(), (clocks, stacked));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -395,12 +444,12 @@ fn a_join_over_event_edges_nan_fills_while_a_state_join_carries() {
         );
         assert_close(&vals(g.view(synced)), want_sync, &format!("tick {i}: sync"));
         if poke.iter().all(Option::is_some) {
-            // When every input notified there is nothing to NaN-fill, so the
+            // When every input fired there is nothing to NaN-fill, so the
             // two joins must agree down to the bit.
             assert_same_bits(
                 g.view(stacked),
                 g.view(synced),
-                &format!("tick {i}: all inputs notified"),
+                &format!("tick {i}: all inputs fired"),
             );
         }
     }
@@ -408,18 +457,27 @@ fn a_join_over_event_edges_nan_fills_while_a_state_join_carries() {
 
 /// The same contrast for `concat`, on rank-1 inputs joined along an existing
 /// axis: the NaN fill covers the whole contribution of a quiet input (both of
-/// its elements), not just a scalar slot, so the fill is expressed in terms of
-/// each input's chunk of the output rather than element-by-element.
+/// its elements), not just a scalar slot, so the joined clock array is
+/// expressed in terms of each input's chunk of the output rather than
+/// element-by-element — an `as_clock_map` over the pair of leg clocks.
 #[test]
-fn a_concat_over_event_edges_nan_fills_while_a_state_concat_carries() {
+fn a_clock_concat_nan_fills_while_a_state_concat_carries() {
     let nan = f64::NAN;
     let mut b = Builder::new();
     let (a, av) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let av_clock = b.segment(clock::always(), av);
     let (c, cv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
-    let ea = b.segment(event::as_event(), av);
-    let ec = b.segment(event::as_event(), cv);
+    let cv_clock = b.segment(clock::always(), cv);
     let joined = b.segment(array::concat::<f64, 1>(0), &[av, cv][..]);
-    let synced = b.segment(array::concat::<f64, 1>(0), &[ea, ec][..]);
+    let clocks = b.segment(
+        clock::as_clock_map(array::array_binary_map(
+            |a: ArrayView<bool, 0>, c: ArrayView<bool, 0>| {
+                tradingflow::data::Array::from_parts([4], vec![*a, *a, *c, *c].into())
+            },
+        )),
+        (av_clock, cv_clock),
+    );
+    let synced = b.segment(batch_face(), (clocks, joined));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -462,99 +520,22 @@ fn a_concat_over_event_edges_nan_fills_while_a_state_concat_carries() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The carry contract and coalescing
-// ---------------------------------------------------------------------------
-
-/// The general carry contract, in both halves. A join reads *every* input each
-/// generation, including the ones that did not notify, so poking one source
-/// produces an output that mixes the fresh value with the carried ones. And an
-/// idle generation — no source poked at all — never schedules the join, so its
-/// output stays byte-identical to the previous one: the assertion is on raw bit
-/// patterns because "unchanged" has to include *which* `NaN` is sitting in the
-/// buffer, and because a join that quietly recomputed from stale inputs would
-/// still produce equal-looking floats.
-///
-/// The second half also pins the one thing about the event join that is easy
-/// to get backwards: it NaN-fills per *input*, not per generation, so an idle
-/// generation (the join never scheduled) carries its previous output (NaNs
-/// included) rather than blanking the whole cross-section.
-#[test]
-fn a_join_carries_unnotified_inputs_and_freezes_when_idle() {
-    let nan = f64::NAN;
-    let mut b = Builder::new();
-    let (s0, s0v) = b.source(array::scalar(0.0_f64));
-    let (s1, s1v) = b.source(array::scalar(0.0_f64));
-    let (s2, s2v) = b.source(array::scalar(0.0_f64));
-    let e0 = b.segment(event::as_event(), s0v);
-    let e1 = b.segment(event::as_event(), s1v);
-    let e2 = b.segment(event::as_event(), s2v);
-    let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
-    let synced = b.segment(array::stack::<f64, 0, 1>(0), &[e0, e1, e2][..]);
-    let mut g = b.build();
-    let mut pool = Pool::new(0);
-
-    // Generation 1: all three fire, and one of them carries a NaN payload of
-    // its own so the byte-identity assertion below has a NaN to preserve.
-    *g.state_mut(s0) = scalar(1.0);
-    *g.state_mut(s1) = scalar(nan);
-    *g.state_mut(s2) = scalar(3.0);
-    g.stabilize(&mut pool, &nano(1));
-    assert_close(&vals(g.view(stacked)), &[1.0, nan, 3.0], "gen 1: stack");
-    assert_close(&vals(g.view(synced)), &[1.0, nan, 3.0], "gen 1: sync");
-
-    // Generation 2: only `s2` fires. The plain join still reads `s0` and `s1`
-    // and carries both (including the NaN that is a genuine payload); the
-    // `_sync` join overwrites them with the missing marker.
-    *g.state_mut(s2) = scalar(7.0);
-    g.stabilize(&mut pool, &nano(2));
-    assert_close(
-        &vals(g.view(stacked)),
-        &[1.0, nan, 7.0],
-        "gen 2: stack carries the quiet inputs",
-    );
-    assert_close(
-        &vals(g.view(synced)),
-        &[nan, nan, 7.0],
-        "gen 2: sync fills the quiet inputs",
-    );
-
-    // Generations 3 and 4 are idle: neither join is scheduled at all, so both
-    // outputs must be byte-for-byte what generation 2 left behind.
-    let frozen_stack = bits(g.view(stacked));
-    let frozen_sync = bits(g.view(synced));
-    for t in 3..=4 {
-        g.stabilize(&mut pool, &nano(t));
-        assert_eq!(
-            bits(g.view(stacked)),
-            frozen_stack,
-            "gen {t}: stack drifted"
-        );
-        assert_eq!(bits(g.view(synced)), frozen_sync, "gen {t}: sync drifted");
-    }
-
-    // And the graph is still live afterwards — the freeze is idleness, not a
-    // node that fell out of the schedule permanently.
-    *g.state_mut(s0) = scalar(9.0);
-    g.stabilize(&mut pool, &nano(5));
-    assert_close(&vals(g.view(stacked)), &[9.0, nan, 7.0], "gen 5: stack");
-    assert_close(&vals(g.view(synced)), &[9.0, nan, nan], "gen 5: sync");
-}
-
 /// Two sources poked before the same `stabilize` produce **one** pass over the
 /// union of their cones, not one pass each: a join downstream of both recomputes
-/// exactly once and emits exactly one notification for the generation. This is
-/// what makes a generation the unit of time in the graph — if the two pokes were
-/// drained separately the join would first fire on a half-updated input pair,
-/// and every downstream record would carry a spurious intermediate row.
+/// exactly once and its derived clock signals exactly once for the generation.
+/// This is what makes a generation the unit of time in the graph — if the two
+/// pokes were drained separately the join would first fire on a half-updated
+/// input pair, and every downstream record would carry a spurious intermediate
+/// row.
 #[test]
 fn coalesced_pokes_recompute_the_union_of_cones_once() {
     let mut b = Builder::new();
     let (a, av) = b.source(array::scalar(0.0_f64));
     let (c, cv) = b.source(array::scalar(0.0_f64));
     let sum = b.segment(elem::add(), (av, cv));
-    let probe = b.segment(count::<0>(), sum);
-    let rec = b.segment(series::record_all(), sum);
+    let probe = b.segment(runs::<0>(), sum);
+    let sum_clock = b.segment(clock::always(), sum);
+    let rec = b.segment(series::record_all(), (sum_clock, sum));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 

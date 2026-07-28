@@ -3,7 +3,7 @@ use crate::graph::Segment;
 use crate::operators::array;
 use crate::ports::ArrayPort;
 
-/// Elementwise AND.
+/// Elementwise boolean and.
 pub fn and<const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<bool, N>, ArrayPort<bool, N>),
     Outputs = ArrayPort<bool, N>,
@@ -12,7 +12,7 @@ pub fn and<const N: usize>() -> impl Segment<
     array::binary_map(|&a, &b| a && b)
 }
 
-/// Elementwise OR.
+/// Elementwise boolean or.
 pub fn or<const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<bool, N>, ArrayPort<bool, N>),
     Outputs = ArrayPort<bool, N>,
@@ -21,7 +21,7 @@ pub fn or<const N: usize>() -> impl Segment<
     array::binary_map(|&a, &b| a || b)
 }
 
-/// Elementwise choice: select between two arrays under a boolean mask.
+/// Elementwise choice: `if cond { a } else { b }`.
 pub fn choose<T: Scalar, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<bool, N>, ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<T, N>,
@@ -30,7 +30,7 @@ pub fn choose<T: Scalar, const N: usize>() -> impl Segment<
     array::ternary_map(|&cond, a: &T, b: &T| if cond { a.clone() } else { b.clone() })
 }
 
-/// Elementwise indicator: select between two constants under a boolean mask.
+/// Elementwise indicator: `if cond { a } else { b }` for constant `a` and `b`.
 pub fn indicator<T: Scalar, const N: usize>(
     a: T,
     b: T,

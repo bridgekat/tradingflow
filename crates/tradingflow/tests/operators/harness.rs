@@ -1,11 +1,13 @@
 //! Shared fixtures for the operator integration tests: instant/array
-//! constructors, NaN-aware assertions, deterministic data paths, and the two
-//! auxiliary segments (a pokeable clock and an eventful-batch counter) that
-//! the event-semantics tests wire in as probes.
+//! constructors, NaN-aware assertions, deterministic data paths, and the
+//! auxiliary probe segments (a pokeable clock, a clock-pulse counter and a
+//! scheduled-generation counter) that the event-semantics tests wire in.
 
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Scalar, SeriesView};
+use tradingflow::graph::typed::{Builder, NodeHandle};
 use tradingflow::graph::{Port, Segment, Val};
-use tradingflow::ports::{ArrayPort, ClockPort, is_eventful};
+use tradingflow::operators::{array, clock};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, ClockArrayPort, ClockPort, ClockPortHandle};
 
 /// Default tolerance for [`assert_close`]. Loose enough for the accumulators'
 /// incremental arithmetic, tight enough that a wrong formula never passes.
@@ -74,7 +76,7 @@ pub fn bits<const N: usize>(v: ArrayView<'_, f64, N>) -> Vec<u64> {
 // Assertions
 // ---------------------------------------------------------------------------
 
-/// Asserts elementwise equality within [`TOL`].
+/// Asserts elementwise equality within [`EPS`].
 ///
 /// `NaN` matches only `NaN` and each infinity matches only itself with the
 /// same sign — both are ordinary results here (`NaN` is the missing-data
@@ -146,10 +148,113 @@ pub fn quarter_path(seed: u64, len: usize) -> Vec<f64> {
 // Probe segments
 // ---------------------------------------------------------------------------
 
+/// A pokeable array cell paired with its derived poke clock: each poke is one
+/// clock signal, and the values wire retains the last poked batch in between.
+/// Returns the source handle (for `state_mut`) and the `(clock, values)`
+/// stream handles (for wiring); state-only consumers wire just the values.
+#[allow(clippy::type_complexity)]
+pub fn event_src<const N: usize>(
+    b: &mut Builder<Instant>,
+    v: Array<f64, N>,
+) -> (
+    NodeHandle<impl Segment<State = Array<f64, N>> + use<N>>,
+    (ClockPortHandle, ArrayPortHandle<f64, N>),
+) {
+    let (h, raw) = b.source(array::constant(v));
+    let clock = b.segment(clock::always(), raw);
+    (h, (clock, raw))
+}
+
+/// Operator signature for [`batch_face`].
+pub struct BatchFace<const N: usize>;
+
+impl<const N: usize> Segment for BatchFace<N> {
+    type Inputs = (ClockArrayPort<N>, ArrayPort<f64, N>);
+    type Outputs = ArrayPort<f64, N>;
+    type Context = Instant;
+    type State = Array<f64, N>;
+
+    fn init(self, (_, a): (ArrayView<'_, bool, N>, ArrayView<'_, f64, N>)) -> Array<f64, N> {
+        Array::full(a.extents(), f64::NAN)
+    }
+
+    fn compute<'a, 'b: 'a>(
+        (clocks, a): (ArrayView<'a, bool, N>, ArrayView<'a, f64, N>),
+        state: &'b mut Array<f64, N>,
+        _: &Instant,
+    ) -> ArrayView<'a, f64, N> {
+        let clocks = tradingflow::data::array::broadcast_to(clocks, a.extents());
+        for ((out, &c), &v) in state.data_mut().iter_mut().zip(clocks.iter()).zip(a.iter()) {
+            *out = if c { v } else { f64::NAN };
+        }
+        state.view()
+    }
+
+    fn reset<'a, 'b: 'a>(
+        _: (ArrayView<'a, bool, N>, ArrayView<'a, f64, N>),
+        state: &'b mut Array<f64, N>,
+    ) -> ArrayView<'a, f64, N> {
+        state.view()
+    }
+}
+
+/// Materializes an event stream's batch face of the last *scheduled*
+/// generation: element `j` is the values wire where clock element `j` pulsed
+/// and NaN elsewhere. Clock edges read post-reset (all-false) through
+/// `g.view`, so assertions on "what arrived on this wire this tick" go
+/// through this probe instead.
+pub fn batch_face<const N: usize>() -> impl Segment<
+    Inputs = (ClockArrayPort<N>, ArrayPort<f64, N>),
+    Outputs = ArrayPort<f64, N>,
+    Context = Instant,
+> {
+    BatchFace
+}
+
 /// Operator signature for [`count`].
 pub struct Count<const N: usize>;
 
 impl<const N: usize> Segment for Count<N> {
+    type Inputs = (ClockPort, ArrayPort<f64, N>);
+    type Outputs = Port<Val<usize>>;
+    type Context = Instant;
+    type State = usize;
+
+    fn init(self, _: (ArrayView<'_, bool, 0>, ArrayView<'_, f64, N>)) -> usize {
+        0
+    }
+
+    fn compute<'a, 'b: 'a>(
+        (clock, _): (ArrayView<'a, bool, 0>, ArrayView<'a, f64, N>),
+        state: &'b mut usize,
+        _: &Instant,
+    ) -> usize {
+        if *clock {
+            *state += 1;
+        }
+        *state
+    }
+
+    fn reset<'a, 'b: 'a>(
+        _: (ArrayView<'a, bool, 0>, ArrayView<'a, f64, N>),
+        state: &'b mut usize,
+    ) -> usize {
+        *state
+    }
+}
+
+/// Counts an event stream's clock signals — the probe for event-propagation
+/// assertions (a scheduled generation without a pulse does not count).
+pub fn count<const N: usize>()
+-> impl Segment<Inputs = (ClockPort, ArrayPort<f64, N>), Outputs = Port<Val<usize>>, Context = Instant>
+{
+    Count
+}
+
+/// Operator signature for [`runs`].
+pub struct Runs<const N: usize>;
+
+impl<const N: usize> Segment for Runs<N> {
     type Inputs = ArrayPort<f64, N>;
     type Outputs = Port<Val<usize>>;
     type Context = Instant;
@@ -159,10 +264,8 @@ impl<const N: usize> Segment for Count<N> {
         0
     }
 
-    fn compute<'a, 'b: 'a>(a: ArrayView<'a, f64, N>, state: &'b mut usize, _: &Instant) -> usize {
-        if is_eventful(a) {
-            *state += 1;
-        }
+    fn compute<'a, 'b: 'a>(_: ArrayView<'a, f64, N>, state: &'b mut usize, _: &Instant) -> usize {
+        *state += 1;
         *state
     }
 
@@ -171,12 +274,12 @@ impl<const N: usize> Segment for Count<N> {
     }
 }
 
-/// Counts how many *eventful* input batches this node has seen — the probe
-/// for event-propagation assertions (a scheduled generation whose input is
-/// quiescent does not count).
-pub fn count<const N: usize>()
+/// Counts how many generations scheduled this node's cone — the probe for
+/// dirty-cone/recompute assertions on *state* edges (every scheduled
+/// generation counts, eventful or not).
+pub fn runs<const N: usize>()
 -> impl Segment<Inputs = ArrayPort<f64, N>, Outputs = Port<Val<usize>>, Context = Instant> {
-    Count
+    Runs
 }
 
 /// Operator signature for [`clock`].
@@ -190,12 +293,12 @@ impl Segment for ManualClock {
 
     fn init(self, _: ()) {}
 
-    fn reset<'a, 'b: 'a>(_: (), _: &'b mut ()) -> bool {
-        false
+    fn reset<'a, 'b: 'a>(_: (), _: &'b mut ()) -> ArrayView<'a, bool, 0> {
+        ArrayView::scalar(&false)
     }
 
-    fn compute<'a, 'b: 'a>(_: (), _: &'b mut (), _: &Instant) -> bool {
-        true
+    fn compute<'a, 'b: 'a>(_: (), _: &'b mut (), _: &Instant) -> ArrayView<'a, bool, 0> {
+        ArrayView::scalar(&true)
     }
 }
 

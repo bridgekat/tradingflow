@@ -184,18 +184,18 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
     }
 }
 
-impl<T: Scalar> Deref for ArrayView<'_, T, 0> {
+impl<'a, T: Scalar> Deref for ArrayView<'a, T, 0> {
     type Target = T;
 
-    fn deref(&self) -> &Self::Target {
+    fn deref(&self) -> &'a Self::Target {
         &self.data[0]
     }
 }
 
-impl<T: Scalar, const N: usize> Index<[usize; N]> for ArrayView<'_, T, N> {
+impl<'a, T: Scalar, const N: usize> Index<[usize; N]> for ArrayView<'a, T, N> {
     type Output = T;
 
-    fn index(&self, index: [usize; N]) -> &T {
+    fn index(&self, index: [usize; N]) -> &'a T {
         &self.data[self.layout.offset(index)]
     }
 }

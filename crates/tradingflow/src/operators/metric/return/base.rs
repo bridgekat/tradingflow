@@ -46,7 +46,7 @@ impl<T: Scalar + Float, A: Accumulator<T>> Segment for Return<T, A> {
     type Context = Instant;
     type State = ReturnState<T, A>;
 
-    fn init(self, _: (bool, ArrayView<'_, T, 0>)) -> Self::State {
+    fn init(self, _: (ArrayView<'_, bool, 0>, ArrayView<'_, T, 0>)) -> Self::State {
         ReturnState {
             acc: self.acc,
             prev: T::nan(),
@@ -56,18 +56,18 @@ impl<T: Scalar + Float, A: Accumulator<T>> Segment for Return<T, A> {
     }
 
     fn reset<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, T, 0>),
+        _: (ArrayView<'a, bool, 0>, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
     ) -> ArrayView<'a, T, 0> {
         state.out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (clock, value): (bool, ArrayView<'a, T, 0>),
+        (clock, value): (ArrayView<'a, bool, 0>, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
-        _: &Self::Context,
+        _: &Instant,
     ) -> ArrayView<'a, T, 0> {
-        if !clock {
+        if !*clock {
             return state.out.view();
         }
         assert!(value.is_finite(), "return: input value must be finite");
@@ -115,7 +115,7 @@ impl<T: Scalar + Float, A: Accumulator<T>> Segment for LogReturn<T, A> {
     type Context = Instant;
     type State = LogReturnState<T, A>;
 
-    fn init(self, _: (bool, ArrayView<'_, T, 0>)) -> Self::State {
+    fn init(self, _: (ArrayView<'_, bool, 0>, ArrayView<'_, T, 0>)) -> Self::State {
         LogReturnState {
             acc: self.acc,
             prev: T::nan(),
@@ -125,18 +125,18 @@ impl<T: Scalar + Float, A: Accumulator<T>> Segment for LogReturn<T, A> {
     }
 
     fn reset<'a, 'b: 'a>(
-        _: (bool, ArrayView<'a, T, 0>),
+        _: (ArrayView<'a, bool, 0>, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
     ) -> ArrayView<'a, T, 0> {
         state.out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        (clock, value): (bool, ArrayView<'a, T, 0>),
+        (clock, value): (ArrayView<'a, bool, 0>, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
-        _: &Self::Context,
+        _: &Instant,
     ) -> ArrayView<'a, T, 0> {
-        if !clock {
+        if !*clock {
             return state.out.view();
         }
         assert!(value.is_finite(), "log_return: input value must be finite");

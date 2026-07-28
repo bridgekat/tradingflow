@@ -1,3 +1,3 @@
-//! Basic operators for feature construction from financial data.
+//! Financial feature extraction operators.
 
 pub mod stock;

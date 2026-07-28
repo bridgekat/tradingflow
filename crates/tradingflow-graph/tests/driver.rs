@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 use std::thread;
 
 use futures::stream::{self, Stream};
-use tradingflow_graph::driver::{Builder, Clock, Event, Queue, Source, StreamFeed};
+use tradingflow_graph::driver::{Builder, Event, Queue, Source, StreamFeed, Time};
 use tradingflow_graph::pool::Pool;
 use tradingflow_graph::typed::{Port, Ref, Segment, Val};
 
@@ -27,7 +27,7 @@ impl SimClock {
         Self(Arc::new(Mutex::new(t)))
     }
 }
-impl Clock<Instant> for SimClock {
+impl Time<Instant> for SimClock {
     fn now(&self) -> Instant {
         *self.0.lock().unwrap()
     }

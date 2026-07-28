@@ -21,9 +21,9 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
+use tradingflow::time::UnixTime;
 
 use common::models::{benchmark_relative, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable, TRADING_DAYS};
@@ -50,17 +50,27 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
 
     let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
 
     let predicted_returns = sc.segment(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
-        (m.universe, m.features.series, m.demeaned_series),
+        (
+            m.rebalance_clock,
+            m.universe,
+            m.features.series,
+            m.demeaned_series,
+        ),
     );
     let predicted_cov = sc.segment(
         shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS),
-        (m.universe, m.features.series, m.target_series),
+        (
+            m.rebalance_clock,
+            m.universe,
+            m.features.series,
+            m.target_series,
+        ),
     );
 
     let h_index = m.index_nav(&mut sc);
@@ -72,7 +82,12 @@ async fn main() {
             let gamma_daily = gamma_ann / TRADING_DAYS.sqrt();
             let soft = sc.segment(
                 benchmark_relative(m.n, args.index_size, gamma_daily, true, true),
-                (m.universe, predicted_returns, predicted_cov),
+                (
+                    m.rebalance_clock,
+                    m.universe,
+                    predicted_returns.1,
+                    predicted_cov.1,
+                ),
             );
             (gamma_ann, m.record_nav(&mut sc, soft))
         })

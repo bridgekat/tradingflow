@@ -19,15 +19,14 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{array_binary_map, array_map};
 use tradingflow::operators::elem::mul;
-use tradingflow::operators::event;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::traders::benchmark;
 use tradingflow::sources::basic::*;
+use tradingflow::time::UnixTime;
 
 use clap::Parser;
 
@@ -45,23 +44,21 @@ async fn main() {
     let n = symbols.len();
     eprintln!("loaded {n} symbols; index_size={}", args.index_size);
 
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
 
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.segment(mul(), (st.close, st.circ_shares));
 
     let rebalance_clock = sc.source(pulse(args.rebalance_instants()));
+    // Recomputed once per rebalance pulse and retained in between, so the
+    // wire itself holds the rebalance-day universe fixed until the next pulse.
     let universe = common::build_cap_weighted_universe(
         &mut sc,
         circ_market_cap,
         rebalance_clock,
         args.index_size,
     );
-
-    // Hold the rebalance-day universe fixed between rebalances by re-emitting it
-    // on the daily close pulse (clock = the close view, data = the universe).
-    let daily = sc.segment(event::as_clock(), st.close);
-    let daily_universe = sc.segment(event::sample(), (daily, universe));
+    let daily = st.daily;
 
     // Summed circulating market cap of the current constituents.
     let masked_circ_sum = |u: ArrayView<f64, 1>, c: ArrayView<f64, 1>| -> f64 {
@@ -76,14 +73,20 @@ async fn main() {
     };
     let index_circ_market_cap = sc.segment(
         array_binary_map(move |u, c| Array::scalar(masked_circ_sum(u, c))),
-        (daily_universe, circ_market_cap),
+        (universe, circ_market_cap),
     );
 
     // Frictionless cap-weighted index NAV via the native Benchmark trader.
-    let (upper, lower) = common::build_price_limits(&mut sc, st.close, 0.10);
+    let (upper, lower) = common::build_price_limits(&mut sc, daily, st.close, 0.10);
     let index = sc.segment(
         benchmark(n, 1.0, true),
-        (universe, st.close, st.adjusts, upper, lower),
+        (
+            (rebalance_clock, universe),
+            (daily, st.close),
+            st.adjusts,
+            upper,
+            lower,
+        ),
     );
     let index_value = sc.segment(
         array_map(|a: ArrayView<f64, 1>| {
@@ -92,8 +95,8 @@ async fn main() {
         index,
     );
 
-    let h_mc = sc.segment(record_all(), index_circ_market_cap);
-    let h_nav = sc.segment(record_all(), index_value);
+    let h_mc = sc.segment(record_all(), (daily, index_circ_market_cap));
+    let h_nav = sc.segment(record_all(), (daily, index_value));
 
     let mut session = sc.build();
     let mut pool = Pool::new(args.threads);

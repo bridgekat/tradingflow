@@ -1,4 +1,4 @@
-//! Basic statistical operators on (cross-sectional) arrays.
+//! Statistical operators on (cross-sectional) arrays.
 
 mod gaussianize;
 mod percentile;

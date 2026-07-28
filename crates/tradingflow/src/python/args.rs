@@ -1,25 +1,29 @@
-//! [`PyArgs`] — build the Python view tuple + produced bools from typed input
-//! refs.
+//! [`PyArgs`] — build the unified Python input tuple from typed input refs.
 
 use pyo3::prelude::*;
 
 use crate::graph::Interface;
 use crate::graph::typed::InterfaceHandles;
-use crate::ports::{ArrayPort, ArrayPorts, ClockPort, SeriesPort, SeriesPorts, is_eventful};
+use crate::ports::{
+    ArrayPort, ArrayPorts, ClockArrayPort, ClockArrayPorts, SeriesPort, SeriesPorts,
+};
 
-use super::{NativeArrayView, NativeSeriesView};
+use super::{NativeArrayView, NativeArrayViewBool, NativeSeriesView};
 
-/// Walks an operator's input [`Interface`] refs tree, appending one Python view
-/// per leaf ([`NativeArrayView`] / [`NativeSeriesView`] / `None`) and one
-/// produced (notify) bool per leaf, in tree order.
+/// Walks an operator's input [`Interface`] refs tree, appending **one Python
+/// value per leaf, in tree order**: a [`NativeArrayView`] /
+/// [`NativeSeriesView`] for a data leaf, and a [`NativeArrayViewBool`] for a
+/// clock leaf of any rank (a rank-0 clock reads as `if clock:` via its
+/// `__bool__`; a clock array reads as a NumPy bool mask via `value()`). The
+/// Python side receives a single `inputs` tuple whose positions mirror the
+/// wiring exactly — clocks and values share one numbering.
 pub trait PyArgs: Interface + InterfaceHandles {
-    /// Append one Python view per leaf to `views` and one notify bit per leaf
-    /// to `produced` (views order = legacy input order).
+    /// Append this leaf's (or subtree's) Python values to `views` in tree
+    /// order.
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
-        produced: &mut Vec<bool>,
     ) -> PyResult<()>;
 }
 
@@ -28,10 +32,8 @@ impl<const N: usize> PyArgs for ArrayPort<f64, N> {
         py: Python<'py>,
         refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
-        produced: &mut Vec<bool>,
     ) -> PyResult<()> {
         views.push(NativeArrayView::bind_view::<N>(py, refs)?);
-        produced.push(is_eventful(refs));
         Ok(())
     }
 }
@@ -41,38 +43,33 @@ impl<const N: usize> PyArgs for SeriesPort<f64, N> {
         py: Python<'py>,
         refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
-        produced: &mut Vec<bool>,
     ) -> PyResult<()> {
-        // A series is a behavior (always current), so its bit is always set.
         views.push(NativeSeriesView::bind::<N>(py, refs)?);
-        produced.push(true);
         Ok(())
     }
 }
 
-impl PyArgs for ClockPort {
+impl<const N: usize> PyArgs for ClockArrayPort<N> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
-        produced: &mut Vec<bool>,
     ) -> PyResult<()> {
-        views.push(py.None().into_bound(py));
-        produced.push(refs);
+        // The pulses ride the inputs tuple as a bool view, in wiring order.
+        views.push(NativeArrayViewBool::bind_view::<N>(py, refs)?);
         Ok(())
     }
 }
 
-/// A runtime-length group appends one view + bit per element.
+/// A runtime-length group appends one view per element.
 impl<const N: usize> PyArgs for ArrayPorts<f64, N> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
-        produced: &mut Vec<bool>,
     ) -> PyResult<()> {
         for &value in refs {
-            <ArrayPort<f64, N> as PyArgs>::append_views(py, value, views, produced)?;
+            <ArrayPort<f64, N> as PyArgs>::append_views(py, value, views)?;
         }
         Ok(())
     }
@@ -83,10 +80,22 @@ impl<const N: usize> PyArgs for SeriesPorts<f64, N> {
         py: Python<'py>,
         refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
-        produced: &mut Vec<bool>,
     ) -> PyResult<()> {
         for &value in refs {
-            <SeriesPort<f64, N> as PyArgs>::append_views(py, value, views, produced)?;
+            <SeriesPort<f64, N> as PyArgs>::append_views(py, value, views)?;
+        }
+        Ok(())
+    }
+}
+
+impl<const N: usize> PyArgs for ClockArrayPorts<N> {
+    fn append_views<'py>(
+        py: Python<'py>,
+        refs: Self::Values<'_>,
+        views: &mut Vec<Bound<'py, PyAny>>,
+    ) -> PyResult<()> {
+        for &value in refs {
+            <ClockArrayPort<N> as PyArgs>::append_views(py, value, views)?;
         }
         Ok(())
     }
@@ -99,9 +108,8 @@ macro_rules! tuple_pyargs {
                 py: Python<'py>,
                 refs: Self::Values<'_>,
                 views: &mut Vec<Bound<'py, PyAny>>,
-                produced: &mut Vec<bool>,
             ) -> PyResult<()> {
-                $( $T::append_views(py, refs.$idx, views, produced)?; )+
+                $( $T::append_views(py, refs.$idx, views)?; )+
                 Ok(())
             }
         }

@@ -1,4 +1,4 @@
-//! Basic elementwise operators on arrays.
+//! Elementwise operations on arrays.
 
 mod boolean;
 mod cast;

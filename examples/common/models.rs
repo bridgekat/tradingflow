@@ -17,11 +17,20 @@ use tradingflow::ports::{ArrayPort, ClockPort, SeriesPort};
 use tradingflow::python::{PyClassOperator, PyParams, py_class_operator};
 
 // ===========================================================================
-// Port shapes (all array edges are `ArrayPort` views — the one currency)
+// Port shapes. Every leaf — clocks included — occupies one slot of the
+// Python side's `inputs` tuple, in wiring order: a leading `ClockPort` is
+// `inputs[0]` (`if inputs[0]:` gates the rebalance), and the data leaves
+// follow at their wired positions.
 // ===========================================================================
 
-/// A predictor's inputs: `(universe, feature panel history, target history)`.
-pub type PredictorIn = (ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>);
+/// A predictor's inputs:
+/// `(rebalance clock, universe, feature panel history, target history)`.
+pub type PredictorIn = (
+    ClockPort,
+    ArrayPort<f64, 1>,
+    SeriesPort<f64, 2>,
+    SeriesPort<f64, 1>,
+);
 
 /// A mean predictor: `(N,)` expected returns.
 pub type MeanPredictor = PyClassOperator<PredictorIn, 1>;
@@ -30,22 +39,35 @@ pub type MeanPredictor = PyClassOperator<PredictorIn, 1>;
 /// keeps the matrix a matrix across the Python boundary.
 pub type CovPredictor = PyClassOperator<PredictorIn, 2>;
 
-/// A mean-only portfolio's inputs: `(universe, predicted returns)`.
-pub type MeanPortfolio = PyClassOperator<(ArrayPort<f64, 1>, ArrayPort<f64, 1>), 1>;
+/// A mean-only portfolio's inputs:
+/// `(rebalance clock, universe, predicted returns)`.
+pub type MeanPortfolio = PyClassOperator<(ClockPort, ArrayPort<f64, 1>, ArrayPort<f64, 1>), 1>;
 
-/// A mean-variance portfolio's inputs: `(universe, predicted returns, covariance)`.
-pub type MeanVarPortfolio =
-    PyClassOperator<(ArrayPort<f64, 1>, ArrayPort<f64, 1>, ArrayPort<f64, 2>), 1>;
+/// A mean-variance portfolio's inputs:
+/// `(rebalance clock, universe, predicted returns, covariance)`.
+pub type MeanVarPortfolio = PyClassOperator<
+    (
+        ClockPort,
+        ArrayPort<f64, 1>,
+        ArrayPort<f64, 1>,
+        ArrayPort<f64, 2>,
+    ),
+    1,
+>;
 
 /// The rolling market beta/alpha metric: `(clock, strategy log-returns, index log-returns)`.
 pub type RegressionCoefficients =
     PyClassOperator<(ClockPort, SeriesPort<f64, 0>, SeriesPort<f64, 1>), 1>;
 
-/// The GMV realized-variance metric: `(covariance, raw returns)` → scalar.
-pub type MinimumVariance = PyClassOperator<(ArrayPort<f64, 2>, ArrayPort<f64, 1>), 0>;
+/// The GMV realized-variance metric:
+/// `((cov clock, covariance), (target clock, raw returns))` → scalar.
+pub type MinimumVariance =
+    PyClassOperator<(ClockPort, ArrayPort<f64, 2>, ClockPort, ArrayPort<f64, 1>), 0>;
 
-/// The information-coefficient metric: `(factor, target)` → scalar correlation.
-pub type InformationCoefficient = PyClassOperator<(ArrayPort<f64, 1>, ArrayPort<f64, 1>), 0>;
+/// The information-coefficient metric:
+/// `((factor clock, factor), (target clock, target))` → scalar correlation.
+pub type InformationCoefficient =
+    PyClassOperator<(ClockPort, ArrayPort<f64, 1>, ClockPort, ArrayPort<f64, 1>), 0>;
 
 // ===========================================================================
 // Shared shape

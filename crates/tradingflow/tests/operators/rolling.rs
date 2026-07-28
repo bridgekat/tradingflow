@@ -2,7 +2,8 @@
 //! (`sum`, `mean`, `var`, `std_dev`, `cov`, `mean_exp`) and the window-offset
 //! readers (`lag`, `diff`, `pct_change`), each in both spellings — the
 //! `series_*` form over a hoisted `SeriesPort`, and the self-recording form
-//! that buffers a live `ArrayPort` behind a private `series::buffer`.
+//! that buffers a live `(clock, values)` stream behind a private
+//! `series::buffer`, ingesting one sample per clock signal.
 //!
 //! Window semantics, as implemented by `rolling::base::Rolling` driving an
 //! `Accumulator` over `Retention::trim_count`:
@@ -28,7 +29,7 @@
 use tradingflow::data::{Array, Duration, SeriesView};
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::{array, elem, rolling, series};
+use tradingflow::operators::{array, clock, elem, rolling, series};
 
 use crate::harness::*;
 
@@ -167,7 +168,7 @@ fn sum_tracks_the_trailing_count_window_exactly() {
     let paths: Vec<Vec<f64>> = (0..3).map(|s| quarter_path(10 + s, 40)).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (src, xv) = event_src(&mut b, arr([3], vec![0.0_f64; 3]));
     let s = b.segment(rolling::sum(W, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -194,10 +195,9 @@ fn sum_min_count_gates_on_the_finite_sample_count() {
     let path = [1.0, nan, 2.0, nan, nan, 4.0, 5.0, 6.0];
 
     let mut b = Builder::new();
-    // A NaN sample must ride along an eventful batch to be recorded at all (a
-    // bare all-NaN poke is "no event"), so the path shares its rows with an
-    // always-finite carrier element.
-    let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    // The NaN samples ride along a second, always-finite carrier element —
+    // per-element independence is part of what the reference exercises.
+    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
     let rec = b.segment(series::record_all(), xv);
     let s = b.segment(rolling::series_sum(W, MIN), rec);
     let mut g = b.build();
@@ -229,7 +229,7 @@ fn sum_min_count_gates_on_the_finite_sample_count() {
 #[should_panic(expected = "min_count must be positive")]
 fn sum_rejects_a_zero_min_count() {
     let mut b = Builder::new();
-    let (_src, xv) = b.source(array::scalar(0.0_f64));
+    let (_src, xv) = event_src(&mut b, scalar(0.0_f64));
     let rec = b.segment(series::record_all(), xv);
     let _ = b.segment(rolling::series_sum(3, 0), rec);
 }
@@ -246,7 +246,7 @@ fn mean_emits_partial_windows_before_filling() {
     let path = [1.0, 2.0, 3.0, 6.0, 9.0];
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let m = b.segment(rolling::mean(W, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -282,7 +282,7 @@ fn mean_min_count_equal_to_the_window_forces_a_warm_up() {
     let path = quarter_path(3, 20);
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let m = b.segment(rolling::mean(W, W), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -327,7 +327,7 @@ fn mean_accumulates_each_cross_section_element_independently() {
     ];
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (src, xv) = event_src(&mut b, arr([3], vec![0.0_f64; 3]));
     let m = b.segment(rolling::mean(W, MIN), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -373,7 +373,7 @@ fn mean_over_a_duration_window_selects_ticks_by_timestamp() {
     let path = quarter_path(7, days.len());
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let fused = b.segment(rolling::mean(Duration::from_days(SPAN), 1), xv);
     let rec = b.segment(series::record_all(), xv);
     let hoisted = b.segment(rolling::series_mean(Duration::from_days(SPAN), 1), rec);
@@ -415,7 +415,7 @@ fn var_matches_the_population_variance_of_the_window() {
     let paths: Vec<Vec<f64>> = (0..2).map(|s| quarter_path(31 + s, 40)).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
     let v = b.segment(rolling::var(W, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -440,7 +440,7 @@ fn std_dev_matches_the_square_root_of_the_window_variance() {
     let path = quarter_path(33, 30);
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let s = b.segment(rolling::std_dev(W, MIN), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -463,7 +463,7 @@ fn var_clamps_the_rounding_error_of_a_constant_window_to_zero() {
     let c = 1000.0 + 1.0 / 3.0;
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let v = b.segment(rolling::var(W, 1), xv);
     let s = b.segment(rolling::std_dev(W, 1), xv);
     let mut g = b.build();
@@ -520,7 +520,7 @@ fn cov_produces_a_symmetric_matrix_whose_diagonal_is_the_variance() {
     ];
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([K], vec![0.0_f64; K].into()));
+    let (src, xv) = event_src(&mut b, arr([K], vec![0.0_f64; K]));
     let c = b.segment(rolling::cov(W, 1), xv);
     let v = b.segment(rolling::var(W, 1), xv);
     let mut g = b.build();
@@ -575,27 +575,19 @@ fn cov_gates_each_matrix_entry_on_its_own_pairwise_complete_count() {
     ];
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([K], vec![0.0_f64; K].into()));
+    let (src, xv) = event_src(&mut b, arr([K], vec![0.0_f64; K]));
     let rec = b.segment(series::record_all(), xv);
     let c = b.segment(rolling::series_cov(W, MIN), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     let mut mixed_gates = 0;
-    // An all-NaN cross row carries no events and is never recorded, so the
-    // reference drops those ticks before windowing.
-    let kept: Vec<usize> = (0..base.len())
-        .filter(|&t| paths.iter().any(|p| !p[t].is_nan()))
-        .collect();
-    let kept_paths: Vec<Vec<f64>> = paths
-        .iter()
-        .map(|p| kept.iter().map(|&t| p[t]).collect())
-        .collect();
+    // Every poke is a pulse, so every cross row is recorded — the all-NaN rows
+    // included, which occupy a window slot while contributing to no pair.
     for t in 0..base.len() {
         *g.state_mut(src) = cross(&paths, t);
         g.stabilize(&mut pool, &nano(t as i64 + 1));
-        let last_kept = kept.iter().take_while(|&&k| k <= t).count() - 1;
-        let want = ref_cov_matrix(&kept_paths, last_kept, W, MIN);
+        let want = ref_cov_matrix(&paths, t, W, MIN);
         assert_close(&vals(g.view(c)), &want, &format!("tick {t}"));
         if want.iter().any(|v| v.is_nan()) && want.iter().any(|v| v.is_finite()) {
             mixed_gates += 1;
@@ -619,7 +611,7 @@ fn mean_exp_weights_the_window_geometrically() {
     let path = [10.0, 20.0, 30.0, 40.0];
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let rec = b.segment(series::record_all(), xv);
     let e = b.segment(rolling::series_mean_exp(alpha, 2, 1), rec);
     let mut g = b.build();
@@ -658,7 +650,7 @@ fn mean_exp_matches_a_recomputed_weighted_window() {
     let paths: Vec<Vec<f64>> = (0..2).map(|s| quarter_path(51 + s, 40)).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
     let e = b.segment(rolling::mean_exp(alpha, W, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -682,7 +674,7 @@ fn mean_exp_with_alpha_one_collapses_to_the_latest_value() {
     let path = quarter_path(57, 20);
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let e = b.segment(rolling::mean_exp(1.0, 4, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -708,7 +700,7 @@ fn lag_warms_up_to_nan_then_returns_the_value_n_ticks_ago() {
     let path = quarter_path(61, 40);
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let l = b.segment(rolling::lag(N), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -731,7 +723,7 @@ fn diff_and_pct_change_warm_up_then_track_the_lagged_sample() {
     let path: Vec<f64> = (1..=40).map(|i| (i * i) as f64).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let d = b.segment(rolling::diff(N), xv);
     let p = b.segment(rolling::pct_change(N), xv);
     let mut g = b.build();
@@ -771,7 +763,7 @@ fn lag_over_a_duration_window_returns_the_last_tick_before_it() {
     let path = quarter_path(63, days.len());
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     let l = b.segment(rolling::lag(Duration::from_days(SPAN)), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -818,11 +810,11 @@ fn a_bounded_record_compacts_underneath_rolling_and_lag() {
     let path = quarter_path(71, TICKS);
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
     // The rolling mean reads back W elements and the lag N + 1; a retention of
     // 8 covers both with margin. See `a_record_trimmed_to_the_window_is_rejected`
     // for what happens without that margin.
-    let rec = b.segment(series::record(8, false), xv);
+    let rec = b.segment(series::record_on(8, false), xv);
     let m = b.segment(rolling::series_mean(W, 1), rec);
     let l = b.segment(rolling::series_lag(N), rec);
     let mut g = b.build();
@@ -871,19 +863,19 @@ fn a_bounded_record_compacts_underneath_rolling_and_lag() {
     assert_eq!(last_ts, nano(TICKS as i64), "latest timestamp intact");
 }
 
-/// The safety contract behind that margin: a hoisted `record` must not trim to
+/// The safety contract behind that margin: a hoisted record must not trim to
 /// exactly the rolling window, because the accumulator has to *read* an element
-/// on the tick it evicts it. `series::record(w, false)` trims eagerly with the
-/// same cutoff the rolling operator is about to use, so it eventually drops a
-/// row out from under it and the driver's assertion fires. The self-recording
+/// on the tick it evicts it. `series::record_on(w, false)` trims eagerly with
+/// the same cutoff the rolling operator is about to use, so it eventually drops
+/// a row out from under it and the driver's assertion fires. The self-recording
 /// forms sidestep this by buffering with `delayed = true`, which defers
 /// trimming by one tick.
 #[test]
 #[should_panic(expected = "input series dropped elements")]
 fn a_record_trimmed_to_the_window_is_rejected() {
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::scalar(0.0_f64));
-    let rec = b.segment(series::record(2, false), xv);
+    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let rec = b.segment(series::record_on(2, false), xv);
     let _ = b.segment(rolling::series_sum(2, 1), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -898,9 +890,9 @@ fn a_record_trimmed_to_the_window_is_rejected() {
 // series_* / self-recording equivalence
 // ---------------------------------------------------------------------------
 
-/// The headline equivalence: `rolling::std_dev(w, c)` over a live `ArrayPort`
-/// is tick-for-tick *bit*-identical to the hoisted spelling
-/// `series::record(..)` → `rolling::series_var(w, c)` → `elem::sqrt()`,
+/// The headline equivalence: `rolling::std_dev(w, c)` over a live stream is
+/// tick-for-tick *bit*-identical to the hoisted spelling
+/// `series::record_on(..)` → `rolling::series_var(w, c)` → `elem::sqrt()`,
 /// including which `NaN` the warm-up produces.
 #[test]
 fn std_dev_is_bit_identical_to_the_hoisted_var_then_sqrt() {
@@ -909,9 +901,9 @@ fn std_dev_is_bit_identical_to_the_hoisted_var_then_sqrt() {
     let paths: Vec<Vec<f64>> = (0..2).map(|s| quarter_path(81 + s, 40)).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
     let fused = b.segment(rolling::std_dev(W, MIN), xv);
-    let rec = b.segment(series::record(16, false), xv);
+    let rec = b.segment(series::record_on(16, false), xv);
     let var = b.segment(rolling::series_var(W, MIN), rec);
     let hoisted = b.segment(elem::sqrt(), var);
     let mut g = b.build();
@@ -957,40 +949,28 @@ fn every_statistic_is_bit_identical_to_its_hoisted_spelling() {
         .collect();
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
     let rec = b.segment(series::record_all(), xv);
 
+    let sum_f = b.segment(rolling::sum(W, 1), xv);
+    let sum_h = b.segment(rolling::series_sum(W, 1), rec);
+    let mean_f = b.segment(rolling::mean(W, 3), xv);
+    let mean_h = b.segment(rolling::series_mean(W, 3), rec);
+    let var_f = b.segment(rolling::var(W, 2), xv);
+    let var_h = b.segment(rolling::series_var(W, 2), rec);
+    let std_f = b.segment(rolling::std_dev(W, 2), xv);
+    let std_h = b.segment(rolling::series_std_dev(W, 2), rec);
+    let exp_f = b.segment(rolling::mean_exp(alpha, W, 1), xv);
+    let exp_h = b.segment(rolling::series_mean_exp(alpha, W, 1), rec);
+    let lag_f = b.segment(rolling::lag(W), xv);
+    let lag_h = b.segment(rolling::series_lag(W), rec);
     let pairs = [
-        (
-            b.segment(rolling::sum(W, 1), xv),
-            b.segment(rolling::series_sum(W, 1), rec),
-            "sum",
-        ),
-        (
-            b.segment(rolling::mean(W, 3), xv),
-            b.segment(rolling::series_mean(W, 3), rec),
-            "mean",
-        ),
-        (
-            b.segment(rolling::var(W, 2), xv),
-            b.segment(rolling::series_var(W, 2), rec),
-            "var",
-        ),
-        (
-            b.segment(rolling::std_dev(W, 2), xv),
-            b.segment(rolling::series_std_dev(W, 2), rec),
-            "std_dev",
-        ),
-        (
-            b.segment(rolling::mean_exp(alpha, W, 1), xv),
-            b.segment(rolling::series_mean_exp(alpha, W, 1), rec),
-            "mean_exp",
-        ),
-        (
-            b.segment(rolling::lag(W), xv),
-            b.segment(rolling::series_lag(W), rec),
-            "lag",
-        ),
+        (sum_f, sum_h, "sum"),
+        (mean_f, mean_h, "mean"),
+        (var_f, var_h, "var"),
+        (std_f, std_h, "std_dev"),
+        (exp_f, exp_h, "mean_exp"),
+        (lag_f, lag_h, "lag"),
     ];
     let cov_fused = b.segment(rolling::cov(W, 2), xv);
     let cov_hoisted = b.segment(rolling::series_cov(W, 2), rec);
@@ -1024,12 +1004,15 @@ fn diff_and_pct_change_are_bit_identical_to_their_hoisted_spellings() {
     let paths: Vec<Vec<f64>> = (0..2).map(|s| quarter_path(101 + s, 30)).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
-    let fused_diff = b.segment(rolling::diff(N), xv);
-    let fused_pct = b.segment(rolling::pct_change(N), xv);
-    let rec = b.segment(series::record_all(), xv);
+    // The raw state wire (`rawv`) drives the hand-wired arithmetic: `elem` is
+    // stateless, and the current sample is exactly the source's state.
+    let (src, rawv) = b.source(array::constant(arr([2], vec![0.0_f64; 2])));
+    let xc = b.segment(clock::always(), rawv);
+    let fused_diff = b.segment(rolling::diff(N), (xc, rawv));
+    let fused_pct = b.segment(rolling::pct_change(N), (xc, rawv));
+    let rec = b.segment(series::record_all(), (xc, rawv));
     let prev = b.segment(rolling::series_lag(N), rec);
-    let hoisted_diff = b.segment(elem::sub(), (xv, prev));
+    let hoisted_diff = b.segment(elem::sub(), (rawv, prev));
     let hoisted_pct = b.segment(elem::div(), (hoisted_diff, prev));
     let mut g = b.build();
     let mut pool = Pool::new(0);

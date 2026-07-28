@@ -10,7 +10,7 @@ use futures::StreamExt;
 use futures::future::Either;
 use futures::stream::FuturesUnordered;
 
-use super::{Clock, Feed, Stamp};
+use super::{Feed, Stamp, Time};
 
 /// The currently known frontier of a feed.
 ///
@@ -66,7 +66,7 @@ impl<I, S> Future for Active<I, S> {
 /// with explicit timestamps are generally used for replaying "historical" data
 /// rather than "real-time" events, in which case the next event is always
 /// available, so the frontier is always advancing.
-pub struct Queue<I: Clone + Ord, C: Clock<I>, S> {
+pub struct Queue<I: Clone + Ord, C: Time<I>, S> {
     /// The wall clock source.
     clock: C,
     /// Feeds currently being polled for the next event.
@@ -86,7 +86,7 @@ pub struct Queue<I: Clone + Ord, C: Clock<I>, S> {
     instant: Option<I>,
 }
 
-impl<I: Clone + Ord, S, C: Clock<I>> Queue<I, C, S> {
+impl<I: Clone + Ord, S, C: Time<I>> Queue<I, C, S> {
     /// Creates an empty queue over a wall clock.
     pub fn new(clock: C) -> Self {
         Self {

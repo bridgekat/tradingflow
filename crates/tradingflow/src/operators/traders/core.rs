@@ -3,19 +3,25 @@
 //! [`RandomTrader`](super::RandomTrader). Private: nothing here is re-exported.
 
 use crate::data::{Array, ArrayView};
-use crate::ports::{ArrayPort, is_eventful};
+use crate::ports::{ArrayPort, ClockPort};
 
-/// A single `[num_stocks]` view port — the per-input edge of every trader.
+/// A `[num_stocks]` state-array port.
 pub(super) type Vp = ArrayPort<f64, 1>;
 
-/// The five trader inputs `(positions, close, adjusts, upper, lower)`, all
-/// event arrays (a NaN element carries no event this tick).
-pub(super) type TraderInputs = (Vp, Vp, Vp, Vp, Vp);
+/// An event stream input: a clock paired with a `[num_stocks]` value array.
+pub(super) type Sp = (ClockPort, Vp);
 
-/// The five trader input views.
+/// The trader inputs `((positions), (close), adjusts, upper, lower)`: the
+/// positions and close legs are event streams (their clocks mark a new target
+/// and an executable close batch respectively); adjusts, upper and lower are
+/// plain arrays read at execution time (the cumulative adjust factor is safe
+/// to re-read — the ratio against `last_adjust` makes stale repeats no-ops).
+pub(super) type TraderInputs = (Sp, Sp, Vp, Vp, Vp);
+
+/// The trader input views.
 pub(super) type TraderValues<'a> = (
-    ArrayView<'a, f64, 1>,
-    ArrayView<'a, f64, 1>,
+    (ArrayView<'a, bool, 0>, ArrayView<'a, f64, 1>),
+    (ArrayView<'a, bool, 0>, ArrayView<'a, f64, 1>),
     ArrayView<'a, f64, 1>,
     ArrayView<'a, f64, 1>,
     ArrayView<'a, f64, 1>,
@@ -64,12 +70,11 @@ impl TraderCore {
 
 /// One realistic-execution tick, shared by both traders. `cols` are the five
 /// materialized `[positions, close, adjusts, upper, lower]` slices;
-/// `pos_eventful` is whether the positions batch carries events; `can_exec`
-/// is whether the close batch carries events (a pending rebalance is only
-/// executed against an eventful close batch — on a generation with no close
-/// events there is no market to trade in, and the pending signal is held).
-/// `lots` computes the per-stock net trade in *lots*. Writes
-/// `[holdings, cash]` into `s.out`.
+/// `pos_eventful` is the positions clock (a new target arrived); `can_exec`
+/// is the close clock (a pending rebalance is only executed against a fresh
+/// close batch — on a generation with no close pulse there is no market to
+/// trade in, and the pending signal is held). `lots` computes the per-stock
+/// net trade in *lots*. Writes `[holdings, cash]` into `s.out`.
 #[allow(clippy::too_many_arguments)]
 #[expect(
     clippy::needless_range_loop,
@@ -192,9 +197,7 @@ pub(super) fn run_trader<'a, 'b: 'a, L>(
 where
     L: FnMut(f64, &[f64], &[f64], f64, &[f64], &mut [f64]),
 {
-    let (pos, close, adj, up, lo) = values;
-    let pos_eventful = is_eventful(pos);
-    let can_exec = is_eventful(close);
+    let ((pos_eventful, pos), (can_exec, close), adj, up, lo) = values;
     let (a, b, c, d, e) = (
         pos.to_contiguous(),
         close.to_contiguous(),
@@ -202,6 +205,6 @@ where
         up.to_contiguous(),
         lo.to_contiguous(),
     );
-    run_tick(core, pos_eventful, can_exec, [&a, &b, &c, &d, &e], lots);
+    run_tick(core, *pos_eventful, *can_exec, [&a, &b, &c, &d, &e], lots);
     core.out.view()
 }

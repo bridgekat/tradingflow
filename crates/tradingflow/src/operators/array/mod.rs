@@ -1,4 +1,4 @@
-//! Basic array operators.
+//! Basic operators on arrays.
 
 mod concat;
 mod constant;

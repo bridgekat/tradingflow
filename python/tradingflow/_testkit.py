@@ -3,6 +3,12 @@
 `FakeArrayView` / `FakeSeriesView` mirror the API of the Rust `NativeArrayView` /
 `NativeSeriesView` so an operator can be exercised (init + compute) with
 synthetic NumPy data, validating the Python logic without the Rust engine.
+
+Only *input* views need fakes. Outputs are whatever `compute` returns (an
+array, or `None` for no event), so a test reads the return value directly.
+Clock leaves need no fake either: a rank-0 pulse slot in the unified `inputs`
+tuple is truthiness-tested only (`if clock:`), so tests pass plain Python
+bools where the engine would pass a `NativeArrayViewBool`.
 """
 
 from __future__ import annotations
@@ -11,12 +17,10 @@ import numpy as np
 
 
 class FakeArrayView:
-    """Mirror of `NativeArrayView` (an `Array<f64>` cell view)."""
+    """Mirror of `NativeArrayView` (a read-only `Array<f64>` cell view)."""
 
-    def __init__(self, arr, writable: bool = False) -> None:
+    def __init__(self, arr) -> None:
         self._arr = np.asarray(arr, dtype=np.float64)
-        self._writable = writable
-        self.written = None  # last value written (for assertions)
 
     def value(self) -> np.ndarray:
         return self._arr.copy()
@@ -27,11 +31,6 @@ class FakeArrayView:
     def __array__(self, dtype=None, copy=None):
         a = self.value()
         return a if dtype is None else a.astype(dtype)
-
-    def write(self, value) -> None:
-        assert self._writable, "write to a read-only (input) view"
-        self.written = np.ascontiguousarray(value, dtype=np.float64)
-        self._arr = self.written.copy()
 
     @property
     def shape(self):

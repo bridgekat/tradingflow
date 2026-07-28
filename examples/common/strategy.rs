@@ -6,13 +6,15 @@
 //! → trader → total value → record). What remains in each example is the part
 //! that actually differs: which predictor, which optimizer, which trader.
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant, Retention};
 use tradingflow::graph::{Builder, Graph, Pool, Segment};
 use tradingflow::operators::series::record_all;
-use tradingflow::operators::{array::array_map, elem, event, stats::*, traders::*};
-use tradingflow::ports::{ArrayPort, ArrayPortHandle, ClockPortHandle, SeriesPortHandle};
+use tradingflow::operators::{array::array_map, elem, traders::*};
+use tradingflow::ports::{
+    ArrayPort, ArrayPortHandle, ClockPort, ClockPortHandle, SeriesPortHandle,
+};
 use tradingflow::sources::basic::*;
+use tradingflow::time::UnixTime;
 
 use super::args::CommonArgs;
 use super::data::{Stacked, build_stacked};
@@ -31,7 +33,7 @@ pub const PRICE_LIMIT: f64 = 0.10;
 
 /// Map a trader's `(holdings_value, cash)` view to its scalar total value.
 pub fn total_value(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     h: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 0> {
     sc.segment(
@@ -48,15 +50,18 @@ pub fn total_value(
 pub struct Market {
     pub st: Stacked,
     pub features: Features,
-    /// The cap-weighted universe as a view (also the benchmark weights, and
-    /// what the Python operators consume directly).
+    /// The cap-weighted universe weights (read on the rebalance clock — also
+    /// the benchmark weights, and what the Python operators consume).
     pub universe: ArrayPortHandle<f64, 1>,
     pub rebalance_clock: ClockPortHandle,
+    /// The daily close pulse.
+    pub daily: ClockPortHandle,
     pub upper: ArrayPortHandle<f64, 1>,
     pub lower: ArrayPortHandle<f64, 1>,
-    /// Log adjusted close — the source of returns.
+    /// Log adjusted close — the source of returns (refreshed on `daily`).
     pub log_adj: ArrayPortHandle<f64, 1>,
-    /// Raw winsorized log returns, as a live view (the IC evaluators' target).
+    /// Raw winsorized log returns (the IC evaluators' target; refreshed on
+    /// `daily`).
     pub target: ArrayPortHandle<f64, 1>,
     /// Raw winsorized log returns (the covariance predictor's target).
     pub target_series: SeriesPortHandle<f64, 1>,
@@ -72,7 +77,7 @@ impl Market {
     /// Build the spine. `retention` bounds the recorded feature/target panels —
     /// size it to the deepest consumer look-back.
     pub fn build(
-        sc: &mut Builder<Instant, UnixClock>,
+        sc: &mut Builder<Instant, UnixTime>,
         symbols: &[String],
         args: &CommonArgs,
         retention: Retention,
@@ -82,10 +87,10 @@ impl Market {
         let features = build_features(sc, &st, retention);
         let circ_market_cap = sc.segment(elem::mul(), (st.close, st.circ_shares));
         let log_adj = sc.segment(elem::ln(), st.adjusted_close);
-        let daily = sc.segment(event::as_clock(), st.adjusted_close);
+        let daily = st.daily;
         let (target, target_series, demeaned_series) =
             build_log_return_target(sc, log_adj, daily, retention);
-        let (upper, lower) = build_price_limits(sc, st.close, PRICE_LIMIT);
+        let (upper, lower) = build_price_limits(sc, daily, st.close, PRICE_LIMIT);
 
         let rebalance_clock = sc.source(pulse(args.rebalance_instants()));
         let universe =
@@ -102,6 +107,7 @@ impl Market {
             features,
             universe,
             rebalance_clock,
+            daily,
             upper,
             lower,
             log_adj,
@@ -113,21 +119,21 @@ impl Market {
         }
     }
 
-    /// Trade a position vector (already in the view currency) with `trader`,
-    /// returning its scalar total value. `trader` is any of the native traders —
-    /// `Benchmark` (frictionless), `SimpleTrader` / `RandomTrader` (lot + fee
-    /// aware) — which is the cost-model swap point.
+    /// Trade a `(clock, weights)` position stream with `trader`, returning its
+    /// scalar total value. `trader` is any of the native traders — `Benchmark`
+    /// (frictionless), `SimpleTrader` / `RandomTrader` (lot + fee aware) —
+    /// which is the cost-model swap point.
     pub fn simulate<T>(
         &self,
-        sc: &mut Builder<Instant, UnixClock>,
+        sc: &mut Builder<Instant, UnixTime>,
         trader: T,
-        positions: ArrayPortHandle<f64, 1>,
+        positions: (ClockPortHandle, ArrayPortHandle<f64, 1>),
     ) -> ArrayPortHandle<f64, 0>
     where
         T: Segment<
                 Inputs = (
-                    ArrayPort<f64, 1>,
-                    ArrayPort<f64, 1>,
+                    (ClockPort, ArrayPort<f64, 1>),
+                    (ClockPort, ArrayPort<f64, 1>),
                     ArrayPort<f64, 1>,
                     ArrayPort<f64, 1>,
                     ArrayPort<f64, 1>,
@@ -136,11 +142,14 @@ impl Market {
                 Context = Instant,
             >,
     {
+        // The adjust factors ride as carried state: the trader's reinvestment
+        // is a ratio against its own `last_adjust`, so re-reading an unchanged
+        // factor is a no-op.
         let book = sc.segment(
             trader,
             (
                 positions,
-                self.st.close,
+                (self.daily, self.st.close),
                 self.st.adjusts,
                 self.upper,
                 self.lower,
@@ -150,24 +159,24 @@ impl Market {
     }
 
     /// The cap-weighted index's NAV: trade the universe weights frictionlessly.
-    pub fn index_nav(&self, sc: &mut Builder<Instant, UnixClock>) -> SeriesPortHandle<f64, 0> {
-        self.record_nav(sc, self.universe)
+    pub fn index_nav(&self, sc: &mut Builder<Instant, UnixTime>) -> SeriesPortHandle<f64, 0> {
+        self.record_nav(sc, (self.rebalance_clock, self.universe))
     }
 
-    /// A Python portfolio's frictionless NAV: trade its position views via
-    /// `Benchmark`, sum, and record.
+    /// A `(clock, weights)` position stream's frictionless NAV: trade it via
+    /// `Benchmark`, sum, and record on the daily pulse.
     pub fn record_nav(
         &self,
-        sc: &mut Builder<Instant, UnixClock>,
-        positions: ArrayPortHandle<f64, 1>,
+        sc: &mut Builder<Instant, UnixTime>,
+        positions: (ClockPortHandle, ArrayPortHandle<f64, 1>),
     ) -> SeriesPortHandle<f64, 0> {
         let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions);
-        sc.segment(record_all(), value)
+        sc.segment(record_all(), (self.daily, value))
     }
 }
 
 /// Build, run to exhaustion with a progress bar, and return the finished session.
-pub async fn run(sc: Builder<Instant, UnixClock>, args: &CommonArgs) -> Graph<Instant, UnixClock> {
+pub async fn run(sc: Builder<Instant, UnixTime>, args: &CommonArgs) -> Graph<Instant, UnixTime> {
     let mut session = sc.build();
     let mut pool = Pool::new(args.threads);
     let total = session.size_hint();
@@ -269,7 +278,7 @@ impl NavTable {
     /// it as a column — returning its statistics for printing.
     pub fn add(
         &mut self,
-        session: &Graph<Instant, UnixClock>,
+        session: &Graph<Instant, UnixTime>,
         label: impl Into<String>,
         begin_ns: i64,
         h: SeriesPortHandle<f64, 0>,

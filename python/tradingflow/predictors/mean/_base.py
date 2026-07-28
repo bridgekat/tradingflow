@@ -63,10 +63,11 @@ class MeanPredictor[T]:
     `Series` inputs, calls `fit_fn` and `predict_fn`, and emits a
     per-stock prediction.  Non-rebalance ticks are ignored.
 
-    Input ports (in order): ``(universe, features_series, target_series)``
+    Input ports (in order):
+    ``(rebalance_clock, universe, features_series, target_series)``
 
-    - universe: ArrayView, shape ``(num_stocks,)``.  Updates trigger a
-      rebalance.
+    - rebalance_clock: bool clock view; a pulse triggers a rebalance.
+    - universe: ArrayView, shape ``(num_stocks,)``.
     - features_series: SeriesView, element shape ``(num_stocks, num_features)``.
     - target_series: SeriesView, element shape ``(num_stocks,)``.  Must be
       the same length as ``features_series``.
@@ -123,7 +124,7 @@ class MeanPredictor[T]:
         self._max_periods = max_periods
         self._min_periods = min_periods
 
-    def init(self, inputs, timestamp: int) -> MeanPredictorState[T]:
+    def init(self, inputs) -> MeanPredictorState[T]:
         return MeanPredictorState(
             num_stocks=self._num_stocks,
             num_features=self._num_features,
@@ -138,19 +139,15 @@ class MeanPredictor[T]:
 
     @staticmethod
     def compute(
-        state: MeanPredictorState[T],
         inputs,
-        output,
+        state: MeanPredictorState[T],
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        universe_view, features_series_view, target_series_view = inputs
-        universe_produced, _, _ = produced
+    ) -> np.ndarray | None:
+        rebalance, universe_view, features_series_view, target_series_view = inputs
 
-        # Emit only on rebalance ticks (signalled by the `universe`
-        # input producing new weights).
-        if not universe_produced:
-            return False
+        # Emit only on rebalance ticks (the leading clock pulses).
+        if not rebalance:
+            return None
 
         # Check data alignment - features and target must tick in lock-step.
         n_features = len(features_series_view)
@@ -211,5 +208,4 @@ class MeanPredictor[T]:
         if state.fitted and mask.any():
             mu[mask] = state.predict_fn(state, features[mask], state.cached_params)
 
-        output.write(mu)
-        return True
+        return mu

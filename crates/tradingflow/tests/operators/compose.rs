@@ -6,9 +6,9 @@
 //!
 //! 1. **Fusion transparency.** A `segment!` collapses a chain into one graph
 //!    node, so the whole chain reruns as a unit and the inner operators see
-//!    notification flags produced *inside* the node rather than by the
-//!    scheduler. The invariant is that this is unobservable: a fused segment is
-//!    tick-for-tick bit-identical to the same operators as separate nodes.
+//!    clock signals produced *inside* the node rather than at scheduler
+//!    boundaries. The invariant is that this is unobservable: a fused segment
+//!    is tick-for-tick bit-identical to the same operators as separate nodes.
 //! 2. **Composed signals.** The design-brief moving-average crossover, written
 //!    against an independent reference model, over a path long enough that the
 //!    private records compact underneath the windows.
@@ -20,8 +20,8 @@
 use tradingflow::data::ArrayView;
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::{array, elem, event, rolling, series};
-use tradingflow::ports::ArrayPort;
+use tradingflow::operators::{array, clock, elem, rolling, series};
+use tradingflow::ports::{ArrayPort, ClockPort};
 use tradingflow::segment;
 
 use crate::harness::*;
@@ -67,21 +67,24 @@ fn crossover_reference(path: &[f64], fast: usize, slow: usize) -> Vec<bool> {
 /// A fused arithmetic/rolling chain is tick-for-tick bit-identical to the same
 /// operators wired as separate nodes.
 ///
-/// Worth pinning because fusion changes *who* decides that an operator may skip
-/// work. Unfused, the scheduler skips a whole node whose upstream sources are
-/// clean; fused, the node always runs and the inner operator must skip itself
-/// off its own input flags. The two sources are poked independently so that
-/// most generations exercise one of those cases, and the table carries `NaN`
-/// rows so the comparison is over exact bit patterns rather than "both are some
-/// NaN".
+/// Worth pinning because fusion changes *when* the inner operators run:
+/// unfused, the scheduler skips a whole node whose upstream sources are clean;
+/// fused, the node always runs as a unit and each inner clock-gated operator
+/// must ignore the generations without its pulse. The two sources are poked
+/// independently so that most generations exercise one of those cases, and the
+/// table carries `NaN` rows so the comparison is over exact bit patterns
+/// rather than "both are some NaN".
 #[test]
 fn fused_rolling_chain_matches_unfused_nodes() {
     let nan = f64::NAN;
 
     let fused = segment!(
-        |x: ArrayPort<f64, 1>, y: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            let d = elem::sub() @ (rolling::mean(3, 1) @ x, rolling::mean(5, 1) @ y);
-            let prev = rolling::lag(1) @ d;
+        |cx: ClockPort, x: ArrayPort<f64, 1>, cy: ClockPort, y: ArrayPort<f64, 1>|
+            -> ArrayPort<f64, 1> {
+            let d = elem::sub()
+                @ (rolling::mean(3, 1) @ (cx, x), rolling::mean(5, 1) @ (cy, y));
+            let cd = clock::or() @ (cx, cy);
+            let prev = rolling::lag(1) @ (cd, d);
             elem::abs() @ (elem::add() @ (d, prev))
         }
     );
@@ -89,20 +92,19 @@ fn fused_rolling_chain_matches_unfused_nodes() {
     let mut b = Builder::new();
     let (sx, xv) = b.source(array::from_parts([2], vec![nan; 2].into()));
     let (sy, yv) = b.source(array::from_parts([2], vec![nan; 2].into()));
-    // Badge both inputs as event arrays: fused/unfused equivalence holds on
-    // event edges, where "the source did not fire" reads NaN in both wirings.
-    let xv = b.segment(event::as_event(), xv);
-    let yv = b.segment(event::as_event(), yv);
+    let cx = b.segment(clock::always(), xv);
+    let cy = b.segment(clock::always(), yv);
 
     // Reference: the same chain as separate nodes.
-    let fast = b.segment(rolling::mean(3, 1), xv);
-    let slow = b.segment(rolling::mean(5, 1), yv);
+    let fast = b.segment(rolling::mean(3, 1), (cx, xv));
+    let slow = b.segment(rolling::mean(5, 1), (cy, yv));
     let d = b.segment(elem::sub(), (fast, slow));
-    let prev = b.segment(rolling::lag(1), d);
+    let cd = b.segment(clock::or(), (cx, cy));
+    let prev = b.segment(rolling::lag(1), (cd, d));
     let sum = b.segment(elem::add(), (d, prev));
     let plain = b.segment(elem::abs(), sum);
 
-    let f_out = b.segment(fused, (xv, yv));
+    let f_out = b.segment(fused, (cx, xv, cy, yv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -153,22 +155,24 @@ fn fused_rolling_chain_matches_unfused_nodes() {
 /// A fused segment that *gates* (`event::filter`) and returns **two** outputs is
 /// tick-for-tick bit-identical to the same operators as separate nodes.
 ///
-/// This is the fusion case most likely to break. A gate's whole job is to emit
-/// `notify = false` while holding its last passed value, and inside a fused node
-/// that flag never reaches the scheduler — it is consumed by the next inner
-/// operator instead. A multi-output segment additionally makes the macro's
-/// `route` project two wires out of one environment, one of which (`select_at`)
-/// is a zero-copy view derived from the other. The table drives all four gate
-/// states (both pass, either one blocked, both blocked) plus idle generations.
+/// This is the fusion case most likely to break. A gate's whole job is to
+/// withhold a pulse, and inside a fused node that pulse never reaches the
+/// scheduler — it is consumed by the next inner operator instead. A
+/// multi-output segment additionally makes the macro's `route` project two
+/// wires out of one environment, one of which (`select_at`) is a zero-copy
+/// view derived from the other. The table drives all four gate states (both
+/// pass, either one blocked, both blocked) plus idle generations.
 #[test]
 fn fused_gated_multi_output_matches_unfused_nodes() {
     let nan = f64::NAN;
 
     let fused = segment!(
-        |p: ArrayPort<f64, 1>, q: ArrayPort<f64, 1>| -> (ArrayPort<f64, 1>, ArrayPort<f64, 0>) {
-            let gp = event::filter(any_finite) @ p;
-            let gq = event::filter(any_finite) @ q;
-            let m = rolling::mean(3, 1) @ (elem::add() @ (gp, gq));
+        |cp: ClockPort, p: ArrayPort<f64, 1>, cq: ClockPort, q: ArrayPort<f64, 1>|
+            -> (ArrayPort<f64, 1>, ArrayPort<f64, 0>) {
+            let gp = clock::filter(any_finite) @ (cp, p);
+            let gq = clock::filter(any_finite) @ (cq, q);
+            let cs = clock::and() @ (gp, gq);
+            let m = rolling::mean(3, 1) @ (cs, elem::add() @ (p, q));
             (m, array::select_at(0, 0) @ m)
         }
     );
@@ -176,17 +180,18 @@ fn fused_gated_multi_output_matches_unfused_nodes() {
     let mut b = Builder::new();
     let (sp, pv) = b.source(array::from_parts([2], vec![nan; 2].into()));
     let (sq, qv) = b.source(array::from_parts([2], vec![nan; 2].into()));
-    let pv = b.segment(event::as_event(), pv);
-    let qv = b.segment(event::as_event(), qv);
+    let cp = b.segment(clock::always(), pv);
+    let cq = b.segment(clock::always(), qv);
 
     // Reference: the same chain as separate nodes.
-    let gp = b.segment(event::filter(any_finite), pv);
-    let gq = b.segment(event::filter(any_finite), qv);
-    let s = b.segment(elem::add(), (gp, gq));
-    let m = b.segment(rolling::mean(3, 1), s);
+    let gp = b.segment(clock::filter(any_finite), (cp, pv));
+    let gq = b.segment(clock::filter(any_finite), (cq, qv));
+    let cs = b.segment(clock::and(), (gp, gq));
+    let s = b.segment(elem::add(), (pv, qv));
+    let m = b.segment(rolling::mean(3, 1), (cs, s));
     let head = b.segment(array::select_at(0, 0), m);
 
-    let (f_m, f_head) = b.segment(fused, (pv, qv));
+    let (f_m, f_head) = b.segment(fused, (cp, pv, cq, qv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -249,18 +254,21 @@ fn ma_crossover_signal_fires_on_the_edge() {
 
     let mut b = Builder::new();
     let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
+    let xc = b.segment(clock::always(), xv);
     let signal = b.segment(
         segment!(
-            |x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
+            |c: ClockPort, x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
                 let zeros = array::from_parts([2], vec![0.0_f64, 0.0].into()) @ ();
-                let d = elem::sub() @ (rolling::mean(fast, 1) @ x, rolling::mean(slow, 1) @ x);
+                let d = elem::sub()
+                    @ (rolling::mean(fast, 1) @ (c, x), rolling::mean(slow, 1) @ (c, x));
+                let prev = rolling::lag(1) @ (c, d);
                 elem::and() @ (
                     elem::gt() @ (d, zeros),
-                    elem::not() @ (elem::gt() @ (rolling::lag(1) @ d, zeros)),
+                    elem::not() @ (elem::gt() @ (prev, zeros)),
                 )
             }
         ),
-        xv,
+        (xc, xv),
     );
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -284,8 +292,8 @@ fn ma_crossover_signal_fires_on_the_edge() {
     );
 }
 
-/// A self-recording composed chain (`rolling::mean(w, c) @ live_array_port`)
-/// agrees bit-for-bit with the hoisted spelling (one shared `series::record`
+/// A self-recording composed chain (`rolling::mean(w, c) @ (clock, values)`)
+/// agrees bit-for-bit with the hoisted spelling (one shared `series::record_on`
 /// feeding `rolling::series_mean(w, c)`).
 ///
 /// The two spellings differ in more than syntax: the self-recording form gives
@@ -300,19 +308,21 @@ fn self_recording_chain_matches_hoisted_record() {
 
     let mut b = Builder::new();
     let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
+    let xc = b.segment(clock::always(), xv);
 
-    // Self-recording: each `rolling::mean` buffers the live array port itself.
+    // Self-recording: each `rolling::mean` buffers the live stream itself.
     let live = b.segment(
         segment!(
-            |x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-                elem::sub() @ (rolling::mean(fast, 1) @ x, rolling::mean(slow, 1) @ x)
+            |c: ClockPort, x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+                elem::sub()
+                    @ (rolling::mean(fast, 1) @ (c, x), rolling::mean(slow, 1) @ (c, x))
             }
         ),
-        xv,
+        (xc, xv),
     );
 
     // Hoisted: one shared record, two window operators reading it.
-    let rec = b.segment(series::record(32, false), xv);
+    let rec = b.segment(series::record_on(32, false), (xc, xv));
     let h_fast = b.segment(rolling::series_mean(fast, 1), rec);
     let h_slow = b.segment(rolling::series_mean(slow, 1), rec);
     let hoisted = b.segment(elem::sub(), (h_fast, h_slow));
@@ -359,7 +369,7 @@ fn rejoining_cone_recomputes_once_per_generation() {
     let (sb, bv) = b.source(array::scalar(0.0_f64));
     let sum = b.segment(elem::add(), (av, bv));
     let out = b.segment(elem::mul(), (sum, av));
-    let runs = b.segment(count::<0>(), out);
+    let runs = b.segment(runs::<0>(), out);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -403,11 +413,12 @@ fn coalesced_sources_stabilize_once_over_the_union() {
     let mut b = Builder::new();
     let (sa, av) = b.source(array::scalar(0.0_f64));
     let (sb, bv) = b.source(array::scalar(0.0_f64));
-    let runs_a = b.segment(count::<0>(), av);
-    let runs_b = b.segment(count::<0>(), bv);
+    let runs_a = b.segment(runs::<0>(), av);
+    let runs_b = b.segment(runs::<0>(), bv);
     let sum = b.segment(elem::add(), (av, bv));
-    let runs_sum = b.segment(count::<0>(), sum);
-    let rec = b.segment(series::record_all(), sum);
+    let runs_sum = b.segment(runs::<0>(), sum);
+    let sum_clock = b.segment(clock::always(), sum);
+    let rec = b.segment(series::record_all(), (sum_clock, sum));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -455,26 +466,30 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
     let mut b = Builder::new();
     let (sa, av) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
     let (sb, bv) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
+    let ca = b.segment(clock::always(), av);
+    let cb = b.segment(clock::always(), bv);
 
     let spread = b.segment(
         segment!(
-            |x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-                elem::sub() @ (rolling::mean(3, 1) @ x, rolling::mean(7, 1) @ x)
+            |c: ClockPort, x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+                elem::sub()
+                    @ (rolling::mean(3, 1) @ (c, x), rolling::mean(7, 1) @ (c, x))
             }
         ),
-        av,
+        (ca, av),
     );
     let gated = b.segment(
-        event::filter(|a: ArrayView<f64, 1>| a.to_contiguous()[0] > 0.0),
-        spread,
+        clock::filter(|a: ArrayView<f64, 1>| a.to_contiguous()[0] > 0.0),
+        (ca, spread),
     );
 
-    let f2 = b.segment(rolling::mean(3, 1), bv);
-    let s2 = b.segment(rolling::mean(7, 1), bv);
+    let f2 = b.segment(rolling::mean(3, 1), (cb, bv));
+    let s2 = b.segment(rolling::mean(7, 1), (cb, bv));
     let d2 = b.segment(elem::sub(), (f2, s2));
 
-    let join = b.segment(elem::add(), (gated, d2));
-    let lagged = b.segment(rolling::lag(2), join);
+    let cj = b.segment(clock::and(), (gated, cb));
+    let join = b.segment(elem::add(), (spread, d2));
+    let lagged = b.segment(rolling::lag(2), (cj, join));
     let out = b.segment(elem::mul(), (join, lagged));
 
     let mut g = b.build();
@@ -494,7 +509,7 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
             *g.state_mut(sb) = arr1(vec![y, y - 1.0, y + 2.0, y * 0.25]);
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
-        let mut row = bits(g.view(gated));
+        let mut row = bits(g.view(spread));
         row.extend(bits(g.view(d2)));
         row.extend(bits(g.view(out)));
         rows.push(row);
@@ -504,20 +519,20 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
 
 /// One source fans out to `branches` independent gate → record / gate → count
 /// chains with per-branch thresholds; returns each branch's recorded values and
-/// recompute count.
+/// pulse count.
 fn run_fanout(workers: usize, branches: usize, path: &[f64]) -> Vec<(Vec<f64>, usize)> {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
     let probes: Vec<_> = (0..branches)
         .map(|k| {
             let threshold = k as f64 * 15.0;
             let gate = b.segment(
-                event::filter(move |a: ArrayView<f64, 0>| a.to_contiguous()[0] > threshold),
+                clock::filter(move |a: ArrayView<f64, 0>| a.to_contiguous()[0] > threshold),
                 srcv,
             );
             (
-                b.segment(series::record_all(), gate),
-                b.segment(count::<0>(), gate),
+                b.segment(series::record_all(), (gate, srcv.1)),
+                b.segment(count::<0>(), (gate, srcv.1)),
             )
         })
         .collect();
@@ -534,24 +549,22 @@ fn run_fanout(workers: usize, branches: usize, path: &[f64]) -> Vec<(Vec<f64>, u
         .collect()
 }
 
-/// `branches` concurrent *stateful* chains (gate → rolling mean → recompute
+/// `branches` concurrent *stateful* chains (gate → rolling mean → pulse
 /// counter), each gating on a different divisor, over `gens` generations.
 fn run_stateful_stress(workers: usize, branches: usize, gens: usize) -> Vec<usize> {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
     let counters: Vec<_> = (0..branches)
         .map(|k| {
             let divisor = k + 2;
             let gate = b.segment(
-                event::filter(move |a: ArrayView<f64, 0>| {
+                clock::filter(move |a: ArrayView<f64, 0>| {
                     (a.to_contiguous()[0] as usize).is_multiple_of(divisor)
                 }),
                 srcv,
             );
-            let _smoothed = b.segment(rolling::mean(3, 1), gate);
-            // The eventful-batch probe sits on the gate's event edge: the
-            // smoothed output is a state array, which is always current.
-            b.segment(count::<0>(), gate)
+            let _smoothed = b.segment(rolling::mean(3, 1), (gate, srcv.1));
+            b.segment(count::<0>(), (gate, srcv.1))
         })
         .collect();
     let mut g = b.build();
@@ -569,7 +582,7 @@ fn run_stateful_stress(workers: usize, branches: usize, gens: usize) -> Vec<usiz
 ///
 /// This is the cleanest statement of the parallelism invariant: worker count is
 /// a scheduling detail, never a semantic one. The cone deliberately mixes a
-/// fused node, an unfused chain, a gate whose `notify` decides whether a
+/// fused node, an unfused chain, a gate whose pulse decides whether a
 /// downstream lag advances, and a rejoin — so a missing dependency edge, or a
 /// node run before its producer, shows up as a differing bit pattern rather than
 /// as a crash.
@@ -596,8 +609,8 @@ fn pool_size_does_not_change_results() {
 ///
 /// Sixteen sibling cones with *different* thresholds run concurrently off one
 /// source: if a worker ever scattered a result into the wrong branch's slot, or
-/// if two branches shared a gate's retained value, the per-branch expectations
-/// below could not all hold at once.
+/// if two branches shared a gate's state, the per-branch expectations below
+/// could not all hold at once.
 #[test]
 fn parallel_fanout_matches_sequential() {
     const BRANCHES: usize = 16;
@@ -614,7 +627,7 @@ fn parallel_fanout_matches_sequential() {
         let threshold = k as f64 * 15.0;
         let expected: Vec<f64> = path.iter().copied().filter(|&v| v > threshold).collect();
         assert_eq!(recorded, &expected, "branch {k}: recorded values");
-        assert_eq!(*hits, expected.len(), "branch {k}: recompute count");
+        assert_eq!(*hits, expected.len(), "branch {k}: pulse count");
     }
     // The thresholds must actually bite, or every branch would be the same test.
     assert!(
@@ -626,7 +639,7 @@ fn parallel_fanout_matches_sequential() {
 /// Many concurrent stateful nodes over hundreds of generations keep exactly
 /// their own state: no lost, duplicated or cross-branch increments.
 ///
-/// A recompute counter is the sharpest probe for a state race, because a single
+/// A pulse counter is the sharpest probe for a state race, because a single
 /// misplaced run is a permanent off-by-one rather than a value that happens to
 /// converge later. Twenty-four branches × 400 generations on eight workers give
 /// the scheduler ample opportunity to double-run or skip a node, and the

@@ -48,19 +48,16 @@ class InformationCoefficient:
     def __init__(self, num_stocks: int) -> None:
         self._num_stocks = num_stocks
 
-    def init(self, inputs, timestamp: int) -> InformationCoefficientState:
+    def init(self, inputs) -> InformationCoefficientState:
         return InformationCoefficientState(num_stocks=self._num_stocks)
 
     @staticmethod
     def compute(
-        state: InformationCoefficientState,
         inputs,
-        output,
+        state: InformationCoefficientState,
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        predictions, target = inputs
-        predictions_produced, target_produced = produced
+    ) -> np.ndarray | None:
+        predictions_produced, predictions, target_produced, target = inputs
 
         # Accumulate the cross-sectional correlation on each target tick.
         if target_produced and state.predictions is not None:
@@ -75,24 +72,23 @@ class InformationCoefficient:
 
         # Gate: new prediction?
         if not predictions_produced:
-            return False
+            return None
 
         # First prediction stores scores without emitting.
         if not state.initialized:
             state.initialized = True
             state.predictions = predictions.value()
-            return False
+            return None
 
         # Emit mean daily IC over the evaluation period.
         mean_ic = state.sum_ic / max(state.count, 1)
-        output.write(np.array(mean_ic, dtype=np.float64))
 
         # Update stored predictions and reset accumulators.
         state.predictions = predictions.value()
         state.sum_ic = 0.0
         state.count = 0
 
-        return True
+        return np.array(mean_ic, dtype=np.float64)
 
 
 def build(**kwargs) -> InformationCoefficient:

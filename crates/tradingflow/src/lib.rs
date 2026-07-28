@@ -17,13 +17,13 @@
 //! rolling mean, and prints the resulting series.
 //!
 //! ```rust
-//! use tradingflow::clock::UnixClock;
 //! use tradingflow::data::*;
 //! use tradingflow::graph::*;
-//! use tradingflow::operators::{rolling, series};
+//! use tradingflow::operators::{clock, rolling, series};
 //! use tradingflow::ports::*;
 //! use tradingflow::segment;
-//! use tradingflow::sources::basic::*;
+//! use tradingflow::sources::basic;
+//! use tradingflow::time::*;
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -44,22 +44,23 @@
 //!     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
 //!
 //!     // Build the graph.
-//!     let mut b = Builder::new(UnixClock);
-//!     let prices = b.source(array_source(Array::scalar(0.0), data));
-//!     let mean = b.segment(rolling::mean(10, 1), prices);
-//!     let mean_series = b.segment(series::record_all(), mean);
+//!     let mut b = Builder::new(UnixTime);
+//!     let prices = b.source(basic::array_source(Array::scalar(0.0), data));
+//!     let daily = b.segment(clock::always(), prices);
+//!     let mean = b.segment(rolling::mean(10, 1), (daily, prices));
+//!     let mean_series = b.segment(series::record_all(), (daily, mean));
 //!
 //!     // Alternatively, one can use `segment!` to fuse operators into a
 //!     // single segment.
 //!     let mean_series_fuse = b.segment(
 //!         segment!(
-//!             |prices: ArrayPort<f64, 0>| -> SeriesPort<f64, 0> {
-//!                 let mean = rolling::mean(10, 1) @ prices;
-//!                 let mean_series = series::record_all() @ mean;
+//!             |daily: ClockPort, prices: ArrayPort<f64, 0>| -> SeriesPort<f64, 0> {
+//!                 let mean = rolling::mean(10, 1) @ (daily, prices);
+//!                 let mean_series = series::record_all() @ (daily, mean);
 //!                 mean_series
 //!             }
 //!         ),
-//!         prices,
+//!         (daily, prices),
 //!     );
 //!
 //!     // Finalize the graph.
@@ -99,10 +100,10 @@ pub use tradingflow_data as data;
 pub use tradingflow_graph as graph;
 pub use tradingflow_macros as macros;
 
-pub mod clock;
 pub mod operators;
 pub mod ports;
 pub mod sources;
+pub mod time;
 
 pub use macros::segment;
 

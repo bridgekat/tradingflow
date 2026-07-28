@@ -107,24 +107,3 @@ pub fn standardize<T: Scalar + Float, const N: usize>()
 -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Standardize::new()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn infinity_is_treated_as_missing() {
-        // ±∞ must not poison the mean/variance; only the finite entries count,
-        // and the infinite slots come back as NaN.
-        let x = Array::from_parts([4], vec![1.0_f64, 2.0, 3.0, f64::INFINITY].into());
-        let mut out = Array::zeros([4]);
-        standardize_into(&mut out, x.view());
-        let z = out.data();
-        // Finite [1,2,3]: mean 2, pop σ = sqrt(2/3).
-        let s = (2.0_f64 / 3.0).sqrt();
-        assert!((z[0] - (1.0 - 2.0) / s).abs() < 1e-12);
-        assert!((z[1] - 0.0).abs() < 1e-12);
-        assert!((z[2] - (3.0 - 2.0) / s).abs() < 1e-12);
-        assert!(z[3].is_nan());
-    }
-}

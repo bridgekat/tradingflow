@@ -33,7 +33,7 @@ impl<T: Scalar + Float> Accumulator<T> for ReturnMeanAccumulator<T> {
 }
 
 /// Average per-period percentage return of a net-asset-value scalar, where
-/// each period is specified by a clock pulse.
+/// each period is specified by a clock signal.
 pub fn return_mean<T: Scalar + Float>()
 -> impl Segment<Inputs = (ClockPort, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
@@ -41,7 +41,7 @@ pub fn return_mean<T: Scalar + Float>()
 }
 
 /// Average per-period log return of a net-asset-value scalar, where
-/// each period is specified by a clock pulse.
+/// each period is specified by a clock signal.
 pub fn log_return_mean<T: Scalar + Float>()
 -> impl Segment<Inputs = (ClockPort, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {

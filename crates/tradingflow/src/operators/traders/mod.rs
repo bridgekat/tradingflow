@@ -1,4 +1,4 @@
-//! Trader operators (order execution and simulation).
+//! Trading simulation operators.
 //!
 //! A trader turns a strategy's target weights into a simulated portfolio NAV: it
 //! reinvests dividends, executes rebalances against close prices, marks the book
@@ -8,10 +8,11 @@
 //! realistic-cost [`SimpleTrader`], and the stochastic [`RandomTrader`] are all
 //! native Rust; there are no Python trader implementations.
 //!
-//! Each takes the five `[num_stocks]` array views
-//! `(positions, close, adjusts, upper_limit, lower_limit)` as a 5-tuple of
-//! `ArrayPort<f64, 1>`, and outputs `[2]` = `[holdings_value, cash]`.
-//! Only the **positions** notify flag is consulted (one-tick-delayed execution).
+//! Each takes `((positions), (close), adjusts, upper_limit, lower_limit)`
+//! over `[num_stocks]` arrays — positions and close as `(ClockPort,
+//! ArrayPort<f64, 1>)` event streams (the positions clock marks a new target,
+//! executed one tick delayed on the next close pulse), the rest as plain
+//! arrays — and outputs `[2]` = `[holdings_value, cash]`.
 //!
 //! One operator per submodule; the private `core` submodule holds the port
 //! aliases and the realistic-execution machinery shared by [`SimpleTrader`] and

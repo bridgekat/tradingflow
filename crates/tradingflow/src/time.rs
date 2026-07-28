@@ -3,28 +3,24 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::data::{Duration, Instant};
-use crate::graph::Clock;
+use crate::graph::Time;
 
-/// The default wall clock for use by the [`Graph`](super::graph::Graph) event
-/// loop. It assumes and outputs [`Instant`] as UNIX nanoseconds since
-/// `1970-01-01 00:00:00` UTC.
+/// A standard wall clock implementation which assumes and outputs [`Instant`]
+/// as UNIX nanoseconds since `1970-01-01 00:00:00` UTC.
 ///
 /// This clock is not leap-aware: during UTC leap seconds, a single "UNIX
 /// second" spans two SI seconds, by definition.
-pub struct UnixClock;
+pub struct UnixTime;
 
-impl Clock<Instant> for UnixClock {
+impl Time<Instant> for UnixTime {
     fn now(&self) -> Instant {
         let unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("system clock is before the Unix epoch");
+            .expect("system clock is before the UNIX epoch");
         Instant::from_offset(Duration::from_nanos(unix.as_nanos() as i64))
     }
 
     async fn wait_until(&mut self, t: Instant) {
-        // Sleep to just past the target, re-checking after each wake: the
-        // contract is strict (`now() > t` on return), and the timer may round
-        // or wake early.
         loop {
             let now = self.now();
             if now > t {

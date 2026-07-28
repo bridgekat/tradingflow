@@ -6,12 +6,13 @@ use crate::data::SeriesView;
 use crate::data::{Array, Duration, Instant};
 use crate::graph::pool::Pool;
 use crate::graph::typed::Builder;
-use crate::operators::{array, series};
-use crate::ports::{ArrayPort, ArrayPorts, SeriesPort};
+use crate::operators::{array, clock, series};
+use crate::ports::{ArrayPort, ArrayPorts, ClockPort, SeriesPort};
 
-/// The last row of a recorded event stream — the python operators emit event
-/// arrays, whose wires reset to `NaN` after every generation, so the value an
-/// assertion wants is the newest row of a record behind the operator.
+/// The last row of a recorded event stream — the python operators emit
+/// `(clock, values)` streams whose records append one row per produced
+/// compute, so the value an assertion wants is the newest row of a record
+/// behind the operator.
 fn last_row<const N: usize>(v: SeriesView<'_, f64, N>) -> Vec<f64> {
     let rows = v.to_contiguous();
     let width = v.extents().iter().product::<usize>().max(1);
@@ -30,19 +31,18 @@ class S:
     prev: object = None
     initialized: bool = False
 class Turnover:
-    def init(self, inputs, timestamp):
+    def init(self, inputs):
         return S()
     @staticmethod
-    def compute(state, inputs, output, timestamp, produced):
+    def compute(inputs, state, timestamp):
         current = np.where(np.isfinite(inputs[0].value()), inputs[0].value(), 0.0)
         if not state.initialized:
             state.prev = current
             state.initialized = True
-            return False
+            return None
         turnover = float(np.sum(np.abs(current - state.prev)))
         state.prev = current
-        output.write(np.array(turnover, dtype=np.float64))
-        return True
+        return np.array(turnover, dtype=np.float64)
 __op__ = Turnover()
 "#;
 
@@ -84,16 +84,16 @@ fn py_class_operator_turnover() {
 const HIST_DOT: &str = r#"
 import numpy as np
 class HistDot:
-    def init(self, inputs, timestamp):
+    def init(self, inputs):
         return {}
     @staticmethod
-    def compute(state, inputs, output, timestamp, produced):
+    def compute(inputs, state, timestamp):
         weights = inputs[0].value()          # (N,)
         hist = inputs[1].values()            # (T, N)
         # mean over time of <hist[t], weights>
         val = float(np.mean(hist @ weights)) if len(inputs[1]) > 0 else 0.0
-        output.write(np.array(val, dtype=np.float64))
-        return True
+        # A bare float exercises the host's `ascontiguousarray` normalization.
+        return val
 __op__ = HistDot()
 "#;
 
@@ -104,7 +104,10 @@ fn py_class_operator_heterogeneous_series() {
     // Sources lend the view currency directly — `Record` wires straight on.
     let (weights_cell, weights) = b.source(array::from_parts([2], vec![1.0_f64, 1.0].into()));
     let (feed_cell, feed) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
-    let series = b.segment(series::record_all(), feed);
+    // A raw source is a plain array; derive its poke clock so the record
+    // appends one row per poke.
+    let feed_clock = b.segment(clock::always(), feed);
+    let series = b.segment(series::record_all(), (feed_clock, feed));
     let out = b.segment(
         // Scalar output (`vec![]`), so NO = 0.
         PyClassOperator::<(ArrayPort<f64, 1>, SeriesPort<f64, 1>), 0>::from_source(
@@ -147,13 +150,12 @@ import numpy as np
 class Scaler:
     def __init__(self, scale):
         self.scale = scale
-    def init(self, inputs, timestamp):
+    def init(self, inputs):
         return {"scale": self.scale}
     @staticmethod
-    def compute(state, inputs, output, timestamp, produced):
+    def compute(inputs, state, timestamp):
         total = float(np.sum(inputs[0].value())) * state["scale"]
-        output.write(np.array(total, dtype=np.float64))
-        return True
+        return np.array(total, dtype=np.float64)
 def build(scale=1.0):
     return Scaler(scale)
 "#,
@@ -196,12 +198,19 @@ fn pyhost_linear_regression_predictor() {
     let (universe_cell, universe) = b.source(array::from_parts([N], vec![1.0; N].into()));
     let (feat_feed_cell, feat_feed) = b.source(array::zeros::<f64, 2>([N, F]));
     let (tgt_feed_cell, tgt_feed) = b.source(array::zeros::<f64, 1>([N]));
-    // Sources lend the view currency directly — `Record` wires straight on.
-    let feat_series = b.segment(series::record_all(), feat_feed);
-    let tgt_series = b.segment(series::record_all(), tgt_feed);
+    let rebalance_clock = b.segment(clock::always(), universe);
+    let feat_clock = b.segment(clock::always(), feat_feed);
+    let feat_series = b.segment(series::record_all(), (feat_clock, feat_feed));
+    let tgt_clock = b.segment(clock::always(), tgt_feed);
+    let tgt_series = b.segment(series::record_all(), (tgt_clock, tgt_feed));
     let pred = b.segment(
         // Output is the (N,) prediction → NO = 1 (the default).
-        PyClassOperator::<(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)>::from_module(
+        PyClassOperator::<(
+            ClockPort,
+            ArrayPort<f64, 1>,
+            SeriesPort<f64, 2>,
+            SeriesPort<f64, 1>,
+        )>::from_module(
             "tradingflow.predictors.mean.linear_regression",
             PyParams::new()
                 .int("num_stocks", N as i64)
@@ -210,7 +219,7 @@ fn pyhost_linear_regression_predictor() {
                 .int("target_offset", 1),
             vec![N],
         ),
-        (universe, feat_series, tgt_series),
+        (rebalance_clock, universe, feat_series, tgt_series),
     );
     let rec = b.segment(series::record_all(), pred);
     let mut g = b.build();

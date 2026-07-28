@@ -56,13 +56,13 @@ pub fn rem<T: Scalar + Rem<U, Output: Scalar>, U: Scalar, const N: usize>() -> i
     array::binary_map(|a: &T, b: &U| a.clone().rem(b.clone()))
 }
 
-/// Elementwise bitwise NOT: [`Not::not`].
+/// Elementwise bitwise not: [`Not::not`].
 pub fn not<T: Scalar + Not<Output: Scalar>, const N: usize>()
 -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T::Output, N>, Context = Instant> {
     array::map(|x: &T| x.clone().not())
 }
 
-/// Elementwise bitwise AND: [`BitAnd::bitand`].
+/// Elementwise bitwise and: [`BitAnd::bitand`].
 pub fn bitand<T: Scalar + BitAnd<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
@@ -71,7 +71,7 @@ pub fn bitand<T: Scalar + BitAnd<U, Output: Scalar>, U: Scalar, const N: usize>(
     array::binary_map(|a: &T, b: &U| a.clone().bitand(b.clone()))
 }
 
-/// Elementwise bitwise OR: [`BitOr::bitor`].
+/// Elementwise bitwise or: [`BitOr::bitor`].
 pub fn bitor<T: Scalar + BitOr<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
@@ -80,7 +80,7 @@ pub fn bitor<T: Scalar + BitOr<U, Output: Scalar>, U: Scalar, const N: usize>() 
     array::binary_map(|a: &T, b: &U| a.clone().bitor(b.clone()))
 }
 
-/// Elementwise bitwise XOR: [`BitXor::bitxor`].
+/// Elementwise bitwise exclusive or: [`BitXor::bitxor`].
 pub fn bitxor<T: Scalar + BitXor<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,

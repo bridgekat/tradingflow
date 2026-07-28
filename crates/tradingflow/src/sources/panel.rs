@@ -29,20 +29,22 @@
 //! Each emitted cross-section reflects **only that date's rows** (absent symbols
 //! are `NaN`); there is no carry-forward and no window-start seeding. This is the
 //! event-driven behaviour of the old per-symbol sources: a source ticks only on
-//! its own dates, and any "carry the last value" / "NaN-fill" is the job of the
-//! downstream [`stack`](crate::operators::array::stack) / [`eventify`](crate::operators::event::eventify)
-//! operators — not the source. With `with_time_range`, rows before `start` are
-//! simply skipped (no last-value-before-`start` is carried in).
+//! its own dates (marked by its output clock), and any per-element "carry the
+//! last value" / "NaN-fill" is the job of downstream operators — not the
+//! source. With `with_time_range`, rows before `start` are simply skipped (no
+//! last-value-before-`start` is carried in).
 //!
 //! # Irregular kinds & message-passing operators
 //!
 //! For daily prices every symbol ticks on (almost) every date, so the panel is
 //! dense. For **irregular** kinds (dividends, financial reports) the panel emits
 //! at the *union* of all symbols' event dates — which need not include every
-//! trading day. A per-stock `Select` therefore still fires on that union cadence
-//! with `NaN` where the stock had no row; a [`filter`](crate::operators::event::filter) that
-//! drops the all-`NaN` ("no data") rows recovers that stock's true event stream,
-//! so message-passing operators (e.g. [`ForwardAdjust`](crate::operators::feature::stock::ForwardAdjust))
+//! trading day. The `[N, 1]` row clock says which symbols actually have a row
+//! on a pulse: a per-stock `Select` of the values fires on the union cadence
+//! with `NaN` where the stock had no row, and selecting the stock's row-clock
+//! element (via [`as_clock_map`](crate::operators::clock::as_clock_map))
+//! recovers that stock's true event cadence, so per-element event consumers
+//! (e.g. [`forward_adjust`](crate::operators::feature::stock::forward_adjust))
 //! see each real event exactly once — reproducing the per-symbol stream.
 //!
 //! # Timestamps
@@ -80,8 +82,8 @@
 //!
 //! [`with_report_date`](ParquetFinancialReportPanelSource::with_report_date) prepends
 //! `[year, day_of_year]` of the **report** date (for
-//! [`Annualize`](crate::operators::feature::stock::Annualize)). A per-stock pipeline is recovered
-//! downstream by `Select` + a NaN `Filter`.
+//! [`annualize`](crate::operators::feature::stock::annualize)). A per-stock pipeline is
+//! recovered downstream by selecting the stock's value row and row-clock element.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -98,7 +100,7 @@ use tokio::sync::mpsc;
 
 use crate::data::{Array, ArrayView, Duration, Instant};
 use crate::graph::{Event, Source};
-use crate::ports::ArrayPort;
+use crate::ports::{ArrayPort, ClockArrayPort};
 
 // ===========================================================================
 // ParquetPanelSource — the general (date, symbol, values...) panel.
@@ -238,18 +240,27 @@ fn nan_panel(shape: [usize; 2]) -> Array<f64, 2> {
     Array::from_parts(shape, vec![f64::NAN; shape.iter().product()].into())
 }
 
+/// The all-false initial `[N, 1]` row clock (broadcast against `[N, K]`
+/// values downstream).
+fn row_clock(shape: [usize; 2]) -> Array<bool, 2> {
+    Array::from_parts([shape[0], 1], vec![false; shape[0]].into())
+}
+
 fn panel_write(
     state: &mut PanelState,
     ts: Instant,
     batch: Vec<RowUpdate>,
     output: &mut Array<f64, 2>,
+    rows: &mut Array<bool, 2>,
 ) -> usize {
     let Some(first) = batch.first() else { return 0 };
     let k = first.vals.len();
     let buf = output.data_mut();
+    let rows = rows.data_mut();
     if state.last_ts.is_some_and(|last| ts > last) {
         for &r in &state.dirty {
             buf[r * k..r * k + k].fill(f64::NAN);
+            rows[r] = false;
         }
         state.dirty.clear();
     }
@@ -258,6 +269,7 @@ fn panel_write(
     for ev in batch {
         let base = ev.row * k;
         buf[base..base + k].copy_from_slice(&ev.vals);
+        rows[ev.row] = true;
         state.dirty.push(ev.row);
     }
     n
@@ -266,8 +278,8 @@ fn panel_write(
 impl Source for ParquetPanelSource {
     type Instant = Instant;
     type Payload = Vec<RowUpdate>;
-    type Outputs = ArrayPort<f64, 2>;
-    type State = (PanelState, Array<f64, 2>);
+    type Outputs = (ClockArrayPort<2>, ArrayPort<f64, 2>);
+    type State = (PanelState, Array<f64, 2>, Array<bool, 2>);
 
     fn size_hint(&self) -> Option<usize> {
         // Progress is measured in **emitted long-table rows** (one event per
@@ -292,7 +304,8 @@ impl Source for ParquetPanelSource {
     ) {
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
-        let state = (PanelState::default(), nan_panel(self.out_shape()));
+        let shape = self.out_shape();
+        let state = (PanelState::default(), nan_panel(shape), row_clock(shape));
         let (hist_tx, hist_rx) = mpsc::channel(16);
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_panel(&self, &hist_tx) {
@@ -302,19 +315,19 @@ impl Source for ParquetPanelSource {
         (state, receiver_stream(hist_rx))
     }
 
-    fn reset(state: &mut Self::State) -> ArrayView<'_, f64, 2> {
-        // Event source: the quiescent panel carries no events (all-NaN
-        // broadcast preserving the cross-section extents).
-        ArrayView::full(state.1.view().extents(), &f64::NAN)
+    fn reset(state: &mut Self::State) -> (ArrayView<'_, bool, 2>, ArrayView<'_, f64, 2>) {
+        // Quiescent between emissions: row clock low, last cross-section
+        // retained. The broadcast all-false view is O(1).
+        (ArrayView::full(state.2.extents(), &false), state.1.view())
     }
 
-    fn output(state: &mut Self::State) -> ArrayView<'_, f64, 2> {
-        state.1.view()
+    fn output(state: &mut Self::State) -> (ArrayView<'_, bool, 2>, ArrayView<'_, f64, 2>) {
+        (state.2.view(), state.1.view())
     }
 
     fn write(payload: Vec<RowUpdate>, instant: Instant, state: &mut Self::State) -> usize {
-        let (state, output) = state;
-        panel_write(state, instant, payload, output)
+        let (state, output, rows) = state;
+        panel_write(state, instant, payload, output, rows)
     }
 }
 
@@ -707,8 +720,8 @@ struct ReportRow {
 impl Source for ParquetFinancialReportPanelSource {
     type Instant = Instant;
     type Payload = Vec<RowUpdate>;
-    type Outputs = ArrayPort<f64, 2>;
-    type State = (PanelState, Array<f64, 2>);
+    type Outputs = (ClockArrayPort<2>, ArrayPort<f64, 2>);
+    type State = (PanelState, Array<f64, 2>, Array<bool, 2>);
 
     fn size_hint(&self) -> Option<usize> {
         // Progress is in emitted long-table rows. The effective-date emits (after
@@ -728,7 +741,8 @@ impl Source for ParquetFinancialReportPanelSource {
         impl Stream<Item = Event<Vec<RowUpdate>, Instant>> + 'static,
     ) {
         // One item per tick (a batch of that date's reports); small buffer.
-        let state = (PanelState::default(), nan_panel(self.out_shape()));
+        let shape = self.out_shape();
+        let state = (PanelState::default(), nan_panel(shape), row_clock(shape));
         let (hist_tx, hist_rx) = mpsc::channel(16);
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_reports(&self, &hist_tx) {
@@ -741,19 +755,19 @@ impl Source for ParquetFinancialReportPanelSource {
         (state, receiver_stream(hist_rx))
     }
 
-    fn reset(state: &mut Self::State) -> ArrayView<'_, f64, 2> {
-        // Event source: the quiescent panel carries no events (all-NaN
-        // broadcast preserving the cross-section extents).
-        ArrayView::full(state.1.view().extents(), &f64::NAN)
+    fn reset(state: &mut Self::State) -> (ArrayView<'_, bool, 2>, ArrayView<'_, f64, 2>) {
+        // Quiescent between emissions: row clock low, last cross-section
+        // retained. The broadcast all-false view is O(1).
+        (ArrayView::full(state.2.extents(), &false), state.1.view())
     }
 
-    fn output(state: &mut Self::State) -> ArrayView<'_, f64, 2> {
-        state.1.view()
+    fn output(state: &mut Self::State) -> (ArrayView<'_, bool, 2>, ArrayView<'_, f64, 2>) {
+        (state.2.view(), state.1.view())
     }
 
     fn write(payload: Vec<RowUpdate>, instant: Instant, state: &mut Self::State) -> usize {
-        let (state, output) = state;
-        panel_write(state, instant, payload, output)
+        let (state, output, rows) = state;
+        panel_write(state, instant, payload, output, rows)
     }
 }
 

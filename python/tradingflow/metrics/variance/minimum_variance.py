@@ -81,7 +81,7 @@ class MinimumVariance:
     def __init__(self, num_stocks: int) -> None:
         self._num_stocks = num_stocks
 
-    def init(self, inputs, timestamp: int) -> MinimumVarianceState:
+    def init(self, inputs) -> MinimumVarianceState:
         return MinimumVarianceState(num_stocks=self._num_stocks)
 
     @staticmethod
@@ -107,14 +107,11 @@ class MinimumVariance:
 
     @staticmethod
     def compute(
-        state: MinimumVarianceState,
         inputs,
-        output,
+        state: MinimumVarianceState,
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        predictions, target = inputs
-        predictions_produced, target_produced = produced
+    ) -> np.ndarray | None:
+        predictions_produced, predictions, target_produced, target = inputs
 
         # Accumulate one-period portfolio linear return on each target
         # tick.  Target arrives as log returns; convert elementwise so
@@ -132,18 +129,17 @@ class MinimumVariance:
 
         # Gate: new prediction?
         if not predictions_produced:
-            return False
+            return None
 
         # First prediction stores weights without emitting.
         if not state.initialized:
             state.initialized = True
             MinimumVariance._set_weights(state, predictions.value())
-            return False
+            return None
 
         # Emit realized variance over the evaluation period.
         mean = state.sum_r / max(state.count, 1)
         variance = state.sum_r_sq / max(state.count, 1) - mean * mean
-        output.write(np.array(variance, dtype=np.float64))
 
         # Update weights and reset accumulators.
         MinimumVariance._set_weights(state, predictions.value())
@@ -151,7 +147,7 @@ class MinimumVariance:
         state.sum_r_sq = 0.0
         state.count = 0
 
-        return True
+        return np.array(variance, dtype=np.float64)
 
 
 def _gmv_weights(sigma: np.ndarray) -> np.ndarray:

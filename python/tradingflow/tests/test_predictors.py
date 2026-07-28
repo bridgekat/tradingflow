@@ -52,7 +52,7 @@ def _make_panel(seed: int = 0):
         feats.append(x.astype(np.float64))
         targs.append(y.astype(np.float64))
 
-    universe = FakeArrayView(np.ones(N), writable=False)
+    universe = FakeArrayView(np.ones(N))
     features_series = FakeSeriesView(feats, elem_shape=(N, F))
     target_series = FakeSeriesView(targs, elem_shape=(N,))
     return universe, features_series, target_series
@@ -62,30 +62,24 @@ def _drive(op, mean_output: bool, *, n_calls: int = 3, seed: int = 0):
     """Run init + n_calls of compute(); return list of written outputs.
 
     `mean_output` selects the output shape: (N,) for mean predictors,
-    (N, N) for variance predictors.  The universe always "produces"
-    (rebalance tick).  We also fire one non-produced tick to verify it is
-    ignored.
+    (N, N) for variance predictors.  The leading rebalance clock pulses on
+    every call.  We also fire one non-pulsed tick to verify it is ignored.
     """
     universe, features_series, target_series = _make_panel(seed)
-    inputs = (universe, features_series, target_series)
+    views = (universe, features_series, target_series)
     out_shape = (N,) if mean_output else (N, N)
-    output = FakeArrayView(np.zeros(out_shape), writable=True)
 
-    state = op.init(inputs, timestamp=0)
+    state = op.init((False, *views))
 
-    # Non-rebalance tick: universe did not produce -> compute returns False.
-    produced_false = (False, True, True)
-    emitted = op.compute(state, inputs, output, timestamp=0, produced=produced_false)
-    assert emitted is False, "non-rebalance tick must not emit"
+    # Non-rebalance tick: the clock did not pulse -> compute returns None.
+    assert op.compute((False, *views), state, 0) is None, "non-rebalance tick must not emit"
 
     outputs = []
     for k in range(n_calls):
-        produced = (True, True, True)
-        emitted = op.compute(state, inputs, output, timestamp=10 + k, produced=produced)
-        assert emitted is True, "rebalance tick must emit"
-        assert output.written is not None
-        assert output.written.shape == out_shape
-        outputs.append(output.written.copy())
+        emitted = op.compute((True, *views), state, 10 + k)
+        assert emitted is not None, "rebalance tick must emit"
+        assert emitted.shape == out_shape
+        outputs.append(emitted)
     return outputs
 
 
@@ -152,22 +146,21 @@ def test_mean_lasso():
         num_stocks=N, num_features=F, universe_size=N, target_offset=1, alpha=0.1
     )
     universe, features_series, target_series = _make_panel()
-    inputs = (universe, features_series, target_series)
-    output = FakeArrayView(np.zeros(N), writable=True)
-    state = op.init(inputs, timestamp=0)
+    inputs = (True, universe, features_series, target_series)
+    state = op.init(inputs)
 
     if not _HAS_CVXPY:
         raised = False
         try:
-            op.compute(state, inputs, output, timestamp=1, produced=(True, True, True))
+            op.compute(inputs, state, 1)
         except ImportError:
             raised = True
         assert raised, "lasso fit must raise ImportError without cvxpy"
         print("  mean.lasso OK (constructs/inits; fit blocked by missing cvxpy)")
         return
 
-    assert op.compute(state, inputs, output, timestamp=1, produced=(True, True, True))
-    assert np.all(np.isfinite(output.written)), "lasso must produce finite predictions"
+    mu = op.compute(inputs, state, 1)
+    assert mu is not None and np.all(np.isfinite(mu)), "lasso must produce finite predictions"
     print("  mean.lasso OK (cvxpy fit, finite output)")
 
 
@@ -248,27 +241,23 @@ def test_partial_universe_and_nan():
     uni[0] = 0.0
     feats[-1][1, :] = np.nan
 
-    universe = FakeArrayView(uni, writable=False)
+    universe = FakeArrayView(uni)
     features_series = FakeSeriesView(feats, elem_shape=(N, F))
     target_series = FakeSeriesView(targs, elem_shape=(N,))
-    inputs = (universe, features_series, target_series)
+    inputs = (True, universe, features_series, target_series)
 
     # Mean predictor: out-of-universe and NaN-feature stocks -> NaN.
     op = mean_sample.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1)
-    out = FakeArrayView(np.zeros(N), writable=True)
-    st = op.init(inputs, 0)
-    op.compute(st, inputs, out, 1, (True, True, True))
-    mu = out.written
+    st = op.init(inputs)
+    mu = op.compute(inputs, st, 1)
     assert np.isnan(mu[0]), "out-of-universe stock must be NaN"
     assert np.isnan(mu[1]), "NaN-feature stock must be NaN"
     assert np.all(np.isfinite(mu[2:])), "in-universe finite stocks must be finite"
 
     # Variance predictor: NaN rows/cols for dropped stocks.
     opv = var_sample.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1)
-    outv = FakeArrayView(np.zeros((N, N)), writable=True)
-    stv = opv.init(inputs, 0)
-    opv.compute(stv, inputs, outv, 1, (True, True, True))
-    sig = outv.written
+    stv = opv.init(inputs)
+    sig = opv.compute(inputs, stv, 1)
     assert np.all(np.isnan(sig[0, :])) and np.all(np.isnan(sig[:, 0]))
     assert np.all(np.isnan(sig[1, :])) and np.all(np.isnan(sig[:, 1]))
     sub = sig[2:, 2:]
@@ -341,7 +330,7 @@ def test_incremental_equivalence():
     true_beta = rng.normal(size=F)
     feats = [rng.normal(size=(N, F)) for _ in range(T)]
     targs = [feats[t] @ true_beta + 0.1 * rng.normal(size=N) for t in range(T)]
-    universe = FakeArrayView(np.ones(N), writable=False)
+    universe = FakeArrayView(np.ones(N))
     cfg = dict(num_stocks=N, num_features=F, universe_size=N, target_offset=1, min_periods=3)
 
     cases = [
@@ -350,18 +339,16 @@ def test_incremental_equivalence():
         ("Ridge rolling(10)", o_ridge.build(alpha=0.7, max_periods=10, **cfg), i_ridge.build(alpha=0.7, window=10, **cfg)),
     ]
     for name, op_o, op_i in cases:
-        full = (universe, FakeSeriesView(feats, elem_shape=(N, F)), FakeSeriesView(targs, elem_shape=(N,)))
-        so = op_o.init(full, 0)
-        si = op_i.init(full, 0)
+        full = (False, universe, FakeSeriesView(feats, elem_shape=(N, F)), FakeSeriesView(targs, elem_shape=(N,)))
+        so = op_o.init(full)
+        si = op_i.init(full)
         for t in range(2, T + 1):
             fv = FakeSeriesView(feats[:t], elem_shape=(N, F))
             tv = FakeSeriesView(targs[:t], elem_shape=(N,))
-            oo = FakeArrayView(np.zeros(N), writable=True)
-            oi = FakeArrayView(np.zeros(N), writable=True)
-            op_o.compute(so, (universe, fv, tv), oo, t, (True, True, True))
-            op_i.compute(si, (universe, fv, tv), oi, t, (True, True, True))
-            assert np.allclose(oo.written, oi.written, atol=1e-6, equal_nan=True), (
-                f"{name}: mismatch at t={t}, max|d|={np.nanmax(np.abs(oo.written - oi.written)):.3e}"
+            wo = op_o.compute((True, universe, fv, tv), so, t)
+            wi = op_i.compute((True, universe, fv, tv), si, t)
+            assert np.allclose(wo, wi, atol=1e-6, equal_nan=True), (
+                f"{name}: mismatch at t={t}, max|d|={np.nanmax(np.abs(wo - wi)):.3e}"
             )
     print("  incremental equivalence OK (OLS/Ridge, expanding + rolling)")
 
@@ -388,8 +375,8 @@ def test_incremental_all_samples():
 
     op = i_ridge.build(num_stocks=nc, num_features=F, universe_size=nc,
                        target_offset=off, alpha=alpha, min_periods=minp)
-    boot = (FakeArrayView(np.ones(nc)), FakeSeriesView(feats, elem_shape=(nc, F)), FakeSeriesView(targs, elem_shape=(nc,)))
-    si = op.init(boot, 0)
+    boot = (False, FakeArrayView(np.ones(nc)), FakeSeriesView(feats, elem_shape=(nc, F)), FakeSeriesView(targs, elem_shape=(nc,)))
+    si = op.init(boot)
     max_d = 0.0
     for t in range(2, T + 1):
         fl = [f.copy() for f in feats[:t]]
@@ -398,8 +385,7 @@ def test_incremental_all_samples():
         fv = FakeSeriesView(fl, elem_shape=(nc, F))
         tv = FakeSeriesView(targs[:t], elem_shape=(nc,))
         uni = universe_at(t)
-        oi = FakeArrayView(np.zeros(nc), writable=True)
-        op.compute(si, (FakeArrayView(uni), fv, tv), oi, t, (True, True, True))
+        wi = op.compute((True, FakeArrayView(uni), fv, tv), si, t)
 
         # Brute-force oracle: fit on ALL valid samples in the window, predict for
         # the current universe (with the min_periods + finite-feature mask).
@@ -421,12 +407,12 @@ def test_incremental_all_samples():
                 z = (fl[-1][mask] - p.x_mean) / p.x_std
                 mu[mask] = z @ p.beta + p.intercept
 
-        assert np.array_equal(np.isnan(mu), np.isnan(oi.written)), f"NaN-mask mismatch at t={t}"
-        assert np.allclose(mu, oi.written, atol=1e-6, equal_nan=True), (
-            f"all-samples mismatch at t={t}, max|d|={np.nanmax(np.abs(mu - oi.written)):.3e}"
+        assert np.array_equal(np.isnan(mu), np.isnan(wi)), f"NaN-mask mismatch at t={t}"
+        assert np.allclose(mu, wi, atol=1e-6, equal_nan=True), (
+            f"all-samples mismatch at t={t}, max|d|={np.nanmax(np.abs(mu - wi)):.3e}"
         )
         if np.any(np.isfinite(mu)):
-            max_d = max(max_d, float(np.nanmax(np.abs(mu - oi.written))))
+            max_d = max(max_d, float(np.nanmax(np.abs(mu - wi))))
     print(f"  incremental all-samples OK (max|d|={max_d:.2e})")
 
 
@@ -475,35 +461,33 @@ def test_incremental_tight_retention():
     true_beta = rng.normal(size=F)
     feats = [rng.normal(size=(N, F)) for _ in range(T)]
     targs = [feats[t] @ true_beta + 0.1 * rng.normal(size=N) for t in range(T)]
-    universe = FakeArrayView(np.ones(N), writable=False)
+    universe = FakeArrayView(np.ones(N))
     cfg = dict(num_stocks=N, num_features=F, universe_size=N,
                target_offset=off, alpha=alpha, min_periods=minp)
 
     op_o = i_ridge.build(**cfg)  # unbounded oracle
     op_b = i_ridge.build(**cfg)  # tightly retention-bounded
-    so = op_o.init((universe, FakeSeriesView(feats, elem_shape=(N, F)),
-                    FakeSeriesView(targs, elem_shape=(N,))), 0)
-    sb = op_b.init((universe, RetainedSeriesView(feats, T, window, (N, F)),
-                    RetainedSeriesView(targs, T, window, (N,))), 0)
+    so = op_o.init((False, universe, FakeSeriesView(feats, elem_shape=(N, F)),
+                    FakeSeriesView(targs, elem_shape=(N,))))
+    sb = op_b.init((False, universe, RetainedSeriesView(feats, T, window, (N, F)),
+                    RetainedSeriesView(targs, T, window, (N,))))
 
     rebalances = 0
     for t in range(1, T + 1):
-        produced = (t % every == 0, True, True)
+        pulse = t % every == 0
         fo = FakeSeriesView(feats[:t], elem_shape=(N, F))
         to = FakeSeriesView(targs[:t], elem_shape=(N,))
         fb = RetainedSeriesView(feats, t, window, (N, F))
         tb = RetainedSeriesView(targs, t, window, (N,))
-        oo = FakeArrayView(np.zeros(N), writable=True)
-        ob = FakeArrayView(np.zeros(N), writable=True)
-        eo = op_o.compute(so, (universe, fo, to), oo, t, produced)
+        wo = op_o.compute((pulse, universe, fo, to), so, t)
         # Raises IndexError here if per-tick folding ever reads an evicted row.
-        eb = op_b.compute(sb, (universe, fb, tb), ob, t, produced)
-        assert eo == eb, f"emit mismatch at t={t}"
-        if produced[0]:
+        wb = op_b.compute((pulse, universe, fb, tb), sb, t)
+        assert (wo is None) == (wb is None), f"emit mismatch at t={t}"
+        if pulse:
             rebalances += 1
-            assert np.allclose(oo.written, ob.written, atol=1e-9, equal_nan=True), (
+            assert np.allclose(wo, wb, atol=1e-9, equal_nan=True), (
                 f"bounded != unbounded at t={t}, "
-                f"max|d|={np.nanmax(np.abs(oo.written - ob.written)):.3e}"
+                f"max|d|={np.nanmax(np.abs(wo - wb)):.3e}"
             )
     assert rebalances > 0, "test fired no rebalances"
     print(f"  incremental tight retention OK ({rebalances} rebalances, window={window})")

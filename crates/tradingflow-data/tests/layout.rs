@@ -167,19 +167,6 @@ fn split_iter_split_extents() {
     let (offsets, sub) = l.transpose([1, 2, 0]).split_iter::<2, 1>();
     assert_eq!((sub.extents(), sub.strides()), ([2], [12]));
     assert_eq!(offsets.count(), 12);
-
-    // M > N - K: leading extent-1 padding, strided like `pad_ndim` so a
-    // contiguous sub-layout stays detected as contiguous.
-    let (offsets, sub) = l.split_iter::<1, 3>();
-    assert_eq!((sub.extents(), sub.strides()), ([1, 3, 4], [12, 4, 1]));
-    assert!(sub.is_contiguous());
-    assert_eq!(offsets.collect::<Vec<_>>(), vec![0, 12]);
-
-    // The `M = N` shorthand at the scalar end: rank-3 unit sub-layouts.
-    let (offsets, sub) = l.split_iter::<3, 3>();
-    assert_eq!(sub.extents(), [1, 1, 1]);
-    assert_eq!(sub.len(), 1);
-    assert_eq!(offsets.count(), 24);
 }
 
 #[test]
@@ -204,9 +191,6 @@ fn split_iter_offsets_stay_within_span() {
         check::<2, 1>(l);
         check::<3, 0>(l);
         check::<2, 1>(l.transpose([2, 0, 1]));
-        // Padded splits keep the invariant (unit axes span nothing extra).
-        check::<1, 3>(l);
-        check::<3, 3>(l);
     }
     check_all(RowMajor::new([2, 3, 4]));
     check_all(ColMajor::new([2, 3, 4]));
@@ -223,15 +207,9 @@ fn split_iter_offsets_stay_within_span() {
 }
 
 #[test]
-#[should_panic(expected = "K (2) + M (0) must cover rank (3)")]
-fn split_iter_rank_not_covered() {
+#[should_panic(expected = "M (0) must be equal to N - K (3 - 2)")]
+fn split_iter_rank_not_equal() {
     let _ = RowMajor::new([2, 3, 4]).split_iter::<2, 0>();
-}
-
-#[test]
-#[should_panic(expected = "K (4) exceeds rank (3)")]
-fn split_iter_split_beyond_rank() {
-    let _ = RowMajor::new([2, 3, 4]).split_iter::<4, 0>();
 }
 
 #[test]

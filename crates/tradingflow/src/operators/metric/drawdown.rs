@@ -53,7 +53,7 @@ impl<T: Scalar + Float> Segment for Drawdown<T> {
     fn compute<'a, 'b: 'a>(
         value: ArrayView<'a, T, 0>,
         state: &'b mut Self::State,
-        _: &Self::Context,
+        _: &Instant,
     ) -> ArrayView<'a, T, 0> {
         assert!(value.is_finite(), "drawdown: input value must be finite");
         assert!(*value > T::zero(), "drawdown: input value must be positive");

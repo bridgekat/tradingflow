@@ -2,7 +2,7 @@ use std::{any::TypeId, marker::PhantomData, mem::MaybeUninit};
 
 use super::{FlatRead, FlatWrite};
 
-/// Marker type defining the policy for passing a type across interfaces.
+/// Marker type defining the protocol for passing a type across interfaces.
 ///
 /// # Safety
 ///
@@ -18,7 +18,7 @@ pub unsafe trait Pass: 'static {
     }
 }
 
-/// The policy passing `T` by `T` (pass-by-value).
+/// The protocol passing `T` by `T` (pass-by-value).
 pub struct Val<T: Copy + Send + Sync + 'static>(PhantomData<T>);
 
 // # Safety
@@ -28,7 +28,7 @@ unsafe impl<T: Copy + Send + Sync + 'static> Pass for Val<T> {
     type View<'a> = T;
 }
 
-/// The policy passing `T` by `&T` (pass-by-reference).
+/// The protocol passing `T` by `&T` (pass-by-reference).
 pub struct Ref<T: Sync + 'static>(PhantomData<T>);
 
 // # Safety
@@ -38,7 +38,7 @@ unsafe impl<T: Sync + 'static> Pass for Ref<T> {
     type View<'a> = &'a T;
 }
 
-/// The policy passing `Box<[T]>` by `&[T]`.
+/// The protocol passing `Box<[T]>` by `&[T]`.
 pub struct Slice<T: Sync + 'static>(PhantomData<T>);
 
 // # Safety

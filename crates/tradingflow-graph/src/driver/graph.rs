@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::{Clock, Queue, Source, StreamFeed};
+use super::{Queue, Source, StreamFeed, Time};
 use crate::typed::{HandlesInterface, Interface, InterfaceHandles, Pass, PortHandle, Segment};
 
 /// The on-graph node for a source stream.
@@ -43,14 +43,14 @@ impl<T: Source> Segment for Store<T> {
 /// Builder for the top-layer [`Graph`].
 ///
 /// This is the default level of the public graph API.
-pub struct Builder<I: Clone + Ord + Sync + 'static, C: Clock<I>> {
+pub struct Builder<I: Clone + Ord + Sync + 'static, C: Time<I>> {
     inner: crate::typed::Builder<I>,
     queue: Queue<I, C, crate::typed::Graph<I>>,
     num_events: Arc<AtomicUsize>,
     size_hint: Option<usize>,
 }
 
-impl<I: Clone + Ord + Sync + 'static, C: Clock<I>> Builder<I, C> {
+impl<I: Clone + Ord + Sync + 'static, C: Time<I>> Builder<I, C> {
     pub fn new(clock: C) -> Self {
         Self {
             inner: crate::typed::Builder::new(),
@@ -129,7 +129,7 @@ impl<I: Clone + Ord + Sync + 'static, C: Clock<I>> Builder<I, C> {
 /// and the event [`Queue`].
 ///
 /// This is the default level of the public graph API.
-pub struct Graph<I: Clone + Ord + Sync + 'static, C: Clock<I>> {
+pub struct Graph<I: Clone + Ord + Sync + 'static, C: Time<I>> {
     inner: crate::typed::Graph<I>,
     instant: Option<I>,
     queue: Queue<I, C, crate::typed::Graph<I>>,
@@ -137,7 +137,7 @@ pub struct Graph<I: Clone + Ord + Sync + 'static, C: Clock<I>> {
     size_hint: Option<usize>,
 }
 
-impl<I: Clone + Ord + Sync + 'static, C: Clock<I>> Graph<I, C> {
+impl<I: Clone + Ord + Sync + 'static, C: Time<I>> Graph<I, C> {
     pub fn view<V: Pass>(&self, handle: PortHandle<V>) -> V::View<'_> {
         self.inner.view(handle)
     }

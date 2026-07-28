@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::{Instant, SeriesView};
 use tradingflow::graph::Graph;
 use tradingflow::ports::SeriesPortHandle;
+use tradingflow::time::UnixTime;
 
 use super::date::date_str;
 
@@ -26,7 +26,7 @@ use super::date::date_str;
 /// session.run(&mut pool, common::progress(total)).await;
 /// eprintln!(); // move past the finished bar line before printing results
 /// ```
-pub fn progress(total: Option<usize>) -> impl FnMut(&Graph<Instant, UnixClock>, Instant) {
+pub fn progress(total: Option<usize>) -> impl FnMut(&Graph<Instant, UnixTime>, Instant) {
     use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
     // Finish (leave) the bar when the callback is dropped — i.e. when `run`
@@ -75,7 +75,7 @@ pub fn progress(total: Option<usize>) -> impl FnMut(&Graph<Instant, UnixClock>, 
     pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(20));
 
     let guard = FinishOnDrop(pb);
-    move |session: &Graph<Instant, UnixClock>, ts: Instant| {
+    move |session: &Graph<Instant, UnixTime>, ts: Instant| {
         let pb = &guard.0;
         let rows = session.num_events() as u64;
         // Grow the length if the estimate undershot (keeps the percentage sane).
@@ -91,7 +91,7 @@ pub fn progress(total: Option<usize>) -> impl FnMut(&Graph<Instant, UnixClock>, 
 
 /// Read a recorded **scalar** series into `(timestamps_ns, values)`.
 pub fn read_scalar_series(
-    session: &Graph<Instant, UnixClock>,
+    session: &Graph<Instant, UnixTime>,
     h: SeriesPortHandle<f64, 0>,
 ) -> (Vec<i64>, Vec<f64>) {
     let s: SeriesView<f64, 0> = session.view(h);

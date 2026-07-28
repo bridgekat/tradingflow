@@ -22,12 +22,12 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
 use tradingflow::operators::rolling::diff;
 use tradingflow::operators::series::record_all;
 use tradingflow::ports::SeriesPortHandle;
+use tradingflow::time::UnixTime;
 
 use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};
 use common::strategy::{Market, NavTable, TRADING_DAYS};
@@ -71,16 +71,21 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
 
     let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
     // Raw daily log returns for the realized-variance metric (an ordinary
     // `ArrayPort` view — the Python metric consumes it directly).
-    let log_returns = sc.segment(diff(1), m.log_adj);
+    let log_returns = sc.segment(diff(1), (m.daily, m.log_adj));
 
     let predicted_returns = sc.segment(
         linear_regression_mean(m.dims, MIN_PERIODS),
-        (m.universe, m.features.series, m.demeaned_series),
+        (
+            m.rebalance_clock,
+            m.universe,
+            m.features.series,
+            m.demeaned_series,
+        ),
     );
 
     let h_index = m.index_nav(&mut sc);
@@ -93,11 +98,17 @@ async fn main() {
             // `LinearRegression` above keeps its own `min_periods`).
             let cov = sc.segment(
                 e.build(m.dims, args.rebalance_days, None),
-                (m.universe, m.features.series, m.target_series),
+                (
+                    m.rebalance_clock,
+                    m.universe,
+                    m.features.series,
+                    m.target_series,
+                ),
             );
 
-            // GMV realized-variance metric (diagnostic; fed cov + raw returns).
-            let mv = sc.segment(minimum_variance(m.n), (cov, log_returns));
+            // GMV realized-variance metric (diagnostic; fed cov + raw returns
+            // on their own clocks).
+            let mv = sc.segment(minimum_variance(m.n), (cov.0, cov.1, m.daily, log_returns));
 
             // Long-only and long-short Markowitz portfolios.
             let nav: Vec<SeriesPortHandle<f64, 0>> = [true, false]
@@ -111,7 +122,7 @@ async fn main() {
                             RISK_AVERSION,
                             long_only,
                         ),
-                        (m.universe, predicted_returns, cov),
+                        (m.rebalance_clock, m.universe, predicted_returns.1, cov.1),
                     );
                     m.record_nav(&mut sc, soft)
                 })

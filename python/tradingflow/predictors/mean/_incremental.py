@@ -258,7 +258,7 @@ class IncrementalMeanPredictor:
         self._refit_every = int(refit_every)
         self._window = None if window is None else int(window)
 
-    def init(self, inputs, timestamp: int) -> _HarnessState:
+    def init(self, inputs) -> _HarnessState:
         return _HarnessState(
             pool=self._pool_factory(),
             target_offset=self._target_offset,
@@ -268,13 +268,11 @@ class IncrementalMeanPredictor:
 
     @staticmethod
     def compute(
-        state: _HarnessState,
         inputs,
-        output,
+        state: _HarnessState,
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        universe_view, features_series_view, target_series_view = inputs
+    ):
+        rebalance, universe_view, features_series_view, target_series_view = inputs
 
         n_features = len(features_series_view)
         n_target = len(target_series_view)
@@ -310,13 +308,11 @@ class IncrementalMeanPredictor:
             state.n_removed = window_start
 
         # Predict (and refit if due) only on rebalance ticks; other ticks just
-        # fold and carry the previous prediction (notify = False).
-        if not produced[0]:
-            return False
+        # fold and carry the previous prediction (no pulse).
+        if not rebalance:
+            return None
 
         refit_due = (state.rebalance_count % state.refit_every) == 0
         state.rebalance_count += 1
 
-        mu = pool.predict(universe_view.to_numpy(), features_series_view[-1], refit_due)
-        output.write(mu)
-        return True
+        return pool.predict(universe_view.to_numpy(), features_series_view[-1], refit_due)

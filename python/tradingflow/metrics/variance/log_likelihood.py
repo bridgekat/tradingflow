@@ -72,7 +72,7 @@ class LogLikelihood:
     def __init__(self, num_stocks: int) -> None:
         self._num_stocks = num_stocks
 
-    def init(self, inputs, timestamp: int) -> LogLikelihoodState:
+    def init(self, inputs) -> LogLikelihoodState:
         return LogLikelihoodState(num_stocks=self._num_stocks)
 
     @staticmethod
@@ -96,14 +96,11 @@ class LogLikelihood:
 
     @staticmethod
     def compute(
-        state: LogLikelihoodState,
         inputs,
-        output,
+        state: LogLikelihoodState,
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        predictions, target = inputs
-        predictions_produced, target_produced = produced
+    ) -> np.ndarray | None:
+        predictions_produced, predictions, target_produced, target = inputs
 
         # Accumulate one-period Mahalanobis quadratic on each target tick.
         if target_produced and state.initialized:
@@ -114,24 +111,23 @@ class LogLikelihood:
 
         # Gate: new prediction?
         if not predictions_produced:
-            return False
+            return None
 
         # First prediction stores cache without emitting.
         if not state.initialized:
             state.initialized = True
             LogLikelihood._set_prediction(state, predictions.value())
-            return False
+            return None
 
         # Emit period-averaged negative log-likelihood.
         ll = state.log_det + state.sum_quad / max(state.count, 1)
-        output.write(np.array(ll, dtype=np.float64))
 
         # Update cache and reset accumulators.
         LogLikelihood._set_prediction(state, predictions.value())
         state.sum_quad = 0.0
         state.count = 0
 
-        return True
+        return np.array(ll, dtype=np.float64)
 
 
 def _log_pdet_and_pinv(sigma: np.ndarray) -> tuple[float, np.ndarray]:

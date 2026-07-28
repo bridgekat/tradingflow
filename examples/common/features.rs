@@ -4,14 +4,13 @@
 //! # Factor catalog
 //!
 //! Each factor is a small native subgraph over the [`Stacked`](super::Stacked)
-//! cross-sectional panel, returning a `[num_stocks]` factor handle on the panel's
-//! native cadence (daily for price-derived, report-effective-date for
-//! fundamentals, carried forward by the panel's `Stack`).
+//! cross-sectional panel, returning a `[num_stocks]` state handle: daily
+//! price-derived values refresh on the `daily` clock, fundamentals on their
+//! report effective dates (carried forward by the panel).
 //!
-//! TTM (trailing-twelve-month) flows are a 365-day rolling mean of the annualized
-//! quarterly flow (the self-recording `rolling::ma` over a duration window
-//! constructor). Balance-sheet
-//! stocks (assets, equity, liabilities, cash) are used at their latest
+//! TTM (trailing-twelve-month) flows are a 365-day rolling mean of the
+//! annualized quarterly flow, ingesting one sample per report pulse. Balance-
+//! sheet stocks (assets, equity, liabilities, cash) are used at their latest
 //! carried-forward value (no TTM). The parquet stores assets debit-positive and
 //! liabilities / expense items credit-**negative**; the formulas negate them
 //! where a positive magnitude is wanted (`debt`, `cur_liab`, gross profit =
@@ -20,12 +19,12 @@
 //! **Levels** are single shared sub-expressions (`np_ttm`, `gross_ttm`, `debt`…
 //! computed once, reused), so each level factor is one `Divide`/`Log`. The
 //! period-over-period **变动 (delta)** and **同比 (YoY growth)** factors need a
-//! ~1-year lag of an irregular-cadence series: the level is resampled onto the
-//! daily close pulse and run through the self-recording 244-day [`change`] /
-//! [`growth`] (the 次新 idiom), fused into one node via a nested
-//! [`segment!`](tradingflow::segment) — the form recommended for individual
-//! factors. (`(cur − prev)/prev` is NOT rank-equivalent to `cur/prev` once a
-//! year-ago base goes negative, so the subtraction is kept rather than dropped.)
+//! ~1-year lag of an irregular-cadence series: the level is sampled on the
+//! `daily` clock by the self-recording 365-day [`rolling::diff`] /
+//! [`rolling::pct_change`] (the 次新 idiom) — one node each, the clock pairing
+//! *is* the resampling. (`(cur − prev)/prev` is NOT rank-equivalent to
+//! `cur/prev` once a year-ago base goes negative, so the subtraction is kept
+//! rather than dropped.)
 //!
 //! Catalog is config: adding a factor is adding an `add("NAME", handle)` line.
 //! Still deferred: single-quarter YoY/QoQ (need quarterly deltas), z-scores
@@ -35,46 +34,43 @@
 //!
 //! # Price-volume catalog
 //!
-//! Windows are **count-based on the daily price pulse** (the recorded series only
-//! tick when prices change, so `Lag(21)` / `rolling::sum` over 21 ticks ≈ one
-//! trading month and `252` ≈ one year — the same idiom as the 次新 filter). Close-to-close
-//! returns use the forward-adjusted close; intraday (`close/open`) and overnight
-//! (`open/prev close`) use the raw OHLC the panel now exposes.
+//! Windows are **count-based on the daily clock** (the recorded series tick
+//! once per trading day, so `Lag(21)` / `rolling::sum` over 21 ticks ≈ one
+//! trading month and `252` ≈ one year — the same idiom as the 次新 filter).
+//! Close-to-close returns use the forward-adjusted close; intraday
+//! (`close/open`) and overnight (`open/prev close`) use the raw OHLC the panel
+//! exposes.
 //!
 //! This first pass covers the **动量 & 反转** factors derivable from existing
-//! operators (图表4). Still to come: `mmt_range`/`mmt_time_rank`/`mmt_highest_days`
-//! (need rolling rank / argmax / quantile ops), `mmt_off_limit` (limit detection),
-//! `mmt_report_*` (earnings-announcement dates), and the 波动率 / 流动性 /
-//! 量价相关性 categories.
+//! operators (图表4). Still to come: `mmt_report_*` (earnings-announcement
+//! dates) and friends noted inline.
 //!
 //! # Feature panels
 //!
 //! [`Features`] is the whole catalog (fundamental ++ price-volume) stacked into
-//! `(N, F)` and recorded on the daily pulse — the model-ready panel the
+//! `(N, F)` and recorded on the daily clock — the model-ready panel the
 //! predictors regress on. See [`build_features`].
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::{
     Array, ArrayView, Duration, Instant, Layout, Retention, Series, SeriesView,
 };
 use tradingflow::graph::{Builder, Segment};
 use tradingflow::operators::{
-    array::{map, select, select_at, stack},
-    elem, event,
-    metric::*,
-    rolling,
-    series::{buffer, record, record_clocked},
+    array::{map, select_at, stack},
+    elem, rolling,
+    series::{buffer, record_on},
     stats::*,
-    traders::*,
 };
 use tradingflow::ports::{
     ArrayPort, ArrayPortHandle, ClockPortHandle, SeriesPort, SeriesPortHandle,
 };
+use tradingflow::time::UnixTime;
 
 use super::data::Stacked;
 
 /// Trading days a 变动/同比 level is lagged (the 次新 ~1-year idiom); the
-/// self-recording [`change`] / [`growth`] retain exactly this look-back.
+/// self-recording [`rolling::diff`] / [`rolling::pct_change`] retain exactly
+/// this look-back.
 const LAG_YEAR: Retention = Retention::duration(Duration::from_days(365));
 const LAG_MONTH: Retention = Retention::duration(Duration::from_days(30));
 
@@ -95,7 +91,7 @@ pub struct FactorSet {
 /// years). Every factor is rank-transformed, so `0.5` is the common neutral fill.
 /// The rank → fill chain is fused into one node via `segment!`.
 pub(super) fn rank_impute(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     h: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
@@ -107,66 +103,54 @@ pub(super) fn rank_impute(
 }
 
 /// Total market cap = unadjusted close × total shares.
-pub fn market_cap(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> ArrayPortHandle<f64, 1> {
+pub fn market_cap(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -> ArrayPortHandle<f64, 1> {
     sc.segment(elem::mul(), (st.close, st.total_shares))
 }
 
 /// Circulating market cap = unadjusted close × circulating shares.
 pub fn circ_market_cap(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     st: &Stacked,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(elem::mul(), (st.close, st.circ_shares))
 }
 
 /// Trailing-twelve-month of an annualized flow: a 365-day rolling mean of the
-/// annualized (effective-date-aligned) series, via the self-recording
-/// [`rolling::ma`] over a duration window (record fused in, retention sized
-/// internally).
+/// annualized (effective-date-aligned) report stream, ingesting one sample per
+/// report pulse.
 fn ttm(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
+    clock: ClockPortHandle,
     h: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(rolling::mean(LAG_YEAR, 1), h)
+    sc.segment(rolling::mean(LAG_YEAR, 1), (clock, h))
 }
 
-/// 变动 (period-over-period delta): `level − level₋₁ᵧ`. The whole chain —
-/// resample the level onto the daily close pulse, then the self-recording
-/// 244-day [`change`] — is fused into ONE node via a `segment!`. The shared
-/// `level` block is computed once outside, so it is not recomputed here.
-/// The 次新 listing filter excludes names without a full prior year.
+/// 变动 (period-over-period delta): `level − level₋₁ᵧ`, the level sampled on
+/// the daily clock by the self-recording 365-day [`rolling::diff`]. The 次新
+/// listing filter excludes names without a full prior year.
 fn delta(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     st: &Stacked,
     level: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(
-        tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            rolling::diff(LAG_YEAR) @ event::sample() @ (event::as_clock() @ adj, lvl)
-        }),
-        (st.adjusted_close, level),
-    )
+    sc.segment(rolling::diff(LAG_YEAR), (st.daily, level))
 }
 
 /// 同比 (YoY growth): the faithful `(cur − prev) / prev`, i.e. the
-/// self-recording [`growth`] over the same resampled daily pulse as
+/// self-recording [`rolling::pct_change`] on the same daily sampling as
 /// [`delta`].
 fn yoy(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     st: &Stacked,
     level: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(
-        tradingflow::segment!(|adj: ArrayPort<f64, 1>, lvl: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-            rolling::pct_change(LAG_YEAR) @ event::sample() @ (event::as_clock() @ adj, lvl)
-        }),
-        (st.adjusted_close, level),
-    )
+    sc.segment(rolling::pct_change(LAG_YEAR), (st.daily, level))
 }
 
 /// Build the fundamental factor catalog. Each entry is `(name, raw_handle)`,
 /// added in category order.
-pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> FactorSet {
+pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
     let mut add = |name: &str, h: ArrayPortHandle<f64, 1>| {
@@ -177,11 +161,11 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) 
     // Shared building blocks.
     let mc = market_cap(sc, st);
     let fc = circ_market_cap(sc, st);
-    let np_ttm = ttm(sc, st.net_profit);
-    let ocf_ttm = ttm(sc, st.net_operating_cashflow);
-    let rev_ttm = ttm(sc, st.revenue);
-    let op_ttm = ttm(sc, st.operating_profit);
-    let cost_ttm = ttm(sc, st.operating_cost); // negative (a deduction)
+    let np_ttm = ttm(sc, st.reports, st.net_profit_events);
+    let ocf_ttm = ttm(sc, st.cf_reports, st.net_operating_cashflow_events);
+    let rev_ttm = ttm(sc, st.reports, st.revenue_events);
+    let op_ttm = ttm(sc, st.reports, st.operating_profit_events);
+    let cost_ttm = ttm(sc, st.reports, st.operating_cost_events); // negative (a deduction)
     // Gross profit = revenue − COGS = revenue + cost_ttm (cost stored negative).
     // (`operators::add` is fully qualified — the local `add` binding shadows it.)
     let gross_ttm = sc.segment(elem::add(), (rev_ttm, cost_ttm));
@@ -279,25 +263,27 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) 
     // IC (short-term reversal); a contemporaneous (non-lagged) wiring bug would
     // instead make this strongly POSITIVE (the factor overlapping the return).
     let log_adj = sc.segment(elem::ln(), st.adjusted_close);
-    add("REV_1M", sc.segment(rolling::diff(LAG_MONTH), log_adj));
+    add(
+        "REV_1M",
+        sc.segment(rolling::diff(LAG_MONTH), (st.daily, log_adj)),
+    );
 
     // Each catalog entry is finalized into its model-ready feature: rank + impute.
     let feature = raw.into_iter().map(|h| rank_impute(sc, h)).collect();
     FactorSet { names, feature }
 }
 
-/// Forward (next-period) return on the rebalance clock: resample log adjusted
-/// close onto the rebalance pulse, then first-difference across rebalance ticks.
+/// Forward (next-period) return on the rebalance clock: sample log adjusted
+/// close on the rebalance pulse, then first-difference across rebalance ticks.
 /// At rebalance `t` this is the realized log return over `[t-1, t]`; paired with
 /// the factor stored at `t-1` inside `InformationCoefficient`, it is the
 /// next-period return the factor is meant to predict.
 pub fn build_forward_return(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     log_adj: ArrayPortHandle<f64, 1>,
     rebalance_clock: ClockPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
-    let resampled = sc.segment(event::sample(), (rebalance_clock, log_adj));
-    sc.segment(rolling::diff(1), resampled)
+    sc.segment(rolling::diff(1), (rebalance_clock, log_adj))
 }
 
 /// A cross-sectional feature panel.
@@ -314,14 +300,14 @@ pub struct Features {
 // ===========================================================================
 
 fn rsum(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     s: SeriesPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(rolling::series_sum(n, 1), s)
 }
 fn rmean(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     s: SeriesPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
@@ -329,7 +315,7 @@ fn rmean(
 }
 /// Elementwise map preserving shape and NaN.
 fn emap(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     h: ArrayPortHandle<f64, 1>,
     f: fn(f64) -> f64,
 ) -> ArrayPortHandle<f64, 1> {
@@ -337,7 +323,7 @@ fn emap(
 }
 /// Rolling std = sqrt of the count-window variance (variance → sqrt fused).
 fn rstd(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     s: SeriesPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
@@ -350,17 +336,19 @@ fn rstd(
 }
 /// Per-stock rolling Pearson correlation of two daily handles over `n` ticks:
 /// `cov(x,y) = mean(xy) − mean(x)·mean(y)`, normalized by `σx·σy`. Records each
-/// input internally (some redundancy across factors, but keeps call sites simple).
+/// input internally on the daily clock (some redundancy across factors, but
+/// keeps call sites simple).
 fn rcorr(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
+    daily: ClockPortHandle,
     x: ArrayPortHandle<f64, 1>,
     y: ArrayPortHandle<f64, 1>,
     n: usize,
 ) -> ArrayPortHandle<f64, 1> {
-    let xs = sc.segment(buffer(n), x);
-    let ys = sc.segment(buffer(n), y);
+    let xs = sc.segment(buffer(n), (daily, x));
+    let ys = sc.segment(buffer(n), (daily, y));
     let xy = sc.segment(elem::mul(), (x, y));
-    let xys = sc.segment(buffer(n), xy);
+    let xys = sc.segment(buffer(n), (daily, xy));
     let mx = rmean(sc, xs, n);
     let my = rmean(sc, ys, n);
     let mxy = rmean(sc, xys, n);
@@ -439,7 +427,7 @@ impl Segment for WindowReduce {
     }
 }
 fn window_reduce(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     s: SeriesPortHandle<f64, 1>,
     n: usize,
     f: fn(&[f64]) -> f64,
@@ -544,7 +532,7 @@ impl Segment for WindowReduce2 {
     }
 }
 fn window_reduce2(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     s: SeriesPortHandle<f64, 2>,
     n: usize,
     f: fn(&[f64], &[f64]) -> f64,
@@ -731,7 +719,7 @@ impl Segment for ChipDist {
 }
 
 /// Build the price-volume factor catalog (动量 & 反转 first pass).
-pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> FactorSet {
+pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -> FactorSet {
     let mut names = Vec::new();
     let mut raw = Vec::new();
     let mut add = |name: &str, h: ArrayPortHandle<f64, 1>| {
@@ -739,30 +727,31 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
         raw.push(h);
     };
 
-    // --- daily building blocks (recorded on the price pulse) ---
+    // --- daily building blocks, recorded on the daily clock ---
+    let daily = st.daily;
     let lc = sc.segment(elem::ln(), st.adjusted_close); // adjusted log close
-    let lc_s = sc.segment(buffer(Y), lc);
-    let adjclose_s = sc.segment(buffer(Y), st.adjusted_close);
+    let lc_s = sc.segment(buffer(Y), (daily, lc));
+    let adjclose_s = sc.segment(buffer(Y), (daily, st.adjusted_close));
     let lo = sc.segment(elem::ln(), st.open); // raw log open
     let lcr = sc.segment(elem::ln(), st.close); // raw log close
-    let lcr_s = sc.segment(buffer(Y), lcr);
+    let lcr_s = sc.segment(buffer(Y), (daily, lcr));
 
-    let daily_ret = sc.segment(rolling::diff(1), lc); // adjusted close-to-close log return
-    let dret_s = sc.segment(buffer(Y), daily_ret);
+    let daily_ret = sc.segment(rolling::diff(1), (daily, lc)); // adjusted close-to-close log return
+    let dret_s = sc.segment(buffer(Y), (daily, daily_ret));
     let intraday = sc.segment(elem::sub(), (lcr, lo)); // log(close/open)
-    let intra_s = sc.segment(buffer(Y), intraday);
+    let intra_s = sc.segment(buffer(Y), (daily, intraday));
     let prev_lcr = sc.segment(rolling::series_lag(1), lcr_s);
     let overnight = sc.segment(elem::sub(), (lo, prev_lcr)); // log(open / prev close)
-    let over_s = sc.segment(buffer(Y), overnight);
+    let over_s = sc.segment(buffer(Y), (daily, overnight));
 
     let abs_ret = emap(sc, daily_ret, f64::abs);
-    let absret_s = sc.segment(buffer(Y), abs_ret);
+    let absret_s = sc.segment(buffer(Y), (daily, abs_ret));
     let sign_ret = emap(sc, daily_ret, |x| {
         if x.is_finite() { x.signum() } else { f64::NAN }
     });
-    let sign_s = sc.segment(buffer(Y), sign_ret);
+    let sign_s = sc.segment(buffer(Y), (daily, sign_ret));
     let xs_rank = sc.segment(percentile(), daily_ret); // daily cross-sectional rank
-    let xsr_s = sc.segment(buffer(Y), xs_rank);
+    let xsr_s = sc.segment(buffer(Y), (daily, xs_rank));
 
     // shared rolling sums (reused by the _M / _A pairs)
     let rs_intra_m = rsum(sc, intra_s, M);
@@ -828,14 +817,14 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
             f64::NAN
         }
     });
-    let masked_s = sc.segment(buffer(Y), masked_ret);
+    let masked_s = sc.segment(buffer(Y), (daily, masked_ret));
     add("mmt_off_limit_M", rsum(sc, masked_s, M));
     add("mmt_off_limit_A", rsum(sc, masked_s, Y));
 
     // 时序 rank 动量: daily time-series percentile of the log price within 1 year,
     // averaged over 20 days. 最高价距今天数: ticks since the 1-year high.
     let trank = window_reduce(sc, lc_s, Y, ts_rank);
-    let trank_s = sc.segment(buffer(Y), trank);
+    let trank_s = sc.segment(buffer(Y), (daily, trank));
     add("mmt_time_rank_M", rmean(sc, trank_s, 20));
     add(
         "mmt_highest_days_A",
@@ -843,11 +832,13 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     );
 
     // ============ 流动性 (liquidity) — 图表28 ============
+    // Circulating shares are carried state read at daily cadence; NaN volume on
+    // a non-trading element keeps the quotient NaN.
     let turnover = sc.segment(elem::div(), (st.volume, st.circ_shares)); // daily turnover 换手率
-    let turnover_s = sc.segment(buffer(Y), turnover);
-    let amount_s = sc.segment(buffer(Y), st.amount);
+    let turnover_s = sc.segment(buffer(Y), (daily, turnover));
+    let amount_s = sc.segment(buffer(Y), (daily, st.amount));
     let amihud = sc.segment(elem::div(), (abs_ret, st.amount)); // |日收益率| / 成交额
-    let amihud_s = sc.segment(buffer(Y), amihud);
+    let amihud_s = sc.segment(buffer(Y), (daily, amihud));
     // 日K线最短路径 = 2*(最高-最低) − |开盘−收盘|; shortcut 非流动 = 路径 / 成交额.
     let hl = sc.segment(elem::sub(), (st.high, st.low));
     let two_hl = emap(sc, hl, |x| 2.0 * x);
@@ -855,7 +846,7 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     let abs_oc = emap(sc, oc, f64::abs);
     let path = sc.segment(elem::sub(), (two_hl, abs_oc));
     let shortcut = sc.segment(elem::div(), (path, st.amount));
-    let shortcut_s = sc.segment(buffer(Y), shortcut);
+    let shortcut_s = sc.segment(buffer(Y), (daily, shortcut));
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
         add(&format!("liq_turn_avg_{tag}"), rmean(sc, turnover_s, w)); // 换手率均值
@@ -875,68 +866,59 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     // ============ 量价相关性 (price-volume correlation, 20-day) — 图表40 ============
     // sync = corr(turn_t, x_t); post (量领先) = corr(turn_t, x_{t+1}) = corr(lag(turn,1), x);
     // prior (价领先) = corr(turn_t, x_{t-1}) = corr(turn, lag(x,1)).
-    let turnover_change = sc.segment(rolling::diff(1), turnover);
-    let turnchg_s = sc.segment(buffer(Y), turnover_change);
+    let turnover_change = sc.segment(rolling::diff(1), (daily, turnover));
+    let turnchg_s = sc.segment(buffer(Y), (daily, turnover_change));
     let lag_turn1 = sc.segment(rolling::series_lag(1), turnover_s);
     let lag_turnd1 = sc.segment(rolling::series_lag(1), turnchg_s);
     let lag_price1 = sc.segment(rolling::series_lag(1), adjclose_s);
     let lag_ret1 = sc.segment(rolling::series_lag(1), dret_s);
     const WC: usize = 20;
-    add(
-        "corr_price_turn_1M",
-        rcorr(sc, turnover, st.adjusted_close, WC),
-    );
-    add(
-        "corr_price_turn_post_1M",
-        rcorr(sc, lag_turn1, st.adjusted_close, WC),
-    );
-    add(
-        "corr_price_turn_prior_1M",
-        rcorr(sc, turnover, lag_price1, WC),
-    );
-    add("corr_ret_turn_1M", rcorr(sc, turnover, daily_ret, WC));
-    add("corr_ret_turn_post_1M", rcorr(sc, lag_turn1, daily_ret, WC));
-    add("corr_ret_turn_prior_1M", rcorr(sc, turnover, lag_ret1, WC));
-    add(
-        "corr_ret_turnd_1M",
-        rcorr(sc, turnover_change, daily_ret, WC),
-    );
-    add(
-        "corr_ret_turnd_post_1M",
-        rcorr(sc, lag_turnd1, daily_ret, WC),
-    );
-    add(
-        "corr_ret_turnd_prior_1M",
-        rcorr(sc, turnover_change, lag_ret1, WC),
-    );
+    let h = rcorr(sc, daily, turnover, st.adjusted_close, WC);
+    add("corr_price_turn_1M", h);
+    let h = rcorr(sc, daily, lag_turn1, st.adjusted_close, WC);
+    add("corr_price_turn_post_1M", h);
+    let h = rcorr(sc, daily, turnover, lag_price1, WC);
+    add("corr_price_turn_prior_1M", h);
+    let h = rcorr(sc, daily, turnover, daily_ret, WC);
+    add("corr_ret_turn_1M", h);
+    let h = rcorr(sc, daily, lag_turn1, daily_ret, WC);
+    add("corr_ret_turn_post_1M", h);
+    let h = rcorr(sc, daily, turnover, lag_ret1, WC);
+    add("corr_ret_turn_prior_1M", h);
+    let h = rcorr(sc, daily, turnover_change, daily_ret, WC);
+    add("corr_ret_turnd_1M", h);
+    let h = rcorr(sc, daily, lag_turnd1, daily_ret, WC);
+    add("corr_ret_turnd_post_1M", h);
+    let h = rcorr(sc, daily, turnover_change, lag_ret1, WC);
+    add("corr_ret_turnd_prior_1M", h);
 
     // ============ 波动率 (volatility) — 图表16 ============
     // Downside / upside daily returns (positive/negative clamped to 0).
     let downside = emap(sc, daily_ret, |x| {
         if x.is_finite() { x.min(0.0) } else { f64::NAN }
     });
-    let downside_s = sc.segment(buffer(Y), downside);
+    let downside_s = sc.segment(buffer(Y), (daily, downside));
     let upside = emap(sc, daily_ret, |x| {
         if x.is_finite() { x.max(0.0) } else { f64::NAN }
     });
-    let upside_s = sc.segment(buffer(Y), upside);
+    let upside_s = sc.segment(buffer(Y), (daily, upside));
     let highlow = sc.segment(elem::div(), (st.high, st.low)); // 日内振幅 = 最高/最低
-    let highlow_s = sc.segment(buffer(Y), highlow);
+    let highlow_s = sc.segment(buffer(Y), (daily, highlow));
     // Candlestick shadows, normalized by the low (cross-sectional price-level scale).
     let max_oc = sc.segment(elem::maxf(), (st.open, st.close));
     let min_oc = sc.segment(elem::minf(), (st.open, st.close));
     let up_num = sc.segment(elem::sub(), (st.high, max_oc)); // 上影线 = 最高 − max(开,收)
     let upshadow = sc.segment(elem::div(), (up_num, st.low));
-    let upshadow_s = sc.segment(buffer(Y), upshadow);
+    let upshadow_s = sc.segment(buffer(Y), (daily, upshadow));
     let down_num = sc.segment(elem::sub(), (min_oc, st.low)); // 下影线 = min(开,收) − 最低
     let downshadow = sc.segment(elem::div(), (down_num, st.low));
-    let downshadow_s = sc.segment(buffer(Y), downshadow);
+    let downshadow_s = sc.segment(buffer(Y), (daily, downshadow));
     let wup_num = sc.segment(elem::sub(), (st.high, st.close)); // 威廉上影线 = 最高 − 收
     let w_upshadow = sc.segment(elem::div(), (wup_num, st.low));
-    let w_upshadow_s = sc.segment(buffer(Y), w_upshadow);
+    let w_upshadow_s = sc.segment(buffer(Y), (daily, w_upshadow));
     let wdown_num = sc.segment(elem::sub(), (st.close, st.low)); // 威廉下影线 = 收 − 最低
     let w_downshadow = sc.segment(elem::div(), (wdown_num, st.low));
-    let w_downshadow_s = sc.segment(buffer(Y), w_downshadow);
+    let w_downshadow_s = sc.segment(buffer(Y), (daily, w_downshadow));
 
     for (tag, w) in [("1M", M), ("3M", 63usize), ("6M", 126usize)] {
         add(&format!("vol_std_{tag}"), rstd(sc, dret_s, w)); // 波动率
@@ -973,18 +955,18 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
     }
 
     // 振幅调整动量 (mmt_range): pair amplitude (high/low) with the daily return as a
-    // (N,2) series and reduce each window via `range_mom`. The native carry-join
-    // `Stack` along axis 1 wires the two by-value view handles into an (N, 2)
-    // cross-section, so `WindowReduce2` reads `[amp_i, ret_i]` pairs per element.
-    let amp_ret = sc.segment(stack::<f64, 1, 2>(1), &[highlow, daily_ret]); // (N, 2)
-    let amp_ret_s = sc.segment(buffer(Y), amp_ret);
+    // (N,2) series and reduce each window via `range_mom`. The carry-join `Stack`
+    // along axis 1 wires the two handles into an (N, 2) cross-section, so
+    // `WindowReduce2` reads `[amp_i, ret_i]` pairs per element.
+    let amp_ret = sc.segment(stack::<f64, 1, 2>(1), &[highlow, daily_ret][..]); // (N, 2)
+    let amp_ret_s = sc.segment(buffer(Y), (daily, amp_ret));
     add("mmt_range_M", window_reduce2(sc, amp_ret_s, M, range_mom));
     add("mmt_range_A", window_reduce2(sc, amp_ret_s, Y, range_mom));
 
     // ============ 筹码分布 (chip distribution) — 图表52 ============
     // (adjusted close, turnover) -> ChipDist -> (N, 10); column-select each factor.
-    let chip_in = sc.segment(stack::<f64, 1, 2>(1), &[st.adjusted_close, turnover]); // (N, 2)
-    let chip_in_s = sc.segment(buffer(Y), chip_in);
+    let chip_in = sc.segment(stack::<f64, 1, 2>(1), &[st.adjusted_close, turnover][..]); // (N, 2)
+    let chip_in_s = sc.segment(buffer(Y), (daily, chip_in));
     let chip = sc.segment(ChipDist { window: 250 }, chip_in_s); // (N, 10)
     for (c, name) in [
         "distribution_ret_avg",
@@ -1011,8 +993,8 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
 
 /// Build the cross-sectionally percentile-ranked feature panel: the whole CICC
 /// handbook catalog (fundamental ++ price-volume), stacked into `(N, F)`,
-/// resampled onto the daily close pulse and recorded under `feature_retention`
-/// (pass [`Retention::unbounded()`] when a consumer needs full history).
+/// recorded on the daily clock under `feature_retention` (pass
+/// [`Retention::unbounded()`] when a consumer needs full history).
 ///
 /// Each catalog entry is already the model-ready feature (cross-sectionally
 /// ranked, missing values imputed to the neutral median — see [`rank_impute`] —
@@ -1021,7 +1003,7 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixClock>, st: &Stacked) -> F
 /// by design and leans on the predictors' pool-standardized Ridge (`alpha`) to
 /// regularise.
 pub fn build_features(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     st: &Stacked,
     feature_retention: Retention,
 ) -> Features {
@@ -1033,11 +1015,10 @@ pub fn build_features(
     handles.extend(pv.feature);
 
     let stacked = sc.segment(stack(1), &handles[..]);
-    let daily = sc.segment(event::as_clock(), st.adjusted_close);
-    // Sampled on the daily close clock, not gated on the values: the target
-    // panel is recorded on the same clock, and the predictor pairs the two by
-    // row index, so neither series may silently drop a row.
-    let series = sc.segment(record_clocked(feature_retention, false), (daily, stacked));
+    // Recorded on the daily clock, not gated on the values: the target panel
+    // is recorded on the same clock, and the predictor pairs the two by row
+    // index, so neither series may silently drop a row.
+    let series = sc.segment(record_on(feature_retention, false), (st.daily, stacked));
     Features {
         names,
         handles,

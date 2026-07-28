@@ -97,7 +97,7 @@ class VariancePredictor[T]:
         self._max_periods = max_periods
         self._min_periods = min_periods
 
-    def init(self, inputs, timestamp: int) -> VariancePredictorState[T]:
+    def init(self, inputs) -> VariancePredictorState[T]:
         return VariancePredictorState(
             num_stocks=self._num_stocks,
             num_features=self._num_features,
@@ -112,19 +112,15 @@ class VariancePredictor[T]:
 
     @staticmethod
     def compute(
-        state: VariancePredictorState[T],
         inputs,
-        output,
+        state: VariancePredictorState[T],
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        universe_view, features_series_view, target_series_view = inputs
-        universe_produced, _, _ = produced
+    ) -> np.ndarray | None:
+        rebalance, universe_view, features_series_view, target_series_view = inputs
 
-        # Emit only on rebalance ticks (signalled by the `universe`
-        # input producing new weights).
-        if not universe_produced:
-            return False
+        # Emit only on rebalance ticks (the leading clock pulses).
+        if not rebalance:
+            return None
 
         # Check data alignment - features and target must tick in lock-step.
         n_features = len(features_series_view)
@@ -185,5 +181,4 @@ class VariancePredictor[T]:
         if state.fitted and mask.any():
             sigma[np.ix_(mask, mask)] = state.predict_fn(state, features[mask], state.cached_params)
 
-        output.write(sigma)
-        return True
+        return sigma

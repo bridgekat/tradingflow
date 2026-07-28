@@ -1,16 +1,15 @@
 //! Prediction targets and trading constraints derived from the market panel.
 
-use tradingflow::clock::UnixClock;
-use tradingflow::data::{Array, ArrayView, Instant, Retention, Series};
+use tradingflow::data::{Array, ArrayView, Instant, Retention};
 use tradingflow::graph::Builder;
-use tradingflow::operators::series::record_clocked;
+use tradingflow::operators::series::record_on;
 use tradingflow::operators::{
     array::{array_map, map},
-    event, rolling,
+    rolling,
     stats::*,
-    traders::*,
 };
 use tradingflow::ports::{ArrayPortHandle, ClockPortHandle, SeriesPortHandle};
+use tradingflow::time::UnixTime;
 
 /// Cross-sectional demean preserving NaN.
 fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
@@ -41,7 +40,7 @@ fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
 /// [`Retention::unbounded()`] when full history is needed.
 #[allow(clippy::type_complexity)]
 pub fn build_log_return_target(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     log_adj: ArrayPortHandle<f64, 1>,
     daily: ClockPortHandle,
     target_retention: Retention,
@@ -50,26 +49,27 @@ pub fn build_log_return_target(
     SeriesPortHandle<f64, 1>,
     SeriesPortHandle<f64, 1>,
 ) {
-    let log_returns = sc.segment(rolling::diff(1), log_adj);
+    let log_returns = sc.segment(rolling::diff(1), (daily, log_adj));
     let target = sc.segment(winsorize(0.01), log_returns);
-    // Clock-sampled, so the leading all-NaN row (the first close has no prior
-    // close to difference against) is kept and the panel stays index-aligned
-    // with the feature panel recorded on the same clock.
-    let target_series = sc.segment(record_clocked(target_retention, false), (daily, target));
+    // Recorded on every daily pulse, so the leading all-NaN row (the first
+    // close has no prior close to difference against) is kept and the panel
+    // stays index-aligned with the feature panel recorded on the same clock.
+    let target_series = sc.segment(record_on(target_retention, false), (daily, target));
     let demeaned = sc.segment(array_map(demean), target);
-    let demeaned_series = sc.segment(record_clocked(target_retention, false), (daily, demeaned));
+    let demeaned_series = sc.segment(record_on(target_retention, false), (daily, demeaned));
     (target, target_series, demeaned_series)
 }
 
 /// Constant ±`limit_pct` daily price limits from the previous close, rounded to
 /// 0.01 yuan. Returns `(upper, lower)`; first tick is NaN (no prior close).
 pub fn build_price_limits(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
+    daily: ClockPortHandle,
     close: ArrayPortHandle<f64, 1>,
     limit_pct: f64,
 ) -> (ArrayPortHandle<f64, 1>, ArrayPortHandle<f64, 1>) {
     // Self-recording 1-step lag (a tiny private trailing window).
-    let prev_close = sc.segment(rolling::lag(1), close);
+    let prev_close = sc.segment(rolling::lag(1), (daily, close));
     let limit = move |scale: f64| map(move |&x: &f64| ((x * scale) * 100.0).round() / 100.0);
     let upper = sc.segment(limit(1.0 + limit_pct), prev_close);
     let lower = sc.segment(limit(1.0 - limit_pct), prev_close);

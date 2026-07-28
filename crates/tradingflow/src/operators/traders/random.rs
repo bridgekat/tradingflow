@@ -113,7 +113,7 @@ impl Segment for RandomTrader {
     type Context = Instant;
     type State = RandomTraderState;
 
-    fn init(self, (pos, ..): TraderValues<'_>) -> RandomTraderState {
+    fn init(self, ((_, pos), ..): TraderValues<'_>) -> RandomTraderState {
         assert_eq!(
             pos.layout().len(),
             self.num_stocks,
@@ -198,7 +198,7 @@ mod tests {
             let (_lo, lov) = src(&mut b, &[nan; 5]);
             let out = b.segment(
                 RandomTrader::new(5, 2, 1000.0, 1.0, 0.0, 0.0, 0),
-                (posv, closev, adjv, upv, lov),
+                (posv, closev, adjv.1, upv.1, lov.1),
             );
             let mut g = b.build();
             let mut pool = Pool::new(0);

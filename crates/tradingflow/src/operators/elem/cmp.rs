@@ -5,7 +5,7 @@ use crate::graph::Segment;
 use crate::operators::array;
 use crate::ports::ArrayPort;
 
-/// Elementwise equality comparison.
+/// Elementwise equality comparison: [`PartialEq::eq`].
 pub fn eq<T: Scalar + PartialEq, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
@@ -14,7 +14,7 @@ pub fn eq<T: Scalar + PartialEq, const N: usize>() -> impl Segment<
     array::binary_map(|a: &T, b: &T| a.eq(b))
 }
 
-/// Elementwise inequality comparison.
+/// Elementwise inequality comparison: [`PartialEq::ne`].
 pub fn ne<T: Scalar + PartialEq, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
@@ -23,7 +23,7 @@ pub fn ne<T: Scalar + PartialEq, const N: usize>() -> impl Segment<
     array::binary_map(|a: &T, b: &T| a.ne(b))
 }
 
-/// Elementwise partial order.
+/// Elementwise partial order: [`PartialOrd::partial_cmp`].
 pub fn partial_cmp<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<Option<Ordering>, N>,
@@ -32,7 +32,7 @@ pub fn partial_cmp<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     array::binary_map(|a: &T, b: &T| a.partial_cmp(b))
 }
 
-/// Elementwise `<`.
+/// Elementwise less than: [`PartialOrd::lt`].
 pub fn lt<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
@@ -41,7 +41,7 @@ pub fn lt<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     array::binary_map(|a: &T, b: &T| a.lt(b))
 }
 
-/// Elementwise `<=`.
+/// Elementwise less than or equal: [`PartialOrd::le`].
 pub fn le<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
@@ -50,7 +50,7 @@ pub fn le<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     array::binary_map(|a: &T, b: &T| a.le(b))
 }
 
-/// Elementwise `>`.
+/// Elementwise greater than: [`PartialOrd::gt`].
 pub fn gt<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
@@ -59,7 +59,7 @@ pub fn gt<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     array::binary_map(|a: &T, b: &T| a.gt(b))
 }
 
-/// Elementwise `>=`.
+/// Elementwise greater than or equal: [`PartialOrd::ge`].
 pub fn ge<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
@@ -68,7 +68,7 @@ pub fn ge<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
     array::binary_map(|a: &T, b: &T| a.ge(b))
 }
 
-/// Elementwise minimum.
+/// Elementwise minimum: [`Ord::min`].
 pub fn min<T: Scalar + Ord, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<T, N>,
@@ -77,7 +77,7 @@ pub fn min<T: Scalar + Ord, const N: usize>() -> impl Segment<
     array::binary_map(|a: &T, b: &T| a.min(b).clone())
 }
 
-/// Elementwise maximum.
+/// Elementwise maximum: [`Ord::max`].
 pub fn max<T: Scalar + Ord, const N: usize>() -> impl Segment<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<T, N>,
@@ -86,7 +86,7 @@ pub fn max<T: Scalar + Ord, const N: usize>() -> impl Segment<
     array::binary_map(|a: &T, b: &T| a.max(b).clone())
 }
 
-/// Elementwise clamp.
+/// Elementwise clamp: [`Ord::clamp`].
 pub fn clamp<T: Scalar + Ord, const N: usize>(
     min: T,
     max: T,

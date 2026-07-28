@@ -1,13 +1,13 @@
 //! Universe construction for the CICC 基本面因子手册 replication.
 //!
-//! Each universe is a cross-sectional `[num_stocks]` **mask** emitted on the
-//! rebalance clock: `1.0` for in-universe stocks, `NaN` otherwise. Masks are
-//! consumed by [`mask_to_universe`] (which NaNs out-of-universe entries before
-//! cross-sectional ranking) and, in the layered backtest, as equal-weight
-//! position vectors.
+//! Each universe is a cross-sectional `[num_stocks]` **mask**: `1.0` for
+//! in-universe stocks, `NaN` otherwise. Masks are state wires recomputed from
+//! the market cap **once per rebalance pulse** (a clocked
+//! [`array_map_on`](tradingflow::operators::array::array_map_on)) and retained
+//! in between, so a consumer reading between rebalances sees the
+//! as-of-rebalance mask.
 //!
-//! Two flavours, both driven off circulating market cap (`close * circ_shares`)
-//! sampled on the rebalance clock via [`Clocked`]:
+//! Two flavours, both driven off circulating market cap (`close * circ_shares`):
 //!
 //! * [`build_full_market_universe`] — every stock with finite positive cap.
 //! * [`build_caprank_universe`] — a descending-cap rank window `[lo, hi)`,
@@ -20,53 +20,50 @@
 //! (limit-locked) screens are derivable and added in [`build_full_market_universe`]
 //! once wired; for now the full-market universe is "any stock with valid cap".
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::graph::Builder;
-use tradingflow::operators::{
-    array,
-    array::{array_map, map},
-    elem, event,
-    stats::*,
-};
-use tradingflow::ports::{ArrayPort, ArrayPortHandle, ClockPort, ClockPortHandle};
+use tradingflow::operators::{array, clock, elem};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, ClockPortHandle};
+use tradingflow::time::UnixTime;
 
-/// Full-market mask: `1.0` for stocks with finite positive market cap this
-/// rebalance, else `NaN`.
-///
-/// Clock-gated, so this stays a `Map` closure: [`Clocked`] wraps an `Operator`
-/// (it needs `passthrough` to re-present the last mask between ticks), whereas a
-/// fused `segment!` chain is a bare `Segment`.
+/// Full-market mask: `1.0` for stocks with finite positive market cap at the
+/// last rebalance pulse, else `NaN`.
 pub fn build_full_market_universe(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     market_cap: ArrayPortHandle<f64, 1>,
     rebalance_clock: ClockPortHandle,
 ) -> ArrayPortHandle<f64, 1> {
-    let market_cap = sc.segment(event::sample(), (rebalance_clock, market_cap));
     sc.segment(
-        map(|&c: &f64| {
-            if c.is_finite() && c > 0.0 {
-                1.0
-            } else {
-                f64::NAN
-            }
-        }),
-        market_cap,
+        clock::on_clock(array::array_map(|m: ArrayView<f64, 1>| {
+            let s = m.to_contiguous();
+            Array::from_parts(
+                [s.len()],
+                s.iter()
+                    .map(|&c| {
+                        if c.is_finite() && c > 0.0 {
+                            1.0
+                        } else {
+                            f64::NAN
+                        }
+                    })
+                    .collect(),
+            )
+        })),
+        (rebalance_clock, market_cap),
     )
 }
 
 /// Cap-rank window mask: include stocks whose descending market-cap rank (0-based)
 /// falls in `[lo, hi)`. Approximates a size index without real constituents.
 pub fn build_caprank_universe(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     market_cap: ArrayPortHandle<f64, 1>,
     rebalance_clock: ClockPortHandle,
     lo: usize,
     hi: usize,
 ) -> ArrayPortHandle<f64, 1> {
-    let market_cap = sc.segment(event::sample(), (rebalance_clock, market_cap));
     sc.segment(
-        array_map(move |m: ArrayView<f64, 1>| {
+        clock::on_clock(array::array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             let n = s.len();
             let mut idx: Vec<usize> = (0..n).filter(|&i| s[i].is_finite() && s[i] > 0.0).collect();
@@ -78,8 +75,8 @@ pub fn build_caprank_universe(
                 }
             }
             Array::from_parts([n], mask)
-        }),
-        market_cap,
+        })),
+        (rebalance_clock, market_cap),
     )
 }
 
@@ -87,10 +84,9 @@ pub fn build_caprank_universe(
 /// in `universe` **and** its `aged` signal is finite. Passing the 244-trading-day
 /// lag of the log price as `aged` excludes 次新 (stocks listed under ~1 year),
 /// which the handbook drops — newly-listed A-shares have extreme first-year
-/// returns that scramble fundamental-factor signals. Both inputs are on the
-/// rebalance clock.
+/// returns that scramble fundamental-factor signals.
 pub fn with_listing_filter(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     universe: ArrayPortHandle<f64, 1>,
     aged: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
@@ -111,18 +107,12 @@ pub fn with_listing_filter(
 /// is computed within the universe only. Multiplying by a `1.0 / NaN` indicator
 /// leaves in-universe values bit-exact (`x * 1.0 == x`, including `±0` and `±∞`).
 pub fn mask_to_universe(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     data: ArrayPortHandle<f64, 1>,
     universe: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        tradingflow::segment!(
-            |data: ArrayPort<f64, 1>, u: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
-                let zeros = array::zeros([1]) @ ();
-                let keep = elem::indicator(1.0, f64::NAN) @ (elem::gt() @ (u, zeros));
-                elem::mul() @ (data, keep)
-            }
-        ),
+        array::binary_map(|&d: &f64, &u: &f64| if u > 0.0 { d } else { f64::NAN }),
         (data, universe),
     )
 }
@@ -155,22 +145,20 @@ pub fn calculate_index_weights(mc: &[f64], k: usize) -> Box<[f64]> {
 }
 
 /// Cap-**weighted** top-`index_size` universe (a weight vector, not a mask),
-/// recomputed on each rebalance tick. `market_cap` is the per-stock circulating
-/// market cap; `rebalance_clock` is the `UnitPortHandle` of a
-/// [`pulse`](tradingflow::sources::pulse) source.
+/// recomputed from the circulating market cap once per rebalance pulse and
+/// retained in between.
 pub fn build_cap_weighted_universe(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     market_cap: ArrayPortHandle<f64, 1>,
     rebalance_clock: ClockPortHandle,
     index_size: usize,
 ) -> ArrayPortHandle<f64, 1> {
     let k = index_size;
-    let market_cap = sc.segment(event::sample(), (rebalance_clock, market_cap));
     sc.segment(
-        array_map(move |m: ArrayView<f64, 1>| {
+        clock::on_clock(array::array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             Array::from_parts([s.len()], calculate_index_weights(&s, k))
-        }),
-        market_cap,
+        })),
+        (rebalance_clock, market_cap),
     )
 }

@@ -3,15 +3,16 @@
 use std::ffi::CString;
 use std::marker::PhantomData;
 
+use numpy::PyReadonlyArrayDyn;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
 use crate::data::{Array, ArrayView, Instant};
 use crate::graph::{Interface, Segment};
-use crate::ports::{ArrayPort, ArrayPorts};
+use crate::ports::{ArrayPort, ArrayPorts, ClockPort};
 
-use super::{NativeArrayView, PyArgs, PyParams};
+use super::{PyArgs, PyParams};
 
 /// Where a Python operator's definition comes from. Each defines a factory
 /// `build(**kwargs) -> operator` (called with [`PyParams`]) or binds the
@@ -60,10 +61,11 @@ fn resolve_operator<'py>(
 
 /// A class-based Python operator over input ports `I` (e.g. `ArrayPorts<f64,
 /// 1>` or `(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)`)
-/// producing a rank-`NO` array output (an `ArrayPort<f64, NO>` view of the
-/// host's owned buffer — the host speaks the view currency on both sides).
-/// Load its definition from a `.py` file, an importable module, or an inline
-/// source; each defines `build(**kwargs)` (called with [`PyParams`]) or binds
+/// producing a `(clock, values)` event-stream output: the clock fires on
+/// computes where the Python side returned a batch (rather than `None`), and
+/// the values port is a rank-`NO` view of the host's owned buffer. Load its
+/// definition from a `.py` file, an importable module, or an inline source;
+/// each defines `build(**kwargs)` (called with [`PyParams`]) or binds
 /// `__op__`.
 ///
 /// `NO` is the static output rank, defaulting to `1` because the strategy
@@ -116,31 +118,57 @@ impl<I: PyArgs, const NO: usize> PyClassOperator<I, NO> {
 pub struct PyClassState<const NO: usize> {
     operator: Py<PyAny>,
     py_state: Py<PyAny>,
+    /// `numpy.ascontiguousarray`, resolved once — normalizes whatever
+    /// `compute` returns (a list, a scalar, a non-`f64` or strided array)
+    /// before the copy into `out`. A C-contiguous `f64` array passes
+    /// through untouched.
+    as_array: Py<PyAny>,
     out: Array<f64, NO>,
+}
+
+/// Copy a Python `compute` return value into the host's output buffer. The
+/// NumPy boundary negotiates by element count (as the output extents do).
+fn write_output<const NO: usize>(
+    value: &Bound<'_, PyAny>,
+    as_array: &Bound<'_, PyAny>,
+    out: &mut Array<f64, NO>,
+) -> PyResult<()> {
+    let arr = as_array.call1((value, "float64"))?;
+    let readonly = arr.extract::<PyReadonlyArrayDyn<'_, f64>>()?;
+    let src = readonly
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(format!("compute: non-contiguous output: {e}")))?;
+    let dst = out.data_mut();
+    if src.len() != dst.len() {
+        return Err(PyValueError::new_err(format!(
+            "compute: expected {} output elements, got {}",
+            dst.len(),
+            src.len()
+        )));
+    }
+    dst.copy_from_slice(src);
+    Ok(())
 }
 
 impl<I: PyArgs + 'static, const NO: usize> Segment for PyClassOperator<I, NO> {
     type Inputs = I;
-    type Outputs = ArrayPort<f64, NO>;
+    type Outputs = (ClockPort, ArrayPort<f64, NO>);
     type Context = Instant;
     type State = PyClassState<NO>;
 
     fn init(self, inputs: <I as Interface>::Values<'_>) -> PyClassState<NO> {
         // Instantiate the Python operator and call its `init` with the
-        // build-time input views (no produced bits — the legacy Python
-        // `init(inputs, ts)` contract); allocate the output buffer. No Python
-        // `compute` runs here. Init runs before the driver's first batch, so
-        // Python `init` sees `i64::MIN` — the "no time yet" sentinel of the
-        // legacy contract.
-        let ts = Instant::MIN.as_offset().as_nanos();
-        let (operator, py_state) = Python::attach(|py| {
-            let run = || -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        // build-time inputs tuple (clock leaves read `False` — build-time
+        // renders are quiescent); allocate the output buffer. No Python
+        // `compute` runs here.
+        let (operator, py_state, as_array) = Python::attach(|py| {
+            let run = || -> PyResult<(Py<PyAny>, Py<PyAny>, Py<PyAny>)> {
                 let operator = resolve_operator(py, &self.loader, &self.params)?;
                 let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
-                let mut produced: Vec<bool> = Vec::new(); // discarded on init
-                I::append_views(py, inputs, &mut views, &mut produced)?;
-                let st = operator.call_method1("init", (PyTuple::new(py, views)?, ts))?;
-                Ok((operator.unbind(), st.unbind()))
+                I::append_views(py, inputs, &mut views)?;
+                let st = operator.call_method1("init", (PyTuple::new(py, views)?,))?;
+                let as_array = py.import("numpy")?.getattr("ascontiguousarray")?;
+                Ok((operator.unbind(), st.unbind(), as_array.unbind()))
             };
             run().unwrap_or_else(|e| {
                 e.print(py);
@@ -150,6 +178,7 @@ impl<I: PyArgs + 'static, const NO: usize> Segment for PyClassOperator<I, NO> {
         PyClassState {
             operator,
             py_state,
+            as_array,
             out: Array::zeros(out_extents::<NO>(&self.out_shape)),
         }
     }
@@ -158,55 +187,48 @@ impl<I: PyArgs + 'static, const NO: usize> Segment for PyClassOperator<I, NO> {
         inputs: <I as Interface>::Values<'a>,
         state: &'b mut PyClassState<NO>,
         time: &Instant,
-    ) -> ArrayView<'a, f64, NO> {
+    ) -> (ArrayView<'a, bool, 0>, ArrayView<'a, f64, NO>) {
         // The batch's event time, straight from the graph context.
         let ts = time.as_offset().as_nanos();
 
         let PyClassState {
             operator,
             py_state,
+            as_array,
             out,
         } = state;
-        let out_ptr: *mut Array<f64, NO> = &mut *out;
 
         let result: Result<bool, ()> = Python::attach(|py| {
-            let run = || -> PyResult<bool> {
+            let mut run = || -> PyResult<bool> {
                 let mut views: Vec<Bound<'_, PyAny>> = Vec::new();
-                let mut bits: Vec<bool> = Vec::new();
-                I::append_views(py, inputs, &mut views, &mut bits)?;
-                let out_view = NativeArrayView::bind::<NO>(py, out_ptr, true)?;
+                I::append_views(py, inputs, &mut views)?;
                 let op = operator.bind(py);
-                op.call_method1(
-                    "compute",
-                    (
-                        py_state.bind(py),
-                        PyTuple::new(py, views)?,
-                        out_view,
-                        ts,
-                        PyTuple::new(py, bits)?,
-                    ),
-                )?
-                .extract::<bool>()
+                let value =
+                    op.call_method1("compute", (PyTuple::new(py, views)?, py_state.bind(py), ts))?;
+                // `None` is the quiescent return: no event this generation.
+                if value.is_none() {
+                    return Ok(false);
+                }
+                write_output(&value, as_array.bind(py), out)?;
+                Ok(true)
             };
             run().map_err(|e| e.print(py))
         });
         let notify = result
             .unwrap_or_else(|()| panic!("python operator compute failed (see traceback above)"));
-        // The output is an event array: a compute that produced nothing (the
-        // Python side returned `False`) emits the quiescent all-NaN form so
-        // stale values cannot be re-consumed as fresh events downstream.
-        if notify {
-            out.view()
-        } else {
-            ArrayView::full(out.view().extents(), &f64::NAN)
-        }
+        // A returned batch pulses the output clock; the value buffer is
+        // retained either way (its state face holds the last produced batch).
+        (
+            ArrayView::scalar(if notify { &true } else { &false }),
+            out.view(),
+        )
     }
 
     fn reset<'a, 'b: 'a>(
         _: <I as Interface>::Values<'a>,
         state: &'b mut PyClassState<NO>,
-    ) -> ArrayView<'a, f64, NO> {
-        ArrayView::full(state.out.view().extents(), &f64::NAN)
+    ) -> (ArrayView<'a, bool, 0>, ArrayView<'a, f64, NO>) {
+        (ArrayView::scalar(&false), state.out.view())
     }
 }
 

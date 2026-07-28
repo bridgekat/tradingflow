@@ -1032,22 +1032,3 @@ fn split_iter_is_exact_size() {
     it.next();
     assert_eq!(it.len(), 5);
 }
-
-#[test]
-fn split_iter_padded_to_full_rank() {
-    // The `M = N` shorthand: sub-views keep the input rank, with the walked
-    // axes replaced by leading extent-1 axes — no need to name `N - K`.
-    let data: Vec<f64> = (0..6).map(f64::from).collect();
-    let v = ArrayView::from_slice([2, 3], &data);
-    let rows: Vec<ArrayView<f64, 2>> = v.split_iter::<1, 2>().collect();
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0], ArrayView::from_slice([1, 3], &[0.0, 1.0, 2.0]));
-    assert_eq!(rows[1], ArrayView::from_slice([1, 3], &[3.0, 4.0, 5.0]));
-}
-
-#[test]
-#[should_panic(expected = "K (1) + M (0) must cover rank (2)")]
-fn split_iter_rank_not_covered() {
-    let v = ArrayView::<f64, 2>::from_slice([2, 3], &[0.0; 6]);
-    let _ = v.split_iter::<1, 0>();
-}

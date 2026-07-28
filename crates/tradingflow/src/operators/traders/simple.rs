@@ -63,7 +63,7 @@ impl Segment for SimpleTrader {
     type Context = Instant;
     type State = SimpleTraderState;
 
-    fn init(self, (pos, ..): TraderValues<'_>) -> SimpleTraderState {
+    fn init(self, ((_, pos), ..): TraderValues<'_>) -> SimpleTraderState {
         assert_eq!(
             pos.layout().len(),
             self.num_stocks,
@@ -127,7 +127,7 @@ mod tests {
         let (_lo, lov) = src(&mut b, &[nan]);
         let out = b.segment(
             SimpleTrader::new(1, 1_000_000.0, 100.0, 5.0, 0.001),
-            (posv, closev, adjv, upv, lov),
+            (posv, closev, adjv.1, upv.1, lov.1),
         );
         let mut g = b.build();
         let mut pool = Pool::new(0);

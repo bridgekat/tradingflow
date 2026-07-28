@@ -25,7 +25,6 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::{Retention, SeriesView};
 use tradingflow::graph::Builder;
 use tradingflow::operators::array::stack;
@@ -34,6 +33,7 @@ use tradingflow::operators::metric::{comp_return, drawdown, return_sharpe};
 use tradingflow::operators::rolling::diff;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::traders::{benchmark, random_trader};
+use tradingflow::time::UnixTime;
 
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
 use common::strategy::{INITIAL_CASH, Market, trim_scale};
@@ -61,7 +61,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
 
     // ---- Data + features ------------------------------------------------
     // The incremental mean predictor folds one (feature, target) pair per tick,
@@ -73,14 +73,23 @@ async fn main() {
     // ---- Predictor + portfolio ------------------------------------------
     let predicted_returns = sc.segment(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
-        (m.universe, m.features.series, m.demeaned_series),
+        (
+            m.rebalance_clock,
+            m.universe,
+            m.features.series,
+            m.demeaned_series,
+        ),
     );
-    // The Python portfolio emits ordinary `ArrayPort` position views — the
-    // native traders consume them directly.
-    let soft_positions = sc.segment(rank_linear(m.n, 1.0), (m.universe, predicted_returns));
+    // The Python portfolio emits a `(clock, positions)` stream — the native
+    // traders consume it directly.
+    let soft_positions = sc.segment(
+        rank_linear(m.n, 1.0),
+        (m.rebalance_clock, m.universe, predicted_returns.1),
+    );
 
     // ---- Traders (the cost-model swap point) ----------------------------
-    let index_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), m.universe);
+    let index_positions = (m.rebalance_clock, m.universe);
+    let index_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), index_positions);
     let frictionless_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), soft_positions);
     let actual_value = m.simulate(
         &mut sc,
@@ -96,25 +105,27 @@ async fn main() {
     // Rolling market beta / alpha vs the cap-weighted index, on daily log
     // returns of total value (regressor adds the intercept → output [beta, alpha]).
     let log_actual = sc.segment(ln(), actual_value);
-    let strat_logret = sc.segment(diff(1), log_actual);
+    let strat_logret = sc.segment(diff(1), (m.daily, log_actual));
     let log_index = sc.segment(ln(), index_value);
-    let index_logret = sc.segment(diff(1), log_index);
-    let strat_logret_series = sc.segment(record_all(), strat_logret);
+    let index_logret = sc.segment(diff(1), (m.daily, log_index));
+    let strat_logret_series = sc.segment(record_all(), (m.daily, strat_logret));
     // scalar -> (1,): stack the rank-0 view handle into a 1-vector.
     let index_logret_vec = sc.segment(stack(0), &[index_logret][..]);
-    let index_logret_series = sc.segment(record_all(), index_logret_vec);
+    let index_logret_series = sc.segment(record_all(), (m.daily, index_logret_vec));
     let beta_alpha = sc.segment(
         regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS),
         (m.rebalance_clock, strat_logret_series, index_logret_series),
     );
 
     // ---- Records --------------------------------------------------------
-    let h_index = sc.segment(record_all(), index_value);
-    let h_fric = sc.segment(record_all(), frictionless_value);
-    let h_actual = sc.segment(record_all(), actual_value);
-    let h_sharpe = sc.segment(record_all(), sharpe);
-    let h_compound = sc.segment(record_all(), compound);
-    let h_drawdown = sc.segment(record_all(), drawdown);
+    let record_daily =
+        |sc: &mut tradingflow::graph::Builder<_, _>, h| sc.segment(record_all(), (m.daily, h));
+    let h_index = record_daily(&mut sc, index_value);
+    let h_fric = record_daily(&mut sc, frictionless_value);
+    let h_actual = record_daily(&mut sc, actual_value);
+    let h_sharpe = record_daily(&mut sc, sharpe);
+    let h_compound = record_daily(&mut sc, compound);
+    let h_drawdown = record_daily(&mut sc, drawdown);
     let h_beta_alpha = sc.segment(record_all(), beta_alpha);
 
     let session = common::run(sc, &args).await;

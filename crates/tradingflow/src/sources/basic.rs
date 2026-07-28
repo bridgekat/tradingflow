@@ -128,12 +128,12 @@ impl Source for PulseSource {
         ((), futures::stream::iter(it))
     }
 
-    fn reset(_: &mut Self::State) -> bool {
-        false
+    fn reset(_: &mut Self::State) -> ArrayView<'static, bool, 0> {
+        ArrayView::scalar(&false)
     }
 
-    fn output(_: &mut Self::State) -> bool {
-        true
+    fn output(_: &mut Self::State) -> ArrayView<'static, bool, 0> {
+        ArrayView::scalar(&true)
     }
 
     fn write(_: Self::Payload, _: Self::Instant, _: &mut ()) -> usize {

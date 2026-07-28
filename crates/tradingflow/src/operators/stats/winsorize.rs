@@ -107,6 +107,8 @@ fn winsorize_into<T: Scalar + Float, const N: usize>(
     }
 }
 
+/// Cross-sectional removal of extreme values by clamping to the `p` and
+/// `1 - p` quantiles.
 pub fn winsorize<T: Scalar + Float, const N: usize>(
     p: T,
 ) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {

@@ -3,5 +3,5 @@
 mod annualize;
 mod forward_adjust;
 
-pub use annualize::*;
-pub use forward_adjust::*;
+pub use annualize::annualize;
+pub use forward_adjust::forward_adjust;

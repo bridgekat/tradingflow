@@ -25,9 +25,9 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
+use tradingflow::time::UnixTime;
 
 use common::models::{Mode, markowitz, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable};
@@ -55,7 +55,7 @@ async fn main() {
         args.index_size
     );
 
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
 
     // The shared panel / target feed the shrinkage covariance predictor too,
     // which fits over its last `COV_MAX_PERIODS` pairs — so the records must
@@ -67,11 +67,21 @@ async fn main() {
     // Mean predictor (demeaned target) and covariance predictor (raw target).
     let predicted_returns = sc.segment(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
-        (m.universe, m.features.series, m.demeaned_series),
+        (
+            m.rebalance_clock,
+            m.universe,
+            m.features.series,
+            m.demeaned_series,
+        ),
     );
     let predicted_cov = sc.segment(
         shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS),
-        (m.universe, m.features.series, m.target_series),
+        (
+            m.rebalance_clock,
+            m.universe,
+            m.features.series,
+            m.target_series,
+        ),
     );
 
     let h_index = m.index_nav(&mut sc);
@@ -82,7 +92,12 @@ async fn main() {
         .map(|&delta| {
             let soft = sc.segment(
                 markowitz(m.n, args.index_size, Mode::MinMeanVariance, delta, true),
-                (m.universe, predicted_returns, predicted_cov),
+                (
+                    m.rebalance_clock,
+                    m.universe,
+                    predicted_returns.1,
+                    predicted_cov.1,
+                ),
             );
             (delta, m.record_nav(&mut sc, soft))
         })

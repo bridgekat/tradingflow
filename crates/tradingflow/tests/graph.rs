@@ -1,8 +1,8 @@
-use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView};
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::{elem::add, event::filter, series::record_all};
+use tradingflow::operators::{clock, clock::filter, elem::add, series::record_all};
 use tradingflow::sources::basic::*;
+use tradingflow::time::UnixTime;
 
 fn pool() -> Pool {
     Pool::new(0)
@@ -25,9 +25,12 @@ fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
 /// Replay [10,20,30] @ [1,2,3] into a Record.
 #[tokio::test]
 async fn run_single_source_record_all() {
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
     let h = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let hrec = sc.segment(record_all(), h);
+    // The source is a plain array; its derived clock marks each emission, and
+    // the record appends one row per pulse.
+    let hc = sc.segment(clock::always(), h);
+    let hrec = sc.segment(record_all(), (hc, h));
 
     let mut session = sc.build();
     session.run(&mut pool(), |_, _| {}).await;
@@ -41,11 +44,14 @@ async fn run_single_source_record_all() {
 /// ts1:10+0, ts2:10+20, ts3:30+40 → [10,30,70].
 #[tokio::test]
 async fn run_two_sources_add() {
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
     let ha = sc.source(src(&[1, 3], &[10.0, 30.0]));
     let hb = sc.source(src(&[2, 3], &[20.0, 40.0]));
     let ho = sc.segment(add(), (ha, hb));
-    let hrec = sc.segment(record_all(), ho);
+    // A clock derived from the sum node fires on the union of the two source
+    // cadences — one record row per generation that recomputed the sum.
+    let hoc = sc.segment(clock::always(), ho);
+    let hrec = sc.segment(record_all(), (hoc, ho));
 
     let mut session = sc.build();
     session.run(&mut pool(), |_, _| {}).await;
@@ -59,11 +65,12 @@ async fn run_two_sources_add() {
 /// ts1:10+100, ts2:20+200 → [110,220].
 #[tokio::test]
 async fn run_coalescing() {
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
     let ha = sc.source(src(&[1, 2], &[10.0, 20.0]));
     let hb = sc.source(src(&[1, 2], &[100.0, 200.0]));
     let ho = sc.segment(add(), (ha, hb));
-    let hrec = sc.segment(record_all(), ho);
+    let hoc = sc.segment(clock::always(), ho);
+    let hrec = sc.segment(record_all(), (hoc, ho));
 
     let mut session = sc.build();
     session.run(&mut pool(), |_, _| {}).await;
@@ -77,10 +84,14 @@ async fn run_coalescing() {
 /// [1,5,2,10] keep >3 → (2,5),(4,10).
 #[tokio::test]
 async fn run_filter_cutoff() {
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
     let h = sc.source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
-    let hf = sc.segment(filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0), h);
-    let hrec = sc.segment(record_all(), hf);
+    let hc = sc.segment(clock::always(), h);
+    let hf = sc.segment(
+        filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0),
+        (hc, h),
+    );
+    let hrec = sc.segment(record_all(), (hf, h));
 
     let mut session = sc.build();
     session.run(&mut pool(), |_, _| {}).await;
@@ -96,9 +107,10 @@ async fn run_filter_cutoff() {
 /// runs on the session's own task, so it can borrow locals.
 #[tokio::test]
 async fn on_stable_per_batch() {
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
     let h = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let _ = sc.segment(record_all(), h);
+    let hc = sc.segment(clock::always(), h);
+    let _ = sc.segment(record_all(), (hc, h));
 
     let mut session = sc.build();
     assert_eq!(session.size_hint(), Some(3));

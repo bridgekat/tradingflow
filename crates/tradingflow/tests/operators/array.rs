@@ -96,8 +96,8 @@ fn only_poked_constants_recompute_their_cone() {
     let mut b = Builder::new();
     let fixed = b.value(array::scalar(1.0_f64));
     let (src, srcv) = b.source(array::scalar(1.0_f64));
-    let fixed_runs = b.segment(count::<0>(), fixed);
-    let src_runs = b.segment(count::<0>(), srcv);
+    let fixed_runs = b.segment(runs::<0>(), fixed);
+    let src_runs = b.segment(runs::<0>(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -817,8 +817,8 @@ fn unstack_then_stack_rebuilds_the_panel_and_carries_when_idle() {
     let (other, otherv) = b.source(array::scalar(0.0_f64));
     let rows = b.segment(array::unstack::<f64, 2, 1>(0), panelv);
     let rebuilt = b.segment(array::stack::<f64, 1, 2>(0), &rows[..]);
-    let joins = b.segment(count::<2>(), rebuilt);
-    let _unrelated = b.segment(count::<0>(), otherv);
+    let joins = b.segment(runs::<2>(), rebuilt);
+    let _unrelated = b.segment(runs::<0>(), otherv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 

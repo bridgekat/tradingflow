@@ -1,7 +1,7 @@
 use std::future::Future;
 
-/// A generic clock source for the event loop.
-pub trait Clock<I> {
+/// A generic time source for the event loop.
+pub trait Time<I> {
     /// Returns current wall-clock reading. Must be non-decreasing.
     fn now(&self) -> I;
 

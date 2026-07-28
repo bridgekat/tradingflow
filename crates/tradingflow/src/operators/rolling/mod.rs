@@ -1,4 +1,4 @@
-//! Basic rolling window operators on arrays or recorded series.
+//! Rolling window operators on arrays or recorded series.
 
 mod base;
 mod cov;
@@ -9,7 +9,6 @@ mod std_dev;
 mod sum;
 mod var;
 
-pub use base::{Accumulator, Rolling, RollingState};
 pub use cov::{cov, series_cov};
 pub use lag::{diff, lag, pct_change, series_lag};
 pub use mean::{mean, series_mean};

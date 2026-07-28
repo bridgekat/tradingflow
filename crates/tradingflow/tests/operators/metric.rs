@@ -3,7 +3,7 @@
 //!
 //! The `return` family (`comp_return`, `return_mean`, `return_vol`,
 //! `return_sharpe` and their `log_` counterparts) shares one driver: inputs are
-//! `(clock, nav)`, a period is closed by a clock pulse, and the net asset value
+//! `(clock, nav)`, a period is closed by a clock signal, and the net asset value
 //! is required to be finite and strictly positive. A generation without a pulse
 //! folds nothing, holds the previous output and reports `notify = false`. The
 //! first pulse only latches the opening level — no period has closed yet — and
@@ -80,7 +80,7 @@ where
 fn turnover_path(books: &[Vec<f64>]) -> Vec<f64> {
     let width = books[0].len();
     let mut b = Builder::new();
-    let (cell, w) = b.source(array::zeros::<f64, 1>([width]));
+    let (cell, w) = event_src(&mut b, arr1(vec![0.0_f64; width]));
     let out = b.segment(metric::turnover(), w);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -545,7 +545,7 @@ fn drawdown_rejects_a_non_positive_nav() {
 #[should_panic(expected = "length mismatch")]
 fn turnover_rejects_a_change_in_universe_width() {
     let mut b = Builder::new();
-    let (cell, w) = b.source(array::zeros::<f64, 1>([2]));
+    let (cell, w) = event_src(&mut b, arr1(vec![0.0_f64; 2]));
     let _ = b.segment(metric::turnover(), w);
     let mut g = b.build();
     let mut pool = Pool::new(0);

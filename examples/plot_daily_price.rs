@@ -15,17 +15,15 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::clock::UnixClock;
-use tradingflow::data::ArrayView;
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::array;
-use tradingflow::operators::array::select_at;
-use tradingflow::operators::elem::{add, mul, sqrt, sub};
-use tradingflow::operators::event::filter;
+use tradingflow::operators::array::{map, select_at, slice_reshape};
+use tradingflow::operators::clock::as_clock_map;
+use tradingflow::operators::elem::{add, sqrt, sub};
 use tradingflow::operators::feature::stock::forward_adjust;
 use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
 use tradingflow::sources::panel::*;
+use tradingflow::time::UnixTime;
 
 const WINDOW: usize = 252;
 const MULTIPLE: f64 = 2.0;
@@ -60,29 +58,30 @@ async fn main() {
         .position(|s| s == &symbol)
         .unwrap_or_else(|| panic!("{symbol} not in symbol_list.csv"));
 
-    let mut sc = Builder::new(UnixClock);
+    let mut sc = Builder::new(UnixTime);
 
-    // Panel sources: close from prices, (share, cash) from dividends.
+    // Panel sources: close from prices, (share, cash) from dividends. Each is
+    // a `([N, 1] row clock, [N, K])` stream.
     let price_src = parquet_panel_source(prices_pq, vec!["prices.close".into()], symbols.clone());
-    let price_panel = sc.source(price_src);
+    let (price_rows, price_panel) = sc.source(price_src);
     let div_src = parquet_panel_source(
         dividends_pq,
         vec!["dividends.share".into(), "dividends.cash".into()],
         symbols.clone(),
     );
-    let div_panel = sc.source(div_src);
+    let (div_rows, div_panel) = sc.source(div_src);
 
-    // Select the target stock; close (scalar) and volume (scalar) from its row
-    // (rank-1 `[K]` → rank-0 scalar via the squeezing `Select`).
-    let prices = sc.segment(select_at(idx, 0), price_panel);
-    let prices = sc.segment(
-        filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
-        prices,
+    // Select the target stock's row and its own tick clock — the stock's
+    // element of each panel's row clock, squeezed to a rank-0 pulse.
+    let prices = sc.segment(select_at::<f64, 2, 1>(idx, 0), price_panel);
+    let ticks = sc.segment(
+        as_clock_map(slice_reshape::<bool, 2, 0, _>((idx, 0usize))),
+        price_rows,
     );
-    let dividends = sc.segment(select_at(idx, 0), div_panel);
-    let dividends = sc.segment(
-        filter(|a: ArrayView<f64, 1>| a.to_contiguous().iter().any(|x| x.is_finite())),
-        dividends,
+    let dividends = sc.segment(select_at::<f64, 2, 1>(idx, 0), div_panel);
+    let div_ticks = sc.segment(
+        as_clock_map(slice_reshape::<bool, 2, 0, _>((idx, 0usize))),
+        div_rows,
     );
     let closes = sc.segment(select_at(0, 0), prices);
 
@@ -91,23 +90,25 @@ async fn main() {
     // rolling stats.
     let share_divs = sc.segment(select_at(0, 0), dividends);
     let cash_divs = sc.segment(select_at(1, 0), dividends);
-    let (_multipliers, adj_closes) = sc.segment(forward_adjust(), (closes, share_divs, cash_divs));
-    let adj_series = sc.segment(record_all(), adj_closes);
+    let (_multipliers, adj_closes) = sc.segment(
+        forward_adjust(),
+        ((ticks, closes), (div_ticks, share_divs, cash_divs)),
+    );
+    let adj_series = sc.segment(record_all(), (ticks, adj_closes));
 
     // 252-day MA + rolling std → Bollinger bands (scalar series → rank-0).
     let ma = sc.segment(rolling::series_mean(WINDOW, 1), adj_series);
     let var = sc.segment(rolling::series_var(WINDOW, 1), adj_series);
     let std = sc.segment(sqrt(), var);
-    let multiple = sc.segment(array::scalar(MULTIPLE), ());
-    let band = sc.segment(mul(), (std, multiple));
+    let band = sc.segment(map(move |&x: &f64| x * MULTIPLE), std);
     let upper = sc.segment(add(), (ma, band));
     let lower = sc.segment(sub(), (ma, band));
 
-    // Record the outputs.
-    let h_adj = sc.segment(record_all(), adj_closes);
-    let h_ma = sc.segment(record_all(), ma);
-    let h_upper = sc.segment(record_all(), upper);
-    let h_lower = sc.segment(record_all(), lower);
+    // Record the outputs on the stock's own tick clock.
+    let h_adj = sc.segment(record_all(), (ticks, adj_closes));
+    let h_ma = sc.segment(record_all(), (ticks, ma));
+    let h_upper = sc.segment(record_all(), (ticks, upper));
+    let h_lower = sc.segment(record_all(), (ticks, lower));
 
     // Run the historical replay to completion.
     let mut session = sc.build();

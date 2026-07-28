@@ -1,8 +1,8 @@
 //! Built-in operator segments.
 
 pub mod array;
+pub mod clock;
 pub mod elem;
-pub mod event;
 pub mod feature;
 pub mod metric;
 pub mod rolling;

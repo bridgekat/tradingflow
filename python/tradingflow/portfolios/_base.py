@@ -34,7 +34,8 @@ class MeanPortfolioState:
 class MeanPortfolio:
     """Abstract portfolio constructor from per-stock predictions.
 
-    Inputs: (universe, predicted_returns), both shape ``(num_stocks,)``.
+    Inputs: (rebalance_clock, universe, predicted_returns), the arrays both
+    of shape ``(num_stocks,)``.
     Output: position weights, shape ``(num_stocks,)``.
     """
 
@@ -49,9 +50,10 @@ class MeanPortfolio:
         self._logarithmic = logarithmic
         self._positions_fn = positions_fn
 
-    def init(self, inputs, timestamp: int) -> MeanPortfolioState:
+    def init(self, inputs) -> MeanPortfolioState:
         num_stocks = self._num_stocks
         if num_stocks is None:
+            # inputs = (rebalance_clock, universe, mu): read the universe.
             num_stocks = int(inputs[1].shape[0])
         return MeanPortfolioState(
             num_stocks=num_stocks,
@@ -61,20 +63,18 @@ class MeanPortfolio:
 
     @staticmethod
     def compute(
-        state: MeanPortfolioState,
         inputs,
-        output,
+        state: MeanPortfolioState,
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        # Trigger on universe updates: the universe is the canonical
-        # rebalance signal, and the predictor's mu is stored as the last
-        # prediction even when it did not produce this cycle.
-        if not produced[0]:
-            return False
+    ) -> np.ndarray | None:
+        # Trigger on the leading rebalance clock; the predictor's mu is
+        # read as the last prediction even when it did not produce this
+        # cycle.
+        if not inputs[0]:
+            return None
 
-        universe = inputs[0].value()
-        mu = inputs[1].value()
+        universe = inputs[1].value()
+        mu = inputs[2].value()
 
         mask = (universe > 0) & np.isfinite(mu)
         sub_mu = mu[mask]
@@ -87,8 +87,7 @@ class MeanPortfolio:
         if mask.any():
             positions[mask] = state.positions_fn(state, sub_mu)
 
-        output.write(positions)
-        return True
+        return positions
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +133,8 @@ class VariancePortfolioState:
 class VariancePortfolio:
     """Abstract portfolio constructor from covariance alone (no expected returns).
 
-    Inputs: (universe ``(num_stocks,)``, predicted_covariances ``(num_stocks, num_stocks)``).
+    Inputs: (rebalance_clock, universe ``(num_stocks,)``,
+    predicted_covariances ``(num_stocks, num_stocks)``).
     Output: position weights, shape ``(num_stocks,)``.
 
     `positions_fn` is ``(state, sub_universe, sub_previous_positions, None, sub_sigma)``
@@ -157,10 +157,11 @@ class VariancePortfolio:
         self._positions_fn = positions_fn
         self._init_fn = init_fn
 
-    def init(self, inputs, timestamp: int) -> VariancePortfolioState:
+    def init(self, inputs) -> VariancePortfolioState:
         num_stocks = self._num_stocks
         if num_stocks is None:
-            num_stocks = int(inputs[0].shape[0])
+            # inputs = (rebalance_clock, universe, sigma): read the universe.
+            num_stocks = int(inputs[1].shape[0])
         max_universe_size = self._max_universe_size if self._max_universe_size is not None else num_stocks
         solver = self._init_fn(max_universe_size) if self._init_fn is not None else None
         return VariancePortfolioState(
@@ -174,20 +175,18 @@ class VariancePortfolio:
 
     @staticmethod
     def compute(
-        state: VariancePortfolioState,
         inputs,
-        output,
+        state: VariancePortfolioState,
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        # Trigger on universe updates: the universe is the canonical
-        # rebalance signal, and the predictor's sigma is stored as the
-        # last prediction even when it did not produce this cycle.
-        if not produced[0]:
-            return False
+    ) -> np.ndarray | None:
+        # Trigger on the leading rebalance clock; the predictor's sigma is
+        # read as the last prediction even when it did not produce this
+        # cycle.
+        if not inputs[0]:
+            return None
 
-        universe = inputs[0].value()
-        sigma = inputs[1].value()
+        universe = inputs[1].value()
+        sigma = inputs[2].value()
 
         mask = (universe > 0) & np.isfinite(np.diag(sigma))
         sub_sigma = sigma[np.ix_(mask, mask)]
@@ -215,8 +214,7 @@ class VariancePortfolio:
             )
 
         state.previous_positions = positions
-        output.write(positions)
-        return True
+        return positions
 
 
 @dataclass(slots=True)
@@ -234,8 +232,8 @@ class MeanVariancePortfolioState:
 class MeanVariancePortfolio:
     """Abstract portfolio constructor from predicted returns and covariance.
 
-    Inputs: (universe ``(num_stocks,)``, predicted_returns ``(num_stocks,)``,
-    predicted_covariances ``(num_stocks, num_stocks)``).
+    Inputs: (rebalance_clock, universe ``(num_stocks,)``, predicted_returns
+    ``(num_stocks,)``, predicted_covariances ``(num_stocks, num_stocks)``).
     Output: position weights, shape ``(num_stocks,)``.
 
     `positions_fn` is ``(state, sub_universe, sub_previous_positions, sub_mu,
@@ -260,9 +258,11 @@ class MeanVariancePortfolio:
         self._positions_fn = positions_fn
         self._init_fn = init_fn
 
-    def init(self, inputs, timestamp: int) -> MeanVariancePortfolioState:
+    def init(self, inputs) -> MeanVariancePortfolioState:
         num_stocks = self._num_stocks
         if num_stocks is None:
+            # inputs = (rebalance_clock, universe, mu, sigma): read the
+            # universe.
             num_stocks = int(inputs[1].shape[0])
         max_universe_size = self._max_universe_size if self._max_universe_size is not None else num_stocks
         solver = self._init_fn(max_universe_size) if self._init_fn is not None else None
@@ -277,21 +277,19 @@ class MeanVariancePortfolio:
 
     @staticmethod
     def compute(
-        state: MeanVariancePortfolioState,
         inputs,
-        output,
+        state: MeanVariancePortfolioState,
         timestamp: int,
-        produced: tuple[bool, ...],
-    ) -> bool:
-        # Trigger on universe updates: the universe is the canonical
-        # rebalance signal, and both mu and sigma are stored as the last
-        # predictions even when they did not produce this cycle.
-        if not produced[0]:
-            return False
+    ) -> np.ndarray | None:
+        # Trigger on the leading rebalance clock; both mu and sigma are
+        # read as the last predictions even when they did not produce this
+        # cycle.
+        if not inputs[0]:
+            return None
 
-        universe = inputs[0].value()
-        mu = inputs[1].value()
-        sigma = inputs[2].value()
+        universe = inputs[1].value()
+        mu = inputs[2].value()
+        sigma = inputs[3].value()
 
         mask = (universe > 0) & np.isfinite(mu) & np.isfinite(np.diag(sigma))
         sub_mu = mu[mask]
@@ -320,5 +318,4 @@ class MeanVariancePortfolio:
             )
 
         state.previous_positions = positions
-        output.write(positions)
-        return True
+        return positions

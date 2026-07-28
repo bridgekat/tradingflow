@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use crate::data::{self, Array, ArrayView, Instant, Scalar};
 use crate::graph::Segment;
-use crate::ports::ArrayPort;
+use crate::ports::{ArrayPort, ClockArrayPort};
 
 /// Operator signature for [`annualize`].
 pub struct Annualize<T: Scalar + Float, const N: usize> {
@@ -26,24 +26,31 @@ impl<T: Scalar + Float, const N: usize> Default for Annualize<T, N> {
 
 /// Runtime state for [`Annualize`].
 pub struct AnnualizeState<T: Scalar + Float, const N: usize> {
-    prev: Array<(T, i32, i32), N>,
+    prev: Array<(T, u16, u16), N>,
     out: Array<T, N>,
 }
 
 impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
-    type Inputs = (ArrayPort<T, N>, ArrayPort<i32, N>, ArrayPort<i32, N>);
+    type Inputs = (
+        ClockArrayPort<N>,
+        ArrayPort<T, N>,
+        ArrayPort<u16, N>,
+        ArrayPort<u16, N>,
+    );
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
     type State = AnnualizeState<T, N>;
 
     fn init(
         self,
-        (values, years, days): (
+        (clocks, values, years, days): (
+            ArrayView<'_, bool, N>,
             ArrayView<'_, T, N>,
-            ArrayView<'_, i32, N>,
-            ArrayView<'_, i32, N>,
+            ArrayView<'_, u16, N>,
+            ArrayView<'_, u16, N>,
         ),
     ) -> Self::State {
+        let _ = data::array::broadcast_to(clocks, values.extents());
         let _ = data::array::broadcast_to(years, values.extents());
         let _ = data::array::broadcast_to(days, values.extents());
         AnnualizeState {
@@ -54,9 +61,10 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
 
     fn reset<'a, 'b: 'a>(
         _: (
+            ArrayView<'_, bool, N>,
             ArrayView<'_, T, N>,
-            ArrayView<'_, i32, N>,
-            ArrayView<'_, i32, N>,
+            ArrayView<'_, u16, N>,
+            ArrayView<'_, u16, N>,
         ),
         state: &'b mut Self::State,
     ) -> ArrayView<'a, T, N> {
@@ -64,24 +72,30 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (values, years, days): (
+        (clocks, values, years, days): (
+            ArrayView<'_, bool, N>,
             ArrayView<'_, T, N>,
-            ArrayView<'_, i32, N>,
-            ArrayView<'_, i32, N>,
+            ArrayView<'_, u16, N>,
+            ArrayView<'_, u16, N>,
         ),
         state: &'b mut Self::State,
-        _: &Self::Context,
+        _: &Instant,
     ) -> ArrayView<'a, T, N> {
+        let clocks = data::array::broadcast_to(clocks, values.extents());
         let years = data::array::broadcast_to(years, values.extents());
         let days = data::array::broadcast_to(days, values.extents());
-        for ((((&value, &year), &day), (prev_value, prev_year, prev_day)), out) in values
+        for (((((&clock, &value), &year), &day), (prev_value, prev_year, prev_day)), out) in clocks
             .iter()
+            .zip(values.iter())
             .zip(years.iter())
             .zip(days.iter())
             .zip(state.prev.data_mut())
             .zip(state.out.data_mut())
         {
-            if !value.is_nan() {
+            // A NaN value under a set clock is a missing field within the
+            // fired row: skip it and bridge to the next report (the day
+            // delta then spans the gap).
+            if clock && !value.is_nan() {
                 if !prev_value.is_nan() {
                     assert!(
                         year >= *prev_year,
@@ -104,8 +118,6 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
                 *prev_value = value;
                 *prev_year = year;
                 *prev_day = day;
-            } else {
-                *out = T::nan();
             }
         }
         state.out.view()
@@ -116,19 +128,23 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
 ///
 /// Inputs:
 ///
-/// - `ytd_values` (event, one per data point): the YTD-cumulative values of
-///   the data point.
-/// - `year` (state): the year of the current data point. Extents must be
-///   broadcastable to `ytd_values`.
-/// - `day` (state): the day-of-year of the current data point. Extents must be
-///   broadcastable to `ytd_values`.
+/// - `clock`: emits one clock signal per data point.
+/// - `ytd_values`: the YTD-cumulative values of the current data point.
+/// - `year`: the year of the current data point.
+/// - `day`: the day-of-year of the current data point.
+///
+/// All extents must be broadcastable to `ytd_values`.
 ///
 /// Outputs:
 ///
-/// - `annual_values` (event, one per data point): elementwise annualized
-///   `ytd_values`, with the same extents.
+/// - `annual_values`: elementwise annualized `ytd_values`.
 pub fn annualize<T: Scalar + Float, const N: usize>() -> impl Segment<
-    Inputs = (ArrayPort<T, N>, ArrayPort<i32, N>, ArrayPort<i32, N>),
+    Inputs = (
+        ClockArrayPort<N>,
+        ArrayPort<T, N>,
+        ArrayPort<u16, N>,
+        ArrayPort<u16, N>,
+    ),
     Outputs = ArrayPort<T, N>,
     Context = Instant,
 > {

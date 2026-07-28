@@ -4,7 +4,7 @@ use tradingflow_data::Layout;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
 use crate::graph::Segment;
-use crate::ports::ArrayPort;
+use crate::ports::{ArrayPort, ClockPort};
 
 /// Operator signature for [`turnover`].
 pub struct Turnover<T: Scalar + Float> {
@@ -32,12 +32,12 @@ pub struct TurnoverState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Segment for Turnover<T> {
-    type Inputs = ArrayPort<T, 1>;
+    type Inputs = (ClockPort, ArrayPort<T, 1>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = TurnoverState<T>;
 
-    fn init(self, weights: ArrayView<'_, T, 1>) -> Self::State {
+    fn init(self, (_, weights): (ArrayView<'_, bool, 0>, ArrayView<'_, T, 1>)) -> Self::State {
         let len = weights.layout().len();
         TurnoverState {
             prev: vec![T::zero(); len],
@@ -46,17 +46,20 @@ impl<T: Scalar + Float> Segment for Turnover<T> {
     }
 
     fn reset<'a, 'b: 'a>(
-        _: ArrayView<'a, T, 1>,
+        _: (ArrayView<'a, bool, 0>, ArrayView<'a, T, 1>),
         state: &'b mut Self::State,
     ) -> ArrayView<'a, T, 0> {
         state.out.view()
     }
 
     fn compute<'a, 'b: 'a>(
-        weights: ArrayView<'a, T, 1>,
+        (clock, weights): (ArrayView<'a, bool, 0>, ArrayView<'a, T, 1>),
         state: &'b mut Self::State,
-        _: &Self::Context,
+        _: &Instant,
     ) -> ArrayView<'a, T, 0> {
+        if !*clock {
+            return state.out.view();
+        }
         assert!(
             weights.layout().len() == state.prev.len(),
             "turnover: input length mismatch"
@@ -72,8 +75,10 @@ impl<T: Scalar + Float> Segment for Turnover<T> {
     }
 }
 
-/// Cumulative turnover: the sum of L1 norm of changes in a weight vector.
+/// Cumulative turnover: the sum of L1 norm of changes in a weight vector,
+/// accumulated once per clock signal.
 pub fn turnover<T: Scalar + Float>()
--> impl Segment<Inputs = ArrayPort<T, 1>, Outputs = ArrayPort<T, 0>, Context = Instant> {
+-> impl Segment<Inputs = (ClockPort, ArrayPort<T, 1>), Outputs = ArrayPort<T, 0>, Context = Instant>
+{
     Turnover::new()
 }

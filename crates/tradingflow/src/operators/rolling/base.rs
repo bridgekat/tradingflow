@@ -1,3 +1,4 @@
+use num_traits::Float;
 use std::marker::PhantomData;
 use std::ops::Range;
 
@@ -16,7 +17,7 @@ use crate::ports::{ArrayPort, SeriesPort};
 /// - The [`remove`](Self::remove) method is called when an element leaves the
 ///   window.
 /// - The [`write`](Self::write) method is called to write the current output.
-pub trait Accumulator<T: Scalar, const N: usize, U: Scalar, const M: usize>:
+pub trait Accumulator<T: Scalar, const N: usize, U: Scalar + Float, const M: usize>:
     Send + 'static
 {
     fn init(&mut self, extents: [usize; N]) -> Array<U, M>;
@@ -27,14 +28,19 @@ pub trait Accumulator<T: Scalar, const N: usize, U: Scalar, const M: usize>:
 
 /// Operator signature for rolling window operators.
 #[allow(clippy::type_complexity)]
-pub struct Rolling<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, U, M>>
-{
+pub struct Rolling<
+    T: Scalar,
+    const N: usize,
+    U: Scalar + Float,
+    const M: usize,
+    A: Accumulator<T, N, U, M>,
+> {
     window: Retention,
     acc: A,
     _marker: PhantomData<fn() -> (T, U)>,
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, U, M>>
+impl<T: Scalar, const N: usize, U: Scalar + Float, const M: usize, A: Accumulator<T, N, U, M>>
     Rolling<T, N, U, M, A>
 {
     pub fn new(window: Retention, acc: A) -> Self {
@@ -51,7 +57,7 @@ impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, 
 pub struct RollingState<
     T: Scalar,
     const N: usize,
-    U: Scalar,
+    U: Scalar + Float,
     const M: usize,
     A: Accumulator<T, N, U, M>,
 > {
@@ -62,8 +68,8 @@ pub struct RollingState<
     _marker: PhantomData<fn() -> T>,
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, U, M>> Segment
-    for Rolling<T, N, U, M, A>
+impl<T: Scalar, const N: usize, U: Scalar + Float, const M: usize, A: Accumulator<T, N, U, M>>
+    Segment for Rolling<T, N, U, M, A>
 {
     type Inputs = SeriesPort<T, N>;
     type Outputs = ArrayPort<U, M>;
@@ -97,7 +103,7 @@ impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, 
     fn compute<'a, 'b: 'a>(
         series: SeriesView<'a, T, N>,
         state: &'b mut Self::State,
-        instant: &Self::Context,
+        _: &Instant,
     ) -> ArrayView<'a, U, M> {
         assert!(
             series.range().start <= state.range.start,
@@ -105,19 +111,23 @@ impl<T: Scalar, const N: usize, U: Scalar, const M: usize, A: Accumulator<T, N, 
             state.range,
             series.range()
         );
-        let start = series.range().start + state.window.trim_count(series, instant);
-        assert!(
-            state.range.start <= start,
-            "rolling: window start must be monotonic (last window {:?}, got new start {})",
-            state.range,
-            start
-        );
         let end = series.range().end;
         assert!(
             state.range.end <= end,
             "rolling: input series range end must be monotonic (last window {:?}, got new end {})",
             state.range,
             end
+        );
+        if state.range.end == end {
+            return state.out.view();
+        }
+        let instant = series.at(end - 1).0;
+        let start = series.range().start + state.window.trim_count(series, &instant);
+        assert!(
+            state.range.start <= start,
+            "rolling: window start must be monotonic (last window {:?}, got new start {})",
+            state.range,
+            start
         );
         for i in state.range.end..end {
             state.acc.add(series.at(i).1);

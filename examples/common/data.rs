@@ -1,105 +1,113 @@
 //! The stacked cross-sectional market panel: parquet sources → `[num_stocks]`
-//! per-field panels, via one fused per-stock segment.
+//! per-field panels, wired entirely in cross-section.
+//!
+//! Every panel source emits a `([N, 1] row clock, [N, K] values)` event
+//! stream: clock element `i` pulses on the dates stock `i` has a row, and the
+//! one row clock broadcasts over every `[N, K]` value column. Since
+//! [`forward_adjust`] and [`annualize`] gate per element on the clock array,
+//! they run **once over the whole cross-section** — there is no per-stock
+//! fan-out at all, and a NaN under a set clock is a missing field rather than
+//! a missing event. Per-stock carry ("latest known value") is a
+//! cross-sectional [`elem::forward_fill_nan`] over the panel's batch face;
+//! batch-level cadences (`daily`, `reports`) are `clock_any` reductions of
+//! the row clocks.
 
-use tradingflow::clock::UnixClock;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::Builder;
 use tradingflow::operators::{
-    array::{array_map, select, select_at, stack, unstack},
-    elem, event,
+    array::{array_map, select, select_at},
+    clock::{any, as_clock_map},
+    elem,
     feature::stock::*,
-    metric::*,
-    stats::*,
-    traders::*,
 };
-use tradingflow::ports::{ArrayPort, ArrayPortHandle};
+use tradingflow::ports::{ArrayPortHandle, ClockArrayPortHandle, ClockPortHandle};
 use tradingflow::sources::panel::*;
+use tradingflow::time::UnixTime;
 
 use super::args::CommonArgs;
 
 /// Cross-sectional `(num_stocks,)` panels produced by [`build_stacked`].
 ///
-/// The fundamental fields below are point-in-time (effective-date-aligned,
-/// carried forward). Income / cash-flow flows are **annualized** (YTD →
-/// `Annualize`); a trailing-twelve-month figure is a 365-day rolling mean of the
-/// annualized series (see [`factors`](super::features)). The parquet stores assets
-/// debit-positive and liabilities / expense items credit-**negative** — the factor
-/// formulas negate them where a positive magnitude is wanted.
+/// Daily price fields are the **batch face** of the daily stream: on a `daily`
+/// pulse an element is that day's value, `NaN` where the stock did not trade;
+/// between pulses the wire retains the last trading day's cross-section.
+/// The fundamental fields are point-in-time carried state (effective-date
+/// aligned, forward-filled per element). Income / cash-flow flows are
+/// **annualized** (YTD → [`annualize`]); a trailing-twelve-month figure is a
+/// 365-day rolling mean of the annualized report stream (see
+/// [`factors`](super::features)). The parquet stores assets debit-positive and
+/// liabilities / expense items credit-**negative** — the factor formulas negate
+/// them where a positive magnitude is wanted.
 pub struct Stacked {
-    pub close: ArrayPortHandle<f64, 1>, // unadjusted close (StackSync)
-    pub volume: ArrayPortHandle<f64, 1>, // 成交量 shares (StackSync)
-    pub open: ArrayPortHandle<f64, 1>,  // 开盘价 unadjusted (StackSync)
-    pub high: ArrayPortHandle<f64, 1>,  // 最高价 unadjusted (StackSync)
-    pub low: ArrayPortHandle<f64, 1>,   // 最低价 unadjusted (StackSync)
-    pub amount: ArrayPortHandle<f64, 1>, // 成交额 turnover value (StackSync)
-    pub adjusted_close: ArrayPortHandle<f64, 1>, // close * forward-adjust factor (StackSync)
-    pub adjusts: ArrayPortHandle<f64, 1>, // forward-adjust factor (Stack)
-    pub total_shares: ArrayPortHandle<f64, 1>, // (Stack)
-    pub circ_shares: ArrayPortHandle<f64, 1>, // (Stack)
-    pub parent_equity: ArrayPortHandle<f64, 1>, // 归母净资产, positive (Stack)
-    pub net_profit: ArrayPortHandle<f64, 1>, // 净利润, annualized, positive
-    pub operating_profit: ArrayPortHandle<f64, 1>, // 营业利润, annualized, positive
-    pub revenue: ArrayPortHandle<f64, 1>, // 营业收入, annualized, positive
-    pub operating_cost: ArrayPortHandle<f64, 1>, // 营业成本, annualized, NEGATIVE (a deduction)
-    pub total_assets: ArrayPortHandle<f64, 1>, // 总资产, positive
-    pub total_liab: ArrayPortHandle<f64, 1>, // 总负债, NEGATIVE (credit side)
-    pub current_assets: ArrayPortHandle<f64, 1>, // 流动资产, positive
-    pub current_liab: ArrayPortHandle<f64, 1>, // 流动负债, NEGATIVE (credit side)
-    pub cash: ArrayPortHandle<f64, 1>,  // 货币资金, positive
-    pub inventories: ArrayPortHandle<f64, 1>, // 存货, positive
-    pub receivables: ArrayPortHandle<f64, 1>, // 应收票据及账款, positive
-    pub net_operating_cashflow: ArrayPortHandle<f64, 1>, // 经营现金流净额, annualized
+    /// One pulse per trading day (the daily-prices panel's dates).
+    pub daily: ClockPortHandle,
+    /// One pulse per income-statement effective date (any stock reporting).
+    pub reports: ClockPortHandle,
+    /// One pulse per cash-flow-statement effective date.
+    pub cf_reports: ClockPortHandle,
+    pub close: ArrayPortHandle<f64, 1>, // unadjusted close (daily batch face)
+    pub volume: ArrayPortHandle<f64, 1>, // 成交量 shares (daily batch face)
+    pub open: ArrayPortHandle<f64, 1>,  // 开盘价 unadjusted (daily batch face)
+    pub high: ArrayPortHandle<f64, 1>,  // 最高价 unadjusted (daily batch face)
+    pub low: ArrayPortHandle<f64, 1>,   // 最低价 unadjusted (daily batch face)
+    pub amount: ArrayPortHandle<f64, 1>, // 成交额 turnover value (daily batch face)
+    pub adjusted_close: ArrayPortHandle<f64, 1>, // close * forward-adjust factor (daily batch face)
+    pub adjusts: ArrayPortHandle<f64, 1>, // forward-adjust factor (carried)
+    pub total_shares: ArrayPortHandle<f64, 1>, // (carried)
+    pub circ_shares: ArrayPortHandle<f64, 1>, // (carried)
+    pub parent_equity: ArrayPortHandle<f64, 1>, // 归母净资产, positive (carried)
+    pub net_profit: ArrayPortHandle<f64, 1>, // 净利润, annualized, positive (carried)
+    pub operating_profit: ArrayPortHandle<f64, 1>, // 营业利润, annualized, positive (carried)
+    pub revenue: ArrayPortHandle<f64, 1>, // 营业收入, annualized, positive (carried)
+    pub operating_cost: ArrayPortHandle<f64, 1>, // 营业成本, annualized, NEGATIVE (carried)
+    pub total_assets: ArrayPortHandle<f64, 1>, // 总资产, positive (carried)
+    pub total_liab: ArrayPortHandle<f64, 1>, // 总负债, NEGATIVE (carried)
+    pub current_assets: ArrayPortHandle<f64, 1>, // 流动资产, positive (carried)
+    pub current_liab: ArrayPortHandle<f64, 1>, // 流动负债, NEGATIVE (carried)
+    pub cash: ArrayPortHandle<f64, 1>,  // 货币资金, positive (carried)
+    pub inventories: ArrayPortHandle<f64, 1>, // 存货, positive (carried)
+    pub receivables: ArrayPortHandle<f64, 1>, // 应收票据及账款, positive (carried)
+    pub net_operating_cashflow: ArrayPortHandle<f64, 1>, // 经营现金流净额, annualized (carried)
+    // The same five annualized flows on their report cadence (pair with
+    // `reports` / `cf_reports`; an element is non-NaN exactly when that stock's
+    // report became effective on the pulse) — the inputs of the TTM means.
+    pub net_profit_events: ArrayPortHandle<f64, 1>,
+    pub operating_profit_events: ArrayPortHandle<f64, 1>,
+    pub revenue_events: ArrayPortHandle<f64, 1>,
+    pub operating_cost_events: ArrayPortHandle<f64, 1>,
+    pub net_operating_cashflow_events: ArrayPortHandle<f64, 1>,
 }
 
-/// Predicate for the per-stock `Gate`: the row has ≥1 finite entry, i.e.
-/// the stock actually has data this tick (vs. an all-NaN "no data" cross-section
-/// the panel emits on a date where other stocks ticked but this one didn't).
-fn any_finite(a: ArrayView<'_, f64, 1>) -> bool {
-    a.to_contiguous().iter().any(|x| x.is_finite())
-}
-
-/// Load the consolidated long-format parquet panels and stack into the
-/// cross-sectional panel. One [`ParquetPanelSource`] / [`ParquetFinancialReportPanelSource`] per
-/// data kind (one sequential scan each) replaces the per-symbol CSV fan-in.
-/// Each panel fans out through a single [`Split`] node (`1 → N` rows), every
-/// stock's whole transform chain (NaN `Gate` + column `Select`s +
-/// `ForwardAdjust` + `Annualize` + ...) is **fused into one segment** via
-/// `tradingflow::segment!` — one scheduling unit per stock instead of ~19 nodes,
-/// with identical per-operator notify/cutoff semantics (each sub-operator keeps
-/// its own gate inside the fused node) — and `StackSync` (NaN-fill non-trading
-/// slots) / `Stack` (carry last-known) recombine into `[N]` panels. The financial
-/// reports align on the look-ahead-safe effective date `max(report, notice)`
-/// (`use_effective_date`, zero fallback).
+/// Load the consolidated long-format parquet panels and wire the
+/// cross-sectional panel. One [`ParquetPanelSource`] /
+/// [`ParquetFinancialReportPanelSource`] per data kind (one sequential scan
+/// each); the financial reports align on the look-ahead-safe effective date
+/// `max(report, notice)` (`use_effective_date`, zero fallback).
 pub fn build_stacked(
-    sc: &mut Builder<Instant, UnixClock>,
+    sc: &mut Builder<Instant, UnixTime>,
     symbols: &[String],
     args: &CommonArgs,
 ) -> Stacked {
     let dir = &args.data_dir;
     let start = Some(args.data_start());
     let end = Some(args.end());
-    let n = symbols.len();
     let universe: Vec<String> = symbols.to_vec();
 
-    // Panel sources emit pure StackSync cross-sections (only each date's rows;
-    // the carry-forward / NaN-fill is the downstream `Stack` / `StackSync`'s job).
-    // Reports align on the **effective date** `max(report, notice)` — the
-    // look-ahead-safe point-in-time a backtest may use them (`use_effective_date`).
-    // A panel source cell lends its `[N, K]` panel as an `ArrayPort<f64, 2>`
-    // view edge, which feeds `Split` directly.
-    let daily_panel = |sc: &mut Builder<Instant, UnixClock>,
+    // Panel sources emit `([N, 1] row clock, [N, K])` streams reflecting only
+    // each date's rows (absent symbols NaN); all carry-forward is downstream.
+    let daily_panel = |sc: &mut Builder<Instant, UnixTime>,
                        kind: &str,
                        cols: Vec<String>|
-     -> ArrayPortHandle<f64, 2> {
+     -> (ClockArrayPortHandle<2>, ArrayPortHandle<f64, 2>) {
         let s = parquet_panel_source(format!("{dir}/{kind}.parquet"), cols, universe.clone())
             .with_time_range(start, end);
         sc.source(s)
     };
-    let report_panel = |sc: &mut Builder<Instant, UnixClock>,
+    let report_panel = |sc: &mut Builder<Instant, UnixTime>,
                         kind: &str,
                         cols: Vec<String>,
                         with_report_date: bool|
-     -> ArrayPortHandle<f64, 2> {
+     -> (ClockArrayPortHandle<2>, ArrayPortHandle<f64, 2>) {
         let s = parquet_financial_report_panel_source(
             format!("{dir}/{kind}.parquet"),
             cols,
@@ -111,7 +119,7 @@ pub fn build_stacked(
         sc.source(s)
     };
 
-    let prices_panel = daily_panel(
+    let (daily_rows, prices) = daily_panel(
         sc,
         "daily_prices",
         vec![
@@ -123,25 +131,25 @@ pub fn build_stacked(
             "prices.amount".into(), // 5 (turnover value, 成交额)
         ],
     );
-    let div_panel = daily_panel(
+    let (div_rows, divs) = daily_panel(
         sc,
         "dividends",
         vec!["dividends.share".into(), "dividends.cash".into()],
     );
-    let equity_panel = daily_panel(
+    let (_equity_rows, equity) = daily_panel(
         sc,
         "equity_structures",
         vec!["shares.total".into(), "shares.circulating".into()],
     );
-    let balance_panel = report_panel(
+    let (_balance_rows, balance) = report_panel(
         sc,
         "balance_sheets",
         vec![
-            // [0..3]: parent-equity components (summed and negated in-segment).
+            // [0..3]: parent-equity components (summed and negated below).
             "balance_sheet.equity.capital".into(),
             "balance_sheet.equity.reserves".into(),
             "balance_sheet.equity.parent_interests".into(),
-            // [3..8]: point-in-time balance stocks for the fundamental factors
+            // [3..10]: point-in-time balance stocks for the fundamental factors
             // (assets debit-positive, liabilities credit-negative).
             "balance_sheet.assets".into(),         // 3 total assets
             "balance_sheet.liab".into(),           // 4 total liabilities (negative)
@@ -153,7 +161,7 @@ pub fn build_stacked(
         ],
         false,
     );
-    let income_panel = report_panel(
+    let (report_rows, income) = report_panel(
         sc,
         "income_statements",
         vec![
@@ -164,7 +172,7 @@ pub fn build_stacked(
         ],
         true,
     );
-    let cashflow_panel = report_panel(
+    let (cf_report_rows, cashflow) = report_panel(
         sc,
         "cash_flow_statements",
         vec![
@@ -175,193 +183,127 @@ pub fn build_stacked(
         true,
     );
 
-    // One `unstack` per panel: the `1 → N` row fan-out as a single node each. The
-    // rank-2 `[N, K]` panel unstacks along axis 0 into `N` rank-1 `[K]` row views.
-    let prices_rows = sc.segment(unstack(0), prices_panel);
-    let div_rows = sc.segment(unstack(0), div_panel);
-    let equity_rows = sc.segment(unstack(0), equity_panel);
-    let balance_rows = sc.segment(unstack(0), balance_panel);
-    let income_rows = sc.segment(unstack(0), income_panel);
-    let cashflow_rows = sc.segment(unstack(0), cashflow_panel);
+    // Batch-level cadences (any row this date) and `[N]` per-stock row clocks
+    // for the squeezed per-field wires.
+    let daily = sc.segment(any(), daily_rows);
+    let reports = sc.segment(any(), report_rows);
+    let cf_reports = sc.segment(any(), cf_report_rows);
+    let daily_rows1 = sc.segment(as_clock_map(select_at(0, 1)), daily_rows);
+    let div_rows1 = sc.segment(as_clock_map(select_at(0, 1)), div_rows);
 
-    let mut closes = Vec::with_capacity(n);
-    let mut volumes = Vec::with_capacity(n);
-    let mut adjusted_closes = Vec::with_capacity(n);
-    let mut adjust_factors = Vec::with_capacity(n);
-    let mut totals = Vec::with_capacity(n);
-    let mut circs = Vec::with_capacity(n);
-    let mut parent_equities = Vec::with_capacity(n);
-    let mut incomes = Vec::with_capacity(n); // annualized [profit, operating, revenue, cost]
-    let mut balances = Vec::with_capacity(n); // [assets, liab, current_assets, current_liab, cash]
-    let mut cashflows = Vec::with_capacity(n); // annualized [operating, investing, financing]
-    let mut price_extras = Vec::with_capacity(n); // daily [open, high, low, amount]
+    // Daily price fields: squeezing column selects of the `[N, 6]` panel.
+    let close = sc.segment(select_at(0, 1), prices);
+    let volume = sc.segment(select_at(1, 1), prices);
+    let open = sc.segment(select_at(2, 1), prices);
+    let high = sc.segment(select_at(3, 1), prices);
+    let low = sc.segment(select_at(4, 1), prices);
+    let amount = sc.segment(select_at(5, 1), prices);
 
-    for i in 0..n {
-        // The whole per-stock transform chain, fused into ONE graph node via
-        // `segment!`. Inputs are the stock's **zero-copy row views** of the six
-        // panels (from `Split`); the leading `Gate(any_finite)` per panel drops
-        // the all-NaN "no data" ticks, recovering that stock's real event stream.
-        // `Gate` retains the last passed row in its own state and re-presents a
-        // view of it whenever it gates out, so it honours the no-notify⟹unchanged
-        // contract (its un-notified output is the last passed value, never the
-        // gated-out row). Views materialize at the computing/selecting operators,
-        // whose owned outputs retain last values for the carry-style `Stack`
-        // joins; every sub-operator keeps its own notify gate inside the fused
-        // node, so the cutoff and `ForwardAdjust`'s price/dividend message-passing
-        // are unchanged. The segment is identical for every stock (the stock index
-        // lives only in the input wiring), so it monomorphizes once.
-        //
-        // The many fundamental columns are emitted as GROUPED arrays
-        // (`income_ann` [4], `balance_extras` [7], `cf_ann` [3]) rather than one
-        // output each — both to keep the segment within the tuple-arity limit
-        // and to move less. The `Stack` joins below build the `(N, K)` panels;
-        // a squeezing column `Select` recovers each field as `(N,)`.
-        // Per-stock scalar fields are rank-0 `[]` views; grouped fields
-        // (`prices_extras` [4], `income_ann` [4], `balance_extras` [7], `cf_ann`
-        // [3]) are rank-1 `[K]` views. Each `Split` row is an ordinary by-value
-        // `ArrayPort<f64, 1>`, consumed directly by the `Gate`/view operators.
-        let seg = tradingflow::segment!(|prices_row: ArrayPort<f64, 1>,
-                                       div_row: ArrayPort<f64, 1>,
-                                       equity_row: ArrayPort<f64, 1>,
-                                       balance_row: ArrayPort<f64, 1>,
-                                       income_row: ArrayPort<f64, 1>,
-                                       cashflow_row: ArrayPort<f64, 1>|
-            -> (
-            ArrayPort<f64, 0>, // close
-            ArrayPort<f64, 0>, // volume
-            ArrayPort<f64, 0>, // adjusted_close
-            ArrayPort<f64, 0>, // adjusts
-            ArrayPort<f64, 0>, // total_shares
-            ArrayPort<f64, 0>, // circ_shares
-            ArrayPort<f64, 0>, // parent_equity
-            ArrayPort<f64, 1>, // income_ann [4]
-            ArrayPort<f64, 1>, // balance_extras [7]
-            ArrayPort<f64, 1>, // cf_ann [3]
-            ArrayPort<f64, 1>  // prices_extras [4]
-        ) {
-            let prices = event::filter(any_finite) @ prices_row; // [close, volume, open, high, low, amount]
-            let dividends = event::filter(any_finite) @ div_row; // [share, cash]
-            let equity = event::filter(any_finite) @ equity_row; // [total, circulating]
-            let balance = event::filter(any_finite) @ balance_row; // [cap, res, parent, assets, liab, cur_a, cur_l, cash]
-            let income = event::filter(any_finite) @ income_row; // [year, doy, profit, operating, revenue, cost]
-            let cashflow = event::filter(any_finite) @ cashflow_row; // [year, doy, operating, investing, financing]
-            // Terminal column picks `Select` out of the retaining `Gate`'s stable
-            // storage; squeezing one index drops the
-            // axis (rank-1 row → rank-0 scalar). `close` feeds `ForwardAdjust` /
-            // `multiply` and materializes via the owned `Select`.
-            let close = select_at(0, 0) @ prices;
-            let volume = select_at(1, 0) @ prices;
-            // [open, high, low, amount] as a contiguous rank-1 view of cols 2..6.
-            let prices_extras = select(vec![2, 3, 4, 5], 0) @ prices;
-            let share_divs = select_at(0, 0) @ dividends;
-            let cash_divs = select_at(1, 0) @ dividends;
-            let (adjusts, adjusted_close) =
-                forward_adjust() @ (close, share_divs, cash_divs);
-            let total_shares = select_at(0, 0) @ equity;
-            let circ_shares = select_at(1, 0) @ equity;
-            // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).
-            let parent_equity = array_map(|a: ArrayView<f64, 1>| {
-                Array::<f64, 0>::scalar(-a.to_contiguous()[..3].iter().sum::<f64>())
-            }) @ balance;
-            // Annualized income / cash flows (YTD → Annualize; the panel's
-            // leading [year, day_of_year] f64 columns split off and cast to the
-            // i32 calendar inputs, broadcast `[1]` → `[K]`) and the balance
-            // stocks [assets, liab, current_assets, current_liab, cash, inv, rec]
-            // as a contiguous rank-1 view of cols 3..10.
-            let income_year = elem::as_() @ select(vec![0], 0) @ income;
-            let income_doy = elem::as_() @ select(vec![1], 0) @ income;
-            let income_ytd = select(vec![2, 3, 4, 5], 0) @ income;
-            let income_ann = annualize() @ (income_ytd, income_year, income_doy);
-            let cf_year = elem::as_() @ select(vec![0], 0) @ cashflow;
-            let cf_doy = elem::as_() @ select(vec![1], 0) @ cashflow;
-            let cf_ytd = select(vec![2, 3, 4], 0) @ cashflow;
-            let cf_ann = annualize() @ (cf_ytd, cf_year, cf_doy);
-            let balance_extras = select(vec![3, 4, 5, 6, 7, 8, 9], 0) @ balance;
-            (
-                close,
-                volume,
-                adjusted_close,
-                adjusts,
-                total_shares,
-                circ_shares,
-                parent_equity,
-                income_ann,
-                balance_extras,
-                cf_ann,
-                prices_extras,
+    // Forward adjustment, whole cross-section at once: the close leg on the
+    // daily row clock, both dividend legs on the dividend panel's row clock;
+    // a per-stock event is that stock's clock element, and a NaN under a set
+    // clock is a missing field of the fired row.
+    let share_divs = sc.segment(select_at(0, 1), divs);
+    let cash_divs = sc.segment(select_at(1, 1), divs);
+    let (adjusts, adjusted_close) = sc.segment(
+        forward_adjust(),
+        ((daily_rows1, close), (div_rows1, share_divs, cash_divs)),
+    );
+
+    // Point-in-time carried panels: forward-fill each element of the batch
+    // face, then select columns. (The fill node's cone is its own panel's
+    // dates, so it ingests one batch per report date.)
+    let equity_carried = sc.segment(elem::forward_fill_nan(), equity);
+    let total_shares = sc.segment(select_at(0, 1), equity_carried);
+    let circ_shares = sc.segment(select_at(1, 1), equity_carried);
+
+    let balance_carried = sc.segment(elem::forward_fill_nan(), balance);
+    // parent_equity = -(capital + reserves + parent_interests) (cols 0..3).
+    let parent_equity = sc.segment(
+        array_map(|a: ArrayView<f64, 2>| {
+            let n = a.extents()[0];
+            let rows = a.to_contiguous();
+            let k = a.extents()[1];
+            Array::<f64, 1>::from_parts(
+                [n],
+                (0..n)
+                    .map(|i| -rows[i * k..i * k + 3].iter().sum::<f64>())
+                    .collect::<Vec<_>>()
+                    .into(),
             )
-        });
-        let (
-            close,
-            volume,
-            adjusted_close,
-            adjusts,
-            total_shares,
-            circ_shares,
-            parent_equity,
-            income_ann,
-            balance_extras,
-            cf_ann,
-            prices_extras,
-        ) = sc.segment(
-            seg,
-            (
-                prices_rows[i],
-                div_rows[i],
-                equity_rows[i],
-                balance_rows[i],
-                income_rows[i],
-                cashflow_rows[i],
-            ),
-        );
+        }),
+        balance_carried,
+    );
+    let total_assets = sc.segment(select_at(3, 1), balance_carried);
+    let total_liab = sc.segment(select_at(4, 1), balance_carried);
+    let current_assets = sc.segment(select_at(5, 1), balance_carried);
+    let current_liab = sc.segment(select_at(6, 1), balance_carried);
+    let cash = sc.segment(select_at(7, 1), balance_carried);
+    let inventories = sc.segment(select_at(8, 1), balance_carried);
+    let receivables = sc.segment(select_at(9, 1), balance_carried);
 
-        closes.push(close);
-        volumes.push(volume);
-        adjusted_closes.push(adjusted_close);
-        adjust_factors.push(adjusts);
-        totals.push(total_shares);
-        circs.push(circ_shares);
-        parent_equities.push(parent_equity);
-        incomes.push(income_ann);
-        balances.push(balance_extras);
-        cashflows.push(cf_ann);
-        price_extras.push(prices_extras);
-    }
+    // Annualized income / cash flows (YTD → annualize), whole cross-section at
+    // once: the `[N, 1]` report row clock and the `[year, day_of_year]`
+    // calendar columns (non-squeezed `[N, 1]` selects, cast to u16) all
+    // broadcast against the `[N, K]` YTD columns — one row clock gates every
+    // field of the report.
+    let income_year_f = sc.segment(select(vec![0], 1), income);
+    let income_year = sc.segment(elem::as_(), income_year_f);
+    let income_doy_f = sc.segment(select(vec![1], 1), income);
+    let income_doy = sc.segment(elem::as_(), income_doy_f);
+    let income_ytd = sc.segment(select(vec![2, 3, 4, 5], 1), income);
+    let income_ann = sc.segment(
+        annualize(),
+        (report_rows, income_ytd, income_year, income_doy),
+    );
+    let cf_year_f = sc.segment(select(vec![0], 1), cashflow);
+    let cf_year = sc.segment(elem::as_(), cf_year_f);
+    let cf_doy_f = sc.segment(select(vec![1], 1), cashflow);
+    let cf_doy = sc.segment(elem::as_(), cf_doy_f);
+    let cf_ytd = sc.segment(select(vec![2, 3, 4], 1), cashflow);
+    let cf_ann = sc.segment(annualize(), (cf_report_rows, cf_ytd, cf_year, cf_doy));
 
-    // The per-stock segment outputs are by-value `ArrayPort` handles; the carry
-    // joins (`Stack`/`StackSync`) take a slice of them directly.
-
-    // Cross-sectional grouped panels (rank-1 `[K]` rows → rank-2 `[N, K]`); a
-    // squeezing column `Select` (axis 1) recovers each field as rank-1 `[N]`.
-    let income_xs = sc.segment(stack::<f64, 1, 2>(0), &incomes[..]); // (N, 4)
-    let balance_xs = sc.segment(stack::<f64, 1, 2>(0), &balances[..]); // (N, 7)
-    let cf_xs = sc.segment(stack::<f64, 1, 2>(0), &cashflows[..]); // (N, 3)
-    let px_xs = sc.segment(event::eventify(stack::<f64, 1, 2>(0)), &price_extras[..]); // (N, 4) [open, high, low, amount]
+    // Report event columns (batch face on the report clocks) and their
+    // carried counterparts (forward-filled per element).
+    let np_e = sc.segment(select_at(0, 1), income_ann);
+    let op_e = sc.segment(select_at(1, 1), income_ann);
+    let rev_e = sc.segment(select_at(2, 1), income_ann);
+    let cost_e = sc.segment(select_at(3, 1), income_ann);
+    let ocf_e = sc.segment(select_at(0, 1), cf_ann);
+    let income_carried = sc.segment(elem::forward_fill_nan(), income_ann);
+    let cf_carried = sc.segment(elem::forward_fill_nan(), cf_ann);
 
     Stacked {
-        // Per-stock scalars (rank-0) → rank-1 `[N]` cross-sections.
-        close: sc.segment(event::eventify(stack(0)), &closes[..]),
-        volume: sc.segment(event::eventify(stack(0)), &volumes[..]),
-        adjusted_close: sc.segment(event::eventify(stack(0)), &adjusted_closes[..]),
-        adjusts: sc.segment(stack(0), &adjust_factors[..]),
-        total_shares: sc.segment(stack(0), &totals[..]),
-        circ_shares: sc.segment(stack(0), &circs[..]),
-        parent_equity: sc.segment(stack(0), &parent_equities[..]),
-        net_profit: sc.segment(select_at(0, 1), income_xs),
-        operating_profit: sc.segment(select_at(1, 1), income_xs),
-        revenue: sc.segment(select_at(2, 1), income_xs),
-        operating_cost: sc.segment(select_at(3, 1), income_xs),
-        total_assets: sc.segment(select_at(0, 1), balance_xs),
-        total_liab: sc.segment(select_at(1, 1), balance_xs),
-        current_assets: sc.segment(select_at(2, 1), balance_xs),
-        current_liab: sc.segment(select_at(3, 1), balance_xs),
-        cash: sc.segment(select_at(4, 1), balance_xs),
-        inventories: sc.segment(select_at(5, 1), balance_xs),
-        receivables: sc.segment(select_at(6, 1), balance_xs),
-        net_operating_cashflow: sc.segment(select_at(0, 1), cf_xs),
-        open: sc.segment(select_at(0, 1), px_xs),
-        high: sc.segment(select_at(1, 1), px_xs),
-        low: sc.segment(select_at(2, 1), px_xs),
-        amount: sc.segment(select_at(3, 1), px_xs),
+        daily,
+        reports,
+        cf_reports,
+        close,
+        volume,
+        open,
+        high,
+        low,
+        amount,
+        adjusted_close,
+        adjusts,
+        total_shares,
+        circ_shares,
+        parent_equity,
+        net_profit: sc.segment(select_at(0, 1), income_carried),
+        operating_profit: sc.segment(select_at(1, 1), income_carried),
+        revenue: sc.segment(select_at(2, 1), income_carried),
+        operating_cost: sc.segment(select_at(3, 1), income_carried),
+        total_assets,
+        total_liab,
+        current_assets,
+        current_liab,
+        cash,
+        inventories,
+        receivables,
+        net_operating_cashflow: sc.segment(select_at(0, 1), cf_carried),
+        net_profit_events: np_e,
+        operating_profit_events: op_e,
+        revenue_events: rev_e,
+        operating_cost_events: cost_e,
+        net_operating_cashflow_events: ocf_e,
     }
 }

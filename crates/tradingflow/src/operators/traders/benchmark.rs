@@ -3,7 +3,6 @@
 use super::core::{TraderInputs, TraderValues, Vp};
 use crate::data::{Array, ArrayView, Instant, Layout};
 use crate::graph::Segment;
-use crate::ports::is_eventful;
 
 /// Frictionless benchmark executor: replicates target weights exactly, with
 /// dividend reinvestment, one-tick-delayed mark-on-close execution, idealised
@@ -48,7 +47,7 @@ impl Segment for Benchmark {
     type Context = Instant;
     type State = BenchmarkState;
 
-    fn init(self, (pos, ..): TraderValues<'_>) -> BenchmarkState {
+    fn init(self, ((_, pos), ..): TraderValues<'_>) -> BenchmarkState {
         let n = self.num_stocks;
         assert_eq!(
             pos.layout().len(),
@@ -69,13 +68,11 @@ impl Segment for Benchmark {
     }
 
     fn compute<'a, 'b: 'a>(
-        (pos, close, adj, up, lo): TraderValues<'a>,
+        ((pos_eventful, pos), (can_exec, close), adj, up, lo): TraderValues<'a>,
         state: &'b mut BenchmarkState,
         _: &Instant,
     ) -> ArrayView<'a, f64, 1> {
         let n = state.num_stocks;
-        let pos_eventful = is_eventful(pos);
-        let can_exec = is_eventful(close);
         let positions = pos.to_contiguous();
         let closes = close.to_contiguous();
         let adjusts = adj.to_contiguous();
@@ -107,7 +104,7 @@ impl Segment for Benchmark {
         // Execute the rebalance signalled one tick ago, at today's close.
         // Only an eventful close batch can execute: with no close events there
         // is no market to trade in, and the pending signal is held.
-        if can_exec && let Some(pending) = state.pending.take() {
+        if *can_exec && let Some(pending) = state.pending.take() {
             // Step 1: idealised force-liquidation of held stocks with no valid
             // exec price today (suspended/delisted), at their last valid close.
             for i in 0..n {
@@ -145,7 +142,7 @@ impl Segment for Benchmark {
         }
 
         // Capture a new target for execution on the NEXT eventful close.
-        if pos_eventful {
+        if *pos_eventful {
             state.pending = Some(positions.to_vec());
         }
 
@@ -202,7 +199,10 @@ mod tests {
         let (_adj, adjv) = src(&mut b, &[1.0, 1.0]);
         let (_up, upv) = src(&mut b, &[nan, nan]);
         let (_lo, lov) = src(&mut b, &[nan, nan]);
-        let out = b.segment(Benchmark::new(2, 1.0, true), (posv, closev, adjv, upv, lov));
+        let out = b.segment(
+            Benchmark::new(2, 1.0, true),
+            (posv, closev, adjv.1, upv.1, lov.1),
+        );
         let mut g = b.build();
         let mut pool = Pool::new(0);
 
@@ -239,7 +239,10 @@ mod tests {
         let (adj, adjv) = src(&mut b, &[1.0]);
         let (_up, upv) = src(&mut b, &[nan]);
         let (_lo, lov) = src(&mut b, &[nan]);
-        let out = b.segment(Benchmark::new(1, 1.0, true), (posv, closev, adjv, upv, lov));
+        let out = b.segment(
+            Benchmark::new(1, 1.0, true),
+            (posv, closev, adjv.1, upv.1, lov.1),
+        );
         let mut g = b.build();
         let mut pool = Pool::new(0);
 

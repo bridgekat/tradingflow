@@ -6,16 +6,29 @@
 //! metrics) ports nearly verbatim:
 //!
 //! ```text
-//! init(inputs, timestamp) -> state
-//! compute(state, inputs, output, timestamp, produced) -> bool   # @staticmethod
+//! init(inputs) -> state
+//! compute(inputs, state, timestamp) -> ndarray | None   # @staticmethod
 //! ```
 //!
-//! `inputs` is a tuple of **views** — [`NativeArrayView`] for array edges
-//! (`ArrayPort`) and [`NativeSeriesView`] for recorded-history windows
-//! (`SeriesPort` edges), `None` for unit (clock) inputs. `output` is a
-//! writable array view, `timestamp` is naive
-//! nanoseconds (the graph's ambient event time), `produced` is a `tuple[bool, ...]`
-//! parallel to `inputs`, and `state` is a Python object carried across ticks.
+//! The argument order mirrors [`Segment`](crate::graph::Segment)
+//! (`init(inputs)`, `compute(inputs, state, context) -> outputs`), and like
+//! `Segment::compute` the Python side **returns** its output rather than
+//! filling an out-parameter: an `ndarray` is this generation's batch (the
+//! output clock pulses), `None` is quiescence (no pulse, the values wire
+//! retains its last batch). Returning the batch makes "pulsed but wrote
+//! nothing" and "wrote but reported no pulse" unrepresentable — they were
+//! both silently possible under the old `output` + `bool` pair.
+//!
+//! `inputs` is a single tuple with **one entry per wired leaf, in tree
+//! order**: a [`NativeArrayView`] for array edges (`ArrayPort`), a
+//! [`NativeSeriesView`] for recorded-history windows (`SeriesPort` edges),
+//! and a [`NativeArrayViewBool`] for clock leaves of any rank
+//! (`ClockArrayPort<N>`; a rank-0 pulse reads as `if clock:` via `__bool__`,
+//! a clock array as a NumPy bool mask). `timestamp` is naive nanoseconds (the
+//! graph's ambient event time) and `state` is a Python object carried across
+//! ticks. The returned value is normalized with `numpy.ascontiguousarray`
+//! (so a list or a scalar is accepted) and must match the output's element
+//! count.
 //!
 //! The `source` is a Python *program* (statements) executed in the operator's
 //! own globals (with `np`/`numpy` pre-injected) that binds the operator instance
@@ -31,18 +44,18 @@
 //! `(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)` for a
 //! predictor or `ArrayPorts<f64, 1>` for an all-array operator — and the
 //! output is an `ArrayPort<f64, NO>` view of the host's owned buffer. The
-//! [`PyArgs`] trait walks the input type's payload tree to build the Python
-//! view tuple + produced bools in one pass. (An erased enum input would have
-//! to clone growing `Series` each tick — `PyArgs` reads the borrowed views
-//! directly instead.)
+//! [`PyArgs`] trait walks the input type's payload tree to build the unified
+//! Python input tuple in one pass. (An erased enum input would have to clone
+//! growing `Series` each tick — `PyArgs` reads the borrowed views directly
+//! instead.)
 //!
 //! # Data model
 //!
 //! Copy-based (like the legacy bridge): each view copies the data out to a
 //! fresh NumPy array on read (a strided input view is materialized
-//! row-major at bind), and `output.write()` copies a NumPy array back.
-//! Copies make retention safe and the cost is negligible against the NumPy/SciPy
-//! math these operators run.
+//! row-major at bind), and the array `compute` returns is copied back into
+//! the host's output buffer. Copies make retention safe and the cost is
+//! negligible against the NumPy/SciPy math these operators run.
 //!
 //! # Interpreter model (single shared interpreter; easy to switch)
 //!
@@ -94,14 +107,14 @@
 //!
 //! # Safety
 //!
-//! The view pyclasses hold a raw pointer to graph edge data — an input view's
-//! backing buffer (or its owned row-major materialization) or the host's
-//! output buffer — valid only for the duration of one `compute`/`init` (the
-//! payload is borrowed by the engine then). Views are created fresh each call
-//! and must not be retained past it. The output array view's pointer carries
-//! write provenance (`&mut`); input views are read-only. `unsafe Send + Sync`
-//! is sound: a node's `compute` runs on one thread at a time and views never
-//! cross threads.
+//! The view pyclasses hold a raw pointer to an input view's backing buffer
+//! (or to its owned row-major materialization), valid only for the duration
+//! of one `compute`/`init` — the payload is borrowed by the engine then.
+//! Views are created fresh each call and must not be retained past it. Every
+//! view is read-only: outputs travel back as the value `compute` returns, so
+//! no pointer with write provenance is ever handed to Python. `unsafe Send +
+//! Sync` is sound: a node's `compute` runs on one thread at a time and views
+//! never cross threads.
 
 mod args;
 mod array_view;

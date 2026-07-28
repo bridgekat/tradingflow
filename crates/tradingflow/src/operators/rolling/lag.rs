@@ -5,7 +5,7 @@ use crate::data::{Array, ArrayView, Instant, Retention, Scalar, array};
 use crate::graph::{Segment, SegmentExt};
 use crate::operators::elem::{div, sub};
 use crate::operators::series::buffer;
-use crate::ports::{ArrayPort, SeriesPort};
+use crate::ports::{ArrayPort, ClockPort, SeriesPort};
 use crate::segment;
 
 /// Accumulator for [`lag`].
@@ -52,33 +52,36 @@ pub fn series_lag<T: Scalar + Float, const N: usize>(
     Rolling::new(window.into(), LagAccumulator::new())
 }
 
-/// The last element before the specified window. Returns `NaN` if there is no
-/// such element.
+/// The last sample before the specified window.
+/// Returns `NaN` if there is no such sample.
 pub fn lag<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+{
     let window = window.into();
     buffer(window).then(series_lag(window))
 }
 
-/// Change relative to the last element before the specified window.
-/// Returns `NaN` if there is no such element.
+/// Change relative to the last sample before the specified window.
+/// Returns `NaN` if there is no such sample.
 pub fn diff<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    segment!(@[crate::graph::cb] |x: ArrayPort<T, N>| -> ArrayPort<T, N> {
-        let prev = lag(window) @ x;
+) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+{
+    segment!(@[crate::graph::cb] |c: ClockPort, x: ArrayPort<T, N>| -> ArrayPort<T, N> {
+        let prev = lag(window) @ (c, x);
         sub() @ (x, prev)
     })
 }
 
-/// Percentage change relative to the last element before the specified window.
-/// Returns `NaN` if there is no such element.
+/// Percentage change relative to the last sample before the specified window.
+/// Returns `NaN` if there is no such sample.
 pub fn pct_change<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    segment!(@[crate::graph::cb] |x: ArrayPort<T, N>| -> ArrayPort<T, N> {
-        let prev = lag(window) @ x;
+) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+{
+    segment!(@[crate::graph::cb] |c: ClockPort, x: ArrayPort<T, N>| -> ArrayPort<T, N> {
+        let prev = lag(window) @ (c, x);
         div() @ (sub() @ (x, prev), prev)
     })
 }

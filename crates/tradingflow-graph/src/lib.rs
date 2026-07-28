@@ -15,9 +15,9 @@
 //!
 //! ```rust
 //! use futures::Stream;
-//! use tradingflow::clock::UnixClock;
 //! use tradingflow::data::*;
 //! use tradingflow::graph::*;
+//! use tradingflow::time::*;
 //!
 //! /// A stream of `i64` values.
 //! struct SeqSource(Vec<i64>);
@@ -89,7 +89,7 @@
 //!     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
 //!
 //!     // Build the graph.
-//!     let mut b = Builder::new(UnixClock);
+//!     let mut b = Builder::new(UnixTime);
 //!     let s = b.source(SeqSource(vec![1, 2, 3, 4, 5]));
 //!     let t = b.source(SeqSource(vec![10, 20, 30, 40, 50]));
 //!     let x = b.segment(Add, (s, t));
@@ -230,11 +230,11 @@
 //! that compiles down to combinators like the Arrow notation in Haskell[^1]:
 //!
 //! ```rust
-//! use tradingflow::clock::UnixClock;
 //! use tradingflow::data::*;
 //! use tradingflow::graph::*;
 //! use tradingflow::segment;
 //! use tradingflow::sources::basic::*;
+//! use tradingflow::time::*;
 //!
 //! /// An adder which passes inputs and outputs by reference.
 //! struct Add;
@@ -269,7 +269,7 @@
 //!     }
 //! }
 //!
-//! let mut b = Builder::new(UnixClock);
+//! let mut b = Builder::new(UnixTime);
 //! let s = b.source(vec_source(vec![(Instant::EPOCH, 1)]));
 //! let t = b.source(vec_source(vec![(Instant::EPOCH, 2)]));
 //!
@@ -323,6 +323,6 @@ pub mod pool;
 pub mod typed;
 
 pub use cb::SegmentExt;
-pub use driver::{Builder, Clock, Event, Graph, Source, Stamp};
+pub use driver::{Builder, Event, Graph, Source, Stamp, Time};
 pub use pool::Pool;
 pub use typed::{Interface, NodeHandle, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val};

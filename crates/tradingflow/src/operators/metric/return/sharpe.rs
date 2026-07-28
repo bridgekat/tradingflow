@@ -41,7 +41,7 @@ impl<T: Scalar + Float> Accumulator<T> for ReturnSharpeAccumulator<T> {
 }
 
 /// Sharpe ratio (mean / standard deviation) of per-period percentage return of
-/// a net-asset-value scalar, where each period is specified by a clock pulse.
+/// a net-asset-value scalar, where each period is specified by a clock signal.
 pub fn return_sharpe<T: Scalar + Float>()
 -> impl Segment<Inputs = (ClockPort, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
@@ -49,7 +49,7 @@ pub fn return_sharpe<T: Scalar + Float>()
 }
 
 /// Sharpe ratio (mean / standard deviation) of per-period log return of
-/// a net-asset-value scalar, where each period is specified by a clock pulse.
+/// a net-asset-value scalar, where each period is specified by a clock signal.
 pub fn log_return_sharpe<T: Scalar + Float>()
 -> impl Segment<Inputs = (ClockPort, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
