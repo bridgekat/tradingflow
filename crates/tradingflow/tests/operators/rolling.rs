@@ -29,7 +29,7 @@
 use tradingflow::data::{Array, Duration, SeriesView};
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::{array, elem, rolling, series, signal};
+use tradingflow::operators::{elem, rolling, series};
 
 use crate::harness::*;
 
@@ -1006,8 +1006,7 @@ fn diff_and_pct_change_are_bit_identical_to_their_hoisted_spellings() {
     let mut b = Builder::new();
     // The raw state wire (`rawv`) drives the hand-wired arithmetic: `elem` is
     // stateless, and the current sample is exactly the source's state.
-    let (src, rawv) = b.source(array::constant(arr([2], vec![0.0_f64; 2])));
-    let xc = b.segment(signal::always(), rawv);
+    let (src, (xc, rawv)) = b.source(cell(arr([2], vec![0.0_f64; 2])));
     let fused_diff = b.segment(rolling::diff(N), (xc, rawv));
     let fused_pct = b.segment(rolling::pct_change(N), (xc, rawv));
     let rec = b.segment(series::record_all(), (xc, rawv));

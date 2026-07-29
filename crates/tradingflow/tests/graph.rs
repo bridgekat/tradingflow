@@ -1,7 +1,8 @@
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView};
-use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::{elem::add, series::record_all, signal, signal::filter};
-use tradingflow::sources::basic::*;
+use tradingflow::graph::{Builder, Pool, Source};
+use tradingflow::operators::{elem::add, series::record_all, signal};
+use tradingflow::ports::{ArrayPort, SignalPort};
+use tradingflow::sources::sync::array_series;
 use tradingflow::time::UnixTime;
 
 fn pool() -> Pool {
@@ -15,10 +16,16 @@ fn tss(xs: &[i64]) -> Vec<Instant> {
         .collect()
 }
 
-fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
-    array_source(
-        Array::scalar(0.0),
+/// A synchronous scalar source: each replayed sample arrives with a pulse on
+/// the source's own accompanying signal, so nothing downstream has to derive
+/// a cadence from the scheduler.
+fn src(
+    ts: &[i64],
+    vals: &[f64],
+) -> impl Source<Instant = Instant, Outputs = (SignalPort<0>, ArrayPort<f64, 0>)> {
+    array_series(
         Series::from_parts([], tss(ts), vals.to_vec(), 0),
+        Array::scalar(0.0),
     )
 }
 
@@ -26,11 +33,8 @@ fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
 #[tokio::test]
 async fn run_single_source_record_all() {
     let mut sc = Builder::new(UnixTime);
-    let h = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    // The source is a plain array; its derived signal marks each emission, and
-    // the record appends one row per pulse.
-    let hc = sc.segment(signal::always(), h);
-    let hrec = sc.segment(record_all(), (hc, h));
+    let (hs, h) = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
+    let hrec = sc.segment(record_all(), (hs, h));
 
     let mut session = sc.build();
     session.run(&mut pool(), |_, _| {}).await;
@@ -45,12 +49,12 @@ async fn run_single_source_record_all() {
 #[tokio::test]
 async fn run_two_sources_add() {
     let mut sc = Builder::new(UnixTime);
-    let ha = sc.source(src(&[1, 3], &[10.0, 30.0]));
-    let hb = sc.source(src(&[2, 3], &[20.0, 40.0]));
+    let (has, ha) = sc.source(src(&[1, 3], &[10.0, 30.0]));
+    let (hbs, hb) = sc.source(src(&[2, 3], &[20.0, 40.0]));
     let ho = sc.segment(add(), (ha, hb));
-    // A signal derived from the sum node fires on the union of the two source
-    // cadences — one record row per generation that recomputed the sum.
-    let hoc = sc.segment(signal::always(), ho);
+    // The sum's cadence is the union of its inputs', spelled as the `or` of
+    // their signals — one record row per generation either source fired.
+    let hoc = sc.segment(signal::or(), (has, hbs));
     let hrec = sc.segment(record_all(), (hoc, ho));
 
     let mut session = sc.build();
@@ -66,10 +70,10 @@ async fn run_two_sources_add() {
 #[tokio::test]
 async fn run_coalescing() {
     let mut sc = Builder::new(UnixTime);
-    let ha = sc.source(src(&[1, 2], &[10.0, 20.0]));
-    let hb = sc.source(src(&[1, 2], &[100.0, 200.0]));
+    let (has, ha) = sc.source(src(&[1, 2], &[10.0, 20.0]));
+    let (hbs, hb) = sc.source(src(&[1, 2], &[100.0, 200.0]));
     let ho = sc.segment(add(), (ha, hb));
-    let hoc = sc.segment(signal::always(), ho);
+    let hoc = sc.segment(signal::or(), (has, hbs));
     let hrec = sc.segment(record_all(), (hoc, ho));
 
     let mut session = sc.build();
@@ -85,11 +89,10 @@ async fn run_coalescing() {
 #[tokio::test]
 async fn run_filter_cutoff() {
     let mut sc = Builder::new(UnixTime);
-    let h = sc.source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
-    let hc = sc.segment(signal::always(), h);
+    let (hs, h) = sc.source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
     let hf = sc.segment(
-        filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0),
-        (hc, h),
+        signal::filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0),
+        (hs, h),
     );
     let hrec = sc.segment(record_all(), (hf, h));
 
@@ -108,9 +111,8 @@ async fn run_filter_cutoff() {
 #[tokio::test]
 async fn on_stable_per_batch() {
     let mut sc = Builder::new(UnixTime);
-    let h = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let hc = sc.segment(signal::always(), h);
-    let _ = sc.segment(record_all(), (hc, h));
+    let (hs, h) = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
+    let _ = sc.segment(record_all(), (hs, h));
 
     let mut session = sc.build();
     assert_eq!(session.size_hint(), Some(3));

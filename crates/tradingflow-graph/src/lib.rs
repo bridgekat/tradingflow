@@ -19,13 +19,13 @@
 //! use tradingflow::graph::*;
 //! use tradingflow::time::*;
 //!
-//! /// A stream of `i64` values.
-//! struct SeqSource(Vec<i64>);
+//! // A stream of `i64` values.
+//! struct Sequence(Vec<i64>);
 //!
-//! impl Source for SeqSource {
+//! impl Source for Sequence {
 //!     type Instant = Instant;
 //!     type Payload = i64;
-//!     type Outputs = Port<Val<i64>>;
+//!     type Outputs = Port<Ref<i64>>;
 //!     type State = i64;
 //!
 //!     fn init(self) -> (i64, impl Stream<Item = Event<i64, Instant>> + 'static) {
@@ -43,43 +43,47 @@
 //!         1
 //!     }
 //!
-//!     fn output(state: &mut i64) -> i64 {
+//!     fn output(state: &mut i64) -> &i64 {
 //!         // Output current stored value.
-//!         *state
+//!         state
 //!     }
 //!
-//!     fn reset(state: &mut i64) -> i64 {
+//!     fn reset(state: &mut i64) -> &i64 {
 //!         // The stored value is retained on reset.
-//!         *state
+//!         state
 //!     }
 //! }
 //!
-//! /// An adder with two inputs.
+//! // An adder with two inputs.
 //! struct Add;
 //!
 //! impl Segment for Add {
-//!     type Inputs = (Port<Val<i64>>, Port<Val<i64>>);
-//!     type Outputs = Port<Val<i64>>;
+//!     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
+//!     type Outputs = Port<Ref<i64>>;
 //!     type Context = Instant;
-//!     type State = ();
+//!     type State = i64;
 //!
-//!     fn init(self, _inputs: (i64, i64)) {}
+//!     fn init(self, _inputs: (&i64, &i64)) -> i64 {
+//!         // The initial state.
+//!         0
+//!     }
 //!
 //!     fn compute<'a, 'b: 'a>(
-//!         (a, b): (i64, i64),
-//!         _state: &'b mut (),
+//!         (a, b): (&'a i64, &'a i64),
+//!         state: &'b mut i64,
 //!         _instant: &Instant,
-//!     ) -> i64 {
+//!     ) -> &'a i64 {
 //!         // Compute the sum.
-//!         a + b
+//!         *state = *a + *b;
+//!         state
 //!     }
 //!
 //!     fn reset<'a, 'b: 'a>(
-//!         (a, b): (i64, i64),
-//!         _state: &'b mut (),
-//!     ) -> i64 {
+//!         _inputs: (&'a i64, &'a i64),
+//!         state: &'b mut i64
+//!     ) -> &'a i64 {
 //!         // The sum is retained on reset.
-//!         a + b
+//!         state
 //!     }
 //! }
 //!
@@ -90,8 +94,8 @@
 //!
 //!     // Build the graph.
 //!     let mut b = Builder::new(UnixTime);
-//!     let s = b.source(SeqSource(vec![1, 2, 3, 4, 5]));
-//!     let t = b.source(SeqSource(vec![10, 20, 30, 40, 50]));
+//!     let s = b.source(Sequence(vec![1, 2, 3, 4, 5]));
+//!     let t = b.source(Sequence(vec![10, 20, 30, 40, 50]));
 //!     let x = b.segment(Add, (s, t));
 //!     let y = b.segment(Add, (s, x));
 //!     let mut g = b.build();
@@ -100,10 +104,10 @@
 //!     g.run(&mut pool, |_, _| {}).await;
 //!
 //!     // Check final values.
-//!     assert_eq!(g.view(s), 5);
-//!     assert_eq!(g.view(t), 50);
-//!     assert_eq!(g.view(x), 55);
-//!     assert_eq!(g.view(y), 60);
+//!     assert_eq!(*g.view(s), 5);
+//!     assert_eq!(*g.view(t), 50);
+//!     assert_eq!(*g.view(x), 55);
+//!     assert_eq!(*g.view(y), 60);
 //! }
 //! ```
 //!
@@ -230,48 +234,84 @@
 //! that compiles down to combinators like the Arrow notation in Haskell[^1]:
 //!
 //! ```rust
-//! use tradingflow::data::*;
-//! use tradingflow::graph::*;
+//! # use futures::Stream;
+//! # use tradingflow::data::*;
+//! # use tradingflow::graph::*;
+//! # use tradingflow::time::*;
+//! #
+//! # // A stream of `i64` values.
+//! # struct Sequence(Vec<i64>);
+//! #
+//! # impl Source for Sequence {
+//! #     type Instant = Instant;
+//! #     type Payload = i64;
+//! #     type Outputs = Port<Ref<i64>>;
+//! #     type State = i64;
+//! #
+//! #     fn init(self) -> (i64, impl Stream<Item = Event<i64, Instant>> + 'static) {
+//! #         // The event stream.
+//! #         let items = self.0.into_iter().map(|x| Event {
+//! #             stamp: Stamp::Now,
+//! #             payload: Some(x),
+//! #         });
+//! #         (0, futures::stream::iter(items))
+//! #     }
+//! #
+//! #     fn write(payload: i64, _instant: Instant, state: &mut i64) -> usize {
+//! #         // Write event payload into stored value.
+//! #         *state = payload;
+//! #         1
+//! #     }
+//! #
+//! #     fn output(state: &mut i64) -> &i64 {
+//! #         // Output current stored value.
+//! #         state
+//! #     }
+//! #
+//! #     fn reset(state: &mut i64) -> &i64 {
+//! #         // The stored value is retained on reset.
+//! #         state
+//! #     }
+//! # }
+//! #
+//! # // An adder with two inputs.
+//! # struct Add;
+//! #
+//! # impl Segment for Add {
+//! #     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
+//! #     type Outputs = Port<Ref<i64>>;
+//! #     type Context = Instant;
+//! #     type State = i64;
+//! #
+//! #     fn init(self, _inputs: (&i64, &i64)) -> i64 {
+//! #         // The initial state.
+//! #         0
+//! #     }
+//! #
+//! #     fn compute<'a, 'b: 'a>(
+//! #         (a, b): (&'a i64, &'a i64),
+//! #         state: &'b mut i64,
+//! #         _instant: &Instant,
+//! #     ) -> &'a i64 {
+//! #         // Compute the sum.
+//! #         *state = *a + *b;
+//! #         state
+//! #     }
+//! #
+//! #     fn reset<'a, 'b: 'a>(
+//! #         _inputs: (&'a i64, &'a i64),
+//! #         state: &'b mut i64
+//! #     ) -> &'a i64 {
+//! #         // The sum is retained on reset.
+//! #         state
+//! #     }
+//! # }
+//! #
 //! use tradingflow::segment;
-//! use tradingflow::sources::basic::*;
-//! use tradingflow::time::*;
-//!
-//! /// An adder which passes inputs and outputs by reference.
-//! struct Add;
-//!
-//! impl Segment for Add {
-//!     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
-//!     type Outputs = Port<Ref<i64>>;
-//!     type Context = Instant;
-//!     type State = i64;
-//!
-//!     fn init(self, _inputs: (&i64, &i64)) -> i64 {
-//!         // The initial state.
-//!         0
-//!     }
-//!
-//!     fn compute<'a, 'b: 'a>(
-//!         (a, b): (&'a i64, &'a i64),
-//!         state: &'b mut i64,
-//!         _instant: &Instant,
-//!     ) -> &'a i64 {
-//!         // Compute the sum.
-//!         *state = *a + *b;
-//!         state
-//!     }
-//!
-//!     fn reset<'a, 'b: 'a>(
-//!         _inputs: (&'a i64, &'a i64),
-//!         state: &'b mut i64
-//!     ) -> &'a i64 {
-//!         // The sum is retained on reset.
-//!         state
-//!     }
-//! }
 //!
 //! let mut b = Builder::new(UnixTime);
-//! let s = b.source(vec_source(vec![(Instant::EPOCH, 1)]));
-//! let t = b.source(vec_source(vec![(Instant::EPOCH, 2)]));
+//! let s = b.source(Sequence(vec![1, 2, 3, 4, 5]));
+//! let t = b.source(Sequence(vec![10, 20, 30, 40, 50]));
 //!
 //! // One fused node computing: c = b + a; d = c + a; e = d + a; result (e, c).
 //! // Type annotation is needed on inputs and outputs.

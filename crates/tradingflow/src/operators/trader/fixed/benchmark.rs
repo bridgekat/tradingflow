@@ -33,7 +33,9 @@ impl Exec for BenchmarkExec {
 }
 
 /// Frictionless and fractional trader that executes orders at the best bid/ask
-/// prices. May introduce slight leverage.
+/// prices.
+///
+/// May introduce slight leverage due to bid-ask spread and fees.
 ///
 /// Inputs:
 ///
@@ -45,7 +47,7 @@ impl Exec for BenchmarkExec {
 /// - `(div_signals, share_divs, cash_divs)`: per-instrument dividend event
 ///   signal, with the number of share dividends and cash dividends per share.
 /// - `(rebalance_signal, target_weights)`: rebalance signal and the target
-///   weights for each instrument (sum to range `[0, 1]` if unleveraged).
+///   weights for each instrument (should sum to range `[0, 1]` if unleveraged).
 ///
 /// Outputs:
 ///
@@ -55,6 +57,12 @@ impl Exec for BenchmarkExec {
 ///
 /// If some `rebalance_signal` coincides with `price_signal`, the trader
 /// rebalances at the next `price_signal` if `delayed` is set.
+///
+/// Net asset value is computed against mark prices, which are the most recent
+/// valid bid prices (with fallback to most recent ask prices, so limit-down
+/// instruments still get a mark price update). If an asset's inclusion flag
+/// is set to `false`, its mark price will be set to 0, until the flag is set
+/// to `true` with a valid bid/ask price later.
 pub fn benchmark(delayed: bool, initial_cash: f64) -> Fixed<BenchmarkExec> {
     Fixed::new(BenchmarkExec, delayed, initial_cash, 0.0, 0.0)
 }

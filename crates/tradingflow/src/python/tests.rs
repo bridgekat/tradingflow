@@ -3,11 +3,59 @@
 
 use super::{PyClassOperator, PyParams};
 use crate::data::SeriesView;
-use crate::data::{Array, Duration, Instant};
+use crate::data::{Array, ArrayView, Duration, Instant, Scalar};
+use crate::graph::Segment;
 use crate::graph::pool::Pool;
 use crate::graph::typed::Builder;
-use crate::operators::{array, series, signal};
+use crate::operators::{array, series};
 use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, SignalPort};
+
+/// A pokeable array cell paired with its accompanying signal: the signal
+/// pulses on exactly the generations the cell is poked (a root with no inputs
+/// is scheduled only when its own state is touched) and is `false` otherwise.
+/// The manually-stepped counterpart of
+/// [`sources::sync::array_series`](crate::sources::sync::array_series).
+pub struct Cell<T: Scalar, const N: usize> {
+    value: Array<T, N>,
+}
+
+impl<T: Scalar, const N: usize> Segment for Cell<T, N> {
+    type Inputs = ();
+    type Outputs = (SignalPort<0>, ArrayPort<T, N>);
+    type Context = Instant;
+    type State = Array<T, N>;
+
+    fn init(self, _: ()) -> Self::State {
+        self.value
+    }
+
+    fn reset<'a, 'b: 'a>(
+        _: (),
+        state: &'b mut Array<T, N>,
+    ) -> (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>) {
+        (ArrayView::scalar(&false), state.view())
+    }
+
+    fn compute<'a, 'b: 'a>(
+        _: (),
+        state: &'b mut Array<T, N>,
+        _: &Instant,
+    ) -> (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>) {
+        (ArrayView::scalar(&true), state.view())
+    }
+}
+
+/// See [`Cell`].
+pub fn cell<T: Scalar, const N: usize>(
+    value: Array<T, N>,
+) -> impl Segment<
+    Inputs = (),
+    Outputs = (SignalPort<0>, ArrayPort<T, N>),
+    Context = Instant,
+    State = Array<T, N>,
+> {
+    Cell { value }
+}
 
 /// The last row of a recorded event stream — the python operators emit
 /// `(signal, values)` streams whose records append one row per produced
@@ -103,10 +151,10 @@ fn py_class_operator_heterogeneous_series() {
     // weights: Array(2); feed_data: Array(2) recorded into a Series(2).
     // Sources lend the view currency directly — `Record` wires straight on.
     let (weights_cell, weights) = b.source(array::from_parts([2], vec![1.0_f64, 1.0].into()));
-    let (feed_cell, feed) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
-    // A raw source is a plain array; derive its poke signal so the record
+    // The source carries the signal that marks each poke, so the record
     // appends one row per poke.
-    let feed_signal = b.segment(signal::always(), feed);
+    let (feed_cell, (feed_signal, feed)) =
+        b.source(cell(Array::from_parts([2], vec![0.0_f64, 0.0].into())));
     let series = b.segment(series::record_all(), (feed_signal, feed));
     let out = b.segment(
         // Scalar output (`vec![]`), so NO = 0.
@@ -195,13 +243,11 @@ fn pyhost_linear_regression_predictor() {
     const N: usize = 3;
     const F: usize = 2;
     let mut b = Builder::new();
-    let (universe_cell, universe) = b.source(array::from_parts([N], vec![1.0; N].into()));
-    let (feat_feed_cell, feat_feed) = b.source(array::zeros::<f64, 2>([N, F]));
-    let (tgt_feed_cell, tgt_feed) = b.source(array::zeros::<f64, 1>([N]));
-    let rebalance_signal = b.segment(signal::always(), universe);
-    let feat_signal = b.segment(signal::always(), feat_feed);
+    let (universe_cell, (rebalance_signal, universe)) =
+        b.source(cell(Array::from_parts([N], vec![1.0; N].into())));
+    let (feat_feed_cell, (feat_signal, feat_feed)) = b.source(cell(Array::<f64, 2>::zeros([N, F])));
+    let (tgt_feed_cell, (tgt_signal, tgt_feed)) = b.source(cell(Array::<f64, 1>::zeros([N])));
     let feat_series = b.segment(series::record_all(), (feat_signal, feat_feed));
-    let tgt_signal = b.segment(signal::always(), tgt_feed);
     let tgt_series = b.segment(series::record_all(), (tgt_signal, tgt_feed));
     let pred = b.segment(
         // Output is the (N,) prediction → NO = 1 (the default).

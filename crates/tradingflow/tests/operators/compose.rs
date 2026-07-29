@@ -90,10 +90,8 @@ fn fused_rolling_chain_matches_unfused_nodes() {
     );
 
     let mut b = Builder::new();
-    let (sx, xv) = b.source(array::from_parts([2], vec![nan; 2].into()));
-    let (sy, yv) = b.source(array::from_parts([2], vec![nan; 2].into()));
-    let cx = b.segment(signal::always(), xv);
-    let cy = b.segment(signal::always(), yv);
+    let (sx, (cx, xv)) = b.source(cell(arr([2], vec![nan; 2])));
+    let (sy, (cy, yv)) = b.source(cell(arr([2], vec![nan; 2])));
 
     // Reference: the same chain as separate nodes.
     let fast = b.segment(rolling::mean(3, 1), (cx, xv));
@@ -178,10 +176,8 @@ fn fused_gated_multi_output_matches_unfused_nodes() {
     );
 
     let mut b = Builder::new();
-    let (sp, pv) = b.source(array::from_parts([2], vec![nan; 2].into()));
-    let (sq, qv) = b.source(array::from_parts([2], vec![nan; 2].into()));
-    let cp = b.segment(signal::always(), pv);
-    let cq = b.segment(signal::always(), qv);
+    let (sp, (cp, pv)) = b.source(cell(arr([2], vec![nan; 2])));
+    let (sq, (cq, qv)) = b.source(cell(arr([2], vec![nan; 2])));
 
     // Reference: the same chain as separate nodes.
     let gp = b.segment(signal::filter(any_finite), (cp, pv));
@@ -253,8 +249,7 @@ fn ma_crossover_signal_fires_on_the_edge() {
     let path1: Vec<f64> = path0.iter().map(|&x| 200.25 - x).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
-    let xc = b.segment(signal::always(), xv);
+    let (src, (xc, xv)) = b.source(cell(arr([2], vec![0.0_f64, 0.0])));
     let signal = b.segment(
         segment!(
             |c: SignalPort<0>, x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
@@ -307,8 +302,7 @@ fn self_recording_chain_matches_hoisted_record() {
     let (fast, slow) = (4usize, 9usize);
 
     let mut b = Builder::new();
-    let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
-    let xc = b.segment(signal::always(), xv);
+    let (src, (xc, xv)) = b.source(cell(arr([2], vec![0.0_f64, 0.0])));
 
     // Self-recording: each `rolling::mean` buffers the live stream itself.
     let live = b.segment(
@@ -411,13 +405,15 @@ fn rejoining_cone_recomputes_once_per_generation() {
 #[test]
 fn coalesced_sources_stabilize_once_over_the_union() {
     let mut b = Builder::new();
-    let (sa, av) = b.source(array::scalar(0.0_f64));
-    let (sb, bv) = b.source(array::scalar(0.0_f64));
+    let (sa, (sig_a, av)) = b.source(cell(scalar(0.0_f64)));
+    let (sb, (sig_b, bv)) = b.source(cell(scalar(0.0_f64)));
     let runs_a = b.segment(runs::<0>(), av);
     let runs_b = b.segment(runs::<0>(), bv);
     let sum = b.segment(elem::add(), (av, bv));
     let runs_sum = b.segment(runs::<0>(), sum);
-    let sum_signal = b.segment(signal::always(), sum);
+    // The join's cadence is the union of its inputs' — spelled as the `or` of
+    // the two source signals rather than inferred from the scheduler.
+    let sum_signal = b.segment(signal::or(), (sig_a, sig_b));
     let rec = b.segment(series::record_all(), (sum_signal, sum));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -464,10 +460,8 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
     let (p0, p1) = (quarter_path(11, len), quarter_path(23, len));
 
     let mut b = Builder::new();
-    let (sa, av) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
-    let (sb, bv) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
-    let ca = b.segment(signal::always(), av);
-    let cb = b.segment(signal::always(), bv);
+    let (sa, (ca, av)) = b.source(cell(arr([4], vec![0.0_f64; 4])));
+    let (sb, (cb, bv)) = b.source(cell(arr([4], vec![0.0_f64; 4])));
 
     let spread = b.segment(
         segment!(

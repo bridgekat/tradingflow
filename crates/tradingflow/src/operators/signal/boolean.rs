@@ -4,46 +4,6 @@ use crate::data::{ArrayView, Instant, Scalar};
 use crate::graph::Segment;
 use crate::ports::{ArrayPort, SignalPort};
 
-/// Operator signature for [`always`].
-pub struct Always<T: Scalar, const N: usize> {
-    _marker: PhantomData<fn() -> T>,
-}
-
-impl<T: Scalar, const N: usize> Always<T, N> {
-    pub fn new() -> Self {
-        Self {
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T: Scalar, const N: usize> Default for Always<T, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Scalar, const N: usize> Segment for Always<T, N> {
-    type Inputs = ArrayPort<T, N>;
-    type Outputs = SignalPort<0>;
-    type Context = Instant;
-    type State = ();
-
-    fn init(self, _: ArrayView<'_, T, N>) {}
-
-    fn reset<'a, 'b: 'a>(_: ArrayView<'a, T, N>, _: &'b mut ()) -> ArrayView<'a, bool, 0> {
-        ArrayView::scalar(&false)
-    }
-
-    fn compute<'a, 'b: 'a>(
-        _: ArrayView<'a, T, N>,
-        _: &'b mut (),
-        _: &Instant,
-    ) -> ArrayView<'a, bool, 0> {
-        ArrayView::scalar(&true)
-    }
-}
-
 /// Operator signature for [`filter`].
 pub struct Filter<T: Scalar, const N: usize, F>
 where
@@ -175,12 +135,6 @@ impl<const N: usize> Segment for Any<N> {
         };
         ArrayView::scalar(if any { &true } else { &false })
     }
-}
-
-/// A signal that always signals `true` when computed (for testing purposes).
-pub fn always<T: Scalar, const N: usize>()
--> impl Segment<Inputs = ArrayPort<T, N>, Outputs = SignalPort<0>, Context = Instant> {
-    Always::new()
 }
 
 /// Derives a signal which signals `true` when the input signals `true`

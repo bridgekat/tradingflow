@@ -12,7 +12,7 @@ use tradingflow::operators::elem;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::trader::fixed::{Exec, Fixed, benchmark};
 use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle, SignalPortHandle};
-use tradingflow::sources::basic::*;
+use tradingflow::sources::sync::signal_iter;
 use tradingflow::time::UnixTime;
 
 use super::args::CommonArgs;
@@ -81,7 +81,7 @@ impl Market {
         let (_, flags, bids, asks) =
             build_quotes(sc, daily, st.close, PRICE_LIMIT, TICK_SIZE, DELIST_DAYS);
 
-        let rebalance_signal = sc.source(pulse(args.rebalance_instants()));
+        let rebalance_signal = sc.source(signal_iter(args.rebalance_instants().into_iter()));
         let universe =
             build_cap_weighted_universe(sc, circ_market_cap, rebalance_signal, args.index_size);
 

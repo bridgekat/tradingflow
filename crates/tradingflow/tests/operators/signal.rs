@@ -128,9 +128,8 @@ fn a_signal_edge_reads_low_after_every_generation() {
 #[test]
 fn signal_pulses_exactly_when_its_input_notifies() {
     let mut b = Builder::new();
-    let (beat, beatv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (beat, (pulse, _beatv)) = b.source(cell(arr([3], vec![0.0_f64; 3])));
     let (data, datav) = b.source(array::scalar(0.0_f64));
-    let pulse = b.segment(signal::always(), beatv);
     let probe = b.segment(count::<0>(), (pulse, datav));
     let rec = b.segment(series::record_all(), (pulse, datav));
     let mut g = b.build();
@@ -325,11 +324,9 @@ fn a_pulse_samples_the_latest_value_from_an_earlier_generation() {
 fn a_join_carries_unfired_inputs_and_freezes_when_idle() {
     let nan = f64::NAN;
     let mut b = Builder::new();
-    let (s0, s0v) = b.source(array::scalar(0.0_f64));
+    let (s0, (c0, s0v)) = b.source(cell(scalar(0.0_f64)));
     let (s1, s1v) = b.source(array::scalar(0.0_f64));
-    let (s2, s2v) = b.source(array::scalar(0.0_f64));
-    let c0 = b.segment(signal::always(), s0v);
-    let c2 = b.segment(signal::always(), s2v);
+    let (s2, (c2, s2v)) = b.source(cell(scalar(0.0_f64)));
     let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let pulses0 = b.segment(count::<0>(), (c0, s0v));
     let pulses2 = b.segment(count::<0>(), (c2, s2v));
@@ -395,12 +392,9 @@ fn a_join_carries_unfired_inputs_and_freezes_when_idle() {
 fn a_signal_stack_join_nan_fills_while_a_state_join_carries() {
     let nan = f64::NAN;
     let mut b = Builder::new();
-    let (s0, s0v) = b.source(array::scalar(0.0_f64));
-    let s0v_signal = b.segment(signal::always(), s0v);
-    let (s1, s1v) = b.source(array::scalar(0.0_f64));
-    let s1v_signal = b.segment(signal::always(), s1v);
-    let (s2, s2v) = b.source(array::scalar(0.0_f64));
-    let s2v_signal = b.segment(signal::always(), s2v);
+    let (s0, (s0v_signal, s0v)) = b.source(cell(scalar(0.0_f64)));
+    let (s1, (s1v_signal, s1v)) = b.source(cell(scalar(0.0_f64)));
+    let (s2, (s2v_signal, s2v)) = b.source(cell(scalar(0.0_f64)));
     let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let signals = b.segment(
         signal::as_signal_map(array::stack::<bool, 0, 1>(0)),
@@ -464,10 +458,8 @@ fn a_signal_stack_join_nan_fills_while_a_state_join_carries() {
 fn a_signal_concat_nan_fills_while_a_state_concat_carries() {
     let nan = f64::NAN;
     let mut b = Builder::new();
-    let (a, av) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
-    let av_signal = b.segment(signal::always(), av);
-    let (c, cv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
-    let cv_signal = b.segment(signal::always(), cv);
+    let (a, (av_signal, av)) = b.source(cell(arr([2], vec![0.0_f64; 2])));
+    let (c, (cv_signal, cv)) = b.source(cell(arr([2], vec![0.0_f64; 2])));
     let joined = b.segment(array::concat::<f64, 1>(0), &[av, cv][..]);
     let signals = b.segment(
         signal::as_signal_map(array::array_binary_map(
@@ -530,11 +522,12 @@ fn a_signal_concat_nan_fills_while_a_state_concat_carries() {
 #[test]
 fn coalesced_pokes_recompute_the_union_of_cones_once() {
     let mut b = Builder::new();
-    let (a, av) = b.source(array::scalar(0.0_f64));
-    let (c, cv) = b.source(array::scalar(0.0_f64));
+    let (a, (sig_a, av)) = b.source(cell(scalar(0.0_f64)));
+    let (c, (sig_c, cv)) = b.source(cell(scalar(0.0_f64)));
     let sum = b.segment(elem::add(), (av, cv));
     let probe = b.segment(runs::<0>(), sum);
-    let sum_signal = b.segment(signal::always(), sum);
+    // The union of the two source cadences, spelled explicitly.
+    let sum_signal = b.segment(signal::or(), (sig_a, sig_c));
     let rec = b.segment(series::record_all(), (sum_signal, sum));
     let mut g = b.build();
     let mut pool = Pool::new(0);

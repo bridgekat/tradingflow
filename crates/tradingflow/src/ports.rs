@@ -26,7 +26,6 @@ unsafe impl<T: Scalar, const N: usize> Pass for SeriesPass<T, N> {
 }
 
 /// A marker around [`ArrayPass<bool, N>`] indicating a signal array.
-///
 /// Signals should always be reset to `false` (by their producer nodes) at the
 /// end of each generation.
 pub struct SignalPass<const N: usize>(ArrayPass<bool, N>);
@@ -42,7 +41,7 @@ pub type ArrayPort<T, const N: usize> = Port<ArrayPass<T, N>>;
 /// A single port carrying a series by [`SeriesView<T, N>`].
 pub type SeriesPort<T, const N: usize> = Port<SeriesPass<T, N>>;
 
-/// A single port carrying a signal array.
+/// A single port carrying a signal array by [`ArrayView<bool, N>`].
 pub type SignalPort<const N: usize> = Port<SignalPass<N>>;
 
 /// A runtime-length group of [`ArrayPort`]s.

@@ -6,7 +6,6 @@
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Scalar, SeriesView};
 use tradingflow::graph::typed::{Builder, NodeHandle};
 use tradingflow::graph::{Port, Segment, Val};
-use tradingflow::operators::{array, signal};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SignalPort, SignalPortHandle};
 
 /// Default tolerance for [`assert_close`]. Loose enough for the accumulators'
@@ -148,8 +147,8 @@ pub fn quarter_path(seed: u64, len: usize) -> Vec<f64> {
 // Probe segments
 // ---------------------------------------------------------------------------
 
-/// A pokeable array cell paired with its derived poke signal: each poke is one
-/// signal, and the values wire retains the last poked batch in between.
+/// A pokeable array cell paired with its accompanying signal: each poke is one
+/// pulse, and the values wire retains the last poked batch in between.
 /// Returns the source handle (for `state_mut`) and the `(signal, values)`
 /// stream handles (for wiring); state-only consumers wire just the values.
 #[allow(clippy::type_complexity)]
@@ -160,9 +159,54 @@ pub fn event_src<const N: usize>(
     NodeHandle<impl Segment<State = Array<f64, N>> + use<N>>,
     (SignalPortHandle<0>, ArrayPortHandle<f64, N>),
 ) {
-    let (h, raw) = b.source(array::constant(v));
-    let signal = b.segment(signal::always(), raw);
-    (h, (signal, raw))
+    b.source(cell(v))
+}
+
+/// A pokeable array cell paired with its accompanying signal: the signal
+/// pulses on exactly the generations the cell is poked (a root with no inputs
+/// is scheduled only when its own state is touched) and is `false` otherwise.
+/// The manually-stepped counterpart of
+/// [`sources::sync::array_series`](tradingflow::sources::sync::array_series).
+pub struct Cell<T: Scalar, const N: usize> {
+    value: Array<T, N>,
+}
+
+impl<T: Scalar, const N: usize> Segment for Cell<T, N> {
+    type Inputs = ();
+    type Outputs = (SignalPort<0>, ArrayPort<T, N>);
+    type Context = Instant;
+    type State = Array<T, N>;
+
+    fn init(self, _: ()) -> Self::State {
+        self.value
+    }
+
+    fn reset<'a, 'b: 'a>(
+        _: (),
+        state: &'b mut Array<T, N>,
+    ) -> (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>) {
+        (ArrayView::scalar(&false), state.view())
+    }
+
+    fn compute<'a, 'b: 'a>(
+        _: (),
+        state: &'b mut Array<T, N>,
+        _: &Instant,
+    ) -> (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>) {
+        (ArrayView::scalar(&true), state.view())
+    }
+}
+
+/// See [`Cell`].
+pub fn cell<T: Scalar, const N: usize>(
+    value: Array<T, N>,
+) -> impl Segment<
+    Inputs = (),
+    Outputs = (SignalPort<0>, ArrayPort<T, N>),
+    Context = Instant,
+    State = Array<T, N>,
+> {
+    Cell { value }
 }
 
 /// Operator signature for [`batch_face`].

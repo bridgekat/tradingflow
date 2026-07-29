@@ -1,4 +1,4 @@
-//! Performance metric operators on net-asset-value scalars.
+//! Performance metric operators on (net-asset-value) arrays.
 
 mod drawdown;
 mod r#return;

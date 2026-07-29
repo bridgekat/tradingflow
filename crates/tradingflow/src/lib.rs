@@ -19,10 +19,10 @@
 //! ```rust
 //! use tradingflow::data::*;
 //! use tradingflow::graph::*;
-//! use tradingflow::operators::{signal, rolling, series};
+//! use tradingflow::operators::{rolling, series};
 //! use tradingflow::ports::*;
 //! use tradingflow::segment;
-//! use tradingflow::sources::basic;
+//! use tradingflow::sources::sync;
 //! use tradingflow::time::*;
 //!
 //! #[tokio::main]
@@ -45,11 +45,9 @@
 //!
 //!     // Build the graph.
 //!     let mut b = Builder::new(UnixTime);
-//!     let prices = b.source(basic::array_source(Array::scalar(0.0), data));
-//!     let daily = b.segment(signal::always(), prices);
+//!     let (daily, prices) = b.source(sync::array_series(data, Array::scalar(0.0)));
 //!     let mean = b.segment(rolling::mean(10, 1), (daily, prices));
 //!     let mean_series = b.segment(series::record_all(), (daily, mean));
-//!
 //!     // Alternatively, one can use `segment!` to fuse operators into a
 //!     // single segment.
 //!     let mean_series_fuse = b.segment(
@@ -62,8 +60,6 @@
 //!         ),
 //!         (daily, prices),
 //!     );
-//!
-//!     // Finalize the graph.
 //!     let mut g = b.build();
 //!
 //!     // Run the event loop until all sources are exhausted.

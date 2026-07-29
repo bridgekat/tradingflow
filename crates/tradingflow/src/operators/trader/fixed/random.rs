@@ -99,6 +99,8 @@ impl Exec for RandomExec {
 /// `portfolio_size` stocks, re-sampled per rebalance with probability
 /// proportional to the target weights.
 ///
+/// May introduce slight leverage due to rounding and fees.
+///
 /// Inputs and outputs: same as [`benchmark`](super::benchmark).
 pub fn random(
     delayed: bool,

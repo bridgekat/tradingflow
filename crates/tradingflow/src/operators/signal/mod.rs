@@ -10,6 +10,6 @@ mod boolean;
 mod map;
 mod on_signal;
 
-pub use boolean::{always, and, any, filter, or};
+pub use boolean::{and, any, filter, or};
 pub use map::{Signify, as_signal_map};
 pub use on_signal::on_signal;

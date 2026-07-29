@@ -26,7 +26,7 @@ use tradingflow::operators::array::array_binary_map;
 use tradingflow::operators::elem::mul;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::trader::fixed::benchmark;
-use tradingflow::sources::basic::*;
+use tradingflow::sources::sync::signal_iter;
 use tradingflow::time::UnixTime;
 
 use clap::Parser;
@@ -50,7 +50,7 @@ async fn main() {
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.segment(mul(), (st.close, st.circ_shares));
 
-    let rebalance_signal = sc.source(pulse(args.rebalance_instants()));
+    let rebalance_signal = sc.source(signal_iter(args.rebalance_instants().into_iter()));
     // Recomputed once per rebalance pulse and retained in between, so the
     // wire itself holds the rebalance-day universe fixed until the next pulse.
     let universe = common::build_cap_weighted_universe(

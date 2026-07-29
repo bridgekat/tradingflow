@@ -46,8 +46,9 @@ impl Exec for SimpleExec {
 }
 
 /// Simple trader that executes orders at the best bid/ask prices. Positions
-/// are rounded to the nearest lot size at rebalance. May introduce slight
-/// leverage.
+/// are rounded to the nearest lot size at rebalance.
+///
+/// May introduce slight leverage due to rounding and fees.
 ///
 /// Inputs and outputs: same as [`benchmark`](super::benchmark).
 pub fn simple(
