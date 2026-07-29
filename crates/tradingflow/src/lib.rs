@@ -19,7 +19,7 @@
 //! ```rust
 //! use tradingflow::data::*;
 //! use tradingflow::graph::*;
-//! use tradingflow::operators::{clock, rolling, series};
+//! use tradingflow::operators::{signal, rolling, series};
 //! use tradingflow::ports::*;
 //! use tradingflow::segment;
 //! use tradingflow::sources::basic;
@@ -46,7 +46,7 @@
 //!     // Build the graph.
 //!     let mut b = Builder::new(UnixTime);
 //!     let prices = b.source(basic::array_source(Array::scalar(0.0), data));
-//!     let daily = b.segment(clock::always(), prices);
+//!     let daily = b.segment(signal::always(), prices);
 //!     let mean = b.segment(rolling::mean(10, 1), (daily, prices));
 //!     let mean_series = b.segment(series::record_all(), (daily, mean));
 //!
@@ -54,7 +54,7 @@
 //!     // single segment.
 //!     let mean_series_fuse = b.segment(
 //!         segment!(
-//!             |daily: ClockPort, prices: ArrayPort<f64, 0>| -> SeriesPort<f64, 0> {
+//!             |daily: SignalPort<0>, prices: ArrayPort<f64, 0>| -> SeriesPort<f64, 0> {
 //!                 let mean = rolling::mean(10, 1) @ (daily, prices);
 //!                 let mean_series = series::record_all() @ (daily, mean);
 //!                 mean_series
@@ -77,7 +77,7 @@
 //!
 //! This is the whole pattern. An actual strategy can contain many more
 //! operators — [`forward_adjust`](operators::feature::stock::forward_adjust),
-//! [`random_trader`](operators::traders::random_trader),
+//! [`random`](operators::trader::fixed::random),
 //! [`return_sharpe`](operators::metric::return_sharpe)
 //! — but the overall structure stays the same.
 //!

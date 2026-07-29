@@ -6,8 +6,8 @@ synthetic NumPy data, validating the Python logic without the Rust engine.
 
 Only *input* views need fakes. Outputs are whatever `compute` returns (an
 array, or `None` for no event), so a test reads the return value directly.
-Clock leaves need no fake either: a rank-0 pulse slot in the unified `inputs`
-tuple is truthiness-tested only (`if clock:`), so tests pass plain Python
+Signal leaves need no fake either: a rank-0 pulse slot in the unified `inputs`
+tuple is truthiness-tested only (`if signal:`), so tests pass plain Python
 bools where the engine would pass a `NativeArrayViewBool`.
 """
 

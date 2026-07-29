@@ -1,20 +1,20 @@
 use crate::data::ArrayView;
 use crate::graph::{Interface, Segment};
-use crate::ports::ClockPort;
+use crate::ports::SignalPort;
 
-/// Operator signature for [`on_clock`].
-pub struct OnClock<T: Segment> {
+/// Operator signature for [`on_signal`].
+pub struct OnSignal<T: Segment> {
     segment: T,
 }
 
-impl<T: Segment> OnClock<T> {
+impl<T: Segment> OnSignal<T> {
     pub fn new(segment: T) -> Self {
         Self { segment }
     }
 }
 
-impl<T: Segment> Segment for OnClock<T> {
-    type Inputs = (ClockPort, T::Inputs);
+impl<T: Segment> Segment for OnSignal<T> {
+    type Inputs = (SignalPort<0>, T::Inputs);
     type Outputs = T::Outputs;
     type Context = T::Context;
     type State = T::State;
@@ -34,11 +34,11 @@ impl<T: Segment> Segment for OnClock<T> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (clock, inputs): (ArrayView<'a, bool, 0>, <T::Inputs as Interface>::Values<'a>),
+        (signal, inputs): (ArrayView<'a, bool, 0>, <T::Inputs as Interface>::Values<'a>),
         state: &'b mut T::State,
         context: &T::Context,
     ) -> <T::Outputs as Interface>::Values<'a> {
-        if *clock {
+        if *signal {
             T::compute(inputs, state, context)
         } else {
             T::reset(inputs, state)
@@ -46,9 +46,9 @@ impl<T: Segment> Segment for OnClock<T> {
     }
 }
 
-/// Wraps a segment to only compute when the input clock signals `true`.
-pub fn on_clock<T: Segment>(
+/// Wraps a segment to only compute when the input signals `true`.
+pub fn on_signal<T: Segment>(
     segment: T,
-) -> impl Segment<Inputs = (ClockPort, T::Inputs), Outputs = T::Outputs, Context = T::Context> {
-    OnClock::new(segment)
+) -> impl Segment<Inputs = (SignalPort<0>, T::Inputs), Outputs = T::Outputs, Context = T::Context> {
+    OnSignal::new(segment)
 }

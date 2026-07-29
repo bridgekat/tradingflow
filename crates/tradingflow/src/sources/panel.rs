@@ -29,20 +29,27 @@
 //! Each emitted cross-section reflects **only that date's rows** (absent symbols
 //! are `NaN`); there is no carry-forward and no window-start seeding. This is the
 //! event-driven behaviour of the old per-symbol sources: a source ticks only on
-//! its own dates (marked by its output clock), and any per-element "carry the
+//! its own dates (marked by its output signal), and any per-element "carry the
 //! last value" / "NaN-fill" is the job of downstream operators — not the
 //! source. With `with_time_range`, rows before `start` are simply skipped (no
 //! last-value-before-`start` is carried in).
+//!
+//! Which symbols a cross-section actually carries is stated by the `[N, 1]`
+//! **row signal**, not by testing the values for `NaN`: the padding `NaN`s are
+//! an artefact of materialising a sparse date into a dense array, and a
+//! consumer that gates on the signal never reads them. That leaves `NaN` in a
+//! *signalled* cell meaning what it means everywhere else — missing or
+//! erroneous source data — which downstream operators are entitled to reject.
 //!
 //! # Irregular kinds & message-passing operators
 //!
 //! For daily prices every symbol ticks on (almost) every date, so the panel is
 //! dense. For **irregular** kinds (dividends, financial reports) the panel emits
 //! at the *union* of all symbols' event dates — which need not include every
-//! trading day. The `[N, 1]` row clock says which symbols actually have a row
+//! trading day. The `[N, 1]` row signal says which symbols actually have a row
 //! on a pulse: a per-stock `Select` of the values fires on the union cadence
-//! with `NaN` where the stock had no row, and selecting the stock's row-clock
-//! element (via [`as_clock_map`](crate::operators::clock::as_clock_map))
+//! with `NaN` where the stock had no row, and selecting the stock's row-signal
+//! element (via [`as_signal_map`](crate::operators::signal::as_signal_map))
 //! recovers that stock's true event cadence, so per-element event consumers
 //! (e.g. [`forward_adjust`](crate::operators::feature::stock::forward_adjust))
 //! see each real event exactly once — reproducing the per-symbol stream.
@@ -83,7 +90,7 @@
 //! [`with_report_date`](ParquetFinancialReportPanelSource::with_report_date) prepends
 //! `[year, day_of_year]` of the **report** date (for
 //! [`annualize`](crate::operators::feature::stock::annualize)). A per-stock pipeline is
-//! recovered downstream by selecting the stock's value row and row-clock element.
+//! recovered downstream by selecting the stock's value row and row-signal element.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -100,7 +107,7 @@ use tokio::sync::mpsc;
 
 use crate::data::{Array, ArrayView, Duration, Instant};
 use crate::graph::{Event, Source};
-use crate::ports::{ArrayPort, ClockArrayPort};
+use crate::ports::{ArrayPort, SignalPort};
 
 // ===========================================================================
 // ParquetPanelSource — the general (date, symbol, values...) panel.
@@ -240,9 +247,9 @@ fn nan_panel(shape: [usize; 2]) -> Array<f64, 2> {
     Array::from_parts(shape, vec![f64::NAN; shape.iter().product()].into())
 }
 
-/// The all-false initial `[N, 1]` row clock (broadcast against `[N, K]`
+/// The all-false initial `[N, 1]` row signal (broadcast against `[N, K]`
 /// values downstream).
-fn row_clock(shape: [usize; 2]) -> Array<bool, 2> {
+fn row_signal(shape: [usize; 2]) -> Array<bool, 2> {
     Array::from_parts([shape[0], 1], vec![false; shape[0]].into())
 }
 
@@ -278,7 +285,7 @@ fn panel_write(
 impl Source for ParquetPanelSource {
     type Instant = Instant;
     type Payload = Vec<RowUpdate>;
-    type Outputs = (ClockArrayPort<2>, ArrayPort<f64, 2>);
+    type Outputs = (SignalPort<2>, ArrayPort<f64, 2>);
     type State = (PanelState, Array<f64, 2>, Array<bool, 2>);
 
     fn size_hint(&self) -> Option<usize> {
@@ -305,7 +312,7 @@ impl Source for ParquetPanelSource {
         // Each item is now a whole tick's rows, so a small buffer pipelines plenty
         // of ticks ahead while bounding the in-flight row memory.
         let shape = self.out_shape();
-        let state = (PanelState::default(), nan_panel(shape), row_clock(shape));
+        let state = (PanelState::default(), nan_panel(shape), row_signal(shape));
         let (hist_tx, hist_rx) = mpsc::channel(16);
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_panel(&self, &hist_tx) {
@@ -316,7 +323,7 @@ impl Source for ParquetPanelSource {
     }
 
     fn reset(state: &mut Self::State) -> (ArrayView<'_, bool, 2>, ArrayView<'_, f64, 2>) {
-        // Quiescent between emissions: row clock low, last cross-section
+        // Quiescent between emissions: row signal low, last cross-section
         // retained. The broadcast all-false view is O(1).
         (ArrayView::full(state.2.extents(), &false), state.1.view())
     }
@@ -720,7 +727,7 @@ struct ReportRow {
 impl Source for ParquetFinancialReportPanelSource {
     type Instant = Instant;
     type Payload = Vec<RowUpdate>;
-    type Outputs = (ClockArrayPort<2>, ArrayPort<f64, 2>);
+    type Outputs = (SignalPort<2>, ArrayPort<f64, 2>);
     type State = (PanelState, Array<f64, 2>, Array<bool, 2>);
 
     fn size_hint(&self) -> Option<usize> {
@@ -742,7 +749,7 @@ impl Source for ParquetFinancialReportPanelSource {
     ) {
         // One item per tick (a batch of that date's reports); small buffer.
         let shape = self.out_shape();
-        let state = (PanelState::default(), nan_panel(shape), row_clock(shape));
+        let state = (PanelState::default(), nan_panel(shape), row_signal(shape));
         let (hist_tx, hist_rx) = mpsc::channel(16);
         tokio::task::spawn_blocking(move || {
             if let Err(e) = read_reports(&self, &hist_tx) {
@@ -756,7 +763,7 @@ impl Source for ParquetFinancialReportPanelSource {
     }
 
     fn reset(state: &mut Self::State) -> (ArrayView<'_, bool, 2>, ArrayView<'_, f64, 2>) {
-        // Quiescent between emissions: row clock low, last cross-section
+        // Quiescent between emissions: row signal low, last cross-section
         // retained. The broadcast all-false view is O(1).
         (ArrayView::full(state.2.extents(), &false), state.1.view())
     }

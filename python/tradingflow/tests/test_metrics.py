@@ -17,7 +17,7 @@ def _drive(op, state, inputs, ts):
     """Run one compute() call, returning its output batch (or `None`).
 
     `inputs` is the unified tuple — one entry per wired leaf in wiring
-    order, clock pulses as plain bools.
+    order, signal pulses as plain bools.
     """
     return op.compute(tuple(inputs), state, ts)
 
@@ -75,11 +75,11 @@ def test_regression_coefficients():
 
     state = op.init((False, target, baseline))
 
-    # Clock did not tick -> no refit.
+    # Signal false -> no refit.
     emitted = _drive(op, state, [False, target, baseline], 0)
     assert emitted is None
 
-    # Clock tick -> fit and emit (F+1,) with intercept last.
+    # Signal true -> fit and emit (F+1,) with intercept last.
     coef = _drive(op, state, [True, target, baseline], 1)
     assert coef is not None
     assert coef.shape == (f + 1,)

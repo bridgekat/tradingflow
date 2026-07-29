@@ -4,7 +4,7 @@ use super::base::{Accumulator, Rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, array};
 use crate::graph::{Segment, SegmentExt};
 use crate::operators::series::buffer;
-use crate::ports::{ArrayPort, ClockPort, SeriesPort};
+use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
 /// Accumulator for [`mean_exp`].
 pub struct MeanExpAccumulator<T: Scalar + Float> {
@@ -94,12 +94,12 @@ pub fn series_mean_exp<T: Scalar + Float, const N: usize>(
 }
 
 /// Elementwise exponentially-weighted rolling mean (EMA) over a specified
-/// window, ingesting one sample per clock signal. Non-finite values are skipped.
+/// window, ingesting one sample per signal. Non-finite values are skipped.
 pub fn mean_exp<T: Scalar + Float, const N: usize>(
     alpha: T,
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
     let window = window.into();
     buffer(window).then(series_mean_exp(alpha, window, min_count))

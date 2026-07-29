@@ -17,11 +17,11 @@ mod common;
 
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{map, select_at, slice_reshape};
-use tradingflow::operators::clock::as_clock_map;
 use tradingflow::operators::elem::{add, sqrt, sub};
 use tradingflow::operators::feature::stock::forward_adjust;
 use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
+use tradingflow::operators::signal::as_signal_map;
 use tradingflow::sources::panel::*;
 use tradingflow::time::UnixTime;
 
@@ -61,7 +61,7 @@ async fn main() {
     let mut sc = Builder::new(UnixTime);
 
     // Panel sources: close from prices, (share, cash) from dividends. Each is
-    // a `([N, 1] row clock, [N, K])` stream.
+    // a `([N, 1] row signal, [N, K])` stream.
     let price_src = parquet_panel_source(prices_pq, vec!["prices.close".into()], symbols.clone());
     let (price_rows, price_panel) = sc.source(price_src);
     let div_src = parquet_panel_source(
@@ -71,16 +71,16 @@ async fn main() {
     );
     let (div_rows, div_panel) = sc.source(div_src);
 
-    // Select the target stock's row and its own tick clock — the stock's
-    // element of each panel's row clock, squeezed to a rank-0 pulse.
+    // Select the target stock's row and its own tick signal — the stock's
+    // element of each panel's row signal, squeezed to a rank-0 pulse.
     let prices = sc.segment(select_at::<f64, 2, 1>(idx, 0), price_panel);
     let ticks = sc.segment(
-        as_clock_map(slice_reshape::<bool, 2, 0, _>((idx, 0usize))),
+        as_signal_map(slice_reshape::<bool, 2, 0, _>((idx, 0usize))),
         price_rows,
     );
     let dividends = sc.segment(select_at::<f64, 2, 1>(idx, 0), div_panel);
     let div_ticks = sc.segment(
-        as_clock_map(slice_reshape::<bool, 2, 0, _>((idx, 0usize))),
+        as_signal_map(slice_reshape::<bool, 2, 0, _>((idx, 0usize))),
         div_rows,
     );
     let closes = sc.segment(select_at(0, 0), prices);
@@ -104,7 +104,7 @@ async fn main() {
     let upper = sc.segment(add(), (ma, band));
     let lower = sc.segment(sub(), (ma, band));
 
-    // Record the outputs on the stock's own tick clock.
+    // Record the outputs on the stock's own tick signal.
     let h_adj = sc.segment(record_all(), (ticks, adj_closes));
     let h_ma = sc.segment(record_all(), (ticks, ma));
     let h_upper = sc.segment(record_all(), (ticks, upper));

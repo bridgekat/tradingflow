@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
 use crate::graph::Segment;
-use crate::ports::{ArrayPort, ClockPort};
+use crate::ports::{ArrayPort, SignalPort};
 
 /// Base trait for return operator accumulators.
 ///
@@ -41,7 +41,7 @@ pub struct ReturnState<T: Scalar + Float, A: Accumulator<T>> {
 }
 
 impl<T: Scalar + Float, A: Accumulator<T>> Segment for Return<T, A> {
-    type Inputs = (ClockPort, ArrayPort<T, 0>);
+    type Inputs = (SignalPort<0>, ArrayPort<T, 0>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = ReturnState<T, A>;
@@ -63,11 +63,11 @@ impl<T: Scalar + Float, A: Accumulator<T>> Segment for Return<T, A> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (clock, value): (ArrayView<'a, bool, 0>, ArrayView<'a, T, 0>),
+        (signal, value): (ArrayView<'a, bool, 0>, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
         _: &Instant,
     ) -> ArrayView<'a, T, 0> {
-        if !*clock {
+        if !*signal {
             return state.out.view();
         }
         assert!(value.is_finite(), "return: input value must be finite");
@@ -110,7 +110,7 @@ pub struct LogReturnState<T: Scalar + Float, A: Accumulator<T>> {
 }
 
 impl<T: Scalar + Float, A: Accumulator<T>> Segment for LogReturn<T, A> {
-    type Inputs = (ClockPort, ArrayPort<T, 0>);
+    type Inputs = (SignalPort<0>, ArrayPort<T, 0>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = LogReturnState<T, A>;
@@ -132,11 +132,11 @@ impl<T: Scalar + Float, A: Accumulator<T>> Segment for LogReturn<T, A> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (clock, value): (ArrayView<'a, bool, 0>, ArrayView<'a, T, 0>),
+        (signal, value): (ArrayView<'a, bool, 0>, ArrayView<'a, T, 0>),
         state: &'b mut Self::State,
         _: &Instant,
     ) -> ArrayView<'a, T, 0> {
-        if !*clock {
+        if !*signal {
             return state.out.view();
         }
         assert!(value.is_finite(), "log_return: input value must be finite");

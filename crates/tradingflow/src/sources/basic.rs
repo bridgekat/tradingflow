@@ -2,7 +2,7 @@ use futures::stream::Stream;
 
 use crate::data::{Array, ArrayView, Instant, Scalar, Series};
 use crate::graph::{Event, Port, Ref, Source};
-use crate::ports::{ArrayPort, ClockPort};
+use crate::ports::{ArrayPort, SignalPort};
 
 #[derive(Clone)]
 pub struct ArraySource<T: Scalar, const N: usize> {
@@ -116,7 +116,7 @@ pub struct PulseSource {
 impl Source for PulseSource {
     type Instant = Instant;
     type Payload = ();
-    type Outputs = ClockPort;
+    type Outputs = SignalPort<0>;
     type State = ();
 
     fn size_hint(&self) -> Option<usize> {

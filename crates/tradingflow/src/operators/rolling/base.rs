@@ -8,21 +8,20 @@ use crate::ports::{ArrayPort, SeriesPort};
 
 /// Base trait for rolling window operator accumulators.
 ///
-/// Elements are added and removed from the window in time order:
-///
-/// - The [`init`](Self::init) method is called once at build time to
-///   produce the initial output buffer.
-/// - The [`add`](Self::add) method is called when a new element enters the
-///   window.
-/// - The [`remove`](Self::remove) method is called when an element leaves the
-///   window.
-/// - The [`write`](Self::write) method is called to write the current output.
+/// Elements are always added and removed from the window in time order.
 pub trait Accumulator<T: Scalar, const N: usize, U: Scalar + Float, const M: usize>:
     Send + 'static
 {
+    /// Produces the initial output buffer. Called once at build time.
     fn init(&mut self, extents: [usize; N]) -> Array<U, M>;
+
+    /// Adds a new element to the window.
     fn add(&mut self, a: ArrayView<T, N>);
+
+    /// Removes an element from the window.
     fn remove(&mut self, a: ArrayView<T, N>);
+
+    /// Writes the current output to the provided buffer.
     fn write(&mut self, out: &mut Array<U, M>, count: usize);
 }
 

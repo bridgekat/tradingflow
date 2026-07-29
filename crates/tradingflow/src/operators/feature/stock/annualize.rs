@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use crate::data::{self, Array, ArrayView, Instant, Scalar};
 use crate::graph::Segment;
-use crate::ports::{ArrayPort, ClockArrayPort};
+use crate::ports::{ArrayPort, SignalPort};
 
 /// Operator signature for [`annualize`].
 pub struct Annualize<T: Scalar + Float, const N: usize> {
@@ -32,7 +32,7 @@ pub struct AnnualizeState<T: Scalar + Float, const N: usize> {
 
 impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
     type Inputs = (
-        ClockArrayPort<N>,
+        SignalPort<N>,
         ArrayPort<T, N>,
         ArrayPort<u16, N>,
         ArrayPort<u16, N>,
@@ -43,14 +43,14 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
 
     fn init(
         self,
-        (clocks, values, years, days): (
+        (signals, values, years, days): (
             ArrayView<'_, bool, N>,
             ArrayView<'_, T, N>,
             ArrayView<'_, u16, N>,
             ArrayView<'_, u16, N>,
         ),
     ) -> Self::State {
-        let _ = data::array::broadcast_to(clocks, values.extents());
+        let _ = data::array::broadcast_to(signals, values.extents());
         let _ = data::array::broadcast_to(years, values.extents());
         let _ = data::array::broadcast_to(days, values.extents());
         AnnualizeState {
@@ -72,7 +72,7 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (clocks, values, years, days): (
+        (signals, values, years, days): (
             ArrayView<'_, bool, N>,
             ArrayView<'_, T, N>,
             ArrayView<'_, u16, N>,
@@ -81,21 +81,20 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
         state: &'b mut Self::State,
         _: &Instant,
     ) -> ArrayView<'a, T, N> {
-        let clocks = data::array::broadcast_to(clocks, values.extents());
+        let signals = data::array::broadcast_to(signals, values.extents());
         let years = data::array::broadcast_to(years, values.extents());
         let days = data::array::broadcast_to(days, values.extents());
-        for (((((&clock, &value), &year), &day), (prev_value, prev_year, prev_day)), out) in clocks
-            .iter()
-            .zip(values.iter())
-            .zip(years.iter())
-            .zip(days.iter())
-            .zip(state.prev.data_mut())
-            .zip(state.out.data_mut())
+        for (((((&signal, &value), &year), &day), (prev_value, prev_year, prev_day)), out) in
+            signals
+                .iter()
+                .zip(values.iter())
+                .zip(years.iter())
+                .zip(days.iter())
+                .zip(state.prev.data_mut())
+                .zip(state.out.data_mut())
         {
-            // A NaN value under a set clock is a missing field within the
-            // fired row: skip it and bridge to the next report (the day
-            // delta then spans the gap).
-            if clock && !value.is_nan() {
+            if signal {
+                assert!(value.is_finite(), "annualize: input values must be finite");
                 if !prev_value.is_nan() {
                     assert!(
                         year >= *prev_year,
@@ -128,8 +127,9 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
 ///
 /// Inputs:
 ///
-/// - `clock`: emits one clock signal per data point.
+/// - `signal`: emits one signal per data point.
 /// - `ytd_values`: the YTD-cumulative values of the current data point.
+///   Must not be NaN if its corresponding `signal` is true.
 /// - `year`: the year of the current data point.
 /// - `day`: the day-of-year of the current data point.
 ///
@@ -137,10 +137,11 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
 ///
 /// Outputs:
 ///
-/// - `annual_values`: elementwise annualized `ytd_values`.
+/// - `annual_values`: elementwise annualized `ytd_values`. An element is
+///   NaN until its first data point.
 pub fn annualize<T: Scalar + Float, const N: usize>() -> impl Segment<
     Inputs = (
-        ClockArrayPort<N>,
+        SignalPort<N>,
         ArrayPort<T, N>,
         ArrayPort<u16, N>,
         ArrayPort<u16, N>,

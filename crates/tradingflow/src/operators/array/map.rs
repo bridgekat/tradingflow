@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::data::{Array, ArrayView, Instant, Scalar, array};
+use crate::data::{self, Array, ArrayView, Instant, Scalar};
 use crate::graph::Segment;
 use crate::ports::ArrayPort;
 
@@ -354,25 +354,25 @@ pub fn array_ternary_map<
     ArrayTernaryMap::new(f, move |out, a, b, c| *out = g(a, b, c))
 }
 
-/// A closure applied elementwise: [`array::map`].
+/// A closure applied elementwise: [`data::array::map`].
 #[allow(clippy::type_complexity)]
 pub fn map<A: Scalar, T: Scalar, const N: usize>(
     f: impl FnMut(&A) -> T + Clone + Send + 'static,
 ) -> impl Segment<Inputs = ArrayPort<A, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     let init = {
         let f = f.clone();
-        move |a: ArrayView<'_, A, N>| array::map(a, f)
+        move |a: ArrayView<'_, A, N>| data::array::map(a, f)
     };
     let update = {
         let mut f = f;
         move |out: &mut Array<T, N>, a: ArrayView<'_, A, N>| {
-            array::map_into(out.data_mut(), a, &mut f);
+            data::array::map_into(out.data_mut(), a, &mut f);
         }
     };
     ArrayMap::new(init, update)
 }
 
-/// A binary closure applied elementwise: [`array::binary_map`].
+/// A binary closure applied elementwise: [`data::array::binary_map`].
 #[allow(clippy::type_complexity)]
 pub fn binary_map<A: Scalar, B: Scalar, T: Scalar, const N: usize>(
     f: impl FnMut(&A, &B) -> T + Clone + Send + 'static,
@@ -383,18 +383,18 @@ pub fn binary_map<A: Scalar, B: Scalar, T: Scalar, const N: usize>(
 > {
     let init = {
         let f = f.clone();
-        move |a: ArrayView<'_, A, N>, b: ArrayView<'_, B, N>| array::binary_map(a, b, f)
+        move |a: ArrayView<'_, A, N>, b: ArrayView<'_, B, N>| data::array::binary_map(a, b, f)
     };
     let update = {
         let mut f = f;
         move |out: &mut Array<T, N>, a: ArrayView<'_, A, N>, b: ArrayView<'_, B, N>| {
-            array::binary_map_into(out.data_mut(), a, b, &mut f);
+            data::array::binary_map_into(out.data_mut(), a, b, &mut f);
         }
     };
     ArrayBinaryMap::new(init, update)
 }
 
-/// A ternary closure applied elementwise: [`array::ternary_map`].
+/// A ternary closure applied elementwise: [`data::array::ternary_map`].
 #[allow(clippy::type_complexity)]
 pub fn ternary_map<A: Scalar, B: Scalar, C: Scalar, T: Scalar, const N: usize>(
     f: impl FnMut(&A, &B, &C) -> T + Clone + Send + 'static,
@@ -406,7 +406,7 @@ pub fn ternary_map<A: Scalar, B: Scalar, C: Scalar, T: Scalar, const N: usize>(
     let init = {
         let f = f.clone();
         move |a: ArrayView<'_, A, N>, b: ArrayView<'_, B, N>, c: ArrayView<'_, C, N>| {
-            array::ternary_map(a, b, c, f)
+            data::array::ternary_map(a, b, c, f)
         }
     };
     let update = {
@@ -415,7 +415,7 @@ pub fn ternary_map<A: Scalar, B: Scalar, C: Scalar, T: Scalar, const N: usize>(
               a: ArrayView<'_, A, N>,
               b: ArrayView<'_, B, N>,
               c: ArrayView<'_, C, N>| {
-            array::ternary_map_into(out.data_mut(), a, b, c, &mut f);
+            data::array::ternary_map_into(out.data_mut(), a, b, c, &mut f);
         }
     };
     ArrayTernaryMap::new(init, update)

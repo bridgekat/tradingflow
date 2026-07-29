@@ -4,7 +4,7 @@ use super::base::{Accumulator, Rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, array};
 use crate::graph::{Segment, SegmentExt};
 use crate::operators::series::buffer;
-use crate::ports::{ArrayPort, ClockPort, SeriesPort};
+use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
 /// Accumulator for [`var`].
 pub struct VarianceAccumulator<T: Scalar + Float> {
@@ -78,11 +78,11 @@ pub fn series_var<T: Scalar + Float, const N: usize>(
 }
 
 /// Elementwise rolling variance over a specified window, ingesting one sample
-/// per clock signal. Non-finite values are skipped.
+/// per signal. Non-finite values are skipped.
 pub fn var<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
     let window = window.into();
     buffer(window).then(series_var(window, min_count))

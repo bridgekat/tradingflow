@@ -28,7 +28,6 @@ from tradingflow.predictors.variance import shrinkage as var_shrinkage
 from tradingflow.predictors.variance import rmt as var_rmt
 from tradingflow.predictors.variance import hierarchical as var_hier
 
-
 N = 6  # num_stocks
 F = 3  # num_features
 T = 40  # series length
@@ -62,7 +61,7 @@ def _drive(op, mean_output: bool, *, n_calls: int = 3, seed: int = 0):
     """Run init + n_calls of compute(); return list of written outputs.
 
     `mean_output` selects the output shape: (N,) for mean predictors,
-    (N, N) for variance predictors.  The leading rebalance clock pulses on
+    (N, N) for variance predictors.  The leading rebalance signals on
     every call.  We also fire one non-pulsed tick to verify it is ignored.
     """
     universe, features_series, target_series = _make_panel(seed)
@@ -71,7 +70,7 @@ def _drive(op, mean_output: bool, *, n_calls: int = 3, seed: int = 0):
 
     state = op.init((False, *views))
 
-    # Non-rebalance tick: the clock did not pulse -> compute returns None.
+    # Non-rebalance tick: signal false -> compute returns None.
     assert op.compute((False, *views), state, 0) is None, "non-rebalance tick must not emit"
 
     outputs = []
@@ -95,6 +94,7 @@ def _assert_all_finite_full_universe(outputs, square: bool):
 # Mean predictors
 # ---------------------------------------------------------------------------
 
+
 def test_mean_sample():
     op = mean_sample.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1)
     outputs = _drive(op, mean_output=True)
@@ -105,9 +105,7 @@ def test_mean_sample():
 
 
 def test_mean_single_feature():
-    op = mean_single_feature.build(
-        num_stocks=N, num_features=F, universe_size=N, target_offset=0, feature_index=1
-    )
+    op = mean_single_feature.build(num_stocks=N, num_features=F, universe_size=N, target_offset=0, feature_index=1)
     outputs = _drive(op, mean_output=True)
     _assert_all_finite_full_universe(outputs, square=False)
     print("  mean.single_feature OK:", np.round(outputs[-1], 4))
@@ -121,16 +119,12 @@ def test_mean_linear_regression():
 
 
 def test_mean_ridge():
-    op = mean_ridge.build(
-        num_stocks=N, num_features=F, universe_size=N, target_offset=1, alpha=0.5
-    )
+    op = mean_ridge.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1, alpha=0.5)
     outputs = _drive(op, mean_output=True)
     _assert_all_finite_full_universe(outputs, square=False)
 
     # Ridge with alpha=0 should match plain OLS (LinearRegression) closely.
-    op0 = mean_ridge.build(
-        num_stocks=N, num_features=F, universe_size=N, target_offset=1, alpha=0.0
-    )
+    op0 = mean_ridge.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1, alpha=0.0)
     op_ols = mean_lr.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1)
     r0 = _drive(op0, mean_output=True)[-1]
     ols = _drive(op_ols, mean_output=True)[-1]
@@ -142,9 +136,7 @@ def test_mean_lasso():
     # Lasso fits via cvxpy. On the standard `.venv` (cvxpy present) the fit must
     # run and produce finite output; on a no-cvxpy interpreter the deferred import
     # must raise on the first rebalance. Either way the op constructs and inits.
-    op = mean_lasso.build(
-        num_stocks=N, num_features=F, universe_size=N, target_offset=1, alpha=0.1
-    )
+    op = mean_lasso.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1, alpha=0.1)
     universe, features_series, target_series = _make_panel()
     inputs = (True, universe, features_series, target_series)
     state = op.init(inputs)
@@ -168,6 +160,7 @@ def test_mean_lasso():
 # Variance predictors
 # ---------------------------------------------------------------------------
 
+
 def test_var_sample():
     op = var_sample.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1)
     outputs = _drive(op, mean_output=False)
@@ -189,9 +182,7 @@ def test_var_single_index():
 
 def test_var_shrinkage():
     for tgt in (1, 2, 3):
-        op = var_shrinkage.build(
-            num_stocks=N, num_features=F, universe_size=N, target_offset=1, target=tgt
-        )
+        op = var_shrinkage.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1, target=tgt)
         outputs = _drive(op, mean_output=False)
         _assert_all_finite_full_universe(outputs, square=True)
         for o in outputs:
@@ -201,9 +192,7 @@ def test_var_shrinkage():
 
 def test_var_rmt():
     for mode in ("zero", "mean"):
-        op = var_rmt.build(
-            mode=mode, num_stocks=N, num_features=F, universe_size=N, target_offset=1
-        )
+        op = var_rmt.build(mode=mode, num_stocks=N, num_features=F, universe_size=N, target_offset=1)
         outputs = _drive(op, mean_output=False)
         _assert_all_finite_full_universe(outputs, square=True)
         for o in outputs:
@@ -216,9 +205,7 @@ def test_var_rmt():
 
 def test_var_hierarchical():
     for method in ("upgma", "wpgma", "hausdorff"):
-        op = var_hier.build(
-            method=method, num_stocks=N, num_features=F, universe_size=N, target_offset=1
-        )
+        op = var_hier.build(method=method, num_stocks=N, num_features=F, universe_size=N, target_offset=1)
         outputs = _drive(op, mean_output=False)
         _assert_all_finite_full_universe(outputs, square=True)
         for o in outputs:
@@ -229,6 +216,7 @@ def test_var_hierarchical():
 # ---------------------------------------------------------------------------
 # Extra coverage: partial universe + NaN handling (mean & variance bases)
 # ---------------------------------------------------------------------------
+
 
 def test_partial_universe_and_nan():
     """A stock out of universe / with NaN features yields NaN in the output."""
@@ -268,8 +256,12 @@ def test_partial_universe_and_nan():
 def test_refit_every_caching():
     """refit_every>1 reuses cached params between cadence ticks (still emits)."""
     op = mean_ridge.build(
-        num_stocks=N, num_features=F, universe_size=N, target_offset=1,
-        alpha=0.3, refit_every=3,
+        num_stocks=N,
+        num_features=F,
+        universe_size=N,
+        target_offset=1,
+        alpha=0.3,
+        refit_every=3,
     )
     outputs = _drive(op, mean_output=True, n_calls=5)
     _assert_all_finite_full_universe(outputs, square=False)
@@ -303,9 +295,7 @@ def test_mean_subsample():
 
     # End-to-end: a cap above the sample count is a no-op vs the uncapped fit.
     op_full = mean_lr.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1)
-    op_cap = mean_lr.build(
-        num_stocks=N, num_features=F, universe_size=N, target_offset=1, max_samples=10**9
-    )
+    op_cap = mean_lr.build(num_stocks=N, num_features=F, universe_size=N, target_offset=1, max_samples=10**9)
     out_full = _drive(op_full, mean_output=True)
     out_cap = _drive(op_cap, mean_output=True)
     assert np.allclose(out_full[-1], out_cap[-1]), "max_samples above the count must be a no-op"
@@ -336,7 +326,11 @@ def test_incremental_equivalence():
     cases = [
         ("OLS expanding", o_lr.build(**cfg), i_lr.build(**cfg)),
         ("Ridge expanding", o_ridge.build(alpha=0.7, **cfg), i_ridge.build(alpha=0.7, **cfg)),
-        ("Ridge rolling(10)", o_ridge.build(alpha=0.7, max_periods=10, **cfg), i_ridge.build(alpha=0.7, window=10, **cfg)),
+        (
+            "Ridge rolling(10)",
+            o_ridge.build(alpha=0.7, max_periods=10, **cfg),
+            i_ridge.build(alpha=0.7, window=10, **cfg),
+        ),
     ]
     for name, op_o, op_i in cases:
         full = (False, universe, FakeSeriesView(feats, elem_shape=(N, F)), FakeSeriesView(targs, elem_shape=(N,)))
@@ -347,9 +341,9 @@ def test_incremental_equivalence():
             tv = FakeSeriesView(targs[:t], elem_shape=(N,))
             wo = op_o.compute((True, universe, fv, tv), so, t)
             wi = op_i.compute((True, universe, fv, tv), si, t)
-            assert np.allclose(wo, wi, atol=1e-6, equal_nan=True), (
-                f"{name}: mismatch at t={t}, max|d|={np.nanmax(np.abs(wo - wi)):.3e}"
-            )
+            assert np.allclose(
+                wo, wi, atol=1e-6, equal_nan=True
+            ), f"{name}: mismatch at t={t}, max|d|={np.nanmax(np.abs(wo - wi)):.3e}"
     print("  incremental equivalence OK (OLS/Ridge, expanding + rolling)")
 
 
@@ -373,9 +367,15 @@ def test_incremental_all_samples():
         u[(3 * t + 1) % nc] = 0.0
         return u
 
-    op = i_ridge.build(num_stocks=nc, num_features=F, universe_size=nc,
-                       target_offset=off, alpha=alpha, min_periods=minp)
-    boot = (False, FakeArrayView(np.ones(nc)), FakeSeriesView(feats, elem_shape=(nc, F)), FakeSeriesView(targs, elem_shape=(nc,)))
+    op = i_ridge.build(
+        num_stocks=nc, num_features=F, universe_size=nc, target_offset=off, alpha=alpha, min_periods=minp
+    )
+    boot = (
+        False,
+        FakeArrayView(np.ones(nc)),
+        FakeSeriesView(feats, elem_shape=(nc, F)),
+        FakeSeriesView(targs, elem_shape=(nc,)),
+    )
     si = op.init(boot)
     max_d = 0.0
     for t in range(2, T + 1):
@@ -391,14 +391,21 @@ def test_incremental_all_samples():
         # the current universe (with the min_periods + finite-feature mask).
         n_pair = max(0, t - off)
         n = sy = syy = 0.0
-        sx = np.zeros(F); sxx = np.zeros((F, F)); sxy = np.zeros(F); counts = np.zeros(nc)
+        sx = np.zeros(F)
+        sxx = np.zeros((F, F))
+        sxy = np.zeros(F)
+        counts = np.zeros(nc)
         for i in range(n_pair):
             x, y = fl[i], targs[i + off]
             v = np.isfinite(x).all(1) & np.isfinite(y)
             counts += v
             xr, yr = x[v], y[v]
-            sxx += xr.T @ xr; sx += xr.sum(0); sxy += xr.T @ yr
-            sy += float(yr.sum()); syy += float(yr @ yr); n += xr.shape[0]
+            sxx += xr.T @ xr
+            sx += xr.sum(0)
+            sxy += xr.T @ yr
+            sy += float(yr.sum())
+            syy += float(yr @ yr)
+            n += xr.shape[0]
         mu = np.full(nc, np.nan)
         if n > 0:
             p = _solve_standardized(n, sx, sxx, sy, sxy, syy, alpha)
@@ -408,9 +415,9 @@ def test_incremental_all_samples():
                 mu[mask] = z @ p.beta + p.intercept
 
         assert np.array_equal(np.isnan(mu), np.isnan(wi)), f"NaN-mask mismatch at t={t}"
-        assert np.allclose(mu, wi, atol=1e-6, equal_nan=True), (
-            f"all-samples mismatch at t={t}, max|d|={np.nanmax(np.abs(mu - wi)):.3e}"
-        )
+        assert np.allclose(
+            mu, wi, atol=1e-6, equal_nan=True
+        ), f"all-samples mismatch at t={t}, max|d|={np.nanmax(np.abs(mu - wi)):.3e}"
         if np.any(np.isfinite(mu)):
             max_d = max(max_d, float(np.nanmax(np.abs(mu - wi))))
     print(f"  incremental all-samples OK (max|d|={max_d:.2e})")
@@ -455,22 +462,21 @@ def test_incremental_tight_retention():
             return self.at(key)
 
     off, alpha, minp = 1, 0.7, 3
-    window = off + 4   # the engine retains target_offset + a small margin
-    every = 5          # rebalance cadence in ticks
+    window = off + 4  # the engine retains target_offset + a small margin
+    every = 5  # rebalance cadence in ticks
     rng = np.random.default_rng(7)
     true_beta = rng.normal(size=F)
     feats = [rng.normal(size=(N, F)) for _ in range(T)]
     targs = [feats[t] @ true_beta + 0.1 * rng.normal(size=N) for t in range(T)]
     universe = FakeArrayView(np.ones(N))
-    cfg = dict(num_stocks=N, num_features=F, universe_size=N,
-               target_offset=off, alpha=alpha, min_periods=minp)
+    cfg = dict(num_stocks=N, num_features=F, universe_size=N, target_offset=off, alpha=alpha, min_periods=minp)
 
     op_o = i_ridge.build(**cfg)  # unbounded oracle
     op_b = i_ridge.build(**cfg)  # tightly retention-bounded
-    so = op_o.init((False, universe, FakeSeriesView(feats, elem_shape=(N, F)),
-                    FakeSeriesView(targs, elem_shape=(N,))))
-    sb = op_b.init((False, universe, RetainedSeriesView(feats, T, window, (N, F)),
-                    RetainedSeriesView(targs, T, window, (N,))))
+    so = op_o.init((False, universe, FakeSeriesView(feats, elem_shape=(N, F)), FakeSeriesView(targs, elem_shape=(N,))))
+    sb = op_b.init(
+        (False, universe, RetainedSeriesView(feats, T, window, (N, F)), RetainedSeriesView(targs, T, window, (N,)))
+    )
 
     rebalances = 0
     for t in range(1, T + 1):
@@ -486,8 +492,7 @@ def test_incremental_tight_retention():
         if pulse:
             rebalances += 1
             assert np.allclose(wo, wb, atol=1e-9, equal_nan=True), (
-                f"bounded != unbounded at t={t}, "
-                f"max|d|={np.nanmax(np.abs(wo - wb)):.3e}"
+                f"bounded != unbounded at t={t}, " f"max|d|={np.nanmax(np.abs(wo - wb)):.3e}"
             )
     assert rebalances > 0, "test fired no rebalances"
     print(f"  incremental tight retention OK ({rebalances} rebalances, window={window})")

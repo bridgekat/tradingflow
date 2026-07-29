@@ -1,6 +1,6 @@
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView};
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::{clock, clock::filter, elem::add, series::record_all};
+use tradingflow::operators::{elem::add, series::record_all, signal, signal::filter};
 use tradingflow::sources::basic::*;
 use tradingflow::time::UnixTime;
 
@@ -27,9 +27,9 @@ fn src(ts: &[i64], vals: &[f64]) -> ArraySource<f64, 0> {
 async fn run_single_source_record_all() {
     let mut sc = Builder::new(UnixTime);
     let h = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    // The source is a plain array; its derived clock marks each emission, and
+    // The source is a plain array; its derived signal marks each emission, and
     // the record appends one row per pulse.
-    let hc = sc.segment(clock::always(), h);
+    let hc = sc.segment(signal::always(), h);
     let hrec = sc.segment(record_all(), (hc, h));
 
     let mut session = sc.build();
@@ -48,9 +48,9 @@ async fn run_two_sources_add() {
     let ha = sc.source(src(&[1, 3], &[10.0, 30.0]));
     let hb = sc.source(src(&[2, 3], &[20.0, 40.0]));
     let ho = sc.segment(add(), (ha, hb));
-    // A clock derived from the sum node fires on the union of the two source
+    // A signal derived from the sum node fires on the union of the two source
     // cadences — one record row per generation that recomputed the sum.
-    let hoc = sc.segment(clock::always(), ho);
+    let hoc = sc.segment(signal::always(), ho);
     let hrec = sc.segment(record_all(), (hoc, ho));
 
     let mut session = sc.build();
@@ -69,7 +69,7 @@ async fn run_coalescing() {
     let ha = sc.source(src(&[1, 2], &[10.0, 20.0]));
     let hb = sc.source(src(&[1, 2], &[100.0, 200.0]));
     let ho = sc.segment(add(), (ha, hb));
-    let hoc = sc.segment(clock::always(), ho);
+    let hoc = sc.segment(signal::always(), ho);
     let hrec = sc.segment(record_all(), (hoc, ho));
 
     let mut session = sc.build();
@@ -86,7 +86,7 @@ async fn run_coalescing() {
 async fn run_filter_cutoff() {
     let mut sc = Builder::new(UnixTime);
     let h = sc.source(src(&[1, 2, 3, 4], &[1.0, 5.0, 2.0, 10.0]));
-    let hc = sc.segment(clock::always(), h);
+    let hc = sc.segment(signal::always(), h);
     let hf = sc.segment(
         filter(|v: ArrayView<f64, 0>| v.to_contiguous()[0] > 3.0),
         (hc, h),
@@ -109,7 +109,7 @@ async fn run_filter_cutoff() {
 async fn on_stable_per_batch() {
     let mut sc = Builder::new(UnixTime);
     let h = sc.source(src(&[1, 2, 3], &[10.0, 20.0, 30.0]));
-    let hc = sc.segment(clock::always(), h);
+    let hc = sc.segment(signal::always(), h);
     let _ = sc.segment(record_all(), (hc, h));
 
     let mut session = sc.build();

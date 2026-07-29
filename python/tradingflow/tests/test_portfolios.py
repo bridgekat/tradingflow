@@ -29,7 +29,7 @@ _HAS_CVXPY = importlib.util.find_spec("cvxpy") is not None
 def _drive(op, state, inputs, ts):
     """Run one compute() call, returning its weights (or `None`).
 
-    `inputs` is the unified tuple — the leading rebalance clock is a plain
+    `inputs` is the unified tuple — the leading rebalance signal is a plain
     bool, followed by the data views in wiring order.
     """
     return op.compute(tuple(inputs), state, ts)
@@ -39,11 +39,11 @@ def _spd_cov(rng, n, scale=0.02):
     """Random symmetric positive-definite covariance, small (daily) scale."""
     a = rng.standard_normal((n, n))
     cov = a @ a.T / n + np.eye(n)
-    return cov * (scale ** 2)
+    return cov * (scale**2)
 
 
 # ---------------------------------------------------------------------------
-# Mean-only leaves (rebalance_clock, universe, predicted_returns) -> weights
+# Mean-only leaves (rebalance_signal, universe, predicted_returns) -> weights
 # ---------------------------------------------------------------------------
 
 
@@ -323,7 +323,7 @@ def test_cvxpy_operators():
     mu = rng.standard_normal(n) * 0.01
     sigma = _spd_cov(rng, n)
 
-    # MinimumVariance (rebalance_clock, universe, covariance)
+    # MinimumVariance (rebalance_signal, universe, covariance)
     mv = build_minvar(num_stocks=n, long_only=True, logarithmic=False)
     views = (FakeArrayView(universe), FakeArrayView(sigma))
     state = mv.init((False, *views))
@@ -374,7 +374,8 @@ def test_base_threads_previous_positions():
     assert np.allclose(state.previous_positions, 0.0)
 
     # Rebalance 1: active = {0, 1, 2}; first rebalance has no prior positions.
-    u1 = np.zeros(n); u1[[0, 1, 2]] = 1.0
+    u1 = np.zeros(n)
+    u1[[0, 1, 2]] = 1.0
     w1 = _drive(op, state, [True, FakeArrayView(u1), FakeArrayView(mu), FakeArrayView(sigma)], 0)
     assert w1 is not None
     assert np.allclose(captured["sub_prev"], 0.0) and captured["max"] == 5
@@ -383,13 +384,15 @@ def test_base_threads_previous_positions():
 
     # Rebalance 2: active = {1, 2, 3} (drop 0, add 3).  The prior weights of 1, 2
     # must carry; the newcomer 3 seeds at 0; the dropped 0 is discarded.
-    u2 = np.zeros(n); u2[[1, 2, 3]] = 1.0
+    u2 = np.zeros(n)
+    u2[[1, 2, 3]] = 1.0
     assert _drive(op, state, [True, FakeArrayView(u2), FakeArrayView(mu), FakeArrayView(sigma)], 1) is not None
     assert list(captured["active"]) == [1, 2, 3]
     assert np.allclose(captured["sub_prev"], [w1[1], w1[2], 0.0]), captured["sub_prev"]
 
     # `max_universe_size` enforcement: 6 active > 5 must raise.
-    u3 = np.zeros(n); u3[:6] = 1.0
+    u3 = np.zeros(n)
+    u3[:6] = 1.0
     try:
         _drive(op, state, [True, FakeArrayView(u3), FakeArrayView(mu), FakeArrayView(sigma)], 2)
         raise AssertionError("expected ValueError for an oversized active universe")
@@ -410,20 +413,20 @@ def test_warm_start_multi_rebalance():
 
     rng = np.random.default_rng(11)
     n = 10
-    op = build_markowitz(
-        num_stocks=n, max_universe_size=6, mode=Mode.MIN_MEAN_VARIANCE, bound=5.0, logarithmic=False
-    )
+    op = build_markowitz(num_stocks=n, max_universe_size=6, mode=Mode.MIN_MEAN_VARIANCE, bound=5.0, logarithmic=False)
     mu = rng.standard_normal(n) * 0.01
     sigma = _spd_cov(rng, n)
     state = op.init((False, FakeArrayView(np.ones(n)), FakeArrayView(mu), FakeArrayView(sigma)))
 
     for ts, idxs in enumerate([[0, 1, 2, 3, 4, 5], [3, 4, 5, 6, 7, 8], [4, 5, 6, 7, 8, 9]]):
-        u = np.zeros(n); u[idxs] = 1.0
+        u = np.zeros(n)
+        u[idxs] = 1.0
         w = _drive(op, state, [True, FakeArrayView(u), FakeArrayView(mu), FakeArrayView(sigma)], ts)
         assert w is not None
         assert np.all(np.isfinite(w)) and np.all(w >= -1e-6)
         assert np.isclose(w[idxs].sum(), 1.0, atol=1e-2)
-        off = np.ones(n, dtype=bool); off[idxs] = False
+        off = np.ones(n, dtype=bool)
+        off[idxs] = False
         assert np.all(w[off] == 0.0)  # inactive names stay flat
         assert np.allclose(state.previous_positions, w)
 

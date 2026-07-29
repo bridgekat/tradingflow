@@ -43,18 +43,18 @@ impl<T: Source> Segment for Store<T> {
 /// Builder for the top-layer [`Graph`].
 ///
 /// This is the default level of the public graph API.
-pub struct Builder<I: Clone + Ord + Sync + 'static, C: Time<I>> {
+pub struct Builder<I: Clone + Ord + Sync + 'static, T: Time<I>> {
     inner: crate::typed::Builder<I>,
-    queue: Queue<I, C, crate::typed::Graph<I>>,
+    queue: Queue<I, T, crate::typed::Graph<I>>,
     num_events: Arc<AtomicUsize>,
     size_hint: Option<usize>,
 }
 
-impl<I: Clone + Ord + Sync + 'static, C: Time<I>> Builder<I, C> {
-    pub fn new(clock: C) -> Self {
+impl<I: Clone + Ord + Sync + 'static, S: Time<I>> Builder<I, S> {
+    pub fn new(time: S) -> Self {
         Self {
             inner: crate::typed::Builder::new(),
-            queue: Queue::new(clock),
+            queue: Queue::new(time),
             num_events: Arc::new(AtomicUsize::new(0)),
             size_hint: Some(0),
         }
@@ -107,7 +107,7 @@ impl<I: Clone + Ord + Sync + 'static, C: Time<I>> Builder<I, C> {
     }
 
     /// Finalize into a runnable [`Graph`].
-    pub fn build(self) -> Graph<I, C> {
+    pub fn build(self) -> Graph<I, S> {
         let Builder {
             inner: graph,
             queue,

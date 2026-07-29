@@ -3,12 +3,12 @@
 //! A cross-sectional linear-regression strategy on a bounded A-shares
 //! universe: a pooled **Ridge** mean predictor on the 145-factor CICC handbook
 //! panel (the pooled Ridge regularises their collinearity), a **RankLinear**
-//! portfolio, and two traders — a frictionless `Benchmark` and a lot/fee-aware
-//! `RandomTrader` — versus the cap-weighted index. On the whole-market top-800
+//! portfolio, and two traders — a frictionless `benchmark` and a lot/fee-aware
+//! `random` — versus the cap-weighted index. On the whole-market top-800
 //! universe the 145-factor panel yields an actual Sharpe of 0.41.
 //! Performance metrics (Sharpe / compound return /
 //! drawdown, and rolling market beta/alpha via `RegressionCoefficients`) are
-//! computed natively, clock-gated on the rebalance schedule.
+//! computed natively, signal-gated on the rebalance schedule.
 //!
 //! The predictor, portfolio, and beta-alpha operators are Python (`tradingflow`)
 //! operators on the shared interpreter (the two traders are native Rust), so
@@ -32,7 +32,7 @@ use tradingflow::operators::elem::ln;
 use tradingflow::operators::metric::{comp_return, drawdown, return_sharpe};
 use tradingflow::operators::rolling::diff;
 use tradingflow::operators::series::record_all;
-use tradingflow::operators::traders::{benchmark, random_trader};
+use tradingflow::operators::trader::fixed::{benchmark, random};
 use tradingflow::time::UnixTime;
 
 use common::models::{rank_linear, regression_coefficients, ridge_mean};
@@ -74,32 +74,32 @@ async fn main() {
     let predicted_returns = sc.segment(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
         (
-            m.rebalance_clock,
+            m.rebalance_signal,
             m.universe,
             m.features.series,
             m.demeaned_series,
         ),
     );
-    // The Python portfolio emits a `(clock, positions)` stream — the native
+    // The Python portfolio emits a `(signal, positions)` stream — the native
     // traders consume it directly.
     let soft_positions = sc.segment(
         rank_linear(m.n, 1.0),
-        (m.rebalance_clock, m.universe, predicted_returns.1),
+        (m.rebalance_signal, m.universe, predicted_returns.1),
     );
 
     // ---- Traders (the cost-model swap point) ----------------------------
-    let index_positions = (m.rebalance_clock, m.universe);
-    let index_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), index_positions);
-    let frictionless_value = m.simulate(&mut sc, benchmark(m.n, 1.0, true), soft_positions);
+    let index_positions = (m.rebalance_signal, m.universe);
+    let index_value = m.simulate(&mut sc, benchmark(true, 1.0), index_positions);
+    let frictionless_value = m.simulate(&mut sc, benchmark(true, 1.0), soft_positions);
     let actual_value = m.simulate(
         &mut sc,
-        random_trader(m.n, 20, INITIAL_CASH, 100.0, 5.0, 0.001, 0),
+        random(true, INITIAL_CASH, 5.0, 0.001, 100.0, 20, 0),
         soft_positions,
     );
 
-    // ---- Metrics (clock-gated, since inception) -------------------------
-    let sharpe = sc.segment(return_sharpe(), (m.rebalance_clock, actual_value));
-    let compound = sc.segment(comp_return(), (m.rebalance_clock, actual_value));
+    // ---- Metrics (signal-gated, since inception) -------------------------
+    let sharpe = sc.segment(return_sharpe(), (m.rebalance_signal, actual_value));
+    let compound = sc.segment(comp_return(), (m.rebalance_signal, actual_value));
     let drawdown = sc.segment(drawdown(), actual_value);
 
     // Rolling market beta / alpha vs the cap-weighted index, on daily log
@@ -114,7 +114,7 @@ async fn main() {
     let index_logret_series = sc.segment(record_all(), (m.daily, index_logret_vec));
     let beta_alpha = sc.segment(
         regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS),
-        (m.rebalance_clock, strat_logret_series, index_logret_series),
+        (m.rebalance_signal, strat_logret_series, index_logret_series),
     );
 
     // ---- Records --------------------------------------------------------

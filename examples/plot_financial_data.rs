@@ -24,12 +24,12 @@ mod common;
 use tradingflow::data::{Array, ArrayView, Duration, Instant};
 use tradingflow::graph::{Builder, Pool};
 use tradingflow::operators::array::{array_map, select, select_at, slice_reshape};
-use tradingflow::operators::clock::as_clock_map;
 use tradingflow::operators::elem::{as_, div, forward_fill_nan, mul, neg};
 use tradingflow::operators::feature::stock::annualize;
 use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
-use tradingflow::ports::{ArrayPortHandle, ClockArrayPortHandle, ClockPortHandle};
+use tradingflow::operators::signal::as_signal_map;
+use tradingflow::ports::{ArrayPortHandle, SignalPortHandle};
 use tradingflow::sources::panel::*;
 use tradingflow::time::UnixTime;
 
@@ -76,8 +76,8 @@ async fn main() {
     let mut sc = Builder::new(UnixTime);
 
     // ------------------------------------------------------------------
-    // Panel sources → select the target stock's row and its own tick clock:
-    // the source's `[N, 1]` row clock selects to a `[1]` clock array (this
+    // Panel sources → select the target stock's row and its own tick signal:
+    // the source's `[N, 1]` row signal selects to a `[1]` signal array (this
     // stock's dates; broadcastable over the row for the annualizer) and
     // reduces to a rank-0 pulse for the records.
     // ------------------------------------------------------------------
@@ -85,15 +85,15 @@ async fn main() {
                  kind: &str,
                  cols: Vec<String>|
      -> (
-        ClockPortHandle,
-        ClockArrayPortHandle<1>,
+        SignalPortHandle<0>,
+        SignalPortHandle<1>,
         ArrayPortHandle<f64, 1>,
     ) {
         let s = parquet_panel_source(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
         let (rows, panel) = sc.source(s);
         let row = sc.segment(select_at(idx, 0), panel);
-        let tick1 = sc.segment(as_clock_map(slice_reshape((idx, ..))), rows);
-        let tick = sc.segment(as_clock_map(slice_reshape((idx, 0usize))), rows);
+        let tick1 = sc.segment(as_signal_map(slice_reshape((idx, ..))), rows);
+        let tick = sc.segment(as_signal_map(slice_reshape((idx, 0usize))), rows);
         (tick, tick1, row)
     };
 
@@ -102,8 +102,8 @@ async fn main() {
                   cols: Vec<String>,
                   with_report_date: bool|
      -> (
-        ClockPortHandle,
-        ClockArrayPortHandle<1>,
+        SignalPortHandle<0>,
+        SignalPortHandle<1>,
         ArrayPortHandle<f64, 1>,
     ) {
         let s = parquet_financial_report_panel_source(
@@ -114,8 +114,8 @@ async fn main() {
         .with_report_date(with_report_date);
         let (rows, panel) = sc.source(s);
         let row = sc.segment(select_at(idx, 0), panel);
-        let tick1 = sc.segment(as_clock_map(slice_reshape((idx, ..))), rows);
-        let tick = sc.segment(as_clock_map(slice_reshape((idx, 0usize))), rows);
+        let tick1 = sc.segment(as_signal_map(slice_reshape((idx, ..))), rows);
+        let tick = sc.segment(as_signal_map(slice_reshape((idx, 0usize))), rows);
         (tick, tick1, row)
     };
 
@@ -174,7 +174,7 @@ async fn main() {
 
     // Split the panel's leading [year, day_of_year] f64 columns off each report
     // row and cast them to the calendar inputs (broadcast `[1]` → `[K]`); the
-    // annualizer reads them on the report tick clock only.
+    // annualizer reads them on the report tick signal only.
     let income_year_f = sc.segment(select(vec![0], 0), income);
     let income_year = sc.segment(as_(), income_year_f);
     let income_doy_f = sc.segment(select(vec![1], 0), income);

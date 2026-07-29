@@ -6,16 +6,17 @@
 //! per-element corporate-action multiplier that it applies to every later
 //! close.
 //!
-//! Both follow the fine-grained event model (see `operators::event`): an input
-//! stream is a `(clock, values)` pair, its values are only read on the clock's
-//! pulses, and a NaN element inside a pulsed batch is "no event for this
-//! element". The outputs are plain arrays updated on pulses and retained in
-//! between, so a generation without a pulse leaves them readable at their
-//! last-updated values.
+//! Both follow the fine-grained event model (see `operators::signal`): an input
+//! stream is a `(signal array, values...)` group whose values are read exactly
+//! where the signal element is set. Occurrence is the signal alone — a `NaN`
+//! under a set signal is a data error and panics, and an absent component of a
+//! multi-field event (a share-only dividend's cash leg) is zero. The outputs
+//! are plain arrays updated on pulses and retained in between, so a generation
+//! without a pulse leaves them readable at their last-updated values.
 
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::{array, clock, feature::stock};
+use tradingflow::operators::{array, feature::stock, signal};
 
 use crate::harness::*;
 
@@ -24,7 +25,7 @@ use crate::harness::*;
 // ===========================================================================
 
 /// One `annualize` tick: the report period's `(year, day_of_year)` plus the
-/// YTD row (NaN elements carry no event).
+/// YTD row. Every generation pulses the values signal, so every row is read.
 type ReportTick = (u16, u16, Vec<f64>);
 
 /// Drives `annualize` over report ticks, poking all three sources each
@@ -37,9 +38,9 @@ fn annualize_ticks(width: usize, ticks: &[ReportTick]) -> Vec<Vec<f64>> {
     let (values, valuesv) = b.source(array::constant(arr([width], vec![f64::NAN; width])));
     let (year, yearv) = b.source(array::constant(arr([1], vec![0_u16])));
     let (day, dayv) = b.source(array::constant(arr([1], vec![0_u16])));
-    let vclock = b.segment(clock::always(), valuesv);
-    let vclock = b.segment(clock::as_clock_map(array::pad_ndim()), vclock);
-    let out = b.segment(stock::annualize(), (vclock, valuesv, yearv, dayv));
+    let vsignal = b.segment(signal::always(), valuesv);
+    let vsignal = b.segment(signal::as_signal_map(array::pad_ndim()), vsignal);
+    let out = b.segment(stock::annualize(), (vsignal, valuesv, yearv, dayv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -172,9 +173,9 @@ fn annualize_rejects_a_backwards_day_within_a_year() {
     annualize_ticks(1, &[(2024, 91, vec![100.0]), (2024, 60, vec![130.0])]);
 }
 
-/// A generation in which the calendar pokes but the values clock does not
+/// A generation in which the calendar pokes but the values signal does not
 /// pulse reads nothing: the operator recomputes (it is in the dirty cone) but
-/// leaves its retained output untouched, and the stream's clock carries no
+/// leaves its retained output untouched, and the stream's signal carries no
 /// pulse for downstream event consumers.
 #[test]
 fn annualize_calendar_only_tick_retains_the_output() {
@@ -182,10 +183,10 @@ fn annualize_calendar_only_tick_retains_the_output() {
     let (values, valuesv) = b.source(array::constant(arr([1], vec![f64::NAN])));
     let (year, yearv) = b.source(array::constant(arr([1], vec![0_u16])));
     let (day, dayv) = b.source(array::constant(arr([1], vec![0_u16])));
-    let vclock = b.segment(clock::always(), valuesv);
-    let vclock1 = b.segment(clock::as_clock_map(array::pad_ndim()), vclock);
-    let out = b.segment(stock::annualize(), (vclock1, valuesv, yearv, dayv));
-    let pulses = b.segment(count::<1>(), (vclock, out));
+    let vsignal = b.segment(signal::always(), valuesv);
+    let vsignal1 = b.segment(signal::as_signal_map(array::pad_ndim()), vsignal);
+    let out = b.segment(stock::annualize(), (vsignal1, valuesv, yearv, dayv));
+    let pulses = b.segment(count::<1>(), (vsignal, out));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -196,7 +197,7 @@ fn annualize_calendar_only_tick_retains_the_output() {
     assert_close(&vals(g.view(out)), &[100.0 * 365.0 / 91.0], "good tick");
     assert_eq!(g.view(pulses), 1);
 
-    // Poke only the calendar: the values clock does not pulse.
+    // Poke only the calendar: the values signal does not pulse.
     *g.state_mut(year) = arr([1], vec![2024]);
     g.stabilize(&mut pool, &nano(1));
     assert_close(
@@ -214,30 +215,30 @@ fn annualize_calendar_only_tick_retains_the_output() {
 /// One `forward_adjust` generation: the close leg to poke, and the
 /// share/cash fields of a dividend event. A `None` close leaves the close
 /// stream quiet. The two dividend fields are one event (fields of the same
-/// row, riding one clock): if either is `Some` the event fires with the
+/// row, riding one signal): if either is `Some` the event fires with the
 /// absent component written as **zero** — a share-only dividend is a single
 /// dividend event with zero cash dividend, not a missing datum.
 type AdjustTick = (Option<f64>, Option<f64>, Option<f64>);
 
 /// Drives a rank-0 `forward_adjust` over `ticks`, returning per tick the
 /// `(multiplier, adjusted close)` outputs plus the cumulative number of
-/// close-clock signals (the adjusted-close stream's cadence).
+/// close-signals (the adjusted-close stream's cadence).
 fn run_forward_adjust(ticks: &[AdjustTick]) -> Vec<(f64, f64, usize)> {
     let mut b = Builder::new();
     let (close, closev) = b.source(array::scalar(f64::NAN));
     let (share, sharev) = b.source(array::scalar(f64::NAN));
     let (cash, cashv) = b.source(array::scalar(f64::NAN));
-    let cclock = b.segment(clock::always(), closev);
-    let sclock = b.segment(clock::always(), sharev);
-    let cashclock = b.segment(clock::always(), cashv);
-    // The dividend stream has one clock shared by both fields: a dividend
+    let csignal = b.segment(signal::always(), closev);
+    let ssignal = b.segment(signal::always(), sharev);
+    let cashsignal = b.segment(signal::always(), cashv);
+    // The dividend stream has one signal shared by both fields: a dividend
     // event is either leg arriving.
-    let dclock = b.segment(clock::or(), (sclock, cashclock));
+    let dsignal = b.segment(signal::or(), (ssignal, cashsignal));
     let (mult, adj) = b.segment(
         stock::forward_adjust(),
-        ((cclock, closev), (dclock, sharev, cashv)),
+        ((csignal, closev), (dsignal, sharev, cashv)),
     );
-    let pulses = b.segment(count::<0>(), (cclock, adj));
+    let pulses = b.segment(count::<0>(), (csignal, adj));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -414,22 +415,29 @@ fn forward_adjust_zero_dividends_are_no_ops() {
     assert_eq!(out[1].1, 11.0);
 }
 
-/// Missing data is per element: under a broadcast dividend clock, a NaN
-/// component skips only its own element, and each element's cash leg divides
-/// by *its own* previous close.
+/// Events are per element via the signal array: only signalled elements consume
+/// the dividend fields, and each element's cash leg divides by *its own*
+/// previous close. The per-element dividend signal is a stack of two event
+/// pulses.
 #[test]
 fn forward_adjust_elements_carry_events_independently() {
     let mut b = Builder::new();
     let (close, closev) = b.source(array::constant(arr1([f64::NAN, f64::NAN])));
-    let (_, sharev) = b.source(array::constant(arr1([f64::NAN, f64::NAN])));
-    let (cash, cashv) = b.source(array::constant(arr1([f64::NAN, f64::NAN])));
-    let cclock = b.segment(clock::always(), closev);
-    let cclock = b.segment(clock::as_clock_map(array::pad_ndim()), cclock);
-    let dclock = b.segment(clock::always(), cashv);
-    let dclock = b.segment(clock::as_clock_map(array::pad_ndim()), dclock);
+    let (_share, sharev) = b.source(array::constant(arr1([0.0, 0.0])));
+    let (cash, cashv) = b.source(array::constant(arr1([0.0, 0.0])));
+    let (_e0, e0v) = b.source(array::constant(scalar(0.0)));
+    let (e1, e1v) = b.source(array::constant(scalar(0.0)));
+    let csignal = b.segment(signal::always(), closev);
+    let csignal = b.segment(signal::as_signal_map(array::pad_ndim()), csignal);
+    let c0 = b.segment(signal::always(), e0v);
+    let c1 = b.segment(signal::always(), e1v);
+    let dsignal = b.segment(
+        signal::as_signal_map(array::stack::<bool, 0, 1>(0)),
+        &[c0, c1][..],
+    );
     let (mult, adj) = b.segment(
         stock::forward_adjust(),
-        ((cclock, closev), (dclock, sharev, cashv)),
+        ((csignal, closev), (dsignal, sharev, cashv)),
     );
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -438,9 +446,11 @@ fn forward_adjust_elements_carry_events_independently() {
     g.stabilize(&mut pool, &nano(0));
     assert_close(&vals(g.view(adj)), &[10.0, 20.0], "no actions yet");
 
-    // A cash dividend on element 1 only; element 0's leg is NaN (no event).
+    // A dividend event on element 1 only: element 0's signal stays low, so
+    // its dividend fields are not consumed at all.
     *g.state_mut(close) = arr1([10.0, 19.0]);
-    *g.state_mut(cash) = arr1([f64::NAN, 1.0]);
+    *g.state_mut(cash) = arr1([0.0, 1.0]);
+    let _ = g.state_mut(e1);
     g.stabilize(&mut pool, &nano(1));
     assert_close(
         &vals(g.view(mult)),
@@ -460,15 +470,15 @@ fn forward_adjust_elements_carry_events_independently() {
 fn forward_adjust_broadcasts_the_dividend_legs() {
     let mut b = Builder::new();
     let (close, closev) = b.source(array::constant(arr1([f64::NAN, f64::NAN])));
-    let (share, sharev) = b.source(array::constant(arr([1], vec![f64::NAN])));
-    let (_, cashv) = b.source(array::constant(arr([1], vec![f64::NAN])));
-    let cclock = b.segment(clock::always(), closev);
-    let cclock = b.segment(clock::as_clock_map(array::pad_ndim()), cclock);
-    let sclock = b.segment(clock::always(), sharev);
-    let sclock = b.segment(clock::as_clock_map(array::pad_ndim()), sclock);
+    let (share, sharev) = b.source(array::constant(arr([1], vec![0.0])));
+    let (_, cashv) = b.source(array::constant(arr([1], vec![0.0])));
+    let csignal = b.segment(signal::always(), closev);
+    let csignal = b.segment(signal::as_signal_map(array::pad_ndim()), csignal);
+    let ssignal = b.segment(signal::always(), sharev);
+    let ssignal = b.segment(signal::as_signal_map(array::pad_ndim()), ssignal);
     let (mult, adj) = b.segment(
         stock::forward_adjust(),
-        ((cclock, closev), (sclock, sharev, cashv)),
+        ((csignal, closev), (ssignal, sharev, cashv)),
     );
     let mut g = b.build();
     let mut pool = Pool::new(0);

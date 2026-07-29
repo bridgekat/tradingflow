@@ -4,7 +4,7 @@ use super::base::{Accumulator, Rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar};
 use crate::graph::{Segment, SegmentExt};
 use crate::operators::series::buffer;
-use crate::ports::{ArrayPort, ClockPort, SeriesPort};
+use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
 /// Accumulator for [`cov`].
 pub struct CovarianceAccumulator<T: Scalar + Float> {
@@ -111,13 +111,13 @@ pub fn series_cov<T: Scalar + Float>(
 }
 
 /// Pairwise rolling covariance matrix (array extents `[K] -> [K, K]`) over a
-/// specified window, ingesting one sample per clock signal. Non-finite values
+/// specified window, ingesting one sample per signal. Non-finite values
 /// are skipped pairwise-complete: result element `[i, j]` is computed over
 /// ticks where both components are finite.
 pub fn cov<T: Scalar + Float>(
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, 1>), Outputs = ArrayPort<T, 2>, Context = Instant>
+) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, 1>), Outputs = ArrayPort<T, 2>, Context = Instant>
 {
     let window = window.into();
     buffer(window).then(series_cov(window, min_count))

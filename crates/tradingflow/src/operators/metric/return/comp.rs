@@ -3,7 +3,7 @@ use num_traits::Float;
 use super::base::{Accumulator, Return};
 use crate::data::{Instant, Scalar};
 use crate::graph::Segment;
-use crate::ports::{ArrayPort, ClockPort};
+use crate::ports::{ArrayPort, SignalPort};
 
 /// Accumulator for [`comp_return`].
 pub struct CompReturnAccumulator<T: Scalar + Float> {
@@ -33,9 +33,9 @@ impl<T: Scalar + Float> Accumulator<T> for CompReturnAccumulator<T> {
 }
 
 /// Amortized compounded return of a net-asset-value scalar, where
-/// each period is specified by a clock signal.
+/// each period is specified by a signal.
 pub fn comp_return<T: Scalar + Float>()
--> impl Segment<Inputs = (ClockPort, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
+-> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
     Return::new(CompReturnAccumulator::new())
 }

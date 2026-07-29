@@ -2,17 +2,16 @@
 //!
 //! Every strategy example builds the same pipeline up to the predictor, and the
 //! same one after the portfolio. [`Market`] is the front half (panel, features,
-//! target, limits, universe); [`Market::record_nav`] is the back half (positions
-//! → trader → total value → record). What remains in each example is the part
+//! target, quotes, universe); [`Market::record_nav`] is the back half (positions
+//! → trader → net value → record). What remains in each example is the part
 //! that actually differs: which predictor, which optimizer, which trader.
 
-use tradingflow::data::{Array, ArrayView, Instant, Retention};
-use tradingflow::graph::{Builder, Graph, Pool, Segment};
+use tradingflow::data::{Instant, Retention};
+use tradingflow::graph::{Builder, Graph, Pool};
+use tradingflow::operators::elem;
 use tradingflow::operators::series::record_all;
-use tradingflow::operators::{array::array_map, elem, traders::*};
-use tradingflow::ports::{
-    ArrayPort, ArrayPortHandle, ClockPort, ClockPortHandle, SeriesPortHandle,
-};
+use tradingflow::operators::trader::fixed::{Exec, Fixed, benchmark};
+use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle, SignalPortHandle};
 use tradingflow::sources::basic::*;
 use tradingflow::time::UnixTime;
 
@@ -20,7 +19,7 @@ use super::args::CommonArgs;
 use super::data::{Stacked, build_stacked};
 use super::features::{Features, build_features};
 use super::models::Dims;
-use super::target::{build_log_return_target, build_price_limits};
+use super::target::{DELIST_DAYS, PRICE_LIMIT, TICK_SIZE, build_log_return_target, build_quotes};
 use super::universe::build_cap_weighted_universe;
 
 /// Starting capital for the reported NAV curves (the unit-cash traders are
@@ -28,36 +27,25 @@ use super::universe::build_cap_weighted_universe;
 pub const INITIAL_CASH: f64 = 1_000_000.0;
 /// Trading days per year, for annualising.
 pub const TRADING_DAYS: f64 = 252.0;
-/// Daily price-limit band (±10% for most A-shares).
-pub const PRICE_LIMIT: f64 = 0.10;
-
-/// Map a trader's `(holdings_value, cash)` view to its scalar total value.
-pub fn total_value(
-    sc: &mut Builder<Instant, UnixTime>,
-    h: ArrayPortHandle<f64, 1>,
-) -> ArrayPortHandle<f64, 0> {
-    sc.segment(
-        array_map(|a: ArrayView<f64, 1>| {
-            Array::<f64, 0>::scalar(a.to_contiguous().iter().sum::<f64>())
-        }),
-        h,
-    )
-}
 
 /// The market pipeline shared by every strategy example: the stacked panel, the
-/// feature set, the log-return target, the price limits, and the cap-weighted
-/// universe on the rebalance clock.
+/// feature set, the log-return target, the synthetic quote book, and the
+/// cap-weighted universe on the rebalance signal.
 pub struct Market {
     pub st: Stacked,
     pub features: Features,
-    /// The cap-weighted universe weights (read on the rebalance clock — also
+    /// The cap-weighted universe weights (read on the rebalance signal — also
     /// the benchmark weights, and what the Python operators consume).
     pub universe: ArrayPortHandle<f64, 1>,
-    pub rebalance_clock: ClockPortHandle,
+    pub rebalance_signal: SignalPortHandle<0>,
     /// The daily close pulse.
-    pub daily: ClockPortHandle,
-    pub upper: ArrayPortHandle<f64, 1>,
-    pub lower: ArrayPortHandle<f64, 1>,
+    pub daily: SignalPortHandle<0>,
+    /// The synthetic quote book on the daily pulse (see
+    /// [`build_quotes`](super::target::build_quotes)) — what the traders
+    /// execute and mark against.
+    pub flags: ArrayPortHandle<bool, 1>,
+    pub bids: ArrayPortHandle<f64, 1>,
+    pub asks: ArrayPortHandle<f64, 1>,
     /// Log adjusted close — the source of returns (refreshed on `daily`).
     pub log_adj: ArrayPortHandle<f64, 1>,
     /// Raw winsorized log returns (the IC evaluators' target; refreshed on
@@ -90,11 +78,12 @@ impl Market {
         let daily = st.daily;
         let (target, target_series, demeaned_series) =
             build_log_return_target(sc, log_adj, daily, retention);
-        let (upper, lower) = build_price_limits(sc, daily, st.close, PRICE_LIMIT);
+        let (_, flags, bids, asks) =
+            build_quotes(sc, daily, st.close, PRICE_LIMIT, TICK_SIZE, DELIST_DAYS);
 
-        let rebalance_clock = sc.source(pulse(args.rebalance_instants()));
+        let rebalance_signal = sc.source(pulse(args.rebalance_instants()));
         let universe =
-            build_cap_weighted_universe(sc, circ_market_cap, rebalance_clock, args.index_size);
+            build_cap_weighted_universe(sc, circ_market_cap, rebalance_signal, args.index_size);
 
         let dims = Dims {
             num_stocks: n,
@@ -106,10 +95,11 @@ impl Market {
             st,
             features,
             universe,
-            rebalance_clock,
+            rebalance_signal,
             daily,
-            upper,
-            lower,
+            flags,
+            bids,
+            asks,
             log_adj,
             target,
             target_series,
@@ -119,58 +109,42 @@ impl Market {
         }
     }
 
-    /// Trade a `(clock, weights)` position stream with `trader`, returning its
-    /// scalar total value. `trader` is any of the native traders — `Benchmark`
-    /// (frictionless), `SimpleTrader` / `RandomTrader` (lot + fee aware) —
-    /// which is the cost-model swap point.
-    pub fn simulate<T>(
+    /// Trade a `(signal, weights)` position stream with `trader`, returning its
+    /// net asset value. The [`Exec`] policy — frictionless
+    /// [`benchmark`], lot-rounded `simple`, stochastic `random` — is the
+    /// cost-model swap point; everything else (the quote book, the dividend
+    /// stream, the schedule) is shared, so two traders on the same weights
+    /// differ only in their execution.
+    pub fn simulate<E: Exec>(
         &self,
         sc: &mut Builder<Instant, UnixTime>,
-        trader: T,
-        positions: (ClockPortHandle, ArrayPortHandle<f64, 1>),
-    ) -> ArrayPortHandle<f64, 0>
-    where
-        T: Segment<
-                Inputs = (
-                    (ClockPort, ArrayPort<f64, 1>),
-                    (ClockPort, ArrayPort<f64, 1>),
-                    ArrayPort<f64, 1>,
-                    ArrayPort<f64, 1>,
-                    ArrayPort<f64, 1>,
-                ),
-                Outputs = ArrayPort<f64, 1>,
-                Context = Instant,
-            >,
-    {
-        // The adjust factors ride as carried state: the trader's reinvestment
-        // is a ratio against its own `last_adjust`, so re-reading an unchanged
-        // factor is a no-op.
-        let book = sc.segment(
+        trader: Fixed<E>,
+        positions: (SignalPortHandle<0>, ArrayPortHandle<f64, 1>),
+    ) -> ArrayPortHandle<f64, 0> {
+        let (_positions, _cash, net_value) = sc.segment(
             trader,
             (
+                (self.daily, self.flags, self.bids, self.asks),
+                (self.st.div_signals, self.st.share_divs, self.st.cash_divs),
                 positions,
-                (self.daily, self.st.close),
-                self.st.adjusts,
-                self.upper,
-                self.lower,
             ),
         );
-        total_value(sc, book)
+        net_value
     }
 
     /// The cap-weighted index's NAV: trade the universe weights frictionlessly.
     pub fn index_nav(&self, sc: &mut Builder<Instant, UnixTime>) -> SeriesPortHandle<f64, 0> {
-        self.record_nav(sc, (self.rebalance_clock, self.universe))
+        self.record_nav(sc, (self.rebalance_signal, self.universe))
     }
 
-    /// A `(clock, weights)` position stream's frictionless NAV: trade it via
-    /// `Benchmark`, sum, and record on the daily pulse.
+    /// A `(signal, weights)` position stream's frictionless NAV: trade it with
+    /// [`benchmark`] and record on the daily pulse.
     pub fn record_nav(
         &self,
         sc: &mut Builder<Instant, UnixTime>,
-        positions: (ClockPortHandle, ArrayPortHandle<f64, 1>),
+        positions: (SignalPortHandle<0>, ArrayPortHandle<f64, 1>),
     ) -> SeriesPortHandle<f64, 0> {
-        let value = self.simulate(sc, benchmark(self.n, 1.0, true), positions);
+        let value = self.simulate(sc, benchmark(true, 1.0), positions);
         sc.segment(record_all(), (self.daily, value))
     }
 }

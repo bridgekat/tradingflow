@@ -66,9 +66,9 @@ impl<I, S> Future for Active<I, S> {
 /// with explicit timestamps are generally used for replaying "historical" data
 /// rather than "real-time" events, in which case the next event is always
 /// available, so the frontier is always advancing.
-pub struct Queue<I: Clone + Ord, C: Time<I>, S> {
+pub struct Queue<I: Clone + Ord, T: Time<I>, S> {
     /// The wall clock source.
-    clock: C,
+    time: T,
     /// Feeds currently being polled for the next event.
     active: FuturesUnordered<Active<I, S>>,
     /// Parked feeds with buffered events waiting to be read.
@@ -86,11 +86,11 @@ pub struct Queue<I: Clone + Ord, C: Time<I>, S> {
     instant: Option<I>,
 }
 
-impl<I: Clone + Ord, S, C: Time<I>> Queue<I, C, S> {
+impl<I: Clone + Ord, S, T: Time<I>> Queue<I, T, S> {
     /// Creates an empty queue over a wall clock.
-    pub fn new(clock: C) -> Self {
+    pub fn new(time: T) -> Self {
         Self {
-            clock,
+            time,
             active: FuturesUnordered::new(),
             parked: Vec::new(),
             parked_heap: BinaryHeap::new(),
@@ -134,13 +134,13 @@ impl<I: Clone + Ord, S, C: Time<I>> Queue<I, C, S> {
     async fn await_progress(&mut self, wall: Option<I>) {
         let res = match wall {
             Some(wall) if self.active.is_empty() => {
-                self.clock.wait_until(wall).await;
+                self.time.wait_until(wall).await;
                 None
             }
             Some(wall) => {
                 let next = self.active.next();
-                let clock = self.clock.wait_until(wall);
-                match futures::future::select(next, pin!(clock)).await {
+                let time = self.time.wait_until(wall);
+                match futures::future::select(next, pin!(time)).await {
                     Either::Left((res, _)) => res,
                     Either::Right(((), _)) => None,
                 }
@@ -151,7 +151,7 @@ impl<I: Clone + Ord, S, C: Time<I>> Queue<I, C, S> {
             if let Some(stamp) = feed.stamp() {
                 let t = match stamp.clone() {
                     Stamp::Instant(t) => t,
-                    Stamp::Now => self.clock.now(),
+                    Stamp::Now => self.time.now(),
                 };
                 self.parked[id] = Some(feed);
                 self.parked_heap.push(Reverse((t, id)));
@@ -166,7 +166,7 @@ impl<I: Clone + Ord, S, C: Time<I>> Queue<I, C, S> {
     /// if every feed is exhausted.
     pub async fn step(&mut self, sink: &mut S) -> Option<I> {
         loop {
-            let now = self.clock.now();
+            let now = self.time.now();
             // The minimum frontier over all feeds. `None` means the global
             // frontier is unknown (at least one feed is unheard-from), while
             // `Done` means every feed is exhausted.

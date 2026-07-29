@@ -34,7 +34,7 @@ class MeanPortfolioState:
 class MeanPortfolio:
     """Abstract portfolio constructor from per-stock predictions.
 
-    Inputs: (rebalance_clock, universe, predicted_returns), the arrays both
+    Inputs: (rebalance_signal, universe, predicted_returns), the arrays both
     of shape ``(num_stocks,)``.
     Output: position weights, shape ``(num_stocks,)``.
     """
@@ -53,7 +53,7 @@ class MeanPortfolio:
     def init(self, inputs) -> MeanPortfolioState:
         num_stocks = self._num_stocks
         if num_stocks is None:
-            # inputs = (rebalance_clock, universe, mu): read the universe.
+            # inputs = (rebalance_signal, universe, mu): read the universe.
             num_stocks = int(inputs[1].shape[0])
         return MeanPortfolioState(
             num_stocks=num_stocks,
@@ -67,7 +67,7 @@ class MeanPortfolio:
         state: MeanPortfolioState,
         timestamp: int,
     ) -> np.ndarray | None:
-        # Trigger on the leading rebalance clock; the predictor's mu is
+        # Trigger on the leading rebalance signal; the predictor's mu is
         # read as the last prediction even when it did not produce this
         # cycle.
         if not inputs[0]:
@@ -133,7 +133,7 @@ class VariancePortfolioState:
 class VariancePortfolio:
     """Abstract portfolio constructor from covariance alone (no expected returns).
 
-    Inputs: (rebalance_clock, universe ``(num_stocks,)``,
+    Inputs: (rebalance_signal, universe ``(num_stocks,)``,
     predicted_covariances ``(num_stocks, num_stocks)``).
     Output: position weights, shape ``(num_stocks,)``.
 
@@ -160,7 +160,7 @@ class VariancePortfolio:
     def init(self, inputs) -> VariancePortfolioState:
         num_stocks = self._num_stocks
         if num_stocks is None:
-            # inputs = (rebalance_clock, universe, sigma): read the universe.
+            # inputs = (rebalance_signal, universe, sigma): read the universe.
             num_stocks = int(inputs[1].shape[0])
         max_universe_size = self._max_universe_size if self._max_universe_size is not None else num_stocks
         solver = self._init_fn(max_universe_size) if self._init_fn is not None else None
@@ -179,7 +179,7 @@ class VariancePortfolio:
         state: VariancePortfolioState,
         timestamp: int,
     ) -> np.ndarray | None:
-        # Trigger on the leading rebalance clock; the predictor's sigma is
+        # Trigger on the leading rebalance signal; the predictor's sigma is
         # read as the last prediction even when it did not produce this
         # cycle.
         if not inputs[0]:
@@ -232,7 +232,7 @@ class MeanVariancePortfolioState:
 class MeanVariancePortfolio:
     """Abstract portfolio constructor from predicted returns and covariance.
 
-    Inputs: (rebalance_clock, universe ``(num_stocks,)``, predicted_returns
+    Inputs: (rebalance_signal, universe ``(num_stocks,)``, predicted_returns
     ``(num_stocks,)``, predicted_covariances ``(num_stocks, num_stocks)``).
     Output: position weights, shape ``(num_stocks,)``.
 
@@ -261,7 +261,7 @@ class MeanVariancePortfolio:
     def init(self, inputs) -> MeanVariancePortfolioState:
         num_stocks = self._num_stocks
         if num_stocks is None:
-            # inputs = (rebalance_clock, universe, mu, sigma): read the
+            # inputs = (rebalance_signal, universe, mu, sigma): read the
             # universe.
             num_stocks = int(inputs[1].shape[0])
         max_universe_size = self._max_universe_size if self._max_universe_size is not None else num_stocks
@@ -281,7 +281,7 @@ class MeanVariancePortfolio:
         state: MeanVariancePortfolioState,
         timestamp: int,
     ) -> np.ndarray | None:
-        # Trigger on the leading rebalance clock; both mu and sigma are
+        # Trigger on the leading rebalance signal; both mu and sigma are
         # read as the last predictions even when they did not produce this
         # cycle.
         if not inputs[0]:

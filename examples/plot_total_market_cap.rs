@@ -5,8 +5,9 @@
 //! ∝ circulating cap, renormalised). Two views are written to CSV:
 //!
 //! 1. the summed circulating market cap of the current constituents (daily), and
-//! 2. the index total-return NAV from a frictionless native `Benchmark` trader
-//!    (unit cash, dividend reinvestment via adjust factors).
+//! 2. the index total-return NAV from the frictionless native `benchmark` trader
+//!    (unit cash; dividends are credited to cash and reinvested at the next
+//!    rebalance), traded over a synthetic quote book built from the closes.
 //!
 //! Every operator here is native Rust, so this example is a **pure-Rust
 //! backtest** — no Python, no `--features python`, no interpreter setup.
@@ -21,10 +22,10 @@ mod common;
 
 use tradingflow::data::{Array, ArrayView};
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::array::{array_binary_map, array_map};
+use tradingflow::operators::array::array_binary_map;
 use tradingflow::operators::elem::mul;
 use tradingflow::operators::series::record_all;
-use tradingflow::operators::traders::benchmark;
+use tradingflow::operators::trader::fixed::benchmark;
 use tradingflow::sources::basic::*;
 use tradingflow::time::UnixTime;
 
@@ -49,13 +50,13 @@ async fn main() {
     let st = common::build_stacked(&mut sc, &symbols, &args);
     let circ_market_cap = sc.segment(mul(), (st.close, st.circ_shares));
 
-    let rebalance_clock = sc.source(pulse(args.rebalance_instants()));
+    let rebalance_signal = sc.source(pulse(args.rebalance_instants()));
     // Recomputed once per rebalance pulse and retained in between, so the
     // wire itself holds the rebalance-day universe fixed until the next pulse.
     let universe = common::build_cap_weighted_universe(
         &mut sc,
         circ_market_cap,
-        rebalance_clock,
+        rebalance_signal,
         args.index_size,
     );
     let daily = st.daily;
@@ -76,23 +77,23 @@ async fn main() {
         (universe, circ_market_cap),
     );
 
-    // Frictionless cap-weighted index NAV via the native Benchmark trader.
-    let (upper, lower) = common::build_price_limits(&mut sc, daily, st.close, 0.10);
-    let index = sc.segment(
-        benchmark(n, 1.0, true),
-        (
-            (rebalance_clock, universe),
-            (daily, st.close),
-            st.adjusts,
-            upper,
-            lower,
-        ),
+    // Frictionless cap-weighted index NAV via the native benchmark trader,
+    // over the synthetic quote book built from the daily closes.
+    let (price_signal, flags, bids, asks) = common::build_quotes(
+        &mut sc,
+        daily,
+        st.close,
+        common::PRICE_LIMIT,
+        common::TICK_SIZE,
+        common::DELIST_DAYS,
     );
-    let index_value = sc.segment(
-        array_map(|a: ArrayView<f64, 1>| {
-            Array::<f64, 0>::scalar(a.to_contiguous().iter().sum::<f64>())
-        }),
-        index,
+    let (_positions, _cash, index_value) = sc.segment(
+        benchmark(true, 1.0),
+        (
+            (price_signal, flags, bids, asks),
+            (st.div_signals, st.share_divs, st.cash_divs),
+            (rebalance_signal, universe),
+        ),
     );
 
     let h_mc = sc.segment(record_all(), (daily, index_circ_market_cap));

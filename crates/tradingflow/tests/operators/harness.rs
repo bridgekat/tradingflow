@@ -1,13 +1,13 @@
 //! Shared fixtures for the operator integration tests: instant/array
 //! constructors, NaN-aware assertions, deterministic data paths, and the
-//! auxiliary probe segments (a pokeable clock, a clock-pulse counter and a
+//! auxiliary probe segments (a pokeable signal, a signal-pulse counter and a
 //! scheduled-generation counter) that the event-semantics tests wire in.
 
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Scalar, SeriesView};
 use tradingflow::graph::typed::{Builder, NodeHandle};
 use tradingflow::graph::{Port, Segment, Val};
-use tradingflow::operators::{array, clock};
-use tradingflow::ports::{ArrayPort, ArrayPortHandle, ClockArrayPort, ClockPort, ClockPortHandle};
+use tradingflow::operators::{array, signal};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, SignalPort, SignalPortHandle};
 
 /// Default tolerance for [`assert_close`]. Loose enough for the accumulators'
 /// incremental arithmetic, tight enough that a wrong formula never passes.
@@ -148,9 +148,9 @@ pub fn quarter_path(seed: u64, len: usize) -> Vec<f64> {
 // Probe segments
 // ---------------------------------------------------------------------------
 
-/// A pokeable array cell paired with its derived poke clock: each poke is one
-/// clock signal, and the values wire retains the last poked batch in between.
-/// Returns the source handle (for `state_mut`) and the `(clock, values)`
+/// A pokeable array cell paired with its derived poke signal: each poke is one
+/// signal, and the values wire retains the last poked batch in between.
+/// Returns the source handle (for `state_mut`) and the `(signal, values)`
 /// stream handles (for wiring); state-only consumers wire just the values.
 #[allow(clippy::type_complexity)]
 pub fn event_src<const N: usize>(
@@ -158,18 +158,18 @@ pub fn event_src<const N: usize>(
     v: Array<f64, N>,
 ) -> (
     NodeHandle<impl Segment<State = Array<f64, N>> + use<N>>,
-    (ClockPortHandle, ArrayPortHandle<f64, N>),
+    (SignalPortHandle<0>, ArrayPortHandle<f64, N>),
 ) {
     let (h, raw) = b.source(array::constant(v));
-    let clock = b.segment(clock::always(), raw);
-    (h, (clock, raw))
+    let signal = b.segment(signal::always(), raw);
+    (h, (signal, raw))
 }
 
 /// Operator signature for [`batch_face`].
 pub struct BatchFace<const N: usize>;
 
 impl<const N: usize> Segment for BatchFace<N> {
-    type Inputs = (ClockArrayPort<N>, ArrayPort<f64, N>);
+    type Inputs = (SignalPort<N>, ArrayPort<f64, N>);
     type Outputs = ArrayPort<f64, N>;
     type Context = Instant;
     type State = Array<f64, N>;
@@ -179,12 +179,17 @@ impl<const N: usize> Segment for BatchFace<N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (clocks, a): (ArrayView<'a, bool, N>, ArrayView<'a, f64, N>),
+        (signals, a): (ArrayView<'a, bool, N>, ArrayView<'a, f64, N>),
         state: &'b mut Array<f64, N>,
         _: &Instant,
     ) -> ArrayView<'a, f64, N> {
-        let clocks = tradingflow::data::array::broadcast_to(clocks, a.extents());
-        for ((out, &c), &v) in state.data_mut().iter_mut().zip(clocks.iter()).zip(a.iter()) {
+        let signals = tradingflow::data::array::broadcast_to(signals, a.extents());
+        for ((out, &c), &v) in state
+            .data_mut()
+            .iter_mut()
+            .zip(signals.iter())
+            .zip(a.iter())
+        {
             *out = if c { v } else { f64::NAN };
         }
         state.view()
@@ -199,12 +204,12 @@ impl<const N: usize> Segment for BatchFace<N> {
 }
 
 /// Materializes an event stream's batch face of the last *scheduled*
-/// generation: element `j` is the values wire where clock element `j` pulsed
-/// and NaN elsewhere. Clock edges read post-reset (all-false) through
+/// generation: element `j` is the values wire where signal element `j` pulsed
+/// and NaN elsewhere. Signals read post-reset (all-false) through
 /// `g.view`, so assertions on "what arrived on this wire this tick" go
 /// through this probe instead.
 pub fn batch_face<const N: usize>() -> impl Segment<
-    Inputs = (ClockArrayPort<N>, ArrayPort<f64, N>),
+    Inputs = (SignalPort<N>, ArrayPort<f64, N>),
     Outputs = ArrayPort<f64, N>,
     Context = Instant,
 > {
@@ -215,7 +220,7 @@ pub fn batch_face<const N: usize>() -> impl Segment<
 pub struct Count<const N: usize>;
 
 impl<const N: usize> Segment for Count<N> {
-    type Inputs = (ClockPort, ArrayPort<f64, N>);
+    type Inputs = (SignalPort<0>, ArrayPort<f64, N>);
     type Outputs = Port<Val<usize>>;
     type Context = Instant;
     type State = usize;
@@ -225,11 +230,11 @@ impl<const N: usize> Segment for Count<N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (clock, _): (ArrayView<'a, bool, 0>, ArrayView<'a, f64, N>),
+        (signal, _): (ArrayView<'a, bool, 0>, ArrayView<'a, f64, N>),
         state: &'b mut usize,
         _: &Instant,
     ) -> usize {
-        if *clock {
+        if *signal {
             *state += 1;
         }
         *state
@@ -243,11 +248,13 @@ impl<const N: usize> Segment for Count<N> {
     }
 }
 
-/// Counts an event stream's clock signals — the probe for event-propagation
+/// Counts an event stream's signals — the probe for event-propagation
 /// assertions (a scheduled generation without a pulse does not count).
-pub fn count<const N: usize>()
--> impl Segment<Inputs = (ClockPort, ArrayPort<f64, N>), Outputs = Port<Val<usize>>, Context = Instant>
-{
+pub fn count<const N: usize>() -> impl Segment<
+    Inputs = (SignalPort<0>, ArrayPort<f64, N>),
+    Outputs = Port<Val<usize>>,
+    Context = Instant,
+> {
     Count
 }
 
@@ -282,12 +289,12 @@ pub fn runs<const N: usize>()
     Runs
 }
 
-/// Operator signature for [`clock`].
-pub struct ManualClock;
+/// Operator signature for [`signal`].
+pub struct ManualSignal;
 
-impl Segment for ManualClock {
+impl Segment for ManualSignal {
     type Inputs = ();
-    type Outputs = ClockPort;
+    type Outputs = SignalPort<0>;
     type Context = Instant;
     type State = ();
 
@@ -302,9 +309,10 @@ impl Segment for ManualClock {
     }
 }
 
-/// A pokeable manual clock: wired as a source, touching its state via
+/// A pokeable manual signal: wired as a source, touching its state via
 /// `state_mut` marks it dirty, so it pulses (`true`) for exactly the
 /// generations the test chooses and resets to `false` in between.
-pub fn clock() -> impl Segment<Inputs = (), Outputs = ClockPort, Context = Instant, State = ()> {
-    ManualClock
+pub fn signal() -> impl Segment<Inputs = (), Outputs = SignalPort<0>, Context = Instant, State = ()>
+{
+    ManualSignal
 }

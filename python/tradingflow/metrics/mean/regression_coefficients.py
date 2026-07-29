@@ -13,9 +13,9 @@ class RegressionCoefficientsState:
 
 
 class RegressionCoefficients:
-    r"""Pooled OLS regression coefficients on a clock cadence.
+    r"""Pooled OLS regression coefficients on a signal cadence.
 
-    On every clock tick, fits the multivariate linear model
+    On every signal tick, fits the multivariate linear model
     \(y = X \beta + \alpha\) by ordinary least squares using all
     available aligned ``(target, baseline)`` pairs recorded so far, and
     emits the coefficient vector of shape `(F + 1,)` with the intercept
@@ -32,10 +32,10 @@ class RegressionCoefficients:
 
     Notes
     -----
-    The two recorded series must be in lock-step at every clock tick:
+    The two recorded series must be in lock-step at every signal tick:
     the operator asserts ``len(target) == len(baseline)`` on each fire,
     matching the alignment contract of the `MeanPredictor`.
-    Use `ResampleClocked` upstream to fold heterogeneous cadences down onto a
+    Use `ResampleSignalled` upstream to fold heterogeneous cadences down onto a
     single recording pulse.
 
     Non-finite samples (any NaN in the target or in any baseline column)
@@ -43,9 +43,9 @@ class RegressionCoefficients:
 
     Inputs
     ------
-    clock : None
-        Unit/clock source.  The operator refits and emits only on
-        clock ticks; the recorded series can update at any cadence in
+    signal : None
+        Unit/signal source.  The operator refits and emits only on
+        signal ticks; the recorded series can update at any cadence in
         between.
     target : Series, element shape ``()``
         Recorded target series (scalar per tick).
@@ -64,7 +64,7 @@ class RegressionCoefficients:
         Minimum number of valid observations (after dropping rows where
         the target or any baseline column is non-finite) required for
         the operator to emit.  When fewer than `min_periods` valid
-        observations are available at a clock tick, the operator
+        observations are available at a signal tick, the operator
         returns without emitting.  `None` (default) disables the gate.
     """
 
@@ -95,9 +95,9 @@ class RegressionCoefficients:
         state: RegressionCoefficientsState,
         timestamp: int,
     ) -> np.ndarray | None:
-        # Refit only when the leading clock ticks.
-        clock, target_view, baseline_view = inputs
-        if not clock:
+        # Refit only when the leading signal ticks.
+        signal, target_view, baseline_view = inputs
+        if not signal:
             return None
 
         n_target = len(target_view)

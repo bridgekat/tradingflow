@@ -68,7 +68,7 @@ async fn main() {
     let predicted_returns = sc.segment(
         ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
         (
-            m.rebalance_clock,
+            m.rebalance_signal,
             m.universe,
             m.features.series,
             m.demeaned_series,
@@ -77,7 +77,7 @@ async fn main() {
     let predicted_cov = sc.segment(
         shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS),
         (
-            m.rebalance_clock,
+            m.rebalance_signal,
             m.universe,
             m.features.series,
             m.target_series,
@@ -93,7 +93,7 @@ async fn main() {
             let soft = sc.segment(
                 markowitz(m.n, args.index_size, Mode::MinMeanVariance, delta, true),
                 (
-                    m.rebalance_clock,
+                    m.rebalance_signal,
                     m.universe,
                     predicted_returns.1,
                     predicted_cov.1,

@@ -81,7 +81,7 @@ async fn main() {
     let predicted_returns = sc.segment(
         linear_regression_mean(m.dims, MIN_PERIODS),
         (
-            m.rebalance_clock,
+            m.rebalance_signal,
             m.universe,
             m.features.series,
             m.demeaned_series,
@@ -99,7 +99,7 @@ async fn main() {
             let cov = sc.segment(
                 e.build(m.dims, args.rebalance_days, None),
                 (
-                    m.rebalance_clock,
+                    m.rebalance_signal,
                     m.universe,
                     m.features.series,
                     m.target_series,
@@ -107,7 +107,7 @@ async fn main() {
             );
 
             // GMV realized-variance metric (diagnostic; fed cov + raw returns
-            // on their own clocks).
+            // on their own signals).
             let mv = sc.segment(minimum_variance(m.n), (cov.0, cov.1, m.daily, log_returns));
 
             // Long-only and long-short Markowitz portfolios.
@@ -122,7 +122,7 @@ async fn main() {
                             RISK_AVERSION,
                             long_only,
                         ),
-                        (m.rebalance_clock, m.universe, predicted_returns.1, cov.1),
+                        (m.rebalance_signal, m.universe, predicted_returns.1, cov.1),
                     );
                     m.record_nav(&mut sc, soft)
                 })

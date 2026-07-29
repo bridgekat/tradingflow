@@ -56,13 +56,14 @@ pub use data::{Stacked, build_stacked};
 pub use date::{civil_from_days, date_str, days_from_civil, instant_from_days};
 pub use features::{Features, build_features};
 pub use report::{progress, read_scalar_series, write_long_csv, write_wide_csv};
-pub use target::{build_log_return_target, build_price_limits};
+pub use target::{
+    DELIST_DAYS, PRICE_LIMIT, TICK_SIZE, build_log_return_target, build_price_limits, build_quotes,
+};
 pub use universe::{build_cap_weighted_universe, calculate_index_weights};
 
 #[cfg(feature = "python")]
 pub use ic::{IcStats, ic_series, ic_stats};
 #[cfg(feature = "python")]
 pub use strategy::{
-    INITIAL_CASH, Market, NavStats, NavTable, TRADING_DAYS, nav_final, nav_stats, run, total_value,
-    trim_scale,
+    INITIAL_CASH, Market, NavStats, NavTable, TRADING_DAYS, nav_final, nav_stats, run, trim_scale,
 };

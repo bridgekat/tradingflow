@@ -2,7 +2,7 @@
 //!
 //! Each universe is a cross-sectional `[num_stocks]` **mask**: `1.0` for
 //! in-universe stocks, `NaN` otherwise. Masks are state wires recomputed from
-//! the market cap **once per rebalance pulse** (a clocked
+//! the market cap **once per rebalance pulse** (a signalled
 //! [`array_map_on`](tradingflow::operators::array::array_map_on)) and retained
 //! in between, so a consumer reading between rebalances sees the
 //! as-of-rebalance mask.
@@ -22,8 +22,8 @@
 
 use tradingflow::data::{Array, ArrayView, Instant};
 use tradingflow::graph::Builder;
-use tradingflow::operators::{array, clock, elem};
-use tradingflow::ports::{ArrayPort, ArrayPortHandle, ClockPortHandle};
+use tradingflow::operators::{array, elem, signal};
+use tradingflow::ports::{ArrayPort, ArrayPortHandle, SignalPortHandle};
 use tradingflow::time::UnixTime;
 
 /// Full-market mask: `1.0` for stocks with finite positive market cap at the
@@ -31,10 +31,10 @@ use tradingflow::time::UnixTime;
 pub fn build_full_market_universe(
     sc: &mut Builder<Instant, UnixTime>,
     market_cap: ArrayPortHandle<f64, 1>,
-    rebalance_clock: ClockPortHandle,
+    rebalance_signal: SignalPortHandle<0>,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        clock::on_clock(array::array_map(|m: ArrayView<f64, 1>| {
+        signal::on_signal(array::array_map(|m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             Array::from_parts(
                 [s.len()],
@@ -49,7 +49,7 @@ pub fn build_full_market_universe(
                     .collect(),
             )
         })),
-        (rebalance_clock, market_cap),
+        (rebalance_signal, market_cap),
     )
 }
 
@@ -58,12 +58,12 @@ pub fn build_full_market_universe(
 pub fn build_caprank_universe(
     sc: &mut Builder<Instant, UnixTime>,
     market_cap: ArrayPortHandle<f64, 1>,
-    rebalance_clock: ClockPortHandle,
+    rebalance_signal: SignalPortHandle<0>,
     lo: usize,
     hi: usize,
 ) -> ArrayPortHandle<f64, 1> {
     sc.segment(
-        clock::on_clock(array::array_map(move |m: ArrayView<f64, 1>| {
+        signal::on_signal(array::array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             let n = s.len();
             let mut idx: Vec<usize> = (0..n).filter(|&i| s[i].is_finite() && s[i] > 0.0).collect();
@@ -76,7 +76,7 @@ pub fn build_caprank_universe(
             }
             Array::from_parts([n], mask)
         })),
-        (rebalance_clock, market_cap),
+        (rebalance_signal, market_cap),
     )
 }
 
@@ -150,15 +150,15 @@ pub fn calculate_index_weights(mc: &[f64], k: usize) -> Box<[f64]> {
 pub fn build_cap_weighted_universe(
     sc: &mut Builder<Instant, UnixTime>,
     market_cap: ArrayPortHandle<f64, 1>,
-    rebalance_clock: ClockPortHandle,
+    rebalance_signal: SignalPortHandle<0>,
     index_size: usize,
 ) -> ArrayPortHandle<f64, 1> {
     let k = index_size;
     sc.segment(
-        clock::on_clock(array::array_map(move |m: ArrayView<f64, 1>| {
+        signal::on_signal(array::array_map(move |m: ArrayView<f64, 1>| {
             let s = m.to_contiguous();
             Array::from_parts([s.len()], calculate_index_weights(&s, k))
         })),
-        (rebalance_clock, market_cap),
+        (rebalance_signal, market_cap),
     )
 }

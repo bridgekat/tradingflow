@@ -118,7 +118,7 @@ class VariancePredictor[T]:
     ) -> np.ndarray | None:
         rebalance, universe_view, features_series_view, target_series_view = inputs
 
-        # Emit only on rebalance ticks (the leading clock pulses).
+        # Emit only on rebalance ticks (the leading signals).
         if not rebalance:
             return None
 

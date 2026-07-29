@@ -4,10 +4,10 @@
 //! PyO3 pyclasses cannot be generic, so the whole implementation lives in the
 //! generic core [`RawArrayView<T>`] and each exposed element type gets a thin
 //! `#[pyclass]` wrapper delegating to it: [`NativeArrayView`] (`f64`, the
-//! data currency) and [`NativeArrayViewBool`] (`bool`, the clock signal
+//! data currency) and [`NativeArrayViewBool`] (`bool`, the signal
 //! currency). Both speak the same protocol: `value()` / `to_numpy()` copy
 //! out, `__array__` joins the NumPy protocol, `shape` reports extents, and
-//! `__bool__` gives single-element views plain truthiness (`if clock:`),
+//! `__bool__` gives single-element views plain truthiness (`if signal:`),
 //! mirroring NumPy's ambiguity error otherwise.
 //!
 //! Views are **read-only**: an operator's outputs are the array it *returns*
@@ -90,7 +90,7 @@ impl<T: Element + Truthy> RawArrayView<T> {
         }
     }
 
-    /// Plain truthiness for a single-element view (`if clock:`); ambiguous
+    /// Plain truthiness for a single-element view (`if signal:`); ambiguous
     /// for larger arrays, mirroring NumPy.
     fn truthiness(&self) -> PyResult<bool> {
         match self.len {
@@ -155,7 +155,7 @@ macro_rules! native_array_view {
                 self.0.array(py, dtype)
             }
 
-            /// Plain truthiness for a single-element view (`if clock:`).
+            /// Plain truthiness for a single-element view (`if signal:`).
             fn __bool__(&self) -> PyResult<bool> {
                 self.0.truthiness()
             }
@@ -188,8 +188,8 @@ native_array_view!(
 );
 
 native_array_view!(
-    /// The `bool` sibling of [`NativeArrayView`] — the clock signal currency
-    /// (`ClockArrayPort<N>` payloads). A rank-0 clock answers `if clock:`
+    /// The `bool` sibling of [`NativeArrayView`] — the signal currency
+    /// (`SignalPort<N>` payloads). A rank-0 signal answers `if signal:`
     /// directly via `__bool__`.
     NativeArrayViewBool,
     bool

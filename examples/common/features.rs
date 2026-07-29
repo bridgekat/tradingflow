@@ -5,7 +5,7 @@
 //!
 //! Each factor is a small native subgraph over the [`Stacked`](super::Stacked)
 //! cross-sectional panel, returning a `[num_stocks]` state handle: daily
-//! price-derived values refresh on the `daily` clock, fundamentals on their
+//! price-derived values refresh on the `daily` signal, fundamentals on their
 //! report effective dates (carried forward by the panel).
 //!
 //! TTM (trailing-twelve-month) flows are a 365-day rolling mean of the
@@ -20,8 +20,8 @@
 //! computed once, reused), so each level factor is one `Divide`/`Log`. The
 //! period-over-period **变动 (delta)** and **同比 (YoY growth)** factors need a
 //! ~1-year lag of an irregular-cadence series: the level is sampled on the
-//! `daily` clock by the self-recording 365-day [`rolling::diff`] /
-//! [`rolling::pct_change`] (the 次新 idiom) — one node each, the clock pairing
+//! `daily` signal by the self-recording 365-day [`rolling::diff`] /
+//! [`rolling::pct_change`] (the 次新 idiom) — one node each, the signal pairing
 //! *is* the resampling. (`(cur − prev)/prev` is NOT rank-equivalent to
 //! `cur/prev` once a year-ago base goes negative, so the subtraction is kept
 //! rather than dropped.)
@@ -34,7 +34,7 @@
 //!
 //! # Price-volume catalog
 //!
-//! Windows are **count-based on the daily clock** (the recorded series tick
+//! Windows are **count-based on the daily signal** (the recorded series tick
 //! once per trading day, so `Lag(21)` / `rolling::sum` over 21 ticks ≈ one
 //! trading month and `252` ≈ one year — the same idiom as the 次新 filter).
 //! Close-to-close returns use the forward-adjusted close; intraday
@@ -48,7 +48,7 @@
 //! # Feature panels
 //!
 //! [`Features`] is the whole catalog (fundamental ++ price-volume) stacked into
-//! `(N, F)` and recorded on the daily clock — the model-ready panel the
+//! `(N, F)` and recorded on the daily signal — the model-ready panel the
 //! predictors regress on. See [`build_features`].
 
 use tradingflow::data::{
@@ -62,7 +62,7 @@ use tradingflow::operators::{
     stats::*,
 };
 use tradingflow::ports::{
-    ArrayPort, ArrayPortHandle, ClockPortHandle, SeriesPort, SeriesPortHandle,
+    ArrayPort, ArrayPortHandle, SeriesPort, SeriesPortHandle, SignalPortHandle,
 };
 use tradingflow::time::UnixTime;
 
@@ -120,14 +120,14 @@ pub fn circ_market_cap(
 /// report pulse.
 fn ttm(
     sc: &mut Builder<Instant, UnixTime>,
-    clock: ClockPortHandle,
+    signal: SignalPortHandle<0>,
     h: ArrayPortHandle<f64, 1>,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(rolling::mean(LAG_YEAR, 1), (clock, h))
+    sc.segment(rolling::mean(LAG_YEAR, 1), (signal, h))
 }
 
 /// 变动 (period-over-period delta): `level − level₋₁ᵧ`, the level sampled on
-/// the daily clock by the self-recording 365-day [`rolling::diff`]. The 次新
+/// the daily signal by the self-recording 365-day [`rolling::diff`]. The 次新
 /// listing filter excludes names without a full prior year.
 fn delta(
     sc: &mut Builder<Instant, UnixTime>,
@@ -273,7 +273,7 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -
     FactorSet { names, feature }
 }
 
-/// Forward (next-period) return on the rebalance clock: sample log adjusted
+/// Forward (next-period) return on the rebalance signal: sample log adjusted
 /// close on the rebalance pulse, then first-difference across rebalance ticks.
 /// At rebalance `t` this is the realized log return over `[t-1, t]`; paired with
 /// the factor stored at `t-1` inside `InformationCoefficient`, it is the
@@ -281,9 +281,9 @@ pub fn build_factor_catalog(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -
 pub fn build_forward_return(
     sc: &mut Builder<Instant, UnixTime>,
     log_adj: ArrayPortHandle<f64, 1>,
-    rebalance_clock: ClockPortHandle,
+    rebalance_signal: SignalPortHandle<0>,
 ) -> ArrayPortHandle<f64, 1> {
-    sc.segment(rolling::diff(1), (rebalance_clock, log_adj))
+    sc.segment(rolling::diff(1), (rebalance_signal, log_adj))
 }
 
 /// A cross-sectional feature panel.
@@ -336,11 +336,11 @@ fn rstd(
 }
 /// Per-stock rolling Pearson correlation of two daily handles over `n` ticks:
 /// `cov(x,y) = mean(xy) − mean(x)·mean(y)`, normalized by `σx·σy`. Records each
-/// input internally on the daily clock (some redundancy across factors, but
+/// input internally on the daily signal (some redundancy across factors, but
 /// keeps call sites simple).
 fn rcorr(
     sc: &mut Builder<Instant, UnixTime>,
-    daily: ClockPortHandle,
+    daily: SignalPortHandle<0>,
     x: ArrayPortHandle<f64, 1>,
     y: ArrayPortHandle<f64, 1>,
     n: usize,
@@ -727,7 +727,7 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -> Fa
         raw.push(h);
     };
 
-    // --- daily building blocks, recorded on the daily clock ---
+    // --- daily building blocks, recorded on the daily signal ---
     let daily = st.daily;
     let lc = sc.segment(elem::ln(), st.adjusted_close); // adjusted log close
     let lc_s = sc.segment(buffer(Y), (daily, lc));
@@ -993,7 +993,7 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -> Fa
 
 /// Build the cross-sectionally percentile-ranked feature panel: the whole CICC
 /// handbook catalog (fundamental ++ price-volume), stacked into `(N, F)`,
-/// recorded on the daily clock under `feature_retention` (pass
+/// recorded on the daily signal under `feature_retention` (pass
 /// [`Retention::unbounded()`] when a consumer needs full history).
 ///
 /// Each catalog entry is already the model-ready feature (cross-sectionally
@@ -1015,8 +1015,8 @@ pub fn build_features(
     handles.extend(pv.feature);
 
     let stacked = sc.segment(stack(1), &handles[..]);
-    // Recorded on the daily clock, not gated on the values: the target panel
-    // is recorded on the same clock, and the predictor pairs the two by row
+    // Recorded on the daily signal, not gated on the values: the target panel
+    // is recorded on the same signal, and the predictor pairs the two by row
     // index, so neither series may silently drop a row.
     let series = sc.segment(record_on(feature_retention, false), (st.daily, stacked));
     Features {

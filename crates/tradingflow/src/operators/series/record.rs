@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use crate::data::{ArrayView, Instant, Retention, Scalar, Series, SeriesView};
 use crate::graph::Segment;
-use crate::ports::{ArrayPort, ClockPort, SeriesPort};
+use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
 /// Operator signature for [`record_on`] etc.
 pub struct RecordOn<T: Scalar, const N: usize> {
@@ -51,7 +51,7 @@ impl<T: Scalar + Float, const N: usize> RecordState<T, N> {
 }
 
 impl<T: Scalar + Float, const N: usize> Segment for RecordOn<T, N> {
-    type Inputs = (ClockPort, ArrayPort<T, N>);
+    type Inputs = (SignalPort<0>, ArrayPort<T, N>);
     type Outputs = SeriesPort<T, N>;
     type Context = Instant;
     type State = RecordState<T, N>;
@@ -72,29 +72,29 @@ impl<T: Scalar + Float, const N: usize> Segment for RecordOn<T, N> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (clock, a): (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>),
+        (signal, a): (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>),
         state: &'b mut RecordState<T, N>,
         now: &Instant,
     ) -> SeriesView<'a, T, N> {
-        if *clock {
+        if *signal {
             state.push(now, a);
         }
         state.out.view()
     }
 }
 
-/// Records an array into a time series on clock signals, stamping each element
+/// Records an array into a time series on signals, stamping each element
 /// with the current timestamp (graph context).
 ///
 /// A `retention` bound is used to control trimming of the series.
 ///
-/// When `delayed` is set, trimming will be performed on the next clock signal.
+/// When `delayed` is set, trimming will be performed on the next signal.
 /// This allows downstream operators to read elements that are about to be
 /// trimmed.
 pub fn record_on<T: Scalar + Float, const N: usize>(
     retention: impl Into<Retention>,
     delayed: bool,
-) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
+) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
 {
     RecordOn::new(retention.into(), delayed)
 }
@@ -102,14 +102,14 @@ pub fn record_on<T: Scalar + Float, const N: usize>(
 /// Shorthand for [`record_on`] with `delayed = true`.
 pub fn buffer<T: Scalar + Float, const N: usize>(
     retention: impl Into<Retention>,
-) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
+) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
 {
     RecordOn::new(retention.into(), true)
 }
 
 /// Shorthand for [`record_on`] with [`Retention::unbounded`].
 pub fn record_all<T: Scalar + Float, const N: usize>()
--> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
+-> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
 {
     RecordOn::new(Retention::unbounded(), false)
 }

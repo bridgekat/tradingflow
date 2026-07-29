@@ -4,7 +4,7 @@ use tradingflow_data::Layout;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
 use crate::graph::Segment;
-use crate::ports::{ArrayPort, ClockPort};
+use crate::ports::{ArrayPort, SignalPort};
 
 /// Operator signature for [`turnover`].
 pub struct Turnover<T: Scalar + Float> {
@@ -32,7 +32,7 @@ pub struct TurnoverState<T: Scalar + Float> {
 }
 
 impl<T: Scalar + Float> Segment for Turnover<T> {
-    type Inputs = (ClockPort, ArrayPort<T, 1>);
+    type Inputs = (SignalPort<0>, ArrayPort<T, 1>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
     type State = TurnoverState<T>;
@@ -53,11 +53,11 @@ impl<T: Scalar + Float> Segment for Turnover<T> {
     }
 
     fn compute<'a, 'b: 'a>(
-        (clock, weights): (ArrayView<'a, bool, 0>, ArrayView<'a, T, 1>),
+        (signal, weights): (ArrayView<'a, bool, 0>, ArrayView<'a, T, 1>),
         state: &'b mut Self::State,
         _: &Instant,
     ) -> ArrayView<'a, T, 0> {
-        if !*clock {
+        if !*signal {
             return state.out.view();
         }
         assert!(
@@ -76,9 +76,9 @@ impl<T: Scalar + Float> Segment for Turnover<T> {
 }
 
 /// Cumulative turnover: the sum of L1 norm of changes in a weight vector,
-/// accumulated once per clock signal.
+/// accumulated once per signal.
 pub fn turnover<T: Scalar + Float>()
--> impl Segment<Inputs = (ClockPort, ArrayPort<T, 1>), Outputs = ArrayPort<T, 0>, Context = Instant>
+-> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, 1>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
     Turnover::new()
 }

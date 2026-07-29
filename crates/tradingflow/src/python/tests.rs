@@ -6,11 +6,11 @@ use crate::data::SeriesView;
 use crate::data::{Array, Duration, Instant};
 use crate::graph::pool::Pool;
 use crate::graph::typed::Builder;
-use crate::operators::{array, clock, series};
-use crate::ports::{ArrayPort, ArrayPorts, ClockPort, SeriesPort};
+use crate::operators::{array, series, signal};
+use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, SignalPort};
 
 /// The last row of a recorded event stream — the python operators emit
-/// `(clock, values)` streams whose records append one row per produced
+/// `(signal, values)` streams whose records append one row per produced
 /// compute, so the value an assertion wants is the newest row of a record
 /// behind the operator.
 fn last_row<const N: usize>(v: SeriesView<'_, f64, N>) -> Vec<f64> {
@@ -104,10 +104,10 @@ fn py_class_operator_heterogeneous_series() {
     // Sources lend the view currency directly — `Record` wires straight on.
     let (weights_cell, weights) = b.source(array::from_parts([2], vec![1.0_f64, 1.0].into()));
     let (feed_cell, feed) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
-    // A raw source is a plain array; derive its poke clock so the record
+    // A raw source is a plain array; derive its poke signal so the record
     // appends one row per poke.
-    let feed_clock = b.segment(clock::always(), feed);
-    let series = b.segment(series::record_all(), (feed_clock, feed));
+    let feed_signal = b.segment(signal::always(), feed);
+    let series = b.segment(series::record_all(), (feed_signal, feed));
     let out = b.segment(
         // Scalar output (`vec![]`), so NO = 0.
         PyClassOperator::<(ArrayPort<f64, 1>, SeriesPort<f64, 1>), 0>::from_source(
@@ -198,15 +198,15 @@ fn pyhost_linear_regression_predictor() {
     let (universe_cell, universe) = b.source(array::from_parts([N], vec![1.0; N].into()));
     let (feat_feed_cell, feat_feed) = b.source(array::zeros::<f64, 2>([N, F]));
     let (tgt_feed_cell, tgt_feed) = b.source(array::zeros::<f64, 1>([N]));
-    let rebalance_clock = b.segment(clock::always(), universe);
-    let feat_clock = b.segment(clock::always(), feat_feed);
-    let feat_series = b.segment(series::record_all(), (feat_clock, feat_feed));
-    let tgt_clock = b.segment(clock::always(), tgt_feed);
-    let tgt_series = b.segment(series::record_all(), (tgt_clock, tgt_feed));
+    let rebalance_signal = b.segment(signal::always(), universe);
+    let feat_signal = b.segment(signal::always(), feat_feed);
+    let feat_series = b.segment(series::record_all(), (feat_signal, feat_feed));
+    let tgt_signal = b.segment(signal::always(), tgt_feed);
+    let tgt_series = b.segment(series::record_all(), (tgt_signal, tgt_feed));
     let pred = b.segment(
         // Output is the (N,) prediction → NO = 1 (the default).
         PyClassOperator::<(
-            ClockPort,
+            SignalPort<0>,
             ArrayPort<f64, 1>,
             SeriesPort<f64, 2>,
             SeriesPort<f64, 1>,
@@ -219,7 +219,7 @@ fn pyhost_linear_regression_predictor() {
                 .int("target_offset", 1),
             vec![N],
         ),
-        (rebalance_clock, universe, feat_series, tgt_series),
+        (rebalance_signal, universe, feat_series, tgt_series),
     );
     let rec = b.segment(series::record_all(), pred);
     let mut g = b.build();

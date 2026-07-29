@@ -2,9 +2,9 @@ use std::marker::PhantomData;
 
 use crate::data::{ArrayView, Instant, Scalar};
 use crate::graph::Segment;
-use crate::ports::{ArrayPort, ClockArrayPort, ClockPort};
+use crate::ports::{ArrayPort, SignalPort};
 
-/// Operator signature for [`clock_always`].
+/// Operator signature for [`always`].
 pub struct Always<T: Scalar, const N: usize> {
     _marker: PhantomData<fn() -> T>,
 }
@@ -25,7 +25,7 @@ impl<T: Scalar, const N: usize> Default for Always<T, N> {
 
 impl<T: Scalar, const N: usize> Segment for Always<T, N> {
     type Inputs = ArrayPort<T, N>;
-    type Outputs = ClockPort;
+    type Outputs = SignalPort<0>;
     type Context = Instant;
     type State = ();
 
@@ -44,7 +44,7 @@ impl<T: Scalar, const N: usize> Segment for Always<T, N> {
     }
 }
 
-/// Operator signature for [`clock_filter`].
+/// Operator signature for [`filter`].
 pub struct Filter<T: Scalar, const N: usize, F>
 where
     F: FnMut(ArrayView<'_, T, N>) -> bool + Send + 'static,
@@ -69,8 +69,8 @@ impl<T: Scalar, const N: usize, F> Segment for Filter<T, N, F>
 where
     F: FnMut(ArrayView<'_, T, N>) -> bool + Send + 'static,
 {
-    type Inputs = (ClockPort, ArrayPort<T, N>);
-    type Outputs = ClockPort;
+    type Inputs = (SignalPort<0>, ArrayPort<T, N>);
+    type Outputs = SignalPort<0>;
     type Context = Instant;
     type State = F;
 
@@ -86,20 +86,20 @@ where
     }
 
     fn compute<'a, 'b: 'a>(
-        (clock, a): (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>),
+        (signal, a): (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>),
         f: &'b mut Self::State,
         _: &Instant,
     ) -> ArrayView<'a, bool, 0> {
-        ArrayView::scalar(if *clock && f(a) { &true } else { &false })
+        ArrayView::scalar(if *signal && f(a) { &true } else { &false })
     }
 }
 
-/// Operator signature for [`clock_or`].
+/// Operator signature for [`or`].
 pub struct Or;
 
 impl Segment for Or {
-    type Inputs = (ClockPort, ClockPort);
-    type Outputs = ClockPort;
+    type Inputs = (SignalPort<0>, SignalPort<0>);
+    type Outputs = SignalPort<0>;
     type Context = Instant;
     type State = ();
 
@@ -121,12 +121,12 @@ impl Segment for Or {
     }
 }
 
-/// Operator signature for [`clock_and`].
+/// Operator signature for [`and`].
 pub struct And;
 
 impl Segment for And {
-    type Inputs = (ClockPort, ClockPort);
-    type Outputs = ClockPort;
+    type Inputs = (SignalPort<0>, SignalPort<0>);
+    type Outputs = SignalPort<0>;
     type Context = Instant;
     type State = ();
 
@@ -148,12 +148,12 @@ impl Segment for And {
     }
 }
 
-/// Operator signature for [`clock_any`].
+/// Operator signature for [`any`].
 pub struct Any<const N: usize>;
 
 impl<const N: usize> Segment for Any<N> {
-    type Inputs = ClockArrayPort<N>;
-    type Outputs = ClockPort;
+    type Inputs = SignalPort<N>;
+    type Outputs = SignalPort<0>;
     type Context = Instant;
     type State = ();
 
@@ -168,7 +168,6 @@ impl<const N: usize> Segment for Any<N> {
         _: &'b mut (),
         _: &Instant,
     ) -> ArrayView<'a, bool, 0> {
-        // Fast path: a broadcast (stride-0) clock array is one datum.
         let any = if a.data().len() == 1 {
             a.data()[0]
         } else {
@@ -178,37 +177,40 @@ impl<const N: usize> Segment for Any<N> {
     }
 }
 
-/// A clock that always signals `true` when computed (for testing purposes).
+/// A signal that always signals `true` when computed (for testing purposes).
 pub fn always<T: Scalar, const N: usize>()
--> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ClockPort, Context = Instant> {
+-> impl Segment<Inputs = ArrayPort<T, N>, Outputs = SignalPort<0>, Context = Instant> {
     Always::new()
 }
 
-/// Derives a clock which signals `true` when the input clock signals `true`
+/// Derives a signal which signals `true` when the input signals `true`
 /// and the input array satisfies `predicate`.
 pub fn filter<T: Scalar, const N: usize>(
     predicate: impl FnMut(ArrayView<'_, T, N>) -> bool + Send + 'static,
-) -> impl Segment<Inputs = (ClockPort, ArrayPort<T, N>), Outputs = ClockPort, Context = Instant> {
+) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SignalPort<0>, Context = Instant>
+{
     Filter::new(predicate)
 }
 
-/// Derives a clock which signals `true` when both of the input clocks
+/// Derives a signal which signals `true` when both of the input signals
 /// signal `true`.
-pub fn and() -> impl Segment<Inputs = (ClockPort, ClockPort), Outputs = ClockPort, Context = Instant>
+pub fn and()
+-> impl Segment<Inputs = (SignalPort<0>, SignalPort<0>), Outputs = SignalPort<0>, Context = Instant>
 {
     And
 }
 
-/// Derives a clock which signals `true` when either of the input clocks
+/// Derives a signal which signals `true` when either of the input signals
 /// signals `true`.
-pub fn or() -> impl Segment<Inputs = (ClockPort, ClockPort), Outputs = ClockPort, Context = Instant>
+pub fn or()
+-> impl Segment<Inputs = (SignalPort<0>, SignalPort<0>), Outputs = SignalPort<0>, Context = Instant>
 {
     Or
 }
 
-/// Reduces a clock signal array to a single clock which signals `true` when
+/// Reduces a signal array to a single signal which signals `true` when
 /// any element signals `true`.
 pub fn any<const N: usize>()
--> impl Segment<Inputs = ClockArrayPort<N>, Outputs = ClockPort, Context = Instant> {
+-> impl Segment<Inputs = SignalPort<N>, Outputs = SignalPort<0>, Context = Instant> {
     Any
 }

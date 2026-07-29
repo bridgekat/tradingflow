@@ -13,7 +13,7 @@
 use tradingflow::data::{Array, ArrayView, Duration, Instant, NewAxis, Series, SeriesView};
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::{Builder, Graph};
-use tradingflow::operators::{clock, series};
+use tradingflow::operators::{series, signal};
 use tradingflow::ports::SeriesPortHandle;
 
 use crate::harness::*;
@@ -22,7 +22,7 @@ use crate::harness::*;
 // record.rs — appending an array stream into a series
 // ---------------------------------------------------------------------------
 
-/// A row is appended per clock signal, stamped with the `Instant` handed to
+/// A row is appended per signal, stamped with the `Instant` handed to
 /// `stabilize` (not with a tick counter), oldest row first.
 #[test]
 fn record_stamps_rows_with_the_event_time() {
@@ -55,13 +55,13 @@ fn record_stamps_rows_with_the_event_time() {
     assert_eq!(vals(s.at(1).1), vec![20.0]);
 }
 
-/// A generation without a clock signal appends nothing: the record re-lends
+/// A generation without a signal appends nothing: the record re-lends
 /// the series unchanged.
 #[test]
 fn record_appends_nothing_when_the_input_does_not_notify() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
-    let gate = b.segment(clock::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
+    let gate = b.segment(signal::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
     let rec = b.segment(series::record_all(), (gate, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -336,7 +336,7 @@ fn last_and_last_or_differ_only_on_an_empty_series() {
 fn last_or_tracks_the_newest_row_and_holds_it_across_idle_ticks() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
-    let gate = b.segment(clock::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
+    let gate = b.segment(signal::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
     let rec = b.segment(series::record_all(), (gate, srcv.1));
     let lst = b.segment(series::last_or(0.0_f64), rec);
     let mut g = b.build();

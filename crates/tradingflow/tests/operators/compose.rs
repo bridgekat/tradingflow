@@ -6,7 +6,7 @@
 //!
 //! 1. **Fusion transparency.** A `segment!` collapses a chain into one graph
 //!    node, so the whole chain reruns as a unit and the inner operators see
-//!    clock signals produced *inside* the node rather than at scheduler
+//!    signals produced *inside* the node rather than at scheduler
 //!    boundaries. The invariant is that this is unobservable: a fused segment
 //!    is tick-for-tick bit-identical to the same operators as separate nodes.
 //! 2. **Composed signals.** The design-brief moving-average crossover, written
@@ -20,8 +20,8 @@
 use tradingflow::data::ArrayView;
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::{array, clock, elem, rolling, series};
-use tradingflow::ports::{ArrayPort, ClockPort};
+use tradingflow::operators::{array, elem, rolling, series, signal};
+use tradingflow::ports::{ArrayPort, SignalPort};
 use tradingflow::segment;
 
 use crate::harness::*;
@@ -69,7 +69,7 @@ fn crossover_reference(path: &[f64], fast: usize, slow: usize) -> Vec<bool> {
 ///
 /// Worth pinning because fusion changes *when* the inner operators run:
 /// unfused, the scheduler skips a whole node whose upstream sources are clean;
-/// fused, the node always runs as a unit and each inner clock-gated operator
+/// fused, the node always runs as a unit and each inner signal-gated operator
 /// must ignore the generations without its pulse. The two sources are poked
 /// independently so that most generations exercise one of those cases, and the
 /// table carries `NaN` rows so the comparison is over exact bit patterns
@@ -79,11 +79,11 @@ fn fused_rolling_chain_matches_unfused_nodes() {
     let nan = f64::NAN;
 
     let fused = segment!(
-        |cx: ClockPort, x: ArrayPort<f64, 1>, cy: ClockPort, y: ArrayPort<f64, 1>|
+        |cx: SignalPort<0>, x: ArrayPort<f64, 1>, cy: SignalPort<0>, y: ArrayPort<f64, 1>|
             -> ArrayPort<f64, 1> {
             let d = elem::sub()
                 @ (rolling::mean(3, 1) @ (cx, x), rolling::mean(5, 1) @ (cy, y));
-            let cd = clock::or() @ (cx, cy);
+            let cd = signal::or() @ (cx, cy);
             let prev = rolling::lag(1) @ (cd, d);
             elem::abs() @ (elem::add() @ (d, prev))
         }
@@ -92,14 +92,14 @@ fn fused_rolling_chain_matches_unfused_nodes() {
     let mut b = Builder::new();
     let (sx, xv) = b.source(array::from_parts([2], vec![nan; 2].into()));
     let (sy, yv) = b.source(array::from_parts([2], vec![nan; 2].into()));
-    let cx = b.segment(clock::always(), xv);
-    let cy = b.segment(clock::always(), yv);
+    let cx = b.segment(signal::always(), xv);
+    let cy = b.segment(signal::always(), yv);
 
     // Reference: the same chain as separate nodes.
     let fast = b.segment(rolling::mean(3, 1), (cx, xv));
     let slow = b.segment(rolling::mean(5, 1), (cy, yv));
     let d = b.segment(elem::sub(), (fast, slow));
-    let cd = b.segment(clock::or(), (cx, cy));
+    let cd = b.segment(signal::or(), (cx, cy));
     let prev = b.segment(rolling::lag(1), (cd, d));
     let sum = b.segment(elem::add(), (d, prev));
     let plain = b.segment(elem::abs(), sum);
@@ -167,11 +167,11 @@ fn fused_gated_multi_output_matches_unfused_nodes() {
     let nan = f64::NAN;
 
     let fused = segment!(
-        |cp: ClockPort, p: ArrayPort<f64, 1>, cq: ClockPort, q: ArrayPort<f64, 1>|
+        |cp: SignalPort<0>, p: ArrayPort<f64, 1>, cq: SignalPort<0>, q: ArrayPort<f64, 1>|
             -> (ArrayPort<f64, 1>, ArrayPort<f64, 0>) {
-            let gp = clock::filter(any_finite) @ (cp, p);
-            let gq = clock::filter(any_finite) @ (cq, q);
-            let cs = clock::and() @ (gp, gq);
+            let gp = signal::filter(any_finite) @ (cp, p);
+            let gq = signal::filter(any_finite) @ (cq, q);
+            let cs = signal::and() @ (gp, gq);
             let m = rolling::mean(3, 1) @ (cs, elem::add() @ (p, q));
             (m, array::select_at(0, 0) @ m)
         }
@@ -180,13 +180,13 @@ fn fused_gated_multi_output_matches_unfused_nodes() {
     let mut b = Builder::new();
     let (sp, pv) = b.source(array::from_parts([2], vec![nan; 2].into()));
     let (sq, qv) = b.source(array::from_parts([2], vec![nan; 2].into()));
-    let cp = b.segment(clock::always(), pv);
-    let cq = b.segment(clock::always(), qv);
+    let cp = b.segment(signal::always(), pv);
+    let cq = b.segment(signal::always(), qv);
 
     // Reference: the same chain as separate nodes.
-    let gp = b.segment(clock::filter(any_finite), (cp, pv));
-    let gq = b.segment(clock::filter(any_finite), (cq, qv));
-    let cs = b.segment(clock::and(), (gp, gq));
+    let gp = b.segment(signal::filter(any_finite), (cp, pv));
+    let gq = b.segment(signal::filter(any_finite), (cq, qv));
+    let cs = b.segment(signal::and(), (gp, gq));
     let s = b.segment(elem::add(), (pv, qv));
     let m = b.segment(rolling::mean(3, 1), (cs, s));
     let head = b.segment(array::select_at(0, 0), m);
@@ -254,10 +254,10 @@ fn ma_crossover_signal_fires_on_the_edge() {
 
     let mut b = Builder::new();
     let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
-    let xc = b.segment(clock::always(), xv);
+    let xc = b.segment(signal::always(), xv);
     let signal = b.segment(
         segment!(
-            |c: ClockPort, x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
+            |c: SignalPort<0>, x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
                 let zeros = array::from_parts([2], vec![0.0_f64, 0.0].into()) @ ();
                 let d = elem::sub()
                     @ (rolling::mean(fast, 1) @ (c, x), rolling::mean(slow, 1) @ (c, x));
@@ -292,7 +292,7 @@ fn ma_crossover_signal_fires_on_the_edge() {
     );
 }
 
-/// A self-recording composed chain (`rolling::mean(w, c) @ (clock, values)`)
+/// A self-recording composed chain (`rolling::mean(w, c) @ (signal, values)`)
 /// agrees bit-for-bit with the hoisted spelling (one shared `series::record_on`
 /// feeding `rolling::series_mean(w, c)`).
 ///
@@ -308,12 +308,12 @@ fn self_recording_chain_matches_hoisted_record() {
 
     let mut b = Builder::new();
     let (src, xv) = b.source(array::from_parts([2], vec![0.0_f64, 0.0].into()));
-    let xc = b.segment(clock::always(), xv);
+    let xc = b.segment(signal::always(), xv);
 
     // Self-recording: each `rolling::mean` buffers the live stream itself.
     let live = b.segment(
         segment!(
-            |c: ClockPort, x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+            |c: SignalPort<0>, x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
                 elem::sub()
                     @ (rolling::mean(fast, 1) @ (c, x), rolling::mean(slow, 1) @ (c, x))
             }
@@ -417,8 +417,8 @@ fn coalesced_sources_stabilize_once_over_the_union() {
     let runs_b = b.segment(runs::<0>(), bv);
     let sum = b.segment(elem::add(), (av, bv));
     let runs_sum = b.segment(runs::<0>(), sum);
-    let sum_clock = b.segment(clock::always(), sum);
-    let rec = b.segment(series::record_all(), (sum_clock, sum));
+    let sum_signal = b.segment(signal::always(), sum);
+    let rec = b.segment(series::record_all(), (sum_signal, sum));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -466,12 +466,12 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
     let mut b = Builder::new();
     let (sa, av) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
     let (sb, bv) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
-    let ca = b.segment(clock::always(), av);
-    let cb = b.segment(clock::always(), bv);
+    let ca = b.segment(signal::always(), av);
+    let cb = b.segment(signal::always(), bv);
 
     let spread = b.segment(
         segment!(
-            |c: ClockPort, x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
+            |c: SignalPort<0>, x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
                 elem::sub()
                     @ (rolling::mean(3, 1) @ (c, x), rolling::mean(7, 1) @ (c, x))
             }
@@ -479,7 +479,7 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
         (ca, av),
     );
     let gated = b.segment(
-        clock::filter(|a: ArrayView<f64, 1>| a.to_contiguous()[0] > 0.0),
+        signal::filter(|a: ArrayView<f64, 1>| a.to_contiguous()[0] > 0.0),
         (ca, spread),
     );
 
@@ -487,7 +487,7 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
     let s2 = b.segment(rolling::mean(7, 1), (cb, bv));
     let d2 = b.segment(elem::sub(), (f2, s2));
 
-    let cj = b.segment(clock::and(), (gated, cb));
+    let cj = b.segment(signal::and(), (gated, cb));
     let join = b.segment(elem::add(), (spread, d2));
     let lagged = b.segment(rolling::lag(2), (cj, join));
     let out = b.segment(elem::mul(), (join, lagged));
@@ -527,7 +527,7 @@ fn run_fanout(workers: usize, branches: usize, path: &[f64]) -> Vec<(Vec<f64>, u
         .map(|k| {
             let threshold = k as f64 * 15.0;
             let gate = b.segment(
-                clock::filter(move |a: ArrayView<f64, 0>| a.to_contiguous()[0] > threshold),
+                signal::filter(move |a: ArrayView<f64, 0>| a.to_contiguous()[0] > threshold),
                 srcv,
             );
             (
@@ -558,7 +558,7 @@ fn run_stateful_stress(workers: usize, branches: usize, gens: usize) -> Vec<usiz
         .map(|k| {
             let divisor = k + 2;
             let gate = b.segment(
-                clock::filter(move |a: ArrayView<f64, 0>| {
+                signal::filter(move |a: ArrayView<f64, 0>| {
                     (a.to_contiguous()[0] as usize).is_multiple_of(divisor)
                 }),
                 srcv,

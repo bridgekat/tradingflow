@@ -4,19 +4,17 @@ use pyo3::prelude::*;
 
 use crate::graph::Interface;
 use crate::graph::typed::InterfaceHandles;
-use crate::ports::{
-    ArrayPort, ArrayPorts, ClockArrayPort, ClockArrayPorts, SeriesPort, SeriesPorts,
-};
+use crate::ports::{ArrayPort, ArrayPorts, SeriesPort, SeriesPorts, SignalPort, SignalPorts};
 
 use super::{NativeArrayView, NativeArrayViewBool, NativeSeriesView};
 
 /// Walks an operator's input [`Interface`] refs tree, appending **one Python
 /// value per leaf, in tree order**: a [`NativeArrayView`] /
 /// [`NativeSeriesView`] for a data leaf, and a [`NativeArrayViewBool`] for a
-/// clock leaf of any rank (a rank-0 clock reads as `if clock:` via its
-/// `__bool__`; a clock array reads as a NumPy bool mask via `value()`). The
+/// signal leaf of any rank (a rank-0 signal reads as `if signal:` via its
+/// `__bool__`; a signal array reads as a NumPy bool mask via `value()`). The
 /// Python side receives a single `inputs` tuple whose positions mirror the
-/// wiring exactly — clocks and values share one numbering.
+/// wiring exactly — signals and values share one numbering.
 pub trait PyArgs: Interface + InterfaceHandles {
     /// Append this leaf's (or subtree's) Python values to `views` in tree
     /// order.
@@ -49,7 +47,7 @@ impl<const N: usize> PyArgs for SeriesPort<f64, N> {
     }
 }
 
-impl<const N: usize> PyArgs for ClockArrayPort<N> {
+impl<const N: usize> PyArgs for SignalPort<N> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
@@ -88,14 +86,14 @@ impl<const N: usize> PyArgs for SeriesPorts<f64, N> {
     }
 }
 
-impl<const N: usize> PyArgs for ClockArrayPorts<N> {
+impl<const N: usize> PyArgs for SignalPorts<N> {
     fn append_views<'py>(
         py: Python<'py>,
         refs: Self::Values<'_>,
         views: &mut Vec<Bound<'py, PyAny>>,
     ) -> PyResult<()> {
         for &value in refs {
-            <ClockArrayPort<N> as PyArgs>::append_views(py, value, views)?;
+            <SignalPort<N> as PyArgs>::append_views(py, value, views)?;
         }
         Ok(())
     }

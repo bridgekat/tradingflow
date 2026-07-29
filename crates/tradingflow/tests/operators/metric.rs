@@ -3,7 +3,7 @@
 //!
 //! The `return` family (`comp_return`, `return_mean`, `return_vol`,
 //! `return_sharpe` and their `log_` counterparts) shares one driver: inputs are
-//! `(clock, nav)`, a period is closed by a clock signal, and the net asset value
+//! `(signal, nav)`, a period is closed by a signal, and the net asset value
 //! is required to be finite and strictly positive. A generation without a pulse
 //! folds nothing, holds the previous output and reports `notify = false`. The
 //! first pulse only latches the opening level — no period has closed yet — and
@@ -19,7 +19,7 @@ use tradingflow::data::Instant;
 use tradingflow::graph::typed::Builder;
 use tradingflow::graph::{Pool, Segment};
 use tradingflow::operators::{array, metric};
-use tradingflow::ports::{ArrayPort, ClockPort};
+use tradingflow::ports::{ArrayPort, SignalPort};
 
 use crate::harness::*;
 
@@ -27,19 +27,19 @@ use crate::harness::*;
 // Wiring helpers
 // ---------------------------------------------------------------------------
 
-/// Drives a clock-gated scalar metric over `path`, pulsing the clock exactly
+/// Drives a signal-gated scalar metric over `path`, pulsing the signal exactly
 /// once per sample, and returns the metric's output after every generation.
 fn gated<S>(metric: S, path: &[f64]) -> Vec<f64>
 where
     S: Segment<
-            Inputs = (ClockPort, ArrayPort<f64, 0>),
+            Inputs = (SignalPort<0>, ArrayPort<f64, 0>),
             Outputs = ArrayPort<f64, 0>,
             Context = Instant,
         >,
 {
     let mut b = Builder::new();
     let (data, datav) = b.source(array::scalar(0.0_f64));
-    let (tick, tickv) = b.source(clock());
+    let (tick, tickv) = b.source(signal());
     let out = b.segment(metric, (tickv, datav));
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -564,17 +564,17 @@ fn turnover_rejects_a_non_finite_weight() {
 }
 
 // ---------------------------------------------------------------------------
-// Clock gating
+// Signal gating
 // ---------------------------------------------------------------------------
 
-/// A generation where the net asset value moves but the clock does not pulse
+/// A generation where the net asset value moves but the signal does not pulse
 /// closes no period: the metric neither folds the observation nor notifies,
 /// and the next pulse measures against the level standing at that pulse.
 #[test]
-fn an_off_clock_move_closes_no_period() {
+fn an_off_signal_move_closes_no_period() {
     let mut b = Builder::new();
     let (data, datav) = b.source(array::scalar(0.0_f64));
-    let (tick, tickv) = b.source(clock());
+    let (tick, tickv) = b.source(signal());
     let mean = b.segment(metric::return_mean(), (tickv, datav));
     let mut g = b.build();
     let mut pool = Pool::new(0);

@@ -64,9 +64,9 @@ class MeanPredictor[T]:
     per-stock prediction.  Non-rebalance ticks are ignored.
 
     Input ports (in order):
-    ``(rebalance_clock, universe, features_series, target_series)``
+    ``(rebalance_signal, universe, features_series, target_series)``
 
-    - rebalance_clock: bool clock view; a pulse triggers a rebalance.
+    - rebalance_signal: bool signal view; a pulse triggers a rebalance.
     - universe: ArrayView, shape ``(num_stocks,)``.
     - features_series: SeriesView, element shape ``(num_stocks, num_features)``.
     - target_series: SeriesView, element shape ``(num_stocks,)``.  Must be
@@ -145,7 +145,7 @@ class MeanPredictor[T]:
     ) -> np.ndarray | None:
         rebalance, universe_view, features_series_view, target_series_view = inputs
 
-        # Emit only on rebalance ticks (the leading clock pulses).
+        # Emit only on rebalance ticks (the leading signals).
         if not rebalance:
             return None
 

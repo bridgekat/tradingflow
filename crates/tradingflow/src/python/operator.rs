@@ -10,7 +10,7 @@ use pyo3::types::{PyDict, PyTuple};
 
 use crate::data::{Array, ArrayView, Instant};
 use crate::graph::{Interface, Segment};
-use crate::ports::{ArrayPort, ArrayPorts, ClockPort};
+use crate::ports::{ArrayPort, ArrayPorts, SignalPort};
 
 use super::{PyArgs, PyParams};
 
@@ -61,7 +61,7 @@ fn resolve_operator<'py>(
 
 /// A class-based Python operator over input ports `I` (e.g. `ArrayPorts<f64,
 /// 1>` or `(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)`)
-/// producing a `(clock, values)` event-stream output: the clock fires on
+/// producing a `(signal, values)` event-stream output: the signal fires on
 /// computes where the Python side returned a batch (rather than `None`), and
 /// the values port is a rank-`NO` view of the host's owned buffer. Load its
 /// definition from a `.py` file, an importable module, or an inline source;
@@ -113,7 +113,7 @@ impl<I: PyArgs, const NO: usize> PyClassOperator<I, NO> {
 }
 
 /// State: the Python operator instance + its Python state object (created at
-/// init), and the rank-`NO` output buffer. No clock: the event time arrives as
+/// init), and the rank-`NO` output buffer. No signal: the event time arrives as
 /// the graph context, per `compute` call.
 pub struct PyClassState<const NO: usize> {
     operator: Py<PyAny>,
@@ -152,13 +152,13 @@ fn write_output<const NO: usize>(
 
 impl<I: PyArgs + 'static, const NO: usize> Segment for PyClassOperator<I, NO> {
     type Inputs = I;
-    type Outputs = (ClockPort, ArrayPort<f64, NO>);
+    type Outputs = (SignalPort<0>, ArrayPort<f64, NO>);
     type Context = Instant;
     type State = PyClassState<NO>;
 
     fn init(self, inputs: <I as Interface>::Values<'_>) -> PyClassState<NO> {
         // Instantiate the Python operator and call its `init` with the
-        // build-time inputs tuple (clock leaves read `False` — build-time
+        // build-time inputs tuple (signal leaves read `False` — build-time
         // renders are quiescent); allocate the output buffer. No Python
         // `compute` runs here.
         let (operator, py_state, as_array) = Python::attach(|py| {
@@ -216,7 +216,7 @@ impl<I: PyArgs + 'static, const NO: usize> Segment for PyClassOperator<I, NO> {
         });
         let notify = result
             .unwrap_or_else(|()| panic!("python operator compute failed (see traceback above)"));
-        // A returned batch pulses the output clock; the value buffer is
+        // A returned batch pulses the output signal; the value buffer is
         // retained either way (its state face holds the last produced batch).
         (
             ArrayView::scalar(if notify { &true } else { &false }),

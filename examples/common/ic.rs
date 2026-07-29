@@ -3,18 +3,18 @@
 use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
 use tradingflow::operators::series::record_all;
-use tradingflow::ports::{ArrayPortHandle, ClockPortHandle, SeriesPortHandle};
+use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle, SignalPortHandle};
 use tradingflow::time::UnixTime;
 
 use super::models::information_coefficient;
 
 /// Record the per-rebalance IC of the `factor` stream against the `target`
-/// stream — each a `(clock, values)` pair wired straight into the Python
+/// stream — each a `(signal, values)` pair wired straight into the Python
 /// metric, whose own output stream drives the record.
 pub fn ic_series(
     sc: &mut Builder<Instant, UnixTime>,
-    factor: (ClockPortHandle, ArrayPortHandle<f64, 1>),
-    target: (ClockPortHandle, ArrayPortHandle<f64, 1>),
+    factor: (SignalPortHandle<0>, ArrayPortHandle<f64, 1>),
+    target: (SignalPortHandle<0>, ArrayPortHandle<f64, 1>),
     num_stocks: usize,
 ) -> SeriesPortHandle<f64, 0> {
     let ic = sc.segment(

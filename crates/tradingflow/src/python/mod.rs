@@ -14,7 +14,7 @@
 //! (`init(inputs)`, `compute(inputs, state, context) -> outputs`), and like
 //! `Segment::compute` the Python side **returns** its output rather than
 //! filling an out-parameter: an `ndarray` is this generation's batch (the
-//! output clock pulses), `None` is quiescence (no pulse, the values wire
+//! output signals), `None` is quiescence (no pulse, the values wire
 //! retains its last batch). Returning the batch makes "pulsed but wrote
 //! nothing" and "wrote but reported no pulse" unrepresentable — they were
 //! both silently possible under the old `output` + `bool` pair.
@@ -22,9 +22,9 @@
 //! `inputs` is a single tuple with **one entry per wired leaf, in tree
 //! order**: a [`NativeArrayView`] for array edges (`ArrayPort`), a
 //! [`NativeSeriesView`] for recorded-history windows (`SeriesPort` edges),
-//! and a [`NativeArrayViewBool`] for clock leaves of any rank
-//! (`ClockArrayPort<N>`; a rank-0 pulse reads as `if clock:` via `__bool__`,
-//! a clock array as a NumPy bool mask). `timestamp` is naive nanoseconds (the
+//! and a [`NativeArrayViewBool`] for signal leaves of any rank
+//! (`SignalPort<N>`; a rank-0 pulse reads as `if signal:` via `__bool__`,
+//! a signal array as a NumPy bool mask). `timestamp` is naive nanoseconds (the
 //! graph's ambient event time) and `state` is a Python object carried across
 //! ticks. The returned value is normalized with `numpy.ascontiguousarray`
 //! (so a list or a scalar is accepted) and must match the output's element
@@ -37,9 +37,9 @@
 //! # Heterogeneous inputs
 //!
 //! The host speaks the operator library's view currency on both sides: inputs
-//! are trees of port leaves (`ArrayPort<f64, N>` / `SeriesPort<f64, N>`, plus
-//! `RefPort<()>` for unit clocks), runtime-length groups (`ArrayPorts` /
-//! `SeriesPorts`), and tuples, so an operator's input shape is its concrete
+//! are trees of port leaves (`ArrayPort<f64, N>` / `SeriesPort<f64, N>`),
+//! runtime-length groups (`ArrayPorts` / `SeriesPorts`), and tuples,
+//! so an operator's input shape is its concrete
 //! [`Interface`](crate::graph::typed::Interface) type, e.g.
 //! `(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)` for a
 //! predictor or `ArrayPorts<f64, 1>` for an all-array operator — and the

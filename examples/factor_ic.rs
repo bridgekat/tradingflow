@@ -2,7 +2,7 @@
 //!
 //! Evaluates the information coefficient (IC) of each factor in the canonical
 //! 7-factor panel (`common::build_features`) on a bounded A-shares universe.
-//! Each feature is lagged one trading day, resampled onto the rebalance clock,
+//! Each feature is lagged one trading day, resampled onto the rebalance signal,
 //! NaN-masked to the cap-weighted top-`index_size` universe, and paired with
 //! the winsorized realized log-return target via the `InformationCoefficient`
 //! metric. Per-feature IC series are written long-format for cumulative-IC
@@ -59,13 +59,13 @@ async fn main() {
         .map(|&feature| {
             // Lag one trading day, then NaN out the stocks outside the
             // universe so they don't dilute the correlation; the IC metric
-            // reads the masked factor on the rebalance clock.
+            // reads the masked factor on the rebalance signal.
             let feature_series = sc.segment(record_all(), (m.daily, feature));
             let lagged = sc.segment(series_lag(1), feature_series);
             let masked = mask_to_universe(&mut sc, lagged, m.universe);
             ic_series(
                 &mut sc,
-                (m.rebalance_clock, masked),
+                (m.rebalance_signal, masked),
                 (m.daily, m.target),
                 m.n,
             )
