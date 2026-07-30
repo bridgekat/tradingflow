@@ -61,11 +61,11 @@ where
 
 /// Creates an array source from an iterator of timestamped arrays.
 ///
-/// The initial state is a placeholder `empty` array. Later events come from
-/// `iter`, each accompanied by a signal pulse.
+/// The initial value is a placeholder [`Array::zeros`] with given `extents`.
+/// Later events come from `iter`, each accompanied by a signal pulse.
 pub fn array_iter<T: Scalar, const N: usize>(
     iter: impl Iterator<Item = (Instant, Array<T, N>)> + 'static,
-    empty: Array<T, N>,
+    extents: [usize; N],
 ) -> impl Source<Instant = Instant, Outputs = (SignalPort<0>, ArrayPort<T, N>)> {
-    ArrayIter::new(iter, empty)
+    ArrayIter::new(iter, Array::zeros(extents))
 }

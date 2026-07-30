@@ -35,3 +35,33 @@ impl<const N: usize> Iterator for Offsets<N> {
 
 impl<const N: usize> ExactSizeIterator for Offsets<N> {}
 impl<const N: usize> std::iter::FusedIterator for Offsets<N> {}
+
+/// Iterator over indices and physical offsets.
+#[derive(Debug, Clone)]
+pub struct IndicesOffsets<const N: usize> {
+    inner: Offsets<N>,
+}
+
+impl<const N: usize> Iterator for IndicesOffsets<N> {
+    type Item = ([usize; N], usize);
+
+    fn next(&mut self) -> Option<([usize; N], usize)> {
+        let indices = self.inner.indices;
+        let offset = self.inner.next()?;
+        Some((indices, offset))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<const N: usize> ExactSizeIterator for IndicesOffsets<N> {}
+impl<const N: usize> std::iter::FusedIterator for IndicesOffsets<N> {}
+
+impl<const N: usize> Offsets<N> {
+    /// Returns an iterator over indices and physical offsets.
+    pub fn with_indices(self) -> IndicesOffsets<N> {
+        IndicesOffsets { inner: self }
+    }
+}

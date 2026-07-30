@@ -1,8 +1,8 @@
 //! Daily-price plot, reading the consolidated long **parquet** panels via
-//! [`ParquetPanelSource`].
+//! [`panel::Parquet`].
 //!
-//! Loads `daily_prices.parquet` / `dividends.parquet`, `Select`s the target
-//! stock's row out of the cross-section and `Filter`s out the "no data" ticks,
+//! Loads `daily_prices.parquet` / `dividends.parquet`, selects the target
+//! stock's element out of each cross-section and its own tick signal,
 //! then computes the forward-adjusted close with a 252-day moving average and
 //! Bollinger bands using only **native** Rust operators, writing the recorded
 //! series to a tidy CSV for `examples/plot.py` (matplotlib).
@@ -15,14 +15,15 @@
 #[path = "common/mod.rs"]
 mod common;
 
+use tradingflow::data::utils::{Axis, Schema};
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::array::{map, select_at, slice_reshape};
+use tradingflow::operators::array::{map, select_at};
 use tradingflow::operators::elem::{add, sqrt, sub};
-use tradingflow::operators::feature::stock::forward_adjust;
+use tradingflow::operators::feature::forward_adjust;
 use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::signal::as_signal_map;
-use tradingflow::sources::panel::*;
+use tradingflow::sources::panel;
 use tradingflow::time::UnixTime;
 
 const WINDOW: usize = 252;
@@ -61,35 +62,33 @@ async fn main() {
     let mut sc = Builder::new(UnixTime);
 
     // Panel sources: close from prices, (share, cash) from dividends. Each is
-    // a `([N, 1] row signal, [N, K])` stream.
-    let price_src = parquet_panel_source(prices_pq, vec!["prices.close".into()], symbols.clone());
-    let (price_rows, price_panel) = sc.source(price_src);
-    let div_src = parquet_panel_source(
+    // a `([N] signal, M × [N])` stream over the whole-market symbol axis (the
+    // axis schema must cover every label its table carries).
+    let universe = Schema::new(symbols.clone());
+    let (price_signals, prices) = sc.source(panel::parquet(
+        prices_pq,
+        [("symbol".into(), Axis::Labeled(universe.clone()))],
+        vec!["prices.close".into()],
+    ));
+    let (div_signals, divs) = sc.source(panel::parquet(
         dividends_pq,
+        [("symbol".into(), Axis::Labeled(universe))],
         vec!["dividends.share".into(), "dividends.cash".into()],
-        symbols.clone(),
-    );
-    let (div_rows, div_panel) = sc.source(div_src);
+    ));
 
-    // Select the target stock's row and its own tick signal — the stock's
-    // element of each panel's row signal, squeezed to a rank-0 pulse.
-    let prices = sc.segment(select_at::<f64, 2, 1>(idx, 0), price_panel);
+    // Squeeze the target stock's element out of each `[N]` field, and its own
+    // tick signal out of each `[N]` signal.
+    let closes = sc.segment(select_at::<f64, 1, 0>(idx, 0), prices[0]);
     let ticks = sc.segment(
-        as_signal_map(slice_reshape::<bool, 2, 0, _>((idx, 0usize))),
-        price_rows,
+        as_signal_map(select_at::<bool, 1, 0>(idx, 0)),
+        price_signals,
     );
-    let dividends = sc.segment(select_at::<f64, 2, 1>(idx, 0), div_panel);
-    let div_ticks = sc.segment(
-        as_signal_map(slice_reshape::<bool, 2, 0, _>((idx, 0usize))),
-        div_rows,
-    );
-    let closes = sc.segment(select_at(0, 0), prices);
+    let div_ticks = sc.segment(as_signal_map(select_at::<bool, 1, 0>(idx, 0)), div_signals);
 
-    // Forward-adjusted close (scalar close plus the two scalar dividend legs
-    // split out of the `[share, cash]` row), recorded into a Series for the
-    // rolling stats.
-    let share_divs = sc.segment(select_at(0, 0), dividends);
-    let cash_divs = sc.segment(select_at(1, 0), dividends);
+    // Forward-adjusted close (scalar close plus the two scalar dividend legs),
+    // recorded into a Series for the rolling stats.
+    let share_divs = sc.segment(select_at::<f64, 1, 0>(idx, 0), divs[0]);
+    let cash_divs = sc.segment(select_at::<f64, 1, 0>(idx, 0), divs[1]);
     let (_multipliers, adj_closes) = sc.segment(
         forward_adjust(),
         ((ticks, closes), (div_ticks, share_divs, cash_divs)),

@@ -57,7 +57,7 @@ pub trait Layout<const N: usize> {
     }
 
     /// Physical offset of `index`, or `None` if it is out of bounds.
-    fn offset_checked(&self, index: [usize; N]) -> Option<usize> {
+    fn try_offset(&self, index: [usize; N]) -> Option<usize> {
         if self.offset_contains(index) {
             Some(index.iter().zip(self.strides()).map(|(i, s)| i * s).sum())
         } else {
@@ -71,7 +71,7 @@ pub trait Layout<const N: usize> {
     ///
     /// Panics if `index` is out of bounds on any axis.
     fn offset(&self, index: [usize; N]) -> usize {
-        self.offset_checked(index).unwrap_or_else(|| {
+        self.try_offset(index).unwrap_or_else(|| {
             panic!(
                 "index {:?} out of bounds for extents {:?}",
                 index,
@@ -96,7 +96,7 @@ pub trait Layout<const N: usize> {
 
     /// Base offset and layout of the sub-region selected by `slices`, or
     /// `None` if `slices` is out of bounds on any axis.
-    fn slice_checked(&self, slices: impl IntoSlices<N>) -> Option<(usize, Strided<N>)> {
+    fn try_slice(&self, slices: impl IntoSlices<N>) -> Option<(usize, Strided<N>)> {
         let slices = slices.into_slices();
         if self.slice_contains(slices) {
             let extents = self.extents();
@@ -121,7 +121,7 @@ pub trait Layout<const N: usize> {
     /// Panics if `slices` is out of bounds on any axis.
     fn slice(&self, slices: impl IntoSlices<N>) -> (usize, Strided<N>) {
         let slices = slices.into_slices();
-        self.slice_checked(slices).unwrap_or_else(|| {
+        self.try_slice(slices).unwrap_or_else(|| {
             panic!(
                 "slices {:?} out of bounds for extents {:?}",
                 slices,
@@ -137,7 +137,7 @@ pub trait Layout<const N: usize> {
     ///
     /// Panics if `slices` does not consume exactly `N` axes or produce
     /// exactly `M` axes.
-    fn slice_reshape_checked<const M: usize, const K: usize>(
+    fn try_slice_reshape<const M: usize, const K: usize>(
         &self,
         slices: impl IntoSliceReshapes<K>,
     ) -> Option<(usize, Strided<M>)> {
@@ -210,7 +210,7 @@ pub trait Layout<const N: usize> {
         slices: impl IntoSliceReshapes<K>,
     ) -> (usize, Strided<M>) {
         let slices = slices.into_slice_reshapes();
-        self.slice_reshape_checked(slices).unwrap_or_else(|| {
+        self.try_slice_reshape(slices).unwrap_or_else(|| {
             panic!(
                 "slices {:?} out of bounds for extents {:?}",
                 slices,

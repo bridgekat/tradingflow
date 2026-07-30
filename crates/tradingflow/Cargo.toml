@@ -26,7 +26,7 @@ num-traits = "0.2.19"
 bumpalo = "3"
 rand = { version = "0.10", features = ["thread_rng"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
-tradingflow-data = { path = "../tradingflow-data" }
+tradingflow-data = { path = "../tradingflow-data", features = ["arrow"] }
 tradingflow-graph = { path = "../tradingflow-graph" }
 tradingflow-macros = { path = "../tradingflow-macros" }
 arrow = "59.1.0"

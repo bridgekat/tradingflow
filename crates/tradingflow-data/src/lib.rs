@@ -106,22 +106,22 @@
 //! ```rust
 //! use tradingflow::data::*;
 //!
-//! // Create a schema of names.
+//! // Create a schema of labels.
 //! let s = Schema::new(["a", "b", "c"]);
 //!
-//! // Look up names and indices.
-//! assert_eq!(s.name(0), "a");
+//! // Look up labels and indices.
+//! assert_eq!(s.label(0), "a");
 //! assert_eq!(s.index("c"), 2);
 //! assert_eq!(s.indices(["c", "a"]), vec![2, 0]);
 //!
-//! // Select a subset of names by a list of unique indices.
+//! // Select a subset of labels by a list of unique indices.
 //! let subset = s.select(&[0, 2]);
-//! assert_eq!(subset.names(), &["a", "c"]);
+//! assert_eq!(subset.labels(), &["a", "c"]);
 //!
-//! // Take the union of two schemas. Names must be unique.
+//! // Take the union of two schemas. labels must be unique.
 //! let t = Schema::new(["ddd", "eee"]);
 //! let all = subset.union(&t);
-//! assert_eq!(all.names(), &["a", "c", "ddd", "eee"]);
+//! assert_eq!(all.labels(), &["a", "c", "ddd", "eee"]);
 //! ```
 //!
 //! # Arrays
@@ -158,9 +158,12 @@
 //!
 //! # Schemas
 //!
-//! A [`Schema`] is a collection of unique names, which can be used to index
+//! [`Schema`] is a collection of unique labels, which can be used to index
 //! into arrays and series. It is useful for representing the columns of a
 //! table, or the fields of a record.
+//!
+//! [`Axis`] is either a [`Schema`], a [`usize`] indicating an unlabeled axis
+//! of a fixed length, or `()` indicating an unlabeled axis of variable length.
 //!
 //! However, the association between schemas and axes of arrays or series
 //! is not enforced; it is up to the user to maintain consistency. The
@@ -178,6 +181,6 @@ pub use layout::{Layout, Offsets, Slice, SliceReshape};
 pub use scalar::Scalar;
 pub use series::{Series, SeriesView};
 pub use time::{Duration, Instant};
-pub use utils::{Retention, Schema};
+pub use utils::{Axis, Retention, Schema};
 
 pub use SliceReshape::NewAxis;

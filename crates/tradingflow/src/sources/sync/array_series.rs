@@ -55,11 +55,11 @@ impl<T: Scalar, const N: usize> Source for ArraySeries<T, N> {
 
 /// Creates an array source from a time series.
 ///
-/// The initial state is a placeholder `empty` array. Later events come from
-/// `series`, each accompanied by a signal pulse.
+/// The initial state is a placeholder [`Array::zeros`] with `series.extents()`.
+/// Later events come from `series`, each accompanied by a signal pulse.
 pub fn array_series<T: Scalar, const N: usize>(
     series: Series<T, N>,
-    empty: Array<T, N>,
 ) -> impl Source<Instant = Instant, Outputs = (SignalPort<0>, ArrayPort<T, N>)> {
-    ArraySeries::new(series, empty)
+    let extents = series.extents();
+    ArraySeries::new(series, Array::zeros(extents))
 }

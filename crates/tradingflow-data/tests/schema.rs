@@ -6,7 +6,7 @@ fn schema_basic() {
     assert_eq!(s.len(), 3);
     assert_eq!(s.index("a"), 0);
     assert_eq!(s.index("c"), 2);
-    assert_eq!(s.name(1), "b");
+    assert_eq!(s.label(1), "b");
     assert!(s.contains("b"));
     assert!(!s.contains("d"));
 }
@@ -21,7 +21,7 @@ fn schema_indices() {
 fn schema_select() {
     let s = Schema::new(["a", "b", "c", "d"]);
     let sub = s.select(&[1, 3]);
-    assert_eq!(sub.names(), &["b", "d"]);
+    assert_eq!(sub.labels(), &["b", "d"]);
     assert_eq!(sub.index("d"), 1);
 }
 
@@ -35,13 +35,13 @@ fn schema_concat() {
 }
 
 #[test]
-#[should_panic(expected = "duplicate name")]
+#[should_panic(expected = "duplicate label")]
 fn schema_duplicate_panics() {
     Schema::new(["a", "b", "a"]);
 }
 
 #[test]
-#[should_panic(expected = "duplicate name")]
+#[should_panic(expected = "duplicate label")]
 fn schema_concat_overlap_panics() {
     let s1 = Schema::new(["a", "b"]);
     let s2 = Schema::new(["b", "c"]);

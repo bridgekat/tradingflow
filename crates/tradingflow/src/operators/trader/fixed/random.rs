@@ -101,7 +101,7 @@ impl Exec for RandomExec {
 ///
 /// May introduce slight leverage due to rounding and fees.
 ///
-/// Inputs and outputs: same as [`benchmark`](super::benchmark).
+/// See [module-level docs](super) for inputs and outputs.
 pub fn random(
     delayed: bool,
     initial_cash: f64,

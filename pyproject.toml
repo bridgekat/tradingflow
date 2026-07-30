@@ -8,7 +8,15 @@ version = "0.1.0"
 description = "A lightweight library for quantitative investment research."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["numpy>=2.4", "pandas>=3.0", "scipy", "cvxpy", "scs"]
+dependencies = [
+    "numpy>=2.4",
+    "pandas>=3.0",
+    "scipy",
+    "cvxpy",
+    "scs",
+    "pyarrow>=25.0.0",
+    "tqdm>=4.69.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
