@@ -1872,6 +1872,7 @@ dependencies = [
 name = "tradingflow-data"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "tradingflow",
 ]
 

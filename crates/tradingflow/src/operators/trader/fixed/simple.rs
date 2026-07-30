@@ -50,7 +50,7 @@ impl Exec for SimpleExec {
 ///
 /// May introduce slight leverage due to rounding and fees.
 ///
-/// Inputs and outputs: same as [`benchmark`](super::benchmark).
+/// See [module-level docs](super) for inputs and outputs.
 pub fn simple(
     delayed: bool,
     initial_cash: f64,

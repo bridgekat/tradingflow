@@ -76,9 +76,9 @@ fn offset_bounds_are_per_axis() {
     assert!(l.offset_contains([1, 2]));
     // Flat offset 3 is in the buffer, but [0, 3] runs off the end of a row.
     assert!(!l.offset_contains([0, 3]));
-    assert_eq!(l.offset_checked([0, 3]), None);
-    assert_eq!(l.offset_checked([2, 0]), None);
-    assert_eq!(l.offset_checked([1, 2]), Some(5));
+    assert_eq!(l.try_offset([0, 3]), None);
+    assert_eq!(l.try_offset([2, 0]), None);
+    assert_eq!(l.try_offset([1, 2]), Some(5));
 
     // Nothing is in bounds in an empty layout; everything is in a rank-0 one.
     assert!(!RowMajor::new([0]).offset_contains([0]));
@@ -256,12 +256,12 @@ fn slice_offsets_address_the_sub_region() {
 fn slice_bounds_are_per_axis() {
     let l = RowMajor::new([2, 3]);
     // A range may end at the extent, but not beyond it.
-    assert!(l.slice_checked([0..2, 0..3]).is_some());
-    assert!(l.slice_checked([0..2, 0..4]).is_none());
-    assert!(l.slice_checked([0..3, 0..3]).is_none());
+    assert!(l.try_slice([0..2, 0..3]).is_some());
+    assert!(l.try_slice([0..2, 0..4]).is_none());
+    assert!(l.try_slice([0..3, 0..3]).is_none());
     // A decreasing range selects nothing rather than failing.
     #[allow(clippy::reversed_empty_ranges)]
-    let backwards = l.slice_checked([1..0, 0..3]);
+    let backwards = l.try_slice([1..0, 0..3]);
     assert_eq!(backwards, Some((3, Strided::new([0, 3], [3, 1]))));
 
     // An empty range yields an empty layout; the offset is still the
@@ -289,8 +289,8 @@ fn slice_bounds_are_optional() {
     assert_eq!(l.slice((.., (.., 2))), l.slice([(0..4, 1), (0..5, 2)]));
     assert_eq!(l.slice((.., (1.., 3))), l.slice([(0..4, 1), (1..5, 3)]));
     // A start at the extent is an empty tail; past it is out of bounds.
-    assert!(l.slice_checked([4.., 0..]).is_some());
-    assert!(l.slice_checked([5.., 0..]).is_none());
+    assert!(l.try_slice([4.., 0..]).is_some());
+    assert!(l.try_slice([5.., 0..]).is_none());
 }
 
 #[test]
@@ -358,7 +358,7 @@ fn broadcast_axis_repeats_offsets() {
     // The broadcast source index must itself be in bounds; the count is
     // deliberately unconstrained by the extent.
     let oob = [Slice::new(2, Some(4), 0), Slice::from(..)];
-    assert!(l.slice_checked(oob).is_none());
+    assert!(l.try_slice(oob).is_none());
 }
 
 #[test]
@@ -413,12 +413,12 @@ fn slice_reshape_agrees_with_the_single_axis_operations() {
 #[test]
 fn slice_reshape_bounds_are_per_axis() {
     let l = RowMajor::new([2, 3]);
-    let ok: Option<(usize, Strided<1>)> = l.slice_reshape_checked((1, ..));
+    let ok: Option<(usize, Strided<1>)> = l.try_slice_reshape((1, ..));
     assert!(ok.is_some());
     // A collapsing index must be in bounds, as must a slice.
-    let bad_index: Option<(usize, Strided<1>)> = l.slice_reshape_checked((2, ..));
+    let bad_index: Option<(usize, Strided<1>)> = l.try_slice_reshape((2, ..));
     assert!(bad_index.is_none());
-    let bad_slice: Option<(usize, Strided<2>)> = l.slice_reshape_checked((.., 0..4));
+    let bad_slice: Option<(usize, Strided<2>)> = l.try_slice_reshape((.., 0..4));
     assert!(bad_slice.is_none());
 }
 

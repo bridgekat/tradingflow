@@ -14,7 +14,7 @@
 //! [`run`](graph::Graph::run).
 //!
 //! Below is a tiny example that records a synthetic price series, takes a
-//! rolling mean, and prints the resulting series.
+//! 10-period rolling mean (MA10), and prints the resulting series.
 //!
 //! ```rust
 //! use tradingflow::data::*;
@@ -28,16 +28,14 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     // Example data: a random-walk daily price series.
-//!     let timestamps = (0..90)
-//!         .map(|ns| Instant::from_offset(Duration::from_nanos(ns)))
-//!         .collect();
-//!     let values = (0..90)
-//!         .map(|_| rand::random_range(-1.0..1.0))
-//!         .scan(100.0, |sum, delta| {
-//!             *sum += delta;
-//!             Some(*sum)
-//!         })
-//!         .collect();
+//!     let mut timestamps = Vec::new();
+//!     let mut values = Vec::new();
+//!     let mut price = 1000.0;
+//!     for i in 0..365 {
+//!         timestamps.push(Instant::from_offset(Duration::from_days(i)));
+//!         values.push(price);
+//!         price += rand::random_range(-1.0..1.0);
+//!     }
 //!     let data = Series::from_parts([], timestamps, values, 0);
 //!
 //!     // Create the thread pool.
@@ -45,12 +43,12 @@
 //!
 //!     // Build the graph.
 //!     let mut b = Builder::new(UnixTime);
-//!     let (daily, prices) = b.source(sync::array_series(data, Array::scalar(0.0)));
+//!     let (daily, prices) = b.source(sync::array_series(data));
 //!     let mean = b.segment(rolling::mean(10, 1), (daily, prices));
 //!     let mean_series = b.segment(series::record_all(), (daily, mean));
-//!     // Alternatively, one can use `segment!` to fuse operators into a
-//!     // single segment.
-//!     let mean_series_fuse = b.segment(
+//!     // Alternatively, one can use `segment!` to fuse several operators into
+//!     // a single segment.
+//!     let mean_series_fused = b.segment(
 //!         segment!(
 //!             |daily: SignalPort<0>, prices: ArrayPort<f64, 0>| -> SeriesPort<f64, 0> {
 //!                 let mean = rolling::mean(10, 1) @ (daily, prices);
@@ -66,13 +64,13 @@
 //!     g.run(&mut pool, |_, _| {}).await;
 //!
 //!     // Inspect results.
-//!     assert_eq!(g.view(mean_series), g.view(mean_series_fuse));
+//!     assert_eq!(g.view(mean_series), g.view(mean_series_fused));
 //!     println!("{:?}", g.view(mean_series));
 //! }
 //! ```
 //!
 //! This is the whole pattern. An actual strategy can contain many more
-//! operators — [`forward_adjust`](operators::feature::stock::forward_adjust),
+//! operators — [`forward_adjust`](operators::feature::forward_adjust),
 //! [`random`](operators::trader::fixed::random),
 //! [`return_sharpe`](operators::metric::return_sharpe)
 //! — but the overall structure stays the same.

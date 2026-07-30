@@ -4,4 +4,7 @@ mod retention;
 mod schema;
 
 pub use retention::Retention;
-pub use schema::Schema;
+pub use schema::{Axis, Schema};
+
+#[cfg(feature = "arrow")]
+pub mod arrow;

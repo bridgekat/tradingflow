@@ -1,4 +1,4 @@
-use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView};
+use tradingflow::data::{ArrayView, Duration, Instant, Series, SeriesView};
 use tradingflow::graph::{Builder, Pool, Source};
 use tradingflow::operators::{elem::add, series::record_all, signal};
 use tradingflow::ports::{ArrayPort, SignalPort};
@@ -23,10 +23,7 @@ fn src(
     ts: &[i64],
     vals: &[f64],
 ) -> impl Source<Instant = Instant, Outputs = (SignalPort<0>, ArrayPort<f64, 0>)> {
-    array_series(
-        Series::from_parts([], tss(ts), vals.to_vec(), 0),
-        Array::scalar(0.0),
-    )
+    array_series(Series::from_parts([], tss(ts), vals.to_vec(), 0))
 }
 
 /// Replay [10,20,30] @ [1,2,3] into a Record.

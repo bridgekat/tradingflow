@@ -21,16 +21,17 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use tradingflow::data::{Array, ArrayView, Duration, Instant};
+use tradingflow::data::utils::{Axis, Schema};
+use tradingflow::data::{Duration, Instant};
 use tradingflow::graph::{Builder, Pool};
-use tradingflow::operators::array::{array_map, select, select_at, slice_reshape};
-use tradingflow::operators::elem::{as_, div, forward_fill_nan, mul, neg};
-use tradingflow::operators::feature::stock::annualize;
+use tradingflow::operators::array::select_at;
+use tradingflow::operators::elem::{add, as_, div, forward_fill_nan, mul, neg};
+use tradingflow::operators::feature::annualize;
 use tradingflow::operators::rolling;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::signal::as_signal_map;
 use tradingflow::ports::{ArrayPortHandle, SignalPortHandle};
-use tradingflow::sources::panel::*;
+use tradingflow::sources::panel;
 use tradingflow::time::UnixTime;
 
 const COLS: [&str; 10] = [
@@ -76,53 +77,34 @@ async fn main() {
     let mut sc = Builder::new(UnixTime);
 
     // ------------------------------------------------------------------
-    // Panel sources → select the target stock's row and its own tick signal:
-    // the source's `[N, 1]` row signal selects to a `[1]` signal array (this
-    // stock's dates; broadcastable over the row for the annualizer) and
-    // reduces to a rank-0 pulse for the records.
+    // Panel sources → select the target stock's element and its own tick
+    // signal: each source emits `([N] signal, M × [N])` over the whole-market
+    // symbol axis, so one `select_at` per field squeezes this stock's scalar
+    // stream out, and the signal element becomes its rank-0 pulse.
     // ------------------------------------------------------------------
-    let daily = |sc: &mut Builder<Instant, UnixTime>,
-                 kind: &str,
-                 cols: Vec<String>|
-     -> (
-        SignalPortHandle<0>,
-        SignalPortHandle<1>,
-        ArrayPortHandle<f64, 1>,
-    ) {
-        let s = parquet_panel_source(format!("{data_dir}/{kind}.parquet"), cols, symbols.clone());
-        let (rows, panel) = sc.source(s);
-        let row = sc.segment(select_at(idx, 0), panel);
-        let tick1 = sc.segment(as_signal_map(slice_reshape((idx, ..))), rows);
-        let tick = sc.segment(as_signal_map(slice_reshape((idx, 0usize))), rows);
-        (tick, tick1, row)
-    };
-
-    let report = |sc: &mut Builder<Instant, UnixTime>,
-                  kind: &str,
-                  cols: Vec<String>,
-                  with_report_date: bool|
-     -> (
-        SignalPortHandle<0>,
-        SignalPortHandle<1>,
-        ArrayPortHandle<f64, 1>,
-    ) {
-        let s = parquet_financial_report_panel_source(
+    let universe = Schema::new(symbols.clone());
+    let open = |sc: &mut Builder<Instant, UnixTime>,
+                kind: &str,
+                cols: Vec<String>|
+     -> (SignalPortHandle<0>, Vec<ArrayPortHandle<f64, 0>>) {
+        let source = panel::parquet(
             format!("{data_dir}/{kind}.parquet"),
+            [("symbol".into(), Axis::Labeled(universe.clone()))],
             cols,
-            symbols.clone(),
-        )
-        .with_report_date(with_report_date);
-        let (rows, panel) = sc.source(s);
-        let row = sc.segment(select_at(idx, 0), panel);
-        let tick1 = sc.segment(as_signal_map(slice_reshape((idx, ..))), rows);
-        let tick = sc.segment(as_signal_map(slice_reshape((idx, 0usize))), rows);
-        (tick, tick1, row)
+        );
+        let (signals, fields) = sc.source(source);
+        let tick = sc.segment(as_signal_map(select_at::<bool, 1, 0>(idx, 0)), signals);
+        let fields = fields
+            .iter()
+            .map(|&f| sc.segment(select_at::<f64, 1, 0>(idx, 0), f))
+            .collect();
+        (tick, fields)
     };
 
-    let (price_ticks, _, prices) = daily(&mut sc, "daily_prices", vec!["prices.close".into()]); // [close]
-    let (_, _, equity) = daily(&mut sc, "equity_structures", vec!["shares.total".into()]); // [total]
+    let (price_ticks, prices) = open(&mut sc, "daily_prices", vec!["prices.close".into()]);
+    let (_, equity) = open(&mut sc, "equity_structures", vec!["shares.total".into()]);
     // Balance sheet (point-in-time): assets, equity, and the parent-equity parts.
-    let (balance_ticks, _, balance) = report(
+    let (balance_ticks, balance) = open(
         &mut sc,
         "balance_sheets",
         vec![
@@ -132,67 +114,58 @@ async fn main() {
             "balance_sheet.equity.reserves".into(),
             "balance_sheet.equity.parent_interests".into(),
         ],
-        false,
-    ); // [5]
-    // Income / cash flow (YTD → annualize): with_report_date prepends [year, day_of_year].
-    let (income_ticks, income_ticks1, income) = report(
+    );
+    // Income / cash flow (YTD → annualize): the exporter materialises the
+    // report period's [year, day_of_year] as ordinary value columns.
+    let (income_ticks, income) = open(
         &mut sc,
         "income_statements",
         vec![
+            "report_year".into(),
+            "report_day_of_year".into(),
             "income_statement.profit.operating.income".into(),
             "income_statement.profit".into(),
         ],
-        true,
-    ); // [year, day_of_year, op_income, net_profit]
-    let (cf_ticks, cf_ticks1, cf) = report(
+    );
+    let (cf_ticks, cf) = open(
         &mut sc,
         "cash_flow_statements",
-        vec!["cash_flow_statement.change".into()],
-        true,
-    ); // [year, day_of_year, change]
+        vec![
+            "report_year".into(),
+            "report_day_of_year".into(),
+            "cash_flow_statement.change".into(),
+        ],
+    );
 
     // ------------------------------------------------------------------
     // Operators (identical to the CSV version).
     // ------------------------------------------------------------------
-    let close = sc.segment(select_at(0, 0), prices);
-    let total_shares = sc.segment(select_at(0, 0), equity);
-    // Carry the last known share count per element (the equity row retains
-    // only the last equity-panel date's batch, NaN elsewhere).
-    let shares_carried = sc.segment(forward_fill_nan(), total_shares);
-    let market_cap = sc.segment(mul(), (close, shares_carried));
+    let close = prices[0];
+    // The source carries each cell, so the last known share count is already
+    // on the wire (no forward fill needed).
+    let market_cap = sc.segment(mul(), (close, equity[0]));
 
-    let assets = sc.segment(select_at(0, 0), balance);
-    let neg_equity = sc.segment(select_at(1, 0), balance);
-    let equity_val = sc.segment(neg(), neg_equity);
-    let neg_peq = sc.segment(select(vec![2, 3, 4], 0), balance);
-    let parent_equity = sc.segment(
-        array_map(|a: ArrayView<f64, 1>| {
-            Array::<f64, 0>::scalar(-a.to_contiguous().iter().sum::<f64>())
-        }),
-        neg_peq,
-    );
+    let assets = balance[0];
+    let equity_val = sc.segment(neg(), balance[1]);
+    let peq_sum = sc.segment(add(), (balance[2], balance[3]));
+    let peq_sum = sc.segment(add(), (peq_sum, balance[4]));
+    let parent_equity = sc.segment(neg(), peq_sum);
 
-    // Split the panel's leading [year, day_of_year] f64 columns off each report
-    // row and cast them to the calendar inputs (broadcast `[1]` → `[K]`); the
-    // annualizer reads them on the report tick signal only.
-    let income_year_f = sc.segment(select(vec![0], 0), income);
-    let income_year = sc.segment(as_(), income_year_f);
-    let income_doy_f = sc.segment(select(vec![1], 0), income);
-    let income_doy = sc.segment(as_(), income_doy_f);
-    let income_ytd = sc.segment(select(vec![2, 3], 0), income);
-    let income_ann = sc.segment(
+    // The calendar columns date each report; the annualizer reads them (and
+    // the YTD values) on the report tick only.
+    let income_year = sc.segment(as_(), income[0]);
+    let income_doy = sc.segment(as_(), income[1]);
+    let op_income = sc.segment(
         annualize(),
-        (income_ticks1, income_ytd, income_year, income_doy),
-    ); // [op_income, net_profit]
-    let op_income = sc.segment(select_at(0, 0), income_ann);
-    let net_profit = sc.segment(select_at(1, 0), income_ann);
-    let cf_year_f = sc.segment(select(vec![0], 0), cf);
-    let cf_year = sc.segment(as_(), cf_year_f);
-    let cf_doy_f = sc.segment(select(vec![1], 0), cf);
-    let cf_doy = sc.segment(as_(), cf_doy_f);
-    let cf_ytd = sc.segment(select(vec![2], 0), cf);
-    let cf_ann = sc.segment(annualize(), (cf_ticks1, cf_ytd, cf_year, cf_doy)); // [change]
-    let cash_flow = sc.segment(select_at(0, 0), cf_ann);
+        (income_ticks, income[2], income_year, income_doy),
+    );
+    let net_profit = sc.segment(
+        annualize(),
+        (income_ticks, income[3], income_year, income_doy),
+    );
+    let cf_year = sc.segment(as_(), cf[0]);
+    let cf_doy = sc.segment(as_(), cf[1]);
+    let cash_flow = sc.segment(annualize(), (cf_ticks, cf[2], cf_year, cf_doy));
 
     let net_profit_series = sc.segment(record_all(), (income_ticks, net_profit));
     let net_profit_ttm = sc.segment(
@@ -200,9 +173,10 @@ async fn main() {
         net_profit_series,
     );
 
-    // Carry the report-cadence levels per element for the daily ratios.
+    // Carry the recorded TTM level for the daily ratios (the balance fields
+    // are already carried by the source).
     let ttm_carried = sc.segment(forward_fill_nan(), net_profit_ttm);
-    let peq_carried = sc.segment(forward_fill_nan(), parent_equity);
+    let peq_carried = parent_equity;
     let ep = sc.segment(div(), (ttm_carried, market_cap));
     let bp = sc.segment(div(), (peq_carried, market_cap));
     let roe = sc.segment(div(), (ttm_carried, peq_carried));
