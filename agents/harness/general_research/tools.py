@@ -1,14 +1,17 @@
 """File-system, search, shell, and web tools exposed to the agent.
 
-Every tool returns a plain string — including error messages — so the model
-can observe a failure and react to it instead of the whole run aborting.
+Every function tool returns a plain string — including error messages — so the
+model can observe a failure and react to it instead of the whole run aborting.
 Outputs are truncated at fixed caps to keep them from flooding the model's
 context window.
 
-The web tools are ordinary function tools rather than the SDK's built-in
-`WebSearchTool`: hosted tools execute on the OpenAI platform and require the
-Responses API backend, which DeepSeek does not provide. (DeepSeek's own
-server-side search exists only on its Anthropic-compatible endpoint.)
+`web_search` is the exception: it is the SDK's built-in `WebSearchTool`, a
+*hosted* tool that DeepSeek executes server-side (it is the one hosted tool
+type DeepSeek's Responses API implements — `file_search`, `code_interpreter`
+and `computer_use` are silently ignored). Its results never pass through this
+process, so there is nothing here to truncate. `web_fetch` stays a local
+function tool: it retrieves a specific URL verbatim, which hosted search does
+not do.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ import time
 from pathlib import Path
 from html.parser import HTMLParser
 import httpx
-from agents import Tool, function_tool
+from agents import Tool, WebSearchTool, function_tool
 
 # Caps on tool output size.
 _MAX_READ_LINES = 2000
@@ -36,7 +39,6 @@ _MAX_OUTPUT_CHARS = 50_000
 _MAX_JOB_BUFFER_CHARS = 200_000
 _MAX_MATCHES = 200
 _MAX_GLOB_RESULTS = 500
-_MAX_WEB_RESULTS = 20
 _MAX_FETCH_CHARS = 20_000
 _MAX_FETCH_BYTES = 5_000_000
 _MAX_WAIT_SECONDS = 60
@@ -790,44 +792,10 @@ async def web_fetch(url: str, offset: int = 0) -> str:
     return window
 
 
-@function_tool
-async def web_search(query: str, max_results: int = 8) -> str:
-    """Search the web and return result titles, URLs, and snippets.
-
-    Use `web_fetch` afterwards to read the full text of a promising result.
-
-    Args:
-        query: The search query.
-        max_results: Maximum number of results to return.
-    """
-    from ddgs import DDGS  # imported lazily: constructing it opens an HTTP client
-
-    def search() -> list[dict]:
-        return list(DDGS(timeout=15).text(query, max_results=n))
-
-    # ddgs rotates across search providers; a transient failure on one is
-    # common, and retrying usually lands on a different provider. The ddgs
-    # client is synchronous, so it runs in a thread to keep the loop free.
-    n = max(1, min(max_results, _MAX_WEB_RESULTS))
-    results = []
-    for attempt in (1, 2):
-        try:
-            results = await asyncio.to_thread(search)
-            break
-        except Exception as e:  # the backends raise assorted network errors
-            if attempt == 2:
-                return f"Error: web search failed: {e}"
-    if not results:
-        return f"No results for {query!r}."
-
-    blocks = []
-    for i, r in enumerate(results, start=1):
-        url = r.get("href") or r.get("url") or ""
-        title = (r.get("title") or "").strip()
-        body = (r.get("body") or "").strip()
-        blocks.append(f"{i}. {title}\n   {url}\n   {body}")
-
-    return _truncate("\n".join(blocks))
+# Hosted, executed by DeepSeek rather than by this process. `search_context_size`
+# and `user_location` are part of the OpenAI tool schema but DeepSeek ignores
+# them, so they are left at their defaults.
+web_search = WebSearchTool()
 
 
 ALL_TOOLS: list[Tool] = [
