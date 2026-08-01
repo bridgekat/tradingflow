@@ -1,18 +1,22 @@
-//! Tests for the input borrow contract.
+//! Tests for the copying FFI boundary.
 //!
-//! The buffer-protocol mechanics are exercised through `memoryview` and the
-//! raw C-API, which need no third-party packages; the NumPy tests cover the
-//! integration operators actually see and need `numpy` importable by the
-//! embedded interpreter.
+//! Both directions are exercised through NumPy, which the embedded
+//! interpreter must be able to import — the helpers fail loudly on a
+//! misconfigured environment rather than skipping.
 
-use pyo3::exceptions::PyBufferError;
-use pyo3::ffi;
+#![cfg(feature = "python")]
+
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::ffi::CString;
 
-use tradingflow::data::{Array, ArrayView, Duration, Instant, Series};
-use tradingflow::python::{NativeView, Scope};
+use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView};
+use tradingflow::graph::{Builder, Pool, Segment};
+use tradingflow::operators::series::record_all;
+use tradingflow::ports::{ArrayPort, ArrayPorts, SignalPort};
+use tradingflow::python::{PyInterface, PySegment, from_numpy_into, py_segment_source, to_numpy};
+use tradingflow::sources::sync::array_series;
+use tradingflow::time::UnixTime;
 
 // ===========================================================================
 // Helpers
@@ -29,6 +33,17 @@ fn run(py: Python<'_>, globals: &Bound<'_, PyDict>, code: &str) {
         });
 }
 
+/// Evaluates `expr` with `globals`, returning the raw object.
+#[track_caller]
+fn eval_any<'py>(py: Python<'py>, globals: &Bound<'py, PyDict>, expr: &str) -> Bound<'py, PyAny> {
+    let expr = CString::new(expr).unwrap();
+    py.eval(expr.as_c_str(), Some(globals), None)
+        .unwrap_or_else(|e| {
+            e.print(py);
+            panic!("python expression failed (see traceback above)");
+        })
+}
+
 /// Evaluates `expr` with `globals` and extracts the result.
 #[track_caller]
 fn eval<T>(py: Python<'_>, globals: &Bound<'_, PyDict>, expr: &str) -> T
@@ -36,42 +51,23 @@ where
     T: for<'a, 'py> FromPyObject<'a, 'py>,
     for<'a, 'py> <T as FromPyObject<'a, 'py>>::Error: std::fmt::Debug,
 {
-    let expr = CString::new(expr).unwrap();
-    py.eval(expr.as_c_str(), Some(globals), None)
-        .unwrap_or_else(|e| {
-            e.print(py);
-            panic!("python expression failed (see traceback above)");
-        })
+    eval_any(py, globals, expr)
         .extract()
         .expect("unexpected result type")
 }
 
-/// Acquires a buffer with raw `flags`, releasing it immediately on success.
-/// Returns the raised error, if any.
-fn acquire(py: Python<'_>, view: &Bound<'_, NativeView>, flags: std::ffi::c_int) -> Option<PyErr> {
-    // SAFETY: `view` is a live object; the slot is released on success and
-    // left untouched on failure.
-    unsafe {
-        let mut buffer: ffi::Py_buffer = std::mem::zeroed();
-        if ffi::PyObject_GetBuffer(view.as_ptr(), &mut buffer, flags) < 0 {
-            return Some(PyErr::take(py).expect("failed acquisition must set an error"));
-        }
-        ffi::PyBuffer_Release(&mut buffer);
-        None
-    }
-}
-
-/// Whether `numpy` is importable by the embedded interpreter. The NumPy tests
-/// assert on this rather than skipping, so a misconfigured environment fails
-/// loudly instead of silently passing.
-fn numpy(py: Python<'_>) -> Bound<'_, PyModule> {
-    py.import("numpy").unwrap_or_else(|e| {
+/// Globals with `numpy` imported, failing loudly if it is unavailable.
+fn globals(py: Python<'_>) -> Bound<'_, PyDict> {
+    let np = py.import("numpy").unwrap_or_else(|e| {
         e.print(py);
         panic!(
             "numpy is not importable by the embedded interpreter; \
              point PYTHONPATH at an environment that has it"
         );
-    })
+    });
+    let globals = PyDict::new(py);
+    globals.set_item("np", np).unwrap();
+    globals
 }
 
 /// A 2x3 test array with distinct elements.
@@ -79,482 +75,460 @@ fn grid() -> Array<f64, 2> {
     Array::from_parts([2, 3], vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0].into())
 }
 
-// ===========================================================================
-// Buffer metadata
-// ===========================================================================
-
-#[test]
-fn contiguous_array_exports_shape_and_strides() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("v", &view).unwrap();
-
-        run(py, &globals, "m = memoryview(v)");
-        assert_eq!(eval::<Vec<usize>>(py, &globals, "list(m.shape)"), [2, 3]);
-        assert_eq!(eval::<Vec<isize>>(py, &globals, "list(m.strides)"), [24, 8]);
-        assert_eq!(eval::<String>(py, &globals, "m.format"), "d");
-        assert_eq!(eval::<usize>(py, &globals, "m.itemsize"), 8);
-        assert!(eval::<bool>(py, &globals, "m.readonly"));
-        assert!(eval::<bool>(py, &globals, "m.c_contiguous"));
-        assert_eq!(
-            eval::<Vec<Vec<f64>>>(py, &globals, "m.tolist()"),
-            [[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]],
-        );
-
-        run(py, &globals, "del m");
-        scope.close(py).unwrap();
-    });
-}
-
-#[test]
-fn strided_view_is_exported_without_materializing() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        // Columns 1..3 of each row: extents [2, 2], element strides [3, 1].
-        let view = unsafe { scope.array(py, a.view().slice((.., 1..3))) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("v", &view).unwrap();
-
-        run(py, &globals, "m = memoryview(v)");
-        assert_eq!(eval::<Vec<usize>>(py, &globals, "list(m.shape)"), [2, 2]);
-        assert_eq!(eval::<Vec<isize>>(py, &globals, "list(m.strides)"), [24, 8]);
-        assert!(!eval::<bool>(py, &globals, "m.c_contiguous"));
-        assert_eq!(
-            eval::<Vec<Vec<f64>>>(py, &globals, "m.tolist()"),
-            [[1.0, 2.0], [4.0, 5.0]],
-        );
-
-        run(py, &globals, "del m");
-        scope.close(py).unwrap();
-    });
-}
-
-#[test]
-fn transposed_view_is_exported_as_fortran_order() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view().transpose([1, 0])) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("v", &view).unwrap();
-
-        run(py, &globals, "m = memoryview(v)");
-        assert_eq!(eval::<Vec<usize>>(py, &globals, "list(m.shape)"), [3, 2]);
-        assert_eq!(eval::<Vec<isize>>(py, &globals, "list(m.strides)"), [8, 24]);
-        assert!(!eval::<bool>(py, &globals, "m.c_contiguous"));
-        assert!(eval::<bool>(py, &globals, "m.f_contiguous"));
-        assert_eq!(
-            eval::<Vec<Vec<f64>>>(py, &globals, "m.tolist()"),
-            [[0.0, 3.0], [1.0, 4.0], [2.0, 5.0]],
-        );
-
-        run(py, &globals, "del m");
-        scope.close(py).unwrap();
-    });
-}
-
-#[test]
-fn rank_zero_and_bool_views() {
-    let signal = true;
-    let scalar = 42.0_f64;
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let pulse = unsafe { scope.array(py, ArrayView::scalar(&signal)) }.unwrap();
-        let value = unsafe { scope.array(py, ArrayView::scalar(&scalar)) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("pulse", &pulse).unwrap();
-        globals.set_item("value", &value).unwrap();
-
-        run(py, &globals, "p, x = memoryview(pulse), memoryview(value)");
-        assert_eq!(eval::<usize>(py, &globals, "p.ndim"), 0);
-        assert_eq!(eval::<String>(py, &globals, "p.format"), "?");
-        assert!(eval::<bool>(py, &globals, "p.tolist()"));
-        assert_eq!(eval::<usize>(py, &globals, "x.ndim"), 0);
-        assert_eq!(eval::<f64>(py, &globals, "x.tolist()"), 42.0);
-
-        run(py, &globals, "del p, x");
-        scope.close(py).unwrap();
-    });
-}
-
-#[test]
-fn series_binds_values_and_instants() {
-    let instants: Vec<Instant> = (0..4)
-        .map(|i| Instant::from_offset(Duration::from_days(i)))
-        .collect();
-    let s = Series::from_parts([2], instants, (0..8).map(|i| i as f64).collect(), 0);
-
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let (ts, values) = unsafe { scope.series(py, s.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("ts", &ts).unwrap();
-        globals.set_item("values", &values).unwrap();
-
-        run(py, &globals, "mv, mt = memoryview(values), memoryview(ts)");
-        // The time axis is prepended, so a rank-1 element series reads rank 2.
-        assert_eq!(eval::<Vec<usize>>(py, &globals, "list(mv.shape)"), [4, 2]);
-        assert_eq!(
-            eval::<Vec<isize>>(py, &globals, "list(mv.strides)"),
-            [16, 8]
-        );
-        assert_eq!(
-            eval::<Vec<Vec<f64>>>(py, &globals, "mv.tolist()"),
-            [[0.0, 1.0], [2.0, 3.0], [4.0, 5.0], [6.0, 7.0]],
-        );
-        // Timestamps travel as int64 nanoseconds.
-        assert_eq!(eval::<String>(py, &globals, "mt.format"), "q");
-        assert_eq!(
-            eval::<Vec<i64>>(py, &globals, "mt.tolist()"),
-            (0..4).map(|i| i * 86_400_000_000_000).collect::<Vec<_>>(),
-        );
-
-        run(py, &globals, "del mv, mt");
-        scope.close(py).unwrap();
-    });
+/// Nanosecond instants.
+fn tss(xs: &[i64]) -> Vec<Instant> {
+    xs.iter()
+        .copied()
+        .map(|ns| Instant::from_offset(Duration::from_nanos(ns)))
+        .collect()
 }
 
 // ===========================================================================
-// Request negotiation
+// Rust to Python
 // ===========================================================================
 
 #[test]
-fn writable_requests_are_refused() {
+fn arrays_copy_out_with_shape_and_dtype() {
     let a = grid();
     Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
+        let globals = globals(py);
+        globals.set_item("arr", to_numpy(py, a.view())).unwrap();
 
-        let err = acquire(py, &view, ffi::PyBUF_WRITABLE).expect("writable must be refused");
-        assert!(err.is_instance_of::<PyBufferError>(py));
-        assert!(err.to_string().contains("read-only"));
-        assert_eq!(view.get().exports(), 0);
-
-        scope.close(py).unwrap();
-    });
-}
-
-#[test]
-fn simple_requests_require_contiguity() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let contiguous = unsafe { scope.array(py, a.view()) }.unwrap();
-        let strided = unsafe { scope.array(py, a.view().slice((.., 1..3))) }.unwrap();
-
-        // A flat request is fine for a contiguous view...
-        assert!(acquire(py, &contiguous, ffi::PyBUF_SIMPLE).is_none());
-        // ...but a strided one cannot be read flat.
-        let err = acquire(py, &strided, ffi::PyBUF_SIMPLE).expect("strided must be refused");
-        assert!(err.is_instance_of::<PyBufferError>(py));
-        assert!(err.to_string().contains("PyBUF_STRIDES"));
-        // Likewise for an explicit C-contiguity demand.
-        let err = acquire(py, &strided, ffi::PyBUF_C_CONTIGUOUS).expect("strided must be refused");
-        assert!(err.is_instance_of::<PyBufferError>(py));
-
-        scope.close(py).unwrap();
-    });
-}
-
-#[test]
-fn acquisition_balances_the_export_counter() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
-
-        assert_eq!(view.get().exports(), 0);
-        assert!(acquire(py, &view, ffi::PyBUF_FULL_RO).is_none());
-        assert_eq!(view.get().exports(), 0);
-
-        scope.close(py).unwrap();
-    });
-}
-
-// ===========================================================================
-// The contract
-// ===========================================================================
-
-#[test]
-fn transient_consumers_do_not_escape() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("v", &view).unwrap();
-
-        // Read it, copy what we keep, let the consumer die with the frame.
-        run(
-            py,
-            &globals,
-            "def compute(v):\n    return sum(memoryview(v).tolist()[0])\nkept = compute(v)",
-        );
-        assert_eq!(eval::<f64>(py, &globals, "kept"), 3.0);
-        assert_eq!(view.get().exports(), 0);
-
-        scope.close(py).expect("no pointer escaped");
-    });
-}
-
-#[test]
-fn retained_consumer_is_reported_as_an_escape() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("v", &view).unwrap();
-
-        // The classic accident: memoize a slice of this tick's input.
-        run(py, &globals, "state = {}\nstate['prev'] = memoryview(v)");
-        assert_eq!(view.get().exports(), 1);
-
-        let escape = scope.close(py).expect_err("the export must be reported");
-        assert_eq!(escape.len(), 1);
-        let message = escape.to_string();
-        assert!(message.contains("view #0"));
-        assert!(message.contains("float64[2, 3]"));
-        assert!(message.contains("1 outstanding buffer export"));
-    });
-}
-
-#[test]
-fn retained_view_object_is_harmless_but_expires() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("v", &view).unwrap();
-
-        // Keeping the view object itself captures no pointer, so it is not an
-        // escape...
-        run(py, &globals, "state = {'view': v}");
-        scope.close(py).expect("no pointer escaped");
-
-        // ...but the borrow window has closed, so using it later fails loudly
-        // rather than reading memory the graph has moved on from.
-        assert!(!view.get().valid());
-        let err = acquire(py, &view, ffi::PyBUF_FULL_RO).expect("expired view must refuse");
-        assert!(err.is_instance_of::<PyBufferError>(py));
-        assert!(err.to_string().contains("expired"));
-    });
-}
-
-#[test]
-fn exports_trapped_in_a_cycle_are_collected() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("v", &view).unwrap();
-
-        // A self-referential local: unreachable when the frame exits, but the
-        // cycle collector has to run before its export is released.
-        run(
-            py,
-            &globals,
-            "def compute(v):\n\
-             \x20   cycle = {'buffer': memoryview(v)}\n\
-             \x20   cycle['self'] = cycle\n\
-             compute(v)",
-        );
-
-        // `close` collects once and re-checks rather than reporting a false
-        // escape.
-        scope.close(py).expect("a dead cycle is not an escape");
-    });
-}
-
-#[test]
-fn every_view_in_a_scope_is_checked() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let _first = unsafe { scope.array(py, a.view()) }.unwrap();
-        let second = unsafe { scope.array(py, ArrayView::scalar(&1.0_f64)) }.unwrap();
-        let third = unsafe { scope.array(py, a.view().slice((.., 1..3))) }.unwrap();
-        assert_eq!(scope.len(), 3);
-
-        let globals = PyDict::new(py);
-        globals.set_item("second", &second).unwrap();
-        globals.set_item("third", &third).unwrap();
-        run(
-            py,
-            &globals,
-            "state = [memoryview(second), memoryview(third)]",
-        );
-
-        let escape = scope.close(py).expect_err("both exports must be reported");
-        assert_eq!(escape.len(), 2);
-        let message = escape.to_string();
-        assert!(message.contains("view #1"));
-        assert!(message.contains("view #2"));
-        assert!(!message.contains("view #0"));
-    });
-}
-
-// ===========================================================================
-// NumPy integration
-// ===========================================================================
-
-#[test]
-fn numpy_reads_the_view_zero_copy() {
-    let a = grid();
-    let address = a.data().as_ptr() as usize;
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("np", numpy(py)).unwrap();
-        globals.set_item("v", &view).unwrap();
-
-        run(py, &globals, "arr = np.asarray(v)");
         assert_eq!(eval::<Vec<usize>>(py, &globals, "list(arr.shape)"), [2, 3]);
         assert_eq!(eval::<String>(py, &globals, "str(arr.dtype)"), "float64");
-        assert_eq!(eval::<f64>(py, &globals, "float(arr.sum())"), 15.0);
-
-        // Zero-copy: the array points straight at the Rust buffer...
-        assert_eq!(
-            eval::<usize>(py, &globals, "arr.__array_interface__['data'][0]"),
-            address,
-        );
-        // ...read-only, so no write provenance ever reaches Python...
-        assert!(!eval::<bool>(py, &globals, "arr.flags.writeable"));
-        run(
-            py,
-            &globals,
-            "try:\n\
-             \x20   arr[0, 0] = 1.0\n\
-             \x20   raised = False\n\
-             except ValueError:\n\
-             \x20   raised = True",
-        );
-        assert!(eval::<bool>(py, &globals, "raised"));
-        // ...and the array holds the export that proves it is still borrowing.
-        assert_eq!(view.get().exports(), 1);
-
-        run(py, &globals, "del arr");
-        assert_eq!(view.get().exports(), 0);
-        scope.close(py).unwrap();
-    });
-}
-
-#[test]
-fn numpy_reads_a_strided_view_correctly() {
-    let a = grid();
-    Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view().slice((.., 1..3))) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("np", numpy(py)).unwrap();
-        globals.set_item("v", &view).unwrap();
-
-        run(py, &globals, "arr = np.asarray(v)");
         assert_eq!(
             eval::<Vec<Vec<f64>>>(py, &globals, "arr.tolist()"),
+            [[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]],
+        );
+    });
+}
+
+#[test]
+fn strided_and_transposed_views_materialize_row_major() {
+    let a = grid();
+    Python::attach(|py| {
+        let globals = globals(py);
+        // Columns 1..3 of each row, and the transpose: both are strided views
+        // Rust-side, but arrive as plain owned row-major arrays.
+        globals
+            .set_item("sliced", to_numpy(py, a.view().slice((.., 1..3))))
+            .unwrap();
+        globals
+            .set_item("t", to_numpy(py, a.view().transpose([1, 0])))
+            .unwrap();
+
+        assert_eq!(
+            eval::<Vec<Vec<f64>>>(py, &globals, "sliced.tolist()"),
             [[1.0, 2.0], [4.0, 5.0]],
         );
-        // Still a view of the graph's memory, not a repacked copy.
-        assert!(!eval::<bool>(py, &globals, "arr.flags.owndata"));
-
-        run(py, &globals, "del arr");
-        scope.close(py).unwrap();
+        assert!(eval::<bool>(py, &globals, "sliced.flags.c_contiguous"));
+        assert_eq!(
+            eval::<Vec<Vec<f64>>>(py, &globals, "t.tolist()"),
+            [[0.0, 3.0], [1.0, 4.0], [2.0, 5.0]],
+        );
+        assert!(eval::<bool>(py, &globals, "t.flags.c_contiguous"));
     });
 }
 
 #[test]
-fn numpy_recovers_datetime64_from_instants() {
-    let instants: Vec<Instant> = (0..3)
-        .map(|i| Instant::from_offset(Duration::from_days(i)))
-        .collect();
-    let s = Series::from_parts([1], instants, vec![10.0, 20.0, 30.0], 0);
-
+fn rank_zero_and_bool_arrays() {
     Python::attach(|py| {
-        let mut scope = Scope::new();
-        let (ts, values) = unsafe { scope.series(py, s.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("np", numpy(py)).unwrap();
-        globals.set_item("ts", &ts).unwrap();
-        globals.set_item("values", &values).unwrap();
+        let globals = globals(py);
+        globals
+            .set_item("pulse", to_numpy(py, ArrayView::scalar(&true)))
+            .unwrap();
+        globals
+            .set_item("x", to_numpy(py, ArrayView::scalar(&42.0_f64)))
+            .unwrap();
 
-        // The int64 -> datetime64[ns] reinterpretation is itself zero-copy.
-        run(
-            py,
-            &globals,
-            "stamps = np.asarray(ts).view('datetime64[ns]')\nrows = np.asarray(values)",
-        );
-        assert_eq!(
-            eval::<String>(py, &globals, "str(stamps.dtype)"),
-            "datetime64[ns]",
-        );
-        assert_eq!(
-            eval::<String>(py, &globals, "str(stamps[1])"),
-            "1970-01-02T00:00:00.000000000",
-        );
-        assert_eq!(eval::<Vec<usize>>(py, &globals, "list(rows.shape)"), [3, 1]);
-        assert_eq!(eval::<f64>(py, &globals, "float(rows.sum())"), 60.0);
-
-        run(py, &globals, "del stamps, rows");
-        scope.close(py).unwrap();
+        assert_eq!(eval::<usize>(py, &globals, "pulse.ndim"), 0);
+        assert_eq!(eval::<String>(py, &globals, "str(pulse.dtype)"), "bool");
+        assert!(eval::<bool>(py, &globals, "bool(pulse)"));
+        assert_eq!(eval::<usize>(py, &globals, "x.ndim"), 0);
+        assert_eq!(eval::<f64>(py, &globals, "float(x)"), 42.0);
     });
 }
 
 #[test]
-fn numpy_copies_release_the_borrow() {
+fn python_owns_the_copy() {
     let a = grid();
     Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("np", numpy(py)).unwrap();
-        globals.set_item("v", &view).unwrap();
+        let globals = globals(py);
+        globals.set_item("arr", to_numpy(py, a.view())).unwrap();
 
-        // The sanctioned way to memoize an input: copy it.
-        run(py, &globals, "state = {'prev': np.asarray(v).copy()}");
-        assert_eq!(view.get().exports(), 0);
-        assert!(eval::<bool>(py, &globals, "state['prev'].flags.owndata"));
+        // The array's memory belongs to the Python object graph — the copied
+        // buffer rides along as the array's `base` (so OWNDATA is false, as
+        // for any base-backed array), and it is writable. Storing and mutating
+        // it is legal, which is the whole point of the copying model.
+        assert!(eval::<bool>(py, &globals, "arr.base is not None"));
+        assert!(eval::<bool>(py, &globals, "arr.flags.writeable"));
+        run(py, &globals, "state = {'prev': arr}\narr[0, 0] = 99.0");
 
-        scope.close(py).expect("a copy is not a borrow");
-
-        // The copy stays readable after the borrow window closes.
-        assert_eq!(
-            eval::<f64>(py, &globals, "float(state['prev'].sum())"),
-            15.0
-        );
+        // The mutation stayed on the Python side.
+        assert_eq!(a.view()[[0, 0]], 0.0);
     });
 }
 
 #[test]
-fn a_returned_input_passthrough_is_legal_once_dropped() {
+fn the_copy_outlives_the_rust_buffer() {
     let a = grid();
     Python::attach(|py| {
-        let mut scope = Scope::new();
-        let view = unsafe { scope.array(py, a.view()) }.unwrap();
-        let globals = PyDict::new(py);
-        globals.set_item("np", numpy(py)).unwrap();
-        globals.set_item("v", &view).unwrap();
+        let globals = globals(py);
+        globals.set_item("arr", to_numpy(py, a.view())).unwrap();
 
-        // An operator returning one of its inputs unchanged.
-        run(
+        // Free the Rust-side buffer while the Python array is alive; the copy
+        // owns its memory, so nothing dangles by construction.
+        drop(a);
+        assert_eq!(eval::<f64>(py, &globals, "float(arr.sum())"), 15.0);
+    });
+}
+
+// ===========================================================================
+// Python to Rust
+// ===========================================================================
+
+#[test]
+fn arrays_copy_in_from_ndarray() {
+    let mut out = Array::<f64, 2>::zeros([2, 3]);
+    Python::attach(|py| {
+        let globals = globals(py);
+        let value = eval_any(py, &globals, "np.arange(6, dtype='float64') * 10");
+        from_numpy_into(&value, &mut out).unwrap();
+    });
+    assert_eq!(
+        out,
+        Array::from_parts([2, 3], vec![0.0, 10.0, 20.0, 30.0, 40.0, 50.0].into()),
+    );
+}
+
+#[test]
+fn lists_scalars_and_other_dtypes_are_normalized() {
+    Python::attach(|py| {
+        let globals = globals(py);
+
+        // A plain list.
+        let mut out = Array::<f64, 1>::zeros([3]);
+        from_numpy_into(&eval_any(py, &globals, "[1, 2, 3]"), &mut out).unwrap();
+        assert_eq!(out, Array::from_parts([3], vec![1.0, 2.0, 3.0].into()));
+
+        // A Python scalar into a rank-0 output.
+        let mut out = Array::<f64, 0>::zeros([]);
+        from_numpy_into(&eval_any(py, &globals, "2.5"), &mut out).unwrap();
+        assert_eq!(out, Array::from_parts([], vec![2.5].into()));
+
+        // An integer ndarray is cast to the output element type.
+        let mut out = Array::<f64, 1>::zeros([3]);
+        from_numpy_into(&eval_any(py, &globals, "np.array([7, 8, 9])"), &mut out).unwrap();
+        assert_eq!(out, Array::from_parts([3], vec![7.0, 8.0, 9.0].into()));
+
+        // A bool output accepts a bool array.
+        let mut out = Array::<bool, 1>::zeros([2]);
+        from_numpy_into(&eval_any(py, &globals, "np.array([True, False])"), &mut out).unwrap();
+        assert_eq!(out, Array::from_parts([2], vec![true, false].into()));
+    });
+}
+
+#[test]
+fn non_contiguous_values_are_repacked() {
+    let mut out = Array::<f64, 2>::zeros([2, 2]);
+    Python::attach(|py| {
+        let globals = globals(py);
+        // A Fortran-order array goes through ascontiguousarray.
+        let value = eval_any(
             py,
             &globals,
-            "def compute(v):\n    return np.asarray(v)\nout = compute(v)",
+            "np.asfortranarray(np.array([[1.0, 2.0], [3.0, 4.0]]))",
         );
-        assert_eq!(view.get().exports(), 1);
-
-        // The host copies the output into its own buffer, then drops it — which
-        // is what makes the pass-through legal under the copy-out rule.
-        let copied: f64 = eval(py, &globals, "float(np.asarray(out).sum())");
-        assert_eq!(copied, 15.0);
-        run(py, &globals, "del out");
-
-        scope.close(py).expect("the pass-through was released");
+        from_numpy_into(&value, &mut out).unwrap();
     });
+    assert_eq!(
+        out,
+        Array::from_parts([2, 2], vec![1.0, 2.0, 3.0, 4.0].into()),
+    );
+}
+
+#[test]
+fn element_counts_negotiate_but_must_match() {
+    Python::attach(|py| {
+        let globals = globals(py);
+
+        // Same count, different shape: accepted (the boundary negotiates by
+        // element count, exactly as the output extents do).
+        let mut out = Array::<f64, 2>::zeros([3, 1]);
+        from_numpy_into(&eval_any(py, &globals, "[1.0, 2.0, 3.0]"), &mut out).unwrap();
+        assert_eq!(out.view().data(), [1.0, 2.0, 3.0]);
+
+        // Wrong count: rejected, and the output is untouched.
+        let mut out = Array::<f64, 1>::zeros([3]);
+        let err = from_numpy_into(&eval_any(py, &globals, "[1.0, 2.0]"), &mut out).unwrap_err();
+        assert!(err.to_string().contains("expected 3 elements, got 2"));
+        assert_eq!(out, Array::zeros([3]));
+
+        // Something NumPy cannot coerce at all: the normalization error
+        // surfaces as the Python exception it is.
+        let mut out = Array::<f64, 1>::zeros([1]);
+        assert!(from_numpy_into(&eval_any(py, &globals, "object()"), &mut out).is_err());
+    });
+}
+
+#[test]
+fn the_copy_severs_the_python_reference() {
+    let mut out = Array::<f64, 1>::zeros([3]);
+    Python::attach(|py| {
+        let globals = globals(py);
+        run(py, &globals, "src = np.array([1.0, 2.0, 3.0])");
+        let value = eval_any(py, &globals, "src");
+        from_numpy_into(&value, &mut out).unwrap();
+
+        // Mutating the source afterwards must not reach the Rust copy.
+        run(py, &globals, "src[:] = -1.0");
+    });
+    assert_eq!(out, Array::from_parts([3], vec![1.0, 2.0, 3.0].into()));
+}
+
+#[test]
+fn a_round_trip_is_the_identity() {
+    let a = grid();
+    let mut out = Array::<f64, 2>::zeros([2, 3]);
+    Python::attach(|py| {
+        let globals = globals(py);
+        globals.set_item("arr", to_numpy(py, a.view())).unwrap();
+        // An operator returning one of its inputs unchanged: with owned
+        // copies this is unremarkable rather than a special-cased hazard.
+        let value = eval_any(py, &globals, "arr");
+        from_numpy_into(&value, &mut out).unwrap();
+    });
+    assert_eq!(a, out);
+}
+
+// ===========================================================================
+// PyInterface
+// ===========================================================================
+
+#[test]
+fn interface_leaf_allocates_from_first_return() {
+    type Leaf = ArrayPort<f64, 2>;
+    Python::attach(|py| {
+        let globals = globals(py);
+        let mut buffers = <Leaf as PyInterface>::Buffers::default();
+
+        // The first return fixes the rank-2 extents...
+        let value = eval_any(py, &globals, "np.ones((2, 3))");
+        let view = <Leaf as PyInterface>::from_python(&value, &mut buffers).unwrap();
+        assert_eq!(view.extents(), [2, 3]);
+
+        // ...a later same-count return reflows into them...
+        let value = eval_any(py, &globals, "np.arange(6.0)");
+        let view = <Leaf as PyInterface>::from_python(&value, &mut buffers).unwrap();
+        assert_eq!(view.extents(), [2, 3]);
+        assert_eq!(view[[1, 0]], 3.0);
+
+        // ...and rank-2 extents cannot be inferred from a 1-d first return.
+        let mut fresh = <Leaf as PyInterface>::Buffers::default();
+        let value = eval_any(py, &globals, "np.arange(6.0)");
+        assert!(<Leaf as PyInterface>::from_python(&value, &mut fresh).is_err());
+    });
+}
+
+#[test]
+fn interface_tuple_takes_a_sequence_of_matching_arity() {
+    type Pair = (SignalPort<0>, ArrayPort<f64, 1>);
+    Python::attach(|py| {
+        let globals = globals(py);
+        let mut buffers = <Pair as PyInterface>::Buffers::default();
+
+        let value = eval_any(py, &globals, "(True, [1.0, 2.0])");
+        let (sig, values) = <Pair as PyInterface>::from_python(&value, &mut buffers).unwrap();
+        assert!(*sig);
+        assert_eq!(values.data(), [1.0, 2.0]);
+
+        let value = eval_any(py, &globals, "(False,)");
+        let err = <Pair as PyInterface>::from_python(&value, &mut buffers).unwrap_err();
+        assert!(err.to_string().contains("expected a sequence of 2"));
+    });
+}
+
+#[test]
+fn interface_group_outputs_fix_their_length() {
+    type Group = ArrayPorts<f64, 1>;
+    Python::attach(|py| {
+        let globals = globals(py);
+        let mut buffers = <Group as PyInterface>::Buffers::default();
+
+        // The first return fixes the group's length (and each element's
+        // extents)...
+        let value = eval_any(py, &globals, "[np.array([1.0, 2.0]), np.array([3.0])]");
+        let views = <Group as PyInterface>::from_python(&value, &mut buffers).unwrap();
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].data(), [1.0, 2.0]);
+        assert_eq!(views[1].data(), [3.0]);
+
+        // ...later returns of the same length update in place...
+        let value = eval_any(py, &globals, "[np.array([9.0, 8.0]), np.array([7.0])]");
+        let views = <Group as PyInterface>::from_python(&value, &mut buffers).unwrap();
+        assert_eq!(views[0].data(), [9.0, 8.0]);
+        assert_eq!(views[1].data(), [7.0]);
+
+        // ...and a changed length is refused.
+        let value = eval_any(py, &globals, "[np.array([1.0])]");
+        let err = <Group as PyInterface>::from_python(&value, &mut buffers).unwrap_err();
+        assert!(err.to_string().contains("expected 2 values"));
+    });
+}
+
+#[test]
+fn interface_group_inputs_flatten_in_tree_order() {
+    type Inputs = (SignalPort<0>, ArrayPorts<f64, 1>);
+    let a = Array::from_parts([2], vec![1.0, 2.0].into());
+    let b = Array::from_parts([1], vec![3.0].into());
+    Python::attach(|py| {
+        let mut args = Vec::new();
+        let group = [a.view(), b.view()];
+        <Inputs as PyInterface>::to_python(py, (ArrayView::scalar(&true), &group), &mut args)
+            .unwrap();
+
+        // One arg per leaf: the signal, then each group element.
+        assert_eq!(args.len(), 3);
+        let globals = globals(py);
+        globals.set_item("args", args).unwrap();
+        assert!(eval::<bool>(py, &globals, "bool(args[0])"));
+        assert_eq!(
+            eval::<Vec<f64>>(py, &globals, "args[1].tolist()"),
+            [1.0, 2.0],
+        );
+        assert_eq!(eval::<Vec<f64>>(py, &globals, "args[2].tolist()"), [3.0]);
+    });
+}
+
+// ===========================================================================
+// PySegment
+// ===========================================================================
+
+/// A stateful segment mirroring the `Segment` trait: `init` builds the state,
+/// `compute` accumulates into it, `reset` returns the retained batch.
+const ACCUMULATE: &str = r#"
+class Accumulate:
+    def __init__(self, scale):
+        self.scale = scale
+
+    def init(self, inputs):
+        (sig, x) = inputs
+        return {"sum": np.zeros_like(x)}
+
+    def reset(self, inputs, state):
+        return (False, state["sum"])
+
+    def compute(self, inputs, state, instant):
+        (sig, x) = inputs
+        state["sum"] = state["sum"] + x * self.scale
+        return (bool(sig), state["sum"])
+
+def build(scale=1.0):
+    return Accumulate(scale)
+"#;
+
+#[test]
+fn segment_mirrors_the_rust_contract() {
+    type In = (SignalPort<0>, ArrayPort<f64, 1>);
+    type Out = (SignalPort<0>, ArrayPort<f64, 1>);
+    type Seg = PySegment<In, Out>;
+
+    // Keyword arguments for `build(**kwargs)` are a plain Python dict, built
+    // with PyO3 — no bespoke params type, so any Python value works.
+    let params = Python::attach(|py| {
+        use pyo3::types::IntoPyDict;
+        [("scale", 2.0)].into_py_dict(py).unwrap().unbind()
+    });
+    let seg: Seg = py_segment_source(ACCUMULATE, Some(params));
+    let x = Array::from_parts([3], vec![1.0, 2.0, 3.0].into());
+    let quiet = (ArrayView::scalar(&false), x.view());
+    let firing = (ArrayView::scalar(&true), x.view());
+
+    // Build-time: init creates the Python state, the first reset sizes the
+    // output buffers from its return.
+    let mut state = Segment::init(seg, quiet);
+    let (sig, values) = <Seg as Segment>::reset(quiet, &mut state);
+    assert!(!*sig);
+    assert_eq!(values.data(), [0.0, 0.0, 0.0]);
+
+    // Two computes accumulate through the carried Python state.
+    let t = Instant::from_offset(Duration::from_nanos(1));
+    let (sig, values) = <Seg as Segment>::compute(firing, &mut state, &t);
+    assert!(*sig);
+    assert_eq!(values.data(), [2.0, 4.0, 6.0]);
+    let (sig, values) = <Seg as Segment>::compute(firing, &mut state, &t);
+    assert!(*sig);
+    assert_eq!(values.data(), [4.0, 8.0, 12.0]);
+
+    // Reset retains the accumulated batch and quiesces the signal.
+    let (sig, values) = <Seg as Segment>::reset(quiet, &mut state);
+    assert!(!*sig);
+    assert_eq!(values.data(), [4.0, 8.0, 12.0]);
+}
+
+#[test]
+fn segment_receives_the_event_time() {
+    // A single-port interface on both sides: the inputs tuple has one entry,
+    // and the output is a bare array rather than a sequence. Binds `__op__`
+    // directly instead of defining `build`.
+    const STAMP: &str = r#"
+class Stamp:
+    def init(self, inputs):
+        return None
+
+    def reset(self, inputs, state):
+        return np.zeros(1)
+
+    def compute(self, inputs, state, instant):
+        return np.array([float(instant)])
+
+__op__ = Stamp()
+"#;
+    type Seg = PySegment<SignalPort<0>, ArrayPort<f64, 1>>;
+
+    let seg: Seg = py_segment_source(STAMP, None);
+    let pulse = ArrayView::scalar(&true);
+    let mut state = Segment::init(seg, pulse);
+    let values = <Seg as Segment>::reset(pulse, &mut state);
+    assert_eq!(values.data(), [0.0]);
+
+    // The graph's ambient event time arrives as naive nanoseconds.
+    let t = Instant::from_offset(Duration::from_nanos(42));
+    let values = <Seg as Segment>::compute(pulse, &mut state, &t);
+    assert_eq!(values.data(), [42.0]);
+}
+
+/// The whole path through the engine: a replayed source drives a Python
+/// segment, whose output is recorded natively.
+#[tokio::test]
+async fn segment_runs_in_a_graph() {
+    const DOUBLE: &str = r#"
+class Double:
+    def init(self, inputs):
+        return None
+
+    def reset(self, inputs, state):
+        return (False, 0.0)
+
+    def compute(self, inputs, state, instant):
+        (sig, x) = inputs
+        return (bool(sig), x * 2.0)
+
+__op__ = Double()
+"#;
+    type In = (SignalPort<0>, ArrayPort<f64, 0>);
+    type Out = (SignalPort<0>, ArrayPort<f64, 0>);
+
+    let mut b = Builder::new(UnixTime);
+    let data = Series::from_parts([], tss(&[1, 2, 3]), vec![10.0, 20.0, 30.0], 0);
+    let (hs, h) = b.source(array_series(data));
+    let (ds, dv) = b.segment(py_segment_source::<In, Out>(DOUBLE, None), (hs, h));
+    let rec = b.segment(record_all(), (ds, dv));
+
+    let mut g = b.build();
+    g.run(&mut Pool::new(0), |_, _| {}).await;
+
+    let s: SeriesView<f64, 0> = g.view(rec);
+    assert_eq!(s.instants(), tss(&[1, 2, 3]).as_slice());
+    assert_eq!(&*s.to_contiguous(), &[20.0, 40.0, 60.0]);
 }

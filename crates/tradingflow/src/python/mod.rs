@@ -2,89 +2,70 @@
 //!
 //! # Memory ownership model
 //!
+//! Everything crossing the FFI boundary is **copied**. No pointer into
+//! Rust-owned memory ever reaches Python, and no pointer into Python-owned
+//! memory survives past the call that produced it — after a Python segment
+//! returns, there are no references across the boundary in either direction.
+//!
 //! ## Inputs
 //!
-//! Inputs to Python segments are allowed to reference Rust-owned memory
-//! through [`NativeView`], which implement the PEP 3118 buffer protocol.
-//!
-//! However, Python segments must not keep them in node state, since the memory
-//! is only guaranteed to have input lifetime which the node state outlives
-//! (see [`Segment`](crate::graph::Segment) signature). To prevent this, after
-//! each call to some Python function taking [`NativeView`] as arguments,
-//! the Rust host must check that the views' export counters are zero through
-//! [`NativeView::invalidate`] and panic if not. [`Scope::close`] checks for
-//! this condition automatically; see below.
+//! [`to_numpy`] copies payload views into fresh **Python-owned** NumPy
+//! arrays. Because the arrays own their data, Python
+//! segments may freely store, mutate, slice or share them — including keeping
+//! them in node state across generations, the thing a borrowed view could
+//! never allow (node state outlives the input lifetime; see the
+//! [`Segment`](crate::graph::Segment) signature). There is no contract for
+//! operator code to uphold and no host-side check to run.
 //!
 //! ## Outputs
 //!
-//! Outputs from Python segments are passed as NumPy arrays, and are always
-//! copied into Rust-owned memory before dropped.
+//! [`from_numpy`] copies the value a Python segment returns into a Rust-owned
+//! buffer before the value is dropped. The value is normalized with
+//! `numpy.ascontiguousarray` on the way (so a list or a scalar is accepted,
+//! and returning an input array unchanged is fine), and the boundary
+//! negotiates by element count, not shape.
 //!
-//! This simplifies the ownership model: after a Python segment returns, there
-//! should be no references into Python-owned memory in Rust and vice versa.
-//! It also makes export-count-checking easy for inputs: if no copy is
-//! performed, the output array can hold references into the inputs, which
-//! can make the export counts nonzero and trigger an undesired panic.
+//! ## Costs, and the road not taken
 //!
-//! > Although Rust segments are allowed to return references into their inputs,
-//! > supporting this in Python segments would require more complex machinery
-//! > that whitelists input export counts if they only come from outputs -
-//! > difficult to do reliably.
+//! Rust segments can return references into their inputs; copies mean Python
+//! segments cannot. That property is cheap in Rust because the borrow checker
+//! polices it at compile time. A zero-copy bridge (PEP 3118 views with export
+//! counting) was built and retired here — see git history — because the
+//! equivalent policing at the FFI boundary has to happen at runtime, its only
+//! sound failure mode is aborting the process (a captured pointer cannot be
+//! revoked, and a Python thread may already be using it), and the contract
+//! ("never retain a view or anything derived from it") lands on operator
+//! authors who NumPy has trained to do exactly the opposite.
 //!
-//! # The native view
+//! The copies this model pays for are one input copy and one output copy per
+//! `compute`, which is negligible against the NumPy/SciPy/solver work Python
+//! operators exist to run. The one term that can grow is an unbounded series
+//! history window; if profiling ever shows it, the fix is bounded retention or
+//! an incrementally-synced Python-side mirror (series are append-only, so each
+//! element needs copying only once) — not zero-copy.
 //!
-//! [`NativeView`] is a deliberately minimal `#[pyclass]`, which is only used
-//! through wrapper classes in `python/tradingflow/views.py`. It exposes the
-//! core PEP 3118 buffer protocol to Python code so they can access Rust-owned
-//! memory, and implements checked invalidation in [`NativeView::invalidate`].
+//! # What crosses the boundary
 //!
-//! [`NativeView`] should be safe to use even with free-threaded Python
-//! interpreters.
+//! **Arrays only, for now**: array and signal ports, their variadic groups,
+//! and tuples thereof — the shapes [`PyInterface`] is implemented for.
+//! Series stay on the Rust side; window them into arrays or reduce them with
+//! native operators before wiring into a Python segment.
 //!
-//! # The scope helper
+//! # Python segments
 //!
-//! [`Scope`] can be used to create tracked [`NativeView`]s for one Python
-//! function call, via the [`Scope::array`] and [`Scope::series`] methods.
-//!
-//! After a python function returns, its return values are copied to Rust-owned
-//! memory and dropped. After that, [`Scope::close`] can be used to check every
-//! tracked export counter and invalidate every tracked view, returning [`Err`]
-//! if any exports are still outstanding. Panicking on [`Err`] is enough to
-//! prevent safety violations:
-//!
-//! - A **captured pointer** (the operator stored `np.asarray(view)` or slices
-//!   of it) keeps an export outstanding. The pointer cannot be revoked, so the
-//!   escape is reported and the host panics.
-//! - A **captured [`NativeView`]** that was never exported is invalidated,
-//!   making its data pointer no longer accessible: later use raises
-//!   `BufferError` instead of reading from a dangling pointer.
-//!
-//! What no refcount or counter scheme can see is a laundered address
-//! (`arr.ctypes.data` stashed as an integer, or a C extension caching the
-//! pointer). That is outside the contract — the check defends against
-//! accidents, not against deliberate circumvention.
-//!
-//! # Why binding a view is `unsafe`
-//!
-//! Binding erases a borrow: [`Scope::array`], [`Scope::series`] and the
-//! [`NativeView`] constructors under them take a view with a lifetime and hand
-//! back a Python object holding a bare pointer. Nothing left in the type system
-//! tracks when that memory dies, and no lifetime discipline could — the escape
-//! route is Python's own object graph, which Rust cannot see into. That is
-//! precisely why the check is dynamic, and why the obligation to run it has to
-//! be carried by the caller. So they are `unsafe fn`: the caller must close the
-//! scope while the payload is still alive, and must treat [`Err`] as fatal.
-//!
-//! Dropping a scope instead of closing it is *not* enough. It invalidates every
-//! view, so nothing can acquire the payload afterwards, but it skips the export
-//! check — a pointer Python captured during the call then goes unreported and
-//! dangles once the payload dies. Detection is the last line of defence here,
-//! and it only defends if it actually runs.
+//! [`PySegment<I, O>`] is a graph node hosting a Python segment whose contract
+//! mirrors the [`Segment`](crate::graph::Segment) trait method-for-method —
+//! `init(inputs)`, `reset(inputs, state)`, `compute(inputs, state, instant)`
+//! — with [`PyInterface`] packing the conversions on both sides: inputs
+//! arrive as a flat tuple of owned NumPy arrays (one per leaf, in tree
+//! order), and the returned outputs are copied into the node's Rust-owned
+//! buffers, which back the views the node hands the engine. See
+//! [`PySegment`] for the Python-side contract.
 
-mod scalar;
-mod scope;
-mod view;
+mod convert;
+mod interface;
+mod segment;
 
-pub use scalar::{DType, NativeScalar};
-pub use scope::{EscapedViewsError, Scope};
-pub use view::NativeView;
+pub use convert::{from_numpy, from_numpy_into, to_numpy};
+pub use interface::{GroupBuffers, PyInterface};
+pub use segment::{PySegment, PyState, py_segment_file, py_segment_module, py_segment_source};
