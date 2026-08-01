@@ -14,7 +14,7 @@
 //! Swapping an optimizer is swapping a call.
 
 use tradingflow::ports::{ArrayPort, SeriesPort, SignalPort};
-use tradingflow::python::{PyClassOperator, PyParams, py_class_operator};
+use tradingflow::python_old::{PyClassOperator, PyParams, py_class_operator};
 
 // ===========================================================================
 // Port shapes. Every leaf — signals included — occupies one slot of the

@@ -103,3 +103,6 @@ pub use macros::segment;
 
 #[cfg(feature = "python")]
 pub mod python;
+
+#[cfg(feature = "python")]
+pub mod python_old;

@@ -367,12 +367,13 @@ impl Graph {
             // i.e. whose counter reached 0. The writes above happens-before
             // the atomic decrement, so a successor reported ready has observed
             // every dirty predecessor's output.
+            atomic::fence(Ordering::Release);
             for &j in self.node_to_nodes.get(i) {
                 // Release publishes this node's writes into the modification
                 // order; the Acquire fence on the 0-transition then makes
                 // *every* dirty predecessor's writes visible before `j` is
                 // released. This is the `Arc`-drop ordering.
-                if self.counters[j].fetch_sub(1, Ordering::Release) == 1 {
+                if self.counters[j].fetch_sub(1, Ordering::Relaxed) == 1 {
                     atomic::fence(Ordering::Acquire);
                     scope.spawn(j);
                 }

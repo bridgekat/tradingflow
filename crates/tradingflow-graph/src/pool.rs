@@ -283,7 +283,8 @@ enum FindResult {
 fn find_task(local: &Worker<usize>, shared: &Shared) -> FindResult {
     if let Some(task) = local.pop() {
         FindResult::Task(task)
-    } else if shared.pending.load(Ordering::Acquire) == 0 {
+    } else if shared.pending.load(Ordering::Relaxed) == 0 {
+        atomic::fence(Ordering::Acquire);
         FindResult::Done
     } else if let Some(task) = shared.stealers.iter().find_map(|s| s.steal().success()) {
         FindResult::Task(task)
@@ -316,7 +317,8 @@ fn run_task(local: &Worker<usize>, shared: &Shared, task: usize) {
             *slot = Some(payload);
         }
     }
-    shared.pending.fetch_sub(1, Ordering::Release);
+    atomic::fence(Ordering::Release);
+    shared.pending.fetch_sub(1, Ordering::Relaxed);
 }
 
 fn task_data_for<F>(handler: &F) -> *const F

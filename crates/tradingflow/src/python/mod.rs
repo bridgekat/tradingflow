@@ -1,132 +1,90 @@
-//! Class-based Python operator host (feature `python`).
+//! Python segment wrapper.
 //!
-//! [`PyClassOperator`] is a graph node whose compute step runs a Python operator
-//! object, mirroring the legacy `tradingflow.operator.Operator` contract, so the
-//! Python-resident operator layer (predictors / portfolios / stateful
-//! metrics) ports nearly verbatim:
+//! # Memory ownership model
 //!
-//! ```text
-//! init(inputs) -> state
-//! compute(inputs, state, timestamp) -> ndarray | None   # @staticmethod
-//! ```
+//! ## Inputs
 //!
-//! The argument order mirrors [`Segment`](crate::graph::Segment)
-//! (`init(inputs)`, `compute(inputs, state, context) -> outputs`), and like
-//! `Segment::compute` the Python side **returns** its output rather than
-//! filling an out-parameter: an `ndarray` is this generation's batch (the
-//! output signals), `None` is quiescence (no pulse, the values wire
-//! retains its last batch). Returning the batch makes "pulsed but wrote
-//! nothing" and "wrote but reported no pulse" unrepresentable — they were
-//! both silently possible under the old `output` + `bool` pair.
+//! Inputs to Python segments are allowed to reference Rust-owned memory
+//! through [`NativeView`], which implement the PEP 3118 buffer protocol.
 //!
-//! `inputs` is a single tuple with **one entry per wired leaf, in tree
-//! order**: a [`NativeArrayView`] for array edges (`ArrayPort`), a
-//! [`NativeSeriesView`] for recorded-history windows (`SeriesPort` edges),
-//! and a [`NativeArrayViewBool`] for signal leaves of any rank
-//! (`SignalPort<N>`; a rank-0 pulse reads as `if signal:` via `__bool__`,
-//! a signal array as a NumPy bool mask). `timestamp` is naive nanoseconds (the
-//! graph's ambient event time) and `state` is a Python object carried across
-//! ticks. The returned value is normalized with `numpy.ascontiguousarray`
-//! (so a list or a scalar is accepted) and must match the output's element
-//! count.
+//! However, Python segments must not keep them in node state, since the memory
+//! is only guaranteed to have input lifetime which the node state outlives
+//! (see [`Segment`](crate::graph::Segment) signature). To prevent this, after
+//! each call to some Python function taking [`NativeView`] as arguments,
+//! the Rust host must check that the views' export counters are zero through
+//! [`NativeView::invalidate`] and panic if not. [`Scope::close`] checks for
+//! this condition automatically; see below.
 //!
-//! The `source` is a Python *program* (statements) executed in the operator's
-//! own globals (with `np`/`numpy` pre-injected) that binds the operator instance
-//! to the name `__op__`.
+//! ## Outputs
 //!
-//! # Heterogeneous inputs
+//! Outputs from Python segments are passed as NumPy arrays, and are always
+//! copied into Rust-owned memory before dropped.
 //!
-//! The host speaks the operator library's view currency on both sides: inputs
-//! are trees of port leaves (`ArrayPort<f64, N>` / `SeriesPort<f64, N>`),
-//! runtime-length groups (`ArrayPorts` / `SeriesPorts`), and tuples,
-//! so an operator's input shape is its concrete
-//! [`Interface`](crate::graph::typed::Interface) type, e.g.
-//! `(ArrayPort<f64, 1>, SeriesPort<f64, 2>, SeriesPort<f64, 1>)` for a
-//! predictor or `ArrayPorts<f64, 1>` for an all-array operator — and the
-//! output is an `ArrayPort<f64, NO>` view of the host's owned buffer. The
-//! [`PyArgs`] trait walks the input type's payload tree to build the unified
-//! Python input tuple in one pass. (An erased enum input would have to clone
-//! growing `Series` each tick — `PyArgs` reads the borrowed views directly
-//! instead.)
+//! This simplifies the ownership model: after a Python segment returns, there
+//! should be no references into Python-owned memory in Rust and vice versa.
+//! It also makes export-count-checking easy for inputs: if no copy is
+//! performed, the output array can hold references into the inputs, which
+//! can make the export counts nonzero and trigger an undesired panic.
 //!
-//! # Data model
+//! > Although Rust segments are allowed to return references into their inputs,
+//! > supporting this in Python segments would require more complex machinery
+//! > that whitelists input export counts if they only come from outputs -
+//! > difficult to do reliably.
 //!
-//! Copy-based (like the legacy bridge): each view copies the data out to a
-//! fresh NumPy array on read (a strided input view is materialized
-//! row-major at bind), and the array `compute` returns is copied back into
-//! the host's output buffer. Copies make retention safe and the cost is
-//! negligible against the NumPy/SciPy math these operators run.
+//! # The native view
 //!
-//! # Interpreter model (single shared interpreter; easy to switch)
+//! [`NativeView`] is a deliberately minimal `#[pyclass]`, which is only used
+//! through wrapper classes in `python/tradingflow/views.py`. It exposes the
+//! core PEP 3118 buffer protocol to Python code so they can access Rust-owned
+//! memory, and implements checked invalidation in [`NativeView::invalidate`].
 //!
-//! The bridge embeds **one shared CPython** and enters it per `compute` via
-//! PyO3's [`Python::attach`](pyo3::Python::attach). This same code runs, with
-//! **no change**, on any of:
+//! [`NativeView`] should be safe to use even with free-threaded Python
+//! interpreters.
 //!
-//! * **Standard GIL CPython — the default.** Only one thread runs *Python* at a
-//!   time, but operator work that **releases the GIL** runs truly in parallel on
-//!   the pool: NumPy ufuncs/BLAS, SciPy, and convex solvers (cvxpy + CLARABEL /
-//!   SCS / OSQP) all drop the GIL during their native solve. In quant operators
-//!   that native/solve time *is* the cost, so solve-bound graphs parallelize;
-//!   only pure-Python glue serializes. This is the default because the cvxpy
-//!   solver stack has no free-threaded wheels yet.
-//! * **Free-threaded CPython** (PEP 703, `python3.13t`): no GIL, so pure-Python
-//!   parallelizes too. Build against it by pointing `PYO3_PYTHON` at a
-//!   free-threaded venv — nothing in this module assumes one interpreter mode.
-//! * **Own-GIL sub-interpreters** (PEP 684) are a possible future direction but
-//!   cannot `import numpy` (NumPy declares no multiple-interpreter support), so
-//!   they are not used here.
+//! # The scope helper
 //!
-//! Because operators only touch Python under `Python::attach` and never assume
-//! the GIL is present or absent, switching modes is a build/runtime config change
-//! (`PYO3_PYTHON` + the venv), not a code change.
+//! [`Scope`] can be used to create tracked [`NativeView`]s for one Python
+//! function call, via the [`Scope::array`] and [`Scope::series`] methods.
 //!
-//! # Setup
+//! After a python function returns, its return values are copied to Rust-owned
+//! memory and dropped. After that, [`Scope::close`] can be used to check every
+//! tracked export counter and invalidate every tracked view, returning [`Err`]
+//! if any exports are still outstanding. Panicking on [`Err`] is enough to
+//! prevent safety violations:
 //!
-//! A venv with the operators' deps (NumPy, and SciPy/cvxpy for the optimizers):
+//! - A **captured pointer** (the operator stored `np.asarray(view)` or slices
+//!   of it) keeps an export outstanding. The pointer cannot be revoked, so the
+//!   escape is reported and the host panics.
+//! - A **captured [`NativeView`]** that was never exported is invalidated,
+//!   making its data pointer no longer accessible: later use raises
+//!   `BufferError` instead of reading from a dangling pointer.
 //!
-//! ```console
-//! python -m venv .venv && .venv\Scripts\python -m pip install numpy scipy cvxpy
-//! ```
+//! What no refcount or counter scheme can see is a laundered address
+//! (`arr.ctypes.data` stashed as an integer, or a C extension caching the
+//! pointer). That is outside the contract — the check defends against
+//! accidents, not against deliberate circumvention.
 //!
-//! PyO3 links the interpreter named by `PYO3_PYTHON` at build time; the embedded
-//! interpreter computes `sys.path` from the base install, so make the venv's
-//! packages (and `python/`, for the `tradingflow` operator package) visible at
-//! runtime via `PYTHONPATH`. Build and test with:
+//! # Why binding a view is `unsafe`
 //!
-//! ```console
-//! set PYO3_PYTHON=<abs>\.venv\Scripts\python.exe
-//! set PATH=<dir containing python3xx.dll>;%PATH%
-//! set PYTHONPATH=<repo>\python;<abs>\.venv\Lib\site-packages
-//! cargo test --features python operators::pyhost
-//! ```
+//! Binding erases a borrow: [`Scope::array`], [`Scope::series`] and the
+//! [`NativeView`] constructors under them take a view with a lifetime and hand
+//! back a Python object holding a bare pointer. Nothing left in the type system
+//! tracks when that memory dies, and no lifetime discipline could — the escape
+//! route is Python's own object graph, which Rust cannot see into. That is
+//! precisely why the check is dynamic, and why the obligation to run it has to
+//! be carried by the caller. So they are `unsafe fn`: the caller must close the
+//! scope while the payload is still alive, and must treat [`Err`] as fatal.
 //!
-//! For free-threaded instead, swap the venv for a `python3.13t` one (`py install
-//! 3.13t-64`) and the dll dir accordingly. In production, point
-//! `PYTHONPATH`/`PYTHONHOME` at the deployment environment.
-//!
-//! # Safety
-//!
-//! The view pyclasses hold a raw pointer to an input view's backing buffer
-//! (or to its owned row-major materialization), valid only for the duration
-//! of one `compute`/`init` — the payload is borrowed by the engine then.
-//! Views are created fresh each call and must not be retained past it. Every
-//! view is read-only: outputs travel back as the value `compute` returns, so
-//! no pointer with write provenance is ever handed to Python. `unsafe Send +
-//! Sync` is sound: a node's `compute` runs on one thread at a time and views
-//! never cross threads.
+//! Dropping a scope instead of closing it is *not* enough. It invalidates every
+//! view, so nothing can acquire the payload afterwards, but it skips the export
+//! check — a pointer Python captured during the call then goes unreported and
+//! dangles once the payload dies. Detection is the last line of defence here,
+//! and it only defends if it actually runs.
 
-mod args;
-mod array_view;
-mod operator;
-mod params;
-mod series_view;
+mod scalar;
+mod scope;
+mod view;
 
-#[cfg(test)]
-mod tests;
-
-pub use args::*;
-pub use array_view::*;
-pub use operator::*;
-pub use params::*;
-pub use series_view::*;
+pub use scalar::{DType, NativeScalar};
+pub use scope::{EscapedViewsError, Scope};
+pub use view::NativeView;
