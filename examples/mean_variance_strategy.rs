@@ -25,18 +25,22 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
+use tradingflow::operators::portfolio::mean_variance::{Mode, markowitz};
+use tradingflow::operators::predictor::mean::ridge_incr;
+use tradingflow::operators::predictor::variance::{Target, shrinkage};
+use tradingflow::operators::{portfolio, predictor};
 use tradingflow::time::UnixTime;
 
-use common::models::{Mode, markowitz, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable};
 
 const DELTAS: [f64; 8] = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0];
 /// Shrinkage covariance training window (most-recent pairs fed to the fit).
-const COV_MAX_PERIODS: i64 = 200;
-const MIN_PERIODS: i64 = 100;
+const COV_MAX_PERIODS: usize = 200;
+const MIN_PERIODS: usize = 100;
 const RIDGE_ALPHA: f64 = 0.01;
+/// Rank of the covariance approximation the Markowitz solve optimizes against.
+const FACTOR_RANK: usize = 20;
 
 /// Mean-variance strategy: shrinkage covariance + Markowitz, risk-aversion sweep.
 #[derive(Parser)]
@@ -57,32 +61,37 @@ async fn main() {
 
     let mut sc = Builder::new(UnixTime);
 
-    // The shared panel / target feed the shrinkage covariance predictor too,
-    // which fits over its last `COV_MAX_PERIODS` pairs — so the records must
-    // retain that window (the mean predictor's single-pair need is subsumed).
-    let panel_ret = Retention::count(COV_MAX_PERIODS.max(1) as usize + 1);
-    let m = Market::build(&mut sc, &symbols, &args, panel_ret);
-    eprintln!("{} features", m.dims.num_features);
+    let m = Market::build(&mut sc, &symbols, &args);
+    eprintln!("{} features", m.features.names.len());
+
+    // Each predictor keeps its own training window: the incremental Ridge only
+    // needs the pair being folded, while the shrinkage covariance holds
+    // `COV_MAX_PERIODS` cross-sections to re-estimate from.
+    let mean_config = predictor::Config {
+        target_offset: 1,
+        min_periods: Some(MIN_PERIODS),
+        universe_size: Some(args.index_size),
+        ..predictor::Config::default()
+    };
+    let cov_config = predictor::Config {
+        max_periods: Some(COV_MAX_PERIODS),
+        ..mean_config
+    };
 
     // Mean predictor (demeaned target) and covariance predictor (raw target).
     let predicted_returns = sc.segment(
-        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
-        (
-            m.rebalance_signal,
-            m.universe,
-            m.features.series,
-            m.demeaned_series,
-        ),
+        ridge_incr(mean_config, RIDGE_ALPHA),
+        m.predictor_inputs(m.demeaned),
     );
     let predicted_cov = sc.segment(
-        shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS),
-        (
-            m.rebalance_signal,
-            m.universe,
-            m.features.series,
-            m.target_series,
-        ),
+        shrinkage(cov_config, Target::CommonCovariance),
+        m.predictor_inputs(m.target),
     );
+
+    let portfolio_config = portfolio::Config {
+        max_universe_size: Some(args.index_size),
+        ..portfolio::Config::default()
+    };
 
     let h_index = m.index_nav(&mut sc);
 
@@ -91,7 +100,14 @@ async fn main() {
         .iter()
         .map(|&delta| {
             let soft = sc.segment(
-                markowitz(m.n, args.index_size, Mode::MinMeanVariance, delta, true),
+                markowitz(
+                    portfolio_config,
+                    Mode::MinMeanVariance,
+                    delta,
+                    true,
+                    true,
+                    FACTOR_RANK,
+                ),
                 (
                     m.rebalance_signal,
                     m.universe,

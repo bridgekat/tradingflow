@@ -39,10 +39,12 @@
 //!
 //! The copies this model pays for are one input copy and one output copy per
 //! `compute`, which is negligible against the NumPy/SciPy/solver work Python
-//! operators exist to run. The one term that can grow is an unbounded series
-//! history window; if profiling ever shows it, the fix is bounded retention or
-//! an incrementally-synced Python-side mirror (series are append-only, so each
-//! element needs copying only once) — not zero-copy.
+//! operators exist to run — in the strategy examples the solvers outweigh them
+//! by orders of magnitude. What can grow is not the copying but the *history*:
+//! since only the latest cross-section crosses, an operator that fits on a
+//! window has to record that window itself. That cost is the operator's to
+//! bound, and a model which does not read a panel should not retain one — see
+//! `retain_features` in `tradingflow.predictor`.
 //!
 //! # What crosses the boundary
 //!
@@ -68,4 +70,6 @@ mod segment;
 
 pub use convert::{from_numpy, from_numpy_into, to_numpy};
 pub use interface::{GroupBuffers, PyInterface};
-pub use segment::{PySegment, PyState, py_segment_file, py_segment_module, py_segment_source};
+pub use segment::{
+    PySegment, PyState, py_params, py_segment_file, py_segment_module, py_segment_source,
+};

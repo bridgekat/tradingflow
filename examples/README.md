@@ -167,7 +167,7 @@ scripts. For just the operator dependencies without the crawler / plotting, use
 Verify the environment (prints `env OK`):
 
 ```sh
-.venv/bin/python -c "import numpy, scipy, cvxpy, matplotlib; import tradingflow.portfolios.mean_variance.markowitz; print('env OK')"
+.venv/bin/python -c "import numpy, scipy, cvxpy, matplotlib; import tradingflow.portfolio.mean_variance.markowitz; print('env OK')"
 ```
 
 > The bare `python` / `python3` on your `PATH` may not be the venv's interpreter

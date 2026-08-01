@@ -4,6 +4,8 @@ pub mod array;
 pub mod elem;
 pub mod feature;
 pub mod metric;
+pub mod portfolio;
+pub mod predictor;
 pub mod rolling;
 pub mod series;
 pub mod signal;

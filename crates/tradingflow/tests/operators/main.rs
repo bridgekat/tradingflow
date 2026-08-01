@@ -16,6 +16,8 @@ mod compose;
 mod elem;
 mod feature;
 mod metric;
+mod portfolio;
+mod predictor;
 mod rolling;
 mod series;
 mod signal;

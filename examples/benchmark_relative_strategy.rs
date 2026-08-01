@@ -21,17 +21,21 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::data::Retention;
 use tradingflow::graph::Builder;
+use tradingflow::operators::portfolio::mean_variance::benchmark_relative;
+use tradingflow::operators::predictor::mean::ridge_incr;
+use tradingflow::operators::predictor::variance::{Target, shrinkage};
+use tradingflow::operators::{portfolio, predictor};
 use tradingflow::time::UnixTime;
 
-use common::models::{benchmark_relative, ridge_mean, shrinkage_cov};
 use common::strategy::{Market, NavTable, TRADING_DAYS};
 
 const TRACKING_ERRORS_ANN: [f64; 3] = [0.02, 0.05, 0.10];
-const COV_MAX_PERIODS: i64 = 200;
-const MIN_PERIODS: i64 = 100;
+const COV_MAX_PERIODS: usize = 200;
+const MIN_PERIODS: usize = 100;
 const RIDGE_ALPHA: f64 = 1.0;
+/// Rank of the covariance approximation the tracking-error cone is built from.
+const FACTOR_RANK: usize = 20;
 
 /// Benchmark-relative mean-variance strategy on the A-shares panel.
 #[derive(Parser)]
@@ -52,26 +56,32 @@ async fn main() {
 
     let mut sc = Builder::new(UnixTime);
 
-    let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
+    let m = Market::build(&mut sc, &symbols, &args);
+
+    let mean_config = predictor::Config {
+        target_offset: 1,
+        min_periods: Some(MIN_PERIODS),
+        universe_size: Some(args.index_size),
+        ..predictor::Config::default()
+    };
+    let cov_config = predictor::Config {
+        max_periods: Some(COV_MAX_PERIODS),
+        ..mean_config
+    };
 
     let predicted_returns = sc.segment(
-        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
-        (
-            m.rebalance_signal,
-            m.universe,
-            m.features.series,
-            m.demeaned_series,
-        ),
+        ridge_incr(mean_config, RIDGE_ALPHA),
+        m.predictor_inputs(m.demeaned),
     );
     let predicted_cov = sc.segment(
-        shrinkage_cov(m.dims, COV_MAX_PERIODS, MIN_PERIODS),
-        (
-            m.rebalance_signal,
-            m.universe,
-            m.features.series,
-            m.target_series,
-        ),
+        shrinkage(cov_config, Target::CommonCovariance),
+        m.predictor_inputs(m.target),
     );
+
+    let portfolio_config = portfolio::Config {
+        max_universe_size: Some(args.index_size),
+        ..portfolio::Config::default()
+    };
 
     let h_index = m.index_nav(&mut sc);
 
@@ -81,7 +91,7 @@ async fn main() {
         .map(|&gamma_ann| {
             let gamma_daily = gamma_ann / TRADING_DAYS.sqrt();
             let soft = sc.segment(
-                benchmark_relative(m.n, args.index_size, gamma_daily, true, true),
+                benchmark_relative(portfolio_config, gamma_daily, true, true, FACTOR_RANK),
                 (
                     m.rebalance_signal,
                     m.universe,

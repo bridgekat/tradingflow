@@ -25,24 +25,25 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::data::{Retention, SeriesView};
 use tradingflow::graph::Builder;
-use tradingflow::operators::array::stack;
 use tradingflow::operators::elem::ln;
-use tradingflow::operators::metric::{comp_return, drawdown, return_sharpe};
+use tradingflow::operators::metric::performance::{comp_return, drawdown, return_sharpe};
+use tradingflow::operators::portfolio::mean::rank_linear;
+use tradingflow::operators::predictor::mean::ridge_incr;
 use tradingflow::operators::rolling::diff;
 use tradingflow::operators::series::record_all;
 use tradingflow::operators::trader::fixed::{benchmark, random};
+use tradingflow::operators::{portfolio, predictor};
 use tradingflow::time::UnixTime;
 
-use common::models::{rank_linear, regression_coefficients, ridge_mean};
+use common::ic::trailing_beta_alpha;
 use common::strategy::{INITIAL_CASH, Market, trim_scale};
 
-const MIN_PERIODS: i64 = 100;
+const MIN_PERIODS: usize = 100;
 const RIDGE_ALPHA: f64 = 0.01;
 /// Rolling window (trading days) of the market beta/alpha regression.
-const BETA_MAX_PERIODS: i64 = 252;
-const BETA_MIN_PERIODS: i64 = 20;
+const BETA_MAX_PERIODS: usize = 252;
+const BETA_MIN_PERIODS: usize = 20;
 
 /// Mean-only strategy: periodic linear regression + rank-linear portfolio.
 #[derive(Parser)]
@@ -64,26 +65,34 @@ async fn main() {
     let mut sc = Builder::new(UnixTime);
 
     // ---- Data + features ------------------------------------------------
-    // The incremental mean predictor folds one (feature, target) pair per tick,
-    // so the recorded panel / target only need the last 2 rows.
-    let feat_ret = Retention::count(1 + 1);
-    let m = Market::build(&mut sc, &symbols, &args, feat_ret);
-    eprintln!("{} features", m.dims.num_features);
+    let m = Market::build(&mut sc, &symbols, &args);
+    eprintln!("{} features", m.features.names.len());
 
     // ---- Predictor + portfolio ------------------------------------------
+    // The incremental Ridge folds one (feature, target) pair per trading day,
+    // so it never holds more than the pair it is forming.
     let predicted_returns = sc.segment(
-        ridge_mean(m.dims, MIN_PERIODS, RIDGE_ALPHA),
-        (
-            m.rebalance_signal,
-            m.universe,
-            m.features.series,
-            m.demeaned_series,
+        ridge_incr(
+            predictor::Config {
+                target_offset: 1,
+                min_periods: Some(MIN_PERIODS),
+                universe_size: Some(args.index_size),
+                ..predictor::Config::default()
+            },
+            RIDGE_ALPHA,
         ),
+        m.predictor_inputs(m.demeaned),
     );
-    // The Python portfolio emits a `(signal, positions)` stream — the native
-    // traders consume it directly.
+    // The portfolio emits a `(signal, positions)` stream — the native traders
+    // consume it directly.
     let soft_positions = sc.segment(
-        rank_linear(m.n, 1.0),
+        rank_linear(
+            portfolio::Config {
+                max_universe_size: Some(args.index_size),
+                ..portfolio::Config::default()
+            },
+            1.0,
+        ),
         (m.rebalance_signal, m.universe, predicted_returns.1),
     );
 
@@ -100,22 +109,18 @@ async fn main() {
     // ---- Metrics (signal-gated, since inception) -------------------------
     let sharpe = sc.segment(return_sharpe(), (m.rebalance_signal, actual_value));
     let compound = sc.segment(comp_return(), (m.rebalance_signal, actual_value));
-    let drawdown = sc.segment(drawdown(), actual_value);
+    let drawdown = sc.segment(drawdown(), (m.daily, actual_value));
 
-    // Rolling market beta / alpha vs the cap-weighted index, on daily log
-    // returns of total value (regressor adds the intercept → output [beta, alpha]).
+    // Daily log returns of the strategy and of the index, recorded for the
+    // market beta / alpha regression. That regression runs once, on the final
+    // window, so it is computed from the records after the run rather than
+    // rebuilt in-graph at every rebalance.
     let log_actual = sc.segment(ln(), actual_value);
     let strat_logret = sc.segment(diff(1), (m.daily, log_actual));
     let log_index = sc.segment(ln(), index_value);
     let index_logret = sc.segment(diff(1), (m.daily, log_index));
-    let strat_logret_series = sc.segment(record_all(), (m.daily, strat_logret));
-    // scalar -> (1,): stack the rank-0 view handle into a 1-vector.
-    let index_logret_vec = sc.segment(stack(0), &[index_logret][..]);
-    let index_logret_series = sc.segment(record_all(), (m.daily, index_logret_vec));
-    let beta_alpha = sc.segment(
-        regression_coefficients(1, BETA_MAX_PERIODS, BETA_MIN_PERIODS),
-        (m.rebalance_signal, strat_logret_series, index_logret_series),
-    );
+    let h_strat_logret = sc.segment(record_all(), (m.daily, strat_logret));
+    let h_index_logret = sc.segment(record_all(), (m.daily, index_logret));
 
     // ---- Records --------------------------------------------------------
     let record_daily =
@@ -126,7 +131,6 @@ async fn main() {
     let h_sharpe = record_daily(&mut sc, sharpe);
     let h_compound = record_daily(&mut sc, compound);
     let h_drawdown = record_daily(&mut sc, drawdown);
-    let h_beta_alpha = sc.segment(record_all(), beta_alpha);
 
     let session = common::run(sc, &args).await;
 
@@ -162,11 +166,15 @@ async fn main() {
         .into_iter()
         .filter(|x| x.is_finite())
         .fold(0.0_f64, f64::min);
-    let ba: SeriesView<f64, 1> = session.view(h_beta_alpha);
-    let (beta, alpha) = (!ba.is_empty())
-        .then(|| ba.at(ba.range().end - 1))
-        .map(|(_, v)| (v[[0]], v[[1]] * 252.0))
-        .unwrap_or((f64::NAN, f64::NAN));
+    let strat_logret = common::read_scalar_series(&session, h_strat_logret).1;
+    let index_logret = common::read_scalar_series(&session, h_index_logret).1;
+    let (beta, alpha) = trailing_beta_alpha(
+        &strat_logret,
+        &index_logret,
+        BETA_MAX_PERIODS,
+        BETA_MIN_PERIODS,
+    );
+    let alpha = alpha * 252.0;
 
     println!(
         "actual: {:.0} -> {:.0} CNY | annual={:.2}% sharpe={:.3} mdd={:.2}% beta={:.3} alpha_ann={:.2}%",

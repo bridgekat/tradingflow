@@ -59,11 +59,18 @@ fn resolve<'py>(
 ///
 /// ```python
 /// class MySegment:
-///     def init(self, inputs):                    # -> state
+///     type Inputs = tuple[...]
+///     type Outputs = tuple[...]
+///     type Context = int
+///     type State = ...
+///
+///     def init(self, inputs: Inputs) -> State
 ///         ...
-///     def reset(self, inputs, state):            # -> outputs
+///
+///     def reset(inputs: Inputs, state: State) -> Outputs
 ///         ...
-///     def compute(self, inputs, state, instant): # -> outputs
+///
+///     def compute(inputs: Inputs, state: State, instant: Context) -> Outputs
 ///         ...
 /// ```
 ///
@@ -226,6 +233,29 @@ where
 // ===========================================================================
 // Constructors
 // ===========================================================================
+
+/// Builds the keyword arguments for a Python segment's `build`.
+///
+/// The operator constructors all want the same thing — attach to the
+/// interpreter, fill a dict, and treat a failure as fatal — so they share this
+/// rather than each repeating it.
+///
+/// # Panics
+///
+/// If the parameters cannot be converted to Python values, which for ordinary
+/// scalars means the interpreter is out of memory.
+pub fn py_params(
+    build: impl for<'py> FnOnce(&Bound<'py, PyDict>) -> PyResult<()>,
+) -> Option<Py<PyDict>> {
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
+        build(&dict).unwrap_or_else(|e| {
+            e.print(py);
+            panic!("cannot build python segment parameters (see traceback above)");
+        });
+        Some(dict.unbind())
+    })
+}
 
 /// A Python segment loaded from an importable module (on the embedded
 /// interpreter's path). The interfaces `I` and `O` are inferred from the

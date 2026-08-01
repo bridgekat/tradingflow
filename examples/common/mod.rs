@@ -16,8 +16,9 @@
 //! | [`features`] | the CICC factor catalogs (fundamental + price-volume) and the feature panel over them |
 //! | [`universe`] | universe masks and the cap-weighted index |
 //! | [`target`] | the log-return prediction target and price limits |
-//! | [`backtest`] | the decile-backtest harness (needs the `python` feature) |
 //! | [`report`] | progress bar and CSV output |
+//! | [`strategy`] | the backtest spine (`Market`) and NAV reporting (needs `python`) |
+//! | [`ic`] | information-coefficient evaluation and market beta/alpha (needs `python`) |
 //!
 //! Every item is re-exported here, so examples keep using `common::*` paths.
 //!
@@ -33,13 +34,14 @@
 //! * All symbols in `symbol_list.csv` are loaded (matching the original);
 //!   selection of the top-`index_size` constituents happens in-graph.
 
-#![allow(dead_code)] // not every example uses every helper
-#![allow(unused_imports)] // the re-exports below serve all examples, not each one
+// Not every example uses every helper, and each example compiles this module
+// separately — so the re-exports below look unused to whichever example does
+// not happen to need them.
+#![allow(dead_code)]
+#![allow(unused_imports)]
 
 #[cfg(feature = "python")]
 pub mod ic;
-#[cfg(feature = "python")]
-pub mod models;
 #[cfg(feature = "python")]
 pub mod strategy;
 
@@ -62,7 +64,7 @@ pub use target::{
 pub use universe::{build_cap_weighted_universe, calculate_index_weights};
 
 #[cfg(feature = "python")]
-pub use ic::{IcStats, ic_series, ic_stats};
+pub use ic::{IcStats, ic_series, ic_stats, trailing_beta_alpha};
 #[cfg(feature = "python")]
 pub use strategy::{
     INITIAL_CASH, Market, NavStats, NavTable, TRADING_DAYS, nav_final, nav_stats, run, trim_scale,

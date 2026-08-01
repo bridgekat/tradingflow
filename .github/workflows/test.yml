@@ -28,9 +28,10 @@ jobs:
       - run: cargo test --workspace --verbose
 
       # Python operator package (tradingflow) + the runtime deps (numpy/scipy/cvxpy)
-      # the embedded interpreter imports under the `python` feature below.
-      - run: python -m pip install -e ".[dev]"
-      - run: python -m pytest
+      # the embedded interpreter imports under the `python` feature below. The
+      # operators have no test suite of their own — they are exercised through
+      # the engine, by the integration tests in the step after this one.
+      - run: python -m pip install -e .
 
       # Embedded-Python feature: PyO3 links the setup-python interpreter (found on
       # PATH via `pyo3/auto-initialize`); the tests embed it and import tradingflow +
@@ -42,3 +43,11 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
           DYLD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
+
+      # The examples are the only consumers of several operator constructors and
+      # of the whole `examples/common` spine, and `cargo test` does not build
+      # them. Checking both feature configurations catches a wiring that no test
+      # covers — and the default one catches a `python`-gated item leaking out
+      # of its `cfg`.
+      - run: cargo check --examples --verbose
+      - run: cargo check --examples --features python --verbose

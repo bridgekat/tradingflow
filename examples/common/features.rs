@@ -51,14 +51,12 @@
 //! `(N, F)` and recorded on the daily signal — the model-ready panel the
 //! predictors regress on. See [`build_features`].
 
-use tradingflow::data::{
-    Array, ArrayView, Duration, Instant, Layout, Retention, Series, SeriesView,
-};
+use tradingflow::data::{Array, ArrayView, Duration, Instant, Layout, Retention, SeriesView};
 use tradingflow::graph::{Builder, Segment};
 use tradingflow::operators::{
     array::{map, select_at, stack},
     elem, rolling,
-    series::{buffer, record_on},
+    series::buffer,
     stats::*,
 };
 use tradingflow::ports::{
@@ -291,8 +289,10 @@ pub struct Features {
     /// Per-feature live view handles (each `(num_stocks,)`), in column order.
     pub names: Vec<String>,
     pub handles: Vec<ArrayPortHandle<f64, 1>>,
-    /// Trading-day-aligned `Record` of the `(num_stocks, n_features)` panel.
-    pub series: SeriesPortHandle<f64, 2>,
+    /// The live `(num_stocks, n_features)` panel — the predictors' feature
+    /// input. They record whatever history they need themselves, so nothing
+    /// here is retained.
+    pub panel: ArrayPortHandle<f64, 2>,
 }
 
 // ===========================================================================
@@ -992,9 +992,10 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -> Fa
 }
 
 /// Build the cross-sectionally percentile-ranked feature panel: the whole CICC
-/// handbook catalog (fundamental ++ price-volume), stacked into `(N, F)`,
-/// recorded on the daily signal under `feature_retention` (pass
-/// [`Retention::unbounded()`] when a consumer needs full history).
+/// handbook catalog (fundamental ++ price-volume), stacked into `(N, F)`.
+///
+/// The panel is a live cross-section, not a record — predictors keep whatever
+/// training window they need on their own side.
 ///
 /// Each catalog entry is already the model-ready feature (cross-sectionally
 /// ranked, missing values imputed to the neutral median — see [`rank_impute`] —
@@ -1002,11 +1003,7 @@ pub fn build_pv_catalog(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -> Fa
 /// by the predictor's all-features-finite mask). The panel is heavily collinear
 /// by design and leans on the predictors' pool-standardized Ridge (`alpha`) to
 /// regularise.
-pub fn build_features(
-    sc: &mut Builder<Instant, UnixTime>,
-    st: &Stacked,
-    feature_retention: Retention,
-) -> Features {
+pub fn build_features(sc: &mut Builder<Instant, UnixTime>, st: &Stacked) -> Features {
     let fund = build_factor_catalog(sc, st);
     let pv = build_pv_catalog(sc, st);
     let mut names = fund.names;
@@ -1014,14 +1011,10 @@ pub fn build_features(
     names.extend(pv.names);
     handles.extend(pv.feature);
 
-    let stacked = sc.segment(stack(1), &handles[..]);
-    // Recorded on the daily signal, not gated on the values: the target panel
-    // is recorded on the same signal, and the predictor pairs the two by row
-    // index, so neither series may silently drop a row.
-    let series = sc.segment(record_on(feature_retention, false), (st.daily, stacked));
+    let panel = sc.segment(stack(1), &handles[..]);
     Features {
         names,
         handles,
-        series,
+        panel,
     }
 }

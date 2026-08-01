@@ -24,12 +24,12 @@ jobs:
         with:
           python-version: "3.14"
 
-      # Document the full public API, including the optional embedded-Python
-      # operator host (`PyClassOperator`, `add_py_*`, …) gated behind `python`.
-      # `cargo doc` only compiles the crate (no execution/link of an embedded
-      # interpreter), so PyO3 just needs the setup-python interpreter on PATH.
-      # The second invocation adds the in-tree engine crate's own pages, which
-      # tradingflow's docs cross-link into (same target/doc bundle).
+      # Document the full public API, including the embedded-Python segment host
+      # (`PySegment`, `PyInterface`) and the operators built on it, all gated
+      # behind `python`. `cargo doc` only compiles the crate (no execution or
+      # link of an embedded interpreter), so PyO3 just needs the setup-python
+      # interpreter on PATH. `--workspace` also builds the in-tree engine
+      # crates' pages, which tradingflow's docs cross-link into.
       - run: cargo doc --no-deps --workspace --features python
 
       # `cargo doc` puts the crate index at target/doc/tradingflow/index.html, but

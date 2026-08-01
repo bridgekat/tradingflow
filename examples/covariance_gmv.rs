@@ -22,29 +22,105 @@ mod common;
 
 use clap::Parser;
 
-use tradingflow::data::Retention;
+use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
+use tradingflow::operators::metric::predictor::variance::minimum_variance;
+use tradingflow::operators::portfolio::mean_variance::{Mode, markowitz};
+use tradingflow::operators::predictor::mean::linear_regression_incr;
+use tradingflow::operators::predictor::variance::{
+    Replacement, Target, rmt, sample, shrinkage, single_index,
+};
 use tradingflow::operators::rolling::diff;
 use tradingflow::operators::series::record_all;
-use tradingflow::ports::SeriesPortHandle;
+use tradingflow::operators::{portfolio, predictor};
+use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle, SignalPortHandle};
 use tradingflow::time::UnixTime;
 
-use common::models::{CovEstimator, Mode, linear_regression_mean, markowitz, minimum_variance};
 use common::strategy::{Market, NavTable, TRADING_DAYS};
 
 const RISK_AVERSION: f64 = 1.0;
-const MIN_PERIODS: i64 = 100;
+const MIN_PERIODS: usize = 100;
+const FACTOR_RANK: usize = 20;
 
-/// The estimators under comparison, in report order.
-const ESTIMATORS: [CovEstimator; 7] = [
-    CovEstimator::sample("sample"),
-    CovEstimator::shrinkage("shrinkage_comm_cov", 1),
-    CovEstimator::shrinkage("shrinkage_const_corr", 2),
-    CovEstimator::shrinkage("shrinkage_single_index", 3),
-    CovEstimator::rmt("rmt_0", "zero"),
-    CovEstimator::rmt("rmt_m", "mean"),
-    CovEstimator::single_index("single_index"),
+/// A covariance estimator under comparison.
+///
+/// The constructors return distinct opaque types, and a `Segment` cannot be
+/// boxed into a trait object (its `State` is an associated type), so the
+/// variants are named here and wired in a `match` — each arm produces the same
+/// pair of handles, which is what unifies them.
+#[derive(Clone, Copy)]
+enum Kind {
+    Sample,
+    Shrinkage(Target),
+    Rmt(Replacement),
+    SingleIndex,
+}
+
+struct Estimator {
+    name: &'static str,
+    kind: Kind,
+}
+
+/// The estimators under comparison, in report order — every structured
+/// alternative to the raw sample covariance the crate offers.
+const ESTIMATORS: [Estimator; 7] = [
+    Estimator {
+        name: "sample",
+        kind: Kind::Sample,
+    },
+    Estimator {
+        name: "shrinkage_comm_cov",
+        kind: Kind::Shrinkage(Target::CommonCovariance),
+    },
+    Estimator {
+        name: "shrinkage_const_corr",
+        kind: Kind::Shrinkage(Target::ConstantCorrelation),
+    },
+    Estimator {
+        name: "shrinkage_single_index",
+        kind: Kind::Shrinkage(Target::SingleIndex),
+    },
+    Estimator {
+        name: "rmt_0",
+        kind: Kind::Rmt(Replacement::Zero),
+    },
+    Estimator {
+        name: "rmt_m",
+        kind: Kind::Rmt(Replacement::Mean),
+    },
+    Estimator {
+        name: "single_index",
+        kind: Kind::SingleIndex,
+    },
 ];
+
+impl Kind {
+    /// Wire this estimator into the graph, returning its
+    /// `(signal, covariance)` output stream.
+    fn segment(
+        self,
+        sc: &mut Builder<Instant, UnixTime>,
+        config: predictor::Config,
+        inputs: PredictorInputs,
+    ) -> (SignalPortHandle<0>, ArrayPortHandle<f64, 2>) {
+        match self {
+            Kind::Sample => sc.segment(sample(config), inputs),
+            Kind::Shrinkage(target) => sc.segment(shrinkage(config, target), inputs),
+            Kind::Rmt(replacement) => sc.segment(rmt(config, replacement), inputs),
+            Kind::SingleIndex => sc.segment(single_index(config), inputs),
+        }
+    }
+}
+
+/// What [`Market::predictor_inputs`](common::strategy::Market::predictor_inputs)
+/// hands a predictor.
+type PredictorInputs = (
+    SignalPortHandle<0>,
+    ArrayPortHandle<f64, 2>,
+    ArrayPortHandle<f64, 1>,
+    SignalPortHandle<0>,
+    ArrayPortHandle<f64, 1>,
+);
 
 /// Variance-estimator comparison via GMV portfolio realized variance.
 #[derive(Parser)]
@@ -73,19 +149,32 @@ async fn main() {
 
     let mut sc = Builder::new(UnixTime);
 
-    let m = Market::build(&mut sc, &symbols, &args, Retention::unbounded());
-    // Raw daily log returns for the realized-variance metric (an ordinary
-    // `ArrayPort` view — the Python metric consumes it directly).
+    let m = Market::build(&mut sc, &symbols, &args);
+    // Raw daily log returns for the realized-variance metric.
     let log_returns = sc.segment(diff(1), (m.daily, m.log_adj));
 
+    let mean_config = predictor::Config {
+        target_offset: 1,
+        min_periods: Some(MIN_PERIODS),
+        universe_size: Some(args.index_size),
+        ..predictor::Config::default()
+    };
+    // Covariance window = one rebalance period, and no per-stock coverage
+    // filter (the mean predictor above keeps its own).
+    let cov_config = predictor::Config {
+        target_offset: 1,
+        max_periods: Some(args.rebalance_days as usize),
+        universe_size: Some(args.index_size),
+        ..predictor::Config::default()
+    };
+    let portfolio_config = portfolio::Config {
+        max_universe_size: Some(args.index_size),
+        ..portfolio::Config::default()
+    };
+
     let predicted_returns = sc.segment(
-        linear_regression_mean(m.dims, MIN_PERIODS),
-        (
-            m.rebalance_signal,
-            m.universe,
-            m.features.series,
-            m.demeaned_series,
-        ),
+        linear_regression_incr(mean_config),
+        m.predictor_inputs(m.demeaned),
     );
 
     let h_index = m.index_nav(&mut sc);
@@ -93,22 +182,13 @@ async fn main() {
     let recs: Vec<Rec> = ESTIMATORS
         .iter()
         .map(|e| {
-            // Covariance window = rebalance period, and there is no per-stock
-            // `min_periods` filter on the covariance estimators (the mean
-            // `LinearRegression` above keeps its own `min_periods`).
-            let cov = sc.segment(
-                e.build(m.dims, args.rebalance_days, None),
-                (
-                    m.rebalance_signal,
-                    m.universe,
-                    m.features.series,
-                    m.target_series,
-                ),
-            );
+            let cov = e
+                .kind
+                .segment(&mut sc, cov_config, m.predictor_inputs(m.target));
 
-            // GMV realized-variance metric (diagnostic; fed cov + raw returns
-            // on their own signals).
-            let mv = sc.segment(minimum_variance(m.n), (cov.0, cov.1, m.daily, log_returns));
+            // GMV realized-variance metric (diagnostic; fed the covariance and
+            // the raw returns on their own signals).
+            let mv = sc.segment(minimum_variance(), (cov.0, cov.1, m.daily, log_returns));
 
             // Long-only and long-short Markowitz portfolios.
             let nav: Vec<SeriesPortHandle<f64, 0>> = [true, false]
@@ -116,11 +196,12 @@ async fn main() {
                 .map(|long_only| {
                     let soft = sc.segment(
                         markowitz(
-                            m.n,
-                            args.index_size,
+                            portfolio_config,
                             Mode::MinMeanVariance,
                             RISK_AVERSION,
                             long_only,
+                            true,
+                            FACTOR_RANK,
                         ),
                         (m.rebalance_signal, m.universe, predicted_returns.1, cov.1),
                     );

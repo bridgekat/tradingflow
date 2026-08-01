@@ -72,7 +72,7 @@
 //! This is the whole pattern. An actual strategy can contain many more
 //! operators — [`forward_adjust`](operators::feature::forward_adjust),
 //! [`random`](operators::trader::fixed::random),
-//! [`return_sharpe`](operators::metric::return_sharpe)
+//! [`return_sharpe`](operators::metric::performance::return_sharpe)
 //! — but the overall structure stays the same.
 //!
 //! # Arrays and series
@@ -103,6 +103,3 @@ pub use macros::segment;
 
 #[cfg(feature = "python")]
 pub mod python;
-
-#[cfg(feature = "python")]
-pub mod python_old;

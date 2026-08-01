@@ -2,24 +2,22 @@
 
 use tradingflow::data::Instant;
 use tradingflow::graph::Builder;
+use tradingflow::operators::metric::predictor::mean::information_coefficient;
 use tradingflow::operators::series::record_all;
 use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle, SignalPortHandle};
 use tradingflow::time::UnixTime;
 
-use super::models::information_coefficient;
-
-/// Record the per-rebalance IC of the `factor` stream against the `target`
-/// stream — each a `(signal, values)` pair wired straight into the Python
+/// Record the per-evaluation-period IC of the `predict` stream against the
+/// `target` stream — each a `(signal, values)` pair wired straight into the
 /// metric, whose own output stream drives the record.
 pub fn ic_series(
     sc: &mut Builder<Instant, UnixTime>,
-    factor: (SignalPortHandle<0>, ArrayPortHandle<f64, 1>),
+    predict: (SignalPortHandle<0>, ArrayPortHandle<f64, 1>),
     target: (SignalPortHandle<0>, ArrayPortHandle<f64, 1>),
-    num_stocks: usize,
 ) -> SeriesPortHandle<f64, 0> {
     let ic = sc.segment(
-        information_coefficient(num_stocks),
-        (factor.0, factor.1, target.0, target.1),
+        information_coefficient(),
+        (predict.0, predict.1, target.0, target.1),
     );
     sc.segment(record_all(), ic)
 }
@@ -60,4 +58,45 @@ pub fn ic_stats(v: &[f64]) -> Option<IcStats> {
         t,
         n,
     })
+}
+
+/// Trailing-window OLS of `y` on `x` with an intercept: `(beta, alpha)`.
+///
+/// The market beta and alpha of a strategy, computed after the run from two
+/// recorded log-return series rather than in-graph — a single regression on
+/// the final window is not worth a node. Rows where either series is
+/// non-finite are dropped, and fewer than `min_periods` surviving rows give
+/// `NaN`.
+pub fn trailing_beta_alpha(
+    y: &[f64],
+    x: &[f64],
+    max_periods: usize,
+    min_periods: usize,
+) -> (f64, f64) {
+    let start = y.len().min(x.len()).saturating_sub(max_periods);
+    let pairs: Vec<(f64, f64)> = y[start..]
+        .iter()
+        .zip(&x[start..])
+        .filter(|(a, b)| a.is_finite() && b.is_finite())
+        .map(|(a, b)| (*a, *b))
+        .collect();
+
+    let n = pairs.len() as f64;
+    if pairs.len() < min_periods {
+        return (f64::NAN, f64::NAN);
+    }
+
+    let mean_y = pairs.iter().map(|(a, _)| a).sum::<f64>() / n;
+    let mean_x = pairs.iter().map(|(_, b)| b).sum::<f64>() / n;
+    let covariance: f64 = pairs
+        .iter()
+        .map(|(a, b)| (a - mean_y) * (b - mean_x))
+        .sum::<f64>();
+    let variance: f64 = pairs.iter().map(|(_, b)| (b - mean_x).powi(2)).sum::<f64>();
+
+    if variance <= 0.0 {
+        return (f64::NAN, f64::NAN);
+    }
+    let beta = covariance / variance;
+    (beta, mean_y - beta * mean_x)
 }

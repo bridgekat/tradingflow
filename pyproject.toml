@@ -19,20 +19,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
 examples = [
     # Generates the A-shares market data the `examples/` strategies read.
     # Pinned to a GitHub commit (was a git submodule at extern/a-shares-crawler);
     # pip fetches it on demand, so no submodule checkout is needed.
-    "a-shares-crawler @ git+https://github.com/bridgekat/a-shares-crawler.git@1aad4af7909411154662eaa2e913f106beaa2a97",
+    "a-shares-crawler @ git+https://github.com/bridgekat/a-shares-crawler.git@35169561c5ca89637be539d2a438055ac966aa33",
     # The example plot scripts (examples/plot*.py) render the engine's CSV output.
     "matplotlib",
 ]
 
-# `tradingflow` is the Python operator package (predictors / portfolios /
-# metrics) run by the Rust crate's embedded interpreter. It is the only
-# Python package the project ships now — the Rust core is a plain library crate
-# (the legacy Python-as-host `_native` extension and its maturin build are gone).
+# `tradingflow` is the Python operator package (predictor / portfolio / metric)
+# run by the Rust crate's embedded interpreter. It is the only Python package
+# the project ships — the Rust core is a plain library crate. The operators are
+# tested through the engine, in the crate's integration tests, so there is no
+# Python test suite here.
 [tool.hatch.build.targets.wheel]
 packages = ["python/tradingflow"]
 
@@ -41,9 +41,6 @@ packages = ["python/tradingflow"]
 # generation unless this is set.
 [tool.hatch.metadata]
 allow-direct-references = true
-
-[tool.pytest.ini_options]
-testpaths = ["python/tradingflow/tests"]
 
 [tool.black]
 line-length = 120

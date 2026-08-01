@@ -10,13 +10,12 @@ pub const DELIST_DAYS: usize = 20;
 
 use tradingflow::data::{Array, ArrayView, Instant, Retention};
 use tradingflow::graph::Builder;
-use tradingflow::operators::series::record_on;
 use tradingflow::operators::{
     array::{array_map, binary_map, map},
     elem, rolling,
     stats::*,
 };
-use tradingflow::ports::{ArrayPortHandle, SeriesPortHandle, SignalPortHandle};
+use tradingflow::ports::{ArrayPortHandle, SignalPortHandle};
 use tradingflow::time::UnixTime;
 
 /// Cross-sectional demean preserving NaN.
@@ -39,33 +38,24 @@ fn demean(r: ArrayView<f64, 1>) -> Array<f64, 1> {
     )
 }
 
-/// Winsorized daily log returns: `(target, target_series, demeaned_series)`.
-/// The covariance predictor consumes `target_series` (raw); the mean predictor
-/// consumes `demeaned_series` (cross-sectionally demeaned). Both series are
-/// recorded under `target_retention` — size it to the deepest consumer
-/// look-back (the incremental mean predictor reads a single trailing pair, the
-/// shrinkage covariance reads its `max_periods` window); pass
-/// [`Retention::unbounded()`] when full history is needed.
-#[allow(clippy::type_complexity)]
+/// Winsorized daily log returns: `(target, demeaned)`.
+///
+/// The covariance predictor consumes `target` (raw); the mean predictor
+/// consumes `demeaned` (cross-sectionally demeaned), since a pooled regression
+/// should not have to learn the market's daily drift on top of the
+/// cross-sectional signal.
+///
+/// Both are live cross-sections. The predictors record whatever training
+/// window they need on their own side, so there is nothing to retain here.
 pub fn build_log_return_target(
     sc: &mut Builder<Instant, UnixTime>,
     log_adj: ArrayPortHandle<f64, 1>,
     daily: SignalPortHandle<0>,
-    target_retention: Retention,
-) -> (
-    ArrayPortHandle<f64, 1>,
-    SeriesPortHandle<f64, 1>,
-    SeriesPortHandle<f64, 1>,
-) {
+) -> (ArrayPortHandle<f64, 1>, ArrayPortHandle<f64, 1>) {
     let log_returns = sc.segment(rolling::diff(1), (daily, log_adj));
     let target = sc.segment(winsorize(0.01), log_returns);
-    // Recorded on every daily pulse, so the leading all-NaN row (the first
-    // close has no prior close to difference against) is kept and the panel
-    // stays index-aligned with the feature panel recorded on the same signal.
-    let target_series = sc.segment(record_on(target_retention, false), (daily, target));
     let demeaned = sc.segment(array_map(demean), target);
-    let demeaned_series = sc.segment(record_on(target_retention, false), (daily, demeaned));
-    (target, target_series, demeaned_series)
+    (target, demeaned)
 }
 
 /// Constant ±`limit_pct` daily price limits from the previous close, rounded to

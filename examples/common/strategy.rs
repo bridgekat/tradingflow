@@ -6,7 +6,7 @@
 //! → trader → net value → record). What remains in each example is the part
 //! that actually differs: which predictor, which optimizer, which trader.
 
-use tradingflow::data::{Instant, Retention};
+use tradingflow::data::Instant;
 use tradingflow::graph::{Builder, Graph, Pool};
 use tradingflow::operators::elem;
 use tradingflow::operators::series::record_all;
@@ -18,7 +18,6 @@ use tradingflow::time::UnixTime;
 use super::args::CommonArgs;
 use super::data::{Stacked, build_stacked};
 use super::features::{Features, build_features};
-use super::models::Dims;
 use super::target::{DELIST_DAYS, PRICE_LIMIT, TICK_SIZE, build_log_return_target, build_quotes};
 use super::universe::build_cap_weighted_universe;
 
@@ -48,36 +47,34 @@ pub struct Market {
     pub asks: ArrayPortHandle<f64, 1>,
     /// Log adjusted close — the source of returns (refreshed on `daily`).
     pub log_adj: ArrayPortHandle<f64, 1>,
-    /// Raw winsorized log returns (the IC evaluators' target; refreshed on
-    /// `daily`).
+    /// Raw winsorized log returns — the covariance predictor's target, and the
+    /// IC evaluators' (refreshed on `daily`).
     pub target: ArrayPortHandle<f64, 1>,
-    /// Raw winsorized log returns (the covariance predictor's target).
-    pub target_series: SeriesPortHandle<f64, 1>,
-    /// Cross-sectionally demeaned log returns (the mean predictor's target).
-    pub demeaned_series: SeriesPortHandle<f64, 1>,
-    /// Panel dimensions for the predictors.
-    pub dims: Dims,
+    /// Cross-sectionally demeaned log returns — the mean predictor's target.
+    pub demeaned: ArrayPortHandle<f64, 1>,
     /// Number of loaded symbols.
     pub n: usize,
 }
 
 impl Market {
-    /// Build the spine. `retention` bounds the recorded feature/target panels —
-    /// size it to the deepest consumer look-back.
+    /// Build the spine.
+    ///
+    /// Nothing here is recorded for the predictors: they take live
+    /// cross-sections and keep whatever training window they need on their own
+    /// side, so there is no retention to size and no way for two recorded
+    /// panels to fall out of step.
     pub fn build(
         sc: &mut Builder<Instant, UnixTime>,
         symbols: &[String],
         args: &CommonArgs,
-        retention: Retention,
     ) -> Self {
         let n = symbols.len();
         let st = build_stacked(sc, symbols, args);
-        let features = build_features(sc, &st, retention);
+        let features = build_features(sc, &st);
         let circ_market_cap = sc.segment(elem::mul(), (st.close, st.circ_shares));
         let log_adj = sc.segment(elem::ln(), st.adjusted_close);
         let daily = st.daily;
-        let (target, target_series, demeaned_series) =
-            build_log_return_target(sc, log_adj, daily, retention);
+        let (target, demeaned) = build_log_return_target(sc, log_adj, daily);
         let (_, flags, bids, asks) =
             build_quotes(sc, daily, st.close, PRICE_LIMIT, TICK_SIZE, DELIST_DAYS);
 
@@ -85,12 +82,6 @@ impl Market {
         let universe =
             build_cap_weighted_universe(sc, circ_market_cap, rebalance_signal, args.index_size);
 
-        let dims = Dims {
-            num_stocks: n,
-            num_features: features.names.len(),
-            universe_size: args.index_size,
-            target_offset: 1,
-        };
         Self {
             st,
             features,
@@ -102,11 +93,32 @@ impl Market {
             asks,
             log_adj,
             target,
-            target_series,
-            demeaned_series,
-            dims,
+            demeaned,
             n,
         }
+    }
+
+    /// The predictors' input wiring: sample daily, rebalance on the schedule.
+    ///
+    /// `target` is the cross-section to predict — [`Market::demeaned`] for a
+    /// mean predictor, [`Market::target`] for a covariance one.
+    pub fn predictor_inputs(
+        &self,
+        target: ArrayPortHandle<f64, 1>,
+    ) -> (
+        SignalPortHandle<0>,
+        ArrayPortHandle<f64, 2>,
+        ArrayPortHandle<f64, 1>,
+        SignalPortHandle<0>,
+        ArrayPortHandle<f64, 1>,
+    ) {
+        (
+            self.daily,
+            self.features.panel,
+            target,
+            self.rebalance_signal,
+            self.universe,
+        )
     }
 
     /// Trade a `(signal, weights)` position stream with `trader`, returning its
