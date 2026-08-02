@@ -1,12 +1,12 @@
 use std::cmp::{Ord, PartialEq, PartialOrd};
 
 use crate::data::{Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::operators::array;
 use crate::ports::ArrayPort;
 
 /// Elementwise equality comparison: [`PartialEq::eq`].
-pub fn eq<T: Scalar + PartialEq, const N: usize>() -> impl Segment<
+pub fn eq<T: Scalar + PartialEq, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
     Context = Instant,
@@ -15,7 +15,7 @@ pub fn eq<T: Scalar + PartialEq, const N: usize>() -> impl Segment<
 }
 
 /// Elementwise inequality comparison: [`PartialEq::ne`].
-pub fn ne<T: Scalar + PartialEq, const N: usize>() -> impl Segment<
+pub fn ne<T: Scalar + PartialEq, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
     Context = Instant,
@@ -24,7 +24,7 @@ pub fn ne<T: Scalar + PartialEq, const N: usize>() -> impl Segment<
 }
 
 /// Elementwise less than: [`PartialOrd::lt`].
-pub fn lt<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
+pub fn lt<T: Scalar + PartialOrd, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
     Context = Instant,
@@ -33,7 +33,7 @@ pub fn lt<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
 }
 
 /// Elementwise less than or equal: [`PartialOrd::le`].
-pub fn le<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
+pub fn le<T: Scalar + PartialOrd, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
     Context = Instant,
@@ -42,7 +42,7 @@ pub fn le<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
 }
 
 /// Elementwise greater than: [`PartialOrd::gt`].
-pub fn gt<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
+pub fn gt<T: Scalar + PartialOrd, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
     Context = Instant,
@@ -51,7 +51,7 @@ pub fn gt<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
 }
 
 /// Elementwise greater than or equal: [`PartialOrd::ge`].
-pub fn ge<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
+pub fn ge<T: Scalar + PartialOrd, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<bool, N>,
     Context = Instant,
@@ -60,7 +60,7 @@ pub fn ge<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
 }
 
 /// Elementwise minimum: [`Ord::min`].
-pub fn min<T: Scalar + Ord, const N: usize>() -> impl Segment<
+pub fn min<T: Scalar + Ord, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<T, N>,
     Context = Instant,
@@ -69,7 +69,7 @@ pub fn min<T: Scalar + Ord, const N: usize>() -> impl Segment<
 }
 
 /// Elementwise maximum: [`Ord::max`].
-pub fn max<T: Scalar + Ord, const N: usize>() -> impl Segment<
+pub fn max<T: Scalar + Ord, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<T, N>,
     Context = Instant,
@@ -81,6 +81,6 @@ pub fn max<T: Scalar + Ord, const N: usize>() -> impl Segment<
 pub fn clamp<T: Scalar + Ord, const N: usize>(
     min: T,
     max: T,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     array::map(move |x: &T| x.clone().clamp(min.clone(), max.clone()))
 }

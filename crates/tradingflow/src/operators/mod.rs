@@ -1,4 +1,4 @@
-//! Built-in operator segments.
+//! Built-in operator nodes.
 
 pub mod array;
 pub mod elem;

@@ -2,7 +2,7 @@ use num_traits::Float;
 
 use super::base::{Accumulator, Rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, array};
-use crate::graph::{Segment, SegmentExt};
+use crate::graph::{Operator, OperatorExt};
 use crate::operators::series::buffer;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
@@ -73,7 +73,7 @@ impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for VarianceAccu
 pub fn series_var<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Rolling::new(window.into(), VarianceAccumulator::new(min_count))
 }
 
@@ -82,7 +82,7 @@ pub fn series_var<T: Scalar + Float, const N: usize>(
 pub fn var<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
     let window = window.into();
     buffer(window).then(series_var(window, min_count))

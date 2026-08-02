@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use tradingflow_data::Layout;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
 
 /// Operator signature for [`turnover`].
@@ -31,7 +31,7 @@ pub struct TurnoverState<T: Scalar + Float> {
     out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Segment for Turnover<T> {
+impl<T: Scalar + Float> Operator for Turnover<T> {
     type Inputs = (SignalPort<0>, ArrayPort<T, 1>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
@@ -78,7 +78,7 @@ impl<T: Scalar + Float> Segment for Turnover<T> {
 /// Cumulative turnover: the sum of L1 norm of changes in a weight vector,
 /// accumulated once per signal.
 pub fn turnover<T: Scalar + Float>()
--> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, 1>), Outputs = ArrayPort<T, 0>, Context = Instant>
+-> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, 1>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
     Turnover::new()
 }

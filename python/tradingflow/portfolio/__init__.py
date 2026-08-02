@@ -1,12 +1,12 @@
-"""Portfolio construction, as Python segments hosted by the Rust engine.
+"""Portfolio construction, as Python operators hosted by the Rust engine.
 
-Each module defines a segment whose contract mirrors the Rust `Segment`
+Each module defines a operator whose contract mirrors the Rust `Operator`
 trait, and binds it to `__op__` (or defines `build(**kwargs)` when the
-segment takes construction parameters):
+operator takes construction parameters):
 
     init(self, inputs) -> state
-    reset(self, inputs, state) -> outputs
-    compute(self, inputs, state, instant) -> outputs
+    reset(inputs, state) -> outputs
+    compute(inputs, state, instant) -> outputs
 
 See `tradingflow.metric` for the host contract in full.
 

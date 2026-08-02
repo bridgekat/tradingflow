@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{Queue, Source, StreamFeed, Time};
-use crate::typed::{HandlesInterface, Interface, InterfaceHandles, Pass, PortHandle, Segment};
+use crate::typed::{HandlesInterface, Interface, InterfaceHandles, Operator, Pass, PortHandle};
 
 /// The on-graph node for a source stream.
 struct Store<T: Source> {
@@ -17,7 +17,7 @@ impl<T: Source> Store<T> {
     }
 }
 
-impl<T: Source> Segment for Store<T> {
+impl<T: Source> Operator for Store<T> {
     type Inputs = ();
     type Outputs = T::Outputs;
     type Context = T::Instant;
@@ -84,26 +84,26 @@ impl<I: Clone + Ord + Sync + 'static, S: Time<I>> Builder<I, S> {
     }
 
     /// Adds a constant node to the graph.
-    pub fn value<T>(&mut self, value: T) -> <T::Outputs as InterfaceHandles>::HandlesOwned
+    pub fn val<T>(&mut self, value: T) -> <T::Outputs as InterfaceHandles>::HandlesOwned
     where
-        T: Segment<Inputs = (), Context = I>,
+        T: Operator<Inputs = (), Context = I>,
         T::Outputs: InterfaceHandles,
     {
-        self.inner.value(value)
+        self.inner.val(value)
     }
 
-    /// Adds a segment node to the graph.
-    pub fn segment<T, H>(
+    /// Adds an operator node to the graph.
+    pub fn op<T, H>(
         &mut self,
-        segment: T,
+        op: T,
         input_handles: H,
     ) -> <T::Outputs as InterfaceHandles>::HandlesOwned
     where
         H: HandlesInterface,
-        T: Segment<Inputs = H::Interface, Context = I>,
+        T: Operator<Inputs = H::Interface, Context = I>,
         T::Outputs: InterfaceHandles,
     {
-        self.inner.segment(segment, input_handles)
+        self.inner.op(op, input_handles)
     }
 
     /// Finalize into a runnable [`Graph`].

@@ -3,9 +3,9 @@
 mod cell;
 mod error;
 mod graph;
-mod segment;
+mod node;
 
 pub use cell::ErasedCell;
 pub use error::Error;
 pub use graph::{Adjacency, Builder, Graph};
-pub use segment::{ComputeFn, Segment};
+pub use node::{ComputeFn, Node};

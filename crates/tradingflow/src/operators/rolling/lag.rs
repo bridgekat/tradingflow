@@ -2,11 +2,11 @@ use num_traits::Float;
 
 use super::base::{Accumulator, Rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, array};
-use crate::graph::{Segment, SegmentExt};
+use crate::fuse;
+use crate::graph::{Operator, OperatorExt};
 use crate::operators::elem::{div, sub};
 use crate::operators::series::buffer;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
-use crate::segment;
 
 /// Accumulator for [`lag`].
 pub struct LagAccumulator<T: Scalar + Float> {
@@ -48,7 +48,7 @@ impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for LagAccumulat
 /// [`lag`] over an explicitly recorded series.
 pub fn series_lag<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Rolling::new(window.into(), LagAccumulator::new())
 }
 
@@ -56,7 +56,7 @@ pub fn series_lag<T: Scalar + Float, const N: usize>(
 /// Returns `NaN` if there is no such sample.
 pub fn lag<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
     let window = window.into();
     buffer(window).then(series_lag(window))
@@ -66,9 +66,9 @@ pub fn lag<T: Scalar + Float, const N: usize>(
 /// Returns `NaN` if there is no such sample.
 pub fn diff<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
-    segment!(@[crate::graph::cb] |c: SignalPort<0>, x: ArrayPort<T, N>| -> ArrayPort<T, N> {
+    fuse!(@[crate::graph::cb] |c: SignalPort<0>, x: ArrayPort<T, N>| -> ArrayPort<T, N> {
         let prev = lag(window) @ (c, x);
         sub() @ (x, prev)
     })
@@ -78,9 +78,9 @@ pub fn diff<T: Scalar + Float, const N: usize>(
 /// Returns `NaN` if there is no such sample.
 pub fn pct_change<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
-    segment!(@[crate::graph::cb] |c: SignalPort<0>, x: ArrayPort<T, N>| -> ArrayPort<T, N> {
+    fuse!(@[crate::graph::cb] |c: SignalPort<0>, x: ArrayPort<T, N>| -> ArrayPort<T, N> {
         let prev = lag(window) @ (c, x);
         div() @ (sub() @ (x, prev), prev)
     })

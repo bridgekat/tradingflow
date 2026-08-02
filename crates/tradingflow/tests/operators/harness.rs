@@ -1,11 +1,11 @@
 //! Shared fixtures for the operator integration tests: instant/array
 //! constructors, NaN-aware assertions, deterministic data paths, and the
-//! auxiliary probe segments (a pokeable signal, a signal-pulse counter and a
+//! auxiliary probe operators (a pokeable signal, a signal-pulse counter and a
 //! scheduled-generation counter) that the event-semantics tests wire in.
 
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Scalar, SeriesView};
 use tradingflow::graph::typed::{Builder, NodeHandle};
-use tradingflow::graph::{Port, Segment, Val};
+use tradingflow::graph::{Operator, Port, Val};
 use tradingflow::ports::{ArrayPort, ArrayPortHandle, SignalPort, SignalPortHandle};
 
 /// Default tolerance for [`assert_close`]. Loose enough for the accumulators'
@@ -121,7 +121,7 @@ pub fn quarter_path(seed: u64, len: usize) -> Vec<f64> {
 }
 
 // ---------------------------------------------------------------------------
-// Probe segments
+// Probe operators
 // ---------------------------------------------------------------------------
 
 /// A pokeable array cell paired with its accompanying signal: each poke is one
@@ -133,7 +133,7 @@ pub fn event_src<const N: usize>(
     b: &mut Builder<Instant>,
     v: Array<f64, N>,
 ) -> (
-    NodeHandle<impl Segment<State = Array<f64, N>> + use<N>>,
+    NodeHandle<impl Operator<State = Array<f64, N>> + use<N>>,
     (SignalPortHandle<0>, ArrayPortHandle<f64, N>),
 ) {
     b.source(cell(v))
@@ -148,7 +148,7 @@ pub struct Cell<T: Scalar, const N: usize> {
     value: Array<T, N>,
 }
 
-impl<T: Scalar, const N: usize> Segment for Cell<T, N> {
+impl<T: Scalar, const N: usize> Operator for Cell<T, N> {
     type Inputs = ();
     type Outputs = (SignalPort<0>, ArrayPort<T, N>);
     type Context = Instant;
@@ -177,7 +177,7 @@ impl<T: Scalar, const N: usize> Segment for Cell<T, N> {
 /// See [`Cell`].
 pub fn cell<T: Scalar, const N: usize>(
     value: impl Into<Array<T, N>>,
-) -> impl Segment<
+) -> impl Operator<
     Inputs = (),
     Outputs = (SignalPort<0>, ArrayPort<T, N>),
     Context = Instant,
@@ -191,7 +191,7 @@ pub fn cell<T: Scalar, const N: usize>(
 /// Operator signature for [`batch_face`].
 pub struct BatchFace<const N: usize>;
 
-impl<const N: usize> Segment for BatchFace<N> {
+impl<const N: usize> Operator for BatchFace<N> {
     type Inputs = (SignalPort<N>, ArrayPort<f64, N>);
     type Outputs = ArrayPort<f64, N>;
     type Context = Instant;
@@ -231,7 +231,7 @@ impl<const N: usize> Segment for BatchFace<N> {
 /// and NaN elsewhere. Signals read post-reset (all-false) through
 /// `g.view`, so assertions on "what arrived on this wire this tick" go
 /// through this probe instead.
-pub fn batch_face<const N: usize>() -> impl Segment<
+pub fn batch_face<const N: usize>() -> impl Operator<
     Inputs = (SignalPort<N>, ArrayPort<f64, N>),
     Outputs = ArrayPort<f64, N>,
     Context = Instant,
@@ -242,7 +242,7 @@ pub fn batch_face<const N: usize>() -> impl Segment<
 /// Operator signature for [`count`].
 pub struct Count<const N: usize>;
 
-impl<const N: usize> Segment for Count<N> {
+impl<const N: usize> Operator for Count<N> {
     type Inputs = (SignalPort<0>, ArrayPort<f64, N>);
     type Outputs = Port<Val<usize>>;
     type Context = Instant;
@@ -273,7 +273,7 @@ impl<const N: usize> Segment for Count<N> {
 
 /// Counts an event stream's signals — the probe for event-propagation
 /// assertions (a scheduled generation without a pulse does not count).
-pub fn count<const N: usize>() -> impl Segment<
+pub fn count<const N: usize>() -> impl Operator<
     Inputs = (SignalPort<0>, ArrayPort<f64, N>),
     Outputs = Port<Val<usize>>,
     Context = Instant,
@@ -284,7 +284,7 @@ pub fn count<const N: usize>() -> impl Segment<
 /// Operator signature for [`runs`].
 pub struct Runs<const N: usize>;
 
-impl<const N: usize> Segment for Runs<N> {
+impl<const N: usize> Operator for Runs<N> {
     type Inputs = ArrayPort<f64, N>;
     type Outputs = Port<Val<usize>>;
     type Context = Instant;
@@ -308,14 +308,14 @@ impl<const N: usize> Segment for Runs<N> {
 /// dirty-cone/recompute assertions on *state* edges (every scheduled
 /// generation counts, eventful or not).
 pub fn runs<const N: usize>()
--> impl Segment<Inputs = ArrayPort<f64, N>, Outputs = Port<Val<usize>>, Context = Instant> {
+-> impl Operator<Inputs = ArrayPort<f64, N>, Outputs = Port<Val<usize>>, Context = Instant> {
     Runs
 }
 
 /// Operator signature for [`signal`].
 pub struct ManualSignal;
 
-impl Segment for ManualSignal {
+impl Operator for ManualSignal {
     type Inputs = ();
     type Outputs = SignalPort<0>;
     type Context = Instant;
@@ -335,7 +335,7 @@ impl Segment for ManualSignal {
 /// A pokeable manual signal: wired as a source, touching its state via
 /// `state_mut` marks it dirty, so it pulses (`true`) for exactly the
 /// generations the test chooses and resets to `false` in between.
-pub fn signal() -> impl Segment<Inputs = (), Outputs = SignalPort<0>, Context = Instant, State = ()>
+pub fn signal() -> impl Operator<Inputs = (), Outputs = SignalPort<0>, Context = Instant, State = ()>
 {
     ManualSignal
 }

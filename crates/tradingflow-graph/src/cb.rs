@@ -2,13 +2,13 @@
 
 use std::marker::PhantomData;
 
-use super::{Interface, Segment};
+use super::{Interface, Operator};
 
 /// The identity operator `id`: the categorical identity.
 /// Forwards inputs to outputs without modification.
 pub struct Id<T, C>(pub PhantomData<(T, C)>);
 
-impl<T, C> Segment for Id<T, C>
+impl<T, C> Operator for Id<T, C>
 where
     T: Interface,
     C: Sync + 'static,
@@ -42,10 +42,10 @@ impl<T, C> Default for Id<T, C> {
 /// Feeds the outputs of `F` as inputs to `G` and produces the outputs of `G`.
 pub struct Comp<F, G>(pub F, pub G);
 
-impl<F, G> Segment for Comp<F, G>
+impl<F, G> Operator for Comp<F, G>
 where
-    F: Segment,
-    G: Segment<Inputs = F::Outputs, Context = F::Context>,
+    F: Operator,
+    G: Operator<Inputs = F::Outputs, Context = F::Context>,
 {
     type Inputs = F::Inputs;
     type Outputs = G::Outputs;
@@ -82,8 +82,8 @@ where
 
 impl<F, G> Default for Comp<F, G>
 where
-    F: Segment + Default,
-    G: Segment + Default,
+    F: Operator + Default,
+    G: Operator + Default,
 {
     fn default() -> Self {
         Self(F::default(), G::default())
@@ -94,10 +94,10 @@ where
 /// Feeds the same input to both branches and pair their outputs.
 pub struct Fork<F, G>(pub F, pub G);
 
-impl<F, G> Segment for Fork<F, G>
+impl<F, G> Operator for Fork<F, G>
 where
-    F: Segment,
-    G: Segment<Inputs = F::Inputs, Context = F::Context>,
+    F: Operator,
+    G: Operator<Inputs = F::Inputs, Context = F::Context>,
 {
     type Inputs = F::Inputs;
     type Outputs = (F::Outputs, G::Outputs);
@@ -137,8 +137,8 @@ where
 
 impl<F, G> Default for Fork<F, G>
 where
-    F: Segment + Default,
-    G: Segment + Default,
+    F: Operator + Default,
+    G: Operator + Default,
 {
     fn default() -> Self {
         Self(F::default(), G::default())
@@ -149,7 +149,7 @@ where
 /// Forwards the first component of the output and drops the second.
 pub struct Left<T, U, C>(pub PhantomData<(T, U, C)>);
 
-impl<T, U, C> Segment for Left<T, U, C>
+impl<T, U, C> Operator for Left<T, U, C>
 where
     T: Interface,
     U: Interface,
@@ -188,7 +188,7 @@ impl<T, U, C> Default for Left<T, U, C> {
 /// Forwards the second component of the output and drops the first.
 pub struct Right<T, U, C>(pub PhantomData<(T, U, C)>);
 
-impl<T, U, C> Segment for Right<T, U, C>
+impl<T, U, C> Operator for Right<T, U, C>
 where
     T: Interface,
     U: Interface,
@@ -224,14 +224,14 @@ impl<T, U, C> Default for Right<T, U, C> {
 }
 
 /// Parallel composition `F *** G`: the arrow map of the product functor.
-/// Runs both segments over a pair of inputs, producing a pair of outputs.
+/// Runs both operators over a pair of inputs, producing a pair of outputs.
 /// Equivalent to `Fork<Comp<Left, F>, Comp<Right, G>>`.
 pub struct Par<F, G>(pub F, pub G);
 
-impl<F, G> Segment for Par<F, G>
+impl<F, G> Operator for Par<F, G>
 where
-    F: Segment,
-    G: Segment<Context = F::Context>,
+    F: Operator,
+    G: Operator<Context = F::Context>,
 {
     type Inputs = (F::Inputs, G::Inputs);
     type Outputs = (F::Outputs, G::Outputs);
@@ -268,8 +268,8 @@ where
 
 impl<F, G> Default for Par<F, G>
 where
-    F: Segment + Default,
-    G: Segment + Default,
+    F: Operator + Default,
+    G: Operator + Default,
 {
     fn default() -> Self {
         Self(F::default(), G::default())
@@ -283,7 +283,7 @@ where
 /// the type system of Rust.
 pub struct Arr<T, U, F, C>(F, PhantomData<(T, U, C)>);
 
-impl<T, U, F, C> Segment for Arr<T, U, F, C>
+impl<T, U, F, C> Operator for Arr<T, U, F, C>
 where
     T: Interface,
     U: Interface,
@@ -331,10 +331,10 @@ where
 /// reduce type complexity.
 pub struct Bind<F, G, H>(pub F, pub G, pub H);
 
-impl<F, G, H> Segment for Bind<F, G, H>
+impl<F, G, H> Operator for Bind<F, G, H>
 where
-    F: Segment,
-    G: Segment<Context = F::Context>,
+    F: Operator,
+    G: Operator<Context = F::Context>,
     H: for<'a> Fn(
             <F::Outputs as Interface>::Values<'a>,
             &'a (),
@@ -381,9 +381,9 @@ where
 /// Equivalent to `Comp<F, Arr<H>>`; used by macros to reduce type complexity.
 pub struct Route<F, U, T>(pub F, pub T, pub PhantomData<U>);
 
-impl<F, T, H> Segment for Route<F, T, H>
+impl<F, T, H> Operator for Route<F, T, H>
 where
-    F: Segment,
+    F: Operator,
     T: Interface,
     H: for<'a> Fn(<F::Outputs as Interface>::Values<'a>, &'a ()) -> T::Values<'a> + Send + 'static,
 {
@@ -418,32 +418,32 @@ where
     }
 }
 
-/// Convenient combinator methods on any [`Segment`].
-pub trait SegmentExt: Segment + Sized {
+/// Convenient combinator methods on any [`Operator`].
+pub trait OperatorExt: Operator + Sized {
     fn then<G>(self, g: G) -> Comp<Self, G>
     where
-        G: Segment<Inputs = Self::Outputs, Context = Self::Context>,
+        G: Operator<Inputs = Self::Outputs, Context = Self::Context>,
     {
         Comp(self, g)
     }
 
     fn fork<G>(self, g: G) -> Fork<Self, G>
     where
-        G: Segment<Inputs = Self::Inputs, Context = Self::Context>,
+        G: Operator<Inputs = Self::Inputs, Context = Self::Context>,
     {
         Fork(self, g)
     }
 
     fn par<G>(self, g: G) -> Par<Self, G>
     where
-        G: Segment<Context = Self::Context>,
+        G: Operator<Context = Self::Context>,
     {
         Par(self, g)
     }
 
-    fn bind<S, F>(self, seg: S, route: F) -> Bind<Self, S, F>
+    fn bind<S, F>(self, op: S, route: F) -> Bind<Self, S, F>
     where
-        S: Segment<Context = Self::Context>,
+        S: Operator<Context = Self::Context>,
         F: for<'a> Fn(
                 <Self::Outputs as Interface>::Values<'a>,
                 &'a (),
@@ -451,7 +451,7 @@ pub trait SegmentExt: Segment + Sized {
             + Send
             + 'static,
     {
-        Bind(self, seg, route)
+        Bind(self, op, route)
     }
 
     fn route<U, F>(self, route: F) -> Route<Self, U, F>
@@ -465,4 +465,4 @@ pub trait SegmentExt: Segment + Sized {
     }
 }
 
-impl<T: Segment + Sized> SegmentExt for T {}
+impl<T: Operator + Sized> OperatorExt for T {}

@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::MeanPredictor;
 use crate::operators::predictor::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Pooled ordinary least squares on the feature panel, refit from the whole
 /// window each time.
@@ -25,7 +25,7 @@ pub fn linear_regression(
     max_samples: Option<usize>,
     subsample_seed: u64,
 ) -> impl MeanPredictor {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.predictor.mean.linear_regression",
         config.params(|d| {
             d.set_item("max_samples", max_samples)?;

@@ -22,11 +22,11 @@ pub type Outputs = (SignalPort<0>, ArrayPort<f64, 1>);
 
 /// What every constructor in this module returns.
 pub trait VariancePortfolio:
-    crate::graph::Segment<Inputs = Inputs, Outputs = Outputs, Context = Instant>
+    crate::graph::Operator<Inputs = Inputs, Outputs = Outputs, Context = Instant>
 {
 }
 
 impl<S> VariancePortfolio for S where
-    S: crate::graph::Segment<Inputs = Inputs, Outputs = Outputs, Context = Instant>
+    S: crate::graph::Operator<Inputs = Inputs, Outputs = Outputs, Context = Instant>
 {
 }

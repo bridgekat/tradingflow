@@ -52,11 +52,11 @@ pub type Outputs = (SignalPort<0>, ArrayPort<f64, 1>);
 
 /// What every constructor in this module returns.
 pub trait MeanVariancePortfolio:
-    crate::graph::Segment<Inputs = Inputs, Outputs = Outputs, Context = Instant>
+    crate::graph::Operator<Inputs = Inputs, Outputs = Outputs, Context = Instant>
 {
 }
 
 impl<S> MeanVariancePortfolio for S where
-    S: crate::graph::Segment<Inputs = Inputs, Outputs = Outputs, Context = Instant>
+    S: crate::graph::Operator<Inputs = Inputs, Outputs = Outputs, Context = Instant>
 {
 }

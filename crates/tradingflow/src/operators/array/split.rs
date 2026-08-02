@@ -2,7 +2,7 @@ use bumpalo::Bump;
 use std::marker::PhantomData;
 
 use crate::data::{ArrayView, Instant, Scalar, array};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, ArrayPorts};
 
 /// Operator signature for [`split`], [`unstack`] etc.
@@ -26,7 +26,7 @@ where
     }
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Segment for SplitView<T, N, U, M, F>
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Operator for SplitView<T, N, U, M, F>
 where
     F: FnMut(ArrayView<'_, T, N>) -> Vec<ArrayView<'_, U, M>> + Send + 'static,
 {
@@ -62,7 +62,7 @@ where
 pub fn split<T: Scalar, const N: usize>(
     lengths: Vec<usize>,
     axis: usize,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPorts<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPorts<T, N>, Context = Instant> {
     SplitView::new(move |a: ArrayView<'_, T, N>| array::split(a, &lengths, axis))
 }
 
@@ -70,7 +70,7 @@ pub fn split<T: Scalar, const N: usize>(
 /// axis: [`array::unstack`].
 pub fn unstack<T: Scalar, const N: usize, const M: usize>(
     axis: usize,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPorts<T, M>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPorts<T, M>, Context = Instant> {
     assert!(
         M + 1 == N,
         "unstack: output ndim ({M}) must be input ndim ({N}) minus one"

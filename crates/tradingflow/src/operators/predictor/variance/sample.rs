@@ -1,6 +1,6 @@
 use super::VariancePredictor;
 use crate::operators::predictor::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Sample covariance of the target over the window, computed pairwise so a
 /// stock missing on some periods still contributes on the rest.
@@ -15,7 +15,7 @@ use crate::python::py_segment_module;
 ///
 /// See [module-level docs](super::super) for inputs and outputs.
 pub fn sample(config: Config) -> impl VariancePredictor {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.predictor.variance.sample",
         config.params(|_| Ok(())),
     )

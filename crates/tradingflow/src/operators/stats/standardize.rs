@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::ArrayPort;
 
 pub struct Standardize<T: Scalar + Float, const N: usize> {
@@ -23,7 +23,7 @@ impl<T: Scalar + Float, const N: usize> Default for Standardize<T, N> {
     }
 }
 
-impl<T: Scalar + Float, const N: usize> Segment for Standardize<T, N> {
+impl<T: Scalar + Float, const N: usize> Operator for Standardize<T, N> {
     type Inputs = ArrayPort<T, N>;
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
@@ -104,6 +104,6 @@ fn standardize_into<T: Scalar + Float, const N: usize>(
 /// entries (NaN or ±∞) are treated as missing and map to NaN; the whole
 /// cross-section is NaN if fewer than two finite values remain or σ = 0.
 pub fn standardize<T: Scalar + Float, const N: usize>()
--> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+-> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Standardize::new()
 }

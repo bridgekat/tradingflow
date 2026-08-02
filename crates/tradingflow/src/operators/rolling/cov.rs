@@ -2,7 +2,7 @@ use num_traits::Float;
 
 use super::base::{Accumulator, Rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar};
-use crate::graph::{Segment, SegmentExt};
+use crate::graph::{Operator, OperatorExt};
 use crate::operators::series::buffer;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
@@ -106,7 +106,7 @@ impl<T: Scalar + Float> Accumulator<T, 1, T, 2> for CovarianceAccumulator<T> {
 pub fn series_cov<T: Scalar + Float>(
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = SeriesPort<T, 1>, Outputs = ArrayPort<T, 2>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, 1>, Outputs = ArrayPort<T, 2>, Context = Instant> {
     Rolling::new(window.into(), CovarianceAccumulator::new(min_count))
 }
 
@@ -117,7 +117,7 @@ pub fn series_cov<T: Scalar + Float>(
 pub fn cov<T: Scalar + Float>(
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, 1>), Outputs = ArrayPort<T, 2>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, 1>), Outputs = ArrayPort<T, 2>, Context = Instant>
 {
     let window = window.into();
     buffer(window).then(series_cov(window, min_count))

@@ -1,7 +1,7 @@
 use crate::data::Instant;
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Gaussian negative log-likelihood of a covariance predictor against realized
 /// targets, averaged over the evaluation period.
@@ -17,7 +17,7 @@ use crate::python::py_segment_module;
 /// `Σ⁺` is the pseudo-inverse, which keeps a rank-deficient prediction
 /// usable by restricting the likelihood to its PSD subspace; stocks whose
 /// predicted variance is non-finite are excluded and contribute nothing.
-pub fn log_likelihood() -> impl Segment<
+pub fn log_likelihood() -> impl Operator<
     Inputs = (
         SignalPort<0>,
         ArrayPort<f64, 2>,
@@ -27,5 +27,5 @@ pub fn log_likelihood() -> impl Segment<
     Outputs = (SignalPort<0>, ArrayPort<f64, 0>),
     Context = Instant,
 > {
-    py_segment_module("tradingflow.metric.predictor.variance.log_likelihood", None)
+    py_operator_module("tradingflow.metric.predictor.variance.log_likelihood", None)
 }

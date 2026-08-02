@@ -98,7 +98,7 @@ fn run<E: Exec>(trader: Fixed<E>, n: usize, steps: &[Step]) -> Vec<Obs> {
     // One manual signal per stock, stacked into the `[n]` dividend signal array.
     let div_ticks: Vec<_> = (0..n).map(|_| b.source(signal())).collect();
     let div_signals: Vec<_> = div_ticks.iter().map(|&(_, c)| c).collect();
-    let div_signal = b.segment(
+    let div_signal = b.op(
         signal::as_signal_map(array::stack::<bool, 0, 1>(0)),
         &div_signals[..],
     );
@@ -108,7 +108,7 @@ fn run<E: Exec>(trader: Fixed<E>, n: usize, steps: &[Step]) -> Vec<Obs> {
     let (reb_tick, reb_signal) = b.source(signal());
     let (w_h, w_v) = b.source(array::constant(vec![0.0; n]));
 
-    let (pos, cash_out, net_out) = b.segment(
+    let (pos, cash_out, net_out) = b.op(
         trader,
         (
             (price_signal, flags_v, bids_v, asks_v),

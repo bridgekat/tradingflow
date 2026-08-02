@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::MeanVariancePortfolio;
 use crate::operators::portfolio::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Maximizes predicted return subject to a tracking-error budget against the
 /// universe.
@@ -29,7 +29,7 @@ pub fn benchmark_relative(
     full_position: bool,
     factor_rank: usize,
 ) -> impl MeanVariancePortfolio {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.portfolio.mean_variance.benchmark_relative",
         config.params(|d| {
             d.set_item("bound", bound)?;

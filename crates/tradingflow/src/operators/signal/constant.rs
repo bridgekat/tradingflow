@@ -1,5 +1,5 @@
 use crate::data::{ArrayView, Instant};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::SignalPort;
 
 /// Operator signature for [`quiet`] etc.
@@ -13,7 +13,7 @@ impl<const N: usize> Quiet<N> {
     }
 }
 
-impl<const N: usize> Segment for Quiet<N> {
+impl<const N: usize> Operator for Quiet<N> {
     type Inputs = ();
     type Outputs = SignalPort<N>;
     type Context = Instant;
@@ -39,6 +39,6 @@ impl<const N: usize> Segment for Quiet<N> {
 /// A quiet signal array cell.
 pub fn quiet<const N: usize>(
     extents: [usize; N],
-) -> impl Segment<Inputs = (), Outputs = SignalPort<N>, Context = Instant, State = [usize; N]> {
+) -> impl Operator<Inputs = (), Outputs = SignalPort<N>, Context = Instant, State = [usize; N]> {
     Quiet::new(extents)
 }

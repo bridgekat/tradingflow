@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::VariancePredictor;
 use crate::operators::predictor::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// What [`rmt`] does with the eigenvalues it judges to be noise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub fn rmt(config: Config, replacement: Replacement) -> impl VariancePredictor {
         Replacement::Zero => "zero",
         Replacement::Mean => "mean",
     };
-    py_segment_module(
+    py_operator_module(
         "tradingflow.predictor.variance.rmt",
         config.params(|d| d.set_item("mode", mode)),
     )

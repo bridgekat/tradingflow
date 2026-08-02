@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::VariancePredictor;
 use crate::operators::predictor::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// What [`shrinkage`] pulls the sample covariance toward — the three targets
 /// surveyed in Pantaleo et al. (2010), Section III.D.
@@ -33,7 +33,7 @@ pub enum Target {
 ///
 /// See [module-level docs](super::super) for inputs and outputs.
 pub fn shrinkage(config: Config, target: Target) -> impl VariancePredictor {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.predictor.variance.shrinkage",
         config.params(|d| d.set_item("target", target as u8)),
     )

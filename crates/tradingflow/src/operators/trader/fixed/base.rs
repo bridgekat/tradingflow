@@ -1,5 +1,5 @@
 use crate::data::{ArrayView, Instant};
-use crate::graph::{Interface, Segment};
+use crate::graph::{Interface, Operator};
 use crate::ports::{ArrayPort, SignalPort};
 
 /// Base trait for fixed-price execution policies.
@@ -78,7 +78,7 @@ pub struct FixedState<E: Exec> {
     net_value: f64,
 }
 
-impl<E: Exec> Segment for Fixed<E> {
+impl<E: Exec> Operator for Fixed<E> {
     type Inputs = (
         (
             SignalPort<0>,

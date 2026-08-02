@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::VariancePredictor;
 use crate::operators::predictor::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// How [`hierarchical`] measures the similarity of two clusters when deciding
 /// what to merge next.
@@ -39,7 +39,7 @@ pub fn hierarchical(config: Config, linkage: Linkage) -> impl VariancePredictor 
         Linkage::Wpgma => "wpgma",
         Linkage::Hausdorff => "hausdorff",
     };
-    py_segment_module(
+    py_operator_module(
         "tradingflow.predictor.variance.hierarchical",
         config.params(|d| d.set_item("method", method)),
     )

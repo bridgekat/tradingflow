@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::MeanPredictor;
 use crate::operators::predictor::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Pooled L2-penalized regression fit from an incrementally maintained Gram.
 ///
@@ -26,7 +26,7 @@ pub fn ridge_incr(config: Config, alpha: f64) -> impl MeanPredictor {
         alpha >= 0.0,
         "ridge alpha must be non-negative, got {alpha}"
     );
-    py_segment_module(
+    py_operator_module(
         "tradingflow.predictor.mean.ridge_incr",
         config.params(|d| d.set_item("alpha", alpha)),
     )

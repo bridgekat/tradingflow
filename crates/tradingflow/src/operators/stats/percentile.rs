@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use super::rank::rank_positions;
 use crate::data::{Array, ArrayView, Instant, Layout, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::ArrayPort;
 
 pub struct Percentile<T: Scalar + Float, const N: usize> {
@@ -30,7 +30,7 @@ pub struct PercentileState<T: Scalar + Float, const N: usize> {
     out: Array<T, N>,
 }
 
-impl<T: Scalar + Float, const N: usize> Segment for Percentile<T, N> {
+impl<T: Scalar + Float, const N: usize> Operator for Percentile<T, N> {
     type Inputs = ArrayPort<T, N>;
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
@@ -88,6 +88,6 @@ fn percentile_into<T: Scalar + Float, const N: usize>(
 /// ±∞) are treated as missing and map to NaN; tied values share their average
 /// rank.
 pub fn percentile<T: Scalar + Float, const N: usize>()
--> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+-> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Percentile::new()
 }

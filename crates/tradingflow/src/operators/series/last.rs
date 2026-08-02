@@ -1,7 +1,7 @@
 use num_traits::Float;
 
 use crate::data::{Array, ArrayView, Instant, Scalar, SeriesView};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SeriesPort};
 
 /// Operator signature for [`last_or`] and [`last`].
@@ -15,7 +15,7 @@ impl<T: Scalar, const N: usize> Last<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> Segment for Last<T, N> {
+impl<T: Scalar, const N: usize> Operator for Last<T, N> {
     type Inputs = SeriesPort<T, N>;
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
@@ -57,13 +57,13 @@ impl<T: Scalar, const N: usize> Segment for Last<T, N> {
 /// `fill` if the series is empty.
 pub fn last_or<T: Scalar, const N: usize>(
     fill: T,
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Last::new(fill)
 }
 
 /// The most recent element of a series view as an array view. Filled with
 /// NaN if the series is empty.
 pub fn last<T: Scalar + Float, const N: usize>()
--> impl Segment<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+-> impl Operator<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Last::new(T::nan())
 }

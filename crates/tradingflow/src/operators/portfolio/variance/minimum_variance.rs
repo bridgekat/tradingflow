@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::VariancePortfolio;
 use crate::operators::portfolio::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Global minimum variance: the book with the least predicted risk, subject to
 /// being fully invested.
@@ -30,7 +30,7 @@ pub fn minimum_variance(
     long_only: bool,
     factor_rank: usize,
 ) -> impl VariancePortfolio {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.portfolio.variance.minimum_variance",
         config.params(|d| {
             d.set_item("long_only", long_only)?;

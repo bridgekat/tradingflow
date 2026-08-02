@@ -1,6 +1,6 @@
 use super::MeanPredictor;
 use crate::operators::predictor::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Pooled ordinary least squares fit from an incrementally maintained Gram.
 ///
@@ -16,7 +16,7 @@ use crate::python::py_segment_module;
 ///
 /// See [module-level docs](super::super) for inputs and outputs.
 pub fn linear_regression_incr(config: Config) -> impl MeanPredictor {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.predictor.mean.linear_regression_incr",
         config.params(|_| Ok(())),
     )

@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::data::{self, Array, ArrayView, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::ArrayPort;
 
 /// Operator signature for [`array_map`] etc.
@@ -30,7 +30,7 @@ where
     }
 }
 
-impl<A: Scalar, const N: usize, T: Scalar, const M: usize, I, F> Segment
+impl<A: Scalar, const N: usize, T: Scalar, const M: usize, I, F> Operator
     for ArrayMap<A, N, T, M, I, F>
 where
     I: FnOnce(ArrayView<'_, A, N>) -> Array<T, M> + Send + 'static,
@@ -97,7 +97,7 @@ where
     }
 }
 
-impl<A: Scalar, const L: usize, B: Scalar, const N: usize, T: Scalar, const M: usize, I, F> Segment
+impl<A: Scalar, const L: usize, B: Scalar, const N: usize, T: Scalar, const M: usize, I, F> Operator
     for ArrayBinaryMap<A, L, B, N, T, M, I, F>
 where
     I: FnOnce(ArrayView<'_, A, L>, ArrayView<'_, B, N>) -> Array<T, M> + Send + 'static,
@@ -195,7 +195,7 @@ impl<
     const N: usize,
     I,
     F,
-> Segment for ArrayTernaryMap<A, K, B, L, C, M, T, N, I, F>
+> Operator for ArrayTernaryMap<A, K, B, L, C, M, T, N, I, F>
 where
     I: FnOnce(ArrayView<'_, A, K>, ArrayView<'_, B, L>, ArrayView<'_, C, M>) -> Array<T, N>
         + Send
@@ -250,7 +250,7 @@ where
 pub fn array_map_inplace<A: Scalar, const N: usize, T: Scalar, const M: usize>(
     init: impl FnOnce(ArrayView<'_, A, N>) -> Array<T, M> + Send + 'static,
     update: impl FnMut(&mut Array<T, M>, ArrayView<'_, A, N>) + Send + 'static,
-) -> impl Segment<Inputs = ArrayPort<A, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPort<A, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
     ArrayMap::new(init, update)
 }
 
@@ -258,7 +258,7 @@ pub fn array_map_inplace<A: Scalar, const N: usize, T: Scalar, const M: usize>(
 #[allow(clippy::type_complexity)]
 pub fn array_map<A: Scalar, const N: usize, T: Scalar, const M: usize>(
     f: impl FnMut(ArrayView<'_, A, N>) -> Array<T, M> + Clone + Send + 'static,
-) -> impl Segment<Inputs = ArrayPort<A, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPort<A, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
     let mut g = f.clone();
     ArrayMap::new(f, move |out, a| *out = g(a))
 }
@@ -275,7 +275,7 @@ pub fn array_binary_map_inplace<
 >(
     init: impl FnOnce(ArrayView<'_, A, L>, ArrayView<'_, B, N>) -> Array<T, M> + Send + 'static,
     update: impl FnMut(&mut Array<T, M>, ArrayView<'_, A, L>, ArrayView<'_, B, N>) + Send + 'static,
-) -> impl Segment<
+) -> impl Operator<
     Inputs = (ArrayPort<A, L>, ArrayPort<B, N>),
     Outputs = ArrayPort<T, M>,
     Context = Instant,
@@ -294,7 +294,7 @@ pub fn array_binary_map<
     const M: usize,
 >(
     f: impl FnMut(ArrayView<'_, A, L>, ArrayView<'_, B, N>) -> Array<T, M> + Clone + Send + 'static,
-) -> impl Segment<
+) -> impl Operator<
     Inputs = (ArrayPort<A, L>, ArrayPort<B, N>),
     Outputs = ArrayPort<T, M>,
     Context = Instant,
@@ -321,7 +321,7 @@ pub fn array_ternary_map_inplace<
     update: impl FnMut(&mut Array<T, N>, ArrayView<'_, A, K>, ArrayView<'_, B, L>, ArrayView<'_, C, M>)
     + Send
     + 'static,
-) -> impl Segment<
+) -> impl Operator<
     Inputs = (ArrayPort<A, K>, ArrayPort<B, L>, ArrayPort<C, M>),
     Outputs = ArrayPort<T, N>,
     Context = Instant,
@@ -345,7 +345,7 @@ pub fn array_ternary_map<
     + Clone
     + Send
     + 'static,
-) -> impl Segment<
+) -> impl Operator<
     Inputs = (ArrayPort<A, K>, ArrayPort<B, L>, ArrayPort<C, M>),
     Outputs = ArrayPort<T, N>,
     Context = Instant,
@@ -358,7 +358,7 @@ pub fn array_ternary_map<
 #[allow(clippy::type_complexity)]
 pub fn map<A: Scalar, T: Scalar, const N: usize>(
     f: impl FnMut(&A) -> T + Clone + Send + 'static,
-) -> impl Segment<Inputs = ArrayPort<A, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPort<A, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     let init = {
         let f = f.clone();
         move |a: ArrayView<'_, A, N>| data::array::map(a, f)
@@ -376,7 +376,7 @@ pub fn map<A: Scalar, T: Scalar, const N: usize>(
 #[allow(clippy::type_complexity)]
 pub fn binary_map<A: Scalar, B: Scalar, T: Scalar, const N: usize>(
     f: impl FnMut(&A, &B) -> T + Clone + Send + 'static,
-) -> impl Segment<
+) -> impl Operator<
     Inputs = (ArrayPort<A, N>, ArrayPort<B, N>),
     Outputs = ArrayPort<T, N>,
     Context = Instant,
@@ -398,7 +398,7 @@ pub fn binary_map<A: Scalar, B: Scalar, T: Scalar, const N: usize>(
 #[allow(clippy::type_complexity)]
 pub fn ternary_map<A: Scalar, B: Scalar, C: Scalar, T: Scalar, const N: usize>(
     f: impl FnMut(&A, &B, &C) -> T + Clone + Send + 'static,
-) -> impl Segment<
+) -> impl Operator<
     Inputs = (ArrayPort<A, N>, ArrayPort<B, N>, ArrayPort<C, N>),
     Outputs = ArrayPort<T, N>,
     Context = Instant,

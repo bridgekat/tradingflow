@@ -5,16 +5,16 @@ use crate::core::ErasedCell;
 use crate::typed::{NodeHandle, Pass};
 
 use super::{
-    FlatRead, FlatWrite, HandlesInterface, Interface, InterfaceHandles, PortHandle, Segment,
+    FlatRead, FlatWrite, HandlesInterface, Interface, InterfaceHandles, Operator, PortHandle,
 };
 
 /// The erased per-node state: the (immutable) input shape, the input/output
 /// scratch buffers, and the user state.
 type NodeState<T> = (
     Box<[usize]>,
-    <<T as Segment>::Inputs as Interface>::InScratch,
-    <<T as Segment>::Outputs as Interface>::OutScratch,
-    Option<<T as Segment>::State>,
+    <<T as Operator>::Inputs as Interface>::InScratch,
+    <<T as Operator>::Outputs as Interface>::OutScratch,
+    Option<<T as Operator>::State>,
 );
 
 /// Builder for the typed layer [`Graph`].
@@ -48,7 +48,7 @@ impl<C: Sync> Builder<C> {
 
     pub fn push<T, H>(
         &mut self,
-        segment: T,
+        op: T,
         input_handles: H,
     ) -> (
         NodeHandle<T>,
@@ -56,7 +56,7 @@ impl<C: Sync> Builder<C> {
     )
     where
         H: HandlesInterface,
-        T: Segment<Inputs = H::Interface, Context = C>,
+        T: Operator<Inputs = H::Interface, Context = C>,
         T::Outputs: InterfaceHandles,
     {
         // Get the input cell indices + the input shape (per-`ViewPorts` element
@@ -65,8 +65,8 @@ impl<C: Sync> Builder<C> {
         let mut input_shape = Vec::new();
         input_handles.indices_to_vec(&mut input_shape, &mut input_indices);
 
-        // Get the expected input types of the segment, sized to the actual leaf
-        // count and filled in tree-order driven by `input_shape`.
+        // Get the expected input types of the operator, sized to the actual
+        // leaf count and filled in tree-order driven by `input_shape`.
         let mut input_type_ids = Vec::new();
         <T::Inputs as Interface>::type_ids_to_vec(
             &mut FlatRead::new(&input_shape),
@@ -82,8 +82,8 @@ impl<C: Sync> Builder<C> {
             assert!(self.inner.slot_type_id(slot) == ty, "input type mismatch");
         }
 
-        // Read the scheduling hint before `init` consumes the segment.
-        let is_heavy = segment.is_heavy();
+        // Read the scheduling hint before `init` consumes the operator.
+        let is_heavy = op.is_heavy();
 
         // Bundle the (immutable) shape and the scratch buffers with the user
         // state so `compute` can reconstruct the nested payload trees from
@@ -114,7 +114,7 @@ impl<C: Sync> Builder<C> {
                 in_scratch,
             )
         };
-        let outputs = T::reset(inputs, state_mut.insert(T::init(segment, inputs)));
+        let outputs = T::reset(inputs, state_mut.insert(T::init(op, inputs)));
 
         // Serialize the outputs, homing by-value views into the output
         // scratch (this build call also sizes variadic leaves' scratch).
@@ -136,8 +136,8 @@ impl<C: Sync> Builder<C> {
         );
 
         // Construct the node and push it to the graph.
-        let segment = unsafe {
-            crate::core::Segment::new(
+        let op = unsafe {
+            crate::core::Node::new(
                 input_type_ids.into_boxed_slice(),
                 output_type_ids.into_boxed_slice(),
                 compute_fn_for::<T>,
@@ -147,7 +147,7 @@ impl<C: Sync> Builder<C> {
                 is_heavy,
             )
         };
-        let (node_index, output_range) = self.inner.push(segment, &input_indices).unwrap();
+        let (node_index, output_range) = self.inner.push(op, &input_indices).unwrap();
         let output_indices = output_range.collect::<Box<[_]>>();
 
         // Get the output handles from the output cell indices + output shape.
@@ -168,33 +168,33 @@ impl<C: Sync> Builder<C> {
         <T::Outputs as InterfaceHandles>::HandlesOwned,
     )
     where
-        T: Segment<Inputs = (), Context = C>,
+        T: Operator<Inputs = (), Context = C>,
         T::Outputs: InterfaceHandles,
     {
         self.push(source, ())
     }
 
     /// Adds a constant node to the graph.
-    pub fn value<T>(&mut self, value: T) -> <T::Outputs as InterfaceHandles>::HandlesOwned
+    pub fn val<T>(&mut self, value: T) -> <T::Outputs as InterfaceHandles>::HandlesOwned
     where
-        T: Segment<Inputs = (), Context = C>,
+        T: Operator<Inputs = (), Context = C>,
         T::Outputs: InterfaceHandles,
     {
         self.push(value, ()).1
     }
 
-    /// Adds a segment node to the graph.
-    pub fn segment<T, H>(
+    /// Adds an operator node to the graph.
+    pub fn op<T, H>(
         &mut self,
-        segment: T,
+        op: T,
         input_handles: H,
     ) -> <T::Outputs as InterfaceHandles>::HandlesOwned
     where
         H: HandlesInterface,
-        T: Segment<Inputs = H::Interface, Context = C>,
+        T: Operator<Inputs = H::Interface, Context = C>,
         T::Outputs: InterfaceHandles,
     {
-        self.push(segment, input_handles).1
+        self.push(op, input_handles).1
     }
 
     /// Finalize into a runnable [`Graph`].
@@ -212,7 +212,7 @@ impl<C: Sync> Default for Builder<C> {
     }
 }
 
-unsafe fn compute_fn_for<T: Segment>(
+unsafe fn compute_fn_for<T: Operator>(
     in_ptrs: *const [*const ()],
     out_ptrs: *mut [*const ()],
     state: *mut (),
@@ -241,7 +241,7 @@ unsafe fn compute_fn_for<T: Segment>(
     );
 }
 
-unsafe fn reset_fn_for<T: Segment>(
+unsafe fn reset_fn_for<T: Operator>(
     in_ptrs: *const [*const ()],
     out_ptrs: *mut [*const ()],
     state: *mut (),
@@ -291,7 +291,7 @@ impl<C: Sync> Graph<C> {
         unsafe { self.inner.slot_ptr(index).cast::<V::View<'_>>().read() }
     }
 
-    pub fn state_mut<T: Segment>(&mut self, handle: NodeHandle<T>) -> &mut T::State {
+    pub fn state_mut<T: Operator>(&mut self, handle: NodeHandle<T>) -> &mut T::State {
         let index = handle.index();
         let type_id = self.inner.state_mut(index).type_id();
         assert!(

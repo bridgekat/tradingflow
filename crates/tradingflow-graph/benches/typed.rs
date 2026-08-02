@@ -1,8 +1,8 @@
 //! `core` (in-place, work-stealing) engine benchmarks: baselines, a single
-//! segment, a fused fragment chain, a sparse graph, and a "few heavy" parallel
+//! operator, a fused subgraph, a sparse graph, and a "few heavy" parallel
 //! case.
 //!
-//! A segment is currently one node; a fused "fragment chain" is one segment's
+//! An operator is one node; a fused "subgraph" is still one operator's
 //! body. `stabilize` submits the dirty cone to a work-stealing pool and blocks
 //! while the workers drain it. Idle workers park on an event counter, so a
 //! sparse generation leaves them asleep while a tight burst of generations
@@ -14,7 +14,9 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
 use tradingflow_graph::pool::Pool;
-use tradingflow_graph::typed::{Builder, Graph, NodeHandle, Port, PortHandle, Ports, Segment, Val};
+use tradingflow_graph::typed::{
+    Builder, Graph, NodeHandle, Operator, Port, PortHandle, Ports, Val,
+};
 
 const DATA_LEN: usize = 1 << 16;
 const DATA_MASK: usize = DATA_LEN - 1;
@@ -36,12 +38,10 @@ fn heavy_work(mut x: f64, iters: usize) {
     }
 }
 
-// -- segments ---------------------------------------------------------------
-
 /// A generic source node.
 struct Source(f64);
 
-impl Segment for Source {
+impl Operator for Source {
     type Inputs = ();
     type Outputs = Port<Val<f64>>;
     type Context = ();
@@ -60,7 +60,7 @@ impl Segment for Source {
 /// An adder with two inputs.
 struct Add;
 
-impl Segment for Add {
+impl Operator for Add {
     type Inputs = (Port<Val<f64>>, Port<Val<f64>>);
     type Outputs = Port<Val<f64>>;
     type Context = ();
@@ -83,7 +83,7 @@ impl Segment for Add {
 /// A CPU-heavy single-input kernel; `iters` lives in `State`.
 struct Heavy(usize);
 
-impl Segment for Heavy {
+impl Operator for Heavy {
     type Inputs = Port<Val<f64>>;
     type Outputs = Port<Val<()>>;
     type Context = ();
@@ -136,19 +136,19 @@ fn bench_direct_compute(c: &mut Criterion) {
 
 // -- engine scenarios -------------------------------------------------------
 
-fn bench_engine_segment(c: &mut Criterion) {
+fn bench_engine_operator(c: &mut Criterion) {
     let (a, b) = make_data();
     let mut i = 0;
     let mut gb = Builder::new();
     let (ha_cell, ha) = gb.source(Source(0.0));
     let (hb_cell, hb) = gb.source(Source(0.0));
-    let _ = gb.segment(Add, (ha, hb));
+    let _ = gb.op(Add, (ha, hb));
     let mut g = gb.build();
 
     for (threads, suffix) in [(16, ""), (0, "_1t")] {
         let mut pool = Pool::new(threads);
 
-        c.bench_function(&format!("engine_segment{suffix}"), |bencher| {
+        c.bench_function(&format!("engine_operator{suffix}"), |bencher| {
             bencher.iter(|| {
                 *g.state_mut(ha_cell) = a[i];
                 *g.state_mut(hb_cell) = b[i];
@@ -166,9 +166,9 @@ fn bench_engine_chain(c: &mut Criterion) {
         let mut gb = Builder::new();
         let (ha_cell, ha) = gb.source(Source(0.0));
         let (hb_cell, hb) = gb.source(Source(0.0));
-        let mut last = gb.segment(Add, (ha, hb));
+        let mut last = gb.op(Add, (ha, hb));
         for _ in 1..depth {
-            last = gb.segment(Add, (last, ha));
+            last = gb.op(Add, (last, ha));
         }
         let mut g = gb.build();
         let mut pool = Pool::new(16);
@@ -195,17 +195,17 @@ fn bench_engine_sparse(c: &mut Criterion) {
         let (_, hd) = gb.source(Source(0.0));
 
         // Active chain, fed (transitively) by a, b.
-        let mut last = gb.segment(Add, (ha, hb));
+        let mut last = gb.op(Add, (ha, hb));
         for _ in 1..active {
-            last = gb.segment(Add, (last, ha));
+            last = gb.op(Add, (last, ha));
         }
 
         // Inactive chain, fed by c, d (never set) -> never in the dirty cone.
         let inactive = total - active;
         if inactive > 0 {
-            let mut prev = gb.segment(Add, (hc, hd));
+            let mut prev = gb.op(Add, (hc, hd));
             for _ in 1..inactive {
-                prev = gb.segment(Add, (prev, hc));
+                prev = gb.op(Add, (prev, hc));
             }
         }
 
@@ -232,9 +232,7 @@ fn bench_few_heavy(c: &mut Criterion) {
 
     let mut gb = Builder::new();
     let (src_cell, src) = gb.source(Source(1.0));
-    let _ = (0..K)
-        .map(|_| gb.segment(Heavy(ITERS), src))
-        .collect::<Vec<_>>();
+    let _ = (0..K).map(|_| gb.op(Heavy(ITERS), src)).collect::<Vec<_>>();
     let mut g = gb.build();
     let mut pool = Pool::new(16);
     let mut group = c.benchmark_group("few_heavy");
@@ -300,7 +298,7 @@ fn iters_of(layer: usize, j: usize) -> u32 {
 struct Work {
     iters: u32,
 }
-impl Segment for Work {
+impl Operator for Work {
     type Inputs = (Port<Val<f64>>, Port<Val<f64>>, Port<Val<f64>>);
     type Outputs = Port<Val<f64>>;
     type State = u32; // iters
@@ -320,7 +318,7 @@ impl Segment for Work {
 /// Stateless unary map `x -> f(x)`; `passthrough` and `compute` are identical
 /// (it recomputes from the input every generation, gate or no gate).
 struct UnaryMap(fn(f64) -> f64);
-impl Segment for UnaryMap {
+impl Operator for UnaryMap {
     type Inputs = Port<Val<f64>>;
     type Outputs = Port<Val<f64>>;
     type State = fn(f64) -> f64;
@@ -343,7 +341,7 @@ fn double() -> UnaryMap {
 }
 
 struct SumAll;
-impl Segment for SumAll {
+impl Operator for SumAll {
     type Inputs = Ports<Val<f64>>;
     type Outputs = Port<Val<f64>>;
     type State = ();
@@ -383,7 +381,7 @@ fn build(
         }
         layers.push(cur);
     }
-    let aggs = layers.iter().map(|l| gb.segment(SumAll, &l[..])).collect();
+    let aggs = layers.iter().map(|l| gb.op(SumAll, &l[..])).collect();
     (src, aggs)
 }
 
@@ -414,14 +412,14 @@ fn bench_mesh_fusion(c: &mut Criterion) {
             let mut gb = Builder::new();
             let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
                 let it = iters_of(l, j);
-                let seg = tradingflow::segment!(|x: Port<Val<f64>>, y: Port<Val<f64>>, z: Port<Val<f64>>| -> Port<Val<f64>> {
+                let op = tradingflow::fuse!(|x: Port<Val<f64>>, y: Port<Val<f64>>, z: Port<Val<f64>>| -> Port<Val<f64>> {
                     let ww = Work { iters: it } @ (x, y, z);
                     let p = inc() @ ww;
                     let q = double() @ ww;
                     let r = Add @ (p, q);
                     r
                 });
-                gb.segment(seg, (a, b, c))
+                gb.op(op, (a, b, c))
             });
             let mut g = gb.build();
             let mut pool = Pool::new(threads);
@@ -436,15 +434,15 @@ fn bench_mesh_fusion(c: &mut Criterion) {
         {
             let mut gb = Builder::new();
             let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
-                let w_h = gb.segment(
+                let w_h = gb.op(
                     Work {
                         iters: iters_of(l, j),
                     },
                     (a, b, c),
                 );
-                let p = gb.segment(inc(), w_h);
-                let q = gb.segment(double(), w_h);
-                gb.segment(Add, (p, q))
+                let p = gb.op(inc(), w_h);
+                let q = gb.op(double(), w_h);
+                gb.op(Add, (p, q))
             });
             let mut g = gb.build();
             let mut pool = Pool::new(threads);
@@ -462,7 +460,7 @@ criterion_group!(
     benches,
     bench_baseline_add,
     bench_direct_compute,
-    bench_engine_segment,
+    bench_engine_operator,
     bench_engine_chain,
     bench_engine_sparse,
     bench_few_heavy,

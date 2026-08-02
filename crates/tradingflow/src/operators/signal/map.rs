@@ -1,5 +1,5 @@
 use crate::data::ArrayView;
-use crate::graph::{Interface, Segment};
+use crate::graph::{Interface, Operator};
 use crate::ports::{ArrayPort, ArrayPorts, SignalPort, SignalPorts};
 
 /// Interface mapping for [`as_signal_map`].
@@ -61,23 +61,23 @@ impl<const N: usize> Signify for ArrayPorts<bool, N> {
 /// Operator signature for [`as_signal_map`].
 pub struct SignalMap<const M: usize, T>
 where
-    T: Segment<Inputs: Signify, Outputs = ArrayPort<bool, M>>,
+    T: Operator<Inputs: Signify, Outputs = ArrayPort<bool, M>>,
 {
-    segment: T,
+    op: T,
 }
 
 impl<const M: usize, T> SignalMap<M, T>
 where
-    T: Segment<Inputs: Signify, Outputs = ArrayPort<bool, M>>,
+    T: Operator<Inputs: Signify, Outputs = ArrayPort<bool, M>>,
 {
-    pub fn new(segment: T) -> Self {
-        Self { segment }
+    pub fn new(op: T) -> Self {
+        Self { op }
     }
 }
 
-impl<const M: usize, T> Segment for SignalMap<M, T>
+impl<const M: usize, T> Operator for SignalMap<M, T>
 where
-    T: Segment<Inputs: Signify, Outputs = ArrayPort<bool, M>>,
+    T: Operator<Inputs: Signify, Outputs = ArrayPort<bool, M>>,
 {
     type Inputs = <T::Inputs as Signify>::Interface;
     type Outputs = SignalPort<M>;
@@ -85,7 +85,7 @@ where
     type State = T::State;
 
     fn init(self, inputs: <Self::Inputs as Interface>::Values<'_>) -> T::State {
-        T::init(self.segment, <T::Inputs as Signify>::inputs(inputs))
+        T::init(self.op, <T::Inputs as Signify>::inputs(inputs))
     }
 
     fn reset<'a, 'b: 'a>(
@@ -105,16 +105,16 @@ where
     }
 }
 
-/// Applies a bool-array segment on signal arrays, resetting output each time.
+/// Applies a bool-array operator on signal arrays, resetting output each time.
 pub fn as_signal_map<const M: usize, T>(
-    segment: T,
-) -> impl Segment<
+    op: T,
+) -> impl Operator<
     Inputs = <T::Inputs as Signify>::Interface,
     Outputs = SignalPort<M>,
     Context = T::Context,
 >
 where
-    T: Segment<Inputs: Signify, Outputs = ArrayPort<bool, M>>,
+    T: Operator<Inputs: Signify, Outputs = ArrayPort<bool, M>>,
 {
-    SignalMap::new(segment)
+    SignalMap::new(op)
 }

@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::ops::Range;
 
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, SeriesView};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SeriesPort};
 
 /// Base trait for rolling window operator accumulators.
@@ -68,7 +68,7 @@ pub struct RollingState<
 }
 
 impl<T: Scalar, const N: usize, U: Scalar + Float, const M: usize, A: Accumulator<T, N, U, M>>
-    Segment for Rolling<T, N, U, M, A>
+    Operator for Rolling<T, N, U, M, A>
 {
     type Inputs = SeriesPort<T, N>;
     type Outputs = ArrayPort<U, M>;

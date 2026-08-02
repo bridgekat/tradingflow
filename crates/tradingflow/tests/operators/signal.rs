@@ -45,8 +45,8 @@ fn over_three(a: ArrayView<'_, f64, 0>) -> bool {
 fn filter_records_only_passing_values() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let kept = b.segment(signal::filter(over_three), srcv);
-    let rec = b.segment(series::record_all(), (kept, srcv.1));
+    let kept = b.op(signal::filter(over_three), srcv);
+    let rec = b.op(series::record_all(), (kept, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -75,8 +75,8 @@ fn filter_records_only_passing_values() {
 fn filter_suppression_does_not_advance_downstream() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let kept = b.segment(signal::filter(over_three), srcv);
-    let probe = b.segment(count::<0>(), (kept, srcv.1));
+    let kept = b.op(signal::filter(over_three), srcv);
+    let probe = b.op(count::<0>(), (kept, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -104,7 +104,7 @@ fn filter_suppression_does_not_advance_downstream() {
 fn a_signal_edge_reads_low_after_every_generation() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let kept = b.segment(signal::filter(over_three), srcv);
+    let kept = b.op(signal::filter(over_three), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -130,8 +130,8 @@ fn signal_pulses_exactly_when_its_input_notifies() {
     let mut b = Builder::new();
     let (beat, (pulse, _beatv)) = b.source(cell([0.0_f64; 3]));
     let (data, datav) = b.source(array::constant(0.0_f64));
-    let probe = b.segment(count::<0>(), (pulse, datav));
-    let rec = b.segment(series::record_all(), (pulse, datav));
+    let probe = b.op(count::<0>(), (pulse, datav));
+    let rec = b.op(series::record_all(), (pulse, datav));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -165,9 +165,9 @@ fn signal_pulses_exactly_when_its_input_notifies() {
 fn a_filtered_signal_samples_another_wire() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let kept = b.segment(signal::filter(over_three), srcv);
-    let probe = b.segment(count::<0>(), (kept, srcv.1));
-    let rec = b.segment(series::record_all(), (kept, srcv.1));
+    let kept = b.op(signal::filter(over_three), srcv);
+    let probe = b.op(count::<0>(), (kept, srcv.1));
+    let rec = b.op(series::record_all(), (kept, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -204,8 +204,8 @@ fn a_paired_signal_gates_the_record() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
-    let probe = b.segment(count::<0>(), (tickv, srcv));
-    let rec = b.segment(series::record_all(), (tickv, srcv));
+    let probe = b.op(count::<0>(), (tickv, srcv));
+    let rec = b.op(series::record_all(), (tickv, srcv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -247,8 +247,8 @@ fn data_without_a_pulse_is_completely_silent() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
-    let probe = b.segment(count::<0>(), (tickv, srcv));
-    let rec = b.segment(series::record_all(), (tickv, srcv));
+    let probe = b.op(count::<0>(), (tickv, srcv));
+    let rec = b.op(series::record_all(), (tickv, srcv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -280,7 +280,7 @@ fn a_pulse_samples_the_latest_value_from_an_earlier_generation() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
-    let rec = b.segment(series::record_all(), (tickv, srcv));
+    let rec = b.op(series::record_all(), (tickv, srcv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -327,9 +327,9 @@ fn a_join_carries_unfired_inputs_and_freezes_when_idle() {
     let (s0, (c0, s0v)) = b.source(cell(0.0_f64));
     let (s1, s1v) = b.source(array::constant(0.0_f64));
     let (s2, (c2, s2v)) = b.source(cell(0.0_f64));
-    let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
-    let pulses0 = b.segment(count::<0>(), (c0, s0v));
-    let pulses2 = b.segment(count::<0>(), (c2, s2v));
+    let stacked = b.op(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
+    let pulses0 = b.op(count::<0>(), (c0, s0v));
+    let pulses2 = b.op(count::<0>(), (c2, s2v));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -395,12 +395,12 @@ fn a_signal_stack_join_nan_fills_while_a_state_join_carries() {
     let (s0, (s0v_signal, s0v)) = b.source(cell(0.0_f64));
     let (s1, (s1v_signal, s1v)) = b.source(cell(0.0_f64));
     let (s2, (s2v_signal, s2v)) = b.source(cell(0.0_f64));
-    let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
-    let signals = b.segment(
+    let stacked = b.op(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
+    let signals = b.op(
         signal::as_signal_map(array::stack::<bool, 0, 1>(0)),
         &[s0v_signal, s1v_signal, s2v_signal][..],
     );
-    let synced = b.segment(batch_face(), (signals, stacked));
+    let synced = b.op(batch_face(), (signals, stacked));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -460,8 +460,8 @@ fn a_signal_concat_nan_fills_while_a_state_concat_carries() {
     let mut b = Builder::new();
     let (a, (av_signal, av)) = b.source(cell([0.0_f64; 2]));
     let (c, (cv_signal, cv)) = b.source(cell([0.0_f64; 2]));
-    let joined = b.segment(array::concat::<f64, 1>(0), &[av, cv][..]);
-    let signals = b.segment(
+    let joined = b.op(array::concat::<f64, 1>(0), &[av, cv][..]);
+    let signals = b.op(
         signal::as_signal_map(array::array_binary_map(
             |a: ArrayView<bool, 0>, c: ArrayView<bool, 0>| {
                 tradingflow::data::Array::from_parts([4], vec![*a, *a, *c, *c].into())
@@ -469,7 +469,7 @@ fn a_signal_concat_nan_fills_while_a_state_concat_carries() {
         )),
         (av_signal, cv_signal),
     );
-    let synced = b.segment(batch_face(), (signals, joined));
+    let synced = b.op(batch_face(), (signals, joined));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -524,11 +524,11 @@ fn coalesced_pokes_recompute_the_union_of_cones_once() {
     let mut b = Builder::new();
     let (a, (sig_a, av)) = b.source(cell(0.0_f64));
     let (c, (sig_c, cv)) = b.source(cell(0.0_f64));
-    let sum = b.segment(elem::add(), (av, cv));
-    let probe = b.segment(runs::<0>(), sum);
+    let sum = b.op(elem::add(), (av, cv));
+    let probe = b.op(runs::<0>(), sum);
     // The union of the two source cadences, spelled explicitly.
-    let sum_signal = b.segment(signal::or(), (sig_a, sig_c));
-    let rec = b.segment(series::record_all(), (sum_signal, sum));
+    let sum_signal = b.op(signal::or(), (sig_a, sig_c));
+    let rec = b.op(series::record_all(), (sum_signal, sum));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 

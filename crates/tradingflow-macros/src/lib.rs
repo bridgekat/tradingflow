@@ -6,19 +6,19 @@ use quote::quote;
 mod ast;
 mod lower;
 
-/// Macro for subgraph composition.
+/// Macro for operator composition.
 ///
 /// Expansions name the combinator namespace as `::tradingflow::graph::cb` by
 /// default, which can be override using the syntax
-/// `segment!(@[::some::path::to::module] |a: Port<i64>| -> Port<i64> { /* ... */ })`.
+/// `fuse!(@[::some::path::to::module] |a: Port<i64>| -> Port<i64> { /* ... */ })`.
 #[proc_macro]
-pub fn segment(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn fuse(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let (rt, input) = runtime_override(input.into());
-    let segment = match syn::parse2::<ast::Segment>(input) {
+    let fuse = match syn::parse2::<ast::Operator>(input) {
         Ok(flow) => flow,
         Err(e) => return e.into_compile_error().into(),
     };
-    lower::lower(segment, rt)
+    lower::lower(fuse, rt)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

@@ -27,7 +27,7 @@ use crate::ports::{ArrayPort, ArrayPorts, SignalPort, SignalPorts};
 /// [`SignalPort`] leaves, their variadic [`ArrayPorts`] / [`SignalPorts`]
 /// groups, and tuples thereof. Series stay on the Rust side (window them into
 /// arrays, or reduce them with native operators, before wiring into a Python
-/// segment).
+/// operator).
 pub trait PyInterface: Interface {
     /// Rust-owned buffers backing one node's outputs of this shape.
     /// [`Default`] is the unallocated state; the first

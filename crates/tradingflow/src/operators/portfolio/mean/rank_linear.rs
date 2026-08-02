@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::MeanPortfolio;
 use crate::operators::portfolio::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Weights the top `top_fraction` of stocks linearly by rank.
 ///
@@ -22,7 +22,7 @@ pub fn rank_linear(config: Config, top_fraction: f64) -> impl MeanPortfolio {
         top_fraction > 0.0 && top_fraction <= 1.0,
         "top_fraction must be in (0, 1], got {top_fraction}"
     );
-    py_segment_module(
+    py_operator_module(
         "tradingflow.portfolio.mean.rank_linear",
         config.params(|d| d.set_item("top_fraction", top_fraction)),
     )

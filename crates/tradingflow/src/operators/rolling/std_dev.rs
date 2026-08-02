@@ -2,7 +2,7 @@ use num_traits::Float;
 
 use super::var::series_var;
 use crate::data::{Instant, Retention, Scalar};
-use crate::graph::{Segment, SegmentExt};
+use crate::graph::{Operator, OperatorExt};
 use crate::operators::{elem::sqrt, series::buffer};
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
@@ -10,7 +10,7 @@ use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 pub fn series_std_dev<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     series_var(window.into(), min_count).then(sqrt())
 }
 
@@ -19,7 +19,7 @@ pub fn series_std_dev<T: Scalar + Float, const N: usize>(
 pub fn std_dev<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
     let window = window.into();
     buffer(window).then(series_std_dev(window, min_count))

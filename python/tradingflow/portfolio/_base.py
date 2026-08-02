@@ -18,9 +18,9 @@ import numpy as np
 class PortfolioState:
     """Everything a portfolio carries between generations.
 
-    This mirrors the Rust `Segment::State`: `init` moves the build
+    This mirrors the Rust `Operator::State`: `init` moves the build
     configuration in here, so `reset` and `compute` are free functions of
-    `(inputs, state)` and nothing varies on the segment instance — which
+    `(inputs, state)` and nothing varies on the operator instance — which
     matters because a module binding `__op__` shares one instance across every
     node that loads it. `slots=True` makes a stray attribute an
     `AttributeError` rather than a silent cross-node alias.
@@ -124,8 +124,7 @@ class Portfolio:
             active = int(mask.sum())
             if active > state.max_universe_size:
                 raise ValueError(
-                    f"active universe size {active} exceeds "
-                    f"max_universe_size {state.max_universe_size}"
+                    f"active universe size {active} exceeds " f"max_universe_size {state.max_universe_size}"
                 )
 
             sub_mu = None if mu is None else mu[mask]

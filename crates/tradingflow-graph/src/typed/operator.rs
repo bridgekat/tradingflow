@@ -1,7 +1,7 @@
 use super::Interface;
 
-/// A composable graph segment: can be a node or a subgraph.
-pub trait Segment {
+/// A composable operator node in the graph.
+pub trait Operator {
     /// Input tree (e.g. `(Port<f64>, Ports<f64>)`).
     type Inputs: Interface;
     /// Output tree (e.g. `(Port<f64>, Ports<f64>)`).
@@ -11,7 +11,7 @@ pub trait Segment {
     /// Mutable node state, must be completely owned.
     type State: Send + 'static;
 
-    /// Whether the segment is expensive enough to be worth a parallel task.
+    /// Whether the operator is expensive enough to be worth a parallel task.
     fn is_heavy(&self) -> bool {
         false
     }

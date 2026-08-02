@@ -1,19 +1,19 @@
 use crate::data::ArrayView;
-use crate::graph::{Interface, Segment};
+use crate::graph::{Interface, Operator};
 use crate::ports::SignalPort;
 
 /// Operator signature for [`on_signal`].
-pub struct OnSignal<T: Segment> {
-    segment: T,
+pub struct OnSignal<T: Operator> {
+    op: T,
 }
 
-impl<T: Segment> OnSignal<T> {
-    pub fn new(segment: T) -> Self {
-        Self { segment }
+impl<T: Operator> OnSignal<T> {
+    pub fn new(op: T) -> Self {
+        Self { op }
     }
 }
 
-impl<T: Segment> Segment for OnSignal<T> {
+impl<T: Operator> Operator for OnSignal<T> {
     type Inputs = (SignalPort<0>, T::Inputs);
     type Outputs = T::Outputs;
     type Context = T::Context;
@@ -23,7 +23,7 @@ impl<T: Segment> Segment for OnSignal<T> {
         self,
         (_, inputs): (ArrayView<'_, bool, 0>, <T::Inputs as Interface>::Values<'_>),
     ) -> T::State {
-        self.segment.init(inputs)
+        self.op.init(inputs)
     }
 
     fn reset<'a, 'b: 'a>(
@@ -46,9 +46,10 @@ impl<T: Segment> Segment for OnSignal<T> {
     }
 }
 
-/// Wraps a segment to only compute when the input signals `true`.
-pub fn on_signal<T: Segment>(
-    segment: T,
-) -> impl Segment<Inputs = (SignalPort<0>, T::Inputs), Outputs = T::Outputs, Context = T::Context> {
-    OnSignal::new(segment)
+/// Wraps an operator to only compute when the input signals `true`.
+pub fn on_signal<T: Operator>(
+    op: T,
+) -> impl Operator<Inputs = (SignalPort<0>, T::Inputs), Outputs = T::Outputs, Context = T::Context>
+{
+    OnSignal::new(op)
 }

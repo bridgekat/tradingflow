@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{self, Array, ArrayView, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
 
 /// Operator signature for [`annualize`].
@@ -30,7 +30,7 @@ pub struct AnnualizeState<T: Scalar + Float, const N: usize> {
     out: Array<T, N>,
 }
 
-impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
+impl<T: Scalar + Float, const N: usize> Operator for Annualize<T, N> {
     type Inputs = (
         SignalPort<N>,
         ArrayPort<T, N>,
@@ -139,7 +139,7 @@ impl<T: Scalar + Float, const N: usize> Segment for Annualize<T, N> {
 ///
 /// - `annual_values`: elementwise annualized `ytd_values`. An element is
 ///   NaN until its first data point.
-pub fn annualize<T: Scalar + Float, const N: usize>() -> impl Segment<
+pub fn annualize<T: Scalar + Float, const N: usize>() -> impl Operator<
     Inputs = (
         SignalPort<N>,
         ArrayPort<T, N>,

@@ -1,10 +1,10 @@
 use crate::data::{Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::operators::array;
 use crate::ports::ArrayPort;
 
 /// Elementwise boolean and.
-pub fn and<const N: usize>() -> impl Segment<
+pub fn and<const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<bool, N>, ArrayPort<bool, N>),
     Outputs = ArrayPort<bool, N>,
     Context = Instant,
@@ -13,7 +13,7 @@ pub fn and<const N: usize>() -> impl Segment<
 }
 
 /// Elementwise boolean or.
-pub fn or<const N: usize>() -> impl Segment<
+pub fn or<const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<bool, N>, ArrayPort<bool, N>),
     Outputs = ArrayPort<bool, N>,
     Context = Instant,
@@ -22,7 +22,7 @@ pub fn or<const N: usize>() -> impl Segment<
 }
 
 /// Elementwise choice: `if cond { a } else { b }`.
-pub fn choose<T: Scalar, const N: usize>() -> impl Segment<
+pub fn choose<T: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<bool, N>, ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<T, N>,
     Context = Instant,
@@ -34,6 +34,6 @@ pub fn choose<T: Scalar, const N: usize>() -> impl Segment<
 pub fn indicator<T: Scalar, const N: usize>(
     a: T,
     b: T,
-) -> impl Segment<Inputs = ArrayPort<bool, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPort<bool, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     array::map(move |&cond| if cond { a.clone() } else { b.clone() })
 }

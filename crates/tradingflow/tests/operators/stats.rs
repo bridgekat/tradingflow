@@ -8,7 +8,7 @@
 
 use tradingflow::data::{Array, Instant};
 use tradingflow::graph::typed::Builder;
-use tradingflow::graph::{Pool, Segment};
+use tradingflow::graph::{Pool, Operator};
 use tradingflow::operators::{array, stats};
 use tradingflow::ports::ArrayPort;
 
@@ -25,12 +25,12 @@ use crate::harness::*;
 /// generation under test.
 fn run1<S>(op: S, data: Vec<f64>) -> Vec<f64>
 where
-    S: Segment<Inputs = ArrayPort<f64, 1>, Outputs = ArrayPort<f64, 1>, Context = Instant>,
+    S: Operator<Inputs = ArrayPort<f64, 1>, Outputs = ArrayPort<f64, 1>, Context = Instant>,
 {
     let input = data;
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(input.clone()));
-    let out = b.segment(op, srcv);
+    let out = b.op(op, srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -395,8 +395,8 @@ fn rank_two_input_is_one_cross_section_over_the_whole_array() {
 
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(input.clone()));
-    let pct = b.segment(stats::percentile(), srcv);
-    let zsc = b.segment(stats::standardize(), srcv);
+    let pct = b.op(stats::percentile(), srcv);
+    let zsc = b.op(stats::standardize(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 

@@ -1,12 +1,12 @@
 //! Integration tests for the built-in operators.
 //!
 //! One module per operator module, plus [`compose`], which covers what no
-//! single-operator test can: `segment!` fusion, hoisted-versus-self-recording
+//! single-operator test can: operator fusion, hoisted-versus-self-recording
 //! equivalence, and parallel execution.
 //!
 //! Every test drives a real [`Graph`](tradingflow::graph::typed::Graph): build
 //! a wiring, poke sources through `state_mut`, `stabilize`, then assert on the
-//! views. Shared constructors, assertions and probe segments live in
+//! views. Shared constructors, assertions and probe operators live in
 //! [`harness`].
 
 mod harness;

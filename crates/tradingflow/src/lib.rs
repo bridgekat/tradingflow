@@ -20,7 +20,7 @@
 //! ```rust
 //! use tradingflow::{
 //!     data::{Array, ArrayView, Duration, Instant, Series},
-//!     graph::{Builder, Pool, Segment},
+//!     graph::{Builder, Operator, Pool},
 //!     operators::{array, elem, rolling, series, signal, trader},
 //!     ports::{ArrayPort, SignalPort},
 //!     sources::sync,
@@ -53,18 +53,18 @@
 //!     let (daily, prices) = b.source(sync::array_series(data));
 //!
 //!     // The MACD indicator is simple enough to be implemented by composing built-in operators.
-//!     let ma_fast = b.segment(rolling::mean(12, 1), (daily, prices)); // MA(12) of prices
-//!     let ma_slow = b.segment(rolling::mean(26, 1), (daily, prices)); // MA(26) of prices
-//!     let macd = b.segment(elem::sub(), (ma_fast, ma_slow)); // MA(12) - MA(26)
-//!     let smooth = b.segment(rolling::mean(9, 1), (daily, macd)); // MA(9) of MACD
-//!     let diff = b.segment(elem::sub(), (macd, smooth)); // (MACD - smooth)
-//!     let prev = b.segment(rolling::lag(1), (daily, diff)); // (MACD - smooth) one period ago
+//!     let ma_fast = b.op(rolling::mean(12, 1), (daily, prices)); // MA(12) of prices
+//!     let ma_slow = b.op(rolling::mean(26, 1), (daily, prices)); // MA(26) of prices
+//!     let macd = b.op(elem::sub(), (ma_fast, ma_slow)); // MA(12) - MA(26)
+//!     let smooth = b.op(rolling::mean(9, 1), (daily, macd)); // MA(9) of MACD
+//!     let diff = b.op(elem::sub(), (macd, smooth)); // (MACD - smooth)
+//!     let prev = b.op(rolling::lag(1), (daily, diff)); // (MACD - smooth) one period ago
 //!
 //!     // Calculate position weight based on `diff` and `prev`, on each rebalance signal.
-//!     // This requires defining a custom operator, by implementing the `Segment` trait.
+//!     // This requires defining a custom operator, by implementing the `Operator` trait.
 //!     struct Crossover;
 //!
-//!     impl Segment for Crossover {
+//!     impl Operator for Crossover {
 //!         type Inputs = (SignalPort<0>, ArrayPort<f64, 1>, ArrayPort<f64, 1>);
 //!         type Outputs = ArrayPort<f64, 1>;
 //!         type Context = Instant;
@@ -123,18 +123,18 @@
 //!
 //!     // Wire the custom operator into the graph.
 //!     // Rebalance frequency is set to daily.
-//!     let weights = b.segment(Crossover, (daily, diff, prev));
+//!     let weights = b.op(Crossover, (daily, diff, prev));
 //!
 //!     // Simulate frictionless trading using `weight`.
 //!     // Here we assume: best bid = best ask = prices, no dividends.
-//!     let flags = b.value(array::constant([true; N_SYMBOLS]));
+//!     let flags = b.val(array::constant([true; N_SYMBOLS]));
 //!     let bids = prices;
 //!     let asks = prices;
-//!     let div_signals = b.value(signal::quiet([N_SYMBOLS]));
-//!     let share_divs = b.value(array::constant([0.0; N_SYMBOLS]));
-//!     let cash_divs = b.value(array::constant([0.0; N_SYMBOLS]));
+//!     let div_signals = b.val(signal::quiet([N_SYMBOLS]));
+//!     let share_divs = b.val(array::constant([0.0; N_SYMBOLS]));
+//!     let cash_divs = b.val(array::constant([0.0; N_SYMBOLS]));
 //!
-//!     let (_positions, _cash, nav) = b.segment(
+//!     let (_positions, _cash, nav) = b.op(
 //!         trader::fixed::benchmark(false, 100.0),
 //!         (
 //!             (daily, flags, bids, asks),
@@ -142,7 +142,7 @@
 //!             (daily, weights),
 //!         ),
 //!     );
-//!     let nav_series = b.segment(series::record_all(), (daily, nav));
+//!     let nav_series = b.op(series::record_all(), (daily, nav));
 //!
 //!     // Finish building the graph.
 //!     let mut g = b.build();
@@ -185,7 +185,7 @@ pub mod ports;
 pub mod sources;
 pub mod time;
 
-pub use macros::segment;
+pub use macros::fuse;
 
 #[cfg(feature = "python")]
 pub mod python;

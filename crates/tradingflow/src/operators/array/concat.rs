@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar, array};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, ArrayPorts};
 
 /// Operator signature for [`concat`](fn@concat), [`stack`] etc.
@@ -29,7 +29,7 @@ where
     }
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F> Segment
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, I, F> Operator
     for Combine<T, N, U, M, I, F>
 where
     I: FnOnce(&[ArrayView<'_, T, N>]) -> Array<U, M> + Send + 'static,
@@ -64,7 +64,7 @@ where
 /// Concatenates the inputs along the existing axis `axis`: [`array::concat`].
 pub fn concat<T: Scalar, const N: usize>(
     axis: usize,
-) -> impl Segment<Inputs = ArrayPorts<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPorts<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     let init = move |views: &[ArrayView<'_, T, N>]| array::concat(views, axis);
     let update = move |out: &mut Array<T, N>, views: &[ArrayView<'_, T, N>]| {
         array::concat_into(out.data_mut(), views, axis);
@@ -75,7 +75,7 @@ pub fn concat<T: Scalar, const N: usize>(
 /// Stacks the inputs along a new axis inserted at `axis`: [`array::stack`].
 pub fn stack<T: Scalar, const N: usize, const M: usize>(
     axis: usize,
-) -> impl Segment<Inputs = ArrayPorts<T, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPorts<T, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
     assert!(
         M == N + 1,
         "stack: output ndim ({M}) must be input ndim ({N}) plus one"

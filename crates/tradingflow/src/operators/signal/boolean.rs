@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::data::{ArrayView, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
 
 /// Operator signature for [`filter`].
@@ -25,7 +25,7 @@ where
     }
 }
 
-impl<T: Scalar, const N: usize, F> Segment for Filter<T, N, F>
+impl<T: Scalar, const N: usize, F> Operator for Filter<T, N, F>
 where
     F: FnMut(ArrayView<'_, T, N>) -> bool + Send + 'static,
 {
@@ -57,7 +57,7 @@ where
 /// Operator signature for [`or`].
 pub struct Or;
 
-impl Segment for Or {
+impl Operator for Or {
     type Inputs = (SignalPort<0>, SignalPort<0>);
     type Outputs = SignalPort<0>;
     type Context = Instant;
@@ -84,7 +84,7 @@ impl Segment for Or {
 /// Operator signature for [`and`].
 pub struct And;
 
-impl Segment for And {
+impl Operator for And {
     type Inputs = (SignalPort<0>, SignalPort<0>);
     type Outputs = SignalPort<0>;
     type Context = Instant;
@@ -111,7 +111,7 @@ impl Segment for And {
 /// Operator signature for [`any`].
 pub struct Any<const N: usize>;
 
-impl<const N: usize> Segment for Any<N> {
+impl<const N: usize> Operator for Any<N> {
     type Inputs = SignalPort<N>;
     type Outputs = SignalPort<0>;
     type Context = Instant;
@@ -141,7 +141,7 @@ impl<const N: usize> Segment for Any<N> {
 /// and the input array satisfies `predicate`.
 pub fn filter<T: Scalar, const N: usize>(
     predicate: impl FnMut(ArrayView<'_, T, N>) -> bool + Send + 'static,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SignalPort<0>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SignalPort<0>, Context = Instant>
 {
     Filter::new(predicate)
 }
@@ -149,7 +149,7 @@ pub fn filter<T: Scalar, const N: usize>(
 /// Derives a signal which signals `true` when both of the input signals
 /// signal `true`.
 pub fn and()
--> impl Segment<Inputs = (SignalPort<0>, SignalPort<0>), Outputs = SignalPort<0>, Context = Instant>
+-> impl Operator<Inputs = (SignalPort<0>, SignalPort<0>), Outputs = SignalPort<0>, Context = Instant>
 {
     And
 }
@@ -157,7 +157,7 @@ pub fn and()
 /// Derives a signal which signals `true` when either of the input signals
 /// signals `true`.
 pub fn or()
--> impl Segment<Inputs = (SignalPort<0>, SignalPort<0>), Outputs = SignalPort<0>, Context = Instant>
+-> impl Operator<Inputs = (SignalPort<0>, SignalPort<0>), Outputs = SignalPort<0>, Context = Instant>
 {
     Or
 }
@@ -165,6 +165,6 @@ pub fn or()
 /// Reduces a signal array to a single signal which signals `true` when
 /// any element signals `true`.
 pub fn any<const N: usize>()
--> impl Segment<Inputs = SignalPort<N>, Outputs = SignalPort<0>, Context = Instant> {
+-> impl Operator<Inputs = SignalPort<N>, Outputs = SignalPort<0>, Context = Instant> {
     Any
 }

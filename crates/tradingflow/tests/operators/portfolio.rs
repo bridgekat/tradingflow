@@ -1,6 +1,6 @@
 //! Integration tests for `tradingflow::operators::portfolio`.
 //!
-//! Every portfolio is a Python segment, so the whole file needs the `python`
+//! Every portfolio is a Python operator, so the whole file needs the `python`
 //! feature and an interpreter with NumPy and SciPy; the solving portfolios
 //! additionally need CVXPY.
 //!
@@ -21,7 +21,7 @@
 
 use tradingflow::data::{Array, Instant};
 use tradingflow::graph::typed::Builder;
-use tradingflow::graph::{Pool, Segment};
+use tradingflow::graph::{Operator, Pool};
 use tradingflow::operators::array::constant;
 use tradingflow::operators::portfolio::{Config, mean, mean_variance, variance};
 use tradingflow::operators::series::record_all;
@@ -57,15 +57,15 @@ struct Run {
 /// portfolios. `rebalances` gives one generation per entry.
 fn drive_mean<S>(portfolio: S, universe: &[f64], mu: &[f64], rebalances: &[bool]) -> Run
 where
-    S: Segment<Inputs = mean::Inputs, Outputs = mean::Outputs, Context = Instant>,
+    S: Operator<Inputs = mean::Inputs, Outputs = mean::Outputs, Context = Instant>,
 {
     let mut b = Builder::new();
     let (signal, signalv) = b.source(signal());
     let (_, universev) = b.source(constant(universe.to_vec()));
     let (_, muv) = b.source(constant(mu.to_vec()));
 
-    let out = b.segment(portfolio, (signalv, universev, muv));
-    let recorded = b.segment(record_all(), out);
+    let out = b.op(portfolio, (signalv, universev, muv));
+    let recorded = b.op(record_all(), out);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -82,7 +82,7 @@ where
 /// variance portfolios.
 fn drive_variance<S>(portfolio: S, universe: &[f64], sigma: &[f64], rebalances: &[bool]) -> Run
 where
-    S: Segment<Inputs = variance::Inputs, Outputs = variance::Outputs, Context = Instant>,
+    S: Operator<Inputs = variance::Inputs, Outputs = variance::Outputs, Context = Instant>,
 {
     let n = universe.len();
     let mut b = Builder::new();
@@ -90,8 +90,8 @@ where
     let (_, universev) = b.source(constant(universe.to_vec()));
     let (_, sigmav) = b.source(constant(Array::from_parts([n, n], sigma.into())));
 
-    let out = b.segment(portfolio, (signalv, universev, sigmav));
-    let recorded = b.segment(record_all(), out);
+    let out = b.op(portfolio, (signalv, universev, sigmav));
+    let recorded = b.op(record_all(), out);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -113,7 +113,11 @@ fn drive_mean_variance<S>(
     rebalances: &[bool],
 ) -> Run
 where
-    S: Segment<Inputs = mean_variance::Inputs, Outputs = mean_variance::Outputs, Context = Instant>,
+    S: Operator<
+            Inputs = mean_variance::Inputs,
+            Outputs = mean_variance::Outputs,
+            Context = Instant,
+        >,
 {
     let n = universe.len();
     let mut b = Builder::new();
@@ -122,8 +126,8 @@ where
     let (_, muv) = b.source(constant(mu.to_vec()));
     let (_, sigmav) = b.source(constant(Array::from_parts([n, n], sigma.into())));
 
-    let out = b.segment(portfolio, (signalv, universev, muv, sigmav));
-    let recorded = b.segment(record_all(), out);
+    let out = b.op(portfolio, (signalv, universev, muv, sigmav));
+    let recorded = b.op(record_all(), out);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 

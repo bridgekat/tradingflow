@@ -4,7 +4,7 @@ Both fit the same way — accumulate a window of cross-sections, refit on a
 cadence, emit one prediction per rebalance — and differ in the shape of what
 they emit, how a per-stock mask scatters into it, and whether they read the
 feature panel at all. Those are the hooks, and they live on the *state* rather
-than on the segment, so `reset` and `compute` need no `self`.
+than on the operator, so `reset` and `compute` need no `self`.
 """
 
 from collections import deque
@@ -19,15 +19,15 @@ import numpy as np
 class PanelState:
     """Everything a windowed predictor carries between generations.
 
-    This mirrors the Rust `Segment::State`. There, `init` takes `self` *by
-    value*, so the build configuration is moved into the state and the segment
+    This mirrors the Rust `Operator::State`. There, `init` takes `self` *by
+    value*, so the build configuration is moved into the state and the operator
     ceases to exist — which is why `reset` and `compute` are free functions of
     `(inputs, state)`. Python cannot enforce that, but it can follow it: `init`
-    is the only method that reads the segment, everything it needs is copied
+    is the only method that reads the operator, everything it needs is copied
     here, and the subclass hooks hang off the state too.
 
     It matters beyond tidiness. A module binding `__op__` is imported once, so
-    *every node loading it shares one segment instance* — seven of them, in the
+    *every node loading it shares one operator instance* — seven of them, in the
     `covariance_gmv` example. Anything left on `self` would be shared across all
     of them; anything in the state is per-node by construction. `slots=True`
     turns a stray attribute into an `AttributeError` rather than a silent
@@ -196,8 +196,7 @@ class PanelPredictor:
         mask = universe > 0
         if state.universe_size is not None:
             assert int(mask.sum()) <= state.universe_size, (
-                f"universe has {int(mask.sum())} nonzero entries, "
-                f"exceeding universe_size={state.universe_size}"
+                f"universe has {int(mask.sum())} nonzero entries, " f"exceeding universe_size={state.universe_size}"
             )
         if state.min_periods is not None:
             mask = mask & (counts >= state.min_periods)

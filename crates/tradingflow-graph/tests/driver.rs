@@ -7,7 +7,7 @@ use std::thread;
 use futures::stream::{self, Stream};
 use tradingflow_graph::driver::{Builder, Event, Queue, Source, StreamFeed, Time};
 use tradingflow_graph::pool::Pool;
-use tradingflow_graph::typed::{Port, Ref, Segment, Val};
+use tradingflow_graph::typed::{Operator, Port, Ref, Val};
 
 /// A simple timestamp type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -61,7 +61,7 @@ fn live(batches: impl IntoIterator<Item = Batch>) -> impl Stream<Item = Event<Ba
 
 /// Sums each notified delta batch into a running total.
 struct Sum;
-impl Segment for Sum {
+impl Operator for Sum {
     type Inputs = Port<Ref<Batch>>;
     type Outputs = Port<Val<i64>>;
     type Context = Instant;
@@ -82,7 +82,7 @@ impl Segment for Sum {
 
 /// A stateless adder over two by-reference `i64` cells.
 struct Add;
-impl Segment for Add {
+impl Operator for Add {
     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = Instant;
@@ -210,7 +210,7 @@ fn feed_logged<S>(stream: S, log: FeedLog) -> VecFeed<S> {
 /// records nothing), and the auto-gate only calls `compute` on a notified
 /// input, so `compute` always has a real timestamp.
 struct Recorder(Arc<Mutex<Vec<(Instant, i64)>>>);
-impl Segment for Recorder {
+impl Operator for Recorder {
     type Inputs = Port<Ref<i64>>;
     type Outputs = ();
     type Context = Instant;
@@ -232,7 +232,7 @@ impl Segment for Recorder {
 fn single_feed_orders_and_accumulates() {
     let mut b = Builder::new(SimTime::at(Instant(0)));
     let data = b.source(feed(hist([(1, vec![10]), (2, vec![20]), (3, vec![30])])));
-    let sum = b.segment(Sum, data);
+    let sum = b.op(Sum, data);
     let mut d = b.build();
 
     let mut log = Vec::new();
@@ -259,8 +259,8 @@ fn batches_equal_timestamps_across_feeds() {
     let mut b = Builder::new(SimTime::at(Instant(0)));
     let a = b.source(feed(hist([(5, vec![1, 2])])));
     let c = b.source(feed(hist([(5, vec![4])])));
-    let sa = b.segment(Sum, a);
-    let sc = b.segment(Sum, c);
+    let sa = b.op(Sum, a);
+    let sc = b.op(Sum, c);
     let mut d = b.build();
 
     let mut gens = 0;
@@ -332,8 +332,8 @@ fn same_stamp_implicit_events_batch() {
     let mut b = Builder::new(SimTime::at(Instant(7)));
     let a = b.source(feed(live([vec![1, 2]])));
     let c = b.source(feed(live([vec![4]])));
-    let sa = b.segment(Sum, a);
-    let sc = b.segment(Sum, c);
+    let sa = b.op(Sum, a);
+    let sc = b.op(Sum, c);
     let mut d = b.build();
 
     let mut gens = 0;
@@ -462,7 +462,7 @@ fn builder_add_source_merges_and_counts() {
     let mut b = Builder::new(SimTime::at(Instant(0)));
     let x = b.source(Replay(vec![(Instant(1), 10), (Instant(3), 30)]));
     let y = b.source(Replay(vec![(Instant(2), 20), (Instant(3), 40)]));
-    let sum = b.segment(Add, (x, y));
+    let sum = b.op(Add, (x, y));
     let mut d = b.build();
 
     assert_eq!(d.size_hint(), Some(4));
@@ -482,14 +482,14 @@ fn builder_add_source_merges_and_counts() {
 }
 
 /// The running session advances the event-time context between a batch's
-/// writes and its stabilize, so time-stamping segments observe the batch
+/// writes and its stabilize, so time-stamping operators observe the batch
 /// timestamp — with no clock handle threaded through the builder.
 #[test]
 fn event_time_context_stamps_batches() {
     let mut b = Builder::new(SimTime::at(Instant(0)));
     let x = b.source(Replay(vec![(Instant(5), 50), (Instant(9), 90)]));
     let rows = Arc::new(Mutex::new(Vec::new()));
-    b.segment(Recorder(rows.clone()), x);
+    b.op(Recorder(rows.clone()), x);
     let mut d = b.build();
 
     let mut last = None;

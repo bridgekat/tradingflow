@@ -11,10 +11,10 @@ use pyo3::types::PyDict;
 use std::ffi::CString;
 
 use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView};
-use tradingflow::graph::{Builder, Pool, Segment};
+use tradingflow::graph::{Builder, Operator, Pool};
 use tradingflow::operators::series::record_all;
 use tradingflow::ports::{ArrayPort, ArrayPorts, SignalPort};
-use tradingflow::python::{PyInterface, PySegment, from_numpy_into, py_segment_source, to_numpy};
+use tradingflow::python::{PyInterface, PyOperator, from_numpy_into, py_operator_source, to_numpy};
 use tradingflow::sources::sync::array_series;
 use tradingflow::time::UnixTime;
 
@@ -401,10 +401,10 @@ fn interface_group_inputs_flatten_in_tree_order() {
 }
 
 // ===========================================================================
-// PySegment
+// PyOperator
 // ===========================================================================
 
-/// A stateful segment mirroring the `Segment` trait: `init` builds the state,
+/// A stateful operator mirroring the `Operator` trait: `init` builds the state,
 /// `compute` accumulates into it, `reset` returns the retained batch.
 const ACCUMULATE: &str = r#"
 class Accumulate:
@@ -428,10 +428,10 @@ def build(scale=1.0):
 "#;
 
 #[test]
-fn segment_mirrors_the_rust_contract() {
+fn operator_mirrors_the_rust_contract() {
     type In = (SignalPort<0>, ArrayPort<f64, 1>);
     type Out = (SignalPort<0>, ArrayPort<f64, 1>);
-    type Seg = PySegment<In, Out>;
+    type Op = PyOperator<In, Out>;
 
     // Keyword arguments for `build(**kwargs)` are a plain Python dict, built
     // with PyO3 — no bespoke params type, so any Python value works.
@@ -439,35 +439,35 @@ fn segment_mirrors_the_rust_contract() {
         use pyo3::types::IntoPyDict;
         [("scale", 2.0)].into_py_dict(py).unwrap().unbind()
     });
-    let seg: Seg = py_segment_source(ACCUMULATE, Some(params));
+    let op: Op = py_operator_source(ACCUMULATE, Some(params));
     let x = Array::from_parts([3], vec![1.0, 2.0, 3.0].into());
     let quiet = (ArrayView::scalar(&false), x.view());
     let firing = (ArrayView::scalar(&true), x.view());
 
     // Build-time: init creates the Python state, the first reset sizes the
     // output buffers from its return.
-    let mut state = Segment::init(seg, quiet);
-    let (sig, values) = <Seg as Segment>::reset(quiet, &mut state);
+    let mut state = Operator::init(op, quiet);
+    let (sig, values) = <Op as Operator>::reset(quiet, &mut state);
     assert!(!*sig);
     assert_eq!(values.data(), [0.0, 0.0, 0.0]);
 
     // Two computes accumulate through the carried Python state.
     let t = Instant::from_offset(Duration::from_nanos(1));
-    let (sig, values) = <Seg as Segment>::compute(firing, &mut state, &t);
+    let (sig, values) = <Op as Operator>::compute(firing, &mut state, &t);
     assert!(*sig);
     assert_eq!(values.data(), [2.0, 4.0, 6.0]);
-    let (sig, values) = <Seg as Segment>::compute(firing, &mut state, &t);
+    let (sig, values) = <Op as Operator>::compute(firing, &mut state, &t);
     assert!(*sig);
     assert_eq!(values.data(), [4.0, 8.0, 12.0]);
 
     // Reset retains the accumulated batch and quiesces the signal.
-    let (sig, values) = <Seg as Segment>::reset(quiet, &mut state);
+    let (sig, values) = <Op as Operator>::reset(quiet, &mut state);
     assert!(!*sig);
     assert_eq!(values.data(), [4.0, 8.0, 12.0]);
 }
 
 #[test]
-fn segment_receives_the_event_time() {
+fn operator_receives_the_event_time() {
     // A single-port interface on both sides: the inputs tuple has one entry,
     // and the output is a bare array rather than a sequence. Binds `__op__`
     // directly instead of defining `build`.
@@ -484,24 +484,24 @@ class Stamp:
 
 __op__ = Stamp()
 "#;
-    type Seg = PySegment<SignalPort<0>, ArrayPort<f64, 1>>;
+    type Op = PyOperator<SignalPort<0>, ArrayPort<f64, 1>>;
 
-    let seg: Seg = py_segment_source(STAMP, None);
+    let op: Op = py_operator_source(STAMP, None);
     let pulse = ArrayView::scalar(&true);
-    let mut state = Segment::init(seg, pulse);
-    let values = <Seg as Segment>::reset(pulse, &mut state);
+    let mut state = Operator::init(op, pulse);
+    let values = <Op as Operator>::reset(pulse, &mut state);
     assert_eq!(values.data(), [0.0]);
 
     // The graph's ambient event time arrives as naive nanoseconds.
     let t = Instant::from_offset(Duration::from_nanos(42));
-    let values = <Seg as Segment>::compute(pulse, &mut state, &t);
+    let values = <Op as Operator>::compute(pulse, &mut state, &t);
     assert_eq!(values.data(), [42.0]);
 }
 
 /// The whole path through the engine: a replayed source drives a Python
-/// segment, whose output is recorded natively.
+/// operator, whose output is recorded natively.
 #[tokio::test]
-async fn segment_runs_in_a_graph() {
+async fn operator_runs_in_a_graph() {
     const DOUBLE: &str = r#"
 class Double:
     def init(self, inputs):
@@ -522,8 +522,8 @@ __op__ = Double()
     let mut b = Builder::new(UnixTime);
     let data = Series::from_parts([], tss(&[1, 2, 3]), vec![10.0, 20.0, 30.0], 0);
     let (hs, h) = b.source(array_series(data));
-    let (ds, dv) = b.segment(py_segment_source::<In, Out>(DOUBLE, None), (hs, h));
-    let rec = b.segment(record_all(), (ds, dv));
+    let (ds, dv) = b.op(py_operator_source::<In, Out>(DOUBLE, None), (hs, h));
+    let rec = b.op(record_all(), (ds, dv));
 
     let mut g = b.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;

@@ -1,7 +1,7 @@
 use crate::data::Instant;
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Cross-sectional information coefficient of a predictor against a realized
 /// target, averaged over the evaluation period.
@@ -12,7 +12,7 @@ use crate::python::py_segment_module;
 ///
 /// To obtain rank information coefficient (Spearman correlation) instead,
 /// rank both inputs before passing them to this metric.
-pub fn information_coefficient() -> impl Segment<
+pub fn information_coefficient() -> impl Operator<
     Inputs = (
         SignalPort<0>,
         ArrayPort<f64, 1>,
@@ -22,7 +22,7 @@ pub fn information_coefficient() -> impl Segment<
     Outputs = (SignalPort<0>, ArrayPort<f64, 0>),
     Context = Instant,
 > {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.metric.predictor.mean.information_coefficient",
         None,
     )

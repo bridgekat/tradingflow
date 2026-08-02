@@ -4,10 +4,10 @@
 //! The single-operator modules pin what each operator computes in isolation.
 //! This module pins the four properties that only a composition can violate:
 //!
-//! 1. **Fusion transparency.** A `segment!` collapses a chain into one graph
+//! 1. **Fusion transparency.** A `fuse!` collapses a chain into one graph
 //!    node, so the whole chain reruns as a unit and the inner operators see
 //!    signals produced *inside* the node rather than at scheduler
-//!    boundaries. The invariant is that this is unobservable: a fused segment
+//!    boundaries. The invariant is that this is unobservable: a fused operator
 //!    is tick-for-tick bit-identical to the same operators as separate nodes.
 //! 2. **Composed signals.** The design-brief moving-average crossover, written
 //!    against an independent reference model, over a path long enough that the
@@ -18,11 +18,11 @@
 //!    threads; the results must not depend on `N`.
 
 use tradingflow::data::ArrayView;
+use tradingflow::fuse;
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
 use tradingflow::operators::{array, elem, rolling, series, signal};
 use tradingflow::ports::{ArrayPort, SignalPort};
-use tradingflow::segment;
 
 use crate::harness::*;
 
@@ -61,7 +61,7 @@ fn crossover_reference(path: &[f64], fast: usize, slow: usize) -> Vec<bool> {
 }
 
 // ---------------------------------------------------------------------------
-// `segment!` fusion
+// Operator fusion
 // ---------------------------------------------------------------------------
 
 /// A fused arithmetic/rolling chain is tick-for-tick bit-identical to the same
@@ -78,7 +78,7 @@ fn crossover_reference(path: &[f64], fast: usize, slow: usize) -> Vec<bool> {
 fn fused_rolling_chain_matches_unfused_nodes() {
     let nan = f64::NAN;
 
-    let fused = segment!(
+    let fused = fuse!(
         |cx: SignalPort<0>, x: ArrayPort<f64, 1>, cy: SignalPort<0>, y: ArrayPort<f64, 1>|
             -> ArrayPort<f64, 1> {
             let d = elem::sub()
@@ -94,15 +94,15 @@ fn fused_rolling_chain_matches_unfused_nodes() {
     let (sy, (cy, yv)) = b.source(cell([nan; 2]));
 
     // Reference: the same chain as separate nodes.
-    let fast = b.segment(rolling::mean(3, 1), (cx, xv));
-    let slow = b.segment(rolling::mean(5, 1), (cy, yv));
-    let d = b.segment(elem::sub(), (fast, slow));
-    let cd = b.segment(signal::or(), (cx, cy));
-    let prev = b.segment(rolling::lag(1), (cd, d));
-    let sum = b.segment(elem::add(), (d, prev));
-    let plain = b.segment(elem::abs(), sum);
+    let fast = b.op(rolling::mean(3, 1), (cx, xv));
+    let slow = b.op(rolling::mean(5, 1), (cy, yv));
+    let d = b.op(elem::sub(), (fast, slow));
+    let cd = b.op(signal::or(), (cx, cy));
+    let prev = b.op(rolling::lag(1), (cd, d));
+    let sum = b.op(elem::add(), (d, prev));
+    let plain = b.op(elem::abs(), sum);
 
-    let f_out = b.segment(fused, (cx, xv, cy, yv));
+    let f_out = b.op(fused, (cx, xv, cy, yv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -150,13 +150,13 @@ fn fused_rolling_chain_matches_unfused_nodes() {
     );
 }
 
-/// A fused segment that *gates* (`event::filter`) and returns **two** outputs is
-/// tick-for-tick bit-identical to the same operators as separate nodes.
+/// A fused operator that *gates* (`event::filter`) and returns **two** outputs
+/// is tick-for-tick bit-identical to the same operators as separate nodes.
 ///
 /// This is the fusion case most likely to break. A gate's whole job is to
 /// withhold a pulse, and inside a fused node that pulse never reaches the
 /// scheduler — it is consumed by the next inner operator instead. A
-/// multi-output segment additionally makes the macro's `route` project two
+/// multi-output operator additionally makes the macro's `route` project two
 /// wires out of one environment, one of which (`select_at`) is a zero-copy
 /// view derived from the other. The table drives all four gate states (both
 /// pass, either one blocked, both blocked) plus idle generations.
@@ -164,7 +164,7 @@ fn fused_rolling_chain_matches_unfused_nodes() {
 fn fused_gated_multi_output_matches_unfused_nodes() {
     let nan = f64::NAN;
 
-    let fused = segment!(
+    let fused = fuse!(
         |cp: SignalPort<0>, p: ArrayPort<f64, 1>, cq: SignalPort<0>, q: ArrayPort<f64, 1>|
             -> (ArrayPort<f64, 1>, ArrayPort<f64, 0>) {
             let gp = signal::filter(any_finite) @ (cp, p);
@@ -180,14 +180,14 @@ fn fused_gated_multi_output_matches_unfused_nodes() {
     let (sq, (cq, qv)) = b.source(cell([nan; 2]));
 
     // Reference: the same chain as separate nodes.
-    let gp = b.segment(signal::filter(any_finite), (cp, pv));
-    let gq = b.segment(signal::filter(any_finite), (cq, qv));
-    let cs = b.segment(signal::and(), (gp, gq));
-    let s = b.segment(elem::add(), (pv, qv));
-    let m = b.segment(rolling::mean(3, 1), (cs, s));
-    let head = b.segment(array::select_at(0, 0), m);
+    let gp = b.op(signal::filter(any_finite), (cp, pv));
+    let gq = b.op(signal::filter(any_finite), (cq, qv));
+    let cs = b.op(signal::and(), (gp, gq));
+    let s = b.op(elem::add(), (pv, qv));
+    let m = b.op(rolling::mean(3, 1), (cs, s));
+    let head = b.op(array::select_at(0, 0), m);
 
-    let (f_m, f_head) = b.segment(fused, (cp, pv, cq, qv));
+    let (f_m, f_head) = b.op(fused, (cp, pv, cq, qv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -250,8 +250,8 @@ fn ma_crossover_signal_fires_on_the_edge() {
 
     let mut b = Builder::new();
     let (src, (xc, xv)) = b.source(cell([0.0_f64, 0.0]));
-    let signal = b.segment(
-        segment!(
+    let signal = b.op(
+        fuse!(
             |c: SignalPort<0>, x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
                 let zeros = array::constant([0.0_f64, 0.0]) @ ();
                 let d = elem::sub()
@@ -305,8 +305,8 @@ fn self_recording_chain_matches_hoisted_record() {
     let (src, (xc, xv)) = b.source(cell([0.0_f64, 0.0]));
 
     // Self-recording: each `rolling::mean` buffers the live stream itself.
-    let live = b.segment(
-        segment!(
+    let live = b.op(
+        fuse!(
             |c: SignalPort<0>, x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
                 elem::sub()
                     @ (rolling::mean(fast, 1) @ (c, x), rolling::mean(slow, 1) @ (c, x))
@@ -316,10 +316,10 @@ fn self_recording_chain_matches_hoisted_record() {
     );
 
     // Hoisted: one shared record, two window operators reading it.
-    let rec = b.segment(series::record_on(32, false), (xc, xv));
-    let h_fast = b.segment(rolling::series_mean(fast, 1), rec);
-    let h_slow = b.segment(rolling::series_mean(slow, 1), rec);
-    let hoisted = b.segment(elem::sub(), (h_fast, h_slow));
+    let rec = b.op(series::record_on(32, false), (xc, xv));
+    let h_fast = b.op(rolling::series_mean(fast, 1), rec);
+    let h_slow = b.op(rolling::series_mean(slow, 1), rec);
+    let hoisted = b.op(elem::sub(), (h_fast, h_slow));
 
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -361,9 +361,9 @@ fn rejoining_cone_recomputes_once_per_generation() {
     let mut b = Builder::new();
     let (sa, av) = b.source(array::constant(0.0_f64));
     let (sb, bv) = b.source(array::constant(0.0_f64));
-    let sum = b.segment(elem::add(), (av, bv));
-    let out = b.segment(elem::mul(), (sum, av));
-    let runs = b.segment(runs::<0>(), out);
+    let sum = b.op(elem::add(), (av, bv));
+    let out = b.op(elem::mul(), (sum, av));
+    let runs = b.op(runs::<0>(), out);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -407,14 +407,14 @@ fn coalesced_sources_stabilize_once_over_the_union() {
     let mut b = Builder::new();
     let (sa, (sig_a, av)) = b.source(cell(0.0_f64));
     let (sb, (sig_b, bv)) = b.source(cell(0.0_f64));
-    let runs_a = b.segment(runs::<0>(), av);
-    let runs_b = b.segment(runs::<0>(), bv);
-    let sum = b.segment(elem::add(), (av, bv));
-    let runs_sum = b.segment(runs::<0>(), sum);
+    let runs_a = b.op(runs::<0>(), av);
+    let runs_b = b.op(runs::<0>(), bv);
+    let sum = b.op(elem::add(), (av, bv));
+    let runs_sum = b.op(runs::<0>(), sum);
     // The join's cadence is the union of its inputs' — spelled as the `or` of
     // the two source signals rather than inferred from the scheduler.
-    let sum_signal = b.segment(signal::or(), (sig_a, sig_b));
-    let rec = b.segment(series::record_all(), (sum_signal, sum));
+    let sum_signal = b.op(signal::or(), (sig_a, sig_b));
+    let rec = b.op(series::record_all(), (sum_signal, sum));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -449,7 +449,7 @@ fn coalesced_sources_stabilize_once_over_the_union() {
 // Parallel execution
 // ---------------------------------------------------------------------------
 
-/// Builds and runs a mixed cone — a fused `segment!`, the same chain unfused on
+/// Builds and runs a mixed cone — a `fuse!`, the same chain unfused on
 /// a second source, an `event::filter` gate, a lag and a rejoin — on a pool of
 /// `workers` threads, returning the per-tick bit patterns of three outputs.
 ///
@@ -463,8 +463,8 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
     let (sa, (ca, av)) = b.source(cell([0.0_f64; 4]));
     let (sb, (cb, bv)) = b.source(cell([0.0_f64; 4]));
 
-    let spread = b.segment(
-        segment!(
+    let spread = b.op(
+        fuse!(
             |c: SignalPort<0>, x: ArrayPort<f64, 1>| -> ArrayPort<f64, 1> {
                 elem::sub()
                     @ (rolling::mean(3, 1) @ (c, x), rolling::mean(7, 1) @ (c, x))
@@ -472,19 +472,19 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
         ),
         (ca, av),
     );
-    let gated = b.segment(
+    let gated = b.op(
         signal::filter(|a: ArrayView<f64, 1>| a.to_contiguous()[0] > 0.0),
         (ca, spread),
     );
 
-    let f2 = b.segment(rolling::mean(3, 1), (cb, bv));
-    let s2 = b.segment(rolling::mean(7, 1), (cb, bv));
-    let d2 = b.segment(elem::sub(), (f2, s2));
+    let f2 = b.op(rolling::mean(3, 1), (cb, bv));
+    let s2 = b.op(rolling::mean(7, 1), (cb, bv));
+    let d2 = b.op(elem::sub(), (f2, s2));
 
-    let cj = b.segment(signal::and(), (gated, cb));
-    let join = b.segment(elem::add(), (spread, d2));
-    let lagged = b.segment(rolling::lag(2), (cj, join));
-    let out = b.segment(elem::mul(), (join, lagged));
+    let cj = b.op(signal::and(), (gated, cb));
+    let join = b.op(elem::add(), (spread, d2));
+    let lagged = b.op(rolling::lag(2), (cj, join));
+    let out = b.op(elem::mul(), (join, lagged));
 
     let mut g = b.build();
     let mut pool = Pool::new(workers);
@@ -520,13 +520,13 @@ fn run_fanout(workers: usize, branches: usize, path: &[f64]) -> Vec<(Vec<f64>, u
     let probes: Vec<_> = (0..branches)
         .map(|k| {
             let threshold = k as f64 * 15.0;
-            let gate = b.segment(
+            let gate = b.op(
                 signal::filter(move |a: ArrayView<f64, 0>| a.to_contiguous()[0] > threshold),
                 srcv,
             );
             (
-                b.segment(series::record_all(), (gate, srcv.1)),
-                b.segment(count::<0>(), (gate, srcv.1)),
+                b.op(series::record_all(), (gate, srcv.1)),
+                b.op(count::<0>(), (gate, srcv.1)),
             )
         })
         .collect();
@@ -551,14 +551,14 @@ fn run_stateful_stress(workers: usize, branches: usize, gens: usize) -> Vec<usiz
     let counters: Vec<_> = (0..branches)
         .map(|k| {
             let divisor = k + 2;
-            let gate = b.segment(
+            let gate = b.op(
                 signal::filter(move |a: ArrayView<f64, 0>| {
                     (a.to_contiguous()[0] as usize).is_multiple_of(divisor)
                 }),
                 srcv,
             );
-            let _smoothed = b.segment(rolling::mean(3, 1), (gate, srcv.1));
-            b.segment(count::<0>(), (gate, srcv.1))
+            let _smoothed = b.op(rolling::mean(3, 1), (gate, srcv.1));
+            b.op(count::<0>(), (gate, srcv.1))
         })
         .collect();
     let mut g = b.build();

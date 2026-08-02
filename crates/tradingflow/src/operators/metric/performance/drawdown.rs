@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
 
 /// Operator signature for [`drawdown`].
@@ -30,7 +30,7 @@ pub struct DrawdownState<T: Scalar + Float> {
     out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float> Segment for Drawdown<T> {
+impl<T: Scalar + Float> Operator for Drawdown<T> {
     type Inputs = (SignalPort<0>, ArrayPort<T, 0>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
@@ -74,7 +74,7 @@ impl<T: Scalar + Float> Segment for Drawdown<T> {
 /// Percentage drawdown from the running maximum of a net-asset-value scalar,
 /// where each period is specified by a signal.
 pub fn drawdown<T: Scalar + Float>()
--> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
+-> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
     Drawdown::new()
 }

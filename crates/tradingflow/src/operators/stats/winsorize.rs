@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::cmp::Ordering;
 
 use crate::data::{Array, ArrayView, Instant, Layout, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::ArrayPort;
 
 pub struct Winsorize<T: Scalar + Float, const N: usize> {
@@ -25,7 +25,7 @@ pub struct WinsorizeState<T: Scalar + Float, const N: usize> {
     out: Array<T, N>,
 }
 
-impl<T: Scalar + Float, const N: usize> Segment for Winsorize<T, N> {
+impl<T: Scalar + Float, const N: usize> Operator for Winsorize<T, N> {
     type Inputs = ArrayPort<T, N>;
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
@@ -111,6 +111,6 @@ fn winsorize_into<T: Scalar + Float, const N: usize>(
 /// `1 - p` quantiles.
 pub fn winsorize<T: Scalar + Float, const N: usize>(
     p: T,
-) -> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Winsorize::new(p)
 }

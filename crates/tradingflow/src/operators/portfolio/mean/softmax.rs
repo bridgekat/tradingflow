@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::MeanPortfolio;
 use crate::operators::portfolio::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Weights each stock by the softmax of its predicted return.
 ///
@@ -23,7 +23,7 @@ pub fn softmax(config: Config, temperature: f64) -> impl MeanPortfolio {
         temperature > 0.0,
         "softmax temperature must be positive, got {temperature}"
     );
-    py_segment_module(
+    py_operator_module(
         "tradingflow.portfolio.mean.softmax",
         config.params(|d| d.set_item("temperature", temperature)),
     )

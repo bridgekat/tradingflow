@@ -1,6 +1,6 @@
 use super::MeanPortfolio;
 use crate::operators::portfolio::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Weights each stock in proportion to its predicted return.
 ///
@@ -12,7 +12,7 @@ use crate::python::py_segment_module;
 ///
 /// See [module-level docs](super::super) for inputs and outputs.
 pub fn proportional(config: Config) -> impl MeanPortfolio {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.portfolio.mean.proportional",
         config.params(|_| Ok(())),
     )

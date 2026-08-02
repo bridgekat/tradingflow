@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{self, Array, ArrayView, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
 
 /// Operator signature for [`forward_adjust`].
@@ -31,7 +31,7 @@ pub struct ForwardAdjustState<T: Scalar + Float, const N: usize> {
     adj_closes: Array<T, N>,
 }
 
-impl<T: Scalar + Float, const N: usize> Segment for ForwardAdjust<T, N> {
+impl<T: Scalar + Float, const N: usize> Operator for ForwardAdjust<T, N> {
     type Inputs = (
         (SignalPort<N>, ArrayPort<T, N>),
         (SignalPort<N>, ArrayPort<T, N>, ArrayPort<T, N>),
@@ -145,7 +145,7 @@ impl<T: Scalar + Float, const N: usize> Segment for ForwardAdjust<T, N> {
 /// - `multipliers`: elementwise cumulative forward-adjustment multipliers.
 /// - `adj_closes`: elementwise forward-adjusted closing prices.
 #[allow(clippy::type_complexity)]
-pub fn forward_adjust<T: Scalar + Float, const N: usize>() -> impl Segment<
+pub fn forward_adjust<T: Scalar + Float, const N: usize>() -> impl Operator<
     Inputs = (
         (SignalPort<N>, ArrayPort<T, N>),
         (SignalPort<N>, ArrayPort<T, N>, ArrayPort<T, N>),

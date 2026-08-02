@@ -1,6 +1,6 @@
 use std::any::TypeId;
 
-use tradingflow_graph::core::{Builder, ComputeFn, ErasedCell, Error, Graph, Segment};
+use tradingflow_graph::core::{Builder, ComputeFn, ErasedCell, Error, Graph, Node};
 use tradingflow_graph::pool::Pool;
 
 unsafe fn source_fn(
@@ -99,14 +99,14 @@ unsafe fn reset_fn(
     unsafe { out_ptrs.as_mut_unchecked()[0] = state.cast_const() };
 }
 
-/// An `i64`-output segment: state holds the output value, slot points at it.
+/// An `i64`-output operator: state holds the output value, slot points at it.
 /// Marked heavy so these tests keep exercising the parallel task path (the
 /// typed-layer tests cover the light/inline path).
-fn seg(input_types: Box<[TypeId]>, f: ComputeFn) -> Segment {
+fn op(input_types: Box<[TypeId]>, f: ComputeFn) -> Node {
     let state = ErasedCell::new(0i64);
     let ptr = state.get().cast_const();
     unsafe {
-        Segment::new(
+        Node::new(
             input_types,
             Box::new([TypeId::of::<i64>()]),
             f,
@@ -118,16 +118,16 @@ fn seg(input_types: Box<[TypeId]>, f: ComputeFn) -> Segment {
     }
 }
 
-fn unary(f: ComputeFn) -> Segment {
-    seg(Box::new([TypeId::of::<i64>()]), f)
+fn unary(f: ComputeFn) -> Node {
+    op(Box::new([TypeId::of::<i64>()]), f)
 }
 
-fn binary(f: ComputeFn) -> Segment {
-    seg(Box::new([TypeId::of::<i64>(), TypeId::of::<i64>()]), f)
+fn binary(f: ComputeFn) -> Node {
+    op(Box::new([TypeId::of::<i64>(), TypeId::of::<i64>()]), f)
 }
 
-fn source() -> Segment {
-    seg(Box::new([]), source_fn)
+fn source() -> Node {
+    op(Box::new([]), source_fn)
 }
 
 /// Read an output slot's `i64` value (through its pointer).
@@ -173,7 +173,7 @@ fn diamond_and_root_edge_are_glitch_free() {
 fn wide_fan_in_runs_on_the_pool() {
     // S -> N independent `inc` nodes -> one aggregate that reads all N.
     const N: usize = 64;
-    let agg = seg(vec![TypeId::of::<i64>(); N].into_boxed_slice(), sum_all);
+    let agg = op(vec![TypeId::of::<i64>(); N].into_boxed_slice(), sum_all);
 
     let mut b = Builder::new();
     let s = b.push(source(), &[]).unwrap().1.start;
@@ -261,7 +261,7 @@ fn push_rejects_type_mismatch() {
         let state = ErasedCell::new(0.0f64);
         let ptr = state.get().cast_const();
         unsafe {
-            Segment::new(
+            Node::new(
                 Box::new([]),
                 Box::new([TypeId::of::<f64>()]),
                 source_fn,

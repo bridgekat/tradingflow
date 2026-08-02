@@ -28,7 +28,7 @@ use crate::harness::*;
 fn record_stamps_rows_with_the_event_time() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.segment(series::record_all(), srcv);
+    let rec = b.op(series::record_all(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -61,8 +61,8 @@ fn record_stamps_rows_with_the_event_time() {
 fn record_appends_nothing_when_the_input_does_not_notify() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let gate = b.segment(signal::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
-    let rec = b.segment(series::record_all(), (gate, srcv.1));
+    let gate = b.op(signal::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
+    let rec = b.op(series::record_all(), (gate, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -86,7 +86,7 @@ fn record_all_keeps_every_row() {
 
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.segment(series::record_all(), srcv);
+    let rec = b.op(series::record_all(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -112,7 +112,7 @@ fn record_all_keeps_every_row() {
 fn record_keeps_the_element_extents_of_its_input() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, vec![0.0_f64; 2].into());
-    let rec = b.segment(series::record_all(), srcv);
+    let rec = b.op(series::record_all(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -139,9 +139,9 @@ fn record_keeps_the_element_extents_of_its_input() {
 fn record_delayed_defers_trimming_by_one_tick() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let eager = b.segment(series::record_on(2usize, false), srcv);
-    let delayed = b.segment(series::record_on(2usize, true), srcv);
-    let buffered = b.segment(series::buffer(2usize), srcv);
+    let eager = b.op(series::record_on(2usize, false), srcv);
+    let delayed = b.op(series::record_on(2usize, true), srcv);
+    let buffered = b.op(series::buffer(2usize), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -197,7 +197,7 @@ fn bounded_record_compacts_the_front_and_bounds_storage() {
 
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.segment(series::record_on(RETAIN, false), srcv);
+    let rec = b.op(series::record_on(RETAIN, false), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -253,7 +253,7 @@ fn duration_bounded_record_keeps_the_trailing_time_window() {
 
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.segment(series::record_on(Duration::from_days(WINDOW), false), srcv);
+    let rec = b.op(series::record_on(Duration::from_days(WINDOW), false), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -303,8 +303,8 @@ fn duration_bounded_record_keeps_the_trailing_time_window() {
 fn last_and_last_or_differ_only_on_an_empty_series() {
     let mut b = Builder::new();
     let (cell, sv) = b.source(series::constant(Series::new([3])));
-    let nan_filled = b.segment(series::last(), sv);
-    let fill_filled = b.segment(series::last_or(-1.0_f64), sv);
+    let nan_filled = b.op(series::last(), sv);
+    let fill_filled = b.op(series::last_or(-1.0_f64), sv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -336,9 +336,9 @@ fn last_and_last_or_differ_only_on_an_empty_series() {
 fn last_or_tracks_the_newest_row_and_holds_it_across_idle_ticks() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let gate = b.segment(signal::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
-    let rec = b.segment(series::record_all(), (gate, srcv.1));
-    let lst = b.segment(series::last_or(0.0_f64), rec);
+    let gate = b.op(signal::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
+    let rec = b.op(series::record_all(), (gate, srcv.1));
+    let lst = b.op(series::last_or(0.0_f64), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -362,8 +362,8 @@ fn last_or_tracks_the_newest_row_and_holds_it_across_idle_ticks() {
 fn last_reads_the_newest_row_of_a_compacted_record() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.segment(series::record_on(2usize, false), srcv);
-    let lst = b.segment(series::last(), rec);
+    let rec = b.op(series::record_on(2usize, false), srcv);
+    let lst = b.op(series::last(), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -386,10 +386,10 @@ fn last_reads_the_newest_row_of_a_compacted_record() {
 fn shift_positive_lags_values_behind_their_instants() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.segment(series::record_all(), srcv);
-    let by1 = b.segment(series::shift(1), rec);
-    let by2 = b.segment(series::shift(2), rec);
-    let last2 = b.segment(series::last_or(0.0_f64), by2);
+    let rec = b.op(series::record_all(), srcv);
+    let by1 = b.op(series::shift(1), rec);
+    let by2 = b.op(series::shift(2), rec);
+    let last2 = b.op(series::last_or(0.0_f64), by2);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -420,10 +420,10 @@ fn shift_positive_lags_values_behind_their_instants() {
 fn shift_negative_leads_values_ahead_of_their_instants() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.segment(series::record_all(), srcv);
-    let by1 = b.segment(series::shift(-1), rec);
-    let by2 = b.segment(series::shift(-2), rec);
-    let last2 = b.segment(series::last_or(0.0_f64), by2);
+    let rec = b.op(series::record_all(), srcv);
+    let by1 = b.op(series::shift(-1), rec);
+    let by2 = b.op(series::shift(-2), rec);
+    let last2 = b.op(series::last_or(0.0_f64), by2);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -450,8 +450,8 @@ fn shift_negative_leads_values_ahead_of_their_instants() {
 fn shift_by_zero_is_the_identity() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.segment(series::record_all(), srcv);
-    let by0 = b.segment(series::shift(0), rec);
+    let rec = b.op(series::record_all(), srcv);
+    let by0 = b.op(series::shift(0), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -472,11 +472,11 @@ fn shift_by_zero_is_the_identity() {
 fn shift_past_the_window_yields_an_empty_series() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.segment(series::record_all(), srcv);
-    let ahead = b.segment(series::shift(9), rec);
-    let behind = b.segment(series::shift(-9), rec);
-    let last_ahead = b.segment(series::last_or(-1.0_f64), ahead);
-    let last_behind = b.segment(series::last_or(-1.0_f64), behind);
+    let rec = b.op(series::record_all(), srcv);
+    let ahead = b.op(series::shift(9), rec);
+    let behind = b.op(series::shift(-9), rec);
+    let last_ahead = b.op(series::last_or(-1.0_f64), ahead);
+    let last_behind = b.op(series::last_or(-1.0_f64), behind);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -510,7 +510,7 @@ fn constant_series_lends_its_rows_and_is_pokeable() {
         vec![1.0_f64, 2.0, 3.0, 4.0],
         0,
     )));
-    let lst = b.segment(series::last_or(0.0_f64), sv);
+    let lst = b.op(series::last_or(0.0_f64), sv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -537,13 +537,13 @@ fn constant_series_lends_its_rows_and_is_pokeable() {
 #[test]
 fn from_parts_series_keeps_its_logical_base() {
     let mut b = Builder::new();
-    let sv = b.value(series::constant(Series::from_parts(
+    let sv = b.val(series::constant(Series::from_parts(
         [],
         vec![nano(1), nano(2), nano(3)],
         vec![10.0_f64, 20.0, 30.0],
         5,
     )));
-    let lst = b.segment(series::last_or(0.0_f64), sv);
+    let lst = b.op(series::last_or(0.0_f64), sv);
     let g = b.build();
 
     let s = g.view(sv);
@@ -560,7 +560,7 @@ fn from_parts_series_keeps_its_logical_base() {
 #[test]
 fn empty_series_has_no_rows_but_keeps_its_extents() {
     let mut b = Builder::new();
-    let sv = b.value(series::constant(Series::<f64, _>::new([2, 3])));
+    let sv = b.val(series::constant(Series::<f64, _>::new([2, 3])));
     let g = b.build();
 
     let s = g.view(sv);
@@ -597,7 +597,7 @@ fn panels_recorded<H>(
 ) -> (Graph<Instant>, H) {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, Array::zeros([2, 3]));
-    let rec = b.segment(series::record_all(), srcv);
+    let rec = b.op(series::record_all(), srcv);
     let out = wire(&mut b, rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -645,8 +645,8 @@ fn panels_constant<H>(
 #[test]
 fn slice_selects_element_axes_and_keeps_every_row() {
     let (g, (sliced, lst)) = panels_constant(|b, rows| {
-        let sliced = b.segment(series::slice((.., 1..3)), rows);
-        let lst = b.segment(series::last_or(0.0_f64), sliced);
+        let sliced = b.op(series::slice((.., 1..3)), rows);
+        let lst = b.op(series::last_or(0.0_f64), sliced);
         (sliced, lst)
     });
 
@@ -671,15 +671,15 @@ fn slice_selects_element_axes_and_keeps_every_row() {
 /// panicking. A zero-row series has an empty scalar buffer while the slice's
 /// element-axis offset is non-zero, so the narrowing has to tolerate an offset
 /// past the end. This is load-bearing rather than a corner case: the builder
-/// evaluates every segment's output once at build time, when a `record` is
+/// evaluates every operator's output once at build time, when a `record` is
 /// always still empty — so without it, `series::slice` downstream of a
 /// `record` would bring the graph down at `build()`.
 #[test]
 fn slicing_an_empty_series_is_empty() {
     let mut b = Builder::new();
-    let sv = b.value(series::constant(Series::<f64, _>::new([2, 3])));
-    let sliced = b.segment(series::slice((.., 1..3)), sv);
-    let projected = b.segment(series::slice_reshape::<_, _, 1, _>((1usize, ..)), sv);
+    let sv = b.val(series::constant(Series::<f64, _>::new([2, 3])));
+    let sliced = b.op(series::slice((.., 1..3)), sv);
+    let projected = b.op(series::slice_reshape::<_, _, 1, _>((1usize, ..)), sv);
     let g = b.build();
 
     let s = g.view(sliced);
@@ -697,8 +697,8 @@ fn slicing_an_empty_series_is_empty() {
 fn slicing_a_record_survives_the_empty_build() {
     let mut b = Builder::new();
     let (src, srcv) = event_src(&mut b, Array::zeros([2, 3]));
-    let rec = b.segment(series::record_all(), srcv);
-    let sliced = b.segment(series::slice((.., 1..3)), rec);
+    let rec = b.op(series::record_all(), srcv);
+    let sliced = b.op(series::slice((.., 1..3)), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -718,8 +718,8 @@ fn slicing_a_record_survives_the_empty_build() {
 #[test]
 fn transpose_permutes_element_axes_only() {
     let (g, (tr, lst)) = panels_recorded(|b, rec| {
-        let tr = b.segment(series::transpose([1, 0]), rec);
-        let lst = b.segment(series::last_or(0.0_f64), tr);
+        let tr = b.op(series::transpose([1, 0]), rec);
+        let lst = b.op(series::last_or(0.0_f64), tr);
         (tr, lst)
     });
 
@@ -749,8 +749,8 @@ fn transpose_permutes_element_axes_only() {
 #[test]
 fn slice_reshape_projects_an_element_axis_away() {
     let (g, (row1, lst)) = panels_constant(|b, rows| {
-        let row1 = b.segment(series::slice_reshape::<_, _, 1, _>((1usize, ..)), rows);
-        let lst = b.segment(series::last_or(0.0_f64), row1);
+        let row1 = b.op(series::slice_reshape::<_, _, 1, _>((1usize, ..)), rows);
+        let lst = b.op(series::last_or(0.0_f64), row1);
         (row1, lst)
     });
 
@@ -775,7 +775,7 @@ fn derive_view_can_add_element_axes() {
         a.slice_reshape::<4, _>((.., NewAxis, .., NewAxis))
     }
 
-    let (g, wide) = panels_recorded(|b, rec| b.segment(series::derive_view(spread), rec));
+    let (g, wide) = panels_recorded(|b, rec| b.op(series::derive_view(spread), rec));
 
     let s = g.view(wide);
     assert_eq!(s.extents(), [2, 1, 3, 1]);
@@ -789,8 +789,8 @@ fn derive_view_can_add_element_axes() {
 #[test]
 fn pad_ndim_prepends_unit_element_axes() {
     let (g, (same, padded)) = panels_recorded(|b, rec| {
-        let same = b.segment(series::pad_ndim::<_, 2, 2>(), rec);
-        let padded = b.segment(series::pad_ndim::<_, 2, 4>(), rec);
+        let same = b.op(series::pad_ndim::<_, 2, 2>(), rec);
+        let padded = b.op(series::pad_ndim::<_, 2, 4>(), rec);
         (same, padded)
     });
 
@@ -817,8 +817,8 @@ fn derive_view_windows_the_row_axis_preserving_logical_indices() {
     }
 
     let (g, (tail, lst)) = panels_recorded(|b, rec| {
-        let tail = b.segment(series::derive_view(last_two), rec);
-        let lst = b.segment(series::last_or(0.0_f64), tail);
+        let tail = b.op(series::derive_view(last_two), rec);
+        let lst = b.op(series::last_or(0.0_f64), tail);
         (tail, lst)
     });
 

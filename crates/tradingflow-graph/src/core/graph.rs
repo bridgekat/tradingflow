@@ -5,7 +5,7 @@ use std::sync::atomic::{self, AtomicUsize, Ordering};
 
 use super::cell::ErasedCell;
 use super::error::Error;
-use super::segment::{ComputeFn, ResetFn, Segment};
+use super::node::{ComputeFn, Node, ResetFn};
 
 /// Adjacency matrix stored in compressed sparse row format.
 pub struct Adjacency {
@@ -105,7 +105,8 @@ impl<T> From<T> for SyncCell<T> {
 //   published those writes -- so reads never race a concurrent write.
 unsafe impl<T> Sync for SyncCell<T> {}
 
-struct Node {
+/// A [`Node`] that is already fixed into a graph.
+struct FixedNode {
     compute_fn: ComputeFn,
     reset_fn: ResetFn,
     input_range: Range<usize>,
@@ -120,7 +121,7 @@ pub struct Builder {
     output_ptrs: Vec<SyncCell<*const ()>>,
     output_type_ids: Vec<TypeId>,
     input_from_outputs: Adjacency,
-    nodes: Vec<Node>,
+    nodes: Vec<FixedNode>,
 }
 
 impl Builder {
@@ -144,11 +145,11 @@ impl Builder {
 
     pub fn push(
         &mut self,
-        segment: Segment,
+        op: Node,
         input_indices: &[usize],
     ) -> Result<(usize, Range<usize>), Error> {
         let (input_types, output_types, compute_fn, reset_fn, state, output_ptrs, is_heavy) =
-            segment.into_parts();
+            op.into_parts();
 
         let input_arity = input_types.len();
         if input_arity != input_indices.len() {
@@ -196,7 +197,7 @@ impl Builder {
         let output_range = output_begin..self.output_ptrs.len();
 
         let node_index = self.nodes.len();
-        self.nodes.push(Node {
+        self.nodes.push(FixedNode {
             compute_fn,
             reset_fn,
             input_range,
@@ -279,7 +280,7 @@ pub struct Graph {
     output_type_ids: Box<[TypeId]>,
     output_to_inputs: Adjacency,
     node_to_nodes: Adjacency,
-    nodes: Box<[Node]>,
+    nodes: Box<[FixedNode]>,
     counters: Box<[AtomicUsize]>,
     roots: Vec<usize>,
     dirty: Vec<usize>,
@@ -348,7 +349,7 @@ impl Graph {
         // ready for the next generation). Tasks are plain `usize`, so this
         // allocates nothing per node.
         //
-        // Scheduling is cost-gated on the per-segment `is_heavy` hint: a heavy
+        // Scheduling is cost-gated on the per-node `is_heavy` hint: a heavy
         // ready node becomes a pool task that may recruit (wake) a worker; a
         // light one runs inline in the releasing task, since a cross-thread
         // handoff would cost more than the node itself. A cone with no heavy

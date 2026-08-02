@@ -1,5 +1,5 @@
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::ArrayPort;
 
 /// Operator signature for [`constant`] etc.
@@ -13,7 +13,7 @@ impl<T: Scalar, const N: usize> Constant<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> Segment for Constant<T, N> {
+impl<T: Scalar, const N: usize> Operator for Constant<T, N> {
     type Inputs = ();
     type Outputs = ArrayPort<T, N>;
     type Context = Instant;
@@ -35,6 +35,6 @@ impl<T: Scalar, const N: usize> Segment for Constant<T, N> {
 /// A constant array cell.
 pub fn constant<T: Scalar, const N: usize>(
     value: impl Into<Array<T, N>>,
-) -> impl Segment<Inputs = (), Outputs = ArrayPort<T, N>, Context = Instant, State = Array<T, N>> {
+) -> impl Operator<Inputs = (), Outputs = ArrayPort<T, N>, Context = Instant, State = Array<T, N>> {
     Constant::new(value.into())
 }

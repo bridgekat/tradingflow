@@ -1,6 +1,6 @@
 use super::MeanPredictor;
 use crate::operators::predictor::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Predicts each stock's return as its own sample mean over the window,
 /// ignoring features entirely.
@@ -11,7 +11,7 @@ use crate::python::py_segment_module;
 ///
 /// See [module-level docs](super::super) for inputs and outputs.
 pub fn sample(config: Config) -> impl MeanPredictor {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.predictor.mean.sample",
         config.params(|_| Ok(())),
     )

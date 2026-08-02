@@ -1,6 +1,6 @@
 use super::view::DeriveView;
 use crate::data::{self, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::SeriesPort;
 
 /// Shifts the index of a series view by `n` periods: [`data::series::shift`].
@@ -8,6 +8,6 @@ use crate::ports::SeriesPort;
 /// Retains only the elements retained in the input series.
 pub fn shift<T: Scalar, const N: usize>(
     n: isize,
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
     DeriveView::new(move |a| data::series::shift(a, n))
 }

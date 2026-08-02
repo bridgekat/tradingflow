@@ -1,4 +1,4 @@
-//! Segment interfaces for arrays and series.
+//! Operator interfaces for arrays and series.
 
 use std::marker::PhantomData;
 

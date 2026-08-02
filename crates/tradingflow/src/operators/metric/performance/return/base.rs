@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
 
 /// Base trait for return operator accumulators.
@@ -40,7 +40,7 @@ pub struct ReturnState<T: Scalar + Float, A: Accumulator<T>> {
     out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float, A: Accumulator<T>> Segment for Return<T, A> {
+impl<T: Scalar + Float, A: Accumulator<T>> Operator for Return<T, A> {
     type Inputs = (SignalPort<0>, ArrayPort<T, 0>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
@@ -109,7 +109,7 @@ pub struct LogReturnState<T: Scalar + Float, A: Accumulator<T>> {
     out: Array<T, 0>,
 }
 
-impl<T: Scalar + Float, A: Accumulator<T>> Segment for LogReturn<T, A> {
+impl<T: Scalar + Float, A: Accumulator<T>> Operator for LogReturn<T, A> {
     type Inputs = (SignalPort<0>, ArrayPort<T, 0>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;

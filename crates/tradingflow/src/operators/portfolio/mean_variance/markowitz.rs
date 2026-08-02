@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::MeanVariancePortfolio;
 use crate::operators::portfolio::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Which way [`markowitz`] states the return-versus-risk trade-off.
 ///
@@ -51,7 +51,7 @@ pub fn markowitz(
     full_position: bool,
     factor_rank: usize,
 ) -> impl MeanVariancePortfolio {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.portfolio.mean_variance.markowitz",
         config.params(|d| {
             d.set_item("mode", mode as u8)?;

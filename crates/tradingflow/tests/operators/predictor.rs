@@ -1,6 +1,6 @@
 //! Integration tests for `tradingflow::operators::predictor`.
 //!
-//! Every predictor is a Python segment, so the whole file needs the `python`
+//! Every predictor is a Python operator, so the whole file needs the `python`
 //! feature and an interpreter with NumPy (plus SciPy, and CVXPY for
 //! [`lasso`](tradingflow::operators::predictor::mean::lasso)).
 //!
@@ -21,7 +21,7 @@
 
 use tradingflow::data::{Array, Instant};
 use tradingflow::graph::typed::Builder;
-use tradingflow::graph::{Pool, Segment};
+use tradingflow::graph::{Operator, Pool};
 use tradingflow::operators::array::constant;
 use tradingflow::operators::predictor::{Config, mean, variance};
 use tradingflow::operators::series::record_all;
@@ -99,7 +99,7 @@ fn drive<S, const R: usize>(
     ticks: &[Tick],
 ) -> Run
 where
-    S: Segment<
+    S: Operator<
             Inputs = (
                 SignalPort<0>,
                 ArrayPort<f64, 2>,
@@ -119,11 +119,11 @@ where
     let (rebalance_sig, rebalance_sigv) = b.source(signal());
     let (_, universev) = b.source(constant(universe.to_vec()));
 
-    let out = b.segment(
+    let out = b.op(
         predictor,
         (sample_sigv, featuresv, targetv, rebalance_sigv, universev),
     );
-    let recorded = b.segment(record_all(), out);
+    let recorded = b.op(record_all(), out);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 

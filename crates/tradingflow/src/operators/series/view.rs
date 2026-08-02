@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::data::layout::{IntoSliceReshapes, IntoSlices};
 use crate::data::{Instant, Scalar, SeriesView};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::SeriesPort;
 
 /// Operator signature for [`derive_view`] etc.
@@ -26,7 +26,7 @@ where
     }
 }
 
-impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Segment for DeriveView<T, N, U, M, F>
+impl<T: Scalar, const N: usize, U: Scalar, const M: usize, F> Operator for DeriveView<T, N, U, M, F>
 where
     F: FnMut(SeriesView<'_, T, N>) -> SeriesView<'_, U, M> + Send + 'static,
 {
@@ -55,14 +55,14 @@ where
 /// A closure applied to a series view and producing a series view.
 pub fn derive_view<T: Scalar, const N: usize, U: Scalar, const M: usize>(
     f: impl FnMut(SeriesView<'_, T, N>) -> SeriesView<'_, U, M> + Send + 'static,
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<U, M>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<U, M>, Context = Instant> {
     DeriveView::new(f)
 }
 
 /// Takes a slice of a series view: [`SeriesView::slice`].
 pub fn slice<T: Scalar, const N: usize>(
     slices: impl IntoSlices<N>,
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
     let slices = slices.into_slices();
     DeriveView::new(move |a| SeriesView::slice(&a, slices))
 }
@@ -70,20 +70,20 @@ pub fn slice<T: Scalar, const N: usize>(
 /// Takes a slice of a series view: [`SeriesView::slice_reshape`].
 pub fn slice_reshape<T: Scalar, const N: usize, const M: usize, const K: usize>(
     slices: impl IntoSliceReshapes<K>,
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, M>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, M>, Context = Instant> {
     let slices = slices.into_slice_reshapes();
     DeriveView::new(move |a| SeriesView::slice_reshape(&a, slices))
 }
 
 /// Pads leading new axes to a series view: [`SeriesView::pad_ndim`].
 pub fn pad_ndim<T: Scalar, const N: usize, const M: usize>()
--> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, M>, Context = Instant> {
+-> impl Operator<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, M>, Context = Instant> {
     DeriveView::new(move |a| SeriesView::pad_ndim(&a))
 }
 
 /// Permutes the axes of a series view: [`SeriesView::transpose`].
 pub fn transpose<T: Scalar, const N: usize>(
     perm: [usize; N],
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
     DeriveView::new(move |a| SeriesView::transpose(&a, perm))
 }

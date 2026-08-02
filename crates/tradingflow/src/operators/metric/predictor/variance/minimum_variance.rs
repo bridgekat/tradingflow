@@ -1,7 +1,7 @@
 use crate::data::Instant;
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Realized variance of the global minimum variance portfolio implied by a
 /// covariance predictor, over the evaluation period.
@@ -21,7 +21,7 @@ use crate::python::py_segment_module;
 /// and the target vector is mapped elementwise, so the reported variance is
 /// in the units the GMV objective actually minimizes. Stocks whose predicted
 /// variance is non-finite are excluded and hold a zero weight.
-pub fn minimum_variance() -> impl Segment<
+pub fn minimum_variance() -> impl Operator<
     Inputs = (
         SignalPort<0>,
         ArrayPort<f64, 2>,
@@ -31,7 +31,7 @@ pub fn minimum_variance() -> impl Segment<
     Outputs = (SignalPort<0>, ArrayPort<f64, 0>),
     Context = Instant,
 > {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.metric.predictor.variance.minimum_variance",
         None,
     )

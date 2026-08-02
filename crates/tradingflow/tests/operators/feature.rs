@@ -38,8 +38,8 @@ fn annualize_ticks(width: usize, ticks: &[ReportTick]) -> Vec<Vec<f64>> {
     let (values, (vsignal, valuesv)) = b.source(cell(vec![f64::NAN; width]));
     let (year, yearv) = b.source(array::constant([0_u16]));
     let (day, dayv) = b.source(array::constant([0_u16]));
-    let vsignal = b.segment(signal::as_signal_map(array::pad_ndim()), vsignal);
-    let out = b.segment(feature::annualize(), (vsignal, valuesv, yearv, dayv));
+    let vsignal = b.op(signal::as_signal_map(array::pad_ndim()), vsignal);
+    let out = b.op(feature::annualize(), (vsignal, valuesv, yearv, dayv));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -182,9 +182,9 @@ fn annualize_calendar_only_tick_retains_the_output() {
     let (values, (vsignal, valuesv)) = b.source(cell([f64::NAN]));
     let (year, yearv) = b.source(array::constant([0_u16]));
     let (day, dayv) = b.source(array::constant([0_u16]));
-    let vsignal1 = b.segment(signal::as_signal_map(array::pad_ndim()), vsignal);
-    let out = b.segment(feature::annualize(), (vsignal1, valuesv, yearv, dayv));
-    let pulses = b.segment(count::<1>(), (vsignal, out));
+    let vsignal1 = b.op(signal::as_signal_map(array::pad_ndim()), vsignal);
+    let out = b.op(feature::annualize(), (vsignal1, valuesv, yearv, dayv));
+    let pulses = b.op(count::<1>(), (vsignal, out));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -228,12 +228,12 @@ fn run_forward_adjust(ticks: &[AdjustTick]) -> Vec<(f64, f64, usize)> {
     let (cash, (cashsignal, cashv)) = b.source(cell(f64::NAN));
     // The dividend stream has one signal shared by both fields: a dividend
     // event is either leg arriving.
-    let dsignal = b.segment(signal::or(), (ssignal, cashsignal));
-    let (mult, adj) = b.segment(
+    let dsignal = b.op(signal::or(), (ssignal, cashsignal));
+    let (mult, adj) = b.op(
         feature::forward_adjust(),
         ((csignal, closev), (dsignal, sharev, cashv)),
     );
-    let pulses = b.segment(count::<0>(), (csignal, adj));
+    let pulses = b.op(count::<0>(), (csignal, adj));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -422,12 +422,12 @@ fn forward_adjust_elements_carry_events_independently() {
     let (cash, cashv) = b.source(array::constant([0.0, 0.0]));
     let (_e0, (c0, _e0v)) = b.source(cell(0.0));
     let (e1, (c1, _e1v)) = b.source(cell(0.0));
-    let csignal = b.segment(signal::as_signal_map(array::pad_ndim()), csignal);
-    let dsignal = b.segment(
+    let csignal = b.op(signal::as_signal_map(array::pad_ndim()), csignal);
+    let dsignal = b.op(
         signal::as_signal_map(array::stack::<bool, 0, 1>(0)),
         &[c0, c1][..],
     );
-    let (mult, adj) = b.segment(
+    let (mult, adj) = b.op(
         feature::forward_adjust(),
         ((csignal, closev), (dsignal, sharev, cashv)),
     );
@@ -464,9 +464,9 @@ fn forward_adjust_broadcasts_the_dividend_legs() {
     let (close, (csignal, closev)) = b.source(cell([f64::NAN, f64::NAN]));
     let (share, (ssignal, sharev)) = b.source(cell([0.0]));
     let (_, cashv) = b.source(array::constant([0.0]));
-    let csignal = b.segment(signal::as_signal_map(array::pad_ndim()), csignal);
-    let ssignal = b.segment(signal::as_signal_map(array::pad_ndim()), ssignal);
-    let (mult, adj) = b.segment(
+    let csignal = b.op(signal::as_signal_map(array::pad_ndim()), csignal);
+    let ssignal = b.op(signal::as_signal_map(array::pad_ndim()), ssignal);
+    let (mult, adj) = b.op(
         feature::forward_adjust(),
         ((csignal, closev), (ssignal, sharev, cashv)),
     );

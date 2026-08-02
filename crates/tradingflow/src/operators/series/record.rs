@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::marker::PhantomData;
 
 use crate::data::{ArrayView, Instant, Retention, Scalar, Series, SeriesView};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
 /// Operator signature for [`record_on`] etc.
@@ -50,7 +50,7 @@ impl<T: Scalar + Float, const N: usize> RecordState<T, N> {
     }
 }
 
-impl<T: Scalar + Float, const N: usize> Segment for RecordOn<T, N> {
+impl<T: Scalar + Float, const N: usize> Operator for RecordOn<T, N> {
     type Inputs = (SignalPort<0>, ArrayPort<T, N>);
     type Outputs = SeriesPort<T, N>;
     type Context = Instant;
@@ -94,7 +94,7 @@ impl<T: Scalar + Float, const N: usize> Segment for RecordOn<T, N> {
 pub fn record_on<T: Scalar + Float, const N: usize>(
     retention: impl Into<Retention>,
     delayed: bool,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
 {
     RecordOn::new(retention.into(), delayed)
 }
@@ -102,14 +102,14 @@ pub fn record_on<T: Scalar + Float, const N: usize>(
 /// Shorthand for [`record_on`] with `delayed = true`.
 pub fn buffer<T: Scalar + Float, const N: usize>(
     retention: impl Into<Retention>,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
 {
     RecordOn::new(retention.into(), true)
 }
 
 /// Shorthand for [`record_on`] with [`Retention::unbounded`].
 pub fn record_all<T: Scalar + Float, const N: usize>()
--> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
+-> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
 {
     RecordOn::new(Retention::unbounded(), false)
 }

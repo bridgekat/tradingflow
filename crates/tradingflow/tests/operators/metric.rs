@@ -17,7 +17,7 @@
 
 use tradingflow::data::Instant;
 use tradingflow::graph::typed::Builder;
-use tradingflow::graph::{Pool, Segment};
+use tradingflow::graph::{Operator, Pool};
 use tradingflow::operators::{array, metric};
 use tradingflow::ports::{ArrayPort, SignalPort};
 
@@ -31,7 +31,7 @@ use crate::harness::*;
 /// once per sample, and returns the metric's output after every generation.
 fn gated<S>(metric: S, path: &[f64]) -> Vec<f64>
 where
-    S: Segment<
+    S: Operator<
             Inputs = (SignalPort<0>, ArrayPort<f64, 0>),
             Outputs = ArrayPort<f64, 0>,
             Context = Instant,
@@ -40,7 +40,7 @@ where
     let mut b = Builder::new();
     let (data, datav) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
-    let out = b.segment(metric, (tickv, datav));
+    let out = b.op(metric, (tickv, datav));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -60,7 +60,7 @@ fn turnover_path(books: &[Vec<f64>]) -> Vec<f64> {
     let width = books[0].len();
     let mut b = Builder::new();
     let (cell, w) = event_src(&mut b, vec![0.0_f64; width].into());
-    let out = b.segment(metric::portfolio::turnover(), w);
+    let out = b.op(metric::portfolio::turnover(), w);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -543,7 +543,7 @@ fn drawdown_rejects_a_non_positive_nav() {
 fn turnover_rejects_a_change_in_universe_width() {
     let mut b = Builder::new();
     let (cell, w) = event_src(&mut b, [0.0_f64; 2].into());
-    let _ = b.segment(metric::portfolio::turnover(), w);
+    let _ = b.op(metric::portfolio::turnover(), w);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -572,7 +572,7 @@ fn an_off_signal_move_closes_no_period() {
     let mut b = Builder::new();
     let (data, datav) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
-    let mean = b.segment(metric::performance::return_mean(), (tickv, datav));
+    let mean = b.op(metric::performance::return_mean(), (tickv, datav));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -610,10 +610,10 @@ fn a_pulse_without_a_move_closes_a_zero_return_period() {
 }
 
 // ---------------------------------------------------------------------------
-// Predictor-quality metrics (Python segments)
+// Predictor-quality metrics (Python operators)
 // ---------------------------------------------------------------------------
 
-/// The cross-sectional IC metric is a Python segment, so these need the
+/// The cross-sectional IC metric is a Python operator, so these need the
 /// `python` feature and an interpreter with NumPy.
 #[cfg(feature = "python")]
 mod information_coefficient {
@@ -663,8 +663,8 @@ mod information_coefficient {
         let (fval, fvalv) = b.source(constant(Array::<f64, 1>::zeros([3])));
         let (tsig, tsigv) = b.source(signal());
         let (tval, tvalv) = b.source(constant(Array::<f64, 1>::zeros([3])));
-        let ic = b.segment(information_coefficient(), (fsigv, fvalv, tsigv, tvalv));
-        let rec = b.segment(record_all(), ic);
+        let ic = b.op(information_coefficient(), (fsigv, fvalv, tsigv, tvalv));
+        let rec = b.op(record_all(), ic);
         let (_, icv) = ic;
         let mut g = b.build();
         let mut pool = Pool::new(0);
@@ -760,7 +760,7 @@ mod information_coefficient {
     }
 }
 
-/// The covariance-prediction metrics are Python segments sharing one input
+/// The covariance-prediction metrics are Python operators sharing one input
 /// shape — a predicted `(N, N)` covariance and a realized `(N,)` target — and
 /// one cadence, so they share a driver. `minimum_variance` needs SciPy as well
 /// as NumPy.
@@ -768,7 +768,7 @@ mod information_coefficient {
 mod predictor_variance {
     use tradingflow::data::{Array, Instant};
     use tradingflow::graph::typed::Builder;
-    use tradingflow::graph::{Pool, Segment};
+    use tradingflow::graph::{Operator, Pool};
     use tradingflow::operators::array::constant;
     use tradingflow::operators::metric::predictor::variance::{log_likelihood, minimum_variance};
     use tradingflow::operators::series::record_all;
@@ -801,7 +801,7 @@ mod predictor_variance {
     /// `record_all` captured — one row per emission.
     fn drive<S>(metric: S, ticks: &[Tick]) -> Vec<f64>
     where
-        S: Segment<
+        S: Operator<
                 Inputs = (
                     SignalPort<0>,
                     ArrayPort<f64, 2>,
@@ -817,8 +817,8 @@ mod predictor_variance {
         let (pval, pvalv) = b.source(constant(Array::<f64, 2>::zeros([2, 2])));
         let (tsig, tsigv) = b.source(signal());
         let (tval, tvalv) = b.source(constant(Array::<f64, 1>::zeros([2])));
-        let out = b.segment(metric, (psigv, pvalv, tsigv, tvalv));
-        let rec = b.segment(record_all(), out);
+        let out = b.op(metric, (psigv, pvalv, tsigv, tvalv));
+        let rec = b.op(record_all(), out);
         let mut g = b.build();
         let mut pool = Pool::new(0);
 

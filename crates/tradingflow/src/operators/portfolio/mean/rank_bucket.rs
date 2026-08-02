@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::MeanPortfolio;
 use crate::operators::portfolio::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Equally weights the stocks whose percentile rank falls in `[low, high)`.
 ///
@@ -26,7 +26,7 @@ pub fn rank_bucket(config: Config, low: f64, high: f64) -> impl MeanPortfolio {
         (0.0..high).contains(&low) && high <= 1.0,
         "expected 0 <= low < high <= 1, got {low} and {high}"
     );
-    py_segment_module(
+    py_operator_module(
         "tradingflow.portfolio.mean.rank_bucket",
         config.params(|d| {
             d.set_item("low", low)?;

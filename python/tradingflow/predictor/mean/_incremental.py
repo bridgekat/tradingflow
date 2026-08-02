@@ -170,16 +170,13 @@ class RlsMeanPool:
 
     def predict(self, universe: np.ndarray, features: np.ndarray, refit: bool) -> np.ndarray:
         if (refit or not self.fitted) and self.n > 0:
-            self.params = solve_standardized(
-                self.n, self.sx, self.sxx, self.sy, self.sxy, self.syy, self.alpha
-            )
+            self.params = solve_standardized(self.n, self.sx, self.sxx, self.sy, self.sxy, self.syy, self.alpha)
             self.fitted = True
 
         mask = universe > 0
         if self.universe_size is not None:
             assert int(mask.sum()) <= self.universe_size, (
-                f"universe has {int(mask.sum())} nonzero entries, "
-                f"exceeding universe_size={self.universe_size}"
+                f"universe has {int(mask.sum())} nonzero entries, " f"exceeding universe_size={self.universe_size}"
             )
         if self.min_periods is not None and self.counts is not None:
             mask = mask & (self.counts >= self.min_periods)
@@ -198,8 +195,8 @@ class IncrementalState:
 
     As for [`PanelState`](.._panel.PanelState), `init` moves the whole build
     configuration in here so that `reset` and `compute` are free functions of
-    `(inputs, state)` — mirroring the Rust `Segment`, and keeping every node's
-    data its own even when a shared segment instance is loaded from `__op__`.
+    `(inputs, state)` — mirroring the Rust `Operator`, and keeping every node's
+    data its own even when a shared operator instance is loaded from `__op__`.
     """
 
     pool: RlsMeanPool

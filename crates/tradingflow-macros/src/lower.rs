@@ -8,7 +8,7 @@
 //! `Values` the wires turn out to have. Wires the closure does not use
 //! lower to `_`; shadowed slots also lower to `_`.
 //!
-//! Inline applications (`seg @ wires`) are desugared first: each one becomes a
+//! Inline applications (`op @ wires`) are desugared first: each one becomes a
 //! fresh `__flowN` statement (post-order, so nested applications come first),
 //! and the surrounding expression keeps its tree shape over the fresh wires.
 //! After this pass, the body is the flat statement list the translation above
@@ -21,7 +21,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::spanned::Spanned;
 
-use crate::ast::{Segment, WireExpr, WirePat};
+use crate::ast::{Operator, WireExpr, WirePat};
 
 impl WirePat {
     fn leaves(&self, f: &mut impl FnMut(&syn::Ident)) {
@@ -32,28 +32,28 @@ impl WirePat {
     }
 }
 
-/// A fully desugared statement: one segment applied to tree-shaped args.
+/// A fully desugared statement: one operator applied to tree-shaped args.
 struct FlatStmt {
     pat: WirePat,
-    seg: syn::Expr,
+    op: syn::Expr,
     args: WirePat,
 }
 
-/// Desugar inline applications out of a wire expression. Each `seg @ wires`
+/// Desugar inline applications out of a wire expression. Each `op @ wires`
 /// leaf is emitted as a fresh `__flowN` statement (its span kept on the
-/// segment expression, so type errors point at the right application) and
+/// operator expression, so type errors point at the right application) and
 /// replaced by the fresh wire; `__flow` is a reserved name prefix.
 fn flatten(e: WireExpr, out: &mut Vec<FlatStmt>, n: &mut usize) -> WirePat {
     match e {
         WireExpr::Var(v) => WirePat::Var(v),
         WireExpr::Tuple(es) => WirePat::Tuple(es.into_iter().map(|e| flatten(e, out, n)).collect()),
-        WireExpr::Apply(seg, args) => {
+        WireExpr::Apply(op, args) => {
             let args = flatten(*args, out, n);
-            let v = syn::Ident::new(&format!("__flow{n}"), seg.span());
+            let v = syn::Ident::new(&format!("__flow{n}"), op.span());
             *n += 1;
             out.push(FlatStmt {
                 pat: WirePat::Var(v.clone()),
-                seg,
+                op,
                 args,
             });
             WirePat::Var(v)
@@ -155,7 +155,7 @@ fn closure(env: &[WirePat], wires: &WirePat) -> syn::Result<TokenStream> {
     Ok(quote!(|#pat, _| #expr))
 }
 
-pub fn lower(flow: Segment, rt: TokenStream) -> syn::Result<TokenStream> {
+pub fn lower(flow: Operator, rt: TokenStream) -> syn::Result<TokenStream> {
     let tys: Vec<_> = flow.params.iter().map(|p| &p.1).collect();
     let in_ty = match &tys[..] {
         [t] => quote!(#t),
@@ -173,19 +173,19 @@ pub fn lower(flow: Segment, rt: TokenStream) -> syn::Result<TokenStream> {
         let args = flatten(s.args, &mut stmts, &mut n);
         stmts.push(FlatStmt {
             pat: s.pat,
-            seg: s.seg,
+            op: s.op,
             args,
         });
     }
     let result = flatten(flow.result, &mut stmts, &mut n);
 
     // The seed's context is an inference hole `_`: it unifies with any
-    // context-pinned segment in the body, or ultimately with the builder's
+    // context-pinned operator in the body, or ultimately with the builder's
     // context at the push site.
     let mut cur = quote!(#rt::Id::<#in_ty, _>::default());
     for s in &stmts {
-        let (seg, f) = (&s.seg, closure(&env, &s.args)?);
-        cur = quote!(#rt::SegmentExt::bind(#cur, #seg, #f));
+        let (op, f) = (&s.op, closure(&env, &s.args)?);
+        cur = quote!(#rt::OperatorExt::bind(#cur, #op, #f));
         env.push(s.pat.clone());
     }
 
@@ -193,5 +193,5 @@ pub fn lower(flow: Segment, rt: TokenStream) -> syn::Result<TokenStream> {
     // required `-> OutInterface` annotation pins the routed output type.
     let out = &flow.output;
     let f = closure(&env, &result)?;
-    Ok(quote!(#rt::SegmentExt::route::<#out, _>(#cur, #f)))
+    Ok(quote!(#rt::OperatorExt::route::<#out, _>(#cur, #f)))
 }

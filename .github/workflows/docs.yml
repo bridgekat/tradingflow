@@ -24,8 +24,8 @@ jobs:
         with:
           python-version: "3.14"
 
-      # Document the full public API, including the embedded-Python segment host
-      # (`PySegment`, `PyInterface`) and the operators built on it, all gated
+      # Document the full public API, including the Python operator host
+      # (`PyOperator`, `PyInterface`) and the operators built on it, all gated
       # behind `python`. `cargo doc` only compiles the crate (no execution or
       # link of an embedded interpreter), so PyO3 just needs the setup-python
       # interpreter on PATH. `--workspace` also builds the in-tree engine

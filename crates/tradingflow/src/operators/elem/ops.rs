@@ -1,18 +1,18 @@
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Rem, Shl, Shr, Sub};
 
 use crate::data::{Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::operators::array;
 use crate::ports::ArrayPort;
 
 /// Elementwise negation: [`Neg::neg`].
 pub fn neg<T: Scalar + Neg<Output: Scalar>, const N: usize>()
--> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T::Output, N>, Context = Instant> {
+-> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T::Output, N>, Context = Instant> {
     array::map(|x: &T| x.clone().neg())
 }
 
 /// Elementwise addition: [`Add::add`].
-pub fn add<T: Scalar + Add<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn add<T: Scalar + Add<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,
@@ -21,7 +21,7 @@ pub fn add<T: Scalar + Add<U, Output: Scalar>, U: Scalar, const N: usize>() -> i
 }
 
 /// Elementwise subtraction: [`Sub::sub`].
-pub fn sub<T: Scalar + Sub<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn sub<T: Scalar + Sub<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,
@@ -30,7 +30,7 @@ pub fn sub<T: Scalar + Sub<U, Output: Scalar>, U: Scalar, const N: usize>() -> i
 }
 
 /// Elementwise multiplication: [`Mul::mul`].
-pub fn mul<T: Scalar + Mul<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn mul<T: Scalar + Mul<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,
@@ -39,7 +39,7 @@ pub fn mul<T: Scalar + Mul<U, Output: Scalar>, U: Scalar, const N: usize>() -> i
 }
 
 /// Elementwise division: [`Div::div`].
-pub fn div<T: Scalar + Div<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn div<T: Scalar + Div<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,
@@ -48,7 +48,7 @@ pub fn div<T: Scalar + Div<U, Output: Scalar>, U: Scalar, const N: usize>() -> i
 }
 
 /// Elementwise remainder: [`Rem::rem`].
-pub fn rem<T: Scalar + Rem<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn rem<T: Scalar + Rem<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,
@@ -58,12 +58,12 @@ pub fn rem<T: Scalar + Rem<U, Output: Scalar>, U: Scalar, const N: usize>() -> i
 
 /// Elementwise bitwise not: [`Not::not`].
 pub fn not<T: Scalar + Not<Output: Scalar>, const N: usize>()
--> impl Segment<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T::Output, N>, Context = Instant> {
+-> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T::Output, N>, Context = Instant> {
     array::map(|x: &T| x.clone().not())
 }
 
 /// Elementwise bitwise and: [`BitAnd::bitand`].
-pub fn bitand<T: Scalar + BitAnd<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn bitand<T: Scalar + BitAnd<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,
@@ -72,7 +72,7 @@ pub fn bitand<T: Scalar + BitAnd<U, Output: Scalar>, U: Scalar, const N: usize>(
 }
 
 /// Elementwise bitwise or: [`BitOr::bitor`].
-pub fn bitor<T: Scalar + BitOr<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn bitor<T: Scalar + BitOr<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,
@@ -81,7 +81,7 @@ pub fn bitor<T: Scalar + BitOr<U, Output: Scalar>, U: Scalar, const N: usize>() 
 }
 
 /// Elementwise bitwise exclusive or: [`BitXor::bitxor`].
-pub fn bitxor<T: Scalar + BitXor<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn bitxor<T: Scalar + BitXor<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,
@@ -90,7 +90,7 @@ pub fn bitxor<T: Scalar + BitXor<U, Output: Scalar>, U: Scalar, const N: usize>(
 }
 
 /// Elementwise left shift: [`Shl::shl`].
-pub fn shl<T: Scalar + Shl<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn shl<T: Scalar + Shl<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,
@@ -99,7 +99,7 @@ pub fn shl<T: Scalar + Shl<U, Output: Scalar>, U: Scalar, const N: usize>() -> i
 }
 
 /// Elementwise right shift: [`Shr::shr`].
-pub fn shr<T: Scalar + Shr<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Segment<
+pub fn shr<T: Scalar + Shr<U, Output: Scalar>, U: Scalar, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<U, N>),
     Outputs = ArrayPort<T::Output, N>,
     Context = Instant,

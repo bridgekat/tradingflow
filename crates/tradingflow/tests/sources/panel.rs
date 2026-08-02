@@ -30,7 +30,7 @@ use arrow::datatypes::Int32Type;
 use parquet::arrow::ArrowWriter;
 use tradingflow::data::utils::{Axis, Schema};
 use tradingflow::data::{ArrayView, Duration, Instant, SeriesView};
-use tradingflow::graph::{Builder, Pool, Segment};
+use tradingflow::graph::{Builder, Pool, Operator};
 use tradingflow::operators::{series::record_all, signal};
 use tradingflow::ports::{ArrayPort, SignalPort};
 use tradingflow::sources::panel::{csv, parquet};
@@ -88,7 +88,7 @@ fn write_market_panel_csv(path: &std::path::Path, rows: &[(i32, &str, Option<f64
 /// can be recorded next to the values it gates.
 struct SignalFace<const N: usize>;
 
-impl<const N: usize> Segment for SignalFace<N> {
+impl<const N: usize> Operator for SignalFace<N> {
     type Inputs = SignalPort<N>;
     type Outputs = ArrayPort<f64, N>;
     type Context = Instant;
@@ -176,11 +176,11 @@ async fn panel_pivots_long_rows_into_per_date_cross_sections() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let mask_face = sc.segment(SignalFace, sig);
-    let mask_rec = sc.segment(record_all(), (pulse, mask_face));
-    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
-    let volume_rec = sc.segment(record_all(), (pulse, fields[1]));
+    let pulse = sc.op(signal::any(), sig);
+    let mask_face = sc.op(SignalFace, sig);
+    let mask_rec = sc.op(record_all(), (pulse, mask_face));
+    let close_rec = sc.op(record_all(), (pulse, fields[0]));
+    let volume_rec = sc.op(record_all(), (pulse, fields[1]));
 
     let mut g = sc.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;
@@ -237,8 +237,8 @@ async fn an_out_of_window_date_produces_no_generation() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+    let pulse = sc.op(signal::any(), sig);
+    let close_rec = sc.op(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;
@@ -277,8 +277,8 @@ async fn time_range_clips_without_carry_in() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+    let pulse = sc.op(signal::any(), sig);
+    let close_rec = sc.op(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;
@@ -310,8 +310,8 @@ async fn a_date32_timestamp_column_converts_on_read() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+    let pulse = sc.op(signal::any(), sig);
+    let close_rec = sc.op(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;
@@ -346,8 +346,8 @@ async fn a_rank_zero_panel_is_a_scalar_stream() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+    let pulse = sc.op(signal::any(), sig);
+    let close_rec = sc.op(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;
@@ -400,10 +400,10 @@ async fn a_rank_two_panel_scatters_on_both_axes() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let value_rec = sc.segment(record_all(), (pulse, fields[0]));
-    let mask_face = sc.segment(SignalFace, sig);
-    let mask_rec = sc.segment(record_all(), (pulse, mask_face));
+    let pulse = sc.op(signal::any(), sig);
+    let value_rec = sc.op(record_all(), (pulse, fields[0]));
+    let mask_face = sc.op(SignalFace, sig);
+    let mask_rec = sc.op(record_all(), (pulse, mask_face));
 
     let mut g = sc.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;
@@ -456,11 +456,11 @@ async fn a_csv_panel_pivots_exactly_as_the_parquet_one_does() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let mask_face = sc.segment(SignalFace, sig);
-    let mask_rec = sc.segment(record_all(), (pulse, mask_face));
-    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
-    let volume_rec = sc.segment(record_all(), (pulse, fields[1]));
+    let pulse = sc.op(signal::any(), sig);
+    let mask_face = sc.op(SignalFace, sig);
+    let mask_rec = sc.op(record_all(), (pulse, mask_face));
+    let close_rec = sc.op(record_all(), (pulse, fields[0]));
+    let volume_rec = sc.op(record_all(), (pulse, fields[1]));
 
     let mut g = sc.build();
     assert_eq!(
@@ -520,8 +520,8 @@ async fn a_csv_date_column_is_typed_by_how_it_is_written() {
         let source = csv(path.to_str().unwrap(), "date", [], vec!["close".into()]);
         let mut sc = Builder::new(UnixTime);
         let (sig, fields) = sc.source(source);
-        let pulse = sc.segment(signal::any(), sig);
-        let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+        let pulse = sc.op(signal::any(), sig);
+        let close_rec = sc.op(record_all(), (pulse, fields[0]));
 
         let mut g = sc.build();
         g.run(&mut Pool::new(0), |_, _| {}).await;
@@ -563,8 +563,8 @@ async fn a_numeric_label_column_is_read_as_labels() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+    let pulse = sc.op(signal::any(), sig);
+    let close_rec = sc.op(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;
@@ -611,10 +611,10 @@ async fn a_rank_two_csv_panel_scatters_on_both_axes() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let value_rec = sc.segment(record_all(), (pulse, fields[0]));
-    let mask_face = sc.segment(SignalFace, sig);
-    let mask_rec = sc.segment(record_all(), (pulse, mask_face));
+    let pulse = sc.op(signal::any(), sig);
+    let value_rec = sc.op(record_all(), (pulse, fields[0]));
+    let mask_face = sc.op(SignalFace, sig);
+    let mask_rec = sc.op(record_all(), (pulse, mask_face));
 
     let mut g = sc.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;
@@ -659,8 +659,8 @@ async fn a_csv_time_range_clips_without_carry_in() {
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
-    let pulse = sc.segment(signal::any(), sig);
-    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+    let pulse = sc.op(signal::any(), sig);
+    let close_rec = sc.op(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
     g.run(&mut Pool::new(0), |_, _| {}).await;

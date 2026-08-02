@@ -2,7 +2,7 @@ use bumpalo::Bump;
 use tradingflow_graph::cb::*;
 use tradingflow_graph::pool::Pool;
 use tradingflow_graph::typed::{
-    Builder, Graph, NodeHandle, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val,
+    Builder, Graph, NodeHandle, Operator, Pass, Port, PortHandle, Ports, Ref, Slice, Val,
 };
 
 fn fresh(arena: &mut Bump) -> &Bump {
@@ -12,7 +12,7 @@ fn fresh(arena: &mut Bump) -> &Bump {
 
 /// A pass-by-value source node.
 struct Source<T>(T);
-impl<T: Copy + Send + Sync + 'static> Segment for Source<T> {
+impl<T: Copy + Send + Sync + 'static> Operator for Source<T> {
     type Inputs = ();
     type Outputs = Port<Val<T>>;
     type Context = ();
@@ -32,7 +32,7 @@ impl<T: Copy + Send + Sync + 'static> Segment for Source<T> {
 /// resets to the quiescent `None` in between, so a downstream consumer can
 /// tell "a value arrived this generation" from "the same value is still here".
 struct EventSource<T>(T);
-impl<T: Copy + Send + Sync + 'static> Segment for EventSource<T> {
+impl<T: Copy + Send + Sync + 'static> Operator for EventSource<T> {
     type Inputs = ();
     type Outputs = Port<Val<Option<T>>>;
     type Context = ();
@@ -51,7 +51,7 @@ impl<T: Copy + Send + Sync + 'static> Segment for EventSource<T> {
 /// Maps an event through `x -> x + 1`, preserving quiescence — the event
 /// analogue of [`inc`].
 struct IncEvent;
-impl Segment for IncEvent {
+impl Operator for IncEvent {
     type Inputs = Port<Val<Option<i64>>>;
     type Outputs = Port<Val<Option<i64>>>;
     type Context = ();
@@ -67,7 +67,7 @@ impl Segment for IncEvent {
 
 /// A pass-by-reference source node.
 struct RefSource<T>(T);
-impl<T: Send + Sync + 'static> Segment for RefSource<T> {
+impl<T: Send + Sync + 'static> Operator for RefSource<T> {
     type Inputs = ();
     type Outputs = Port<Ref<T>>;
     type Context = ();
@@ -85,7 +85,7 @@ impl<T: Send + Sync + 'static> Segment for RefSource<T> {
 
 /// A pass-by-slice source node.
 struct SliceSource<T>(Box<[T]>);
-impl<T: Send + Sync + 'static> Segment for SliceSource<T> {
+impl<T: Send + Sync + 'static> Operator for SliceSource<T> {
     type Inputs = ();
     type Outputs = Port<Slice<T>>;
     type Context = ();
@@ -104,7 +104,7 @@ impl<T: Send + Sync + 'static> Segment for SliceSource<T> {
 /// Stateless unary map `x -> f(x)`; `passthrough` and `compute` are identical
 /// (it recomputes from the input every generation, gate or no gate).
 struct UnaryMap(fn(i64) -> i64);
-impl Segment for UnaryMap {
+impl Operator for UnaryMap {
     type Inputs = Port<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -121,7 +121,7 @@ impl Segment for UnaryMap {
 }
 /// Stateless binary map `(a, b) -> f(a, b)`.
 struct BinaryMap(fn(i64, i64) -> i64);
-impl Segment for BinaryMap {
+impl Operator for BinaryMap {
     type Inputs = (Port<Val<i64>>, Port<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -148,7 +148,7 @@ fn add() -> BinaryMap {
 
 /// Sum over a runtime-sized list of inputs.
 struct SumAll;
-impl Segment for SumAll {
+impl Operator for SumAll {
     type Inputs = Ports<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -166,7 +166,7 @@ impl Segment for SumAll {
 /// Under value-level event semantics the presence bit lives *in* the payload,
 /// so input 0 is an `Option` event port rather than a flagged `i64`.
 struct DidFirstNotify;
-impl Segment for DidFirstNotify {
+impl Operator for DidFirstNotify {
     type Inputs = (Port<Val<Option<i64>>>, Port<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -183,9 +183,9 @@ impl Segment for DidFirstNotify {
     }
 }
 
-/// Two outputs from one segment: `(a, b) -> (a + b, a - b)`.
+/// Two outputs from one operator: `(a, b) -> (a + b, a - b)`.
 struct AddSub;
-impl Segment for AddSub {
+impl Operator for AddSub {
     type Inputs = (Port<Val<i64>>, Port<Val<i64>>);
     type Outputs = (Port<Val<i64>>, Port<Val<i64>>);
     type Context = ();
@@ -202,7 +202,7 @@ impl Segment for AddSub {
 /// A runtime-sized output list: `x -> [x, x+1, x+2]` (fixed arity 3). Both
 /// the values and the output planes live in the node's arena.
 struct Fanout3;
-impl Segment for Fanout3 {
+impl Operator for Fanout3 {
     type Inputs = Port<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
@@ -226,7 +226,7 @@ impl Segment for Fanout3 {
 /// actually changes, and the quiescent `None` otherwise. The cutoff now lives
 /// in the payload rather than in a side-channel flag, so `reset` emits `None`.
 struct Abs;
-impl Segment for Abs {
+impl Operator for Abs {
     type Inputs = Port<Val<i64>>;
     type Outputs = Port<Val<Option<i64>>>;
     type Context = ();
@@ -250,7 +250,7 @@ impl Segment for Abs {
 /// reports how many times an upstream value-cutoff producer actually fired.
 /// Its own output is a *state* (the running count), so `reset` re-lends it.
 struct GatedCounter;
-impl Segment for GatedCounter {
+impl Operator for GatedCounter {
     type Inputs = Port<Val<Option<i64>>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -271,7 +271,7 @@ impl Segment for GatedCounter {
 
 /// Writes input into a 4-element buffer, in place (allocated once).
 struct BufWrite;
-impl Segment for BufWrite {
+impl Operator for BufWrite {
     type Inputs = Port<Val<f64>>;
     type Outputs = Port<Ref<Vec<f64>>>;
     type Context = ();
@@ -294,7 +294,7 @@ impl Segment for BufWrite {
 /// input notifies. As a stateful accumulator it must NOT re-add an un-notified
 /// (unchanged) input, so it is an `Operator`; `passthrough` retains the sum.
 struct Fold;
-impl Segment for Fold {
+impl Operator for Fold {
     type Inputs = Port<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -313,7 +313,7 @@ impl Segment for Fold {
 
 /// A typed DAG fused into one operator body: `x=a+b; y=x*c; z=x+a; out=y*z`.
 struct FusedDag;
-impl Segment for FusedDag {
+impl Operator for FusedDag {
     type Inputs = (Port<Val<f64>>, Port<Val<f64>>, Port<Val<f64>>);
     type Outputs = Port<Val<f64>>;
     type Context = ();
@@ -332,7 +332,7 @@ impl Segment for FusedDag {
 
 /// Heterogeneous inputs `(f64, i32)`, two outputs `(sum, calls)`, carried counter.
 struct HeteroState;
-impl Segment for HeteroState {
+impl Operator for HeteroState {
     type Inputs = (Port<Val<f64>>, Port<Val<i32>>);
     type Outputs = (Port<Val<f64>>, Port<Val<u64>>);
     type Context = ();
@@ -351,7 +351,7 @@ impl Segment for HeteroState {
 
 /// Homogeneous slice input, two outputs: `(sum, max)`.
 struct SumMax;
-impl Segment for SumMax {
+impl Operator for SumMax {
     type Inputs = Ports<Val<f64>>;
     type Outputs = (Port<Val<f64>>, Port<Val<f64>>);
     type Context = ();
@@ -370,7 +370,7 @@ impl Segment for SumMax {
 /// Dot product over two zipped `Ports`. (`Ports` is a *leaf*: "many of pairs"
 /// is spelled as a pair of `Ports`, zipped in `compute`.)
 struct DotPairs;
-impl Segment for DotPairs {
+impl Operator for DotPairs {
     type Inputs = (Ports<Val<i64>>, Ports<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -386,7 +386,7 @@ impl Segment for DotPairs {
 
 /// Two variadic input groups around a scalar: `sum(a)*k + sum(c)`.
 struct TwoArrays;
-impl Segment for TwoArrays {
+impl Operator for TwoArrays {
     type Inputs = (Ports<Val<i64>>, Port<Val<i64>>, Ports<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -403,7 +403,7 @@ impl Segment for TwoArrays {
 /// Two variadic OUTPUT groups: `x -> (k copies of x, k copies of -x)`. ONE
 /// arena serves both groups' values and all four planes.
 struct SplitTwo(usize);
-impl Segment for SplitTwo {
+impl Operator for SplitTwo {
     type Inputs = Port<Val<i64>>;
     type Outputs = (Ports<Val<i64>>, Ports<Val<i64>>);
     type Context = ();
@@ -430,7 +430,7 @@ impl Segment for SplitTwo {
 /// window `[start, start+W)` of the input array as a plain subslice (zero
 /// copy, no state buffer); the window's addresses move as `start` changes.
 struct Window(usize); // W
-impl Segment for Window {
+impl Operator for Window {
     type Inputs = (Ports<Val<i64>>, Port<Val<usize>>);
     type Outputs = Ports<Val<i64>>;
     type Context = ();
@@ -450,7 +450,7 @@ impl Segment for Window {
 /// input arity, which `init` sees at build: it allocates a buffer sized from
 /// the input and every call fills it in place, returning refs into it.
 struct MapScale(i64); // k
-impl Segment for MapScale {
+impl Operator for MapScale {
     type Inputs = Ports<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
@@ -481,8 +481,8 @@ fn diamond_recomputes_on_source_change() {
     // S -> A=S+1, (S,A) -> D=S+A.
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(1));
-    let a = b.segment(inc(), s);
-    let d = b.segment(add(), (s, a));
+    let a = b.op(inc(), s);
+    let d = b.op(add(), (s, a));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -501,7 +501,7 @@ fn an_event_input_carries_its_event_for_exactly_one_generation() {
     let mut b = Builder::new();
     let (s_cell, s) = b.source(EventSource(0));
     let (s2_cell, s2) = b.source(Source(0));
-    let a = b.segment(DidFirstNotify, (s, s2));
+    let a = b.op(DidFirstNotify, (s, s2));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -519,7 +519,7 @@ fn multi_output_tuple() {
     let mut b = Builder::new();
     let (s1_cell, s1) = b.source(Source(7));
     let (_, s2) = b.source(Source(3));
-    let (sum, diff) = b.segment(AddSub, (s1, s2));
+    let (sum, diff) = b.op(AddSub, (s1, s2));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -537,8 +537,8 @@ fn independent_branch_not_recomputed() {
     let mut b = Builder::new();
     let (s1_cell, s1) = b.source(EventSource(0i64));
     let (_, s2) = b.source(EventSource(0i64));
-    let a = b.segment(GatedCounter, s1);
-    let c = b.segment(GatedCounter, s2);
+    let a = b.op(GatedCounter, s1);
+    let c = b.op(GatedCounter, s2);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -552,8 +552,8 @@ fn independent_branch_not_recomputed() {
 fn value_cutoff_via_notify() {
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(0i64));
-    let abs = b.segment(Abs, s);
-    let c = b.segment(GatedCounter, abs);
+    let abs = b.op(Abs, s);
+    let c = b.op(GatedCounter, abs);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -574,7 +574,7 @@ fn value_cutoff_via_notify() {
 fn in_place_buffer_is_stable() {
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(0.0f64));
-    let buf = b.segment(BufWrite, s);
+    let buf = b.op(BufWrite, s);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -595,7 +595,7 @@ fn in_place_buffer_is_stable() {
 fn stateful_fold_accumulates() {
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(0i64));
-    let acc = b.segment(Fold, s);
+    let acc = b.op(Fold, s);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -608,12 +608,12 @@ fn stateful_fold_accumulates() {
 }
 
 #[test]
-fn fused_subgraph_in_one_segment() {
+fn fused_subgraph_in_one_operator() {
     let mut b = Builder::new();
     let (a_cell, a) = b.source(Source(2.0f64));
     let (_, bb) = b.source(Source(3.0f64));
     let (_, c) = b.source(Source(5.0f64));
-    let out = b.segment(FusedDag, (a, bb, c));
+    let out = b.op(FusedDag, (a, bb, c));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -628,8 +628,8 @@ fn both_outputs_feed_one_consumer() {
     let mut b = Builder::new();
     let (s1_cell, s1) = b.source(Source(7i64));
     let (_, s2) = b.source(Source(3i64));
-    let (sum, diff) = b.segment(AddSub, (s1, s2));
-    let out = b.segment(add(), (sum, diff)); // (a+b) + (a-b) = 2a
+    let (sum, diff) = b.op(AddSub, (s1, s2));
+    let out = b.op(add(), (sum, diff)); // (a+b) + (a-b) = 2a
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -644,9 +644,9 @@ fn multi_output_cross_port_ordering() {
     let mut b = Builder::new();
     let (_, s1) = b.source(Source(10i64));
     let (_, s2) = b.source(Source(4i64));
-    let (sum, diff) = b.segment(AddSub, (s1, s2)); // sum=14, diff=6
-    let doubled = b.segment(double(), sum); // 28
-    let out = b.segment(add(), (doubled, diff)); // 28 + 6 = 34
+    let (sum, diff) = b.op(AddSub, (s1, s2)); // sum=14, diff=6
+    let doubled = b.op(double(), sum); // 28
+    let out = b.op(add(), (doubled, diff)); // 28 + 6 = 34
     let g = b.build();
     assert_eq!(g.view(out), 34);
 }
@@ -656,7 +656,7 @@ fn heterogeneous_inputs_multi_output_with_state() {
     let mut b = Builder::new();
     let (a_cell, a) = b.source(Source(10.0f64));
     let (_, bb) = b.source(Source(3i32));
-    let (sum, calls) = b.segment(HeteroState, (a, bb));
+    let (sum, calls) = b.op(HeteroState, (a, bb));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -674,7 +674,7 @@ fn slice_input_multi_output_sum_max() {
         .into_iter()
         .map(|v| b.source(Source(v)).1)
         .collect();
-    let (sum, max) = b.segment(SumMax, &handles[..]);
+    let (sum, max) = b.op(SumMax, &handles[..]);
     let g = b.build();
 
     assert_eq!(g.view(sum), 11.0);
@@ -688,7 +688,7 @@ fn zipped_manys_dot_product() {
     let (_, b0) = b.source(Source(3));
     let (a1_cell, a1) = b.source(Source(4));
     let (_, b1) = b.source(Source(5));
-    let out = b.segment(DotPairs, (&[a0, a1][..], &[b0, b1][..]));
+    let out = b.op(DotPairs, (&[a0, a1][..], &[b0, b1][..]));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -706,7 +706,7 @@ fn two_variadic_input_groups() {
         [1, 2, 3].into_iter().map(|v| b.source(Source(v))).unzip();
     let (_, k) = b.source(Source(10));
     let ch: Vec<PortHandle<Val<i64>>> = [4, 5].into_iter().map(|v| b.source(Source(v)).1).collect();
-    let out = b.segment(TwoArrays, (&ah[..], k, &ch[..]));
+    let out = b.op(TwoArrays, (&ah[..], k, &ch[..]));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -721,7 +721,7 @@ fn two_variadic_input_groups() {
 fn two_variadic_output_groups() {
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(7));
-    let (pos, neg) = b.segment(SplitTwo(3), s);
+    let (pos, neg) = b.op(SplitTwo(3), s);
     assert_eq!(pos.len(), 3);
     assert_eq!(neg.len(), 3);
     let mut g = b.build();
@@ -748,7 +748,7 @@ fn window_forwards_input_refs() {
         .map(|v| b.source(Source(v)))
         .unzip();
     let (start_cell, start) = b.source(Source(0usize));
-    let win = b.segment(Window(2), (&arrh[..], start));
+    let win = b.op(Window(2), (&arrh[..], start));
     assert_eq!(win.len(), 2);
     let mut g = b.build();
     let mut pool = Pool::new(16);
@@ -781,7 +781,7 @@ fn two_stage_init_allocates_from_input() {
         .into_iter()
         .map(|v| b.source(Source(v)))
         .unzip();
-    let out = b.segment(MapScale(10), &arrh[..]);
+    let out = b.op(MapScale(10), &arrh[..]);
     assert_eq!(out.len(), 4); // sized from the 4-element input at build
     let mut g = b.build();
     let mut pool = Pool::new(16);
@@ -798,7 +798,7 @@ fn two_stage_init_allocates_from_input() {
 /// dangling-read repro): the output points into the source's buffer, so poking
 /// the source to a fresh `Vec` frees the memory the output slots point at.
 struct Spread;
-impl Segment for Spread {
+impl Operator for Spread {
     type Inputs = Port<Ref<Vec<i64>>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
@@ -819,7 +819,7 @@ impl Segment for Spread {
 fn read_before_stabilize_after_poke_is_rejected() {
     let mut b = Builder::new();
     let (s_cell, s) = b.source(RefSource(vec![10i64, 20, 30]));
-    let out = b.segment(Spread, s);
+    let out = b.op(Spread, s);
     let mut g = b.build();
     assert_eq!(g.view(out[0]), 10); // stabilized read is fine
 
@@ -834,7 +834,7 @@ fn read_before_stabilize_after_poke_is_rejected() {
 /// realloc frees the buffer its (build-set) output slots point into, so without
 /// poisoning a later read would dangle.
 struct ReallocPanic;
-impl Segment for ReallocPanic {
+impl Operator for ReallocPanic {
     type Inputs = Port<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
@@ -860,7 +860,7 @@ fn realloc_then_panic_does_not_dangle() {
     // Poisoning must make the subsequent read panic, not dereference it.
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(1i64));
-    let out = b.segment(ReallocPanic, s);
+    let out = b.op(ReallocPanic, s);
     let mut g = b.build();
     let mut pool = Pool::new(16);
     assert_eq!(g.view(out[0]), 1); // build buffer = [1, 1]
@@ -882,10 +882,10 @@ fn realloc_then_panic_does_not_dangle() {
 fn composed_series_then() {
     let mut gb = Builder::new();
     let (s_cell, s) = gb.source(Source(5));
-    let stage = gb.segment(inc(), s);
-    let sep = gb.segment(double(), stage); // separate nodes
+    let stage = gb.op(inc(), s);
+    let sep = gb.op(double(), stage); // separate nodes
     let (s2_cell, s2) = gb.source(Source(5));
-    let comp = gb.segment(inc().then(double()), s2); // composed into ONE segment
+    let comp = gb.op(inc().then(double()), s2); // composed into ONE operator
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -904,7 +904,7 @@ fn composed_par() {
     let mut gb = Builder::new();
     let (a_cell, a) = gb.source(Source(3));
     let (_, bh) = gb.source(Source(4));
-    let (oa, ob) = gb.segment(inc().par(double()), (a, bh));
+    let (oa, ob) = gb.op(inc().par(double()), (a, bh));
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -924,7 +924,7 @@ fn composed_fanout_diamond() {
     // `Inc &&& Double` then `Add`: a -> (a+1, 2a) -> (a+1)+(2a) = 3a+1.
     let mut gb = Builder::new();
     let (s_cell, s) = gb.source(Source(5));
-    let comp = gb.segment(inc().fork(double()).then(add()), s);
+    let comp = gb.op(inc().fork(double()).then(add()), s);
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -942,7 +942,7 @@ fn composed_variadic_intermediate() {
     let mut gb = Builder::new();
     let (xs, xh): (Vec<_>, Vec<PortHandle<Val<i64>>>) =
         [1, 2, 3].into_iter().map(|v| gb.source(Source(v))).unzip();
-    let comp = gb.segment(SumAll.then(Fanout3).then(SumAll), &xh[..]);
+    let comp = gb.op(SumAll.then(Fanout3).then(SumAll), &xh[..]);
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -957,10 +957,10 @@ fn composed_variadic_intermediate() {
 fn composed_stateful_then() {
     let mut gb = Builder::new();
     let (s_cell, s) = gb.source(Source(5));
-    let fold = gb.segment(Fold, s);
-    let sep = gb.segment(double(), fold); // separate nodes
+    let fold = gb.op(Fold, s);
+    let sep = gb.op(double(), fold); // separate nodes
     let (s2_cell, s2) = gb.source(Source(5));
-    let comp = gb.segment(Fold.then(double()), s2); // composed into ONE segment
+    let comp = gb.op(Fold.then(double()), s2); // composed into ONE operator
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -980,7 +980,7 @@ fn composed_stateful_then() {
 fn composed_with_id() {
     let mut gb = Builder::new();
     let (s_cell, s) = gb.source(Source(5));
-    let comp = gb.segment(inc().then(Id::default()).then(double()), s);
+    let comp = gb.op(inc().then(Id::default()).then(double()), s);
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -998,7 +998,7 @@ fn operator_gate_blocks_unnotified_branch() {
     let mut gb = Builder::new();
     let (a_cell, a) = gb.source(EventSource(0));
     let (bh_cell, bh) = gb.source(Source(0));
-    let (count, inc) = gb.segment(GatedCounter.par(inc()), (a, bh));
+    let (count, inc) = gb.op(GatedCounter.par(inc()), (a, bh));
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -1023,7 +1023,7 @@ fn route_reorders_by_forwarding_refs() {
     let swap = Arr::<(Port<Val<i64>>, Port<Val<i64>>), (Port<Val<i64>>, Port<Val<i64>>), _, _>::new(
         |(a, b), _| (b, a),
     );
-    let (o0, o1) = gb.segment(swap, (s0, s1));
+    let (o0, o1) = gb.op(swap, (s0, s1));
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -1036,12 +1036,12 @@ fn route_reorders_by_forwarding_refs() {
 }
 
 #[test]
-fn hand_lowered_segment_chain_infers() {
-    // The exact shape `segment!` emits -- every type except the seed `Id` and the
+fn hand_lowered_operator_chain_infers() {
+    // The exact shape `fuse!` emits -- every type except the seed `Id` and the
     // final `route` turbofish must be INFERRED (this is the empirical risk the
     // bind/route argument order exists to discharge). One fused node:
     //   c = a + b; d = c + 1; result (d, c).
-    let seg = Id::<(Port<Val<i64>>, Port<Val<i64>>), _>::default()
+    let op = Id::<(Port<Val<i64>>, Port<Val<i64>>), _>::default()
         .bind(add(), |(a, b), _| (a, b))
         .bind(inc(), |(_, c), _| c)
         .route::<(Port<Val<i64>>, Port<Val<i64>>), _>(|((_, c), d), _| (d, c));
@@ -1049,7 +1049,7 @@ fn hand_lowered_segment_chain_infers() {
     let mut gb = Builder::new();
     let (s0_cell, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(20));
-    let (od, oc) = gb.segment(seg, (s0, s1));
+    let (od, oc) = gb.op(op, (s0, s1));
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -1062,12 +1062,12 @@ fn hand_lowered_segment_chain_infers() {
     assert_eq!(g.view(od), 32);
 }
 
-// ===== segment! notation =====
+// ===== fuse! notation =====
 
 #[test]
-fn segment_notation_diamond() {
-    // Same graph as `hand_lowered_segment_chain_infers`, via the macro.
-    let seg = tradingflow::segment!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> (Port<Val<i64>>, Port<Val<i64>>) {
+fn operator_notation_diamond() {
+    // Same graph as `hand_lowered_operator_chain_infers`, via the macro.
+    let op = tradingflow::fuse!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> (Port<Val<i64>>, Port<Val<i64>>) {
         let c = add() @ (a, b);
         let d = inc() @ c;
         (d, c)
@@ -1076,7 +1076,7 @@ fn segment_notation_diamond() {
     let mut gb = Builder::new();
     let (s0_cell, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(20));
-    let (od, oc) = gb.segment(seg, (s0, s1));
+    let (od, oc) = gb.op(op, (s0, s1));
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -1090,10 +1090,10 @@ fn segment_notation_diamond() {
 }
 
 #[test]
-fn segment_notation_result_is_last_binding() {
+fn operator_notation_result_is_last_binding() {
     // The result is exactly the last binding: the closing `route` projects it
     // straight out of the environment.
-    let seg = tradingflow::segment!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
+    let op = tradingflow::fuse!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
         let c = add() @ (a, b);
         let d = inc() @ c;
         d
@@ -1102,19 +1102,19 @@ fn segment_notation_result_is_last_binding() {
     let mut gb = Builder::new();
     let (_, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(20));
-    let od = gb.segment(seg, (s0, s1));
+    let od = gb.op(op, (s0, s1));
     let g = gb.build();
     assert_eq!(g.view(od), 31);
 }
 
 #[test]
-fn segment_notation_runtime_path_override() {
+fn operator_notation_runtime_path_override() {
     // A leading `@[path]` overrides the `::tradingflow::graph::cb` the
     // expansion names — the hook a facade crate's `macro_rules!` wrapper uses
     // (passing `@[$crate::...]`) so its users need no direct facade dependency.
     // Here the override is an alias of the same module.
     use tradingflow_graph::cb as alt;
-    let seg = tradingflow::segment!(@[alt] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
+    let op = tradingflow::fuse!(@[alt] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
         let c = add() @ (a, b);
         c
     });
@@ -1122,15 +1122,15 @@ fn segment_notation_runtime_path_override() {
     let mut gb = Builder::new();
     let (_, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(20));
-    let oc = gb.segment(seg, (s0, s1));
+    let oc = gb.op(op, (s0, s1));
     let g = gb.build();
     assert_eq!(g.view(oc), 30);
 }
 
 #[test]
-fn segment_notation_duplicates_reorders_and_drops() {
+fn operator_notation_duplicates_reorders_and_drops() {
     // `a` feeds two statements AND the result; `b` is dropped entirely.
-    let seg = tradingflow::segment!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> (Port<Val<i64>>, Port<Val<i64>>) {
+    let op = tradingflow::fuse!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> (Port<Val<i64>>, Port<Val<i64>>) {
         let s = add() @ (a, a);
         let t = add() @ (s, a);
         (t, s)
@@ -1139,16 +1139,16 @@ fn segment_notation_duplicates_reorders_and_drops() {
     let mut gb = Builder::new();
     let (_, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(20));
-    let (ot, os) = gb.segment(seg, (s0, s1));
+    let (ot, os) = gb.op(op, (s0, s1));
     let g = gb.build();
     assert_eq!(g.view(os), 20); // a + a
     assert_eq!(g.view(ot), 30); // s + a
 }
 
 #[test]
-fn segment_notation_destructures_and_shadows() {
-    // Destructure a two-output segment; shadow `p` to rebind it.
-    let seg = tradingflow::segment!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
+fn operator_notation_destructures_and_shadows() {
+    // Destructure a two-output operator; shadow `p` to rebind it.
+    let op = tradingflow::fuse!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
         let (p, q) = AddSub @ (a, b);
         let p = inc() @ p;
         let r = add() @ (p, q);
@@ -1158,15 +1158,15 @@ fn segment_notation_destructures_and_shadows() {
     let mut gb = Builder::new();
     let (_, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(4));
-    let or = gb.segment(seg, (s0, s1));
+    let or = gb.op(op, (s0, s1));
     let g = gb.build();
     assert_eq!(g.view(or), 21); // (10+4)+1 + (10-4)
 }
 
 #[test]
-fn segment_notation_ports_wire() {
+fn operator_notation_ports_wire() {
     // A `Ports` wire rides the environment like any other.
-    let seg = tradingflow::segment!(@[tradingflow_graph::cb] |xs: Ports<Val<i64>>| -> Port<Val<i64>> {
+    let op = tradingflow::fuse!(@[tradingflow_graph::cb] |xs: Ports<Val<i64>>| -> Port<Val<i64>> {
         let s = SumAll @ xs;
         let t = inc() @ s;
         t
@@ -1176,7 +1176,7 @@ fn segment_notation_ports_wire() {
     let (s0_cell, s0) = gb.source(Source(1));
     let (_, s1) = gb.source(Source(2));
     let (_, s2) = gb.source(Source(3));
-    let ot = gb.segment(seg, &[s0, s1, s2][..]);
+    let ot = gb.op(op, &[s0, s1, s2][..]);
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -1193,7 +1193,7 @@ fn segment_notation_ports_wire() {
 /// advances the counter and lights the notify plane, `passthrough` re-lends the
 /// retained values with the plane cleared.
 struct GatedFanout;
-impl Segment for GatedFanout {
+impl Operator for GatedFanout {
     type Inputs = Port<Val<Option<i64>>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
@@ -1226,8 +1226,8 @@ fn gated_ports_producer_rederives_each_generation() {
     // Ports out). `out[1]` is the recompute count, so it is the probe itself.
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(5i64));
-    let a = b.segment(Abs, s);
-    let out = b.segment(GatedFanout, a);
+    let a = b.op(Abs, s);
+    let out = b.op(GatedFanout, a);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -1247,9 +1247,9 @@ fn gated_ports_producer_rederives_each_generation() {
 }
 
 #[test]
-fn segment_notation_pure_permutation() {
+fn operator_notation_pure_permutation() {
     // No statements at all: an annotated pure shuffle (swap + dup).
-    let seg = tradingflow::segment!(@[tradingflow_graph::cb] |a: Port<Val<i64>>,
+    let op = tradingflow::fuse!(@[tradingflow_graph::cb] |a: Port<Val<i64>>,
                                      b: Port<Val<i64>>|
      -> (Port<Val<i64>>, (Port<Val<i64>>, Port<Val<i64>>)) {
         (b, (a, a))
@@ -1258,7 +1258,7 @@ fn segment_notation_pure_permutation() {
     let mut gb = Builder::new();
     let (_, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(20));
-    let (ob, (oa0, oa1)) = gb.segment(seg, (s0, s1));
+    let (ob, (oa0, oa1)) = gb.op(op, (s0, s1));
     let g = gb.build();
     assert_eq!(g.view(ob), 20);
     assert_eq!(g.view(oa0), 10);
@@ -1266,10 +1266,10 @@ fn segment_notation_pure_permutation() {
 }
 
 #[test]
-fn segment_notation_apply_nests() {
-    // Prefix application `seg @ wires` nests inside wire expressions; each
+fn operator_notation_apply_nests() {
+    // Prefix application `op @ wires` nests inside wire expressions; each
     // nesting desugars to a fresh intermediate wire: d = a + (a + b).
-    let seg = tradingflow::segment!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
+    let op = tradingflow::fuse!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
         let d = add() @ (a, add() @ (a, b));
         d
     });
@@ -1277,7 +1277,7 @@ fn segment_notation_apply_nests() {
     let mut gb = Builder::new();
     let (s0_cell, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(20));
-    let od = gb.segment(seg, (s0, s1));
+    let od = gb.op(op, (s0, s1));
     let mut g = gb.build();
     let mut pool = Pool::new(16);
 
@@ -1289,27 +1289,27 @@ fn segment_notation_apply_nests() {
 }
 
 #[test]
-fn segment_notation_apply_in_result_position() {
+fn operator_notation_apply_in_result_position() {
     // A result-position application chain (no `let`) desugars to a final
     // statement, which the closing `route` projects out.
     // `@` chains right-associatively: Inc @ Add @ (a, b) is Inc(Add(a, b)).
-    let seg = tradingflow::segment!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
+    let op = tradingflow::fuse!(@[tradingflow_graph::cb] |a: Port<Val<i64>>, b: Port<Val<i64>>| -> Port<Val<i64>> {
         inc() @ add() @ (a, b)
     });
 
     let mut gb = Builder::new();
     let (_, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(20));
-    let o = gb.segment(seg, (s0, s1));
+    let o = gb.op(op, (s0, s1));
     let g = gb.build();
     assert_eq!(g.view(o), 31);
 }
 
 #[test]
-fn segment_notation_apply_in_statement_args() {
+fn operator_notation_apply_in_statement_args() {
     // Applications nest inside a statement's argument tuple, and multi-output
     // destructuring works on an application statement.
-    let seg = tradingflow::segment!(
+    let op = tradingflow::fuse!(
         |a: Port<Val<i64>>, b: Port<Val<i64>>| -> (Port<Val<i64>>, Port<Val<i64>>) {
             let (p, q) = AddSub @ (inc() @ a, b);
             let r = add() @ (p, inc() @ q);
@@ -1320,7 +1320,7 @@ fn segment_notation_apply_in_statement_args() {
     let mut gb = Builder::new();
     let (_, s0) = gb.source(Source(10));
     let (_, s1) = gb.source(Source(4));
-    let (or, op) = gb.segment(seg, (s0, s1));
+    let (or, op) = gb.op(op, (s0, s1));
     let g = gb.build();
     assert_eq!(g.view(op), 15); // (10+1) + 4
     assert_eq!(g.view(or), 23); // 15 + ((11-4) + 1)
@@ -1338,9 +1338,9 @@ fn out_of_cone_producer_does_not_spuriously_notify() {
     // input 0 as notified and returned 1.
     let mut b = Builder::new();
     let (_, s0) = b.source(EventSource(0));
-    let p = b.segment(IncEvent, s0);
+    let p = b.op(IncEvent, s0);
     let (s1_cell, s1) = b.source(Source(0));
-    let d = b.segment(DidFirstNotify, (p, s1));
+    let d = b.op(DidFirstNotify, (p, s1));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -1354,7 +1354,7 @@ fn out_of_cone_producer_does_not_spuriously_notify() {
 /// build-time pointer in the tail output slot, so the engine must poison rather
 /// than scatter it (a dangling read in a release build).
 struct ShrinkPorts;
-impl Segment for ShrinkPorts {
+impl Operator for ShrinkPorts {
     type Inputs = Port<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
@@ -1377,7 +1377,7 @@ impl Segment for ShrinkPorts {
 fn shrinking_ports_output_poisons_instead_of_dangling() {
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(1i64));
-    let out = b.segment(ShrinkPorts, s);
+    let out = b.op(ShrinkPorts, s);
     assert_eq!(out.len(), 2); // sized to 2 at build
     let mut g = b.build();
     let mut pool = Pool::new(16);
@@ -1393,7 +1393,7 @@ fn shrinking_ports_output_poisons_instead_of_dangling() {
 /// Views travel BY VALUE: the engine homes them in the node's output scratch,
 /// so this producer is completely stateless.
 struct WindowView;
-impl Segment for WindowView {
+impl Operator for WindowView {
     type Inputs = (Port<Ref<Vec<i64>>>, Port<Val<(usize, usize)>>);
     type Outputs = Port<Slice<i64>>;
     type Context = ();
@@ -1416,7 +1416,7 @@ impl Segment for WindowView {
 
 /// Consumes the window view: `(sum, len)`.
 struct ViewStats;
-impl Segment for ViewStats {
+impl Operator for ViewStats {
     type Inputs = Port<Slice<i64>>;
     type Outputs = (Port<Val<i64>>, Port<Val<usize>>);
     type Context = ();
@@ -1435,12 +1435,12 @@ fn view_window_moves_and_resizes_per_generation() {
     let mut b = Builder::new();
     let (data_cell, data) = b.source(RefSource(vec![1i64, 2, 3, 4, 5, 6, 7, 8]));
     let (range_cell, range) = b.source(Source((0usize, 3usize)));
-    let win = b.segment(WindowView, (data, range));
+    let win = b.op(WindowView, (data, range));
     // Forward the view through an extra node: the forwarder re-homes the fat
     // reference in its OWN output scratch (a copy, not an alias). `Id`'s type
     // parameter is inferred from `win`'s handle -- no turbofish.
-    let fwd = b.segment(Id::default(), win);
-    let (sum, len) = b.segment(ViewStats, fwd);
+    let fwd = b.op(Id::default(), win);
+    let (sum, len) = b.op(ViewStats, fwd);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -1479,7 +1479,7 @@ unsafe impl Pass for StridedF64 {
 /// view itself travels by value; only its variable-length metadata needs the
 /// arena in state.
 struct MakeStrided;
-impl Segment for MakeStrided {
+impl Operator for MakeStrided {
     type Inputs = (Port<Ref<Vec<f64>>>, Port<Val<usize>>);
     type Outputs = Port<StridedF64>;
     type Context = ();
@@ -1502,7 +1502,7 @@ impl Segment for MakeStrided {
 
 /// Sums every `stride`-th element of the view, walking its metadata.
 struct StridedSum;
-impl Segment for StridedSum {
+impl Operator for StridedSum {
     type Inputs = Port<StridedF64>;
     type Outputs = Port<Val<f64>>;
     type Context = ();
@@ -1523,8 +1523,8 @@ fn custom_view_struct_through_the_wire() {
     let mut b = Builder::new();
     let (_, v) = b.source(RefSource(vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0]));
     let (k_cell, k) = b.source(Source(2usize));
-    let view = b.segment(MakeStrided, (v, k));
-    let out = b.segment(StridedSum, view);
+    let view = b.op(MakeStrided, (v, k));
+    let out = b.op(StridedSum, view);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -1537,7 +1537,7 @@ fn custom_view_struct_through_the_wire() {
 
 /// Sums a borrowed slice view plus a scalar into owned state.
 struct SliceTotal;
-impl Segment for SliceTotal {
+impl Operator for SliceTotal {
     type Inputs = (Port<Slice<i64>>, Port<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -1560,7 +1560,7 @@ fn view_source_lends_borrowing_view_from_owned_cell() {
     let mut b = Builder::new();
     let (xs_cell, xs) = b.source(SliceSource(vec![1, 2, 3].into()));
     let (k_cell, k) = b.source(Source(100i64));
-    let out = b.segment(SliceTotal, (xs, k));
+    let out = b.op(SliceTotal, (xs, k));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -1585,7 +1585,7 @@ fn view_source_lends_borrowing_view_from_owned_cell() {
 /// node's state off exclusively between workers, never sharing it; only the
 /// *exposed* output value (the `i64` second field) must be `Sync`.
 struct CellCounter;
-impl Segment for CellCounter {
+impl Operator for CellCounter {
     type Inputs = Port<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -1606,7 +1606,7 @@ impl Segment for CellCounter {
 fn send_only_state_is_accepted() {
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(10i64));
-    let out = b.segment(CellCounter, s);
+    let out = b.op(CellCounter, s);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -1675,7 +1675,7 @@ fn src_val(gn: usize, j: usize) -> i64 {
 struct Work {
     iters: u32,
 }
-impl Segment for Work {
+impl Operator for Work {
     type Inputs = (Port<Val<i64>>, Port<Val<i64>>, Port<Val<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -1717,7 +1717,7 @@ fn simulate(srcs: &[i64], post: impl Fn(usize, usize, i64) -> i64) -> (Vec<Vec<i
 }
 
 /// Build the shared mesh topology, delegating each mesh node's construction to
-/// `node` (a plain or fused segment of the same interface). Returns the source
+/// `node` (a plain or fused operator of the same interface). Returns the source
 /// handles (to poke), the per-layer node handles, and the per-layer aggregates.
 #[allow(clippy::type_complexity)]
 fn build_mesh(
@@ -1746,8 +1746,7 @@ fn build_mesh(
         }
         layers.push(cur);
     }
-    let aggs: Vec<PortHandle<Val<i64>>> =
-        layers.iter().map(|l| b.segment(SumAll, &l[..])).collect();
+    let aggs: Vec<PortHandle<Val<i64>>> = layers.iter().map(|l| b.op(SumAll, &l[..])).collect();
     (src, layers, aggs)
 }
 
@@ -1757,7 +1756,7 @@ fn complex_mesh_multi_generation() {
     let mut srcs: Vec<i64> = (0..NM).map(|j| src_val(0, j)).collect();
     let mut b = Builder::new();
     let (src, nodes, aggs) = build_mesh(&mut b, &srcs, |b, layer, j, [a, b2, c]| {
-        b.segment(
+        b.op(
             Work {
                 iters: iters_of(layer, j),
             },
@@ -1797,8 +1796,8 @@ fn complex_mesh_multi_generation() {
 #[test]
 #[cfg_attr(miri, ignore)] // ~1.1k nodes x 7 generations: far too slow interpreted
 fn complex_mesh_with_fused_nodes() {
-    // The same mesh, but every node is a *fused* segment running a small internal
-    // DAG: even nodes via the `segment!` macro (a fork/join diamond, net 3w+1),
+    // The same mesh, but every node is a *fused* operator running a small internal
+    // DAG: even nodes via the `fuse!` macro (a fork/join diamond, net 3w+1),
     // odd nodes via the combinator API (`Work.then(Inc).then(Double)`, net 2w+2).
     // The scheduled topology -- and node count -- is identical to the plain mesh.
     let mut srcs: Vec<i64> = (0..NM).map(|j| src_val(0, j)).collect();
@@ -1806,16 +1805,16 @@ fn complex_mesh_with_fused_nodes() {
     let (src, nodes, aggs) = build_mesh(&mut b, &srcs, |b, layer, j, [a, b2, c]| {
         let it = iters_of(layer, j);
         if (layer + j) % 2 == 0 {
-            let seg = tradingflow::segment!(@[tradingflow_graph::cb] |x: Port<Val<i64>>, y: Port<Val<i64>>, z: Port<Val<i64>>| -> Port<Val<i64>> {
+            let op = tradingflow::fuse!(@[tradingflow_graph::cb] |x: Port<Val<i64>>, y: Port<Val<i64>>, z: Port<Val<i64>>| -> Port<Val<i64>> {
                 let w = Work { iters: it } @ (x, y, z);
                 let p = inc() @ w;
                 let q = double() @ w;
                 let r = add() @ (p, q);
                 r
             });
-            b.segment(seg, (a, b2, c))
+            b.op(op, (a, b2, c))
         } else {
-            b.segment(Work { iters: it }.then(inc()).then(double()), (a, b2, c))
+            b.op(Work { iters: it }.then(inc()).then(double()), (a, b2, c))
         }
     });
     let mut g = b.build();
@@ -1862,7 +1861,7 @@ fn complex_mesh_with_fused_nodes() {
 /// values into the node's input scratch, so the payload arrives as ONE
 /// contiguous `&[i64]`. Both sides by value: completely stateless.
 struct SumAllPorts;
-impl Segment for SumAllPorts {
+impl Operator for SumAllPorts {
     type Inputs = Ports<Val<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -1882,7 +1881,7 @@ fn ports_group_input_sums() {
     let (s0_cell, s0) = b.source(Source(1i64));
     let (s1_cell, s1) = b.source(Source(2i64));
     let (s2_cell, s2) = b.source(Source(3i64));
-    let total = b.segment(SumAllPorts, &[s0, s1, s2]);
+    let total = b.op(SumAllPorts, &[s0, s1, s2]);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -1901,7 +1900,7 @@ fn ports_group_input_sums() {
 #[test]
 fn empty_ports_group_builds_and_sums_zero() {
     let mut b = Builder::new();
-    let total = b.segment(SumAllPorts, &[] as &[PortHandle<Val<i64>>]);
+    let total = b.op(SumAllPorts, &[] as &[PortHandle<Val<i64>>]);
     let g = b.build();
     assert_eq!(g.view(total), 0);
 }
@@ -1911,7 +1910,7 @@ fn empty_ports_group_builds_and_sums_zero() {
 /// each element in the node's output scratch, slot by slot -- so each slot
 /// then feeds single-`Port` consumers and `Ports` groups alike.
 struct FanoutPorts3;
-impl Segment for FanoutPorts3 {
+impl Operator for FanoutPorts3 {
     type Inputs = Port<Val<i64>>;
     type Outputs = Ports<Val<i64>>;
     type Context = ();
@@ -1932,11 +1931,11 @@ impl Segment for FanoutPorts3 {
 fn ports_group_output_dynamic_arity() {
     let mut b = Builder::new();
     let (s_cell, s) = b.source(Source(10i64));
-    let outs = b.segment(FanoutPorts3, s);
+    let outs = b.op(FanoutPorts3, s);
     assert_eq!(outs.len(), 3);
     // Each group slot is an ordinary `Port` producer: read it directly, and
     // fan the whole group back into a `Ports` consumer.
-    let total = b.segment(SumAllPorts, &outs[..]);
+    let total = b.op(SumAllPorts, &outs[..]);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -1961,8 +1960,8 @@ fn ports_group_forwarded_through_id() {
     let mut b = Builder::new();
     let (_, s0) = b.source(Source(4i64));
     let (s1_cell, s1) = b.source(Source(5i64));
-    let fwd = b.segment(Id::<Ports<Val<i64>>, ()>::default(), &[s0, s1]);
-    let total = b.segment(SumAllPorts, &fwd[..]);
+    let fwd = b.op(Id::<Ports<Val<i64>>, ()>::default(), &[s0, s1]);
+    let total = b.op(SumAllPorts, &fwd[..]);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -1978,7 +1977,7 @@ fn ports_group_forwarded_through_id() {
 /// group in one input tuple. Checks the shape cursor stays aligned across
 /// value/ref variadic leaves: `sum(ports) * k + sum(ports)`.
 struct MixedGroups;
-impl Segment for MixedGroups {
+impl Operator for MixedGroups {
     type Inputs = (Ports<Val<i64>>, Port<Ref<i64>>, Ports<Ref<i64>>);
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -2005,7 +2004,7 @@ fn mixed_value_and_ref_variadic_groups() {
     let (r0_cell, r0) = b.source(RefSource(100i64));
     let (_, r1) = b.source(RefSource(200i64));
     let (_, r2) = b.source(RefSource(300i64));
-    let out = b.segment(MixedGroups, (&[p0, p1], k, &[r0, r1, r2]));
+    let out = b.op(MixedGroups, (&[p0, p1], k, &[r0, r1, r2]));
     let mut g = b.build();
     let mut pool = Pool::new(16);
 
@@ -2021,7 +2020,7 @@ fn mixed_value_and_ref_variadic_groups() {
 /// `&[i64]` window into a different source's data, gathered into one
 /// contiguous slice-of-windows payload (views by value).
 struct ConcatLens;
-impl Segment for ConcatLens {
+impl Operator for ConcatLens {
     type Inputs = Ports<Slice<i64>>;
     type Outputs = Port<Val<i64>>;
     type Context = ();
@@ -2042,9 +2041,9 @@ fn view_ports_group_of_slice_views() {
     let (_, d1) = b.source(RefSource(vec![10i64, 20]));
     let (r0_cell, r0) = b.source(Source((0usize, 2usize)));
     let (_, r1) = b.source(Source((0usize, 2usize)));
-    let w0 = b.segment(WindowView, (d0, r0));
-    let w1 = b.segment(WindowView, (d1, r1));
-    let total = b.segment(ConcatLens, &[w0, w1]);
+    let w0 = b.op(WindowView, (d0, r0));
+    let w1 = b.op(WindowView, (d1, r1));
+    let total = b.op(ConcatLens, &[w0, w1]);
     let mut g = b.build();
     let mut pool = Pool::new(16);
 

@@ -31,9 +31,9 @@ pub type ResetFn = unsafe fn(
     context: *const (),
 );
 
-/// Type-erased segment definition.
+/// Type-erased node definition.
 #[derive(Debug)]
-pub struct Segment {
+pub struct Node {
     /// Expected input types, for wiring checks.
     input_types: Box<[TypeId]>,
     /// Declared outputs types, for wiring checks.
@@ -46,11 +46,11 @@ pub struct Segment {
     state: ErasedCell,
     /// Initial output value pointers. Can reference into the state.
     output_ptrs: Box<[*const ()]>,
-    /// Whether the segment is expensive enough to be worth a parallel task.
+    /// Whether the node is expensive enough to be worth a parallel task.
     is_heavy: bool,
 }
 
-impl Segment {
+impl Node {
     /// # Safety
     ///
     /// The given `compute_fn` and `reset_fn` must correctly handle the

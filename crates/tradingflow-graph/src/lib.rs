@@ -57,7 +57,7 @@
 //! // An adder with two inputs.
 //! struct Add;
 //!
-//! impl Segment for Add {
+//! impl Operator for Add {
 //!     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
 //!     type Outputs = Port<Ref<i64>>;
 //!     type Context = Instant;
@@ -96,8 +96,8 @@
 //!     let mut b = Builder::new(UnixTime);
 //!     let s = b.source(Sequence(vec![1, 2, 3, 4, 5]));
 //!     let t = b.source(Sequence(vec![10, 20, 30, 40, 50]));
-//!     let x = b.segment(Add, (s, t));
-//!     let y = b.segment(Add, (s, x));
+//!     let x = b.op(Add, (s, t));
+//!     let y = b.op(Add, (s, x));
 //!     let mut g = b.build();
 //!
 //!     // Update the source value and then recompute in parallel.
@@ -117,8 +117,10 @@
 //!
 //! - [`Builder::source`] adds a source stream to the graph, returning its
 //!   output port handle.
-//! - [`Builder::segment`] adds a segment node to the graph, taking input port
+//! - [`Builder::op`] adds an operator node to the graph, taking input port
 //!   handles and returning its output port handles.
+//! - [`Builder::value`] is a special case of [`Builder::op`], which omits
+//!   input port handles for an input-less operator node (i.e. constant value).
 //! - [`Builder::build`] finalizes into a [`Graph`].
 //!
 //! A [`Graph`] represents a complete computation graph with source streams.
@@ -146,27 +148,27 @@
 //! - The [`Source::write`] method will be called on each subsequent
 //!   [`Graph::step`] with new events, to write the events into the node.
 //!
-//! # Creating segments
+//! # Creating operators
 //!
-//! Each segment is a single node of scheduling. It must implement [`Segment`],
-//! which declares its inputs and outputs, its graph context (must be the
-//! timestamp type), its mutable state, and the following methods:
+//! Each operator is a single node of scheduling. It must implement
+//! [`Operator`], which declares its inputs and outputs, its graph context
+//! (must be the timestamp type), its mutable state, and the following methods:
 //!
-//! - The [`Segment::init`] method is called once during graph construction,
+//! - The [`Operator::init`] method is called once during graph construction,
 //!   to create the node's state.
-//! - The [`Segment::reset`] method is called immediately after, to obtain the
+//! - The [`Operator::reset`] method is called immediately after, to obtain the
 //!   node's initial output values, and again after every [`Graph::stabilize`]
 //!   to reset its outputs to quiescent states (either retained or `None`,
 //!   depending on semantics).
-//! - The [`Segment::compute`] method will be called on each subsequent
+//! - The [`Operator::compute`] method will be called on each subsequent
 //!   [`Graph::stabilize`] with new inputs, to obtain updated output values.
 //!   It can also access the graph context (typically the current timestamp)
 //!   or mutate the node's state.
 //!
 //! # Interfaces and passing protocols
 //!
-//! The associated types [`Segment::Inputs`] and [`Segment::Outputs`] define
-//! the [`Interface`] of a segment. They can be constructed from the following
+//! The associated types [`Operator::Inputs`] and [`Operator::Outputs`] define
+//! the [`Interface`] of an operator. They can be constructed from the following
 //! basic building blocks:
 //!
 //! - [`Port<Val<T>>`] — a single pass-by-value port. It carries `(bool, T)`
@@ -214,16 +216,16 @@
 //! Multi-threaded execution has a cost: waking a worker to run a trivial node
 //! can take much longer time than the actual computation inside the node
 //! itself. The scheduler therefore only creates parallel tasks for nodes
-//! marked [`Segment::is_heavy`]; light nodes keep running in the same thread.
+//! marked [`Operator::is_heavy`]; light nodes keep running in the same thread.
 //!
 //! Optionally, we can go one step further: fusing small operators together
-//! into a single segment node lets the compiler monomorphize and inline the
+//! into a single operator node lets the compiler monomorphize and inline the
 //! whole chain, which still pays on the hottest fine-grained paths.
 //!
-//! The library provides combinator methods to fuse segments into larger
-//! segments:
+//! The library provides combinator methods to fuse operators into larger
+//! operators:
 //!
-//! | Combinator | Method (via [`cb::SegmentExt`]) | Meaning |
+//! | Combinator | Method (via [`cb::OperatorExt`]) | Meaning |
 //! | --- | --- | --- |
 //! | [`cb::Id<T>`] | — | Identity: outputs are inputs unchanged. |
 //! | [`cb::Comp<F, G>`] | `f.then(g)` | Composition: outputs `g(f(x))`. |
@@ -233,7 +235,7 @@
 //! | [`cb::Arr`] | — | Applies a stateless closure to the inputs. |
 //!
 //! However, point-free combinators get unreadable fast. As an alternative, the
-//! `tradingflow-macros` crate provides the `segment!` macro, which is a DSL
+//! `tradingflow-macros` crate provides the `fuse!` macro, which is a DSL
 //! that compiles down to combinators like the Arrow notation in Haskell[^1]:
 //!
 //! ```rust
@@ -280,7 +282,7 @@
 //! # // An adder with two inputs.
 //! # struct Add;
 //! #
-//! # impl Segment for Add {
+//! # impl Operator for Add {
 //! #     type Inputs = (Port<Ref<i64>>, Port<Ref<i64>>);
 //! #     type Outputs = Port<Ref<i64>>;
 //! #     type Context = Instant;
@@ -310,7 +312,7 @@
 //! #     }
 //! # }
 //! #
-//! use tradingflow::segment;
+//! use tradingflow::fuse;
 //!
 //! let mut b = Builder::new(UnixTime);
 //! let s = b.source(Sequence(vec![1, 2, 3, 4, 5]));
@@ -318,17 +320,17 @@
 //!
 //! // One fused node computing: c = b + a; d = c + a; e = d + a; result (e, c).
 //! // Type annotation is needed on inputs and outputs.
-//! let seg = segment!(|a: Port<Ref<i64>>, b: Port<Ref<i64>>| -> (Port<Ref<i64>>, Port<Ref<i64>>) {
+//! let fused = fuse!(|a: Port<Ref<i64>>, b: Port<Ref<i64>>| -> (Port<Ref<i64>>, Port<Ref<i64>>) {
 //!     let c = Add @ (b, a);
 //!     let e = Add @ (Add @ (c, a), a);
 //!     (e, c)
 //! });
 //!
-//! let (e, c) = b.segment(seg, (s, t));
+//! let (e, c) = b.op(fused, (s, t));
 //! ```
 //!
-//! The expression `seg @ wires` applies a segment (can be any Rust expression
-//! whose type `T` implements the [`Segment`] trait) to wires. Applications
+//! The expression `op @ wires` applies an operator (can be any Rust expression
+//! whose type `T` implements the [`Operator`] trait) to wires. Applications
 //! nest inside any wire expression and chain right-associatively.
 //!
 //! # Safety
@@ -377,7 +379,7 @@ pub mod driver;
 pub mod pool;
 pub mod typed;
 
-pub use cb::SegmentExt;
+pub use cb::OperatorExt;
 pub use driver::{Builder, Event, Graph, Source, Stamp, Time};
 pub use pool::Pool;
-pub use typed::{Interface, NodeHandle, Pass, Port, PortHandle, Ports, Ref, Segment, Slice, Val};
+pub use typed::{Interface, NodeHandle, Operator, Pass, Port, PortHandle, Ports, Ref, Slice, Val};

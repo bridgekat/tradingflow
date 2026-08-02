@@ -2,7 +2,7 @@ use pyo3::types::PyDictMethods;
 
 use super::MeanVariancePortfolio;
 use crate::operators::portfolio::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Mean-variance optimization by matrix-free ADMM, without CVXPY.
 ///
@@ -37,7 +37,7 @@ pub fn admm_mnr(
     factor_rank: Option<usize>,
 ) -> impl MeanVariancePortfolio {
     assert!(delta > 0.0, "admm_mnr delta must be positive, got {delta}");
-    py_segment_module(
+    py_operator_module(
         "tradingflow.portfolio.mean_variance.admm_mnr",
         config.params(|d| {
             d.set_item("delta", delta)?;

@@ -2,7 +2,7 @@ use num_traits::Float;
 
 use super::base::{Accumulator, LogReturn, Return};
 use crate::data::{Instant, Scalar};
-use crate::graph::Segment;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SignalPort};
 
 /// Accumulator for [`return_mean`].
@@ -35,7 +35,7 @@ impl<T: Scalar + Float> Accumulator<T> for ReturnMeanAccumulator<T> {
 /// Average per-period percentage return of a net-asset-value scalar, where
 /// each period is specified by a signal.
 pub fn return_mean<T: Scalar + Float>()
--> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
+-> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
     Return::new(ReturnMeanAccumulator::new())
 }
@@ -43,7 +43,7 @@ pub fn return_mean<T: Scalar + Float>()
 /// Average per-period log return of a net-asset-value scalar, where
 /// each period is specified by a signal.
 pub fn log_return_mean<T: Scalar + Float>()
--> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
+-> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {
     LogReturn::new(ReturnMeanAccumulator::new())
 }

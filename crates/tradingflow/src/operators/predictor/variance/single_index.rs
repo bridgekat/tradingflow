@@ -1,6 +1,6 @@
 use super::VariancePredictor;
 use crate::operators::predictor::Config;
-use crate::python::py_segment_module;
+use crate::python::py_operator_module;
 
 /// Single-index factor model: one market factor plus idiosyncratic variance.
 ///
@@ -13,7 +13,7 @@ use crate::python::py_segment_module;
 ///
 /// See [module-level docs](super::super) for inputs and outputs.
 pub fn single_index(config: Config) -> impl VariancePredictor {
-    py_segment_module(
+    py_operator_module(
         "tradingflow.predictor.variance.single_index",
         config.params(|_| Ok(())),
     )

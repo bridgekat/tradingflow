@@ -2,7 +2,7 @@ use num_traits::Float;
 
 use super::base::{Accumulator, Rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, array};
-use crate::graph::{Segment, SegmentExt};
+use crate::graph::{Operator, OperatorExt};
 use crate::operators::series::buffer;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
@@ -89,7 +89,7 @@ pub fn series_mean_exp<T: Scalar + Float, const N: usize>(
     alpha: T,
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Rolling::new(window.into(), MeanExpAccumulator::new(alpha, min_count))
 }
 
@@ -99,7 +99,7 @@ pub fn mean_exp<T: Scalar + Float, const N: usize>(
     alpha: T,
     window: impl Into<Retention>,
     min_count: usize,
-) -> impl Segment<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
     let window = window.into();
     buffer(window).then(series_mean_exp(alpha, window, min_count))
