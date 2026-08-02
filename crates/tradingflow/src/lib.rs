@@ -157,7 +157,7 @@
 //!
 //! This is the whole pattern. An actual strategy can contain many more
 //! operators — [`feature::forward_adjust`](operators::feature::forward_adjust),
-//! [`trader::fixed::random`](operators::trader::fixed::random),
+//! [`trader::fixed::benchmark`](operators::trader::fixed::benchmark),
 //! [`metric::performance::return_sharpe`](operators::metric::performance::return_sharpe)
 //! — but the overall structure stays the same.
 //!

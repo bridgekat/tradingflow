@@ -17,18 +17,30 @@ This framework is structured into sub-packages in the `crates/` directory:
 
 ## Get started
 
-Prerequisites: Rust 1.95+ and Python 3.12+ (for the `python` feature).
+Recommended setup: Rust 1.95+, Python 3.12+ and [the `uv` package manager](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync
-cargo build --features python
-cargo run --example strategy_macd
+uv sync  # Create a virtual environment in `.venv/` and install dependencies
+cargo build --features python  # Build `tradingflow` with the `python` feature enabled
 ```
 
-`uv sync` creates `.venv/` and installs the operator implementations in `python/` into it as an editable install, together with NumPy and the rest of what those operators import.
+Building with the `python` feature involves finding and linking a Python interpreter, as described in [PyO3 Building and Distribution](https://pyo3.rs/main/building-and-distribution). PyO3 prioritizes the one in `.venv/` if created; this can be overridden via the `PYO3_PYTHON` environment variable. On Windows, the `PATH` environment variable must contain the directory in which the Python interpreter's DLL is found, as mentioned in [PyO3 FAQ](https://pyo3.rs/main/faq.html#im-trying-to-call-python-from-rust-but-i-get-status_dll_not_found-or-status_entrypoint_not_found).
 
-Building the `python` feature involves finding and linking a Python interpreter, as described in [PyO3 Building and Distribution](https://pyo3.rs/main/building-and-distribution). It should be the one in `.venv/` — which is what PyO3 picks up from an activated virtual environment, and what the `PYO3_PYTHON` environment variable may be used to name explicitly. Whichever is chosen is remembered: the embedded interpreter starts up as a stand-in for it, and takes its standard library and its `site-packages` — and so the operator implementations — from wherever that interpreter lives. Neither `PYTHONHOME` nor `PYTHONPATH` needs to be set, and the built binary does not need the virtual environment activated to run.
+If a run requires Python operators using NumPy or SciPy, make sure to also set `OPENBLAS_NUM_THREADS=1`: OpenBLAS is not thread-safe to use unless its internal parallelism is disabled (see [OpenBLAS FAQ](https://www.openmathlib.org/OpenBLAS/docs/faq/#how-can-i-use-openblas-in-multi-threaded-applications)), which may crash the program.
 
-On Windows, the `PATH` environment variable must contain the directory in which the Python interpreter's DLL is found, as mentioned in [PyO3 FAQ](https://pyo3.rs/main/faq.html#im-trying-to-call-python-from-rust-but-i-get-status_dll_not_found-or-status_entrypoint_not_found). For a virtual environment, that is the DLL of the installation it was created from rather than anything in the environment itself.
+## Additional examples
 
-If NumPy operators are used, make sure to set `OPENBLAS_NUM_THREADS=1` when running: OpenBLAS is not thread-safe to use unless its internal parallelism is disabled (see [OpenBLAS FAQ](https://www.openmathlib.org/OpenBLAS/docs/faq/#how-can-i-use-openblas-in-multi-threaded-applications)).
+Simple strategy backtesting examples can be found in [`crates/tradingflow/examples/`](crates/tradingflow/examples/). Run with:
+
+```bash
+git lfs pull  # Make sure market data files are available
+cargo run --release --example strategy_macd
+cargo run --release --example strategy_macd_panel
+cargo run --release --example strategy_markowitz_panel --features python
+```
+
+- `strategy_macd` is a simple MACD crossover strategy on synthetic price signals (the example in the docs).
+- `strategy_macd_panel` is the same strategy as `strategy_macd` tested on real stock price history.
+- `strategy_markowitz_panel` computes a few cross-sectional features (momentum, volatility, size), fits an incremental Ridge regression on them against next-day log returns alongside a shrinkage covariance estimate, and hands both moments to a simple Markowitz portfolio optimizer. The predictors and the optimizer are Python operators, so it needs the `python` feature and necessary dependencies installed.
+
+The two `panel` examples backtest against real market history: a decade of daily price data for six A-shares stocks, stored as long-format CSV tables. Both read the tables through the built-in CSV panel sources, forward-adjust closing prices for dividends, simulate frictionless trading, log their NAV curves to a CSV under `target/`, and print summary statistics (return, volatility, Sharpe, max drawdown). Pass `-- --help` for available command-line options.

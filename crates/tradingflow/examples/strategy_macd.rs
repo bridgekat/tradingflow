@@ -1,3 +1,5 @@
+//! MACD crossover strategy over synthetic data.
+
 use tradingflow::{
     data::{Array, ArrayView, Duration, Instant, Series},
     graph::{Builder, Operator, Pool},
