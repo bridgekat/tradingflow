@@ -46,6 +46,14 @@
 //! bound, and a model which does not read a panel should not retain one — see
 //! `retain_features` in `tradingflow.predictor`.
 //!
+//! # Starting the interpreter
+//!
+//! [`attach`] is this module's way in, and starts the embedded interpreter on
+//! first use — configured to stand in for the interpreter PyO3 linked against,
+//! so it finds that interpreter's standard library and `site-packages` without
+//! `PYTHONHOME` or `PYTHONPATH`. See [`initialize`] for why an embedded
+//! interpreter cannot work this out for itself.
+//!
 //! # What crosses the boundary
 //!
 //! **Arrays only, for now**: array and signal ports, their variadic groups,
@@ -66,10 +74,12 @@
 
 mod convert;
 mod interface;
+mod interpreter;
 mod operator;
 
 pub use convert::{from_numpy, from_numpy_into, to_numpy};
 pub use interface::{GroupBuffers, PyInterface};
+pub use interpreter::{attach, initialize};
 pub use operator::{
     PyOperator, PyState, py_operator_file, py_operator_module, py_operator_source, py_params,
 };

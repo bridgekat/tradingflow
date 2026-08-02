@@ -4,7 +4,7 @@ use pyo3::types::{PyDict, PyTuple};
 use std::ffi::CString;
 use std::marker::PhantomData;
 
-use super::PyInterface;
+use super::{PyInterface, attach};
 use crate::data::Instant;
 use crate::graph::{Interface, Operator};
 
@@ -164,7 +164,7 @@ fn call<'a, I: PyInterface, O: PyInterface>(
         state,
         buffers,
     } = state;
-    Python::attach(move |py| {
+    attach(move |py| {
         let run = || -> PyResult<Bound<'_, PyAny>> {
             let args = args_tuple::<I>(py, inputs)?;
             let instance = instance.bind(py);
@@ -200,7 +200,7 @@ where
     }
 
     fn init(self, inputs: <I as Interface>::Values<'_>) -> PyState<O> {
-        Python::attach(|py| {
+        attach(|py| {
             let run = || -> PyResult<(Py<PyAny>, Py<PyAny>)> {
                 let instance = resolve(py, &self.loader, self.params.as_ref())?;
                 let state = instance.call_method1("init", (args_tuple::<I>(py, inputs)?,))?;
@@ -251,7 +251,7 @@ where
 pub fn py_params(
     build: impl for<'py> FnOnce(&Bound<'py, PyDict>) -> PyResult<()>,
 ) -> Option<Py<PyDict>> {
-    Python::attach(|py| {
+    attach(|py| {
         let dict = PyDict::new(py);
         build(&dict).unwrap_or_else(|e| {
             e.print(py);

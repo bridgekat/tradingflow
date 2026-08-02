@@ -25,6 +25,10 @@ cargo build --features python
 cargo run --example strategy_macd
 ```
 
-The `python` feature links `libpython`, so it needs the environment variables `PYO3_PYTHON` and `PATH` to be set correctly. Moreover, the `PYTHONPATH` environment variable must point to `python/` in this repository, so that operator implementations can be imported.
+`uv sync` creates `.venv/` and installs the operator implementations in `python/` into it as an editable install, together with NumPy and the rest of what those operators import.
+
+Building the `python` feature involves finding and linking a Python interpreter, as described in [PyO3 Building and Distribution](https://pyo3.rs/main/building-and-distribution). It should be the one in `.venv/` — which is what PyO3 picks up from an activated virtual environment, and what the `PYO3_PYTHON` environment variable may be used to name explicitly. Whichever is chosen is remembered: the embedded interpreter starts up as a stand-in for it, and takes its standard library and its `site-packages` — and so the operator implementations — from wherever that interpreter lives. Neither `PYTHONHOME` nor `PYTHONPATH` needs to be set, and the built binary does not need the virtual environment activated to run.
+
+On Windows, the `PATH` environment variable must contain the directory in which the Python interpreter's DLL is found, as mentioned in [PyO3 FAQ](https://pyo3.rs/main/faq.html#im-trying-to-call-python-from-rust-but-i-get-status_dll_not_found-or-status_entrypoint_not_found). For a virtual environment, that is the DLL of the installation it was created from rather than anything in the environment itself.
 
 If NumPy operators are used, make sure to set `OPENBLAS_NUM_THREADS=1` when running: OpenBLAS is not thread-safe to use unless its internal parallelism is disabled (see [OpenBLAS FAQ](https://www.openmathlib.org/OpenBLAS/docs/faq/#how-can-i-use-openblas-in-multi-threaded-applications)).

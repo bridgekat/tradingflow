@@ -14,7 +14,9 @@ use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView}
 use tradingflow::graph::{Builder, Operator, Pool};
 use tradingflow::operators::series::record_all;
 use tradingflow::ports::{ArrayPort, ArrayPorts, SignalPort};
-use tradingflow::python::{PyInterface, PyOperator, from_numpy_into, py_operator_source, to_numpy};
+use tradingflow::python::{
+    PyInterface, PyOperator, attach, from_numpy_into, py_operator_source, to_numpy,
+};
 use tradingflow::sources::sync::array_series;
 use tradingflow::time::UnixTime;
 
@@ -62,7 +64,7 @@ fn globals(py: Python<'_>) -> Bound<'_, PyDict> {
         e.print(py);
         panic!(
             "numpy is not importable by the embedded interpreter; \
-             point PYTHONPATH at an environment that has it"
+             install it into the environment PyO3 was built against"
         );
     });
     let globals = PyDict::new(py);
@@ -90,7 +92,7 @@ fn tss(xs: &[i64]) -> Vec<Instant> {
 #[test]
 fn arrays_copy_out_with_shape_and_dtype() {
     let a = grid();
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         globals.set_item("arr", to_numpy(py, a.view())).unwrap();
 
@@ -106,7 +108,7 @@ fn arrays_copy_out_with_shape_and_dtype() {
 #[test]
 fn strided_and_transposed_views_materialize_row_major() {
     let a = grid();
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         // Columns 1..3 of each row, and the transpose: both are strided views
         // Rust-side, but arrive as plain owned row-major arrays.
@@ -132,7 +134,7 @@ fn strided_and_transposed_views_materialize_row_major() {
 
 #[test]
 fn rank_zero_and_bool_arrays() {
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         globals
             .set_item("pulse", to_numpy(py, ArrayView::scalar(&true)))
@@ -152,7 +154,7 @@ fn rank_zero_and_bool_arrays() {
 #[test]
 fn python_owns_the_copy() {
     let a = grid();
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         globals.set_item("arr", to_numpy(py, a.view())).unwrap();
 
@@ -172,7 +174,7 @@ fn python_owns_the_copy() {
 #[test]
 fn the_copy_outlives_the_rust_buffer() {
     let a = grid();
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         globals.set_item("arr", to_numpy(py, a.view())).unwrap();
 
@@ -190,7 +192,7 @@ fn the_copy_outlives_the_rust_buffer() {
 #[test]
 fn arrays_copy_in_from_ndarray() {
     let mut out = Array::<f64, 2>::zeros([2, 3]);
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         let value = eval_any(py, &globals, "np.arange(6, dtype='float64') * 10");
         from_numpy_into(&value, &mut out).unwrap();
@@ -203,7 +205,7 @@ fn arrays_copy_in_from_ndarray() {
 
 #[test]
 fn lists_scalars_and_other_dtypes_are_normalized() {
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
 
         // A plain list.
@@ -231,7 +233,7 @@ fn lists_scalars_and_other_dtypes_are_normalized() {
 #[test]
 fn non_contiguous_values_are_repacked() {
     let mut out = Array::<f64, 2>::zeros([2, 2]);
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         // A Fortran-order array goes through ascontiguousarray.
         let value = eval_any(
@@ -249,7 +251,7 @@ fn non_contiguous_values_are_repacked() {
 
 #[test]
 fn element_counts_negotiate_but_must_match() {
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
 
         // Same count, different shape: accepted (the boundary negotiates by
@@ -274,7 +276,7 @@ fn element_counts_negotiate_but_must_match() {
 #[test]
 fn the_copy_severs_the_python_reference() {
     let mut out = Array::<f64, 1>::zeros([3]);
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         run(py, &globals, "src = np.array([1.0, 2.0, 3.0])");
         let value = eval_any(py, &globals, "src");
@@ -290,7 +292,7 @@ fn the_copy_severs_the_python_reference() {
 fn a_round_trip_is_the_identity() {
     let a = grid();
     let mut out = Array::<f64, 2>::zeros([2, 3]);
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         globals.set_item("arr", to_numpy(py, a.view())).unwrap();
         // An operator returning one of its inputs unchanged: with owned
@@ -308,7 +310,7 @@ fn a_round_trip_is_the_identity() {
 #[test]
 fn interface_leaf_allocates_from_first_return() {
     type Leaf = ArrayPort<f64, 2>;
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         let mut buffers = <Leaf as PyInterface>::Buffers::default();
 
@@ -333,7 +335,7 @@ fn interface_leaf_allocates_from_first_return() {
 #[test]
 fn interface_tuple_takes_a_sequence_of_matching_arity() {
     type Pair = (SignalPort<0>, ArrayPort<f64, 1>);
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         let mut buffers = <Pair as PyInterface>::Buffers::default();
 
@@ -351,7 +353,7 @@ fn interface_tuple_takes_a_sequence_of_matching_arity() {
 #[test]
 fn interface_group_outputs_fix_their_length() {
     type Group = ArrayPorts<f64, 1>;
-    Python::attach(|py| {
+    attach(|py| {
         let globals = globals(py);
         let mut buffers = <Group as PyInterface>::Buffers::default();
 
@@ -381,7 +383,7 @@ fn interface_group_inputs_flatten_in_tree_order() {
     type Inputs = (SignalPort<0>, ArrayPorts<f64, 1>);
     let a = Array::from_parts([2], vec![1.0, 2.0].into());
     let b = Array::from_parts([1], vec![3.0].into());
-    Python::attach(|py| {
+    attach(|py| {
         let mut args = Vec::new();
         let group = [a.view(), b.view()];
         <Inputs as PyInterface>::to_python(py, (ArrayView::scalar(&true), &group), &mut args)
@@ -435,7 +437,7 @@ fn operator_mirrors_the_rust_contract() {
 
     // Keyword arguments for `build(**kwargs)` are a plain Python dict, built
     // with PyO3 — no bespoke params type, so any Python value works.
-    let params = Python::attach(|py| {
+    let params = attach(|py| {
         use pyo3::types::IntoPyDict;
         [("scale", 2.0)].into_py_dict(py).unwrap().unbind()
     });
