@@ -94,22 +94,30 @@ impl<T: Scalar + Float, const N: usize> Operator for RecordOn<T, N> {
 pub fn record_on<T: Scalar + Float, const N: usize>(
     retention: impl Into<Retention>,
     delayed: bool,
-) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
-{
+) -> impl Operator<
+    Inputs = (SignalPort<0>, ArrayPort<T, N>),
+    Outputs = SeriesPort<T, N>,
+    Context = Instant,
+> {
     RecordOn::new(retention.into(), delayed)
 }
 
 /// Shorthand for [`record_on`] with `delayed = true`.
 pub fn buffer<T: Scalar + Float, const N: usize>(
     retention: impl Into<Retention>,
-) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
-{
+) -> impl Operator<
+    Inputs = (SignalPort<0>, ArrayPort<T, N>),
+    Outputs = SeriesPort<T, N>,
+    Context = Instant,
+> {
     RecordOn::new(retention.into(), true)
 }
 
 /// Shorthand for [`record_on`] with [`Retention::unbounded`].
-pub fn record_all<T: Scalar + Float, const N: usize>()
--> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = SeriesPort<T, N>, Context = Instant>
-{
+pub fn record_all<T: Scalar + Float, const N: usize>() -> impl Operator<
+    Inputs = (SignalPort<0>, ArrayPort<T, N>),
+    Outputs = SeriesPort<T, N>,
+    Context = Instant,
+> {
     RecordOn::new(Retention::unbounded(), false)
 }

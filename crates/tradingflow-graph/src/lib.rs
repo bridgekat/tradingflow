@@ -119,7 +119,7 @@
 //!   output port handle.
 //! - [`Builder::op`] adds an operator node to the graph, taking input port
 //!   handles and returning its output port handles.
-//! - [`Builder::value`] is a special case of [`Builder::op`], which omits
+//! - [`Builder::val`] is a special case of [`Builder::op`], which omits
 //!   input port handles for an input-less operator node (i.e. constant value).
 //! - [`Builder::build`] finalizes into a [`Graph`].
 //!

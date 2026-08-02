@@ -8,7 +8,7 @@
 
 use tradingflow::data::{Array, Instant};
 use tradingflow::graph::typed::Builder;
-use tradingflow::graph::{Pool, Operator};
+use tradingflow::graph::{Operator, Pool};
 use tradingflow::operators::{array, stats};
 use tradingflow::ports::ArrayPort;
 

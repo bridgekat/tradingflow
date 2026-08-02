@@ -30,7 +30,7 @@ use arrow::datatypes::Int32Type;
 use parquet::arrow::ArrowWriter;
 use tradingflow::data::utils::{Axis, Schema};
 use tradingflow::data::{ArrayView, Duration, Instant, SeriesView};
-use tradingflow::graph::{Builder, Pool, Operator};
+use tradingflow::graph::{Builder, Operator, Pool};
 use tradingflow::operators::{series::record_all, signal};
 use tradingflow::ports::{ArrayPort, SignalPort};
 use tradingflow::sources::panel::{csv, parquet};
