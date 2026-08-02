@@ -9,10 +9,9 @@
 //! saturation, ...) plus, in the last section, the strided and broadcast paths
 //! of the shared elementwise core that every one of them routes through.
 
-use std::cmp::Ordering;
 use std::f64::consts::{FRAC_PI_4, PI};
 
-use tradingflow::data::Instant;
+use tradingflow::data::{Array, Instant};
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
 use tradingflow::operators::{array, elem};
@@ -41,8 +40,8 @@ fn each(x: &[f64], f: impl Fn(f64) -> f64) -> Vec<f64> {
 #[test]
 fn ops_arithmetic_family() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
-    let y = b.value(array::from_parts([4], vec![2.0_f64, 2.0, 0.0, 0.0].into()));
+    let (xs, x) = b.source(array::constant([0.0_f64; 4]));
+    let y = b.value(array::constant([2.0_f64, 2.0, 0.0, 0.0]));
     let sum = b.segment(elem::add(), (x, y));
     let diff = b.segment(elem::sub(), (x, y));
     let prod = b.segment(elem::mul(), (x, y));
@@ -52,7 +51,7 @@ fn ops_arithmetic_family() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([4], vec![7.5, -7.5, 3.0, 0.0]);
+    *g.state_mut(xs) = [7.5, -7.5, 3.0, 0.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(sum)), vec![9.5, -5.5, 3.0, 0.0]);
@@ -78,8 +77,8 @@ fn ops_arithmetic_family() {
 #[test]
 fn ops_integer_arithmetic_truncates_toward_zero() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([4], vec![0_i32; 4].into()));
-    let y = b.value(array::from_parts([4], vec![2_i32, 2, -2, -2].into()));
+    let (xs, x) = b.source(array::constant([0_i32; 4]));
+    let y = b.value(array::constant([2_i32, 2, -2, -2]));
     let sum = b.segment(elem::add::<i32, i32, 1>(), (x, y));
     let diff = b.segment(elem::sub::<i32, i32, 1>(), (x, y));
     let prod = b.segment(elem::mul::<i32, i32, 1>(), (x, y));
@@ -89,7 +88,7 @@ fn ops_integer_arithmetic_truncates_toward_zero() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([4], vec![7_i32, -7, 7, -7]);
+    *g.state_mut(xs) = [7_i32, -7, 7, -7].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(sum)), vec![9, -5, 5, -9]);
@@ -107,9 +106,9 @@ fn ops_integer_arithmetic_truncates_toward_zero() {
 #[test]
 fn ops_bitwise_and_shift_family() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([4], vec![0_i32; 4].into()));
-    let y = b.value(array::from_parts([4], vec![10_i32, 3, 0, 255].into()));
-    let n = b.value(array::from_parts([4], vec![1_u32, 2, 3, 4].into()));
+    let (xs, x) = b.source(array::constant([0_i32; 4]));
+    let y = b.value(array::constant([10_i32, 3, 0, 255]));
+    let n = b.value(array::constant([1_u32, 2, 3, 4]));
     let and = b.segment(elem::bitand::<i32, i32, 1>(), (x, y));
     let or = b.segment(elem::bitor::<i32, i32, 1>(), (x, y));
     let xor = b.segment(elem::bitxor::<i32, i32, 1>(), (x, y));
@@ -119,7 +118,7 @@ fn ops_bitwise_and_shift_family() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([4], vec![12_i32, -8, 5, -1]);
+    *g.state_mut(xs) = [12_i32, -8, 5, -1].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(and)), vec![8, 0, 0, 255]);
@@ -140,8 +139,8 @@ fn ops_bitwise_and_shift_family() {
 #[test]
 fn cmp_predicate_family() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
-    let y = b.value(array::from_parts([4], vec![2.0_f64, 2.0, 1.0, 0.0].into()));
+    let (xs, x) = b.source(array::constant([0.0_f64; 4]));
+    let y = b.value(array::constant([2.0_f64, 2.0, 1.0, 0.0]));
     let equal = b.segment(elem::eq(), (x, y));
     let unequal = b.segment(elem::ne(), (x, y));
     let less = b.segment(elem::lt(), (x, y));
@@ -151,7 +150,7 @@ fn cmp_predicate_family() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([4], vec![1.0, 2.0, 3.0, -0.0]);
+    *g.state_mut(xs) = [1.0, 2.0, 3.0, -0.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(equal)), vec![false, true, false, true]);
@@ -170,20 +169,19 @@ fn cmp_predicate_family() {
 #[test]
 fn cmp_follows_ieee_nan_semantics() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
-    let zeros = b.value(array::from_parts([4], vec![0.0_f64; 4].into()));
+    let (xs, x) = b.source(array::constant([0.0_f64; 4]));
+    let zeros = b.value(array::constant([0.0_f64; 4]));
     let equal = b.segment(elem::eq(), (x, zeros));
     let unequal = b.segment(elem::ne(), (x, zeros));
     let less = b.segment(elem::lt(), (x, zeros));
     let less_eq = b.segment(elem::le(), (x, zeros));
     let greater = b.segment(elem::gt(), (x, zeros));
     let greater_eq = b.segment(elem::ge(), (x, zeros));
-    let order = b.segment(elem::partial_cmp(), (x, zeros));
     let finite = b.segment(elem::is_finite(), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([4], vec![1.0, -1.0, 0.0, f64::NAN]);
+    *g.state_mut(xs) = [1.0, -1.0, 0.0, f64::NAN].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(equal)), vec![false, false, true, false]);
@@ -192,15 +190,6 @@ fn cmp_follows_ieee_nan_semantics() {
     assert_eq!(vals(g.view(less_eq)), vec![false, true, true, false]);
     assert_eq!(vals(g.view(greater)), vec![true, false, false, false]);
     assert_eq!(vals(g.view(greater_eq)), vec![true, false, true, false]);
-    assert_eq!(
-        vals(g.view(order)),
-        vec![
-            Some(Ordering::Greater),
-            Some(Ordering::Less),
-            Some(Ordering::Equal),
-            None,
-        ]
-    );
     assert_eq!(vals(g.view(finite)), vec![true, true, true, false]);
 }
 
@@ -210,15 +199,15 @@ fn cmp_follows_ieee_nan_semantics() {
 #[test]
 fn cmp_ord_min_max_clamp_family() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([4], vec![0_i32; 4].into()));
-    let y = b.value(array::from_parts([4], vec![4_i32, 2, -8, 7].into()));
+    let (xs, x) = b.source(array::constant([0_i32; 4]));
+    let y = b.value(array::constant([4_i32, 2, -8, 7]));
     let smaller = b.segment(elem::min(), (x, y));
     let larger = b.segment(elem::max(), (x, y));
     let clamped = b.segment(elem::clamp(-2_i32, 5), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([4], vec![1_i32, 5, -3, 7]);
+    *g.state_mut(xs) = [1_i32, 5, -3, 7].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(smaller)), vec![1, 2, -8, 7]);
@@ -237,7 +226,7 @@ fn cmp_ord_min_max_clamp_family() {
 #[test]
 fn float_rounding_family() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([5], vec![0.0_f64; 5].into()));
+    let (xs, x) = b.source(array::constant([0.0_f64; 5]));
     let down = b.segment(elem::floor(), x);
     let up = b.segment(elem::ceil(), x);
     let nearest = b.segment(elem::round(), x);
@@ -246,7 +235,7 @@ fn float_rounding_family() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([5], vec![-1.5, -0.5, 0.5, 1.5, 2.5]);
+    *g.state_mut(xs) = [-1.5, -0.5, 0.5, 1.5, 2.5].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(down)), vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
@@ -263,14 +252,14 @@ fn float_rounding_family() {
 #[test]
 fn float_sign_and_magnitude_family() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([5], vec![0.0_f64; 5].into()));
+    let (xs, x) = b.source(array::constant([0.0_f64; 5]));
     let magnitude = b.segment(elem::abs(), x);
     let sign = b.segment(elem::signum(), x);
     let inverse = b.segment(elem::recip(), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([5], vec![-2.0, -0.0, 0.0, 4.0, f64::NAN]);
+    *g.state_mut(xs) = [-2.0, -0.0, 0.0, 4.0, f64::NAN].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_close(
@@ -300,7 +289,7 @@ fn float_sign_and_magnitude_family() {
 fn float_powers_roots_and_logs_family() {
     let x = [1.0_f64, 2.0, 8.0, 0.5];
     let mut b = Builder::new();
-    let (xs, xp) = b.source(array::from_parts([4], vec![1.0_f64; 4].into()));
+    let (xs, xp) = b.source(array::constant([1.0_f64; 4]));
     let cube = b.segment(elem::powi(3), xp);
     let half_power = b.segment(elem::powf(0.5), xp);
     let root = b.segment(elem::sqrt(), xp);
@@ -312,7 +301,7 @@ fn float_powers_roots_and_logs_family() {
     let binary = b.segment(elem::log2(), xp);
     let decimal = b.segment(elem::log10(), xp);
 
-    let (ds, dp) = b.source(array::from_parts([2], vec![1.0_f64; 2].into()));
+    let (ds, dp) = b.source(array::constant([1.0_f64; 2]));
     let edge_root = b.segment(elem::sqrt(), dp);
     let edge_cube_root = b.segment(elem::cbrt(), dp);
     let edge_ln = b.segment(elem::ln(), dp);
@@ -320,8 +309,8 @@ fn float_powers_roots_and_logs_family() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([4], x.to_vec());
-    *g.state_mut(ds) = arr([2], vec![-1.0_f64, 0.0]);
+    *g.state_mut(xs) = x.into();
+    *g.state_mut(ds) = [-1.0_f64, 0.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(cube)), vec![1.0, 8.0, 512.0, 0.125]);
@@ -354,7 +343,7 @@ fn float_powers_roots_and_logs_family() {
 fn float_trig_family() {
     let x = [0.0_f64, 0.5, -0.75, 1.0];
     let mut b = Builder::new();
-    let (xs, xp) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
+    let (xs, xp) = b.source(array::constant([0.0_f64; 4]));
     let sine = b.segment(elem::sin(), xp);
     let cosine = b.segment(elem::cos(), xp);
     let tangent = b.segment(elem::tan(), xp);
@@ -364,7 +353,7 @@ fn float_trig_family() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([4], x.to_vec());
+    *g.state_mut(xs) = x.into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_close(&vals(g.view(sine)), &each(&x, f64::sin), "sin");
@@ -387,7 +376,7 @@ fn float_trig_family() {
 fn float_hyperbolic_family() {
     let x = [0.0_f64, 0.5, -0.75, 1.0, 2.0];
     let mut b = Builder::new();
-    let (xs, xp) = b.source(array::from_parts([5], vec![0.0_f64; 5].into()));
+    let (xs, xp) = b.source(array::constant([0.0_f64; 5]));
     let hsine = b.segment(elem::sinh(), xp);
     let hcosine = b.segment(elem::cosh(), xp);
     let htangent = b.segment(elem::tanh(), xp);
@@ -397,7 +386,7 @@ fn float_hyperbolic_family() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([5], x.to_vec());
+    *g.state_mut(xs) = x.into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_close(&vals(g.view(hsine)), &each(&x, f64::sinh), "sinh");
@@ -429,16 +418,13 @@ fn float_hyperbolic_family() {
 #[test]
 fn float_atan2_resolves_all_quadrants() {
     let mut b = Builder::new();
-    let (ys, y) = b.source(array::from_parts([5], vec![0.0_f64; 5].into()));
-    let x = b.value(array::from_parts(
-        [5],
-        vec![1.0_f64, -1.0, -1.0, 1.0, -1.0].into(),
-    ));
+    let (ys, y) = b.source(array::constant([0.0_f64; 5]));
+    let x = b.value(array::constant([1.0_f64, -1.0, -1.0, 1.0, -1.0]));
     let angle = b.segment(elem::atan2(), (y, x));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(ys) = arr([5], vec![1.0, 1.0, -1.0, -1.0, 0.0]);
+    *g.state_mut(ys) = [1.0, 1.0, -1.0, -1.0, 0.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_close(
@@ -455,7 +441,7 @@ fn float_atan2_resolves_all_quadrants() {
 #[test]
 fn float_classification_family() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([6], vec![0.0_f64; 6].into()));
+    let (xs, x) = b.source(array::constant([0.0_f64; 6]));
     let nan = b.segment(elem::is_nan(), x);
     let infinite = b.segment(elem::is_infinite(), x);
     let finite = b.segment(elem::is_finite(), x);
@@ -465,17 +451,15 @@ fn float_classification_family() {
 
     let subnormal = f64::MIN_POSITIVE / 2.0;
     assert!(subnormal > 0.0 && !subnormal.is_normal(), "input setup");
-    *g.state_mut(xs) = arr(
-        [6],
-        vec![
-            1.0,
-            0.0,
-            subnormal,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-        ],
-    );
+    *g.state_mut(xs) = [
+        1.0,
+        0.0,
+        subnormal,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+    ]
+    .into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(
@@ -504,18 +488,15 @@ fn float_classification_family() {
 #[test]
 fn float_min_max_clamp_nan_handling() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([5], vec![0.0_f64; 5].into()));
-    let y = b.value(array::from_parts(
-        [5],
-        vec![2.0_f64, 4.0, f64::NAN, 7.0, f64::NAN].into(),
-    ));
+    let (xs, x) = b.source(array::constant([0.0_f64; 5]));
+    let y = b.value(array::constant([2.0_f64, 4.0, f64::NAN, 7.0, f64::NAN]));
     let smaller = b.segment(elem::minf(), (x, y));
     let larger = b.segment(elem::maxf(), (x, y));
     let clamped = b.segment(elem::clampf(2.0, 5.0), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([5], vec![1.0, 5.0, 3.0, f64::NAN, f64::NAN]);
+    *g.state_mut(xs) = [1.0, 5.0, 3.0, f64::NAN, f64::NAN].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_close(
@@ -542,16 +523,13 @@ fn float_min_max_clamp_nan_handling() {
 #[test]
 fn float_missing_data_fill_family() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([5], vec![0.0_f64; 5].into()));
+    let (xs, x) = b.source(array::constant([0.0_f64; 5]));
     let filled = b.segment(elem::fill_nan(0.0), x);
     let replaced = b.segment(elem::fill_where(|v: &f64| *v <= 1.0, -1.0), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr(
-        [5],
-        vec![1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 3.0],
-    );
+    *g.state_mut(xs) = [1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 3.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_close(
@@ -571,12 +549,12 @@ fn float_missing_data_fill_family() {
 #[test]
 fn fill_where_selects_over_any_scalar() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([5], vec![0_i32; 5].into()));
+    let (xs, x) = b.source(array::constant([0_i32; 5]));
     let clipped = b.segment(elem::fill_where(|v: &i32| *v < 0, 0), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(xs) = arr([5], vec![3_i32, -1, 0, -7, 5]);
+    *g.state_mut(xs) = [3_i32, -1, 0, -7, 5].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(clipped)), vec![3, 0, 0, 0, 5]);
@@ -591,7 +569,7 @@ fn fill_where_selects_over_any_scalar() {
 fn forward_fill_nan_carries_the_last_present_value_across_generations() {
     let nan = f64::NAN;
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([3], vec![nan; 3].into()));
+    let (xs, x) = b.source(array::constant([nan; 3]));
     let filled = b.segment(elem::forward_fill_nan(), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -599,15 +577,15 @@ fn forward_fill_nan_carries_the_last_present_value_across_generations() {
     // The carry is seeded from the build-time value: nothing filled yet.
     assert_close(&vals(g.view(filled)), &[nan, nan, nan], "gen 0");
 
-    *g.state_mut(xs) = arr([3], vec![1.0, nan, 3.0]);
+    *g.state_mut(xs) = [1.0, nan, 3.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_close(&vals(g.view(filled)), &[1.0, nan, 3.0], "gen 1");
 
-    *g.state_mut(xs) = arr([3], vec![nan, 2.0, nan]);
+    *g.state_mut(xs) = [nan, 2.0, nan].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(filled)), vec![1.0, 2.0, 3.0], "gen 2: carried");
 
-    *g.state_mut(xs) = arr([3], vec![f64::INFINITY, nan, 30.0]);
+    *g.state_mut(xs) = [f64::INFINITY, nan, 30.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_close(
         &vals(g.view(filled)),
@@ -622,7 +600,7 @@ fn forward_fill_nan_carries_the_last_present_value_across_generations() {
 #[test]
 fn forward_fill_where_carries_over_the_selected_elements() {
     let mut b = Builder::new();
-    let (xs, x) = b.source(array::from_parts([3], vec![-1_i32; 3].into()));
+    let (xs, x) = b.source(array::constant([-1_i32; 3]));
     let filled = b.segment(elem::forward_fill_where(|v: &i32| *v < 0), x);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -630,11 +608,11 @@ fn forward_fill_where_carries_over_the_selected_elements() {
     // Seeded from the build value, sentinels and all.
     assert_eq!(vals(g.view(filled)), vec![-1, -1, -1], "gen 0");
 
-    *g.state_mut(xs) = arr([3], vec![10_i32, -1, 30]);
+    *g.state_mut(xs) = [10_i32, -1, 30].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(filled)), vec![10, -1, 30], "gen 1");
 
-    *g.state_mut(xs) = arr([3], vec![-1_i32, 20, -1]);
+    *g.state_mut(xs) = [-1_i32, 20, -1].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(filled)), vec![10, 20, 30], "gen 2: carried");
 }
@@ -651,26 +629,20 @@ fn forward_fill_where_carries_over_the_selected_elements() {
 #[test]
 fn boolean_connectives_and_selection() {
     let mut b = Builder::new();
-    let (ps, p) = b.source(array::from_parts([4], vec![false; 4].into()));
-    let q = b.value(array::from_parts(
-        [4],
-        vec![true, false, true, false].into(),
-    ));
+    let (ps, p) = b.source(array::constant([false; 4]));
+    let q = b.value(array::constant([true, false, true, false]));
     let both = b.segment(elem::and(), (p, q));
     let either = b.segment(elem::or(), (p, q));
     let neither = b.segment(elem::not::<bool, 1>(), either);
     let exactly_one = b.segment(elem::bitxor::<bool, bool, 1>(), (p, q));
-    let lhs = b.value(array::from_parts([4], vec![1.0_f64, 2.0, 3.0, 4.0].into()));
-    let rhs = b.value(array::from_parts(
-        [4],
-        vec![10.0_f64, 20.0, 30.0, 40.0].into(),
-    ));
+    let lhs = b.value(array::constant([1.0_f64, 2.0, 3.0, 4.0]));
+    let rhs = b.value(array::constant([10.0_f64, 20.0, 30.0, 40.0]));
     let picked = b.segment(elem::choose(), (exactly_one, lhs, rhs));
     let signed = b.segment(elem::indicator(1.0_f64, -1.0), p);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(ps) = arr([4], vec![true, true, false, false]);
+    *g.state_mut(ps) = [true, true, false, false].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(both)), vec![true, false, false, false]);
@@ -693,18 +665,15 @@ fn boolean_connectives_and_selection() {
 #[test]
 fn cast_into_is_lossless_where_as_truncates() {
     let mut b = Builder::new();
-    let (is, i) = b.source(array::from_parts([3], vec![0_i32; 3].into()));
+    let (is, i) = b.source(array::constant([0_i32; 3]));
     let widened = b.segment(elem::into::<i32, f64, 1>(), i);
-    let (fs, f) = b.source(array::from_parts([6], vec![0.0_f64; 6].into()));
+    let (fs, f) = b.source(array::constant([0.0_f64; 6]));
     let narrowed = b.segment(elem::as_::<f64, i32, 1>(), f);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(is) = arr([3], vec![1_i32, -2, 3]);
-    *g.state_mut(fs) = arr(
-        [6],
-        vec![1.9_f64, -1.9, 2.5, f64::NAN, 1e18, f64::NEG_INFINITY],
-    );
+    *g.state_mut(is) = [1_i32, -2, 3].into();
+    *g.state_mut(fs) = [1.9_f64, -1.9, 2.5, f64::NAN, 1e18, f64::NEG_INFINITY].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(vals(g.view(widened)), vec![1.0, -2.0, 3.0]);
@@ -729,19 +698,19 @@ fn cast_into_is_lossless_where_as_truncates() {
 fn core_accepts_strided_view_inputs() {
     let mut b = Builder::new();
     // A `[2, 3]` panel read transposed: extents `[3, 2]`, strides `[1, 3]`.
-    let (ps, p) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (ps, p) = b.source(array::constant(Array::zeros([2, 3])));
     let flipped = b.segment(array::transpose([1, 0]), p);
     let magnitude = b.segment(elem::abs(), flipped);
     // Two columns of a `[2, 2]`: rank-1 views of stride 2.
-    let (qs, q) = b.source(array::from_parts([2, 2], vec![0.0_f64; 4].into()));
+    let (qs, q) = b.source(array::constant(Array::zeros([2, 2])));
     let col0 = b.segment(array::select_at::<_, 2, 1>(0, 1), q);
     let col1 = b.segment(array::select_at::<_, 2, 1>(1, 1), q);
     let rising = b.segment(elem::lt(), (col0, col1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(ps) = arr([2, 3], vec![1.0, -2.0, 3.0, -4.0, 5.0, -6.0]);
-    *g.state_mut(qs) = arr([2, 2], vec![1.0, 5.0, 4.0, 2.0]);
+    *g.state_mut(ps) = [[1.0, -2.0, 3.0], [-4.0, 5.0, -6.0]].into();
+    *g.state_mut(qs) = [[1.0, 5.0], [4.0, 2.0]].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(g.view(magnitude).extents(), [3, 2]);
@@ -749,8 +718,8 @@ fn core_accepts_strided_view_inputs() {
     assert_eq!(vals(g.view(rising)), vec![true, false]);
 
     // A second generation takes the in-place update path over the same views.
-    *g.state_mut(ps) = arr([2, 3], vec![-10.0, 20.0, -30.0, 40.0, -50.0, 60.0]);
-    *g.state_mut(qs) = arr([2, 2], vec![9.0, 1.0, 0.0, 7.0]);
+    *g.state_mut(ps) = [[-10.0, 20.0, -30.0], [40.0, -50.0, 60.0]].into();
+    *g.state_mut(qs) = [[9.0, 1.0], [0.0, 7.0]].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(
@@ -767,13 +736,13 @@ fn core_accepts_strided_view_inputs() {
 #[test]
 fn core_binary_op_broadcasts_extent_one_axes() {
     let mut b = Builder::new();
-    let (cs, col) = b.source(array::from_parts([2, 1], vec![0.0_f64; 2].into()));
-    let row = b.value(array::from_parts([1, 3], vec![10.0_f64, 20.0, 30.0].into()));
-    let outer = b.segment(elem::mul(), (col, row));
+    let (cs, col) = b.source(array::constant([[0.0], [0.0]]));
+    let row = b.value(array::constant([[10.0, 20.0, 30.0]]));
+    let outer = b.segment(elem::mul::<_, _, 2>(), (col, row));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(cs) = arr([2, 1], vec![1.0, 2.0]);
+    *g.state_mut(cs) = [[1.0], [2.0]].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(g.view(outer).extents(), [2, 3]);

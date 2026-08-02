@@ -1,5 +1,6 @@
-//! Integration tests for [`tradingflow::sources::panel::Parquet`]:
-//! a real Parquet file, through the full driver, observed per generation.
+//! Integration tests for [`tradingflow::sources::panel::parquet`] and
+//! [`tradingflow::sources::panel::csv`]: a real file of each format, through
+//! the full driver, observed per generation.
 //!
 //! The properties pinned here:
 //!
@@ -15,6 +16,10 @@
 //!   filtering in the source (a subset universe will later be a decode-level
 //!   `RowFilter`).
 //! * The half-open time range clips without carry-in.
+//!
+//! The two formats are the same source with a different decoder in front, so
+//! the CSV tests pin what is CSV's own: the typing of a schemaless file, and
+//! the parity of everything above with the Parquet reading of the same table.
 
 use std::sync::Arc;
 
@@ -28,7 +33,7 @@ use tradingflow::data::{ArrayView, Duration, Instant, SeriesView};
 use tradingflow::graph::{Builder, Pool, Segment};
 use tradingflow::operators::{series::record_all, signal};
 use tradingflow::ports::{ArrayPort, SignalPort};
-use tradingflow::sources::panel::Parquet;
+use tradingflow::sources::panel::{csv, parquet};
 use tradingflow::time::UnixTime;
 
 fn day(d: i32) -> Instant {
@@ -64,6 +69,19 @@ fn write_market_panel(path: &std::path::Path, rows: &[(i32, &str, Option<f64>, O
     let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+/// Writes the same `(date, symbol, close, volume)` long table as CSV. Dates
+/// are written as epoch nanoseconds and a missing value as an empty field,
+/// which is how a null arrives in a file that has no null of its own.
+fn write_market_panel_csv(path: &std::path::Path, rows: &[(i32, &str, Option<f64>, Option<f64>)]) {
+    let cell = |v: Option<f64>| v.map_or(String::new(), |v| v.to_string());
+    let mut out = String::from("date,symbol,close,volume\n");
+    for &(d, symbol, close, volume) in rows {
+        let ns = day(d).as_offset().as_nanos();
+        out.push_str(&format!("{ns},{symbol},{},{}\n", cell(close), cell(volume)));
+    }
+    std::fs::write(path, out).unwrap();
 }
 
 /// Snapshots a signal array as `f64` (1.0 / 0.0) so the per-generation mask
@@ -123,6 +141,10 @@ fn assert_rows_eq(actual: &[Vec<f64>], expected: &[Vec<f64>], what: &str) {
     }
 }
 
+// ===========================================================================
+// Parquet
+// ===========================================================================
+
 /// The core pivot, against a dictionary-encoded symbol column: per-date
 /// cross-sections in schema order, both fields sharing the one signal.
 /// Inactive cells — and null value cells in active rows — preserve the last
@@ -145,8 +167,9 @@ async fn panel_pivots_long_rows_into_per_date_cross_sections() {
     );
 
     let schema = Schema::new(["AAA", "BBB", "CCC"]);
-    let source = Parquet::new(
+    let source = parquet(
         path.to_str().unwrap(),
+        "date",
         [("symbol".into(), Axis::Labeled(schema))],
         vec!["close".into(), "volume".into()],
     );
@@ -204,8 +227,9 @@ async fn an_out_of_window_date_produces_no_generation() {
         ],
     );
 
-    let source = Parquet::new(
+    let source = parquet(
         path.to_str().unwrap(),
+        "date",
         [("symbol".into(), Axis::Labeled(Schema::new(["AAA"])))],
         vec!["close".into()],
     )
@@ -243,8 +267,9 @@ async fn time_range_clips_without_carry_in() {
         ],
     );
 
-    let source = Parquet::new(
+    let source = parquet(
         path.to_str().unwrap(),
+        "date",
         [("symbol".into(), Axis::Labeled(Schema::new(["AAA"])))],
         vec!["close".into()],
     )
@@ -281,7 +306,7 @@ async fn a_date32_timestamp_column_converts_on_read() {
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 
-    let source = Parquet::new(path.to_str().unwrap(), [], vec!["close".into()]);
+    let source = parquet(path.to_str().unwrap(), "date", [], vec!["close".into()]);
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
@@ -317,7 +342,7 @@ async fn a_rank_zero_panel_is_a_scalar_stream() {
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 
-    let source = Parquet::new(path.to_str().unwrap(), [], vec!["close".into()]);
+    let source = parquet(path.to_str().unwrap(), "date", [], vec!["close".into()]);
 
     let mut sc = Builder::new(UnixTime);
     let (sig, fields) = sc.source(source);
@@ -363,8 +388,9 @@ async fn a_rank_two_panel_scatters_on_both_axes() {
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 
-    let source = Parquet::new(
+    let source = parquet(
         path.to_str().unwrap(),
+        "date",
         [
             ("symbol".into(), Axis::Labeled(Schema::new(["AAA", "BBB"]))),
             ("bucket".into(), Axis::Fixed(2)),
@@ -397,4 +423,248 @@ async fn a_rank_two_panel_scatters_on_both_axes() {
         &[vec![1.0, 1.0, 0.0, 1.0], vec![0.0, 0.0, 1.0, 0.0]],
         "mask",
     );
+}
+
+// ===========================================================================
+// CSV
+// ===========================================================================
+
+/// The same table, the same graph, the same generations — only the decoder
+/// differs. Empty fields stand in for the Parquet nulls, and the row count
+/// the driver reports comes from the file's lines rather than a footer.
+#[tokio::test]
+async fn a_csv_panel_pivots_exactly_as_the_parquet_one_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("panel.csv");
+    write_market_panel_csv(
+        &path,
+        &[
+            (1, "BBB", Some(20.0), Some(200.0)),
+            (1, "AAA", Some(10.0), Some(100.0)),
+            (2, "AAA", Some(11.0), None),
+            (2, "CCC", None, Some(300.0)),
+        ],
+    );
+
+    let schema = Schema::new(["AAA", "BBB", "CCC"]);
+    let source = csv(
+        path.to_str().unwrap(),
+        "date",
+        [("symbol".into(), Axis::Labeled(schema))],
+        vec!["close".into(), "volume".into()],
+    );
+
+    let mut sc = Builder::new(UnixTime);
+    let (sig, fields) = sc.source(source);
+    let pulse = sc.segment(signal::any(), sig);
+    let mask_face = sc.segment(SignalFace, sig);
+    let mask_rec = sc.segment(record_all(), (pulse, mask_face));
+    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+    let volume_rec = sc.segment(record_all(), (pulse, fields[1]));
+
+    let mut g = sc.build();
+    assert_eq!(
+        g.size_hint(),
+        Some(4),
+        "the four data rows, less the header"
+    );
+    g.run(&mut Pool::new(0), |_, _| {}).await;
+
+    let nan = f64::NAN;
+    assert_eq!(g.view(mask_rec).instants(), &[day(1), day(2)]);
+    assert_rows_eq(
+        &rows(g.view(mask_rec)),
+        &[vec![1.0, 1.0, 0.0], vec![1.0, 0.0, 1.0]],
+        "mask",
+    );
+    assert_rows_eq(
+        &rows(g.view(close_rec)),
+        &[vec![10.0, 20.0, nan], vec![11.0, 20.0, nan]],
+        "close",
+    );
+    assert_rows_eq(
+        &rows(g.view(volume_rec)),
+        &[vec![100.0, 200.0, nan], vec![100.0, 200.0, 300.0]],
+        "volume",
+    );
+}
+
+/// The date column is the one column a CSV source types from the file, and
+/// the three spellings of a date all name the same instants.
+#[tokio::test]
+async fn a_csv_date_column_is_typed_by_how_it_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let epoch = |d: i32| day(d).as_offset().as_nanos();
+    let cases = [
+        (
+            "calendar dates",
+            "1970-01-02".to_string(),
+            "1970-01-03".to_string(),
+        ),
+        (
+            "timestamps",
+            "1970-01-02 00:00:00".to_string(),
+            "1970-01-03 00:00:00".to_string(),
+        ),
+        (
+            "epoch nanoseconds",
+            epoch(1).to_string(),
+            epoch(2).to_string(),
+        ),
+    ];
+
+    for (what, first, second) in cases {
+        let path = dir.path().join(format!("{}.csv", what.replace(' ', "_")));
+        std::fs::write(&path, format!("date,close\n{first},10.0\n{second},11.0\n")).unwrap();
+
+        let source = csv(path.to_str().unwrap(), "date", [], vec!["close".into()]);
+        let mut sc = Builder::new(UnixTime);
+        let (sig, fields) = sc.source(source);
+        let pulse = sc.segment(signal::any(), sig);
+        let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+
+        let mut g = sc.build();
+        g.run(&mut Pool::new(0), |_, _| {}).await;
+
+        assert_eq!(g.view(close_rec).instants(), &[day(1), day(2)], "{what}");
+        assert_rows_eq(&rows(g.view(close_rec)), &[vec![10.0], vec![11.0]], what);
+    }
+}
+
+/// An index column is typed by its axis, not by its contents: numeric symbols
+/// are labels, and the schema — not their numeric value — places them.
+#[tokio::test]
+async fn a_numeric_label_column_is_read_as_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("panel.csv");
+    let epoch = |d: i32| day(d).as_offset().as_nanos();
+    std::fs::write(
+        &path,
+        format!(
+            "date,symbol,close\n\
+             {d1},600001,20.0\n\
+             {d1},600000,10.0\n\
+             {d2},600000,11.0\n",
+            d1 = epoch(1),
+            d2 = epoch(2),
+        ),
+    )
+    .unwrap();
+
+    let source = csv(
+        path.to_str().unwrap(),
+        "date",
+        [(
+            "symbol".into(),
+            Axis::Labeled(Schema::new(["600000", "600001"])),
+        )],
+        vec!["close".into()],
+    );
+
+    let mut sc = Builder::new(UnixTime);
+    let (sig, fields) = sc.source(source);
+    let pulse = sc.segment(signal::any(), sig);
+    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+
+    let mut g = sc.build();
+    g.run(&mut Pool::new(0), |_, _| {}).await;
+
+    assert_eq!(g.view(close_rec).instants(), &[day(1), day(2)]);
+    // Schema order, not file order and not numeric order: 600000 first.
+    assert_rows_eq(
+        &rows(g.view(close_rec)),
+        &[vec![10.0, 20.0], vec![11.0, 20.0]],
+        "close",
+    );
+}
+
+/// Rank 2 over CSV: a named axis times a numeric one, the numeric column read
+/// as integers because its axis says so.
+#[tokio::test]
+async fn a_rank_two_csv_panel_scatters_on_both_axes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("panel2.csv");
+    let epoch = |d: i32| day(d).as_offset().as_nanos();
+    std::fs::write(
+        &path,
+        format!(
+            "date,symbol,bucket,value\n\
+             {d1},AAA,0,1.0\n\
+             {d1},AAA,1,2.0\n\
+             {d1},BBB,1,5.0\n\
+             {d2},BBB,0,7.0\n",
+            d1 = epoch(1),
+            d2 = epoch(2),
+        ),
+    )
+    .unwrap();
+
+    let source = csv(
+        path.to_str().unwrap(),
+        "date",
+        [
+            ("symbol".into(), Axis::Labeled(Schema::new(["AAA", "BBB"]))),
+            ("bucket".into(), Axis::Fixed(2)),
+        ],
+        vec!["value".into()],
+    );
+
+    let mut sc = Builder::new(UnixTime);
+    let (sig, fields) = sc.source(source);
+    let pulse = sc.segment(signal::any(), sig);
+    let value_rec = sc.segment(record_all(), (pulse, fields[0]));
+    let mask_face = sc.segment(SignalFace, sig);
+    let mask_rec = sc.segment(record_all(), (pulse, mask_face));
+
+    let mut g = sc.build();
+    g.run(&mut Pool::new(0), |_, _| {}).await;
+
+    let nan = f64::NAN;
+    assert_eq!(g.view(value_rec).instants(), &[day(1), day(2)]);
+    assert_rows_eq(
+        &rows(g.view(value_rec)),
+        &[vec![1.0, 2.0, nan, 5.0], vec![1.0, 2.0, 7.0, 5.0]],
+        "value",
+    );
+    assert_rows_eq(
+        &rows(g.view(mask_rec)),
+        &[vec![1.0, 1.0, 0.0, 1.0], vec![0.0, 0.0, 1.0, 0.0]],
+        "mask",
+    );
+}
+
+/// The window clips a CSV scan the same way, at both ends: no carry-in of the
+/// last pre-window value, and no generation past the end.
+#[tokio::test]
+async fn a_csv_time_range_clips_without_carry_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("panel.csv");
+    write_market_panel_csv(
+        &path,
+        &[
+            (1, "AAA", Some(10.0), Some(100.0)),
+            (2, "AAA", Some(11.0), Some(110.0)),
+            (3, "AAA", Some(12.0), Some(120.0)),
+            (4, "AAA", Some(13.0), Some(130.0)),
+        ],
+    );
+
+    let source = csv(
+        path.to_str().unwrap(),
+        "date",
+        [("symbol".into(), Axis::Labeled(Schema::new(["AAA"])))],
+        vec!["close".into()],
+    )
+    .with_time_range(Some(day(2)), Some(day(4)));
+
+    let mut sc = Builder::new(UnixTime);
+    let (sig, fields) = sc.source(source);
+    let pulse = sc.segment(signal::any(), sig);
+    let close_rec = sc.segment(record_all(), (pulse, fields[0]));
+
+    let mut g = sc.build();
+    g.run(&mut Pool::new(0), |_, _| {}).await;
+
+    assert_eq!(g.view(close_rec).instants(), &[day(2), day(3)]);
+    assert_rows_eq(&rows(g.view(close_rec)), &[vec![11.0], vec![12.0]], "close");
 }

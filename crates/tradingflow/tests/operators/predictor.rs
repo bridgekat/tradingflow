@@ -117,7 +117,7 @@ where
     let (features, featuresv) = b.source(constant(Array::<f64, 2>::zeros([n, num_features])));
     let (target, targetv) = b.source(constant(Array::<f64, 1>::zeros([n])));
     let (rebalance_sig, rebalance_sigv) = b.source(signal());
-    let (_, universev) = b.source(constant(arr1(universe.to_vec())));
+    let (_, universev) = b.source(constant(universe.to_vec()));
 
     let out = b.segment(
         predictor,
@@ -129,8 +129,8 @@ where
 
     for (i, tick) in ticks.iter().enumerate() {
         if let Some((x, y)) = &tick.sample {
-            *g.state_mut(features) = arr([n, num_features], x.clone());
-            *g.state_mut(target) = arr1(y.clone());
+            *g.state_mut(features) = Array::from_parts([n, num_features], x.clone().into());
+            *g.state_mut(target) = Array::from_parts([n], y.clone().into());
             let _ = g.state_mut(sample_sig);
         }
         if tick.rebalance {

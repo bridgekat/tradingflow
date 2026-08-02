@@ -91,9 +91,9 @@ fn run<E: Exec>(trader: Fixed<E>, n: usize, steps: &[Step]) -> Vec<Obs> {
     let mut b = Builder::new();
 
     let (price_tick, price_signal) = b.source(signal());
-    let (flags_h, flags_v) = b.source(array::constant(arr([n], vec![true; n])));
-    let (bids_h, bids_v) = b.source(array::constant(arr1(vec![-INF; n])));
-    let (asks_h, asks_v) = b.source(array::constant(arr1(vec![INF; n])));
+    let (flags_h, flags_v) = b.source(array::constant(vec![true; n]));
+    let (bids_h, bids_v) = b.source(array::constant(vec![-INF; n]));
+    let (asks_h, asks_v) = b.source(array::constant(vec![INF; n]));
 
     // One manual signal per stock, stacked into the `[n]` dividend signal array.
     let div_ticks: Vec<_> = (0..n).map(|_| b.source(signal())).collect();
@@ -102,11 +102,11 @@ fn run<E: Exec>(trader: Fixed<E>, n: usize, steps: &[Step]) -> Vec<Obs> {
         signal::as_signal_map(array::stack::<bool, 0, 1>(0)),
         &div_signals[..],
     );
-    let (share_h, share_v) = b.source(array::constant(arr1(vec![0.0; n])));
-    let (cash_h, cash_v) = b.source(array::constant(arr1(vec![0.0; n])));
+    let (share_h, share_v) = b.source(array::constant(vec![0.0; n]));
+    let (cash_h, cash_v) = b.source(array::constant(vec![0.0; n]));
 
     let (reb_tick, reb_signal) = b.source(signal());
-    let (w_h, w_v) = b.source(array::constant(arr1(vec![0.0; n])));
+    let (w_h, w_v) = b.source(array::constant(vec![0.0; n]));
 
     let (pos, cash_out, net_out) = b.segment(
         trader,
@@ -122,25 +122,25 @@ fn run<E: Exec>(trader: Fixed<E>, n: usize, steps: &[Step]) -> Vec<Obs> {
     let mut out = Vec::new();
     for (i, s) in steps.iter().enumerate() {
         if let Some(f) = &s.flags {
-            *g.state_mut(flags_h) = arr([n], f.clone());
+            *g.state_mut(flags_h) = f.clone().into();
         }
         if let Some((bd, ak)) = &s.quotes {
-            *g.state_mut(bids_h) = arr1(bd.clone());
-            *g.state_mut(asks_h) = arr1(ak.clone());
+            *g.state_mut(bids_h) = bd.clone().into();
+            *g.state_mut(asks_h) = ak.clone().into();
             let _ = g.state_mut(price_tick);
         }
         if let Some((sh, ca)) = &s.dividend {
-            *g.state_mut(share_h) = arr1(sh.clone());
-            *g.state_mut(cash_h) = arr1(ca.clone());
+            *g.state_mut(share_h) = sh.clone().into();
+            *g.state_mut(cash_h) = ca.clone().into();
             for &(h, _) in &div_ticks {
                 let _ = g.state_mut(h);
             }
         }
         if let Some(w) = &s.weights {
-            *g.state_mut(w_h) = arr1(w.clone());
+            *g.state_mut(w_h) = w.clone().into();
         }
         if let Some(w) = &s.target {
-            *g.state_mut(w_h) = arr1(w.clone());
+            *g.state_mut(w_h) = w.clone().into();
             let _ = g.state_mut(reb_tick);
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));

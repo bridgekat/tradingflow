@@ -9,7 +9,7 @@ mod ops;
 
 pub use boolean::{and, choose, indicator, or};
 pub use cast::{as_, into};
-pub use cmp::{clamp, eq, ge, gt, le, lt, max, min, ne, partial_cmp};
+pub use cmp::{clamp, eq, ge, gt, le, lt, max, min, ne};
 pub use fill::{fill_nan, fill_where, forward_fill_nan, forward_fill_where};
 pub use float::{
     abs, acos, acosh, asin, asinh, atan, atan2, atanh, cbrt, ceil, clampf, cos, cosh, exp, exp2,

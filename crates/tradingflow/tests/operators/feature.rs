@@ -35,9 +35,9 @@ type ReportTick = (u16, u16, Vec<f64>);
 /// so every tick also exercises the broadcast of the calendar inputs.
 fn annualize_ticks(width: usize, ticks: &[ReportTick]) -> Vec<Vec<f64>> {
     let mut b = Builder::new();
-    let (values, (vsignal, valuesv)) = b.source(cell(arr([width], vec![f64::NAN; width])));
-    let (year, yearv) = b.source(array::constant(arr([1], vec![0_u16])));
-    let (day, dayv) = b.source(array::constant(arr([1], vec![0_u16])));
+    let (values, (vsignal, valuesv)) = b.source(cell(vec![f64::NAN; width]));
+    let (year, yearv) = b.source(array::constant([0_u16]));
+    let (day, dayv) = b.source(array::constant([0_u16]));
     let vsignal = b.segment(signal::as_signal_map(array::pad_ndim()), vsignal);
     let out = b.segment(feature::annualize(), (vsignal, valuesv, yearv, dayv));
     let mut g = b.build();
@@ -48,9 +48,9 @@ fn annualize_ticks(width: usize, ticks: &[ReportTick]) -> Vec<Vec<f64>> {
         .enumerate()
         .map(|(i, (y, d, row))| {
             assert_eq!(row.len(), width, "every row must have the same width");
-            *g.state_mut(values) = arr([width], row.clone());
-            *g.state_mut(year) = arr([1], vec![*y]);
-            *g.state_mut(day) = arr([1], vec![*d]);
+            *g.state_mut(values) = row.clone().into();
+            *g.state_mut(year) = [*y].into();
+            *g.state_mut(day) = [*d].into();
             g.stabilize(&mut pool, &nano(i as i64));
             vals(g.view(out))
         })
@@ -179,24 +179,24 @@ fn annualize_rejects_a_backwards_day_within_a_year() {
 #[test]
 fn annualize_calendar_only_tick_retains_the_output() {
     let mut b = Builder::new();
-    let (values, (vsignal, valuesv)) = b.source(cell(arr([1], vec![f64::NAN])));
-    let (year, yearv) = b.source(array::constant(arr([1], vec![0_u16])));
-    let (day, dayv) = b.source(array::constant(arr([1], vec![0_u16])));
+    let (values, (vsignal, valuesv)) = b.source(cell([f64::NAN]));
+    let (year, yearv) = b.source(array::constant([0_u16]));
+    let (day, dayv) = b.source(array::constant([0_u16]));
     let vsignal1 = b.segment(signal::as_signal_map(array::pad_ndim()), vsignal);
     let out = b.segment(feature::annualize(), (vsignal1, valuesv, yearv, dayv));
     let pulses = b.segment(count::<1>(), (vsignal, out));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(values) = arr([1], vec![100.0]);
-    *g.state_mut(year) = arr([1], vec![2024]);
-    *g.state_mut(day) = arr([1], vec![91]);
+    *g.state_mut(values) = [100.0].into();
+    *g.state_mut(year) = [2024].into();
+    *g.state_mut(day) = [91].into();
     g.stabilize(&mut pool, &nano(0));
     assert_close(&vals(g.view(out)), &[100.0 * 365.0 / 91.0], "good tick");
     assert_eq!(g.view(pulses), 1);
 
     // Poke only the calendar: the values signal does not pulse.
-    *g.state_mut(year) = arr([1], vec![2024]);
+    *g.state_mut(year) = [2024].into();
     g.stabilize(&mut pool, &nano(1));
     assert_close(
         &vals(g.view(out)),
@@ -223,9 +223,9 @@ type AdjustTick = (Option<f64>, Option<f64>, Option<f64>);
 /// close-signals (the adjusted-close stream's cadence).
 fn run_forward_adjust(ticks: &[AdjustTick]) -> Vec<(f64, f64, usize)> {
     let mut b = Builder::new();
-    let (close, (csignal, closev)) = b.source(cell(scalar(f64::NAN)));
-    let (share, (ssignal, sharev)) = b.source(cell(scalar(f64::NAN)));
-    let (cash, (cashsignal, cashv)) = b.source(cell(scalar(f64::NAN)));
+    let (close, (csignal, closev)) = b.source(cell(f64::NAN));
+    let (share, (ssignal, sharev)) = b.source(cell(f64::NAN));
+    let (cash, (cashsignal, cashv)) = b.source(cell(f64::NAN));
     // The dividend stream has one signal shared by both fields: a dividend
     // event is either leg arriving.
     let dsignal = b.segment(signal::or(), (ssignal, cashsignal));
@@ -242,11 +242,11 @@ fn run_forward_adjust(ticks: &[AdjustTick]) -> Vec<(f64, f64, usize)> {
         .enumerate()
         .map(|(i, &(c, s, d))| {
             if let Some(c) = c {
-                *g.state_mut(close) = scalar(c);
+                *g.state_mut(close) = c.into();
             }
             if s.is_some() || d.is_some() {
-                *g.state_mut(share) = scalar(s.unwrap_or(0.0));
-                *g.state_mut(cash) = scalar(d.unwrap_or(0.0));
+                *g.state_mut(share) = s.unwrap_or(0.0).into();
+                *g.state_mut(cash) = d.unwrap_or(0.0).into();
             }
             g.stabilize(&mut pool, &nano(i as i64));
             (vals(g.view(mult))[0], vals(g.view(adj))[0], g.view(pulses))
@@ -417,11 +417,11 @@ fn forward_adjust_zero_dividends_are_no_ops() {
 #[test]
 fn forward_adjust_elements_carry_events_independently() {
     let mut b = Builder::new();
-    let (close, (csignal, closev)) = b.source(cell(arr1([f64::NAN, f64::NAN])));
-    let (_share, sharev) = b.source(array::constant(arr1([0.0, 0.0])));
-    let (cash, cashv) = b.source(array::constant(arr1([0.0, 0.0])));
-    let (_e0, (c0, _e0v)) = b.source(cell(scalar(0.0)));
-    let (e1, (c1, _e1v)) = b.source(cell(scalar(0.0)));
+    let (close, (csignal, closev)) = b.source(cell([f64::NAN, f64::NAN]));
+    let (_share, sharev) = b.source(array::constant([0.0, 0.0]));
+    let (cash, cashv) = b.source(array::constant([0.0, 0.0]));
+    let (_e0, (c0, _e0v)) = b.source(cell(0.0));
+    let (e1, (c1, _e1v)) = b.source(cell(0.0));
     let csignal = b.segment(signal::as_signal_map(array::pad_ndim()), csignal);
     let dsignal = b.segment(
         signal::as_signal_map(array::stack::<bool, 0, 1>(0)),
@@ -434,14 +434,14 @@ fn forward_adjust_elements_carry_events_independently() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(close) = arr1([10.0, 20.0]);
+    *g.state_mut(close) = [10.0, 20.0].into();
     g.stabilize(&mut pool, &nano(0));
     assert_close(&vals(g.view(adj)), &[10.0, 20.0], "no actions yet");
 
     // A dividend event on element 1 only: element 0's signal stays low, so
     // its dividend fields are not consumed at all.
-    *g.state_mut(close) = arr1([10.0, 19.0]);
-    *g.state_mut(cash) = arr1([0.0, 1.0]);
+    *g.state_mut(close) = [10.0, 19.0].into();
+    *g.state_mut(cash) = [0.0, 1.0].into();
     let _ = g.state_mut(e1);
     g.stabilize(&mut pool, &nano(1));
     assert_close(
@@ -461,9 +461,9 @@ fn forward_adjust_elements_carry_events_independently() {
 #[test]
 fn forward_adjust_broadcasts_the_dividend_legs() {
     let mut b = Builder::new();
-    let (close, (csignal, closev)) = b.source(cell(arr1([f64::NAN, f64::NAN])));
-    let (share, (ssignal, sharev)) = b.source(cell(arr([1], vec![0.0])));
-    let (_, cashv) = b.source(array::constant(arr([1], vec![0.0])));
+    let (close, (csignal, closev)) = b.source(cell([f64::NAN, f64::NAN]));
+    let (share, (ssignal, sharev)) = b.source(cell([0.0]));
+    let (_, cashv) = b.source(array::constant([0.0]));
     let csignal = b.segment(signal::as_signal_map(array::pad_ndim()), csignal);
     let ssignal = b.segment(signal::as_signal_map(array::pad_ndim()), ssignal);
     let (mult, adj) = b.segment(
@@ -473,11 +473,11 @@ fn forward_adjust_broadcasts_the_dividend_legs() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(close) = arr1([10.0, 20.0]);
+    *g.state_mut(close) = [10.0, 20.0].into();
     g.stabilize(&mut pool, &nano(0));
 
-    *g.state_mut(close) = arr1([5.0, 10.0]);
-    *g.state_mut(share) = arr([1], vec![1.0]);
+    *g.state_mut(close) = [5.0, 10.0].into();
+    *g.state_mut(share) = [1.0].into();
     g.stabilize(&mut pool, &nano(1));
     assert_close(&vals(g.view(mult)), &[2.0, 2.0], "one leg, every element");
     assert_close(&vals(g.view(adj)), &[10.0, 20.0], "both quotes re-adjust");

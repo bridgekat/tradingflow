@@ -90,8 +90,8 @@ fn fused_rolling_chain_matches_unfused_nodes() {
     );
 
     let mut b = Builder::new();
-    let (sx, (cx, xv)) = b.source(cell(arr([2], vec![nan; 2])));
-    let (sy, (cy, yv)) = b.source(cell(arr([2], vec![nan; 2])));
+    let (sx, (cx, xv)) = b.source(cell([nan; 2]));
+    let (sy, (cy, yv)) = b.source(cell([nan; 2]));
 
     // Reference: the same chain as separate nodes.
     let fast = b.segment(rolling::mean(3, 1), (cx, xv));
@@ -133,10 +133,10 @@ fn fused_rolling_chain_matches_unfused_nodes() {
     let mut seen = Vec::new();
     for (i, (x, y)) in ticks.iter().enumerate() {
         if let Some(x) = x {
-            *g.state_mut(sx) = arr1(x.to_vec());
+            *g.state_mut(sx) = x.to_vec().into();
         }
         if let Some(y) = y {
-            *g.state_mut(sy) = arr1(y.to_vec());
+            *g.state_mut(sy) = y.to_vec().into();
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_same_bits(g.view(plain), g.view(f_out), &format!("tick {i}"));
@@ -176,8 +176,8 @@ fn fused_gated_multi_output_matches_unfused_nodes() {
     );
 
     let mut b = Builder::new();
-    let (sp, (cp, pv)) = b.source(cell(arr([2], vec![nan; 2])));
-    let (sq, (cq, qv)) = b.source(cell(arr([2], vec![nan; 2])));
+    let (sp, (cp, pv)) = b.source(cell([nan; 2]));
+    let (sq, (cq, qv)) = b.source(cell([nan; 2]));
 
     // Reference: the same chain as separate nodes.
     let gp = b.segment(signal::filter(any_finite), (cp, pv));
@@ -207,10 +207,10 @@ fn fused_gated_multi_output_matches_unfused_nodes() {
     let mut seen = Vec::new();
     for (i, (p, q)) in ticks.iter().enumerate() {
         if let Some(p) = p {
-            *g.state_mut(sp) = arr1(p.to_vec());
+            *g.state_mut(sp) = p.to_vec().into();
         }
         if let Some(q) = q {
-            *g.state_mut(sq) = arr1(q.to_vec());
+            *g.state_mut(sq) = q.to_vec().into();
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_same_bits(g.view(m), g.view(f_m), &format!("tick {i}: mean"));
@@ -249,11 +249,11 @@ fn ma_crossover_signal_fires_on_the_edge() {
     let path1: Vec<f64> = path0.iter().map(|&x| 200.25 - x).collect();
 
     let mut b = Builder::new();
-    let (src, (xc, xv)) = b.source(cell(arr([2], vec![0.0_f64, 0.0])));
+    let (src, (xc, xv)) = b.source(cell([0.0_f64, 0.0]));
     let signal = b.segment(
         segment!(
             |c: SignalPort<0>, x: ArrayPort<f64, 1>| -> ArrayPort<bool, 1> {
-                let zeros = array::from_parts([2], vec![0.0_f64, 0.0].into()) @ ();
+                let zeros = array::constant([0.0_f64, 0.0]) @ ();
                 let d = elem::sub()
                     @ (rolling::mean(fast, 1) @ (c, x), rolling::mean(slow, 1) @ (c, x));
                 let prev = rolling::lag(1) @ (c, d);
@@ -272,7 +272,7 @@ fn ma_crossover_signal_fires_on_the_edge() {
     let expect1 = crossover_reference(&path1, fast, slow);
     let mut fired = 0usize;
     for t in 0..path0.len() {
-        *g.state_mut(src) = arr1(vec![path0[t], path1[t]]);
+        *g.state_mut(src) = [path0[t], path1[t]].into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         assert_eq!(
             &*g.view(signal).to_contiguous(),
@@ -302,7 +302,7 @@ fn self_recording_chain_matches_hoisted_record() {
     let (fast, slow) = (4usize, 9usize);
 
     let mut b = Builder::new();
-    let (src, (xc, xv)) = b.source(cell(arr([2], vec![0.0_f64, 0.0])));
+    let (src, (xc, xv)) = b.source(cell([0.0_f64, 0.0]));
 
     // Self-recording: each `rolling::mean` buffers the live stream itself.
     let live = b.segment(
@@ -326,7 +326,7 @@ fn self_recording_chain_matches_hoisted_record() {
 
     let (p0, p1) = (quarter_path(1, 40), quarter_path(2, 40));
     for t in 0..40 {
-        *g.state_mut(src) = arr1(vec![p0[t], p1[t]]);
+        *g.state_mut(src) = [p0[t], p1[t]].into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         assert_same_bits(g.view(live), g.view(hoisted), &format!("tick {t}"));
     }
@@ -359,8 +359,8 @@ fn self_recording_chain_matches_hoisted_record() {
 #[test]
 fn rejoining_cone_recomputes_once_per_generation() {
     let mut b = Builder::new();
-    let (sa, av) = b.source(array::scalar(0.0_f64));
-    let (sb, bv) = b.source(array::scalar(0.0_f64));
+    let (sa, av) = b.source(array::constant(0.0_f64));
+    let (sb, bv) = b.source(array::constant(0.0_f64));
     let sum = b.segment(elem::add(), (av, bv));
     let out = b.segment(elem::mul(), (sum, av));
     let runs = b.segment(runs::<0>(), out);
@@ -379,10 +379,10 @@ fn rejoining_cone_recomputes_once_per_generation() {
     ];
     for (i, &(a, bb, want, want_runs)) in ticks.iter().enumerate() {
         if let Some(a) = a {
-            *g.state_mut(sa) = scalar(a);
+            *g.state_mut(sa) = a.into();
         }
         if let Some(bb) = bb {
-            *g.state_mut(sb) = scalar(bb);
+            *g.state_mut(sb) = bb.into();
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_close(&vals(g.view(out)), &[want], &format!("tick {i}"));
@@ -405,8 +405,8 @@ fn rejoining_cone_recomputes_once_per_generation() {
 #[test]
 fn coalesced_sources_stabilize_once_over_the_union() {
     let mut b = Builder::new();
-    let (sa, (sig_a, av)) = b.source(cell(scalar(0.0_f64)));
-    let (sb, (sig_b, bv)) = b.source(cell(scalar(0.0_f64)));
+    let (sa, (sig_a, av)) = b.source(cell(0.0_f64));
+    let (sb, (sig_b, bv)) = b.source(cell(0.0_f64));
     let runs_a = b.segment(runs::<0>(), av);
     let runs_b = b.segment(runs::<0>(), bv);
     let sum = b.segment(elem::add(), (av, bv));
@@ -428,10 +428,10 @@ fn coalesced_sources_stabilize_once_over_the_union() {
     ];
     for (i, &(a, bb, (wa, wb, ws))) in ticks.iter().enumerate() {
         if let Some(a) = a {
-            *g.state_mut(sa) = scalar(a);
+            *g.state_mut(sa) = a.into();
         }
         if let Some(bb) = bb {
-            *g.state_mut(sb) = scalar(bb);
+            *g.state_mut(sb) = bb.into();
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(g.view(runs_a), wa, "tick {i}: a leg reruns");
@@ -460,8 +460,8 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
     let (p0, p1) = (quarter_path(11, len), quarter_path(23, len));
 
     let mut b = Builder::new();
-    let (sa, (ca, av)) = b.source(cell(arr([4], vec![0.0_f64; 4])));
-    let (sb, (cb, bv)) = b.source(cell(arr([4], vec![0.0_f64; 4])));
+    let (sa, (ca, av)) = b.source(cell([0.0_f64; 4]));
+    let (sb, (cb, bv)) = b.source(cell([0.0_f64; 4]));
 
     let spread = b.segment(
         segment!(
@@ -497,10 +497,10 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
         } else {
             vec![x, x + 0.25, x - 0.5, x * 0.5]
         };
-        *g.state_mut(sa) = arr1(row_a);
+        *g.state_mut(sa) = row_a.into();
         if i % 3 != 2 {
             let y = p1[i];
-            *g.state_mut(sb) = arr1(vec![y, y - 1.0, y + 2.0, y * 0.25]);
+            *g.state_mut(sb) = [y, y - 1.0, y + 2.0, y * 0.25].into();
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         let mut row = bits(g.view(spread));
@@ -516,7 +516,7 @@ fn run_mixed_cone(workers: usize, len: usize) -> Vec<Vec<u64>> {
 /// pulse count.
 fn run_fanout(workers: usize, branches: usize, path: &[f64]) -> Vec<(Vec<f64>, usize)> {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let probes: Vec<_> = (0..branches)
         .map(|k| {
             let threshold = k as f64 * 15.0;
@@ -534,7 +534,7 @@ fn run_fanout(workers: usize, branches: usize, path: &[f64]) -> Vec<(Vec<f64>, u
     let mut pool = Pool::new(workers);
 
     for (i, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(i as i64 + 1));
     }
     probes
@@ -547,7 +547,7 @@ fn run_fanout(workers: usize, branches: usize, path: &[f64]) -> Vec<(Vec<f64>, u
 /// counter), each gating on a different divisor, over `gens` generations.
 fn run_stateful_stress(workers: usize, branches: usize, gens: usize) -> Vec<usize> {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let counters: Vec<_> = (0..branches)
         .map(|k| {
             let divisor = k + 2;
@@ -565,7 +565,7 @@ fn run_stateful_stress(workers: usize, branches: usize, gens: usize) -> Vec<usiz
     let mut pool = Pool::new(workers);
 
     for i in 1..=gens {
-        *g.state_mut(src) = scalar(i as f64);
+        *g.state_mut(src) = (i as f64).into();
         g.stabilize(&mut pool, &nano(i as i64));
     }
     counters.iter().map(|&c| g.view(c)).collect()

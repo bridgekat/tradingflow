@@ -44,14 +44,14 @@ fn over_three(a: ArrayView<'_, f64, 0>) -> bool {
 #[test]
 fn filter_records_only_passing_values() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let kept = b.segment(signal::filter(over_three), srcv);
     let rec = b.segment(series::record_all(), (kept, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (i, v) in [1.0, 5.0, 2.0, 10.0].into_iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(i as i64 + 1));
     }
 
@@ -74,7 +74,7 @@ fn filter_records_only_passing_values() {
 #[test]
 fn filter_suppression_does_not_advance_downstream() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let kept = b.segment(signal::filter(over_three), srcv);
     let probe = b.segment(count::<0>(), (kept, srcv.1));
     let mut g = b.build();
@@ -91,7 +91,7 @@ fn filter_suppression_does_not_advance_downstream() {
         (3.0, 3), // the predicate is strict: 3.0 does not pass `> 3.0`
     ];
     for (i, &(v, expected)) in ticks.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(g.view(probe), expected, "tick {i}: poked {v}");
     }
@@ -103,13 +103,13 @@ fn filter_suppression_does_not_advance_downstream() {
 #[test]
 fn a_signal_edge_reads_low_after_every_generation() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let kept = b.segment(signal::filter(over_three), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (i, v) in [1.0, 5.0, 2.0, 10.0].into_iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert!(!*g.view(srcv.0), "tick {i}: the source signal reads low");
         assert!(!*g.view(kept), "tick {i}: the filtered signal reads low");
@@ -128,8 +128,8 @@ fn a_signal_edge_reads_low_after_every_generation() {
 #[test]
 fn signal_pulses_exactly_when_its_input_notifies() {
     let mut b = Builder::new();
-    let (beat, (pulse, _beatv)) = b.source(cell(arr([3], vec![0.0_f64; 3])));
-    let (data, datav) = b.source(array::scalar(0.0_f64));
+    let (beat, (pulse, _beatv)) = b.source(cell([0.0_f64; 3]));
+    let (data, datav) = b.source(array::constant(0.0_f64));
     let probe = b.segment(count::<0>(), (pulse, datav));
     let rec = b.segment(series::record_all(), (pulse, datav));
     let mut g = b.build();
@@ -146,10 +146,10 @@ fn signal_pulses_exactly_when_its_input_notifies() {
     ];
     for (i, &(bp, dp, pulses, value)) in ticks.iter().enumerate() {
         if let Some(row) = bp {
-            *g.state_mut(beat) = arr([3], row);
+            *g.state_mut(beat) = row.into();
         }
         if let Some(v) = dp {
-            *g.state_mut(data) = scalar(v);
+            *g.state_mut(data) = v.into();
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(g.view(probe), pulses, "tick {i}: pulse count");
@@ -164,7 +164,7 @@ fn signal_pulses_exactly_when_its_input_notifies() {
 #[test]
 fn a_filtered_signal_samples_another_wire() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let kept = b.segment(signal::filter(over_three), srcv);
     let probe = b.segment(count::<0>(), (kept, srcv.1));
     let rec = b.segment(series::record_all(), (kept, srcv.1));
@@ -182,7 +182,7 @@ fn a_filtered_signal_samples_another_wire() {
         (0.5, 3, 4.0),
     ];
     for (i, &(v, pulses, value)) in ticks.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(g.view(probe), pulses, "tick {i}: poked {v}");
         let last = series_vals(g.view(rec)).last().copied().unwrap_or(f64::NAN);
@@ -202,7 +202,7 @@ fn a_filtered_signal_samples_another_wire() {
 #[test]
 fn a_paired_signal_gates_the_record() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
     let probe = b.segment(count::<0>(), (tickv, srcv));
     let rec = b.segment(series::record_all(), (tickv, srcv));
@@ -222,7 +222,7 @@ fn a_paired_signal_gates_the_record() {
     ];
     for (i, &(pulse, poke, emissions, value)) in ticks.iter().enumerate() {
         if let Some(v) = poke {
-            *g.state_mut(src) = scalar(v);
+            *g.state_mut(src) = v.into();
         }
         if pulse {
             // Touching the signal cell's state marks it dirty; the value is
@@ -245,7 +245,7 @@ fn a_paired_signal_gates_the_record() {
 #[test]
 fn data_without_a_pulse_is_completely_silent() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
     let probe = b.segment(count::<0>(), (tickv, srcv));
     let rec = b.segment(series::record_all(), (tickv, srcv));
@@ -253,7 +253,7 @@ fn data_without_a_pulse_is_completely_silent() {
     let mut pool = Pool::new(0);
 
     for (i, v) in [1.0, 2.0, 3.0, 4.0].into_iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(
             g.view(probe),
@@ -278,7 +278,7 @@ fn data_without_a_pulse_is_completely_silent() {
 #[test]
 fn a_pulse_samples_the_latest_value_from_an_earlier_generation() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(0.0_f64));
+    let (src, srcv) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
     let rec = b.segment(series::record_all(), (tickv, srcv));
     let mut g = b.build();
@@ -286,7 +286,7 @@ fn a_pulse_samples_the_latest_value_from_an_earlier_generation() {
 
     // Two data-only generations: nothing is sampled, nothing is recorded.
     for (i, v) in [1.0, 2.0].into_iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(i as i64 + 1));
     }
     assert_eq!(g.view(rec).len(), 0, "data alone must not record");
@@ -324,9 +324,9 @@ fn a_pulse_samples_the_latest_value_from_an_earlier_generation() {
 fn a_join_carries_unfired_inputs_and_freezes_when_idle() {
     let nan = f64::NAN;
     let mut b = Builder::new();
-    let (s0, (c0, s0v)) = b.source(cell(scalar(0.0_f64)));
-    let (s1, s1v) = b.source(array::scalar(0.0_f64));
-    let (s2, (c2, s2v)) = b.source(cell(scalar(0.0_f64)));
+    let (s0, (c0, s0v)) = b.source(cell(0.0_f64));
+    let (s1, s1v) = b.source(array::constant(0.0_f64));
+    let (s2, (c2, s2v)) = b.source(cell(0.0_f64));
     let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let pulses0 = b.segment(count::<0>(), (c0, s0v));
     let pulses2 = b.segment(count::<0>(), (c2, s2v));
@@ -335,9 +335,9 @@ fn a_join_carries_unfired_inputs_and_freezes_when_idle() {
 
     // Generation 1: all three fire, and one of them carries a NaN payload of
     // its own so the byte-identity assertion below has a NaN to preserve.
-    *g.state_mut(s0) = scalar(1.0);
-    *g.state_mut(s1) = scalar(nan);
-    *g.state_mut(s2) = scalar(3.0);
+    *g.state_mut(s0) = (1.0).into();
+    *g.state_mut(s1) = (nan).into();
+    *g.state_mut(s2) = (3.0).into();
     g.stabilize(&mut pool, &nano(1));
     assert_close(&vals(g.view(stacked)), &[1.0, nan, 3.0], "gen 1: stack");
     assert_eq!((g.view(pulses0), g.view(pulses2)), (1, 1), "gen 1: pulses");
@@ -345,7 +345,7 @@ fn a_join_carries_unfired_inputs_and_freezes_when_idle() {
     // Generation 2: only `s2` fires. The join still reads `s0` and `s1` and
     // carries both (including the NaN that is a genuine payload); only `s2`'s
     // signals.
-    *g.state_mut(s2) = scalar(7.0);
+    *g.state_mut(s2) = (7.0).into();
     g.stabilize(&mut pool, &nano(2));
     assert_close(
         &vals(g.view(stacked)),
@@ -373,7 +373,7 @@ fn a_join_carries_unfired_inputs_and_freezes_when_idle() {
 
     // And the graph is still live afterwards — the freeze is idleness, not a
     // node that fell out of the schedule permanently.
-    *g.state_mut(s0) = scalar(9.0);
+    *g.state_mut(s0) = (9.0).into();
     g.stabilize(&mut pool, &nano(5));
     assert_close(&vals(g.view(stacked)), &[9.0, nan, 7.0], "gen 5: stack");
     assert_eq!((g.view(pulses0), g.view(pulses2)), (2, 2), "gen 5: pulses");
@@ -392,9 +392,9 @@ fn a_join_carries_unfired_inputs_and_freezes_when_idle() {
 fn a_signal_stack_join_nan_fills_while_a_state_join_carries() {
     let nan = f64::NAN;
     let mut b = Builder::new();
-    let (s0, (s0v_signal, s0v)) = b.source(cell(scalar(0.0_f64)));
-    let (s1, (s1v_signal, s1v)) = b.source(cell(scalar(0.0_f64)));
-    let (s2, (s2v_signal, s2v)) = b.source(cell(scalar(0.0_f64)));
+    let (s0, (s0v_signal, s0v)) = b.source(cell(0.0_f64));
+    let (s1, (s1v_signal, s1v)) = b.source(cell(0.0_f64));
+    let (s2, (s2v_signal, s2v)) = b.source(cell(0.0_f64));
     let stacked = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let signals = b.segment(
         signal::as_signal_map(array::stack::<bool, 0, 1>(0)),
@@ -427,7 +427,7 @@ fn a_signal_stack_join_nan_fills_while_a_state_join_carries() {
     for (i, (poke, want_stack, want_sync)) in ticks.iter().enumerate() {
         for (h, v) in [s0, s1, s2].into_iter().zip(poke) {
             if let Some(v) = v {
-                *g.state_mut(h) = scalar(*v);
+                *g.state_mut(h) = (*v).into();
             }
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
@@ -458,8 +458,8 @@ fn a_signal_stack_join_nan_fills_while_a_state_join_carries() {
 fn a_signal_concat_nan_fills_while_a_state_concat_carries() {
     let nan = f64::NAN;
     let mut b = Builder::new();
-    let (a, (av_signal, av)) = b.source(cell(arr([2], vec![0.0_f64; 2])));
-    let (c, (cv_signal, cv)) = b.source(cell(arr([2], vec![0.0_f64; 2])));
+    let (a, (av_signal, av)) = b.source(cell([0.0_f64; 2]));
+    let (c, (cv_signal, cv)) = b.source(cell([0.0_f64; 2]));
     let joined = b.segment(array::concat::<f64, 1>(0), &[av, cv][..]);
     let signals = b.segment(
         signal::as_signal_map(array::array_binary_map(
@@ -497,10 +497,10 @@ fn a_signal_concat_nan_fills_while_a_state_concat_carries() {
     ];
     for (i, (pa, pc, want_concat, want_sync)) in ticks.iter().enumerate() {
         if let Some(row) = pa {
-            *g.state_mut(a) = arr1(*row);
+            *g.state_mut(a) = (*row).into();
         }
         if let Some(row) = pc {
-            *g.state_mut(c) = arr1(*row);
+            *g.state_mut(c) = (*row).into();
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_close(
@@ -522,8 +522,8 @@ fn a_signal_concat_nan_fills_while_a_state_concat_carries() {
 #[test]
 fn coalesced_pokes_recompute_the_union_of_cones_once() {
     let mut b = Builder::new();
-    let (a, (sig_a, av)) = b.source(cell(scalar(0.0_f64)));
-    let (c, (sig_c, cv)) = b.source(cell(scalar(0.0_f64)));
+    let (a, (sig_a, av)) = b.source(cell(0.0_f64));
+    let (c, (sig_c, cv)) = b.source(cell(0.0_f64));
     let sum = b.segment(elem::add(), (av, cv));
     let probe = b.segment(runs::<0>(), sum);
     // The union of the two source cadences, spelled explicitly.
@@ -543,10 +543,10 @@ fn coalesced_pokes_recompute_the_union_of_cones_once() {
     ];
     for (i, &(pa, pc, recomputes, sum_value)) in ticks.iter().enumerate() {
         if let Some(v) = pa {
-            *g.state_mut(a) = scalar(v);
+            *g.state_mut(a) = v.into();
         }
         if let Some(v) = pc {
-            *g.state_mut(c) = scalar(v);
+            *g.state_mut(c) = v.into();
         }
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         assert_eq!(g.view(probe), recomputes, "tick {i}: recompute count");

@@ -27,7 +27,7 @@ use crate::harness::*;
 #[test]
 fn record_stamps_rows_with_the_event_time() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_all(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -42,7 +42,7 @@ fn record_stamps_rows_with_the_event_time() {
     // Event times need not be consecutive: the stamp is whatever `stabilize`
     // is given.
     for (t, v) in [(1_i64, 10.0), (5, 20.0), (9, 30.0)] {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t));
     }
 
@@ -60,14 +60,14 @@ fn record_stamps_rows_with_the_event_time() {
 #[test]
 fn record_appends_nothing_when_the_input_does_not_notify() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let gate = b.segment(signal::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
     let rec = b.segment(series::record_all(), (gate, srcv.1));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 1.0), (2, 5.0), (3, 2.0), (4, 10.0)] {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t));
     }
 
@@ -85,13 +85,13 @@ fn record_all_keeps_every_row() {
     const TICKS: i64 = 40;
 
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_all(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for t in 1..=TICKS {
-        *g.state_mut(src) = scalar(t as f64);
+        *g.state_mut(src) = (t as f64).into();
         g.stabilize(&mut pool, &nano(t));
     }
 
@@ -111,13 +111,13 @@ fn record_all_keeps_every_row() {
 #[test]
 fn record_keeps_the_element_extents_of_its_input() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
+    let (src, srcv) = event_src(&mut b, vec![0.0_f64; 2].into());
     let rec = b.segment(series::record_all(), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for t in 1..=3_i64 {
-        *g.state_mut(src) = arr1(vec![t as f64, -(t as f64)]);
+        *g.state_mut(src) = [t as f64, -(t as f64)].into();
         g.stabilize(&mut pool, &nano(t));
     }
 
@@ -138,7 +138,7 @@ fn record_keeps_the_element_extents_of_its_input() {
 #[test]
 fn record_delayed_defers_trimming_by_one_tick() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let eager = b.segment(series::record_on(2usize, false), srcv);
     let delayed = b.segment(series::record_on(2usize, true), srcv);
     let buffered = b.segment(series::buffer(2usize), srcv);
@@ -159,7 +159,7 @@ fn record_delayed_defers_trimming_by_one_tick() {
     ];
 
     for t in 1..=6_i64 {
-        *g.state_mut(src) = scalar(10.0 * t as f64);
+        *g.state_mut(src) = (10.0 * t as f64).into();
         g.stabilize(&mut pool, &nano(t));
 
         let (e, d, f) = (g.view(eager), g.view(delayed), g.view(buffered));
@@ -196,13 +196,13 @@ fn bounded_record_compacts_the_front_and_bounds_storage() {
     const TICKS: i64 = 30;
 
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_on(RETAIN, false), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for t in 1..=TICKS {
-        *g.state_mut(src) = scalar(t as f64);
+        *g.state_mut(src) = (t as f64).into();
         g.stabilize(&mut pool, &nano(t));
 
         let s = g.view(rec);
@@ -252,13 +252,13 @@ fn duration_bounded_record_keeps_the_trailing_time_window() {
     const DAYS: i64 = 12;
 
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_on(Duration::from_days(WINDOW), false), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for n in 1..=DAYS {
-        *g.state_mut(src) = scalar(n as f64);
+        *g.state_mut(src) = (n as f64).into();
         g.stabilize(&mut pool, &day(n));
 
         let s = g.view(rec);
@@ -302,7 +302,7 @@ fn duration_bounded_record_keeps_the_trailing_time_window() {
 #[test]
 fn last_and_last_or_differ_only_on_an_empty_series() {
     let mut b = Builder::new();
-    let (cell, sv) = b.source(series::empty::<f64, 1>([3]));
+    let (cell, sv) = b.source(series::constant(Series::new([3])));
     let nan_filled = b.segment(series::last(), sv);
     let fill_filled = b.segment(series::last_or(-1.0_f64), sv);
     let mut g = b.build();
@@ -335,7 +335,7 @@ fn last_and_last_or_differ_only_on_an_empty_series() {
 #[test]
 fn last_or_tracks_the_newest_row_and_holds_it_across_idle_ticks() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let gate = b.segment(signal::filter(|a: ArrayView<'_, f64, 0>| *a > 3.0), srcv);
     let rec = b.segment(series::record_all(), (gate, srcv.1));
     let lst = b.segment(series::last_or(0.0_f64), rec);
@@ -350,7 +350,7 @@ fn last_or_tracks_the_newest_row_and_holds_it_across_idle_ticks() {
         (3, 2.0, 5.0), // dropped: carried
         (4, 10.0, 10.0),
     ] {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t));
         assert_eq!(vals(g.view(lst)), vec![want], "tick {t}");
     }
@@ -361,14 +361,14 @@ fn last_or_tracks_the_newest_row_and_holds_it_across_idle_ticks() {
 #[test]
 fn last_reads_the_newest_row_of_a_compacted_record() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_on(2usize, false), srcv);
     let lst = b.segment(series::last(), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for t in 1..=10_i64 {
-        *g.state_mut(src) = scalar(t as f64);
+        *g.state_mut(src) = (t as f64).into();
         g.stabilize(&mut pool, &nano(t));
         assert_eq!(vals(g.view(lst)), vec![t as f64], "tick {t}");
     }
@@ -385,7 +385,7 @@ fn last_reads_the_newest_row_of_a_compacted_record() {
 #[test]
 fn shift_positive_lags_values_behind_their_instants() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_all(), srcv);
     let by1 = b.segment(series::shift(1), rec);
     let by2 = b.segment(series::shift(2), rec);
@@ -394,7 +394,7 @@ fn shift_positive_lags_values_behind_their_instants() {
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 10.0), (2, 20.0), (3, 30.0), (4, 40.0)] {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t));
     }
 
@@ -419,7 +419,7 @@ fn shift_positive_lags_values_behind_their_instants() {
 #[test]
 fn shift_negative_leads_values_ahead_of_their_instants() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_all(), srcv);
     let by1 = b.segment(series::shift(-1), rec);
     let by2 = b.segment(series::shift(-2), rec);
@@ -428,7 +428,7 @@ fn shift_negative_leads_values_ahead_of_their_instants() {
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 10.0), (2, 20.0), (3, 30.0), (4, 40.0)] {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t));
     }
 
@@ -449,14 +449,14 @@ fn shift_negative_leads_values_ahead_of_their_instants() {
 #[test]
 fn shift_by_zero_is_the_identity() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_all(), srcv);
     let by0 = b.segment(series::shift(0), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 10.0), (2, 20.0), (3, 30.0)] {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t));
     }
 
@@ -471,7 +471,7 @@ fn shift_by_zero_is_the_identity() {
 #[test]
 fn shift_past_the_window_yields_an_empty_series() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, srcv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_all(), srcv);
     let ahead = b.segment(series::shift(9), rec);
     let behind = b.segment(series::shift(-9), rec);
@@ -481,7 +481,7 @@ fn shift_past_the_window_yields_an_empty_series() {
     let mut pool = Pool::new(0);
 
     for (t, v) in [(1_i64, 10.0), (2, 20.0), (3, 30.0)] {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t));
     }
 
@@ -537,12 +537,12 @@ fn constant_series_lends_its_rows_and_is_pokeable() {
 #[test]
 fn from_parts_series_keeps_its_logical_base() {
     let mut b = Builder::new();
-    let sv = b.value(series::from_parts(
+    let sv = b.value(series::constant(Series::from_parts(
         [],
         vec![nano(1), nano(2), nano(3)],
         vec![10.0_f64, 20.0, 30.0],
         5,
-    ));
+    )));
     let lst = b.segment(series::last_or(0.0_f64), sv);
     let g = b.build();
 
@@ -560,7 +560,7 @@ fn from_parts_series_keeps_its_logical_base() {
 #[test]
 fn empty_series_has_no_rows_but_keeps_its_extents() {
     let mut b = Builder::new();
-    let sv = b.value(series::empty::<f64, 2>([2, 3]));
+    let sv = b.value(series::constant(Series::<f64, _>::new([2, 3])));
     let g = b.build();
 
     let s = g.view(sv);
@@ -579,10 +579,10 @@ fn empty_series_has_no_rows_but_keeps_its_extents() {
 /// The `[2, 3]` panel recorded on tick `k`: element `(i, j)` is
 /// `100k + 10i + j`, so every scalar names its own row and position.
 fn panel(k: i64) -> Array<f64, 2> {
-    let data: Vec<f64> = (0..2)
+    let data = (0..2)
         .flat_map(|i| (0..3).map(move |j| (100 * k + 10 * i + j) as f64))
         .collect();
-    arr([2, 3], data)
+    Array::from_parts([2, 3], data)
 }
 
 /// The flat row-major scalars of all three recorded panels.
@@ -596,7 +596,7 @@ fn panels_recorded<H>(
     wire: impl FnOnce(&mut Builder<Instant>, SeriesPortHandle<f64, 2>) -> H,
 ) -> (Graph<Instant>, H) {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, arr([2, 3], vec![0.0_f64; 6]));
+    let (src, srcv) = event_src(&mut b, Array::zeros([2, 3]));
     let rec = b.segment(series::record_all(), srcv);
     let out = wire(&mut b, rec);
     let mut g = b.build();
@@ -677,7 +677,7 @@ fn slice_selects_element_axes_and_keeps_every_row() {
 #[test]
 fn slicing_an_empty_series_is_empty() {
     let mut b = Builder::new();
-    let sv = b.value(series::empty::<f64, 2>([2, 3]));
+    let sv = b.value(series::constant(Series::<f64, _>::new([2, 3])));
     let sliced = b.segment(series::slice((.., 1..3)), sv);
     let projected = b.segment(series::slice_reshape::<_, _, 1, _>((1usize, ..)), sv);
     let g = b.build();
@@ -696,7 +696,7 @@ fn slicing_an_empty_series_is_empty() {
 #[test]
 fn slicing_a_record_survives_the_empty_build() {
     let mut b = Builder::new();
-    let (src, srcv) = event_src(&mut b, arr([2, 3], vec![0.0_f64; 6]));
+    let (src, srcv) = event_src(&mut b, Array::zeros([2, 3]));
     let rec = b.segment(series::record_all(), srcv);
     let sliced = b.segment(series::slice((.., 1..3)), rec);
     let mut g = b.build();
@@ -704,7 +704,7 @@ fn slicing_a_record_survives_the_empty_build() {
 
     assert!(g.view(sliced).is_empty(), "empty at build");
 
-    *g.state_mut(src) = arr([2, 3], (1..=6).map(|i| i as f64).collect::<Vec<_>>());
+    *g.state_mut(src) = Array::from_parts([2, 3], (1..=6).map(|i| i as f64).collect());
     g.stabilize(&mut pool, &nano(1));
 
     let s = g.view(sliced);

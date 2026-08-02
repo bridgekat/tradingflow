@@ -9,7 +9,7 @@ mod split;
 mod view;
 
 pub use concat::{concat, stack};
-pub use constant::{constant, from_parts, full, scalar, zeros};
+pub use constant::constant;
 pub use map::{
     array_binary_map, array_binary_map_inplace, array_map, array_map_inplace, array_ternary_map,
     array_ternary_map_inplace, binary_map, map, ternary_map,

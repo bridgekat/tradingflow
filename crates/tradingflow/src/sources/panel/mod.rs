@@ -63,6 +63,10 @@
 //! - `signals`: the signal array marking active cells.
 //! - `values`: `M` value arrays, each containing the values of a value column.
 
+mod base;
+mod csv;
 mod parquet;
 
-pub use parquet::{Parquet, parquet};
+pub use base::{Panel, PanelBatch, PanelState, Reader};
+pub use csv::csv;
+pub use parquet::parquet;

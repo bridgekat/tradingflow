@@ -29,29 +29,6 @@ pub fn day(n: i64) -> Instant {
 }
 
 // ---------------------------------------------------------------------------
-// Array constructors
-// ---------------------------------------------------------------------------
-
-/// A rank-0 (scalar) array.
-pub fn scalar<T: Scalar>(v: T) -> Array<T, 0> {
-    Array::scalar(v)
-}
-
-/// A rank-`N` array from its extents and row-major data.
-pub fn arr<T: Scalar, const N: usize>(
-    extents: [usize; N],
-    data: impl Into<Box<[T]>>,
-) -> Array<T, N> {
-    Array::from_parts(extents, data.into())
-}
-
-/// A rank-1 array, the common cross-section shape.
-pub fn arr1<T: Scalar>(data: impl Into<Box<[T]>>) -> Array<T, 1> {
-    let data = data.into();
-    Array::from_parts([data.len()], data)
-}
-
-// ---------------------------------------------------------------------------
 // View readback
 // ---------------------------------------------------------------------------
 
@@ -199,14 +176,16 @@ impl<T: Scalar, const N: usize> Segment for Cell<T, N> {
 
 /// See [`Cell`].
 pub fn cell<T: Scalar, const N: usize>(
-    value: Array<T, N>,
+    value: impl Into<Array<T, N>>,
 ) -> impl Segment<
     Inputs = (),
     Outputs = (SignalPort<0>, ArrayPort<T, N>),
     Context = Instant,
     State = Array<T, N>,
 > {
-    Cell { value }
+    Cell {
+        value: value.into(),
+    }
 }
 
 /// Operator signature for [`batch_face`].

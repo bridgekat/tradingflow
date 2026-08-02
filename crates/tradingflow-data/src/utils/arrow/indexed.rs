@@ -76,8 +76,8 @@ pub fn build_value_column<T: ArrowScalar, const N: usize>(
 /// which can contain either plain or dictionary-encoded strings. In all other
 /// cases, the axis should correspond to an integer-valued column.
 pub fn read_index_columns<const N: usize>(
-    columns: &[ArrowArrayRef; N],
-    axes: &[Axis; N],
+    columns: [ArrowArrayRef; N],
+    axes: [&Axis; N],
 ) -> Vec<[usize; N]> {
     let m = columns
         .first()
@@ -139,7 +139,7 @@ pub fn read_index_columns<const N: usize>(
 /// Converts `N`-dimensional indices into `N` index columns (Arrow arrays).
 pub fn build_index_columns<const N: usize>(
     indices: &[[usize; N]],
-    axes: &[Axis; N],
+    axes: [&Axis; N],
 ) -> [ArrowArrayRef; N] {
     std::array::from_fn(|j| {
         if let Axis::Labeled(schema) = &axes[j] {

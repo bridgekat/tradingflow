@@ -7,9 +7,11 @@
 //! events, in which case they should be ignored when the signal is `false`.
 
 mod boolean;
+mod constant;
 mod map;
 mod on_signal;
 
 pub use boolean::{and, any, filter, or};
+pub use constant::quiet;
 pub use map::{Signify, as_signal_map};
 pub use on_signal::on_signal;

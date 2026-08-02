@@ -20,7 +20,7 @@ use crate::harness::*;
 /// A `[2, 3]` panel of consecutive integers — the smallest shape where "which
 /// axis?" is a real question and where a transpose is observably strided.
 fn panel23() -> Array<f64, 2> {
-    arr([2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]].into()
 }
 
 /// Whether a published view is row-major contiguous (`as_slice` succeeds) or a
@@ -33,24 +33,24 @@ fn is_contiguous<const N: usize>(v: ArrayView<'_, f64, N>) -> bool {
 // constant
 // ---------------------------------------------------------------------------
 
-/// `array::scalar` is the rank-0 cell: no axes, exactly one element. Wired as
+/// `scalar` is the rank-0 cell: no axes, exactly one element. Wired as
 /// a source it is the pokeable entry point every other test builds on, so the
 /// poke-then-stabilize round trip is pinned here once.
 #[test]
 fn scalar_is_a_pokeable_rank_zero_cell() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::scalar(1.5_f64));
+    let (src, srcv) = b.source(array::constant(1.5_f64));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     assert_eq!(g.view(srcv).ndim(), 0);
     assert_eq!(vals(g.view(srcv)), vec![1.5]);
 
-    *g.state_mut(src) = scalar(2.5);
+    *g.state_mut(src) = (2.5).into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(srcv)), vec![2.5]);
 
-    *g.state_mut(src) = scalar(-0.25);
+    *g.state_mut(src) = (-0.25).into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(srcv)), vec![-0.25]);
 }
@@ -60,8 +60,8 @@ fn scalar_is_a_pokeable_rank_zero_cell() {
 #[test]
 fn full_and_zeros_fill_the_requested_extents() {
     let mut b = Builder::new();
-    let sevens = b.value(array::full([2, 3], 7.0_f64));
-    let empty = b.value(array::zeros::<f64, 2>([2, 2]));
+    let sevens = b.value(array::constant(Array::full([2, 3], 7.0_f64)));
+    let empty = b.value(array::constant(Array::<f64, 2>::zeros([2, 2])));
     let g = b.build();
 
     assert_eq!(g.view(sevens).extents(), [2, 3]);
@@ -75,10 +75,10 @@ fn full_and_zeros_fill_the_requested_extents() {
 #[test]
 fn from_parts_and_constant_lay_data_out_row_major() {
     let mut b = Builder::new();
-    let parts = b.value(array::from_parts(
+    let parts = b.value(array::constant(Array::from_parts(
         [2, 3],
-        vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0].into(),
-    ));
+        [1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0].into(),
+    )));
     let owned = b.value(array::constant(panel23()));
     let g = b.build();
 
@@ -94,8 +94,8 @@ fn from_parts_and_constant_lay_data_out_row_major() {
 #[test]
 fn only_poked_constants_recompute_their_cone() {
     let mut b = Builder::new();
-    let fixed = b.value(array::scalar(1.0_f64));
-    let (src, srcv) = b.source(array::scalar(1.0_f64));
+    let fixed = b.value(array::constant(1.0_f64));
+    let (src, srcv) = b.source(array::constant(1.0_f64));
     let fixed_runs = b.segment(runs::<0>(), fixed);
     let src_runs = b.segment(runs::<0>(), srcv);
     let mut g = b.build();
@@ -106,11 +106,11 @@ fn only_poked_constants_recompute_their_cone() {
     g.stabilize(&mut pool, &nano(1)); // nothing poked at all
     assert_eq!((g.view(fixed_runs), g.view(src_runs)), (0, 0));
 
-    *g.state_mut(src) = scalar(2.0);
+    *g.state_mut(src) = (2.0).into();
     g.stabilize(&mut pool, &nano(2));
     assert_eq!((g.view(fixed_runs), g.view(src_runs)), (0, 1));
 
-    *g.state_mut(src) = scalar(3.0);
+    *g.state_mut(src) = (3.0).into();
     g.stabilize(&mut pool, &nano(3));
     assert_eq!((g.view(fixed_runs), g.view(src_runs)), (0, 2));
 }
@@ -126,19 +126,19 @@ fn only_poked_constants_recompute_their_cone() {
 #[test]
 fn map_is_elementwise_and_may_change_the_scalar_type() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
+    let (src, srcv) = b.source(array::constant([0.0_f64; 4]));
     let doubled = b.segment(array::map(|&x: &f64| x * 2.0), srcv);
     let positive = b.segment(array::map(|&x: &f64| x > 0.0), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr1(vec![1.0, -2.0, 3.0, -4.0]);
+    *g.state_mut(src) = [1.0, -2.0, 3.0, -4.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(doubled).extents(), [4]);
     assert_eq!(vals(g.view(doubled)), vec![2.0, -4.0, 6.0, -8.0]);
     assert_eq!(vals(g.view(positive)), vec![true, false, true, false]);
 
-    *g.state_mut(src) = arr1(vec![-1.0, 2.0, -3.0, 4.0]);
+    *g.state_mut(src) = [-1.0, 2.0, -3.0, 4.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(doubled)), vec![-2.0, 4.0, -6.0, 8.0]);
     assert_eq!(vals(g.view(positive)), vec![false, true, false, true]);
@@ -149,7 +149,7 @@ fn map_is_elementwise_and_may_change_the_scalar_type() {
 #[test]
 fn map_walks_a_strided_input_in_logical_order() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
     let flipped = b.segment(array::transpose([1, 0]), srcv);
     let scaled = b.segment(array::map(|&x: &f64| x * 10.0), flipped);
     let mut g = b.build();
@@ -173,8 +173,8 @@ fn map_walks_a_strided_input_in_logical_order() {
 #[test]
 fn binary_map_broadcasts_extent_one_axes() {
     let mut b = Builder::new();
-    let (panel, panelv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
-    let (col, colv) = b.source(array::from_parts([2, 1], vec![0.0_f64; 2].into()));
+    let (panel, panelv) = b.source(array::constant(Array::zeros([2, 3])));
+    let (col, colv) = b.source(array::constant(Array::zeros([2, 1])));
     let sum = b.segment(
         array::binary_map(|&x: &f64, &y: &f64| x + y),
         (panelv, colv),
@@ -183,12 +183,12 @@ fn binary_map_broadcasts_extent_one_axes() {
     let mut pool = Pool::new(0);
 
     *g.state_mut(panel) = panel23();
-    *g.state_mut(col) = arr([2, 1], vec![10.0, 20.0]);
+    *g.state_mut(col) = [[10.0], [20.0]].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(sum).extents(), [2, 3]);
     assert_eq!(vals(g.view(sum)), vec![11.0, 12.0, 13.0, 24.0, 25.0, 26.0]);
 
-    *g.state_mut(col) = arr([2, 1], vec![100.0, 200.0]);
+    *g.state_mut(col) = [[100.0], [200.0]].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(
         vals(g.view(sum)),
@@ -201,9 +201,9 @@ fn binary_map_broadcasts_extent_one_axes() {
 #[test]
 fn ternary_map_combines_three_aligned_inputs() {
     let mut b = Builder::new();
-    let (x, xv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
-    let (y, yv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
-    let (z, zv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (x, xv) = b.source(array::constant(Array::zeros([3])));
+    let (y, yv) = b.source(array::constant(Array::zeros([3])));
+    let (z, zv) = b.source(array::constant(Array::zeros([3])));
     let fma = b.segment(
         array::ternary_map(|&a: &f64, &b: &f64, &c: &f64| a * b + c),
         (xv, yv, zv),
@@ -211,13 +211,13 @@ fn ternary_map_combines_three_aligned_inputs() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(x) = arr1(vec![1.0, 2.0, 3.0]);
-    *g.state_mut(y) = arr1(vec![10.0, 10.0, 10.0]);
-    *g.state_mut(z) = arr1(vec![0.5, 0.5, 0.5]);
+    *g.state_mut(x) = [1.0, 2.0, 3.0].into();
+    *g.state_mut(y) = [10.0, 10.0, 10.0].into();
+    *g.state_mut(z) = [0.5, 0.5, 0.5].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(fma)), vec![10.5, 20.5, 30.5]);
 
-    *g.state_mut(z) = arr1(vec![-0.5, -0.5, -0.5]);
+    *g.state_mut(z) = [-0.5, -0.5, -0.5].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(fma)), vec![9.5, 19.5, 29.5]);
 }
@@ -227,23 +227,23 @@ fn ternary_map_combines_three_aligned_inputs() {
 #[test]
 fn array_map_reduces_the_whole_array_to_a_lower_rank() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (src, srcv) = b.source(array::constant([0.0_f64; 3]));
     let mean = b.segment(
         array::array_map(|a: ArrayView<'_, f64, 1>| {
             let n = a.extents()[0] as f64;
-            Array::scalar(a.iter().sum::<f64>() / n)
+            (a.iter().sum::<f64>() / n).into()
         }),
         srcv,
     );
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr1(vec![1.0, 2.0, 4.0]);
+    *g.state_mut(src) = [1.0, 2.0, 4.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(mean).ndim(), 0);
     assert_close(&vals(g.view(mean)), &[7.0 / 3.0], "mean of [1, 2, 4]");
 
-    *g.state_mut(src) = arr1(vec![2.0, 4.0, 6.0]);
+    *g.state_mut(src) = [2.0, 4.0, 6.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(mean)), vec![4.0]);
 }
@@ -254,27 +254,26 @@ fn array_map_reduces_the_whole_array_to_a_lower_rank() {
 #[test]
 fn array_map_may_resize_its_output_between_generations() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (src, srcv) = b.source(array::constant([0.0_f64; 3]));
     let finite = b.segment(
         array::array_map(|a: ArrayView<'_, f64, 1>| {
-            arr1(
-                a.iter()
-                    .copied()
-                    .filter(|x| x.is_finite())
-                    .collect::<Vec<_>>(),
-            )
+            a.iter()
+                .copied()
+                .filter(|x| x.is_finite())
+                .collect::<Vec<_>>()
+                .into()
         }),
         srcv,
     );
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr1(vec![1.0, f64::NAN, 3.0]);
+    *g.state_mut(src) = [1.0, f64::NAN, 3.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(finite).extents(), [2]);
     assert_eq!(vals(g.view(finite)), vec![1.0, 3.0]);
 
-    *g.state_mut(src) = arr1(vec![f64::NAN, f64::NAN, 5.0]);
+    *g.state_mut(src) = [f64::NAN, f64::NAN, 5.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(finite).extents(), [1]);
     assert_eq!(vals(g.view(finite)), vec![5.0]);
@@ -285,8 +284,8 @@ fn array_map_may_resize_its_output_between_generations() {
 #[test]
 fn array_binary_map_may_raise_the_output_rank() {
     let mut b = Builder::new();
-    let (x, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
-    let (y, yv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (x, xv) = b.source(array::constant([0.0_f64; 2]));
+    let (y, yv) = b.source(array::constant([0.0_f64; 3]));
     let outer = b.segment(
         array::array_binary_map(|a: ArrayView<'_, f64, 1>, c: ArrayView<'_, f64, 1>| {
             let (n, m) = (a.extents()[0], c.extents()[0]);
@@ -303,8 +302,8 @@ fn array_binary_map_may_raise_the_output_rank() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(x) = arr1(vec![1.0, 2.0]);
-    *g.state_mut(y) = arr1(vec![10.0, 20.0, 30.0]);
+    *g.state_mut(x) = [1.0, 2.0].into();
+    *g.state_mut(y) = [10.0, 20.0, 30.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(outer).extents(), [2, 3]);
     assert_eq!(
@@ -319,13 +318,13 @@ fn array_binary_map_may_raise_the_output_rank() {
 #[test]
 fn array_ternary_map_assembles_carried_inputs() {
     let mut b = Builder::new();
-    let (s0, s0v) = b.source(array::scalar(0.0_f64));
-    let (s1, s1v) = b.source(array::scalar(0.0_f64));
-    let (s2, s2v) = b.source(array::scalar(0.0_f64));
+    let (s0, s0v) = b.source(array::constant(0.0_f64));
+    let (s1, s1v) = b.source(array::constant(0.0_f64));
+    let (s2, s2v) = b.source(array::constant(0.0_f64));
     let row = b.segment(
         array::array_ternary_map(
             |a: ArrayView<'_, f64, 0>, b: ArrayView<'_, f64, 0>, c: ArrayView<'_, f64, 0>| {
-                arr1(vec![*a, *b, *c])
+                [*a, *b, *c].into()
             },
         ),
         (s0v, s1v, s2v),
@@ -333,14 +332,14 @@ fn array_ternary_map_assembles_carried_inputs() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(s0) = scalar(1.0);
-    *g.state_mut(s1) = scalar(2.0);
-    *g.state_mut(s2) = scalar(3.0);
+    *g.state_mut(s0) = (1.0).into();
+    *g.state_mut(s1) = (2.0).into();
+    *g.state_mut(s2) = (3.0).into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(row).extents(), [3]);
     assert_eq!(vals(g.view(row)), vec![1.0, 2.0, 3.0]);
 
-    *g.state_mut(s1) = scalar(20.0);
+    *g.state_mut(s1) = (20.0).into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(row)), vec![1.0, 20.0, 3.0]);
 }
@@ -352,7 +351,7 @@ fn array_ternary_map_assembles_carried_inputs() {
 #[test]
 fn array_map_inplace_accumulates_into_a_retained_buffer() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let (src, srcv) = b.source(array::constant([0.0_f64; 2]));
     let running = b.segment(
         array::array_map_inplace(
             |a: ArrayView<'_, f64, 1>| Array::zeros(a.extents()),
@@ -374,7 +373,7 @@ fn array_map_inplace_accumulates_into_a_retained_buffer() {
         (vec![10.0, 20.0], vec![11.0, 22.0]),
         (vec![100.0, 200.0], vec![111.0, 222.0]),
     ] {
-        *g.state_mut(src) = arr1(poke);
+        *g.state_mut(src) = poke.into();
         g.stabilize(&mut pool, &Instant::MIN);
         assert_eq!(vals(g.view(running)), expected);
     }
@@ -385,8 +384,8 @@ fn array_map_inplace_accumulates_into_a_retained_buffer() {
 #[test]
 fn array_binary_map_inplace_accumulates_across_both_inputs() {
     let mut b = Builder::new();
-    let (x, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
-    let (y, yv) = b.source(array::from_parts([2], vec![1.0_f64; 2].into()));
+    let (x, xv) = b.source(array::constant([0.0_f64; 2]));
+    let (y, yv) = b.source(array::constant([1.0_f64; 2]));
     let dot = b.segment(
         array::array_binary_map_inplace(
             |a: ArrayView<'_, f64, 1>, _: ArrayView<'_, f64, 1>| Array::zeros(a.extents()),
@@ -401,14 +400,14 @@ fn array_binary_map_inplace_accumulates_across_both_inputs() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(x) = arr1(vec![1.0, 2.0]);
-    *g.state_mut(y) = arr1(vec![3.0, 4.0]);
+    *g.state_mut(x) = [1.0, 2.0].into();
+    *g.state_mut(y) = [3.0, 4.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(dot)), vec![3.0, 8.0]);
 
     // Only `x` notifies; `y` is read from its carried view and the running
     // product keeps accumulating.
-    *g.state_mut(x) = arr1(vec![10.0, 10.0]);
+    *g.state_mut(x) = [10.0, 10.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(dot)), vec![33.0, 48.0]);
 }
@@ -418,9 +417,9 @@ fn array_binary_map_inplace_accumulates_across_both_inputs() {
 #[test]
 fn array_ternary_map_inplace_folds_three_inputs_into_one_buffer() {
     let mut b = Builder::new();
-    let (x, xv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
-    let (_, yv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
-    let (_, zv) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
+    let (x, xv) = b.source(array::constant([0.0_f64; 2]));
+    let (_, yv) = b.source(array::constant([0.0_f64; 2]));
+    let (_, zv) = b.source(array::constant([0.0_f64; 2]));
     let total = b.segment(
         array::array_ternary_map_inplace(
             |a: ArrayView<'_, f64, 1>, _: ArrayView<'_, f64, 1>, _: ArrayView<'_, f64, 1>| {
@@ -440,11 +439,11 @@ fn array_ternary_map_inplace_folds_three_inputs_into_one_buffer() {
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(x) = arr1(vec![1.0, 2.0]);
+    *g.state_mut(x) = [1.0, 2.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(total)), vec![1.0, 2.0]);
 
-    *g.state_mut(x) = arr1(vec![4.0, 8.0]);
+    *g.state_mut(x) = [4.0, 8.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(total)), vec![5.0, 10.0]);
 }
@@ -459,17 +458,17 @@ fn array_ternary_map_inplace_folds_three_inputs_into_one_buffer() {
 #[test]
 fn select_gathers_indices_in_order_and_may_repeat_them() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([5], vec![0.0_f64; 5].into()));
+    let (src, srcv) = b.source(array::constant([0.0_f64; 5]));
     let picked = b.segment(array::select(vec![3, 0, 3], 0), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr1(vec![10.0, 20.0, 30.0, 40.0, 50.0]);
+    *g.state_mut(src) = [10.0, 20.0, 30.0, 40.0, 50.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(picked).extents(), [3]);
     assert_eq!(vals(g.view(picked)), vec![40.0, 10.0, 40.0]);
 
-    *g.state_mut(src) = arr1(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    *g.state_mut(src) = [1.0, 2.0, 3.0, 4.0, 5.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(picked)), vec![4.0, 1.0, 4.0]);
 }
@@ -479,7 +478,7 @@ fn select_gathers_indices_in_order_and_may_repeat_them() {
 #[test]
 fn select_gathers_along_the_named_axis_only() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
     let rows = b.segment(array::select(vec![1, 0], 0), srcv);
     let cols = b.segment(array::select(vec![2, 0], 1), srcv);
     let mut g = b.build();
@@ -500,14 +499,14 @@ fn select_gathers_along_the_named_axis_only() {
 #[test]
 fn select_mask_keeps_the_true_positions() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([4], vec![0.0_f64; 4].into()));
-    let (panel, panelv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([4])));
+    let (panel, panelv) = b.source(array::constant(Array::zeros([2, 3])));
     let kept = b.segment(array::select_mask(vec![true, false, true, true], 0), srcv);
     let outer = b.segment(array::select_mask(vec![true, false, true], 1), panelv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr1(vec![10.0, 20.0, 30.0, 40.0]);
+    *g.state_mut(src) = [10.0, 20.0, 30.0, 40.0].into();
     *g.state_mut(panel) = panel23();
     g.stabilize(&mut pool, &Instant::MIN);
 
@@ -524,7 +523,7 @@ fn select_mask_keeps_the_true_positions() {
 #[test]
 fn select_at_squeezes_the_indexed_axis() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
     let row = b.segment(array::select_at::<f64, 2, 1>(1, 0), srcv);
     let col = b.segment(array::select_at::<f64, 2, 1>(2, 1), srcv);
     let mut g = b.build();
@@ -551,17 +550,17 @@ fn select_at_squeezes_the_indexed_axis() {
 #[test]
 fn select_at_on_a_vector_yields_a_rank_zero_view() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (src, srcv) = b.source(array::constant([0.0_f64; 3]));
     let one = b.segment(array::select_at::<f64, 1, 0>(1, 0), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr1(vec![7.0, 8.0, 9.0]);
+    *g.state_mut(src) = [7.0, 8.0, 9.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(one).ndim(), 0);
     assert_eq!(vals(g.view(one)), vec![8.0]);
 
-    *g.state_mut(src) = arr1(vec![70.0, 80.0, 90.0]);
+    *g.state_mut(src) = [70.0, 80.0, 90.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(one)), vec![80.0]);
 }
@@ -571,7 +570,7 @@ fn select_at_on_a_vector_yields_a_rank_zero_view() {
 #[test]
 fn select_gathers_from_a_strided_input() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
     let flipped = b.segment(array::transpose([1, 0]), srcv); // [3, 2], strided
     let picked = b.segment(array::select(vec![0, 2], 0), flipped);
     let mut g = b.build();
@@ -595,15 +594,15 @@ fn select_gathers_from_a_strided_input() {
 #[test]
 fn concat_interleaves_differently_per_axis() {
     let mut b = Builder::new();
-    let (p, pv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
-    let (q, qv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (p, pv) = b.source(array::constant(Array::zeros([2, 3])));
+    let (q, qv) = b.source(array::constant(Array::zeros([2, 3])));
     let down = b.segment(array::concat(0), &[pv, qv][..]);
     let across = b.segment(array::concat(1), &[pv, qv][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(p) = panel23();
-    *g.state_mut(q) = arr([2, 3], vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
+    *g.state_mut(q) = [[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(g.view(down).extents(), [4, 3]);
@@ -628,21 +627,21 @@ fn concat_interleaves_differently_per_axis() {
 #[test]
 fn concat_joins_a_variadic_group_of_uneven_inputs() {
     let mut b = Builder::new();
-    let (a, av) = b.source(array::from_parts([2], vec![0.0_f64; 2].into()));
-    let (c, cv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
-    let (d, dv) = b.source(array::from_parts([1], vec![0.0_f64; 1].into()));
+    let (a, av) = b.source(array::constant([0.0_f64; 2]));
+    let (c, cv) = b.source(array::constant([0.0_f64; 3]));
+    let (d, dv) = b.source(array::constant([0.0_f64; 1]));
     let joined = b.segment(array::concat(0), &[av, cv, dv][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(a) = arr1(vec![1.0, 2.0]);
-    *g.state_mut(c) = arr1(vec![3.0, 4.0, 5.0]);
-    *g.state_mut(d) = arr1(vec![6.0]);
+    *g.state_mut(a) = [1.0, 2.0].into();
+    *g.state_mut(c) = [3.0, 4.0, 5.0].into();
+    *g.state_mut(d) = [6.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(g.view(joined).extents(), [6]);
     assert_eq!(vals(g.view(joined)), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
-    *g.state_mut(c) = arr1(vec![30.0, 40.0, 50.0]);
+    *g.state_mut(c) = [30.0, 40.0, 50.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(joined)), vec![1.0, 2.0, 30.0, 40.0, 50.0, 6.0]);
 }
@@ -653,15 +652,15 @@ fn concat_joins_a_variadic_group_of_uneven_inputs() {
 #[test]
 fn stack_inserts_a_new_axis_at_the_requested_position() {
     let mut b = Builder::new();
-    let (u, uv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
-    let (v, vv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (u, uv) = b.source(array::constant([0.0_f64; 3]));
+    let (v, vv) = b.source(array::constant([0.0_f64; 3]));
     let as_rows = b.segment(array::stack::<f64, 1, 2>(0), &[uv, vv][..]);
     let as_cols = b.segment(array::stack::<f64, 1, 2>(1), &[uv, vv][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(u) = arr1(vec![1.0, 2.0, 3.0]);
-    *g.state_mut(v) = arr1(vec![4.0, 5.0, 6.0]);
+    *g.state_mut(u) = [1.0, 2.0, 3.0].into();
+    *g.state_mut(v) = [4.0, 5.0, 6.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(g.view(as_rows).extents(), [2, 3]);
@@ -676,21 +675,21 @@ fn stack_inserts_a_new_axis_at_the_requested_position() {
 #[test]
 fn stack_of_rank_zero_sources_builds_a_cross_section() {
     let mut b = Builder::new();
-    let (s0, s0v) = b.source(array::scalar(0.0_f64));
-    let (s1, s1v) = b.source(array::scalar(0.0_f64));
-    let (s2, s2v) = b.source(array::scalar(0.0_f64));
+    let (s0, s0v) = b.source(array::constant(0.0_f64));
+    let (s1, s1v) = b.source(array::constant(0.0_f64));
+    let (s2, s2v) = b.source(array::constant(0.0_f64));
     let row = b.segment(array::stack::<f64, 0, 1>(0), &[s0v, s1v, s2v][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(s0) = scalar(1.0);
-    *g.state_mut(s1) = scalar(2.0);
-    *g.state_mut(s2) = scalar(3.0);
+    *g.state_mut(s0) = (1.0).into();
+    *g.state_mut(s1) = (2.0).into();
+    *g.state_mut(s2) = (3.0).into();
     g.stabilize(&mut pool, &nano(1));
     assert_eq!(g.view(row).extents(), [3]);
     assert_eq!(vals(g.view(row)), vec![1.0, 2.0, 3.0]);
 
-    *g.state_mut(s1) = scalar(20.0);
+    *g.state_mut(s1) = (20.0).into();
     g.stabilize(&mut pool, &nano(2));
     assert_eq!(vals(g.view(row)), vec![1.0, 20.0, 3.0]);
 }
@@ -700,15 +699,15 @@ fn stack_of_rank_zero_sources_builds_a_cross_section() {
 #[test]
 fn concat_accepts_strided_and_contiguous_inputs_together() {
     let mut b = Builder::new();
-    let (p, pv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
-    let (q, qv) = b.source(array::from_parts([3, 2], vec![0.0_f64; 6].into()));
+    let (p, pv) = b.source(array::constant(Array::zeros([2, 3])));
+    let (q, qv) = b.source(array::constant(Array::zeros([3, 2])));
     let flipped = b.segment(array::transpose([1, 0]), pv); // [3, 2], strided
     let joined = b.segment(array::concat(1), &[flipped, qv][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     *g.state_mut(p) = panel23();
-    *g.state_mut(q) = arr([3, 2], vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+    *g.state_mut(q) = [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(g.view(joined).extents(), [3, 4]);
@@ -731,21 +730,21 @@ fn concat_accepts_strided_and_contiguous_inputs_together() {
 #[test]
 fn split_cuts_an_axis_into_chunks_that_concat_back() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([6], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant([0.0_f64; 6]));
     let chunks = b.segment(array::split(vec![2, 3, 1], 0), srcv);
     assert_eq!(chunks.len(), 3);
     let rejoined = b.segment(array::concat(0), &chunks[..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr1(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    *g.state_mut(src) = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(chunks[0])), vec![1.0, 2.0]);
     assert_eq!(vals(g.view(chunks[1])), vec![3.0, 4.0, 5.0]);
     assert_eq!(vals(g.view(chunks[2])), vec![6.0]);
     assert_eq!(vals(g.view(rejoined)), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
-    *g.state_mut(src) = arr1(vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
+    *g.state_mut(src) = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(chunks[1])), vec![30.0, 40.0, 50.0]);
     assert_eq!(
@@ -760,7 +759,7 @@ fn split_cuts_an_axis_into_chunks_that_concat_back() {
 #[test]
 fn split_along_an_inner_axis_yields_strided_chunks() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
     let chunks = b.segment(array::split(vec![1, 2], 1), srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -782,14 +781,14 @@ fn split_along_an_inner_axis_yields_strided_chunks() {
 #[test]
 fn unstack_drops_the_split_axis() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([3, 2], vec![0.0_f64; 6].into()));
-    let (panel, panelv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([3, 2])));
+    let (panel, panelv) = b.source(array::constant(Array::zeros([2, 3])));
     let rows = b.segment(array::unstack::<f64, 2, 1>(0), srcv);
     let cols = b.segment(array::unstack::<f64, 2, 1>(1), panelv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    *g.state_mut(src) = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]].into();
     *g.state_mut(panel) = panel23();
     g.stabilize(&mut pool, &Instant::MIN);
 
@@ -813,8 +812,8 @@ fn unstack_drops_the_split_axis() {
 #[test]
 fn unstack_then_stack_rebuilds_the_panel_and_carries_when_idle() {
     let mut b = Builder::new();
-    let (panel, panelv) = b.source(array::from_parts([3, 2], vec![0.0_f64; 6].into()));
-    let (other, otherv) = b.source(array::scalar(0.0_f64));
+    let (panel, panelv) = b.source(array::constant(Array::zeros([3, 2])));
+    let (other, otherv) = b.source(array::constant(0.0_f64));
     let rows = b.segment(array::unstack::<f64, 2, 1>(0), panelv);
     let rebuilt = b.segment(array::stack::<f64, 1, 2>(0), &rows[..]);
     let joins = b.segment(runs::<2>(), rebuilt);
@@ -824,7 +823,7 @@ fn unstack_then_stack_rebuilds_the_panel_and_carries_when_idle() {
 
     assert_eq!(g.view(joins), 0);
 
-    *g.state_mut(panel) = arr([3, 2], vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0]);
+    *g.state_mut(panel) = [[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]].into();
     g.stabilize(&mut pool, &nano(1));
     assert_eq!(g.view(rebuilt).extents(), [3, 2]);
     assert_eq!(vals(g.view(rebuilt)), vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0]);
@@ -832,12 +831,12 @@ fn unstack_then_stack_rebuilds_the_panel_and_carries_when_idle() {
 
     // An unrelated poke must not recompute the join, and must not disturb the
     // cross-section it already published.
-    *g.state_mut(other) = scalar(1.0);
+    *g.state_mut(other) = (1.0).into();
     g.stabilize(&mut pool, &nano(2));
     assert_eq!(g.view(joins), 1, "unrelated poke recomputed the join");
     assert_eq!(vals(g.view(rebuilt)), vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0]);
 
-    *g.state_mut(panel) = arr([3, 2], vec![4.0, 40.0, 5.0, 50.0, 6.0, 60.0]);
+    *g.state_mut(panel) = [[4.0, 40.0], [5.0, 50.0], [6.0, 60.0]].into();
     g.stabilize(&mut pool, &nano(3));
     assert_eq!(vals(g.view(rebuilt)), vec![4.0, 40.0, 5.0, 50.0, 6.0, 60.0]);
     assert_eq!(g.view(joins), 2);
@@ -853,15 +852,15 @@ fn unstack_then_stack_rebuilds_the_panel_and_carries_when_idle() {
 #[test]
 fn slice_narrows_each_axis_and_tracks_the_source() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([5], vec![0.0_f64; 5].into()));
-    let (grid, gridv) = b.source(array::from_parts([3, 4], vec![0.0_f64; 12].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([5])));
+    let (grid, gridv) = b.source(array::constant(Array::zeros([3, 4])));
     let middle = b.segment(array::slice((1usize..4,)), srcv);
     let window = b.segment(array::slice((1usize..3, 1usize..3)), gridv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr1(vec![10.0, 20.0, 30.0, 40.0, 50.0]);
-    *g.state_mut(grid) = arr([3, 4], (1..=12).map(|i| i as f64).collect::<Vec<_>>());
+    *g.state_mut(src) = [10.0, 20.0, 30.0, 40.0, 50.0].into();
+    *g.state_mut(grid) = Array::from_parts([3, 4], (1..=12).map(|i| i as f64).collect());
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(g.view(middle).extents(), [3]);
@@ -872,7 +871,7 @@ fn slice_narrows_each_axis_and_tracks_the_source() {
     assert_eq!(vals(g.view(window)), vec![6.0, 7.0, 10.0, 11.0]);
     assert!(!is_contiguous(g.view(window)));
 
-    *g.state_mut(src) = arr1(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    *g.state_mut(src) = [1.0, 2.0, 3.0, 4.0, 5.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
     assert_eq!(vals(g.view(middle)), vec![2.0, 3.0, 4.0]);
 }
@@ -883,13 +882,13 @@ fn slice_narrows_each_axis_and_tracks_the_source() {
 #[test]
 fn a_stepped_slice_feeds_a_strided_view_downstream() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([6], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant([0.0_f64; 6]));
     let evens = b.segment(array::slice([(0usize..6, 2usize)]), srcv);
     let scaled = b.segment(array::map(|&x: &f64| x * 10.0), evens);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = arr1(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    *g.state_mut(src) = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(g.view(evens).extents(), [3]);
@@ -904,7 +903,7 @@ fn a_stepped_slice_feeds_a_strided_view_downstream() {
 #[test]
 fn slice_reshape_drops_every_indexed_axis() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
     let row = b.segment(array::slice_reshape::<_, _, 1, _>((1usize, ..)), srcv);
     let cell = b.segment(array::slice_reshape::<_, _, 0, _>((1usize, 2usize)), srcv);
     let mut g = b.build();
@@ -927,7 +926,7 @@ fn slice_reshape_inserts_new_axes() {
     use tradingflow::data::layout::SliceReshape::NewAxis;
 
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
     // Two axes in, four out: a unit axis outside and between the originals.
     let spread = b.segment(
         array::slice_reshape::<_, _, 4, _>((NewAxis, .., NewAxis, ..)),
@@ -956,7 +955,7 @@ fn slice_reshape_inserts_new_axes() {
 #[test]
 fn transpose_permutes_axes_without_copying() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
     let flipped = b.segment(array::transpose([1, 0]), srcv);
     let back = b.segment(array::transpose([1, 0]), flipped);
     let mut g = b.build();
@@ -987,15 +986,15 @@ fn derive_view_runs_an_arbitrary_view_transform() {
     }
 
     let mut b = Builder::new();
-    let (panel, panelv) = b.source(array::from_parts([3, 2], vec![0.0_f64; 6].into()));
-    let (vector, vectorv) = b.source(array::from_parts([3], vec![0.0_f64; 3].into()));
+    let (panel, panelv) = b.source(array::constant(Array::zeros([3, 2])));
+    let (vector, vectorv) = b.source(array::constant(Array::zeros([3])));
     let tail = b.segment(array::derive_view(tail_rows), panelv);
     let padded = b.segment(array::derive_view(as_row_panel), vectorv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(panel) = arr([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    *g.state_mut(vector) = arr1(vec![7.0, 8.0, 9.0]);
+    *g.state_mut(panel) = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]].into();
+    *g.state_mut(vector) = [7.0, 8.0, 9.0].into();
     g.stabilize(&mut pool, &Instant::MIN);
 
     assert_eq!(g.view(tail).extents(), [2, 2]);
@@ -1010,7 +1009,7 @@ fn derive_view_runs_an_arbitrary_view_transform() {
 #[test]
 fn pad_ndim_prepends_unit_axes() {
     let mut b = Builder::new();
-    let (src, srcv) = b.source(array::from_parts([2, 3], vec![0.0_f64; 6].into()));
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
     let raised = b.segment(array::pad_ndim::<_, 2, 4>(), srcv);
     let same = b.segment(array::pad_ndim::<_, 2, 2>(), srcv);
     let mut g = b.build();

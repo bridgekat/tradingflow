@@ -314,3 +314,31 @@ impl<T: Scalar, const N: usize> Series<T, N> {
         self.view().asof(query_ts)
     }
 }
+
+impl<T: Scalar, const N: usize> From<(Vec<Instant>, Vec<Array<T, N>>)> for Series<T, N> {
+    fn from((instants, values): (Vec<Instant>, Vec<Array<T, N>>)) -> Self {
+        let Some(first) = values.first() else {
+            panic!("from: empty values vector");
+        };
+        let layout = first.layout();
+        let stride = layout.len();
+        let mut data = Vec::with_capacity(instants.len() * stride);
+        for value in values {
+            assert_eq!(
+                value.layout(),
+                layout,
+                "from: value extents {:?} != first value extents {:?}",
+                value.extents(),
+                layout.extents()
+            );
+            data.extend_from_slice(value.data());
+        }
+        Self {
+            layout,
+            stride,
+            instants,
+            data,
+            base: 0,
+        }
+    }
+}

@@ -1,4 +1,4 @@
-use std::cmp::{Ord, Ordering, PartialEq, PartialOrd};
+use std::cmp::{Ord, PartialEq, PartialOrd};
 
 use crate::data::{Instant, Scalar};
 use crate::graph::Segment;
@@ -21,15 +21,6 @@ pub fn ne<T: Scalar + PartialEq, const N: usize>() -> impl Segment<
     Context = Instant,
 > {
     array::binary_map(|a: &T, b: &T| a.ne(b))
-}
-
-/// Elementwise partial order: [`PartialOrd::partial_cmp`].
-pub fn partial_cmp<T: Scalar + PartialOrd, const N: usize>() -> impl Segment<
-    Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
-    Outputs = ArrayPort<Option<Ordering>, N>,
-    Context = Instant,
-> {
-    array::binary_map(|a: &T, b: &T| a.partial_cmp(b))
 }
 
 /// Elementwise less than: [`PartialOrd::lt`].

@@ -106,11 +106,11 @@ fn resolve_indices_reads_labelled_and_numeric_axes() {
     let symbols: ArrayRef = Arc::new(StringArray::from(vec!["CCC", "AAA", "BBB"]));
     let buckets: ArrayRef = Arc::new(Int32Array::from(vec![1, 0, 1]));
     let axes = [
-        Axis::Labeled(Schema::new(["AAA", "BBB", "CCC"])),
-        Axis::None,
+        &Axis::Labeled(Schema::new(["AAA", "BBB", "CCC"])),
+        &Axis::None,
     ];
 
-    let indices = read_index_columns(&[symbols, buckets], &axes);
+    let indices = read_index_columns([symbols, buckets], axes);
 
     assert_eq!(indices, vec![[2, 1], [0, 0], [1, 1]]);
 }
@@ -121,9 +121,9 @@ fn resolve_indices_reads_labelled_and_numeric_axes() {
 fn resolve_indices_reads_a_dictionary_encoded_axis() {
     let symbols: DictionaryArray<Int32Type> =
         vec!["CCC", "AAA", "CCC", "BBB"].into_iter().collect();
-    let axes = [Axis::Labeled(Schema::new(["AAA", "BBB", "CCC"]))];
+    let axes = [&Axis::Labeled(Schema::new(["AAA", "BBB", "CCC"]))];
 
-    let indices = read_index_columns(&[Arc::new(symbols) as ArrayRef], &axes);
+    let indices = read_index_columns([Arc::new(symbols) as ArrayRef], axes);
 
     assert_eq!(indices, vec![[2], [0], [2], [1]]);
 }
@@ -132,9 +132,9 @@ fn resolve_indices_reads_a_dictionary_encoded_axis() {
 #[test]
 fn resolve_indices_reads_any_dictionary_key_width() {
     let symbols: DictionaryArray<Int8Type> = vec!["BBB", "AAA"].into_iter().collect();
-    let axes = [Axis::Labeled(Schema::new(["AAA", "BBB"]))];
+    let axes = [&Axis::Labeled(Schema::new(["AAA", "BBB"]))];
 
-    let indices = read_index_columns(&[Arc::new(symbols) as ArrayRef], &axes);
+    let indices = read_index_columns([Arc::new(symbols) as ArrayRef], axes);
 
     assert_eq!(indices, vec![[1], [0]]);
 }
@@ -149,9 +149,9 @@ fn a_dictionary_may_describe_labels_outside_the_schema() {
     let symbols: DictionaryArray<Int32Type> = vec!["AAA", "BBB"].into_iter().collect();
     // Keep only the AAA row; the dictionary still carries BBB.
     let filtered = filter(&symbols, &BooleanArray::from(vec![true, false])).unwrap();
-    let axes = [Axis::Labeled(Schema::new(["AAA"]))];
+    let axes = [&Axis::Labeled(Schema::new(["AAA"]))];
 
-    let indices = read_index_columns(&[filtered], &axes);
+    let indices = read_index_columns([filtered], axes);
 
     assert_eq!(indices, vec![[0]], "the unreferenced BBB entry is ignored");
 }
@@ -162,8 +162,8 @@ fn a_dictionary_may_describe_labels_outside_the_schema() {
 fn resolve_indices_rejects_a_referenced_label_outside_the_schema() {
     let symbols: DictionaryArray<Int32Type> = vec!["AAA", "BBB"].into_iter().collect();
     let _ = read_index_columns(
-        &[Arc::new(symbols) as ArrayRef],
-        &[Axis::Labeled(Schema::new(["AAA"]))],
+        [Arc::new(symbols) as ArrayRef],
+        [&Axis::Labeled(Schema::new(["AAA"]))],
     );
 }
 
@@ -173,7 +173,7 @@ fn resolve_indices_rejects_a_referenced_label_outside_the_schema() {
 #[should_panic(expected = r#"label "ZZZ" in string index column 0 is not in the schema"#)]
 fn a_plain_string_axis_reports_an_unknown_label_alike() {
     let symbols: ArrayRef = Arc::new(StringArray::from(vec!["AAA", "ZZZ"]));
-    let _ = read_index_columns(&[symbols], &[Axis::Labeled(Schema::new(["AAA"]))]);
+    let _ = read_index_columns([symbols], [&Axis::Labeled(Schema::new(["AAA"]))]);
 }
 
 #[test]
@@ -181,8 +181,8 @@ fn a_plain_string_axis_reports_an_unknown_label_alike() {
 fn resolve_indices_rejects_a_null_dictionary_key() {
     let symbols: DictionaryArray<Int32Type> = vec![Some("AAA"), None].into_iter().collect();
     let _ = read_index_columns(
-        &[Arc::new(symbols) as ArrayRef],
-        &[Axis::Labeled(Schema::new(["AAA"]))],
+        [Arc::new(symbols) as ArrayRef],
+        [&Axis::Labeled(Schema::new(["AAA"]))],
     );
 }
 
@@ -190,7 +190,7 @@ fn resolve_indices_rejects_a_null_dictionary_key() {
 #[should_panic(expected = "null in numeric index column 0")]
 fn resolve_indices_rejects_a_null_position() {
     let buckets: ArrayRef = Arc::new(Int32Array::from(vec![Some(0), None]));
-    let _ = read_index_columns(&[buckets], &[Axis::None]);
+    let _ = read_index_columns([buckets], [&Axis::None]);
 }
 
 /// `set_indices` walks row-major, which is the row order the whole write side
@@ -232,10 +232,10 @@ fn scatter_pivots_long_rows_into_a_cross_section() {
     let symbols: ArrayRef = Arc::new(StringArray::from(vec!["AAA", "AAA", "CCC", "BBB"]));
     let buckets: ArrayRef = Arc::new(UInt64Array::from(vec![0_u64, 1, 1, 0]));
     let axes = [
-        Axis::Labeled(Schema::new(["AAA", "BBB", "CCC"])),
-        Axis::None,
+        &Axis::Labeled(Schema::new(["AAA", "BBB", "CCC"])),
+        &Axis::None,
     ];
-    let indices = read_index_columns(&[symbols, buckets], &axes);
+    let indices = read_index_columns([symbols, buckets], axes);
     // The BBB row is null: it must leave both the mask and the fill alone.
     let column = Float64Array::from(vec![Some(1.0), Some(2.0), Some(5.0), None]);
 
@@ -277,8 +277,8 @@ fn scatter_leaves_unnamed_cells_untouched() {
 #[test]
 fn one_resolution_serves_every_field_of_a_batch() {
     let symbols: ArrayRef = Arc::new(StringArray::from(vec!["BBB", "AAA"]));
-    let axes = [Axis::Labeled(Schema::new(["AAA", "BBB"]))];
-    let indices = read_index_columns(&[symbols], &axes);
+    let axes = [&Axis::Labeled(Schema::new(["AAA", "BBB"]))];
+    let indices = read_index_columns([symbols], axes);
 
     let mut mask = Array::full([2], false);
     let mut opens = Array::full([2], f64::NAN);
@@ -333,19 +333,19 @@ fn scatter_rejects_a_row_count_mismatch() {
 #[test]
 fn a_cross_section_round_trips_through_a_long_table() {
     let axes = [
-        Axis::Labeled(Schema::new(["AAA", "BBB", "CCC"])),
-        Axis::None,
+        &Axis::Labeled(Schema::new(["AAA", "BBB", "CCC"])),
+        &Axis::None,
     ];
     let mask = Array::from_parts([3, 2], vec![true, true, false, false, false, true].into());
     let values = Array::from_parts([3, 2], vec![1.0, 2.0, 9.0, 9.0, 9.0, 5.0].into());
 
     // Out: the marked cells become rows.
     let indices = true_indices(mask.view());
-    let [symbols, buckets] = build_index_columns(&indices, &axes);
+    let [symbols, buckets] = build_index_columns(&indices, axes);
     let column = build_value_column(&indices, mask.view(), values.view());
 
     // Back: the rows land on the cells they came from.
-    let round = read_index_columns(&[symbols, buckets], &axes);
+    let round = read_index_columns([symbols, buckets], axes);
     assert_eq!(round, indices);
 
     let mut mask2 = Array::full([3, 2], false);

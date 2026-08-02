@@ -151,7 +151,7 @@ fn ref_cov_matrix(paths: &[Vec<f64>], t: usize, w: usize, min_count: usize) -> V
 
 /// The tick-`t` cross-section of a set of per-element paths.
 fn cross(paths: &[Vec<f64>], t: usize) -> Array<f64, 1> {
-    arr1(paths.iter().map(|p| p[t]).collect::<Vec<_>>())
+    paths.iter().map(|p| p[t]).collect::<Vec<_>>().into()
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ fn sum_tracks_the_trailing_count_window_exactly() {
     let paths: Vec<Vec<f64>> = (0..3).map(|s| quarter_path(10 + s, 40)).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, arr([3], vec![0.0_f64; 3]));
+    let (src, xv) = event_src(&mut b, vec![0.0_f64; 3].into());
     let s = b.segment(rolling::sum(W, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -197,7 +197,7 @@ fn sum_min_count_gates_on_the_finite_sample_count() {
     let mut b = Builder::new();
     // The NaN samples ride along a second, always-finite carrier element —
     // per-element independence is part of what the reference exercises.
-    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
+    let (src, xv) = event_src(&mut b, vec![0.0_f64; 2].into());
     let rec = b.segment(series::record_all(), xv);
     let s = b.segment(rolling::series_sum(W, MIN), rec);
     let mut g = b.build();
@@ -205,7 +205,7 @@ fn sum_min_count_gates_on_the_finite_sample_count() {
 
     let (mut gated, mut emitted) = (0, 0);
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = arr1([v, 0.0]);
+        *g.state_mut(src) = [v, 0.0].into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         let want = ref_sum(count_window(&path, t, W), MIN);
         assert_close(&[vals(g.view(s))[0]], &[want], &format!("tick {t}"));
@@ -229,7 +229,7 @@ fn sum_min_count_gates_on_the_finite_sample_count() {
 #[should_panic(expected = "min_count must be positive")]
 fn sum_rejects_a_zero_min_count() {
     let mut b = Builder::new();
-    let (_src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (_src, xv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_all(), xv);
     let _ = b.segment(rolling::series_sum(3, 0), rec);
 }
@@ -246,13 +246,13 @@ fn mean_emits_partial_windows_before_filling() {
     let path = [1.0, 2.0, 3.0, 6.0, 9.0];
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let m = b.segment(rolling::mean(W, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         let window = count_window(&path, t, W);
         assert_eq!(window.len(), (t + 1).min(W), "tick {t}: window model");
@@ -282,13 +282,13 @@ fn mean_min_count_equal_to_the_window_forces_a_warm_up() {
     let path = quarter_path(3, 20);
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let m = b.segment(rolling::mean(W, W), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         let got = vals(g.view(m));
         if t + 1 < W {
@@ -327,7 +327,7 @@ fn mean_accumulates_each_cross_section_element_independently() {
     ];
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, arr([3], vec![0.0_f64; 3]));
+    let (src, xv) = event_src(&mut b, vec![0.0_f64; 3].into());
     let m = b.segment(rolling::mean(W, MIN), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -373,7 +373,7 @@ fn mean_over_a_duration_window_selects_ticks_by_timestamp() {
     let path = quarter_path(7, days.len());
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let fused = b.segment(rolling::mean(Duration::from_days(SPAN), 1), xv);
     let rec = b.segment(series::record_all(), xv);
     let hoisted = b.segment(rolling::series_mean(Duration::from_days(SPAN), 1), rec);
@@ -382,7 +382,7 @@ fn mean_over_a_duration_window_selects_ticks_by_timestamp() {
 
     let mut differs_from_count_window = 0;
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &day(days[t]));
         let window = duration_window(&path, &days, t, SPAN);
         assert_close(
@@ -415,7 +415,7 @@ fn var_matches_the_population_variance_of_the_window() {
     let paths: Vec<Vec<f64>> = (0..2).map(|s| quarter_path(31 + s, 40)).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
+    let (src, xv) = event_src(&mut b, vec![0.0_f64; 2].into());
     let v = b.segment(rolling::var(W, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -440,13 +440,13 @@ fn std_dev_matches_the_square_root_of_the_window_variance() {
     let path = quarter_path(33, 30);
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let s = b.segment(rolling::std_dev(W, MIN), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, &x) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(x);
+        *g.state_mut(src) = x.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         let want = ref_var(count_window(&path, t, W), MIN).sqrt();
         assert_close(&vals(g.view(s)), &[want], &format!("tick {t}"));
@@ -463,7 +463,7 @@ fn var_clamps_the_rounding_error_of_a_constant_window_to_zero() {
     let c = 1000.0 + 1.0 / 3.0;
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let v = b.segment(rolling::var(W, 1), xv);
     let s = b.segment(rolling::std_dev(W, 1), xv);
     let mut g = b.build();
@@ -474,7 +474,7 @@ fn var_clamps_the_rounding_error_of_a_constant_window_to_zero() {
     let (mut sum, mut sum_sq, mut n) = (0.0_f64, 0.0_f64, 0_usize);
     let mut clamped = 0;
     for t in 0..40 {
-        *g.state_mut(src) = scalar(c);
+        *g.state_mut(src) = c.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
 
         sum += c;
@@ -520,7 +520,7 @@ fn cov_produces_a_symmetric_matrix_whose_diagonal_is_the_variance() {
     ];
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, arr([K], vec![0.0_f64; K]));
+    let (src, xv) = event_src(&mut b, vec![0.0_f64; K].into());
     let c = b.segment(rolling::cov(W, 1), xv);
     let v = b.segment(rolling::var(W, 1), xv);
     let mut g = b.build();
@@ -575,7 +575,7 @@ fn cov_gates_each_matrix_entry_on_its_own_pairwise_complete_count() {
     ];
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, arr([K], vec![0.0_f64; K]));
+    let (src, xv) = event_src(&mut b, vec![0.0_f64; K].into());
     let rec = b.segment(series::record_all(), xv);
     let c = b.segment(rolling::series_cov(W, MIN), rec);
     let mut g = b.build();
@@ -611,7 +611,7 @@ fn mean_exp_weights_the_window_geometrically() {
     let path = [10.0, 20.0, 30.0, 40.0];
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_all(), xv);
     let e = b.segment(rolling::series_mean_exp(alpha, 2, 1), rec);
     let mut g = b.build();
@@ -626,7 +626,7 @@ fn mean_exp_weights_the_window_geometrically() {
         (0.5 * 40.0 + 0.25 * 30.0) / 0.75,
     ];
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         assert_close(&vals(g.view(e)), &want[t..t + 1], &format!("tick {t}"));
         // The same numbers, from the generic reference model.
@@ -650,7 +650,7 @@ fn mean_exp_matches_a_recomputed_weighted_window() {
     let paths: Vec<Vec<f64>> = (0..2).map(|s| quarter_path(51 + s, 40)).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
+    let (src, xv) = event_src(&mut b, vec![0.0_f64; 2].into());
     let e = b.segment(rolling::mean_exp(alpha, W, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -674,13 +674,13 @@ fn mean_exp_with_alpha_one_collapses_to_the_latest_value() {
     let path = quarter_path(57, 20);
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let e = b.segment(rolling::mean_exp(1.0, 4, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         assert_eq!(vals(g.view(e)), vec![v], "tick {t}");
     }
@@ -700,13 +700,13 @@ fn lag_warms_up_to_nan_then_returns_the_value_n_ticks_ago() {
     let path = quarter_path(61, 40);
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let l = b.segment(rolling::lag(N), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         let want = if t < N { f64::NAN } else { path[t - N] };
         assert_close(&vals(g.view(l)), &[want], &format!("tick {t}"));
@@ -723,14 +723,14 @@ fn diff_and_pct_change_warm_up_then_track_the_lagged_sample() {
     let path: Vec<f64> = (1..=40).map(|i| (i * i) as f64).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let d = b.segment(rolling::diff(N), xv);
     let p = b.segment(rolling::pct_change(N), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         if t < N {
             assert!(
@@ -763,7 +763,7 @@ fn lag_over_a_duration_window_returns_the_last_tick_before_it() {
     let path = quarter_path(63, days.len());
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let l = b.segment(rolling::lag(Duration::from_days(SPAN)), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -771,7 +771,7 @@ fn lag_over_a_duration_window_returns_the_last_tick_before_it() {
     let mut jumped = 0;
     let mut prev_first = 0usize;
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &day(days[t]));
         let first = first_in_duration_window(&days, t, SPAN);
         let want = if first == 0 {
@@ -810,7 +810,7 @@ fn a_bounded_record_compacts_underneath_rolling_and_lag() {
     let path = quarter_path(71, TICKS);
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     // The rolling mean reads back W elements and the lag N + 1; a retention of
     // 8 covers both with margin. See `a_record_trimmed_to_the_window_is_rejected`
     // for what happens without that margin.
@@ -822,7 +822,7 @@ fn a_bounded_record_compacts_underneath_rolling_and_lag() {
 
     let mut compacted_at = None;
     for (t, &v) in path.iter().enumerate() {
-        *g.state_mut(src) = scalar(v);
+        *g.state_mut(src) = v.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
 
         assert_close(
@@ -874,14 +874,14 @@ fn a_bounded_record_compacts_underneath_rolling_and_lag() {
 #[should_panic(expected = "input series dropped elements")]
 fn a_record_trimmed_to_the_window_is_rejected() {
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, scalar(0.0_f64));
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.segment(series::record_on(2, false), xv);
     let _ = b.segment(rolling::series_sum(2, 1), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     for t in 0..8 {
-        *g.state_mut(src) = scalar(t as f64);
+        *g.state_mut(src) = (t as f64).into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
     }
 }
@@ -901,7 +901,7 @@ fn std_dev_is_bit_identical_to_the_hoisted_var_then_sqrt() {
     let paths: Vec<Vec<f64>> = (0..2).map(|s| quarter_path(81 + s, 40)).collect();
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
+    let (src, xv) = event_src(&mut b, vec![0.0_f64; 2].into());
     let fused = b.segment(rolling::std_dev(W, MIN), xv);
     let rec = b.segment(series::record_on(16, false), xv);
     let var = b.segment(rolling::series_var(W, MIN), rec);
@@ -949,7 +949,7 @@ fn every_statistic_is_bit_identical_to_its_hoisted_spelling() {
         .collect();
 
     let mut b = Builder::new();
-    let (src, xv) = event_src(&mut b, arr([2], vec![0.0_f64; 2]));
+    let (src, xv) = event_src(&mut b, vec![0.0_f64; 2].into());
     let rec = b.segment(series::record_all(), xv);
 
     let sum_f = b.segment(rolling::sum(W, 1), xv);
@@ -1006,7 +1006,7 @@ fn diff_and_pct_change_are_bit_identical_to_their_hoisted_spellings() {
     let mut b = Builder::new();
     // The raw state wire (`rawv`) drives the hand-wired arithmetic: `elem` is
     // stateless, and the current sample is exactly the source's state.
-    let (src, (xc, rawv)) = b.source(cell(arr([2], vec![0.0_f64; 2])));
+    let (src, (xc, rawv)) = b.source(cell([0.0_f64; 2]));
     let fused_diff = b.segment(rolling::diff(N), (xc, rawv));
     let fused_pct = b.segment(rolling::pct_change(N), (xc, rawv));
     let rec = b.segment(series::record_all(), (xc, rawv));

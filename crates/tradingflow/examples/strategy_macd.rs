@@ -2,23 +2,28 @@ use tradingflow::{
     data::{Array, ArrayView, Duration, Instant, Series},
     graph::{Builder, Pool, Segment},
     operators::{array, elem, rolling, series, signal, trader},
-    ports::ArrayPort,
+    ports::{ArrayPort, SignalPort},
     sources::sync,
     time::UnixTime,
 };
 
 #[tokio::main]
 async fn main() {
-    // Example data: a random-walk daily price series.
+    const N_SYMBOLS: usize = 5;
+    const N_DAYS: usize = 30;
+
+    // Example data: 5 instruments, each having random-walk daily price series.
     let mut timestamps = Vec::new();
     let mut values = Vec::new();
-    let mut price = 100.0;
-    for i in 0..30 {
-        timestamps.push(Instant::from_offset(Duration::from_days(i)));
-        values.push(price);
-        price += rand::random_range(-1.0..1.0);
+    let mut prices = [100.0; N_SYMBOLS];
+    for i in 0..N_DAYS {
+        timestamps.push(Instant::from_offset(Duration::from_days(i as i64)));
+        values.push(Array::from(prices));
+        for price in &mut prices {
+            *price += rand::random_range(-3.0..3.0);
+        }
     }
-    let data = Series::from_parts([], timestamps, values, 0);
+    let data = Series::from((timestamps, values));
 
     // Create the thread pool.
     let mut pool = Pool::new(std::thread::available_parallelism().unwrap().get());
@@ -35,65 +40,86 @@ async fn main() {
     let diff = b.segment(elem::sub(), (macd, smooth)); // (MACD - smooth)
     let prev = b.segment(rolling::lag(1), (daily, diff)); // (MACD - smooth) one period ago
 
-    // Calculate position weight based on `diff` and `prev`.
+    // Calculate position weight based on `diff` and `prev`, on each rebalance signal.
     // This requires defining a custom operator, by implementing the `Segment` trait.
     struct Crossover;
 
     impl Segment for Crossover {
-        type Inputs = (ArrayPort<f64, 0>, ArrayPort<f64, 0>);
-        type Outputs = ArrayPort<f64, 0>;
+        type Inputs = (SignalPort<0>, ArrayPort<f64, 1>, ArrayPort<f64, 1>);
+        type Outputs = ArrayPort<f64, 1>;
         type Context = Instant;
-        type State = Array<f64, 0>;
+        type State = Array<f64, 1>;
 
-        fn init(self, _: (ArrayView<'_, f64, 0>, ArrayView<'_, f64, 0>)) -> Self::State {
-            Array::scalar(0.0) // Initialize state (weight) to 0.0.
+        fn init(
+            self,
+            _: (
+                ArrayView<'_, bool, 0>,
+                ArrayView<'_, f64, 1>,
+                ArrayView<'_, f64, 1>,
+            ),
+        ) -> Self::State {
+            // Initialize state (weights) to 0.0.
+            [0.0; N_SYMBOLS].into()
         }
 
         fn reset<'a, 'b: 'a>(
-            _: (ArrayView<'a, f64, 0>, ArrayView<'a, f64, 0>),
+            _: (
+                ArrayView<'a, bool, 0>,
+                ArrayView<'a, f64, 1>,
+                ArrayView<'a, f64, 1>,
+            ),
             state: &'b mut Self::State,
-        ) -> ArrayView<'a, f64, 0> {
-            state.view() // Output current state (weight).
+        ) -> ArrayView<'a, f64, 1> {
+            // Output current state (weights).
+            state.view()
         }
 
         fn compute<'a, 'b: 'a>(
-            (diff, prev): (ArrayView<'a, f64, 0>, ArrayView<'a, f64, 0>),
+            (rebalance_signal, diff, prev): (
+                ArrayView<'a, bool, 0>,
+                ArrayView<'a, f64, 1>,
+                ArrayView<'a, f64, 1>,
+            ),
             state: &'b mut Self::State,
             _: &Self::Context,
-        ) -> ArrayView<'a, f64, 0> {
-            if *diff > 0.0 && *prev <= 0.0 {
-                **state = 1.0; // Buy signal: set state (weight) to 1.0.
+        ) -> ArrayView<'a, f64, 1> {
+            // Update state (weights) only when rebalance signal is true.
+            if *rebalance_signal {
+                for (i, (&diff, &prev)) in diff.iter().zip(prev.iter()).enumerate() {
+                    // Buy: set weight for the i-th symbol to (1 / N).
+                    if diff > 0.0 && prev <= 0.0 {
+                        state[[i]] = 1.0 / N_SYMBOLS as f64;
+                    }
+                    // Sell: set weight for the i-th symbol to 0.
+                    if diff < 0.0 && prev >= 0.0 {
+                        state[[i]] = 0.0;
+                    }
+                }
             }
-            if *diff < 0.0 && *prev >= 0.0 {
-                **state = 0.0; // Sell signal: set state (weight) to 0.0.
-            }
-            state.view() // Output current state (weight).
+            // Output current state (weights).
+            state.view()
         }
     }
 
     // Wire the custom operator into the graph.
-    let weight = b.segment(Crossover, (diff, prev));
+    // Rebalance frequency is set to daily.
+    let weights = b.segment(Crossover, (daily, diff, prev));
 
     // Simulate frictionless trading using `weight`.
     // Here we assume: best bid = best ask = prices, no dividends.
-    let price_signal = daily;
-    let flags = b.value(array::from_parts([1], vec![true].into()));
-    let bids = b.segment(array::pad_ndim(), prices); // Convert scalar to 1D vector
-    let asks = b.segment(array::pad_ndim(), prices); // (Same)
-
-    let div_signals = b.segment(signal::as_signal_map(array::pad_ndim()), daily);
-    let share_divs = b.value(array::from_parts([1], vec![0.0].into()));
-    let cash_divs = b.value(array::from_parts([1], vec![0.0].into()));
-
-    let rebalance_signal = daily;
-    let weights = b.segment(array::pad_ndim(), weight);
+    let flags = b.value(array::constant([true; N_SYMBOLS]));
+    let bids = prices;
+    let asks = prices;
+    let div_signals = b.value(signal::quiet([N_SYMBOLS]));
+    let share_divs = b.value(array::constant([0.0; N_SYMBOLS]));
+    let cash_divs = b.value(array::constant([0.0; N_SYMBOLS]));
 
     let (_positions, _cash, nav) = b.segment(
         trader::fixed::benchmark(false, 100.0),
         (
-            (price_signal, flags, bids, asks),
+            (daily, flags, bids, asks),
             (div_signals, share_divs, cash_divs),
-            (rebalance_signal, weights),
+            (daily, weights),
         ),
     );
     let nav_series = b.segment(series::record_all(), (daily, nav));

@@ -6,7 +6,7 @@
 //! worth pinning are therefore the exact formula, the treatment of missing
 //! (non-finite) entries, and the degenerate cross-sections.
 
-use tradingflow::data::Instant;
+use tradingflow::data::{Array, Instant};
 use tradingflow::graph::typed::Builder;
 use tradingflow::graph::{Pool, Segment};
 use tradingflow::operators::{array, stats};
@@ -27,14 +27,14 @@ fn run1<S>(op: S, data: Vec<f64>) -> Vec<f64>
 where
     S: Segment<Inputs = ArrayPort<f64, 1>, Outputs = ArrayPort<f64, 1>, Context = Instant>,
 {
-    let input = arr1(data);
+    let input = data;
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(input.clone()));
     let out = b.segment(op, srcv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(src) = input;
+    *g.state_mut(src) = input.into();
     g.stabilize(&mut pool, &Instant::MIN);
     vals(g.view(out))
 }
@@ -391,7 +391,7 @@ fn rank_two_input_is_one_cross_section_over_the_whole_array() {
     // same three percentiles {1/6, 3/6, 5/6}; a whole-array ranking spreads all
     // six values over (0, 1).
     let data = vec![3.0, 1.0, 5.0, 2.0, 6.0, 4.0];
-    let input = arr([2, 3], data.clone());
+    let input = Array::from_parts([2, 3], data.clone().into());
 
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(input.clone()));

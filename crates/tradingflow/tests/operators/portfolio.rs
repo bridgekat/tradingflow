@@ -19,7 +19,7 @@
 
 #![cfg(feature = "python")]
 
-use tradingflow::data::Instant;
+use tradingflow::data::{Array, Instant};
 use tradingflow::graph::typed::Builder;
 use tradingflow::graph::{Pool, Segment};
 use tradingflow::operators::array::constant;
@@ -61,8 +61,8 @@ where
 {
     let mut b = Builder::new();
     let (signal, signalv) = b.source(signal());
-    let (_, universev) = b.source(constant(arr1(universe.to_vec())));
-    let (_, muv) = b.source(constant(arr1(mu.to_vec())));
+    let (_, universev) = b.source(constant(universe.to_vec()));
+    let (_, muv) = b.source(constant(mu.to_vec()));
 
     let out = b.segment(portfolio, (signalv, universev, muv));
     let recorded = b.segment(record_all(), out);
@@ -87,8 +87,8 @@ where
     let n = universe.len();
     let mut b = Builder::new();
     let (signal, signalv) = b.source(signal());
-    let (_, universev) = b.source(constant(arr1(universe.to_vec())));
-    let (_, sigmav) = b.source(constant(arr([n, n], sigma.to_vec())));
+    let (_, universev) = b.source(constant(universe.to_vec()));
+    let (_, sigmav) = b.source(constant(Array::from_parts([n, n], sigma.into())));
 
     let out = b.segment(portfolio, (signalv, universev, sigmav));
     let recorded = b.segment(record_all(), out);
@@ -118,9 +118,9 @@ where
     let n = universe.len();
     let mut b = Builder::new();
     let (signal, signalv) = b.source(signal());
-    let (_, universev) = b.source(constant(arr1(universe.to_vec())));
-    let (_, muv) = b.source(constant(arr1(mu.to_vec())));
-    let (_, sigmav) = b.source(constant(arr([n, n], sigma.to_vec())));
+    let (_, universev) = b.source(constant(universe.to_vec()));
+    let (_, muv) = b.source(constant(mu.to_vec()));
+    let (_, sigmav) = b.source(constant(Array::from_parts([n, n], sigma.into())));
 
     let out = b.segment(portfolio, (signalv, universev, muv, sigmav));
     let recorded = b.segment(record_all(), out);

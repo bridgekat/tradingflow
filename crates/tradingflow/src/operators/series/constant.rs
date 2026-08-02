@@ -38,28 +38,8 @@ impl<T: Scalar, const N: usize> Segment for Constant<T, N> {
 
 /// A constant series cell.
 pub fn constant<T: Scalar, const N: usize>(
-    value: Series<T, N>,
+    value: impl Into<Series<T, N>>,
 ) -> impl Segment<Inputs = (), Outputs = SeriesPort<T, N>, Context = Instant, State = Series<T, N>>
 {
-    Constant::new(value)
-}
-
-/// An empty series: [`Series::new`].
-pub fn empty<T: Scalar, const N: usize>(
-    extents: [usize; N],
-) -> impl Segment<Inputs = (), Outputs = SeriesPort<T, N>, Context = Instant, State = Series<T, N>>
-{
-    Constant::new(Series::new(extents))
-}
-
-/// A series from element extents, instants, and a row-major contiguous buffer
-/// of packed elements: [`Series::from_parts`].
-pub fn from_parts<T: Scalar, const N: usize>(
-    extents: [usize; N],
-    instants: Vec<Instant>,
-    data: Vec<T>,
-    base: usize,
-) -> impl Segment<Inputs = (), Outputs = SeriesPort<T, N>, Context = Instant, State = Series<T, N>>
-{
-    Constant::new(Series::from_parts(extents, instants, data, base))
+    Constant::new(value.into())
 }

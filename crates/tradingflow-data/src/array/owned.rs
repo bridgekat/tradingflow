@@ -209,3 +209,53 @@ impl<T: Scalar + PartialEq, const N: usize> PartialEq for Array<T, N> {
 }
 
 impl<T: Scalar + Eq, const N: usize> Eq for Array<T, N> {}
+
+impl<T: Scalar> From<T> for Array<T, 0> {
+    fn from(value: T) -> Self {
+        Self::scalar(value)
+    }
+}
+
+impl<T: Scalar> From<Box<[T]>> for Array<T, 1> {
+    fn from(value: Box<[T]>) -> Self {
+        let len = value.len();
+        Self::from_parts([len], value)
+    }
+}
+
+impl<T: Scalar> From<Vec<T>> for Array<T, 1> {
+    fn from(value: Vec<T>) -> Self {
+        let len = value.len();
+        Self::from_parts([len], value.into())
+    }
+}
+
+impl<T: Scalar, const N0: usize> From<[T; N0]> for Array<T, 1> {
+    fn from(value: [T; N0]) -> Self {
+        Self::from_parts([N0], value.into())
+    }
+}
+
+impl<T: Scalar, const N0: usize, const N1: usize> From<[[T; N1]; N0]> for Array<T, 2> {
+    fn from(value: [[T; N1]; N0]) -> Self {
+        let mut data = Vec::with_capacity(N0 * N1);
+        for row in value {
+            data.extend_from_slice(&row);
+        }
+        Self::from_parts([N0, N1], data.into())
+    }
+}
+
+impl<T: Scalar, const N0: usize, const N1: usize, const N2: usize> From<[[[T; N2]; N1]; N0]>
+    for Array<T, 3>
+{
+    fn from(value: [[[T; N2]; N1]; N0]) -> Self {
+        let mut data = Vec::with_capacity(N0 * N1 * N2);
+        for matrix in value {
+            for row in matrix {
+                data.extend_from_slice(&row);
+            }
+        }
+        Self::from_parts([N0, N1, N2], data.into())
+    }
+}

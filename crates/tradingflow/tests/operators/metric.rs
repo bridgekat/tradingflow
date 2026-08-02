@@ -38,7 +38,7 @@ where
         >,
 {
     let mut b = Builder::new();
-    let (data, datav) = b.source(array::scalar(0.0_f64));
+    let (data, datav) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
     let out = b.segment(metric, (tickv, datav));
     let mut g = b.build();
@@ -46,7 +46,7 @@ where
 
     let mut seen = Vec::with_capacity(path.len());
     for (i, &p) in path.iter().enumerate() {
-        *g.state_mut(data) = scalar(p);
+        *g.state_mut(data) = p.into();
         let _ = g.state_mut(tick);
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         seen.push(vals(g.view(out))[0]);
@@ -59,14 +59,14 @@ where
 fn turnover_path(books: &[Vec<f64>]) -> Vec<f64> {
     let width = books[0].len();
     let mut b = Builder::new();
-    let (cell, w) = event_src(&mut b, arr1(vec![0.0_f64; width]));
+    let (cell, w) = event_src(&mut b, vec![0.0_f64; width].into());
     let out = b.segment(metric::portfolio::turnover(), w);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     let mut seen = Vec::with_capacity(books.len());
     for (i, book) in books.iter().enumerate() {
-        *g.state_mut(cell) = arr1(book.clone());
+        *g.state_mut(cell) = book.clone().into();
         g.stabilize(&mut pool, &nano(i as i64 + 1));
         seen.push(vals(g.view(out))[0]);
     }
@@ -542,14 +542,14 @@ fn drawdown_rejects_a_non_positive_nav() {
 #[should_panic(expected = "length mismatch")]
 fn turnover_rejects_a_change_in_universe_width() {
     let mut b = Builder::new();
-    let (cell, w) = event_src(&mut b, arr1(vec![0.0_f64; 2]));
+    let (cell, w) = event_src(&mut b, [0.0_f64; 2].into());
     let _ = b.segment(metric::portfolio::turnover(), w);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    *g.state_mut(cell) = arr1(vec![0.5, 0.5]);
+    *g.state_mut(cell) = [0.5, 0.5].into();
     g.stabilize(&mut pool, &nano(1));
-    *g.state_mut(cell) = arr1(vec![0.4, 0.3, 0.3]);
+    *g.state_mut(cell) = [0.4, 0.3, 0.3].into();
     g.stabilize(&mut pool, &nano(2));
 }
 
@@ -570,21 +570,21 @@ fn turnover_rejects_a_non_finite_weight() {
 #[test]
 fn an_off_signal_move_closes_no_period() {
     let mut b = Builder::new();
-    let (data, datav) = b.source(array::scalar(0.0_f64));
+    let (data, datav) = b.source(array::constant(0.0_f64));
     let (tick, tickv) = b.source(signal());
     let mean = b.segment(metric::performance::return_mean(), (tickv, datav));
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
     // Opening pulse: latch 100, emit 0.
-    *g.state_mut(data) = scalar(100.0);
+    *g.state_mut(data) = 100.0.into();
     let _ = g.state_mut(tick);
     g.stabilize(&mut pool, &nano(1));
     assert_eq!(vals(g.view(mean))[0], 0.0);
 
     // The level moves twice with no pulse: nothing folds, nothing notifies.
     for (i, v) in [110.0, 130.0].into_iter().enumerate() {
-        *g.state_mut(data) = scalar(v);
+        *g.state_mut(data) = v.into();
         g.stabilize(&mut pool, &nano(i as i64 + 2));
         assert_eq!(vals(g.view(mean))[0], 0.0, "held through the quiet tick");
     }
@@ -672,11 +672,11 @@ mod information_coefficient {
         let mut held = Vec::with_capacity(ticks.len());
         for (i, tick) in ticks.iter().enumerate() {
             if let Some(xs) = tick.factor {
-                *g.state_mut(fval) = arr1(xs.to_vec());
+                *g.state_mut(fval) = xs.to_vec().into();
                 let _ = g.state_mut(fsig);
             }
             if let Some(xs) = tick.target {
-                *g.state_mut(tval) = arr1(xs.to_vec());
+                *g.state_mut(tval) = xs.to_vec().into();
                 let _ = g.state_mut(tsig);
             }
             g.stabilize(&mut pool, &nano(i as i64 + 1));
@@ -824,11 +824,11 @@ mod predictor_variance {
 
         for (i, tick) in ticks.iter().enumerate() {
             if let Some(m) = tick.predict {
-                *g.state_mut(pval) = arr([2, 2], m.to_vec());
+                *g.state_mut(pval) = Array::from_parts([2, 2], m.into());
                 let _ = g.state_mut(psig);
             }
             if let Some(xs) = tick.target {
-                *g.state_mut(tval) = arr1(xs.to_vec());
+                *g.state_mut(tval) = xs.to_vec().into();
                 let _ = g.state_mut(tsig);
             }
             g.stabilize(&mut pool, &nano(i as i64 + 1));

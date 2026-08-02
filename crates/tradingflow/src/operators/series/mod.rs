@@ -6,7 +6,7 @@ mod record;
 mod shift;
 mod view;
 
-pub use constant::{constant, empty, from_parts};
+pub use constant::constant;
 pub use last::{last, last_or};
 pub use record::{buffer, record_all, record_on};
 pub use shift::shift;
