@@ -1,11 +1,18 @@
 """Agent definition: instructions, model wiring, and tool set.
 
-DeepSeek's endpoint is OpenAI-compatible at the Chat Completions layer only
-(it does not implement the Responses API), so the Agents SDK is configured
-with its `OpenAIChatCompletionsModel` adapter — the documented way to run the
-SDK against third-party providers. Agent-level code (tools, runner, streaming)
-is identical either way; if DeepSeek ever ships a Responses endpoint, only
-this module changes.
+DeepSeek implements the OpenAI Responses API (for `deepseek-v4-flash`), so the
+Agents SDK talks to it through `OpenAIResponsesModel` — the SDK's primary
+surface — rather than the older Chat Completions adapter. This buys native
+reasoning items (thinking text streams as `response.reasoning_text.delta`
+instead of being smuggled through a non-standard `reasoning_content` field)
+and the server-side `web_search` tool, which the Chat Completions layer could
+not offer.
+
+DeepSeek's implementation is stateless: `previous_response_id`, `conversation`
+and `store` are unsupported, so the full item list is resent every turn — which
+is exactly what the SDK does by default here. Reasoning items are echoed back
+as plain text (`encrypted_content` is never populated), and the server rebuilds
+a `web_search_call`'s results from its id when the item is passed back verbatim.
 """
 
 from __future__ import annotations
@@ -14,7 +21,7 @@ import platform
 from datetime import date
 from pathlib import Path
 
-from agents import ModelSettings, RunResultStreaming, Runner, Agent, OpenAIChatCompletionsModel, set_tracing_disabled
+from agents import ModelSettings, RunResultStreaming, Runner, Agent, OpenAIResponsesModel, set_tracing_disabled
 from openai import AsyncOpenAI
 from openai.types import Reasoning
 
@@ -33,6 +40,7 @@ You are a quant researcher and coding agent operating on the user's machine. You
 # General tips
 
 - If any link appears to lead to an important or information-dense piece of documentation (e.g. overview, tutorial, interface spec), follow it. More knowledge helps you take informed actions.
+- `web_search` runs on the server: a single call may issue several queries and open pages on its own. Use `web_fetch` when you already know the exact URL you want, or need a page's raw text (e.g. a CSV or JSON endpoint) rather than a summary.
 - Make sure to read and understand any code you are trying to run: know its capabilities, limitations and estimate its performance. Make sure inputs are correct, and the logic is sound.
 - Keep consistent style in your code.
 - If a command can take more than a few seconds to run, you can use `run_command` with `wait_seconds = 0` to run it in the background, then use `check_command` to check for its outputs periodically. This also allows for running programs in parallel.
@@ -75,8 +83,10 @@ def build_agent(base_url: str, api_key: str, model: str) -> Agent:
             cwd=Path.cwd(),
             today=date.today().isoformat(),
         ),
-        model=OpenAIChatCompletionsModel(model=model, openai_client=client),
-        model_settings=ModelSettings(reasoning=Reasoning(effort="high", summary="auto")),
+        model=OpenAIResponsesModel(model=model, openai_client=client),
+        # No `summary=`: DeepSeek accepts the field but never generates summaries,
+        # emitting the raw thinking text as the reasoning item's content instead.
+        model_settings=ModelSettings(reasoning=Reasoning(effort="high")),
         tools=ALL_TOOLS,
     )
     return agent

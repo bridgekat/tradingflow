@@ -20,11 +20,11 @@ This framework is structured into sub-packages in the `crates/` directory:
 Prerequisites: Rust 1.95+ and Python 3.12+ (for the `python` feature).
 
 ```bash
-git clone https://github.com/bridgekat/tradingflow.git
-cd tradingflow
-cargo build -p tradingflow --features python
+uv sync
+cargo build --features python
+cargo run --example strategy_macd
 ```
 
 The `python` feature links `libpython`, so it needs the environment variables `PYO3_PYTHON` and `PATH` to be set correctly. Moreover, the `PYTHONPATH` environment variable must point to `python/` in this repository, so that operator implementations can be imported.
 
-If NumPy operators are used, make sure to set `OPENBLAS_NUM_THREADS=1`: OpenBLAS is not thread-safe to use unless its internal parallelism is disabled (see [OpenBLAS FAQ](https://www.openmathlib.org/OpenBLAS/docs/faq/#how-can-i-use-openblas-in-multi-threaded-applications)).
+If NumPy operators are used, make sure to set `OPENBLAS_NUM_THREADS=1` when running: OpenBLAS is not thread-safe to use unless its internal parallelism is disabled (see [OpenBLAS FAQ](https://www.openmathlib.org/OpenBLAS/docs/faq/#how-can-i-use-openblas-in-multi-threaded-applications)).
