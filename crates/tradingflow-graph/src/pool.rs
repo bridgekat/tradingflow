@@ -1,7 +1,6 @@
 //! The thread pool.
 
 use std::any::Any;
-use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::atomic::{self, AtomicPtr, AtomicUsize, Ordering};
@@ -100,18 +99,16 @@ impl EventCount {
 pub struct Scope<'s> {
     local: NonNull<Worker<usize>>,
     shared: NonNull<Shared>,
-    first: Cell<bool>,
     _brand: PhantomData<fn(&'s ()) -> &'s ()>,
 }
 
 impl<'s> Scope<'s> {
-    pub fn spawn(&self, task: usize) {
+    pub fn spawn(&self, task: usize, recruit: bool) {
         let shared = unsafe { self.shared.as_ref() };
         let local = unsafe { self.local.as_ref() };
         shared.pending.fetch_add(1, Ordering::Relaxed);
         local.push(task);
-        // First spawn stays for this thread to run; only the surplus recruits.
-        if !self.first.replace(false) {
+        if recruit {
             shared.ec.notify_one();
         }
     }
@@ -186,7 +183,7 @@ impl Pool {
     /// Running graphs in parallel on a shared pool would instead need per-scope
     /// state (a completion latch + handler per scope, scope-tagged tasks) and a
     /// `&self` signature.
-    pub fn run<F>(&mut self, seed: impl IntoIterator<Item = usize>, handler: F)
+    pub fn run<F>(&mut self, seed: impl FnOnce(&Scope<'_>), handler: F)
     where
         F: for<'s> Fn(usize, &Scope<'s>) + Sync,
     {
@@ -200,12 +197,9 @@ impl Pool {
         let scope = Scope {
             local: NonNull::from(&self.local),
             shared: NonNull::from(&*self.shared),
-            first: Cell::new(true),
             _brand: PhantomData,
         };
-        for task in seed {
-            scope.spawn(task);
-        }
+        seed(&scope);
 
         // Check for available tasks until none left. Main thread never sleeps.
         let backoff = Backoff::new();
@@ -298,7 +292,6 @@ fn run_task(local: &Worker<usize>, shared: &Shared, task: usize) {
     let scope = Scope {
         local: NonNull::from(local),
         shared: NonNull::from(shared),
-        first: Cell::new(true),
         _brand: PhantomData,
     };
     let task_data = shared.task_data.load(Ordering::Relaxed);

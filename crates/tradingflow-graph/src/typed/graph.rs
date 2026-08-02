@@ -82,6 +82,9 @@ impl<C: Sync> Builder<C> {
             assert!(self.inner.slot_type_id(slot) == ty, "input type mismatch");
         }
 
+        // Read the scheduling hint before `init` consumes the segment.
+        let is_heavy = segment.is_heavy();
+
         // Bundle the (immutable) shape and the scratch buffers with the user
         // state so `compute` can reconstruct the nested payload trees from
         // the flat cell slices and home its result (see `NodeState`).
@@ -141,6 +144,7 @@ impl<C: Sync> Builder<C> {
                 reset_fn_for::<T>,
                 state_cell,
                 output_ptrs.into_boxed_slice(),
+                is_heavy,
             )
         };
         let (node_index, output_range) = self.inner.push(segment, &input_indices).unwrap();

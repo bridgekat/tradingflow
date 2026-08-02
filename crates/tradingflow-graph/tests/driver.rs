@@ -9,10 +9,6 @@ use tradingflow_graph::driver::{Builder, Event, Queue, Source, StreamFeed, Time}
 use tradingflow_graph::pool::Pool;
 use tradingflow_graph::typed::{Port, Ref, Segment, Val};
 
-fn pool() -> Pool {
-    Pool::new(thread::available_parallelism().unwrap().get())
-}
-
 /// A simple timestamp type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Instant(i64);
@@ -240,7 +236,7 @@ fn single_feed_orders_and_accumulates() {
     let mut d = b.build();
 
     let mut log = Vec::new();
-    pollster::block_on(d.run(&mut pool(), |d, _| log.push(d.view(sum))));
+    pollster::block_on(d.run(&mut Pool::new(16), |d, _| log.push(d.view(sum))));
     assert_eq!(log, vec![10, 30, 60]);
 }
 
@@ -253,7 +249,7 @@ fn merges_feeds_in_timestamp_order() {
     let mut d = b.build();
 
     let mut ts = Vec::new();
-    pollster::block_on(d.run(&mut pool(), |_, t| ts.push(t)));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, t| ts.push(t)));
     assert_eq!(ts, vec![Instant(1), Instant(2), Instant(3)]);
 }
 
@@ -268,7 +264,7 @@ fn batches_equal_timestamps_across_feeds() {
     let mut d = b.build();
 
     let mut gens = 0;
-    pollster::block_on(d.run(&mut pool(), |_, _| gens += 1));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, _| gens += 1));
     // Both feeds' t=5 events fold into a single generation.
     assert_eq!(gens, 1);
     assert_eq!(d.view(sa) + d.view(sc), 7);
@@ -284,7 +280,7 @@ fn future_events_gated_by_wall_clock() {
     let mut d = b.build();
 
     let mut nows = Vec::new();
-    pollster::block_on(d.run(&mut pool(), |_, _| nows.push(time.now())));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, _| nows.push(time.now())));
     assert_eq!(nows, vec![Instant(6), Instant(11)]);
 }
 
@@ -298,7 +294,7 @@ fn implicit_events_stamped_with_wall_clock() {
     let mut d = b.build();
 
     let mut ts = Vec::new();
-    pollster::block_on(d.run(&mut pool(), |_, t| ts.push(t)));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, t| ts.push(t)));
     // Explicit t=3 first, then the implicit event stamped now=7.
     assert_eq!(ts, vec![Instant(3), Instant(7)]);
 }
@@ -316,7 +312,7 @@ fn same_stamp_run_within_one_feed() {
     let mut d = b.build();
 
     let mut gens = 0;
-    pollster::block_on(d.run(&mut pool(), |_, _| gens += 1));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, _| gens += 1));
     assert_eq!(gens, 2);
     assert_eq!(
         *log.lock().unwrap(),
@@ -341,7 +337,7 @@ fn same_stamp_implicit_events_batch() {
     let mut d = b.build();
 
     let mut gens = 0;
-    pollster::block_on(d.run(&mut pool(), |_, _| gens += 1));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, _| gens += 1));
     assert_eq!(gens, 1);
     assert_eq!(d.view(sa) + d.view(sc), 7);
 }
@@ -360,7 +356,7 @@ fn frontier_message_advances_without_data() {
     let mut d = b.build();
 
     let mut ts = Vec::new();
-    pollster::block_on(d.run(&mut pool(), |_, t| ts.push(t)));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, t| ts.push(t)));
     assert_eq!(ts, vec![Instant(2), Instant(5)]);
 }
 
@@ -383,7 +379,7 @@ fn many_feeds_merge_in_order() {
     let mut d = b.build();
 
     let mut ts = Vec::new();
-    pollster::block_on(d.run(&mut pool(), |_, t| ts.push(t)));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, t| ts.push(t)));
     assert_eq!(ts, (1..=N).map(Instant).collect::<Vec<_>>());
 }
 
@@ -452,7 +448,7 @@ fn async_channel_feeds_merge_in_order() {
     let mut d = b.build();
 
     let mut ts = Vec::new();
-    pollster::block_on(d.run(&mut pool(), |_, t| ts.push(t)));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, t| ts.push(t)));
     pa.join().unwrap();
     pc.join().unwrap();
     assert_eq!(ts, vec![Instant(1), Instant(2), Instant(3), Instant(4)]);
@@ -471,7 +467,7 @@ fn builder_add_source_merges_and_counts() {
 
     assert_eq!(d.size_hint(), Some(4));
     let mut log = Vec::new();
-    pollster::block_on(d.run(&mut pool(), |d, t| {
+    pollster::block_on(d.run(&mut Pool::new(16), |d, t| {
         log.push((t, d.view(sum), d.num_events()))
     }));
     assert_eq!(
@@ -497,7 +493,7 @@ fn event_time_context_stamps_batches() {
     let mut d = b.build();
 
     let mut last = None;
-    pollster::block_on(d.run(&mut pool(), |_, t| last = Some(t)));
+    pollster::block_on(d.run(&mut Pool::new(16), |_, t| last = Some(t)));
     assert_eq!(
         *rows.lock().unwrap(),
         vec![(Instant(5), 50), (Instant(9), 90)]

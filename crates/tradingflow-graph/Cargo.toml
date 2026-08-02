@@ -3,15 +3,18 @@ name = "tradingflow-graph"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+crate-type = ["lib"]
+
 [dependencies]
 crossbeam = "0.8.4"
-futures = "0.3.32"
+futures = "0.3.33"
 
 [dev-dependencies]
-bumpalo = "3"
-criterion = "0.8.2"
-pollster = { version = "1.0.1", features = ["macro"] }
 tradingflow = { path = "../tradingflow" }
+bumpalo = "3.20.3"
+pollster = { version = "1.0.1", features = ["macro"] }
+criterion = "0.8.2"
 
 [[bench]]
 name = "typed"

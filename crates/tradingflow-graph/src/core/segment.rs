@@ -46,6 +46,8 @@ pub struct Segment {
     state: ErasedCell,
     /// Initial output value pointers. Can reference into the state.
     output_ptrs: Box<[*const ()]>,
+    /// Whether the segment is expensive enough to be worth a parallel task.
+    is_heavy: bool,
 }
 
 impl Segment {
@@ -60,6 +62,7 @@ impl Segment {
         reset_fn: ResetFn,
         state: ErasedCell,
         output_ptrs: Box<[*const ()]>,
+        is_heavy: bool,
     ) -> Self {
         Self {
             input_types,
@@ -68,6 +71,7 @@ impl Segment {
             reset_fn,
             state,
             output_ptrs,
+            is_heavy,
         }
     }
 
@@ -81,6 +85,7 @@ impl Segment {
         ResetFn,
         ErasedCell,
         Box<[*const ()]>,
+        bool,
     ) {
         (
             self.input_types,
@@ -89,6 +94,7 @@ impl Segment {
             self.reset_fn,
             self.state,
             self.output_ptrs,
+            self.is_heavy,
         )
     }
 }

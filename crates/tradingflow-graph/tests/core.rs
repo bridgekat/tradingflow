@@ -1,12 +1,7 @@
 use std::any::TypeId;
-use std::thread;
 
 use tradingflow_graph::core::{Builder, ComputeFn, ErasedCell, Error, Graph, Segment};
 use tradingflow_graph::pool::Pool;
-
-fn pool() -> Pool {
-    Pool::new(thread::available_parallelism().unwrap().get())
-}
 
 unsafe fn source_fn(
     _: *const [*const ()],
@@ -105,6 +100,8 @@ unsafe fn reset_fn(
 }
 
 /// An `i64`-output segment: state holds the output value, slot points at it.
+/// Marked heavy so these tests keep exercising the parallel task path (the
+/// typed-layer tests cover the light/inline path).
 fn seg(input_types: Box<[TypeId]>, f: ComputeFn) -> Segment {
     let state = ErasedCell::new(0i64);
     let ptr = state.get().cast_const();
@@ -116,6 +113,7 @@ fn seg(input_types: Box<[TypeId]>, f: ComputeFn) -> Segment {
             reset_fn,
             state,
             Box::new([ptr]),
+            true,
         )
     }
 }
@@ -152,7 +150,7 @@ fn diamond_and_root_edge_are_glitch_free() {
     let d = b.push(binary(add), &[a, bb]).unwrap().1.start;
     let e = b.push(binary(add), &[s, a]).unwrap().1.start;
     let mut g = b.build();
-    let mut pool = pool();
+    let mut pool = Pool::new(16);
 
     set(&mut g, s, 1);
     g.stabilize(&mut pool, &());
@@ -184,7 +182,7 @@ fn wide_fan_in_runs_on_the_pool() {
         .collect();
     let total = b.push(agg, &layer).unwrap().1.start;
     let mut g = b.build();
-    let mut pool = pool();
+    let mut pool = Pool::new(16);
 
     set(&mut g, s, 1);
     g.stabilize(&mut pool, &());
@@ -206,7 +204,7 @@ fn panic_in_compute_poisons_the_graph() {
     let p = b.push(unary(panic_if_negative), &[s]).unwrap().1.start;
     let d = b.push(unary(inc), &[p]).unwrap().1.start;
     let mut g = b.build();
-    let mut pool = pool();
+    let mut pool = Pool::new(16);
 
     // Poison value: P panics, unwinding out of `stabilize` (the panic message
     // is printed to stderr by the default hook -- expected, the test catches it).
@@ -270,6 +268,7 @@ fn push_rejects_type_mismatch() {
                 reset_fn,
                 state,
                 Box::new([ptr]),
+                true,
             )
         }
     };

@@ -11,6 +11,11 @@ pub trait Segment {
     /// Mutable node state, must be completely owned.
     type State: Send + 'static;
 
+    /// Whether the segment is expensive enough to be worth a parallel task.
+    fn is_heavy(&self) -> bool {
+        false
+    }
+
     /// Typed state initialization function.
     fn init(self, inputs: <Self::Inputs as Interface>::Values<'_>) -> Self::State;
 

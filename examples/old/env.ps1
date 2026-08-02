@@ -1,16 +1,16 @@
-# examples/env.ps1 - configure the embedded-Python environment for the `python`
-# examples (the Rust-driven examples in `examples/`).
+# examples/old/env.ps1 - configure the embedded-Python environment for the `python`
+# examples (the Rust-driven examples in `examples/old/`).
 #
 # Dot-source it (note the leading "." and space) so the variables persist in
 # your current shell:
 #
-#     . .\examples\env.ps1
+#     . .\examples\old\env.ps1
 #
 # Then build/run as usual, e.g.:
 #
 #     cargo run --example mean_variance_strategy --features python -- --index-size 1000
 #
-# See examples/README.md for the full explanation of what each variable does.
+# See examples/old/README.md for the full explanation of what each variable does.
 #
 # NOTE: this script deliberately does NOT set `$ErrorActionPreference = 'Stop'`.
 # It is dot-sourced, so that would leak into your shell - and because the
@@ -20,11 +20,12 @@
 
 # Repo root = parent of this script's directory.
 $repo = Split-Path -Parent $PSScriptRoot
+$repo = Split-Path -Parent $repo
 $venv = Join-Path $repo '.venv'
 $venvPython = Join-Path $venv 'Scripts\python.exe'
 
 if (-not (Test-Path $venvPython)) {
-    throw "No .venv found at $venv. Create it first - see examples/README.md (`Setup`)."
+    throw "No .venv found at $venv. Create it first - see examples/old/README.md (`Setup`)."
 }
 
 # (1) BUILD TIME - which interpreter PyO3 links against. The GIL `.venv` (base
@@ -58,7 +59,7 @@ $env:PYTHONPATH = (Join-Path $repo 'python') + ';' + (Join-Path $venv 'Lib\site-
 #     source of parallelism (one BLAS call per worker); multi-threaded runs are
 #     then bit-identical to single-threaded. Only OpenBLAS needs this - other
 #     backends (MKL, ...) are thread-safe. Set it BEFORE the interpreter loads
-#     numpy. See examples/README.md ("Parallelism").
+#     numpy. See examples/old/README.md ("Parallelism").
 $env:OPENBLAS_NUM_THREADS = '1'
 
 Write-Host "python env configured:" -ForegroundColor Green

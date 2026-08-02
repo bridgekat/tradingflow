@@ -195,6 +195,10 @@ where
     type Context = Instant;
     type State = PyState<O>;
 
+    fn is_heavy(&self) -> bool {
+        true
+    }
+
     fn init(self, inputs: <I as Interface>::Values<'_>) -> PyState<O> {
         Python::attach(|py| {
             let run = || -> PyResult<(Py<PyAny>, Py<PyAny>)> {

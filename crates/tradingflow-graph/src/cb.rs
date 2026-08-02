@@ -52,6 +52,10 @@ where
     type Context = F::Context;
     type State = (F::State, G::State);
 
+    fn is_heavy(&self) -> bool {
+        self.0.is_heavy() || self.1.is_heavy()
+    }
+
     fn init(self, inputs: <F::Inputs as Interface>::Values<'_>) -> Self::State {
         let mut fs = self.0.init(inputs);
         let mid = F::reset(<F::Inputs as Interface>::reborrow(inputs), &mut fs);
@@ -99,6 +103,10 @@ where
     type Outputs = (F::Outputs, G::Outputs);
     type Context = F::Context;
     type State = (F::State, G::State);
+
+    fn is_heavy(&self) -> bool {
+        self.0.is_heavy() || self.1.is_heavy()
+    }
 
     fn init(self, inputs: <F::Inputs as Interface>::Values<'_>) -> Self::State {
         (self.0.init(inputs), self.1.init(inputs))
@@ -230,6 +238,10 @@ where
     type Context = F::Context;
     type State = (F::State, G::State);
 
+    fn is_heavy(&self) -> bool {
+        self.0.is_heavy() || self.1.is_heavy()
+    }
+
     fn init(self, inputs: <Self::Inputs as Interface>::Values<'_>) -> Self::State {
         let (a, b) = inputs;
         (self.0.init(a), self.1.init(b))
@@ -335,6 +347,10 @@ where
     type Context = F::Context;
     type State = (F::State, G::State, H);
 
+    fn is_heavy(&self) -> bool {
+        self.0.is_heavy() || self.1.is_heavy()
+    }
+
     fn init(self, inputs: <Self::Inputs as Interface>::Values<'_>) -> Self::State {
         let mut fs = self.0.init(inputs);
         let env = F::reset(<F::Inputs as Interface>::reborrow(inputs), &mut fs);
@@ -375,6 +391,10 @@ where
     type Outputs = T;
     type Context = F::Context;
     type State = (F::State, H);
+
+    fn is_heavy(&self) -> bool {
+        self.0.is_heavy()
+    }
 
     fn init(self, inputs: <Self::Inputs as Interface>::Values<'_>) -> Self::State {
         (self.0.init(inputs), self.1)

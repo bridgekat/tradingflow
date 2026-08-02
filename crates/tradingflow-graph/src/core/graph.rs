@@ -111,6 +111,7 @@ struct Node {
     input_range: Range<usize>,
     output_range: Range<usize>,
     state: ErasedCell,
+    is_heavy: bool,
 }
 
 /// Builder for the core layer [`Graph`].
@@ -146,7 +147,7 @@ impl Builder {
         segment: Segment,
         input_indices: &[usize],
     ) -> Result<(usize, Range<usize>), Error> {
-        let (input_types, output_types, compute_fn, reset_fn, state, output_ptrs) =
+        let (input_types, output_types, compute_fn, reset_fn, state, output_ptrs, is_heavy) =
             segment.into_parts();
 
         let input_arity = input_types.len();
@@ -201,6 +202,7 @@ impl Builder {
             input_range,
             output_range: output_range.clone(),
             state,
+            is_heavy,
         });
         Ok((node_index, output_range))
     }
@@ -342,43 +344,60 @@ impl Graph {
 
         // Data flow over the cone on the work-stealing pool: seed the roots,
         // each finished node releases the successors whose counter hits 0.
-        // `run` blocks until the batch drains (counters return to 0, ready for
-        // the next generation). Tasks are plain `usize`, so this allocates
-        // nothing per node.
-        pool.run(self.roots.iter().copied(), |i, scope| {
-            // Run node `i` compute function.
-            let compute_fn = self.nodes[i].compute_fn;
-            let input_range = self.nodes[i].input_range.clone();
-            let output_range = self.nodes[i].output_range.clone();
-            let input_ptrs = cell_slice(&self.input_ptrs[input_range]);
-            let output_ptrs = cell_slice_mut(&self.output_ptrs[output_range]);
-            let state = self.nodes[i].state.get();
-            let context = context as *const _ as *const ();
-            unsafe { compute_fn(input_ptrs, output_ptrs, state, context) };
-            // Scatter this node's fresh output slots into every consumer's
-            // input slot unconditionally. Load-bearing for pointer/reference
-            // safety on data inside slots.
-            for s in self.nodes[i].output_range.clone() {
-                for &t in self.output_to_inputs.get(s) {
-                    unsafe { *self.input_ptrs[t].get() = *self.output_ptrs[s].get() };
+        // `run_with` blocks until the batch drains (counters return to 0,
+        // ready for the next generation). Tasks are plain `usize`, so this
+        // allocates nothing per node.
+        //
+        // Scheduling is cost-gated on the per-segment `is_heavy` hint: a heavy
+        // ready node becomes a pool task that may recruit (wake) a worker; a
+        // light one runs inline in the releasing task, since a cross-thread
+        // handoff would cost more than the node itself. A cone with no heavy
+        // nodes therefore runs entirely on the calling thread, waking no one.
+        pool.run(
+            |scope| {
+                for &i in self.roots.iter() {
+                    scope.spawn(i, self.nodes[i].is_heavy);
                 }
-            }
-            // Report each successor whose last dirty predecessor was `i` --
-            // i.e. whose counter reached 0. The writes above happens-before
-            // the atomic decrement, so a successor reported ready has observed
-            // every dirty predecessor's output.
-            atomic::fence(Ordering::Release);
-            for &j in self.node_to_nodes.get(i) {
-                // Release publishes this node's writes into the modification
-                // order; the Acquire fence on the 0-transition then makes
-                // *every* dirty predecessor's writes visible before `j` is
-                // released. This is the `Arc`-drop ordering.
-                if self.counters[j].fetch_sub(1, Ordering::Relaxed) == 1 {
-                    atomic::fence(Ordering::Acquire);
-                    scope.spawn(j);
+            },
+            |i, scope| {
+                // Run node `i` compute function.
+                let node = &self.nodes[i];
+                let compute_fn = node.compute_fn;
+                let input_ptrs = cell_slice(&self.input_ptrs[node.input_range.clone()]);
+                let output_ptrs = cell_slice_mut(&self.output_ptrs[node.output_range.clone()]);
+                let state = node.state.get();
+                let context = context as *const _ as *const ();
+                unsafe { compute_fn(input_ptrs, output_ptrs, state, context) };
+
+                // Scatter this node's fresh output slots into every
+                // consumer's input slot unconditionally. Load-bearing for
+                // pointer/reference safety on data inside slots.
+                for s in node.output_range.clone() {
+                    for &t in self.output_to_inputs.get(s) {
+                        unsafe { *self.input_ptrs[t].get() = *self.output_ptrs[s].get() };
+                    }
                 }
-            }
-        });
+                // Report each successor whose last dirty predecessor was
+                // `i` -- i.e. whose counter reached 0. The writes above
+                // happens-before the atomic decrement, so a successor
+                // reported ready has observed every dirty predecessor's
+                // output.
+                atomic::fence(Ordering::Release);
+                for &j in self.node_to_nodes.get(i) {
+                    // Release publishes this node's writes into the
+                    // modification order; the Acquire fence on the
+                    // 0-transition then makes *every* dirty predecessor's
+                    // writes visible before `j` is released. This is the
+                    // `Arc`-drop ordering. It also covers the inline path:
+                    // the fences pair exactly as they would across a task
+                    // handoff.
+                    if self.counters[j].fetch_sub(1, Ordering::Relaxed) == 1 {
+                        atomic::fence(Ordering::Acquire);
+                        scope.spawn(j, self.nodes[j].is_heavy);
+                    }
+                }
+            },
+        );
         self.roots.clear();
 
         // Call reset functions and reset cone membership for the next round,

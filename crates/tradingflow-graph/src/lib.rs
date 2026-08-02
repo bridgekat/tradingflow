@@ -211,11 +211,14 @@
 //!
 //! # Operator fusion
 //!
-//! Multi-threaded execution has a cost: every unit of work is a thread-pool
-//! task, and waking a worker to run a trivial node can take much longer time
-//! than the actual computation inside the node itself. Therefore, it is often
-//! desirable to fuse small operators together into a single segment node,
-//! to be executed on a single thread.
+//! Multi-threaded execution has a cost: waking a worker to run a trivial node
+//! can take much longer time than the actual computation inside the node
+//! itself. The scheduler therefore only creates parallel tasks for nodes
+//! marked [`Segment::is_heavy`]; light nodes keep running in the same thread.
+//!
+//! Optionally, we can go one step further: fusing small operators together
+//! into a single segment node lets the compiler monomorphize and inline the
+//! whole chain, which still pays on the hottest fine-grained paths.
 //!
 //! The library provides combinator methods to fuse segments into larger
 //! segments:
@@ -353,6 +356,18 @@
 //!   of panicking.
 //!
 //! Tests have been run on Miri to check for memory safety and common UBs.
+//! Run Miri with **tree borrows** — under the default Stacked Borrows model,
+//! crossbeam's deque/epoch internals produce third-party false positives
+//! (retag violations in `crossbeam-epoch`), and its global garbage queue is
+//! reported as leaked:
+//!
+//! ```text
+//! MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-ignore-leaks -Zmiri-disable-isolation" \
+//!     cargo +nightly miri test -p tradingflow-graph
+//! ```
+//!
+//! (`-Zmiri-disable-isolation` is only needed by doctests that read the
+//! system clock via `Stamp::Now`.)
 //!
 //! [^1]: <https://www.haskell.org/arrows/syntax.html>
 
