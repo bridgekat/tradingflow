@@ -46,6 +46,3 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
-
-# Example market data (a-shares-crawler output; regenerate, do not commit)
-/examples/data/

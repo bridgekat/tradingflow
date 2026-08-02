@@ -31,10 +31,6 @@ use tradingflow::ports::{ArrayPort, SignalPort};
 use tradingflow::sources::panel::Parquet;
 use tradingflow::time::UnixTime;
 
-fn pool() -> Pool {
-    Pool::new(0)
-}
-
 fn day(d: i32) -> Instant {
     Instant::from_offset(Duration::from_days(d as i64))
 }
@@ -164,7 +160,7 @@ async fn panel_pivots_long_rows_into_per_date_cross_sections() {
     let volume_rec = sc.segment(record_all(), (pulse, fields[1]));
 
     let mut g = sc.build();
-    g.run(&mut pool(), |_, _| {}).await;
+    g.run(&mut Pool::new(0), |_, _| {}).await;
 
     let nan = f64::NAN;
     let masks = rows(g.view(mask_rec));
@@ -221,7 +217,7 @@ async fn an_out_of_window_date_produces_no_generation() {
     let close_rec = sc.segment(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
-    g.run(&mut pool(), |_, _| {}).await;
+    g.run(&mut Pool::new(0), |_, _| {}).await;
 
     assert_eq!(
         g.view(close_rec).instants(),
@@ -260,7 +256,7 @@ async fn time_range_clips_without_carry_in() {
     let close_rec = sc.segment(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
-    g.run(&mut pool(), |_, _| {}).await;
+    g.run(&mut Pool::new(0), |_, _| {}).await;
 
     assert_eq!(g.view(close_rec).instants(), &[day(2), day(3)]);
     assert_rows_eq(&rows(g.view(close_rec)), &[vec![11.0], vec![12.0]], "close");
@@ -293,7 +289,7 @@ async fn a_date32_timestamp_column_converts_on_read() {
     let close_rec = sc.segment(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
-    g.run(&mut pool(), |_, _| {}).await;
+    g.run(&mut Pool::new(0), |_, _| {}).await;
 
     assert_eq!(
         g.view(close_rec).instants(),
@@ -329,7 +325,7 @@ async fn a_rank_zero_panel_is_a_scalar_stream() {
     let close_rec = sc.segment(record_all(), (pulse, fields[0]));
 
     let mut g = sc.build();
-    g.run(&mut pool(), |_, _| {}).await;
+    g.run(&mut Pool::new(0), |_, _| {}).await;
 
     assert_eq!(
         g.view(close_rec).instants(),
@@ -384,7 +380,7 @@ async fn a_rank_two_panel_scatters_on_both_axes() {
     let mask_rec = sc.segment(record_all(), (pulse, mask_face));
 
     let mut g = sc.build();
-    g.run(&mut pool(), |_, _| {}).await;
+    g.run(&mut Pool::new(0), |_, _| {}).await;
 
     let nan = f64::NAN;
     assert_eq!(g.view(value_rec).instants(), &[day(1), day(2)]);
