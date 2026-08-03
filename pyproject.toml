@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "tradingflow"
 version = "0.1.0"
-description = "A lightweight library for quantitative investment research."
+description = "Operator library for TradingFlow."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -18,16 +18,6 @@ dependencies = [
     "tqdm>=4.69.0",
 ]
 
-[project.optional-dependencies]
-examples = [
-    # Generates the A-shares market data the `examples/` strategies read.
-    # Pinned to a GitHub commit (was a git submodule at extern/a-shares-crawler);
-    # pip fetches it on demand, so no submodule checkout is needed.
-    "a-shares-crawler @ git+https://github.com/bridgekat/a-shares-crawler.git@35169561c5ca89637be539d2a438055ac966aa33",
-    # The example plot scripts (examples/plot*.py) render the engine's CSV output.
-    "matplotlib",
-]
-
 # `tradingflow` is the Python operator package (predictor / portfolio / metric)
 # run by the Rust crate's embedded interpreter. It is the only Python package
 # the project ships — the Rust core is a plain library crate. The operators are
@@ -35,12 +25,6 @@ examples = [
 # Python test suite here.
 [tool.hatch.build.targets.wheel]
 packages = ["python/tradingflow"]
-
-# The `examples` extra pins a-shares-crawler by a `git+https` URL (a PEP 508
-# direct reference); hatchling rejects direct references during metadata
-# generation unless this is set.
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.black]
 line-length = 120
