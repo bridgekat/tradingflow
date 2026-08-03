@@ -1,5 +1,5 @@
-//! This crate implements a multithreaded executor for static computation
-//! graphs.
+//! This crate implements a multithreaded executor for static, stateful
+//! computation graphs.
 //!
 //! Each compute node can hold a mutable state, read inputs and produce outputs
 //! *that may contain references into the node's state or into its inputs*: it
@@ -171,16 +171,16 @@
 //! the [`Interface`] of an operator. They can be constructed from the following
 //! basic building blocks:
 //!
-//! - [`Port<Val<T>>`] — a single pass-by-value port. It carries `(bool, T)`
-//!   where `T: Copy + Send + Sync`.
+//! - [`Port<Val<T>>`] — a single pass-by-value port. It carries `T` where
+//!   `T: Copy + Send + Sync`.
 //! - [`Ports<Val<T>>`] — a dynamic-length group of pass-by-value ports. It
-//!   carries `(&[bool], &[T])` where `T: Copy + Send + Sync`, and is
-//!   compatible with a group of [`Port<Val<T>>`]s.
-//! - [`Port<Ref<T>>`] — a single pass-by-reference port. It carries
-//!   `(bool, &T)` where `T: Sync`.
+//!   carries `&[T]` where `T: Copy + Send + Sync`, and is compatible with
+//!   a group of [`Port<Val<T>>`]s.
+//! - [`Port<Ref<T>>`] — a single pass-by-reference port. It carries `&T` where
+//!   `T: Sync`.
 //! - [`Ports<Ref<T>>`] — a dynamic-length group of pass-by-reference ports.
-//!   It carries `(&[bool], &[&T])` where `T: Sync`, and is compatible
-//!   with a group of [`Port<Ref<T>>`]s.
+//!   It carries `&[&T]` where `T: Sync`, and is compatible with a group of
+//!   [`Port<Ref<T>>`]s.
 //! - Arbitrarily nested tuples of the above (each branch up to arity 12).
 //!
 //! In fact, the [`Port<V>`] and [`Ports<V>`] markers can be used over any
@@ -358,10 +358,10 @@
 //!   of panicking.
 //!
 //! Tests have been run on Miri to check for memory safety and common UBs.
-//! Run Miri with **tree borrows** — under the default Stacked Borrows model,
-//! crossbeam's deque/epoch internals produce third-party false positives
+//! Run Miri with **Tree Borrows**: under the default Stacked Borrows model,
+//! [`crossbeam`]'s deque/epoch internals produce third-party false positives
 //! (retag violations in `crossbeam-epoch`), and its global garbage queue is
-//! reported as leaked:
+//! reported as leaked.
 //!
 //! ```text
 //! MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-ignore-leaks -Zmiri-disable-isolation" \

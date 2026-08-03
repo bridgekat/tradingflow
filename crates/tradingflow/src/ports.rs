@@ -26,8 +26,10 @@ unsafe impl<T: Scalar, const N: usize> Pass for SeriesPass<T, N> {
 }
 
 /// A marker around [`ArrayPass<bool, N>`] indicating a signal array.
-/// Signals should always be reset to `false` (by their producer nodes) at the
-/// end of each generation.
+/// Signals indicate the occurrence of one-off events (a trading day,
+/// a calendar month, a dividend event...) and should always be reset to
+/// `false` in the [`Operator::reset`](crate::graph::Operator::reset)
+/// implementation of whichever operator that has produced them.
 pub struct SignalPass<const N: usize>(ArrayPass<bool, N>);
 
 // SAFETY: same as above.

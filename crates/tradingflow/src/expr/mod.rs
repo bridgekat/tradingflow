@@ -84,8 +84,8 @@
 //!
 //! ```
 //! use tradingflow::data::{Array, Duration, Instant, Series};
+//! use tradingflow::expr;
 //! use tradingflow::graph::{Builder, Pool};
-//! use tradingflow::operators::feature::expr;
 //! use tradingflow::sources::sync;
 //! use tradingflow::time::UnixTime;
 //!

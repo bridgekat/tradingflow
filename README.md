@@ -4,16 +4,9 @@
 
 A lightweight framework for quantitative investment research.
 
-A trading strategy is a static computation graph: feature extraction, model prediction, portfolio optimization, trading simulation and performance evaluation are all operator nodes in this graph. Writing a strategy backtest amounts to wiring together reusable operators, and new operators can be readily implemented.
+A trading strategy is a *static, stateful computation graph*: feature extraction, model prediction, portfolio optimization, trading simulation and performance evaluation are all operator nodes in this graph. When new data arrives, changes are automatically propagated throughout the graph. Writing a strategy backtest amounts to wiring together reusable operators, and new operators can be readily implemented.
 
 [Read the full documentation here.](https://bridgekat.github.io/tradingflow/)
-
-This framework is structured into sub-packages in the `crates/` directory:
-
-- The `tradingflow-data` package, which provides generic N-dimensional arrays and time series;
-- The `tradingflow-graph` package, which provides abstractions and scheduling for generic computation graphs;
-- The `tradingflow-macros` package, which provides procedural macros for composing operators;
-- The `tradingflow` package itself contains data loaders and operator implementations for quantitative investment research. Operators can additionally be written in Python and run on an embedded interpreter, giving strategies direct access to the data science ecosystem of Python.
 
 ## Get started
 

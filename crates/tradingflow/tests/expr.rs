@@ -1,12 +1,141 @@
-//! Integration tests for `operators::feature::expr`: the parser (precedence,
-//! desugaring, error positions), canonicalization and hash-consing (CSE), and
-//! the lowered graphs' semantics against hand-computed references.
+//! Integration tests for `expr`: the parser (precedence, desugaring, error
+//! positions), canonicalization and hash-consing (CSE), and the lowered graphs'
+//! semantics against hand-computed references.
 
-use tradingflow::graph::Pool;
+use tradingflow::data::{Array, ArrayView, Duration, Instant, Scalar};
+use tradingflow::expr::{Context, Error, Expr, parse};
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::feature::expr::{Context, Error, Expr, parse};
+use tradingflow::graph::{Operator, Pool};
+use tradingflow::ports::{ArrayPort, SignalPort};
 
-use crate::harness::*;
+/// Default tolerance for [`assert_close`]. Loose enough for the accumulators'
+/// incremental arithmetic, tight enough that a wrong formula never passes.
+pub const EPS: f64 = 1e-10;
+
+// ---------------------------------------------------------------------------
+// Instants
+// ---------------------------------------------------------------------------
+
+/// An instant `n` nanoseconds after the epoch — the default stamp for tests
+/// that only need distinct, ordered ticks.
+pub fn nano(n: i64) -> Instant {
+    Instant::from_offset(Duration::from_nanos(n))
+}
+
+// ---------------------------------------------------------------------------
+// Assertions
+// ---------------------------------------------------------------------------
+
+/// Asserts elementwise equality within [`EPS`].
+///
+/// `NaN` matches only `NaN` and each infinity matches only itself with the
+/// same sign — both are ordinary results here (`NaN` is the missing-data
+/// marker, and infinities fall out of `recip(0)`, `ln(0)`, division by zero
+/// and the like), so they are values to assert on rather than errors. Note a
+/// tolerance test cannot express them: `inf - inf` is `NaN`, which compares
+/// false against any bound.
+#[track_caller]
+pub fn assert_close(actual: &[f64], expected: &[f64], ctx: &str) {
+    assert_close_tol(actual, expected, EPS, ctx);
+}
+
+/// [`assert_close`] with an explicit tolerance.
+#[track_caller]
+pub fn assert_close_tol(actual: &[f64], expected: &[f64], tol: f64, ctx: &str) {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "{ctx}: length {} != expected {}",
+        actual.len(),
+        expected.len()
+    );
+    for (i, (&a, &e)) in actual.iter().zip(expected).enumerate() {
+        let ok = if e.is_nan() {
+            a.is_nan()
+        } else if e.is_infinite() {
+            a == e
+        } else {
+            (a - e).abs() <= tol
+        };
+        assert!(
+            ok,
+            "{ctx}: element {i} is {a}, expected {e}\n  actual: {actual:?}\n  expected: {expected:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic data
+// ---------------------------------------------------------------------------
+
+/// A deterministic pseudo-random path of quarter-valued samples. Quarters keep
+/// every running sum exactly representable in binary floating point, so an
+/// incremental accumulator and a freshly-summed reference agree bit-for-bit
+/// and exact equality is a sound assertion.
+pub fn quarter_path(seed: u64, len: usize) -> Vec<f64> {
+    let mut state = seed;
+    (0..len)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 33) % 1000) as f64 / 4.0
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Probe operators
+// ---------------------------------------------------------------------------
+
+/// A pokeable array cell paired with its accompanying signal: the signal
+/// pulses on exactly the generations the cell is poked (a root with no inputs
+/// is scheduled only when its own state is touched) and is `false` otherwise.
+/// The manually-stepped counterpart of
+/// [`sources::sync::array_series`](tradingflow::sources::sync::array_series).
+pub struct Cell<T: Scalar, const N: usize> {
+    value: Array<T, N>,
+}
+
+impl<T: Scalar, const N: usize> Operator for Cell<T, N> {
+    type Inputs = ();
+    type Outputs = (SignalPort<0>, ArrayPort<T, N>);
+    type Context = Instant;
+    type State = Array<T, N>;
+
+    fn init(self, _: ()) -> Self::State {
+        self.value
+    }
+
+    fn reset<'a, 'b: 'a>(
+        _: (),
+        state: &'b mut Array<T, N>,
+    ) -> (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>) {
+        (ArrayView::scalar(&false), state.view())
+    }
+
+    fn compute<'a, 'b: 'a>(
+        _: (),
+        state: &'b mut Array<T, N>,
+        _: &Instant,
+    ) -> (ArrayView<'a, bool, 0>, ArrayView<'a, T, N>) {
+        (ArrayView::scalar(&true), state.view())
+    }
+}
+
+/// See [`Cell`].
+pub fn cell<T: Scalar, const N: usize>(
+    value: impl Into<Array<T, N>>,
+) -> impl Operator<
+    Inputs = (),
+    Outputs = (SignalPort<0>, ArrayPort<T, N>),
+    Context = Instant,
+    State = Array<T, N>,
+> {
+    Cell {
+        value: value.into(),
+    }
+}
 
 /// Shorthand for a call node.
 fn call(name: &str, args: Vec<Expr>) -> Expr {
@@ -123,8 +252,8 @@ fn display_round_trips() {
 #[test]
 fn cse_dedupes_semantically_equal_wires() {
     let mut b = Builder::new();
-    let (_src, (sig, x)) = event_src::<1>(&mut b, vec![0.0_f64; 1].into());
-    let (_src2, (_, y)) = event_src::<1>(&mut b, vec![0.0_f64; 1].into());
+    let (_src, (sig, x)) = b.source(cell([0.0_f64; 1]));
+    let (_src2, (_, y)) = b.source(cell([0.0_f64; 1]));
     let mut ctx = Context::new(sig, [1]);
     ctx.add_field("x", x);
     ctx.add_field("y", y);
@@ -179,7 +308,7 @@ fn lowered_graphs_match_reference() {
     let nan = f64::NAN;
 
     let mut b = Builder::new();
-    let (src, (sig, x)) = event_src::<1>(&mut b, vec![0.0_f64; 1].into());
+    let (src, (sig, x)) = b.source(cell([0.0_f64; 1]));
     let mut ctx = Context::new(sig, [1]).with_field("x", x);
 
     let delta = ctx.lower_str(&mut b, "$x - Ref($x, 1)").unwrap();
@@ -212,34 +341,42 @@ fn lowered_graphs_match_reference() {
         let want_branches = if v > 0.0 { v } else { prev };
 
         assert_close(
-            &vals(g.view(delta)),
+            &g.view(delta).to_contiguous(),
             &[want_delta],
             &format!("delta, tick {t}"),
         );
-        assert_close(&vals(g.view(mean3)), &[mean], &format!("mean3, tick {t}"));
-        assert_close(&vals(g.view(cum)), &[want_cum], &format!("cum, tick {t}"));
         assert_close(
-            &vals(g.view(folded)),
+            &g.view(mean3).to_contiguous(),
+            &[mean],
+            &format!("mean3, tick {t}"),
+        );
+        assert_close(
+            &g.view(cum).to_contiguous(),
+            &[want_cum],
+            &format!("cum, tick {t}"),
+        );
+        assert_close(
+            &g.view(folded).to_contiguous(),
             &[v * 5.0],
             &format!("folded, tick {t}"),
         );
         assert_close(
-            &vals(g.view(cond)),
+            &g.view(cond).to_contiguous(),
             &[want_cond],
             &format!("cond, tick {t}"),
         );
         assert_close(
-            &vals(g.view(branches)),
+            &g.view(branches).to_contiguous(),
             &[want_branches],
             &format!("branches, tick {t}"),
         );
         assert_close(
-            &vals(g.view(ticks)),
+            &g.view(ticks).to_contiguous(),
             &[(t + 1) as f64],
             &format!("ticks, tick {t}"),
         );
         assert_close(
-            &vals(g.view(mean_const)),
+            &g.view(mean_const).to_contiguous(),
             &[1.0],
             &format!("mean_const, tick {t}"),
         );
@@ -395,7 +532,7 @@ fn scan_ops_match_reference() {
     path[15] = f64::NAN;
 
     let mut b = Builder::new();
-    let (src, (sig, x)) = event_src::<1>(&mut b, vec![0.0_f64; 1].into());
+    let (src, (sig, x)) = b.source(cell([0.0_f64; 1]));
     let mut ctx = Context::new(sig, [1]).with_field("x", x);
 
     let max = ctx.lower_str(&mut b, "Max($x, 5)").unwrap();
@@ -430,7 +567,11 @@ fn scan_ops_match_reference() {
             (wma, sref_wma(&pairs), "wma"),
         ];
         for (wire, want, what) in checks {
-            assert_close(&vals(g.view(wire)), &[want], &format!("{what}, tick {t}"));
+            assert_close(
+                &g.view(wire).to_contiguous(),
+                &[want],
+                &format!("{what}, tick {t}"),
+            );
         }
     }
 }
@@ -445,7 +586,7 @@ fn moment_and_regression_ops_match_reference() {
     path[9] = f64::NAN;
 
     let mut b = Builder::new();
-    let (src, (sig, x)) = event_src::<1>(&mut b, vec![0.0_f64; 1].into());
+    let (src, (sig, x)) = b.source(cell([0.0_f64; 1]));
     let mut ctx = Context::new(sig, [1]).with_field("x", x);
 
     let skew = ctx.lower_str(&mut b, "Skew($x, 6)").unwrap();
@@ -494,7 +635,11 @@ fn moment_and_regression_ops_match_reference() {
             (resi, want_resi, "resi"),
         ];
         for (wire, want, what) in checks {
-            assert_close(&vals(g.view(wire)), &[want], &format!("{what}, tick {t}"));
+            assert_close(
+                &g.view(wire).to_contiguous(),
+                &[want],
+                &format!("{what}, tick {t}"),
+            );
         }
     }
 }
@@ -509,7 +654,7 @@ fn pair_statistics_match_reference() {
     const W: usize = 3;
 
     let mut b = Builder::new();
-    let (src, (sig, x)) = event_src::<1>(&mut b, vec![0.0_f64; 1].into());
+    let (src, (sig, x)) = b.source(cell([0.0_f64; 1]));
     let mut ctx = Context::new(sig, [1]).with_field("x", x);
 
     let corr = ctx.lower_str(&mut b, "Corr($x, $x, 3)").unwrap();
@@ -533,13 +678,13 @@ fn pair_statistics_match_reference() {
         let want_corr = if k < 2 { f64::NAN } else { 1.0 };
 
         assert_close_tol(
-            &vals(g.view(cov)),
+            &g.view(cov).to_contiguous(),
             &[want_cov],
             1e-9,
             &format!("cov, tick {t}"),
         );
         assert_close_tol(
-            &vals(g.view(corr)),
+            &g.view(corr).to_contiguous(),
             &[want_corr],
             1e-9,
             &format!("corr, tick {t}"),
@@ -551,7 +696,7 @@ fn pair_statistics_match_reference() {
 #[test]
 fn cross_sectional_operators_match_reference() {
     let mut b = Builder::new();
-    let (src, (sig, x)) = event_src::<1>(&mut b, vec![0.0_f64; 3].into());
+    let (src, (sig, x)) = b.source(cell([0.0_f64; 3]));
     let mut ctx = Context::new(sig, [3]).with_field("x", x);
 
     let z = ctx.lower_str(&mut b, "CSZscore($x)").unwrap();
@@ -566,7 +711,7 @@ fn cross_sectional_operators_match_reference() {
     let mean = xs.iter().sum::<f64>() / 3.0;
     let std = (xs.iter().map(|&a| (a - mean) * (a - mean)).sum::<f64>() / 3.0).sqrt();
     let want: Vec<f64> = xs.iter().map(|&a| (a - mean) / std).collect();
-    assert_close(&vals(g.view(z)), &want, "zscore");
+    assert_close(&g.view(z).to_contiguous(), &want, "zscore");
 }
 
 // ---------------------------------------------------------------------------
@@ -579,7 +724,7 @@ fn cross_sectional_operators_match_reference() {
 #[test]
 fn lowering_errors_are_reported() {
     let mut b = Builder::new();
-    let (_src, (sig, x)) = event_src::<1>(&mut b, vec![0.0_f64; 1].into());
+    let (_src, (sig, x)) = b.source(cell([0.0_f64; 1]));
     let mut ctx = Context::new(sig, [1]).with_field("x", x);
 
     let lower =

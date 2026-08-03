@@ -5,7 +5,7 @@ use std::fmt;
 pub enum Error {
     /// Syntax error at a byte offset of the source string.
     Parse { pos: usize, message: String },
-    /// A `$field` not registered on the [`Context`].
+    /// A `$field` not registered on the [`Context`](super::Context).
     UnknownField(String),
     /// A function name outside the vocabulary.
     UnknownFunction(String),

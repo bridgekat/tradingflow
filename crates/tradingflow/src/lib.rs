@@ -1,8 +1,9 @@
 //! A lightweight framework for quantitative investment research.
 //!
-//! A trading strategy is a static computation graph: feature extraction,
-//! model prediction, portfolio optimization, trading simulation and
-//! performance evaluation are all operator nodes in this graph.
+//! A trading strategy is a *static, stateful computation graph*: feature
+//! extraction, model prediction, portfolio optimization, trading simulation
+//! and performance evaluation are all operator nodes in this graph. When new
+//! data arrives, changes are automatically propagated throughout the graph.
 //! Writing a strategy backtest amounts to wiring together reusable operators,
 //! and new operators can be readily implemented.
 //!
@@ -167,19 +168,34 @@
 //!
 //! # Building computation graphs
 //!
-//! See module-level docs of [`graph`].
+//! See module-level docs of [`graph`] and [`ports`].
 //!
-//! The [`ports`] module provides type aliases for common port types
-//! (booleans, arrays, series).
+//! The [`ports`] module provides additional type aliases for [`graph::Port`]
+//! which are more commonly used for trading strategies: instead of passing
+//! around scalars or thin references, most operators here pass boolean signal
+//! arrays, scalar value arrays or time series by their views.
 //!
-//! # Built-in sources and operators
+//! # Built-in data sources
 //!
-//! See module-level docs of [`sources`] and [`operators`].
+//! See [`sources`] and its sub-modules.
+//!
+//! # Built-in operator nodes
+//!
+//! See [`operators`] and its sub-modules.
+//!
+//! # Factor expressions
+//!
+//! See module-level docs of [`expr`].
+//!
+//! # Python operators
+//!
+//! See module-level docs of [`python`].
 
 pub use tradingflow_data as data;
 pub use tradingflow_graph as graph;
 pub use tradingflow_macros as macros;
 
+pub mod expr;
 pub mod operators;
 pub mod ports;
 pub mod sources;
