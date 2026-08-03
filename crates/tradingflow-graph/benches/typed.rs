@@ -259,60 +259,11 @@ fn bench_few_heavy(c: &mut Criterion) {
     group.finish();
 }
 
-// -- complex mesh (large, non-trivial topology, variable workload) -----------
-
-/// `iters` rounds of an LCG, folded mod `MODULUS` so node values (and thus
-/// full-layer sums) stay bounded.
-fn lcg(seed: i64, iters: u32) -> i64 {
-    const MODULUS: i64 = 1_000_000_007;
-    let mut h = seed.rem_euclid(MODULUS);
-    for _ in 0..iters {
-        h = h.wrapping_mul(48271).wrapping_add(1).rem_euclid(MODULUS);
-    }
-    h
-}
-
-fn work(a: i64, b: i64, c: i64, iters: u32) -> i64 {
-    let seed = a
-        .wrapping_mul(3)
-        .wrapping_add(b.wrapping_mul(5))
-        .wrapping_add(c.wrapping_mul(7));
-    lcg(seed, iters)
-}
+// -- complex mesh (large, non-trivial topology, light workload) -----------
 
 /// Two local predecessors and one long-range one.
 fn preds(layer: usize, j: usize, n: usize) -> [usize; 3] {
     [j, (j + 1) % n, (j * 13 + layer * 7 + 1) % n]
-}
-
-/// Mostly light (0..18 rounds), ~1/16 deliberately heavy.
-fn iters_of(layer: usize, j: usize) -> u32 {
-    let base = ((layer * 31 + j * 17) % 19) as u32;
-    if (layer + j).is_multiple_of(16) {
-        base * 40 + 200
-    } else {
-        base
-    }
-}
-
-struct Work {
-    iters: u32,
-}
-impl Operator for Work {
-    type Inputs = (Port<Val<f64>>, Port<Val<f64>>, Port<Val<f64>>);
-    type Outputs = Port<Val<f64>>;
-    type State = u32; // iters
-    type Context = ();
-    fn init(self, _: (f64, f64, f64)) -> Self::State {
-        self.iters
-    }
-    fn reset<'a, 'b: 'a>((a, b, c): (f64, f64, f64), iters: &'b mut Self::State) -> f64 {
-        work(a as i64, b as i64, c as i64, *iters) as f64
-    }
-    fn compute<'a, 'b: 'a>((a, b, c): (f64, f64, f64), iters: &'b mut Self::State, _: &()) -> f64 {
-        let out = work(a as i64, b as i64, c as i64, *iters);
-        out as f64
-    }
 }
 
 /// Stateless unary map `x -> f(x)`; `passthrough` and `compute` are identical
@@ -410,12 +361,12 @@ fn bench_mesh_fusion(c: &mut Criterion) {
         // node.
         {
             let mut gb = Builder::new();
-            let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
-                let it = iters_of(l, j);
+            let (src, aggs) = build(&mut gb, w, d, |gb, _, _, [a, b, c]| {
                 let op = tradingflow::fuse!(|x: Port<Val<f64>>, y: Port<Val<f64>>, z: Port<Val<f64>>| -> Port<Val<f64>> {
-                    let ww = Work { iters: it } @ (x, y, z);
-                    let p = inc() @ ww;
-                    let q = double() @ ww;
+                    let xy = Add @ (x, y);
+                    let w = Add @ (xy, z);
+                    let p = inc() @ w;
+                    let q = double() @ w;
                     let r = Add @ (p, q);
                     r
                 });
@@ -429,19 +380,14 @@ fn bench_mesh_fusion(c: &mut Criterion) {
             });
         }
 
-        // The same diamond as FOUR scheduled nodes (identical result, 4x the
-        // nodes).
+        // The same diamond as 5 scheduled nodes.
         {
             let mut gb = Builder::new();
-            let (src, aggs) = build(&mut gb, w, d, |gb, l, j, [a, b, c]| {
-                let w_h = gb.op(
-                    Work {
-                        iters: iters_of(l, j),
-                    },
-                    (a, b, c),
-                );
-                let p = gb.op(inc(), w_h);
-                let q = gb.op(double(), w_h);
+            let (src, aggs) = build(&mut gb, w, d, |gb, _, _, [x, y, z]| {
+                let xy = gb.op(Add, (x, y));
+                let w = gb.op(Add, (xy, z));
+                let p = gb.op(inc(), w);
+                let q = gb.op(double(), w);
                 gb.op(Add, (p, q))
             });
             let mut g = gb.build();

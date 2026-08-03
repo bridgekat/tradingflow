@@ -8,14 +8,14 @@ use crate::ports::{ArrayPort, SignalPort};
 /// Accumulator for [`return_vol`].
 pub struct ReturnVolAccumulator<T: Scalar + Float> {
     sum: T,
-    sum_sq: T,
+    sum2: T,
 }
 
 impl<T: Scalar + Float> ReturnVolAccumulator<T> {
     pub fn new() -> Self {
         Self {
             sum: T::zero(),
-            sum_sq: T::zero(),
+            sum2: T::zero(),
         }
     }
 }
@@ -29,13 +29,13 @@ impl<T: Scalar + Float> Default for ReturnVolAccumulator<T> {
 impl<T: Scalar + Float> Accumulator<T> for ReturnVolAccumulator<T> {
     fn add(&mut self, value: T) {
         self.sum = self.sum + value;
-        self.sum_sq = self.sum_sq + value * value;
+        self.sum2 = self.sum2 + value * value;
     }
 
     fn output(&mut self, count: usize) -> T {
         let n = T::from(count).unwrap();
         let mean = self.sum / n;
-        let var = (self.sum_sq / n - mean * mean).max(T::zero());
+        let var = (self.sum2 / n - mean * mean).max(T::zero());
         var.sqrt()
     }
 }

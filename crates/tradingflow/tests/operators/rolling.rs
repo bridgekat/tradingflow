@@ -83,20 +83,22 @@ fn ref_mean(xs: &[f64], min_count: usize) -> f64 {
     finite(xs).sum::<f64>() / n as f64
 }
 
-/// Rolling variance reference — the *population* variance (divide by `n`),
-/// written two-pass so it is independent of the operator's `E[x²] - E[x]²`
-/// form.
+/// Rolling variance reference — the *sample* variance (divide by `n − 1`,
+/// so at least 2 finite samples), written two-pass so it is independent of
+/// the operator's `E[x²] - E[x]²` form.
 fn ref_var(xs: &[f64], min_count: usize) -> f64 {
     let n = n_finite(xs);
-    if n < min_count {
+    if n < min_count.max(2) {
         return f64::NAN;
     }
     let m = finite(xs).sum::<f64>() / n as f64;
-    finite(xs).map(|x| (x - m) * (x - m)).sum::<f64>() / n as f64
+    finite(xs).map(|x| (x - m) * (x - m)).sum::<f64>() / (n - 1) as f64
 }
 
-/// Rolling covariance reference for one matrix entry, computed over the ticks
-/// where *both* components are finite ("pairwise complete").
+/// Rolling covariance reference for one matrix entry — the *sample*
+/// covariance (divide by `n − 1`), computed over the ticks where *both*
+/// components are finite ("pairwise complete"), of which at least 2 are
+/// required.
 fn ref_cov(xi: &[f64], xj: &[f64], min_count: usize) -> f64 {
     let pairs: Vec<(f64, f64)> = xi
         .iter()
@@ -104,13 +106,13 @@ fn ref_cov(xi: &[f64], xj: &[f64], min_count: usize) -> f64 {
         .filter(|(a, b)| a.is_finite() && b.is_finite())
         .map(|(&a, &b)| (a, b))
         .collect();
-    if pairs.len() < min_count {
+    if pairs.len() < min_count.max(2) {
         return f64::NAN;
     }
     let n = pairs.len() as f64;
     let mi = pairs.iter().map(|p| p.0).sum::<f64>() / n;
     let mj = pairs.iter().map(|p| p.1).sum::<f64>() / n;
-    pairs.iter().map(|(a, b)| (a - mi) * (b - mj)).sum::<f64>() / n
+    pairs.iter().map(|(a, b)| (a - mi) * (b - mj)).sum::<f64>() / (n - 1.0)
 }
 
 /// Rolling EWMA reference: the newest in-window sample carries weight `alpha`,
@@ -221,17 +223,6 @@ fn sum_min_count_gates_on_the_finite_sample_count() {
         gated >= 4 && emitted >= 2,
         "{gated} gated, {emitted} emitted"
     );
-}
-
-/// `min_count` must be positive: zero would make the "enough data" test
-/// vacuous and let the accumulators divide by a zero count.
-#[test]
-#[should_panic(expected = "min_count must be positive")]
-fn sum_rejects_a_zero_min_count() {
-    let mut b = Builder::new();
-    let (_src, xv) = event_src(&mut b, (0.0_f64).into());
-    let rec = b.op(series::record_all(), xv);
-    let _ = b.op(rolling::series_sum(3, 0), rec);
 }
 
 // ---------------------------------------------------------------------------
@@ -407,10 +398,11 @@ fn mean_over_a_duration_window_selects_ticks_by_timestamp() {
 // var / std_dev
 // ---------------------------------------------------------------------------
 
-/// `var` is the population variance (divide by the finite count) of the
-/// trailing window, computed independently per element.
+/// `var` is the sample variance (divide by the finite count less one) of the
+/// trailing window, computed independently per element; a single sample is
+/// gated to `NaN` regardless of `min_count`.
 #[test]
-fn var_matches_the_population_variance_of_the_window() {
+fn var_matches_the_sample_variance_of_the_window() {
     const W: usize = 5;
     let paths: Vec<Vec<f64>> = (0..2).map(|s| quarter_path(31 + s, 40)).collect();
 
@@ -454,13 +446,13 @@ fn std_dev_matches_the_square_root_of_the_window_variance() {
     }
 }
 
-/// The `E[x²] - E[x]²` form can round to a small *negative* number on a window
+/// The `Σx² - n·mean²` form can round to a small *negative* number on a window
 /// of identical samples. The accumulator clamps it at zero, which is what keeps
 /// `std_dev` from turning a perfectly good finite window into `NaN`.
 #[test]
 fn var_clamps_the_rounding_error_of_a_constant_window_to_zero() {
     const W: usize = 7;
-    let c = 1000.0 + 1.0 / 3.0;
+    let c = 1000.0 + 1.0 / 9.0;
 
     let mut b = Builder::new();
     let (src, xv) = event_src(&mut b, (0.0_f64).into());
@@ -471,25 +463,31 @@ fn var_clamps_the_rounding_error_of_a_constant_window_to_zero() {
 
     // Mirror of the accumulator's own arithmetic — same values in the same
     // order — so the unclamped result it would have written is reproducible.
-    let (mut sum, mut sum_sq, mut n) = (0.0_f64, 0.0_f64, 0_usize);
+    let (mut sum, mut sum2, mut n) = (0.0_f64, 0.0_f64, 0_usize);
     let mut clamped = 0;
     for t in 0..40 {
         *g.state_mut(src) = c.into();
         g.stabilize(&mut pool, &nano(t as i64 + 1));
 
         sum += c;
-        sum_sq += c * c;
+        sum2 += c * c;
         n += 1;
         if n > W {
             sum -= c;
-            sum_sq -= c * c;
+            sum2 -= c * c;
             n -= 1;
         }
-        let raw = sum_sq / n as f64 - (sum / n as f64) * (sum / n as f64);
-        clamped += usize::from(raw < 0.0);
 
         let got_var = vals(g.view(v))[0];
         let got_std = vals(g.view(s))[0];
+        if n < 2 {
+            assert!(got_var.is_nan(), "tick {t}: single sample must gate");
+            continue;
+        }
+        let mean = sum / n as f64;
+        let raw = (sum2 - n as f64 * mean * mean) / (n - 1) as f64;
+        clamped += usize::from(raw < 0.0);
+
         assert_eq!(got_var, raw.max(0.0), "tick {t}: clamped variance");
         assert!(got_var >= 0.0, "tick {t}: negative variance {got_var}");
         assert!(got_std.is_finite(), "tick {t}: std_dev is {got_std}");

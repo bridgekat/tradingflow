@@ -14,6 +14,7 @@ mod harness;
 mod array;
 mod compose;
 mod elem;
+mod expr;
 mod feature;
 mod metric;
 mod portfolio;

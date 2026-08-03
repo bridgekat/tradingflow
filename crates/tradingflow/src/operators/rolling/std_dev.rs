@@ -14,8 +14,9 @@ pub fn series_std_dev<T: Scalar + Float, const N: usize>(
     series_var(window.into(), min_count).then(sqrt())
 }
 
-/// Elementwise rolling standard deviation over a specified window, ingesting
-/// one sample per signal. Non-finite values are skipped.
+/// Elementwise rolling sample standard deviation (the square root of the
+/// unbiased `n − 1` variance) over a specified window, ingesting one sample
+/// per signal. Non-finite values are skipped.
 pub fn std_dev<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
     min_count: usize,

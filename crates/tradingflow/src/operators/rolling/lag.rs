@@ -1,7 +1,7 @@
 use num_traits::Float;
 
 use super::base::{Accumulator, Rolling};
-use crate::data::{Array, ArrayView, Instant, Retention, Scalar, array};
+use crate::data::{Array, ArrayView, Instant, Retention, Scalar, SeriesView, array};
 use crate::fuse;
 use crate::graph::{Operator, OperatorExt};
 use crate::operators::elem::{div, sub};
@@ -40,7 +40,7 @@ impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for LagAccumulat
         });
     }
 
-    fn write(&mut self, out: &mut Array<T, N>, _: usize) {
+    fn write(&mut self, out: &mut Array<T, N>, _: SeriesView<'_, T, N>) {
         out.data_mut().clone_from_slice(&self.value);
     }
 }

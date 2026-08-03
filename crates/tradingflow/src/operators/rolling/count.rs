@@ -6,35 +6,21 @@ use crate::graph::{Operator, OperatorExt};
 use crate::operators::series::buffer;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
-/// Accumulator for [`sum`].
-pub struct SumAccumulator<T: Scalar + Float> {
-    sum: Vec<T>,
+/// Accumulator for [`count`].
+pub struct CountAccumulator {
     count: Vec<usize>,
-    min_count: usize,
 }
 
-impl<T: Scalar + Float> SumAccumulator<T> {
-    fn new(min_count: usize) -> Self {
-        Self {
-            sum: Vec::new(),
-            count: Vec::new(),
-            min_count: min_count.max(1),
-        }
-    }
-}
-
-impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for SumAccumulator<T> {
+impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for CountAccumulator {
     fn init(&mut self, extents: [usize; N]) -> Array<T, N> {
         let stride = extents.iter().product();
-        self.sum = vec![T::zero(); stride];
         self.count = vec![0; stride];
-        Array::full(extents, T::nan())
+        Array::full(extents, T::zero())
     }
 
     fn add(&mut self, a: ArrayView<T, N>) {
         array::for_each(a, |j, &x| {
             if x.is_finite() {
-                self.sum[j] = self.sum[j] + x;
                 self.count[j] += 1;
             }
         });
@@ -43,7 +29,6 @@ impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for SumAccumulat
     fn remove(&mut self, a: ArrayView<T, N>) {
         array::for_each(a, |j, &x| {
             if x.is_finite() {
-                self.sum[j] = self.sum[j] - x;
                 self.count[j] -= 1;
             }
         });
@@ -51,30 +36,25 @@ impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for SumAccumulat
 
     fn write(&mut self, out: &mut Array<T, N>, _: SeriesView<'_, T, N>) {
         for (j, o) in out.data_mut().iter_mut().enumerate() {
-            if self.count[j] >= self.min_count {
-                *o = self.sum[j];
-            } else {
-                *o = T::nan();
-            }
+            *o = T::from(self.count[j]).unwrap();
         }
     }
 }
 
-/// [`sum`] over an explicitly recorded series.
-pub fn series_sum<T: Scalar + Float, const N: usize>(
+/// [`count`] over an explicitly recorded series.
+pub fn series_count<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
-    min_count: usize,
 ) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    Rolling::new(window.into(), SumAccumulator::new(min_count))
+    Rolling::new(window.into(), CountAccumulator { count: Vec::new() })
 }
 
-/// Elementwise rolling sum over a specified window, ingesting one sample per
-/// signal. Non-finite values are skipped.
-pub fn sum<T: Scalar + Float, const N: usize>(
+/// Elementwise count of the finite samples in a specified window, ingesting
+/// one sample per signal. Always defined (zero when the window holds no finite
+/// samples).
+pub fn count<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
-    min_count: usize,
 ) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
     let window = window.into();
-    buffer(window).then(series_sum(window, min_count))
+    buffer(window).then(series_count(window))
 }

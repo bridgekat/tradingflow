@@ -1,7 +1,7 @@
 use num_traits::Float;
 
 use super::base::{Accumulator, Rolling};
-use crate::data::{Array, ArrayView, Instant, Retention, Scalar, array};
+use crate::data::{Array, ArrayView, Instant, Retention, Scalar, SeriesView, array};
 use crate::graph::{Operator, OperatorExt};
 use crate::operators::series::buffer;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
@@ -10,11 +10,10 @@ use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 pub struct MeanExpAccumulator<T: Scalar + Float> {
     alpha: T,
     one_minus_alpha: T,
-    added: usize,
-    removed: usize,
+    rows: usize,
+    count: Vec<usize>,
     sum: Vec<T>,
     sum_w: Vec<T>,
-    count: Vec<usize>,
     min_count: usize,
 }
 
@@ -24,16 +23,14 @@ impl<T: Scalar + Float> MeanExpAccumulator<T> {
             alpha > T::zero() && alpha <= T::one(),
             "alpha must be in (0, 1]"
         );
-        assert!(min_count > 0, "min_count must be positive");
         Self {
             alpha,
             one_minus_alpha: T::one() - alpha,
-            added: 0,
-            removed: 0,
+            rows: 0,
+            count: Vec::new(),
             sum: Vec::new(),
             sum_w: Vec::new(),
-            count: Vec::new(),
-            min_count,
+            min_count: min_count.max(1),
         }
     }
 }
@@ -48,32 +45,32 @@ impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for MeanExpAccum
     }
 
     fn add(&mut self, a: ArrayView<T, N>) {
-        self.added += 1;
+        self.rows += 1;
         array::for_each(a, |j, &x| {
             self.sum[j] = self.sum[j] * self.one_minus_alpha;
             self.sum_w[j] = self.sum_w[j] * self.one_minus_alpha;
             if x.is_finite() {
+                self.count[j] += 1;
                 self.sum[j] = self.sum[j] + self.alpha * x;
                 self.sum_w[j] = self.sum_w[j] + self.alpha;
-                self.count[j] += 1;
             }
         });
     }
 
     fn remove(&mut self, a: ArrayView<T, N>) {
-        let age = i32::try_from(self.added - self.removed - 1).unwrap_or(i32::MAX);
+        let age = i32::try_from(self.rows - 1).unwrap_or(i32::MAX);
         let w = self.alpha * self.one_minus_alpha.powi(age);
         array::for_each(a, |j, &x| {
             if x.is_finite() {
+                self.count[j] -= 1;
                 self.sum[j] = self.sum[j] - w * x;
                 self.sum_w[j] = self.sum_w[j] - w;
-                self.count[j] -= 1;
             }
         });
-        self.removed += 1;
+        self.rows -= 1;
     }
 
-    fn write(&mut self, out: &mut Array<T, N>, _: usize) {
+    fn write(&mut self, out: &mut Array<T, N>, _: SeriesView<'_, T, N>) {
         for (j, o) in out.data_mut().iter_mut().enumerate() {
             if self.count[j] >= self.min_count && self.sum_w[j] > T::zero() {
                 *o = self.sum[j] / self.sum_w[j];

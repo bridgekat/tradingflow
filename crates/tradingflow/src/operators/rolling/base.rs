@@ -2,7 +2,7 @@ use num_traits::Float;
 use std::marker::PhantomData;
 use std::ops::Range;
 
-use crate::data::{Array, ArrayView, Instant, Retention, Scalar, SeriesView};
+use crate::data::{Array, ArrayView, Instant, Retention, Scalar, SeriesView, array};
 use crate::graph::Operator;
 use crate::ports::{ArrayPort, SeriesPort};
 
@@ -21,8 +21,9 @@ pub trait Accumulator<T: Scalar, const N: usize, U: Scalar + Float, const M: usi
     /// Removes an element from the window.
     fn remove(&mut self, a: ArrayView<T, N>);
 
-    /// Writes the current output to the provided buffer.
-    fn write(&mut self, out: &mut Array<U, M>, count: usize);
+    /// Writes the current output to the provided buffer. All elements in
+    /// the current window is accessible from `window` if needed.
+    fn write(&mut self, out: &mut Array<U, M>, window: SeriesView<'_, T, N>);
 }
 
 /// Operator signature for rolling window operators.
@@ -135,7 +136,72 @@ impl<T: Scalar, const N: usize, U: Scalar + Float, const M: usize, A: Accumulato
             state.acc.remove(series.at(i).1);
         }
         state.range = start..end;
-        state.acc.write(&mut state.out, state.range.len());
+        state
+            .acc
+            .write(&mut state.out, series.window(state.range.clone()));
         state.out.view()
+    }
+}
+
+/// Accumulator adaptor for window-scanning statistics: `add`/`remove` are
+/// no-ops and the statistic is recomputed per lane from the window view on
+/// every [`write`](Accumulator::write).
+///
+/// The closure receives the lane's **finite** samples as `(position, value)`
+/// pairs, oldest first — positions are 0-based from the window start and count
+/// every row, so non-finite samples leave gaps — plus the total number of rows
+/// in the window. Lanes with fewer than `min_count` finite samples emit `NaN`
+/// without calling the closure.
+pub struct Scanning<T: Scalar + Float, F> {
+    min_count: usize,
+    lanes: Vec<Vec<(usize, T)>>,
+    f: F,
+}
+
+impl<T: Scalar + Float, F> Scanning<T, F> {
+    pub fn new(min_count: usize, f: F) -> Self {
+        Self {
+            min_count,
+            lanes: Vec::new(),
+            f,
+        }
+    }
+}
+
+impl<T: Scalar + Float, const N: usize, F> Accumulator<T, N, T, N> for Scanning<T, F>
+where
+    F: FnMut(&[(usize, T)], usize) -> T + Send + 'static,
+{
+    fn init(&mut self, extents: [usize; N]) -> Array<T, N> {
+        let stride = extents.iter().product();
+        self.lanes = vec![Vec::new(); stride];
+        Array::full(extents, T::nan())
+    }
+
+    fn add(&mut self, _: ArrayView<T, N>) {}
+
+    fn remove(&mut self, _: ArrayView<T, N>) {}
+
+    fn write(&mut self, out: &mut Array<T, N>, window: SeriesView<'_, T, N>) {
+        for lane in self.lanes.iter_mut() {
+            lane.clear();
+        }
+        let start = window.range().start;
+        for i in window.range() {
+            let lanes = &mut self.lanes;
+            array::for_each(window.at(i).1, |j, &x| {
+                if x.is_finite() {
+                    lanes[j].push((i - start, x));
+                }
+            });
+        }
+        let len = window.len();
+        for (o, pairs) in out.data_mut().iter_mut().zip(self.lanes.iter()) {
+            *o = if pairs.len() < self.min_count {
+                T::nan()
+            } else {
+                (self.f)(pairs, len)
+            };
+        }
     }
 }
