@@ -1,4 +1,5 @@
 use num_traits::Float;
+use std::cmp::Ordering;
 use std::marker::PhantomData;
 
 use crate::data::{Array, ArrayView, Instant, Scalar};
@@ -6,13 +7,15 @@ use crate::graph::Operator;
 use crate::ports::ArrayPort;
 
 pub struct Scale<T: Scalar + Float, const N: usize> {
+    compare: Ordering,
     target: f64,
     _marker: PhantomData<fn() -> T>,
 }
 
 impl<T: Scalar + Float, const N: usize> Scale<T, N> {
-    pub fn new(target: f64) -> Self {
+    pub fn new(compare: Ordering, target: f64) -> Self {
         Self {
+            compare,
             target,
             _marker: PhantomData,
         }
@@ -20,6 +23,7 @@ impl<T: Scalar + Float, const N: usize> Scale<T, N> {
 }
 
 pub struct ScaleState<T: Scalar + Float, const N: usize> {
+    compare: Ordering,
     target: T,
     out: Array<T, N>,
 }
@@ -32,10 +36,11 @@ impl<T: Scalar + Float, const N: usize> Operator for Scale<T, N> {
 
     fn init(self, x: ArrayView<'_, T, N>) -> Self::State {
         let mut state = ScaleState {
+            compare: self.compare,
             target: T::from(self.target).unwrap(),
             out: Array::zeros(x.extents()),
         };
-        scale_into(&mut state.out, x, state.target);
+        scale_into(&mut state.out, x, state.compare, state.target);
         state
     }
 
@@ -51,7 +56,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Scale<T, N> {
         state: &'b mut Self::State,
         _: &Instant,
     ) -> ArrayView<'a, T, N> {
-        scale_into(&mut state.out, x, state.target);
+        scale_into(&mut state.out, x, state.compare, state.target);
         state.out.view()
     }
 }
@@ -59,6 +64,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Scale<T, N> {
 fn scale_into<T: Scalar + Float, const N: usize>(
     out: &mut Array<T, N>,
     x: ArrayView<'_, T, N>,
+    compare: Ordering,
     target: T,
 ) {
     let mut sum = T::zero();
@@ -67,8 +73,10 @@ fn scale_into<T: Scalar + Float, const N: usize>(
             sum = sum + v.abs();
         }
     }
-    let factor = if sum > T::zero() {
-        target / sum
+    let factor = if sum.partial_cmp(&target) == Some(compare) {
+        T::one() // Skip scaling if the sum meets the condition.
+    } else if sum > T::zero() {
+        target / sum // Scale to reach the target sum.
     } else {
         T::nan() // A zero (or empty) cross-section cannot reach the target.
     };
@@ -85,5 +93,19 @@ fn scale_into<T: Scalar + Float, const N: usize>(
 pub fn scale<T: Scalar + Float, const N: usize>(
     target: f64,
 ) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    Scale::new(target)
+    Scale::new(Ordering::Equal, target)
+}
+
+/// Like [`scale`], but only scale when the sum is no greater than `target`.
+pub fn scale_up<T: Scalar + Float, const N: usize>(
+    target: f64,
+) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+    Scale::new(Ordering::Greater, target)
+}
+
+/// Like [`scale`], but only scale when the sum is no less than `target`.
+pub fn scale_down<T: Scalar + Float, const N: usize>(
+    target: f64,
+) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+    Scale::new(Ordering::Less, target)
 }
