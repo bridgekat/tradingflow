@@ -85,6 +85,7 @@ pub struct Context<const N: usize> {
     clock: SignalPortHandle<0>,
     extents: [usize; N],
     fields: HashMap<String, ArrayPortHandle<f64, N>>,
+    groupings: HashMap<String, ArrayPortHandle<u32, N>>,
     cache: HashMap<Expr, Value<N>>,
     const_wires: HashMap<u64, ArrayPortHandle<f64, N>>,
 }
@@ -99,6 +100,7 @@ impl<const N: usize> Context<N> {
             clock,
             extents,
             fields: HashMap::new(),
+            groupings: HashMap::new(),
             cache: HashMap::new(),
             const_wires: HashMap::new(),
         }
@@ -112,6 +114,22 @@ impl<const N: usize> Context<N> {
     /// Chaining form of [`add_field`](Context::add_field).
     pub fn with_field(mut self, name: impl Into<String>, wire: ArrayPortHandle<f64, N>) -> Self {
         self.add_field(name, wire);
+        self
+    }
+
+    /// Registers a grouping for `IndNeutralize(x, $name)`: a wire tagging
+    /// each cross-section element with a group id (e.g. industry tags encoded
+    /// as small dense integers), shaped like the context extents. The tags
+    /// may change over time — the demean regroups every tick. A static
+    /// tagging is a constant array node
+    /// ([`array::constant`](crate::operators::array::constant)).
+    pub fn add_grouping(&mut self, name: impl Into<String>, tags: ArrayPortHandle<u32, N>) {
+        self.groupings.insert(name.into(), tags);
+    }
+
+    /// Chaining form of [`add_grouping`](Context::add_grouping).
+    pub fn with_grouping(mut self, name: impl Into<String>, tags: ArrayPortHandle<u32, N>) -> Self {
+        self.add_grouping(name, tags);
         self
     }
 
@@ -516,6 +534,38 @@ impl<const N: usize> Context<N> {
                 let x = self.num_wire(b, name, x)?;
                 Ok(Value::Num(b.add_op(stats::standardize(), x)))
             }
+            "Scale" => {
+                // `Scale(x)` targets 1; `Scale(x, a)` targets `a`.
+                let (x, target) = match args {
+                    [x] => (x, 1.0),
+                    [x, a] => (x, scale_target(name, a)?),
+                    _ => {
+                        return Err(Error::Arity {
+                            name: name.to_string(),
+                            expected: 2,
+                            got: args.len(),
+                        });
+                    }
+                };
+                let x = self.num_wire(b, name, x)?;
+                Ok(Value::Num(b.add_op(stats::scale(target), x)))
+            }
+            "IndNeutralize" => {
+                let [x, g] = check_arity(name, args)?;
+                let Expr::Field(group) = g else {
+                    return Err(Error::Type {
+                        name: name.to_string(),
+                        message: "the grouping must be a bare `$name` registered \
+                                  via `Context::add_grouping`"
+                            .into(),
+                    });
+                };
+                let Some(&tags) = self.groupings.get(group) else {
+                    return Err(Error::UnknownGrouping(group.clone()));
+                };
+                let x = self.num_wire(b, name, x)?;
+                Ok(Value::Num(b.add_op(stats::group_demean(), (x, tags))))
+            }
 
             _ => Err(Error::UnknownFunction(name.to_string())),
         }
@@ -573,6 +623,21 @@ fn window(name: &str, expr: &Expr, min: usize) -> Result<usize, Error> {
         return Err(fail(format!("window is {w}; must be at least {min}")));
     }
     Ok(w)
+}
+
+/// Extracts a `Scale` target: a positive finite constant literal.
+fn scale_target(name: &str, expr: &Expr) -> Result<f64, Error> {
+    let fail = |message: String| Error::Window {
+        name: name.to_string(),
+        message,
+    };
+    let &Expr::Const(c) = expr else {
+        return Err(fail("scale target must be a numeric literal".into()));
+    };
+    if !(c.is_finite() && c > 0.0) {
+        return Err(fail(format!("scale target is {c}; must be positive")));
+    }
+    Ok(c)
 }
 
 /// Extracts a fraction argument: a constant in `[0, 1]`.

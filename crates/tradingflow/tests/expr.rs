@@ -714,6 +714,83 @@ fn cross_sectional_operators_match_reference() {
     assert_close(&g.view(z).to_contiguous(), &want, "zscore");
 }
 
+/// `Scale` renormalizes the cross-section to a target absolute sum, and
+/// `IndNeutralize` demeans within the groups of a registered tag wire —
+/// regrouping when the tags change; non-finite entries stay NaN and are
+/// excluded from the sums and means.
+#[test]
+fn scale_and_group_neutralize_match_reference() {
+    let nan = f64::NAN;
+
+    let mut b = Builder::new();
+    let (src, (sig, x)) = b.source(cell([0.0_f64; 4]));
+    let (tag_src, (_tag_sig, tags)) = b.source(cell([0_u32, 0, 1, 1]));
+    let mut ctx = Context::new(sig, [4])
+        .with_field("x", x)
+        .with_grouping("g", tags);
+
+    let scaled = ctx.lower_str(&mut b, "Scale($x)").unwrap();
+    let scaled2 = ctx.lower_str(&mut b, "Scale($x, 2)").unwrap();
+    let neut = ctx.lower_str(&mut b, "IndNeutralize($x, $g)").unwrap();
+
+    // Grouping misuse is rejected: unknown name, and a non-`$name` argument.
+    assert!(matches!(
+        ctx.lower_str(&mut b, "IndNeutralize($x, $h)"),
+        Err(Error::UnknownGrouping(name)) if name == "h"
+    ));
+    assert!(matches!(
+        ctx.lower_str(&mut b, "IndNeutralize($x, 1)"),
+        Err(Error::Type { .. })
+    ));
+    assert!(matches!(
+        ctx.lower_str(&mut b, "Scale($x, 0)"),
+        Err(Error::Window { .. })
+    ));
+
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(src) = [1.0, -3.0, 2.0, nan].into();
+    g.stabilize(&mut pool, &nano(1));
+
+    // Σ|x| over the finite entries is 6; NaN stays NaN.
+    assert_close(
+        &g.view(scaled).to_contiguous(),
+        &[1.0 / 6.0, -3.0 / 6.0, 2.0 / 6.0, nan],
+        "scale",
+    );
+    assert_close(
+        &g.view(scaled2).to_contiguous(),
+        &[2.0 / 6.0, -6.0 / 6.0, 4.0 / 6.0, nan],
+        "scale to 2",
+    );
+    // Group 0 has mean -1; group 1's only finite member is its own mean.
+    assert_close(
+        &g.view(neut).to_contiguous(),
+        &[2.0, -2.0, 0.0, nan],
+        "group demean",
+    );
+
+    // An all-zero (or all-missing) cross-section cannot reach the target.
+    *g.state_mut(src) = [0.0, 0.0, 0.0, 0.0].into();
+    g.stabilize(&mut pool, &nano(2));
+    assert_close(
+        &g.view(scaled).to_contiguous(),
+        &[nan, nan, nan, nan],
+        "scale of zero",
+    );
+
+    // Tags are a live wire: retagging regroups the demean.
+    *g.state_mut(src) = [1.0, -3.0, 2.0, nan].into();
+    *g.state_mut(tag_src) = [0_u32, 0, 0, 1].into();
+    g.stabilize(&mut pool, &nano(3));
+    assert_close(
+        &g.view(neut).to_contiguous(),
+        &[1.0, -3.0, 2.0, nan], // Group 0 now has mean 0; group 1 is all-NaN.
+        "group demean after retagging",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Lowering: errors
 // ---------------------------------------------------------------------------

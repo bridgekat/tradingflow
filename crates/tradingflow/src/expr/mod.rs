@@ -45,11 +45,16 @@
 //! | `Power(a, b)`, `Greater(a, b)`, `Less(a, b)` | elementwise `powf` / max / min |
 //! | `If(c, a, b)`, `And, Or, Not` | elementwise choice and boolean logic |
 //! | `CSRank(x)`, `CSZscore(x)` | **cross-sectional** percentile rank / z-score |
+//! | `Scale(x)`, `Scale(x, a)` | **cross-sectional** rescale so `Σ\|x\| = a` (default 1) |
+//! | `IndNeutralize(x, $g)` | **cross-sectional** demean within the groups of grouping `g` |
 //!
 //! The cross-sectional operators go beyond Qlib's expression engine (whose
 //! expressions are strictly per-instrument): here every wire is a
 //! cross-section, so `CSRank` is just [`stats::percentile`](crate::operators::stats::percentile)
-//! on the current tick.
+//! on the current tick. `IndNeutralize`'s second argument names a `u32`
+//! group-tag wire (e.g. industry classifications) registered via
+//! [`Context::add_grouping`], in its own namespace separate from the fields;
+//! the tags may change over time — the demean regroups every tick.
 //!
 //! # Semantics notes
 //!

@@ -7,6 +7,8 @@ pub enum Error {
     Parse { pos: usize, message: String },
     /// A `$field` not registered on the [`Context`](super::Context).
     UnknownField(String),
+    /// A grouping not registered on the [`Context`](super::Context).
+    UnknownGrouping(String),
     /// A function name outside the vocabulary.
     UnknownFunction(String),
     /// Wrong number of arguments to a function.
@@ -28,6 +30,10 @@ impl fmt::Display for Error {
         match self {
             Error::Parse { pos, message } => write!(f, "parse error at offset {pos}: {message}"),
             Error::UnknownField(name) => write!(f, "unknown field `${name}`"),
+            Error::UnknownGrouping(name) => write!(
+                f,
+                "unknown grouping `${name}`; register it with `Context::add_grouping`"
+            ),
             Error::UnknownFunction(name) => write!(f, "unknown function `{name}`"),
             Error::Arity {
                 name,
