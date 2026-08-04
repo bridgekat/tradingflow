@@ -230,7 +230,9 @@ impl<const N: usize> Operator for BatchFace<N> {
 /// generation: element `j` is the values wire where signal element `j` pulsed
 /// and NaN elsewhere. Signals read post-reset (all-false) through
 /// `g.view`, so assertions on "what arrived on this wire this tick" go
-/// through this probe instead.
+/// through this probe instead. Deliberately not `signal::collect`: the probe
+/// is clockless and *carries* the face between scheduled generations so that
+/// `g.view` can read it after the fact.
 pub fn batch_face<const N: usize>() -> impl Operator<
     Inputs = (SignalPort<N>, ArrayPort<f64, N>),
     Outputs = ArrayPort<f64, N>,

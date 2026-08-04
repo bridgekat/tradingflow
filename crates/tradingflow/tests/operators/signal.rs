@@ -449,6 +449,61 @@ fn a_signal_stack_join_nan_fills_while_a_state_join_carries() {
     }
 }
 
+/// `signal::collect` latches element-wise events between clock pulses and
+/// flushes them as one batch per pulse. Every clause of the contract gets a
+/// tick below: an event arriving off-clock is delivered at the *next* pulse
+/// (not lost, not emitted early), two events on the same element between
+/// pulses keep only the latest, a pulse *clears* the latch so an empty period
+/// emits all-NaN (a period with no samples — never a stale re-emission), and
+/// an event in the pulse generation itself makes that batch.
+#[test]
+fn collect_latches_events_and_flushes_one_batch_per_clock_pulse() {
+    let nan = f64::NAN;
+    let mut b = Builder::new();
+    let (e0, (s0_signal, s0v)) = b.source(cell(0.0_f64));
+    let (e1, (s1_signal, s1v)) = b.source(cell(0.0_f64));
+    let (clock, clockv) = b.source(signal());
+    let stacked = b.op(array::stack::<f64, 0, 1>(0), &[s0v, s1v][..]);
+    let signals = b.op(
+        signal::as_signal_map(array::stack::<bool, 0, 1>(0)),
+        &[s0_signal, s1_signal][..],
+    );
+    let batch = b.op(signal::collect(), (signals, stacked, clockv));
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    // (poke of e0, poke of e1, pulse?, expected batch)
+    type Tick = (Option<f64>, Option<f64>, bool, [f64; 2]);
+    let ticks: &[Tick] = &[
+        // An off-clock event is latched, not emitted: the batch stays at its
+        // initial all-NaN.
+        (Some(1.0), None, false, [nan, nan]),
+        // A later event on the same element overwrites the pending one.
+        (Some(2.0), None, false, [nan, nan]),
+        // The pulse flushes the latest pending event per element; `e1` never
+        // fired, so its slot is NaN even though its values wire reads 0.0.
+        (None, None, true, [2.0, nan]),
+        // The flush cleared the latch: an empty period emits all-NaN rather
+        // than re-exposing the previous batch.
+        (None, None, true, [nan, nan]),
+        // An event in the pulse generation itself joins that batch.
+        (None, Some(7.0), true, [nan, 7.0]),
+    ];
+    for (i, &(p0, p1, pulse, want)) in ticks.iter().enumerate() {
+        if let Some(v) = p0 {
+            *g.state_mut(e0) = v.into();
+        }
+        if let Some(v) = p1 {
+            *g.state_mut(e1) = v.into();
+        }
+        if pulse {
+            let _ = g.state_mut(clock);
+        }
+        g.stabilize(&mut pool, &nano(i as i64 + 1));
+        assert_close(&vals(g.view(batch)), &want, &format!("tick {i}"));
+    }
+}
+
 /// The same contrast for `concat`, on rank-1 inputs joined along an existing
 /// axis: the NaN fill covers the whole contribution of a quiet input (both of
 /// its elements), not just a scalar slot, so the joined signal array is
