@@ -4,7 +4,7 @@ use pyo3::types::{PyDict, PyTuple};
 use std::ffi::CString;
 use std::marker::PhantomData;
 
-use super::{PyInterface, attach};
+use super::PyInterface;
 use crate::data::Instant;
 use crate::graph::{Interface, Operator};
 
@@ -23,7 +23,7 @@ fn resolve<'py>(
     loader: &Loader,
     params: Option<&Py<PyDict>>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let (build, instance) = match loader {
+    let build = match loader {
         Loader::Source(src) => {
             let g = PyDict::new(py);
             let np = py.import("numpy")?;
@@ -32,22 +32,13 @@ fn resolve<'py>(
             let code = CString::new(src.as_str())
                 .map_err(|_| PyValueError::new_err("python source has interior NUL"))?;
             py.run(code.as_c_str(), Some(&g), None)?;
-            (g.get_item("build")?, g.get_item("__op__")?)
+            g.get_item("build")?
         }
-        Loader::Module(name) => {
-            let module = py.import(name.as_str())?;
-            (module.getattr("build").ok(), module.getattr("__op__").ok())
-        }
+        Loader::Module(name) => py.import(name.as_str())?.getattr("build").ok(),
     };
-    if let Some(build) = build {
-        build.call((), params.map(|p| p.bind(py)))
-    } else if let Some(instance) = instance {
-        Ok(instance)
-    } else {
-        Err(PyValueError::new_err(
-            "python operator must define `build(**kwargs)` or bind `__op__`",
-        ))
-    }
+    build
+        .ok_or_else(|| PyValueError::new_err("python operator must define `build(**kwargs)`"))?
+        .call((), params.map(|p| p.bind(py)))
 }
 
 /// A graph node hosting a Python operator over input interface `I` and output
@@ -89,10 +80,12 @@ fn resolve<'py>(
 /// # Loading and parameters
 ///
 /// An operator definition is loaded from an inline source, an importable
-/// module, or a `.py` file; each binds an instance to `__op__` or defines a
-/// factory `build(**kwargs)`, called with the keyword arguments given at
-/// construction as a plain Python dict (build it with PyO3, e.g.
+/// module, or a `.py` file; each defines a factory `build(**kwargs)`
+/// returning the operator instance, called with the keyword arguments given
+/// at construction as a plain Python dict (build it with PyO3, e.g.
 /// [`IntoPyDict`](pyo3::types::IntoPyDict) — any Python values work).
+/// A fresh instance per `build` call keeps every node's operator its own —
+/// module-level state would be shared across all nodes loading the module.
 ///
 /// # Failure
 ///
@@ -164,7 +157,7 @@ fn call<'a, I: PyInterface, O: PyInterface>(
         state,
         buffers,
     } = state;
-    attach(move |py| {
+    Python::attach(move |py| {
         let run = || -> PyResult<Bound<'_, PyAny>> {
             let args = args_tuple::<I>(py, inputs)?;
             let instance = instance.bind(py);
@@ -200,7 +193,7 @@ where
     }
 
     fn init(self, inputs: <I as Interface>::Values<'_>) -> PyState<O> {
-        attach(|py| {
+        Python::attach(|py| {
             let run = || -> PyResult<(Py<PyAny>, Py<PyAny>)> {
                 let instance = resolve(py, &self.loader, self.params.as_ref())?;
                 let state = instance.call_method1("init", (args_tuple::<I>(py, inputs)?,))?;
@@ -251,7 +244,7 @@ where
 pub fn py_params(
     build: impl for<'py> FnOnce(&Bound<'py, PyDict>) -> PyResult<()>,
 ) -> Option<Py<PyDict>> {
-    attach(|py| {
+    Python::attach(|py| {
         let dict = PyDict::new(py);
         build(&dict).unwrap_or_else(|e| {
             e.print(py);
@@ -271,8 +264,8 @@ pub fn py_operator_module<I: PyInterface, O: PyInterface>(
     PyOperator::from_module(module, params)
 }
 
-/// A Python operator loaded from an inline Python program binding `__op__`
-/// or defining `build(**kwargs)`.
+/// A Python operator loaded from an inline Python program defining
+/// `build(**kwargs)`.
 pub fn py_operator_source<I: PyInterface, O: PyInterface>(
     source: impl Into<String>,
     params: Option<Py<PyDict>>,

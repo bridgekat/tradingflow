@@ -27,27 +27,8 @@ jobs:
       - run: cargo build --workspace --verbose
       - run: cargo test --workspace --verbose
 
-      # Python operator package (tradingflow) + the runtime deps (numpy/scipy/cvxpy)
-      # the embedded interpreter imports under the `python` feature below. The
-      # operators have no test suite of their own — they are exercised through
-      # the engine, by the integration tests in the step after this one.
-      - run: python -m pip install -e .
-
-      # Embedded-Python feature: PyO3 links the setup-python interpreter (found on
-      # PATH via `pyo3/auto-initialize`); the tests embed it and import tradingflow +
-      # numpy from that interpreter's own site-packages (installed just above). The
-      # test binary loads libpython at runtime, so its lib dir must be on the
-      # loader path — `$pythonLocation/lib` on Linux (LD_LIBRARY_PATH) and macOS
-      # (DYLD_LIBRARY_PATH); on Windows `pythonXY.dll` is already found via PATH.
-      - run: cargo test -p tradingflow --features python --verbose
-        env:
-          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
-          DYLD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
-
-      # The examples are the only consumers of several operator constructors and
-      # of the whole `examples/common` spine, and `cargo test` does not build
-      # them. Checking both feature configurations catches a wiring that no test
-      # covers — and the default one catches a `python`-gated item leaking out
-      # of its `cfg`.
-      - run: cargo check --examples --verbose
-      - run: cargo check --examples --features python --verbose
+      # The bridge tests exchange NumPy arrays across the FFI boundary, so the
+      # embedded interpreter's environment must be able to import numpy. It is
+      # the only Python dependency — the repo ships no Python code of its own.
+      - run: python -m pip install numpy
+      - run: cargo test -p tradingflow --all-features --verbose

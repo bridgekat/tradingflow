@@ -14,15 +14,24 @@ use tradingflow::data::{Array, ArrayView, Duration, Instant, Series, SeriesView}
 use tradingflow::graph::{Builder, Operator, Pool};
 use tradingflow::operators::series::record_all;
 use tradingflow::ports::{ArrayPort, ArrayPorts, SignalPort};
-use tradingflow::python::{
-    PyInterface, PyOperator, attach, from_numpy_into, py_operator_source, to_numpy,
-};
+use tradingflow::python::{PyInterface, PyOperator, from_numpy_into, py_operator_source, to_numpy};
 use tradingflow::sources::sync::array_series;
 use tradingflow::time::UnixTime;
 
 // ===========================================================================
 // Helpers
 // ===========================================================================
+
+/// Attaches to the interpreter, initializing it on first use with CPython's
+/// default configuration — the step a host performs before running Python
+/// operators; the library itself never starts an interpreter.
+fn attach<F, R>(f: F) -> R
+where
+    F: for<'py> FnOnce(Python<'py>) -> R,
+{
+    Python::initialize();
+    Python::attach(f)
+}
 
 /// Runs `code` with `globals`, printing any traceback before failing.
 #[track_caller]
@@ -471,8 +480,7 @@ fn operator_mirrors_the_rust_contract() {
 #[test]
 fn operator_receives_the_event_time() {
     // A single-port interface on both sides: the inputs tuple has one entry,
-    // and the output is a bare array rather than a sequence. Binds `__op__`
-    // directly instead of defining `build`.
+    // and the output is a bare array rather than a sequence.
     const STAMP: &str = r#"
 class Stamp:
     def init(self, inputs):
@@ -484,10 +492,12 @@ class Stamp:
     def compute(self, inputs, state, instant):
         return np.array([float(instant)])
 
-__op__ = Stamp()
+def build():
+    return Stamp()
 "#;
     type Op = PyOperator<SignalPort<0>, ArrayPort<f64, 1>>;
 
+    Python::initialize();
     let op: Op = py_operator_source(STAMP, None);
     let pulse = ArrayView::scalar(&true);
     let mut state = Operator::init(op, pulse);
@@ -516,11 +526,13 @@ class Double:
         (sig, x) = inputs
         return (bool(sig), x * 2.0)
 
-__op__ = Double()
+def build():
+    return Double()
 "#;
     type In = (SignalPort<0>, ArrayPort<f64, 0>);
     type Out = (SignalPort<0>, ArrayPort<f64, 0>);
 
+    Python::initialize();
     let mut b = Builder::new(UnixTime);
     let data = Series::from_parts([], tss(&[1, 2, 3]), vec![10.0, 20.0, 30.0], 0);
     let (hs, h) = b.source(array_series(data));

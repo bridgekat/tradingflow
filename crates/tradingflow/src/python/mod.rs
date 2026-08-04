@@ -43,16 +43,20 @@
 //! by orders of magnitude. What can grow is not the copying but the *history*:
 //! since only the latest cross-section crosses, an operator that fits on a
 //! window has to record that window itself. That cost is the operator's to
-//! bound, and a model which does not read a panel should not retain one — see
-//! `retain_features` in `tradingflow.predictor`.
+//! bound, and a model which does not read a panel should not retain one.
 //!
 //! # Starting the interpreter
 //!
-//! [`attach`] is this module's way in, and starts the embedded interpreter on
-//! first use — configured to stand in for the interpreter PyO3 linked against,
-//! so it finds that interpreter's standard library and `site-packages` without
-//! `PYTHONHOME` or `PYTHONPATH`. See [`initialize`] for why an embedded
-//! interpreter cannot work this out for itself.
+//! This module never starts an interpreter: the host initializes CPython
+//! before the first Python operator runs — [`pyo3::Python::initialize`] for
+//! the default configuration, which resolves the installation the linked
+//! `libpython` belongs to. Every environment decision beyond that (a virtual
+//! environment's `site-packages`, a relocated installation) is likewise the
+//! host's, typically made by recording the interpreter `pyo3-build-config`
+//! resolved in a build script and setting `PyConfig.executable` at startup —
+//! CPython then behaves exactly as if that interpreter had been run directly,
+//! reading its `pyvenv.cfg` and putting its `site-packages` on `sys.path`.
+//! A `Python::attach` reached before initialization panics.
 //!
 //! # What crosses the boundary
 //!
@@ -74,12 +78,10 @@
 
 mod convert;
 mod interface;
-mod interpreter;
 mod operator;
 
 pub use convert::{from_numpy, from_numpy_into, to_numpy};
 pub use interface::{GroupBuffers, PyInterface};
-pub use interpreter::{attach, initialize};
 pub use operator::{
     PyOperator, PyState, py_operator_file, py_operator_module, py_operator_source, py_params,
 };

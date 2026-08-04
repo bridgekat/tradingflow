@@ -181,10 +181,12 @@ async fn main() {
     // ask = close, so a suspended symbol trades at its carried price), with
     // real dividend events credited to the book.
     let flags = b.val(array::constant(vec![true; n]));
+    let bids = close;
+    let asks = close;
     let (_positions, _cash, nav) = b.op(
         trader::fixed::benchmark(false, args.initial_cash),
         (
-            (daily, flags, close, close),
+            (daily, flags, bids, asks),
             (div_signals, share_divs, cash_divs),
             (daily, weights),
         ),
