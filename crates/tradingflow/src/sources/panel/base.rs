@@ -1,4 +1,4 @@
-use arrow::array::{Array as _, ArrayRef, RecordBatch, TimestampNanosecondArray};
+use arrow::array::{Array as ArrowArray, ArrayRef, RecordBatch, TimestampNanosecondArray};
 use arrow::compute::{CastOptions, cast, cast_with_options};
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::error::ArrowError;
@@ -17,8 +17,16 @@ pub trait Reader: Send + 'static {
     /// Description of this reader in debug messages.
     fn desc(&self) -> String;
 
-    /// The estimated number of rows. Called once at build time.
-    fn size_hint(&self) -> Option<usize>;
+    /// The estimated number of rows covering the time range `[start, end)`,
+    /// counted the same way [`Source::size_hint`] is: one per row emitted.
+    /// Called once at build time, so a reader may re-read the table to sharpen
+    /// the estimate, but should stay cheap relative to reading it in full.
+    fn size_hint(
+        &self,
+        time_column: &str,
+        start: Option<Instant>,
+        end: Option<Instant>,
+    ) -> Option<usize>;
 
     /// Iterate over batches of rows, in ascending timestamp order. Each batch
     /// of rows must contain columns of the following names:
@@ -39,6 +47,28 @@ pub trait Reader: Send + 'static {
         start: Option<Instant>,
         end: Option<Instant>,
     ) -> impl Iterator<Item = Result<RecordBatch, ArrowError>>;
+}
+
+/// Casts a column of timestamps to UTC nanoseconds since the epoch. Readers
+/// use this on statistics as well as on data, so that a bound is read on
+/// exactly the same scale as the values it bounds.
+pub(super) fn cast_timestamps(
+    column: &dyn ArrowArray,
+) -> Result<TimestampNanosecondArray, ArrowError> {
+    let cast = cast_with_options(
+        column,
+        &DataType::Timestamp(TimeUnit::Nanosecond, Some("+00:00".into())),
+        &CastOptions {
+            safe: false,
+            ..Default::default()
+        },
+    )?;
+    // The cast either produced the requested type or failed.
+    Ok(cast
+        .as_any()
+        .downcast_ref::<TimestampNanosecondArray>()
+        .unwrap()
+        .clone())
 }
 
 /// Source signature for Arrow panel sources.
@@ -99,7 +129,8 @@ impl<const N: usize, R: Reader> Source for Panel<N, R> {
     type State = PanelState<N>;
 
     fn size_hint(&self) -> Option<usize> {
-        self.reader.size_hint()
+        self.reader
+            .size_hint(&self.time_column, self.start, self.end)
     }
 
     fn init(
@@ -210,20 +241,8 @@ fn tx_task<const N: usize, R: Reader>(
             .column_by_name(&panel.time_column)
             .unwrap_or_else(|| panic!("{source}: missing column {:?}", panel.time_column));
 
-        let timestamps = cast_with_options(
-            timestamps.as_ref(),
-            &DataType::Timestamp(TimeUnit::Nanosecond, Some("+00:00".into())),
-            &CastOptions {
-                safe: false,
-                ..Default::default()
-            },
-        )
-        .unwrap_or_else(|e| panic!("{source}: time column {:?}: {e}", panel.time_column));
-
-        let timestamps = timestamps
-            .as_any()
-            .downcast_ref::<TimestampNanosecondArray>()
-            .unwrap();
+        let timestamps = cast_timestamps(timestamps.as_ref())
+            .unwrap_or_else(|e| panic!("{source}: time column {:?}: {e}", panel.time_column));
 
         if timestamps.null_count() > 0 {
             panic!("{source}: null in time column {:?}", panel.time_column);

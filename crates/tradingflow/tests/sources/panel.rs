@@ -16,6 +16,9 @@
 //!   filtering in the source (a subset universe will later be a decode-level
 //!   `RowFilter`).
 //! * The half-open time range clips without carry-in.
+//! * The row count reported ahead of a run is the count of the rows that run
+//!   will emit, not of the file — each format finding the window's rows by
+//!   what it carries, row-group statistics or a bisection over byte offsets.
 //!
 //! The two formats are the same source with a different decoder in front, so
 //! the CSV tests pin what is CSV's own: the typing of a schemaless file, and
@@ -28,9 +31,10 @@ use arrow::array::{
 };
 use arrow::datatypes::Int32Type;
 use parquet::arrow::ArrowWriter;
+use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use tradingflow::data::utils::{Axis, Schema};
 use tradingflow::data::{ArrayView, Duration, Instant, SeriesView};
-use tradingflow::graph::{Builder, Operator, Pool};
+use tradingflow::graph::{Builder, Operator, Pool, Source};
 use tradingflow::operators::{series::record_all, signal};
 use tradingflow::ports::{ArrayPort, SignalPort};
 use tradingflow::sources::panel::{csv, parquet};
@@ -54,6 +58,28 @@ fn timestamps(days: impl IntoIterator<Item = i32>) -> TimestampNanosecondArray {
 /// dictionary-encoded, exactly as a low-cardinality string column comes out
 /// of the crawler's Parquet files.
 fn write_market_panel(path: &std::path::Path, rows: &[(i32, &str, Option<f64>, Option<f64>)]) {
+    write_market_panel_in_groups(path, rows, rows.len().max(1));
+}
+
+/// Writes the same table into row groups of at most `group` rows, so that a
+/// time range can be seen to cover some row groups whole and cut through
+/// others — which is what the reader's statistics-driven pruning turns on.
+fn write_market_panel_in_groups(
+    path: &std::path::Path,
+    rows: &[(i32, &str, Option<f64>, Option<f64>)],
+    group: usize,
+) {
+    write_market_panel_with(path, rows, group, EnabledStatistics::Chunk);
+}
+
+/// Writes the same table with statistics enabled or not, so that a reader
+/// leaning on them can also be seen doing without.
+fn write_market_panel_with(
+    path: &std::path::Path,
+    rows: &[(i32, &str, Option<f64>, Option<f64>)],
+    group: usize,
+    statistics: EnabledStatistics,
+) {
     let dates = timestamps(rows.iter().map(|r| r.0));
     let symbols: DictionaryArray<Int32Type> = rows.iter().map(|r| r.1).collect();
     let closes = Float64Array::from(rows.iter().map(|r| r.2).collect::<Vec<_>>());
@@ -66,7 +92,11 @@ fn write_market_panel(path: &std::path::Path, rows: &[(i32, &str, Option<f64>, O
     ])
     .unwrap();
     let file = std::fs::File::create(path).unwrap();
-    let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(group))
+        .set_statistics_enabled(statistics)
+        .build();
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props)).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 }
@@ -285,6 +315,92 @@ async fn time_range_clips_without_carry_in() {
 
     assert_eq!(g.view(close_rec).instants(), &[day(2), day(3)]);
     assert_rows_eq(&rows(g.view(close_rec)), &[vec![11.0], vec![12.0]], "close");
+}
+
+/// The row count a Parquet window reports is the count of the rows it will
+/// emit, not of the file. The row groups the range misses are pruned by their
+/// time statistics, those it covers whole are taken from the metadata, and the
+/// two it cuts through are counted from their time column alone.
+#[test]
+fn a_parquet_size_hint_counts_the_window_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("panel.parquet");
+    let rows: Vec<_> = (1..=20)
+        .flat_map(|d| {
+            [
+                (d, "AAA", Some(d as f64), None),
+                (d, "BBB", None, Some(d as f64)),
+            ]
+        })
+        .collect();
+    write_market_panel_in_groups(&path, &rows, 8);
+
+    let hint = |start, end| {
+        let source = parquet(
+            path.to_str().unwrap(),
+            "date",
+            [("symbol".into(), Axis::Labeled(Schema::new(["AAA", "BBB"])))],
+            vec!["close".into()],
+        )
+        .with_time_range(start, end);
+        Source::size_hint(&source)
+    };
+
+    // Two rows a day over twenty days, in row groups of days 1-4, 5-8, 9-12,
+    // 13-16 and 17-20.
+    assert_eq!(hint(None, None), Some(40), "the whole file");
+    assert_eq!(
+        hint(Some(day(5)), Some(day(13))),
+        Some(16),
+        "two whole row groups, the rest pruned"
+    );
+    assert_eq!(
+        hint(Some(day(6)), Some(day(15))),
+        Some(18),
+        "a row group clipped at either end, one whole between them"
+    );
+    assert_eq!(hint(None, Some(day(5))), Some(8), "clipped at the end only");
+    assert_eq!(
+        hint(Some(day(17)), None),
+        Some(8),
+        "clipped at the start only"
+    );
+    assert_eq!(hint(Some(day(21)), None), Some(0), "past the last row");
+    assert_eq!(hint(None, Some(day(1))), Some(0), "before the first row");
+}
+
+/// A file written without statistics has nothing to prune by, so every row
+/// group is kept — and, having no bounds to trust, counted from its time
+/// column rather than assumed whole. The count stays exact; only the saving
+/// is lost.
+#[test]
+fn a_parquet_size_hint_without_statistics_still_counts_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("panel.parquet");
+    let rows: Vec<_> = (1..=20)
+        .flat_map(|d| {
+            [
+                (d, "AAA", Some(d as f64), None),
+                (d, "BBB", None, Some(d as f64)),
+            ]
+        })
+        .collect();
+    write_market_panel_with(&path, &rows, 8, EnabledStatistics::None);
+
+    let hint = |start, end| {
+        let source = parquet(
+            path.to_str().unwrap(),
+            "date",
+            [("symbol".into(), Axis::Labeled(Schema::new(["AAA", "BBB"])))],
+            vec!["close".into()],
+        )
+        .with_time_range(start, end);
+        Source::size_hint(&source)
+    };
+
+    assert_eq!(hint(None, None), Some(40), "the whole file");
+    assert_eq!(hint(Some(day(6)), Some(day(15))), Some(18), "a window");
+    assert_eq!(hint(Some(day(21)), None), Some(0), "past the last row");
 }
 
 /// Timestamp-type dispatch: a `date32` column — the crawler's existing
@@ -667,4 +783,57 @@ async fn a_csv_time_range_clips_without_carry_in() {
 
     assert_eq!(g.view(close_rec).instants(), &[day(2), day(3)]);
     assert_rows_eq(&rows(g.view(close_rec)), &[vec![11.0], vec![12.0]], "close");
+}
+
+/// The row count a CSV window reports is exact for every window, empty and
+/// out-of-bounds ones included. A CSV file carries no counts of its own, so the
+/// window is bisected for as a byte range and the rows inside it are counted;
+/// the bisection has to land on a row boundary for that count to mean anything,
+/// and the rows here are deliberately of unequal width — one-digit against
+/// two-digit days, and a null in either value column — so that no arithmetic on
+/// a presumed row size could pass in its place.
+#[test]
+fn a_csv_size_hint_counts_every_window_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("panel.csv");
+    let rows: Vec<_> = (1..=12)
+        .flat_map(|d| {
+            [
+                (d, "AAA", Some(d as f64), None),
+                (d, "BBB", None, Some(d as f64)),
+            ]
+        })
+        .collect();
+    write_market_panel_csv(&path, &rows);
+
+    let hint = |start, end| {
+        let source = csv(
+            path.to_str().unwrap(),
+            "date",
+            [("symbol".into(), Axis::Labeled(Schema::new(["AAA", "BBB"])))],
+            vec!["close".into()],
+        )
+        .with_time_range(start, end);
+        Source::size_hint(&source)
+    };
+
+    assert_eq!(
+        hint(None, None),
+        Some(24),
+        "the whole file, less the header"
+    );
+    assert_eq!(hint(None, Some(day(5))), Some(8), "open at the start");
+    assert_eq!(hint(Some(day(9)), None), Some(8), "open at the end");
+
+    // Every window over the table, and a day past either end of it.
+    for start in 0..=14 {
+        for end in 0..=14 {
+            let expected = rows.iter().filter(|r| start <= r.0 && r.0 < end).count();
+            assert_eq!(
+                hint(Some(day(start)), Some(day(end))),
+                Some(expected),
+                "[{start}, {end})"
+            );
+        }
+    }
 }
