@@ -1,5 +1,6 @@
 //! Statistical operators on (cross-sectional) arrays.
 
+mod corr;
 mod demean;
 mod gaussianize;
 mod group_demean;
@@ -9,6 +10,7 @@ mod scale;
 mod standardize;
 mod winsorize;
 
+pub use corr::corr;
 pub use demean::demean;
 pub use gaussianize::gaussianize;
 pub use group_demean::group_demean;

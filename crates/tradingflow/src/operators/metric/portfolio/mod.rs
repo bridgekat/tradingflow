@@ -7,8 +7,8 @@
 //!
 //! # Outputs
 //!
-//! - `metric`: the performance metric computed from the input signal
-//!   and weights, updated each period at `signal == true`.
+//! - `metric`: the performance metric computed from the input weights,
+//!   updated each period at `signal == true`.
 
 mod turnover;
 

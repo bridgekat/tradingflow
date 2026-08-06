@@ -346,6 +346,119 @@ fn winsorize_passes_nan_through_but_clamps_infinities() {
 }
 
 // ---------------------------------------------------------------------------
+// corr
+// ---------------------------------------------------------------------------
+
+/// Pushes one pair of rank-1 cross-sections through `op` and returns its
+/// rank-0 output.
+fn run2<S>(op: S, a: Vec<f64>, b: Vec<f64>) -> f64
+where
+    S: Operator<
+            Inputs = (ArrayPort<f64, 1>, ArrayPort<f64, 1>),
+            Outputs = ArrayPort<f64, 0>,
+            Context = Instant,
+        >,
+{
+    let mut bld = Builder::new();
+    let (sa, va) = bld.source(array::constant(a.clone()));
+    let (sb, vb) = bld.source(array::constant(b.clone()));
+    let out = bld.op(op, (va, vb));
+    let mut g = bld.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(sa) = a.into();
+    *g.state_mut(sb) = b.into();
+    g.stabilize(&mut pool, &Instant::MIN);
+    vals(g.view(out))[0]
+}
+
+/// The reference Pearson correlation over the pairwise-finite entries,
+/// written out longhand: centered cross-moment over the geometric mean of the
+/// centered second moments.
+fn expected_corr(x: &[f64], y: &[f64]) -> f64 {
+    let pairs: Vec<(f64, f64)> = x
+        .iter()
+        .zip(y.iter())
+        .filter(|(a, b)| a.is_finite() && b.is_finite())
+        .map(|(&a, &b)| (a, b))
+        .collect();
+    let n = pairs.len() as f64;
+    let mean_x = pairs.iter().map(|p| p.0).sum::<f64>() / n;
+    let mean_y = pairs.iter().map(|p| p.1).sum::<f64>() / n;
+    let sxy: f64 = pairs.iter().map(|p| (p.0 - mean_x) * (p.1 - mean_y)).sum();
+    let sxx: f64 = pairs.iter().map(|p| (p.0 - mean_x).powi(2)).sum();
+    let syy: f64 = pairs.iter().map(|p| (p.1 - mean_y).powi(2)).sum();
+    sxy / (sxx * syy).sqrt()
+}
+
+/// `corr` is the Pearson coefficient of the two cross-sections, matching the
+/// longhand centered-moment formula on an arbitrary pair.
+#[test]
+fn corr_matches_the_closed_form() {
+    let x = vec![3.0, 1.0, 4.0, 1.5, 9.0, 2.6];
+    let y = vec![2.0, 7.0, 1.0, 8.0, 2.8, 1.8];
+    let got = run2(stats::corr(false, 2), x.clone(), y.clone());
+    assert_close(&[got], &[expected_corr(&x, &y)], "corr vs reference");
+}
+
+/// An affine relation with positive slope correlates to exactly +1, and a
+/// negative slope to −1: the coefficient is scale- and shift-invariant.
+#[test]
+fn corr_is_plus_minus_one_on_affine_pairs() {
+    let x = vec![3.0, 1.0, 4.0, 1.5, 9.0];
+    let up: Vec<f64> = x.iter().map(|v| 2.0 * v + 1.0).collect();
+    let down: Vec<f64> = x.iter().map(|v| -0.5 * v + 3.0).collect();
+    assert_close(
+        &[run2(stats::corr(false, 2), x.clone(), up)],
+        &[1.0],
+        "slope up",
+    );
+    assert_close(
+        &[run2(stats::corr(false, 2), x, down)],
+        &[-1.0],
+        "slope down",
+    );
+}
+
+/// A non-finite entry on **either** side drops the pair (pairwise-complete):
+/// the result equals `corr` of the surviving pairs, unaffected by what the
+/// dropped positions hold on the other side.
+#[test]
+fn corr_skips_non_finite_pairwise() {
+    // Positions 2 (x is NaN) and 4 (y is +∞) drop; the survivors are affine.
+    let x = vec![1.0, 2.0, f64::NAN, 4.0, 5.0];
+    let y = vec![2.0, 4.0, 999.0, 8.0, f64::INFINITY];
+    let got = run2(stats::corr(false, 2), x, y);
+    assert_close(&[got], &[1.0], "corr over the surviving affine pairs");
+}
+
+/// Degenerate cross-sections give NaN: fewer than two valid pairs, fewer than
+/// `min_count` valid pairs, or a zero-variance side.
+#[test]
+fn corr_is_nan_without_pairs_or_spread() {
+    let x = vec![1.0, 2.0, 3.0];
+    // One valid pair.
+    let sparse = vec![5.0, f64::NAN, f64::NAN];
+    assert!(run2(stats::corr(false, 2), x.clone(), sparse).is_nan());
+    // Three valid pairs, but the floor is raised above them.
+    let y = vec![2.0, 5.0, 4.0];
+    assert!(run2(stats::corr(false, 4), x.clone(), y.clone()).is_nan());
+    assert!(!run2(stats::corr(false, 3), x.clone(), y.clone()).is_nan());
+    // A constant side has zero variance.
+    assert!(run2(stats::corr(false, 2), x, vec![7.0, 7.0, 7.0]).is_nan());
+}
+
+/// The coefficient is symmetric in its arguments, bit for bit.
+#[test]
+fn corr_is_symmetric() {
+    let x = vec![3.0, 1.0, f64::NAN, 1.5, 9.0];
+    let y = vec![2.0, 7.0, 1.0, f64::NAN, 2.8];
+    let xy = run2(stats::corr(false, 2), x.clone(), y.clone());
+    let yx = run2(stats::corr(false, 2), y, x);
+    assert_eq!(xy.to_bits(), yx.to_bits(), "corr(x, y) vs corr(y, x)");
+}
+
+// ---------------------------------------------------------------------------
 // Shared edge cases
 // ---------------------------------------------------------------------------
 

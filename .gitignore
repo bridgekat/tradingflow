@@ -1,6 +1,11 @@
 # Build artifacts
 /target/
 
+# Virtual environments
+__pycache__/
+.venv/
+uv.lock
+
 # IDE/editor files
 .claude/
 .vscode/

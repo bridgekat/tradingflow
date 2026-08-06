@@ -7,8 +7,8 @@
 //!
 //! # Outputs
 //!
-//! - `metric`: the performance metric computed from the input signal
-//!   and value, updated each period at `signal == true`.
+//! - `metric`: the performance metric computed from the input value,
+//!   updated each period at `signal == true`.
 
 mod drawdown;
 mod r#return;
