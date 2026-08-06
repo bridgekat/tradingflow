@@ -102,7 +102,7 @@ fn offsets_walk_row_major() {
     let col = Strided::new([2], [3]);
     assert_eq!(col.iter().collect::<Vec<_>>(), vec![0, 3]);
 
-    // Transposed [2, 3] -> [3, 2]: row-major over swapped axes.
+    // Permuted [2, 3] -> [3, 2]: row-major over swapped axes.
     let t = Strided::new([3, 2], [1, 3]);
     assert_eq!(t.iter().collect::<Vec<_>>(), vec![0, 3, 1, 4, 2, 5]);
 
@@ -163,8 +163,8 @@ fn split_iter_split_extents() {
     assert_eq!(sub.len(), 1);
     assert_eq!(offsets.collect::<Vec<_>>(), l.iter().collect::<Vec<_>>());
 
-    // Other axis selections: transpose the wanted axes to the back first.
-    let (offsets, sub) = l.transpose([1, 2, 0]).split_iter::<2, 1>();
+    // Other axis selections: permute the wanted axes to the back first.
+    let (offsets, sub) = l.permute_axes([1, 2, 0]).split_iter::<2, 1>();
     assert_eq!((sub.extents(), sub.strides()), ([2], [12]));
     assert_eq!(offsets.count(), 12);
 }
@@ -190,7 +190,7 @@ fn split_iter_offsets_stay_within_span() {
         check::<1, 2>(l);
         check::<2, 1>(l);
         check::<3, 0>(l);
-        check::<2, 1>(l.transpose([2, 0, 1]));
+        check::<2, 1>(l.permute_axes([2, 0, 1]));
     }
     check_all(RowMajor::new([2, 3, 4]));
     check_all(ColMajor::new([2, 3, 4]));
@@ -451,32 +451,68 @@ fn slices_accept_tuples_and_arrays_alike() {
 }
 
 #[test]
-fn transpose_permutes_extents_and_strides() {
+fn permute_axes_permutes_extents_and_strides() {
     let l = RowMajor::new([2, 3, 4]);
     // Axis d of the result is axis perm[d] of the input.
-    let t = l.transpose([2, 0, 1]);
+    let t = l.permute_axes([2, 0, 1]);
     assert_eq!(t, Strided::new([4, 2, 3], [1, 12, 4]));
-    // The transposed layout addresses the same element under the permuted
+    // The permuted layout addresses the same element under the permuted
     // index, and the span never changes.
     assert_eq!(t.offset([3, 1, 2]), l.offset([1, 2, 3]));
     assert_eq!(t.span(), l.span());
     // The identity permutation is a no-op; the inverse roundtrips.
-    assert_eq!(l.transpose([0, 1, 2]), l.into());
-    assert_eq!(t.transpose([1, 2, 0]), l.into());
+    assert_eq!(l.permute_axes([0, 1, 2]), l.into());
+    assert_eq!(t.permute_axes([1, 2, 0]), l.into());
     // A rank-0 layout has exactly one (empty) permutation: itself.
-    assert_eq!(RowMajor::new([]).transpose([]), Strided::new([], []));
+    assert_eq!(RowMajor::new([]).permute_axes([]), Strided::new([], []));
 }
 
 #[test]
-#[should_panic(expected = "transpose: duplicate axis 1")]
-fn transpose_rejects_repeated_axes() {
-    let _ = RowMajor::new([2, 3, 4]).transpose([1, 2, 1]);
+#[should_panic(expected = "permute_axes: duplicate axis 1")]
+fn permute_axes_rejects_repeated_axes() {
+    let _ = RowMajor::new([2, 3, 4]).permute_axes([1, 2, 1]);
 }
 
 #[test]
-#[should_panic(expected = "transpose: axis 3 out of bounds for rank 2")]
-fn transpose_rejects_out_of_range_axis() {
-    let _ = RowMajor::new([2, 3]).transpose([0, 3]);
+#[should_panic(expected = "permute_axes: axis 3 out of bounds for rank 2")]
+fn permute_axes_rejects_out_of_range_axis() {
+    let _ = RowMajor::new([2, 3]).permute_axes([0, 3]);
+}
+
+#[test]
+fn move_axis_shifts_the_other_axes_over() {
+    let l = RowMajor::new([2, 3, 4]);
+
+    // Moving the middle axis to the back leaves 0 and 2 in their order.
+    assert_eq!(l.move_axis(1, 2), l.permute_axes([0, 2, 1]));
+    assert_eq!(l.move_axis(1, 2), Strided::new([2, 4, 3], [12, 1, 4]));
+
+    // Moving axis 2 to the front leaves 0 and 1 in that order, where a swap
+    // would have put them back to front.
+    assert_eq!(l.move_axis(2, 0), l.permute_axes([2, 0, 1]));
+    assert_eq!(l.move_axis(2, 0), Strided::new([4, 2, 3], [1, 12, 4]));
+    assert_ne!(l.move_axis(2, 0), l.swap_axes(2, 0));
+
+    // Moving an axis to its own position is the identity, and moving it back and
+    // forth roundtrips.
+    assert_eq!(l.move_axis(1, 1), l.into());
+    assert_eq!(l.move_axis(2, 0).move_axis(0, 2), l.into());
+
+    // The extents and strides travel together, so the span never changes.
+    assert_eq!(l.move_axis(0, 2).span(), l.span());
+    assert_eq!(l.move_axis(0, 2).offset([2, 3, 1]), l.offset([1, 2, 3]));
+}
+
+#[test]
+#[should_panic(expected = "move_axis: axis 3 out of bounds for rank 3")]
+fn move_axis_rejects_out_of_range_source() {
+    let _ = RowMajor::new([2, 3, 4]).move_axis(3, 0);
+}
+
+#[test]
+#[should_panic(expected = "move_axis: axis 5 out of bounds for rank 3")]
+fn move_axis_rejects_out_of_range_destination() {
+    let _ = RowMajor::new([2, 3, 4]).move_axis(0, 5);
 }
 
 #[test]

@@ -81,9 +81,25 @@ pub fn pad_ndim<T: Scalar, const N: usize, const M: usize>()
     DeriveView::new(move |a| SeriesView::pad_ndim(&a))
 }
 
-/// Permutes the axes of a series view: [`SeriesView::transpose`].
-pub fn transpose<T: Scalar, const N: usize>(
+/// Swaps the axes of a series view: [`SeriesView::swap_axes`].
+pub fn swap_axes<T: Scalar, const N: usize>(
+    c: usize,
+    d: usize,
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
+    DeriveView::new(move |a| SeriesView::swap_axes(&a, c, d))
+}
+
+/// Permutes the axes of a series view: [`SeriesView::permute_axes`].
+pub fn permute_axes<T: Scalar, const N: usize>(
     perm: [usize; N],
 ) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
-    DeriveView::new(move |a| SeriesView::transpose(&a, perm))
+    DeriveView::new(move |a| SeriesView::permute_axes(&a, perm))
+}
+
+/// Moves one element axis of a series view: [`SeriesView::move_axis`].
+pub fn move_axis<T: Scalar, const N: usize>(
+    from: usize,
+    to: usize,
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = SeriesPort<T, N>, Context = Instant> {
+    DeriveView::new(move |a| SeriesView::move_axis(&a, from, to))
 }

@@ -142,14 +142,38 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
         unsafe { ArrayView::from_parts_unchecked(self.layout.pad_ndim(), self.data) }
     }
 
-    /// A zero-copy view with axes permuted: axis `d` of the result is axis
-    /// `perm[d]` of `self`.
+    /// A view with axes swapped: axis `c` and `d` of the result are axes `d`
+    /// and `c` of `self`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `c` or `d` is out of bounds for rank `N`.
+    pub fn swap_axes(&self, c: usize, d: usize) -> Self {
+        let layout = self.layout.swap_axes(c, d);
+        // SAFETY: `self.data.len() >= self.layout.span() == layout.span()`.
+        unsafe { ArrayView::from_parts_unchecked(layout, self.data) }
+    }
+
+    /// A view with axes permuted: axis `d` of the result is axis `perm[d]` of
+    /// `self`.
     ///
     /// # Panics
     ///
     /// Panics if `perm` is not a permutation of `0..N`.
-    pub fn transpose(&self, perm: [usize; N]) -> Self {
-        let layout = self.layout.transpose(perm);
+    pub fn permute_axes(&self, perm: [usize; N]) -> Self {
+        let layout = self.layout.permute_axes(perm);
+        // SAFETY: `self.data.len() >= self.layout.span() == layout.span()`.
+        unsafe { ArrayView::from_parts_unchecked(layout, self.data) }
+    }
+
+    /// A view with axis `from` moved to position `to`, the axes between them
+    /// shifting over to keep their relative order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `from` or `to` is out of bounds for rank `N`.
+    pub fn move_axis(&self, from: usize, to: usize) -> Self {
+        let layout = self.layout.move_axis(from, to);
         // SAFETY: `self.data.len() >= self.layout.span() == layout.span()`.
         unsafe { ArrayView::from_parts_unchecked(layout, self.data) }
     }

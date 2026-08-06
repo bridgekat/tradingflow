@@ -46,3 +46,28 @@ pub fn outer_reduce<A: Scalar, const N: usize, T: Scalar, const K: usize, const 
     };
     ArrayMap::new(init, update)
 }
+
+/// A closure folding the single axis `axis` of the input into one accumulator
+/// per remaining index, producing a rank-`M` array whose extents are those of
+/// the input without `axis`: [`data::array::reduce_along_axis`].
+#[allow(clippy::type_complexity)]
+pub fn reduce_along_axis<A: Scalar, const N: usize, T: Scalar, const M: usize>(
+    axis: usize,
+    initial: T,
+    f: impl FnMut(&mut T, &A) + Clone + Send + 'static,
+) -> impl Operator<Inputs = ArrayPort<A, N>, Outputs = ArrayPort<T, M>, Context = Instant> {
+    let init = {
+        let (initial, f) = (initial.clone(), f.clone());
+        move |a: ArrayView<'_, A, N>| {
+            data::array::reduce_along_axis::<A, T, N, M>(a, axis, initial, f)
+        }
+    };
+    let update = {
+        let mut f = f;
+        move |out: &mut Array<T, M>, a: ArrayView<'_, A, N>| {
+            out.data_mut().fill(initial.clone());
+            data::array::reduce_along_axis_into::<A, T, N, M>(out, a, axis, &mut f);
+        }
+    };
+    ArrayMap::new(init, update)
+}

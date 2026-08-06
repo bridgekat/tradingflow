@@ -236,17 +236,33 @@ pub trait Layout<const N: usize> {
         )
     }
 
+    /// Layout with axes swapped: axes `c` and `d` of the result are axes `d`
+    /// and `c` of `self`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `c` or `d` is out of bounds for rank `N`.
+    fn swap_axes(&self, c: usize, d: usize) -> Strided<N> {
+        assert!(c < N, "swap_axes: axis {c} out of bounds for rank {N}");
+        assert!(d < N, "swap_axes: axis {d} out of bounds for rank {N}");
+        let mut extents = self.extents();
+        let mut strides = self.strides();
+        extents.swap(c, d);
+        strides.swap(c, d);
+        Strided::new(extents, strides)
+    }
+
     /// Layout with axes permuted: axis `d` of the result is axis `perm[d]`
     /// of `self`.
     ///
     /// # Panics
     ///
     /// Panics if `perm` is not a permutation of `0..N`.
-    fn transpose(&self, perm: [usize; N]) -> Strided<N> {
+    fn permute_axes(&self, perm: [usize; N]) -> Strided<N> {
         let mut seen = [false; N];
         for &p in &perm {
-            assert!(p < N, "transpose: axis {p} out of bounds for rank {N}");
-            assert!(!seen[p], "transpose: duplicate axis {p}");
+            assert!(p < N, "permute_axes: axis {p} out of bounds for rank {N}");
+            assert!(!seen[p], "permute_axes: duplicate axis {p}");
             seen[p] = true;
         }
         let extents = self.extents();
@@ -255,6 +271,26 @@ pub trait Layout<const N: usize> {
             std::array::from_fn(|d| extents[perm[d]]),
             std::array::from_fn(|d| strides[perm[d]]),
         )
+    }
+
+    /// Layout with axis `from` moved to position `to`, the axes between them
+    /// shifting over to keep their relative order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `from` or `to` is out of bounds for rank `N`.
+    fn move_axis(&self, from: usize, to: usize) -> Strided<N> {
+        assert!(
+            from < N,
+            "move_axis: axis {from} out of bounds for rank {N}"
+        );
+        assert!(to < N, "move_axis: axis {to} out of bounds for rank {N}");
+        self.permute_axes(std::array::from_fn(|d| match d {
+            _ if d == to => from,
+            _ if from <= d && d < to => d + 1,
+            _ if to < d && d <= from => d - 1,
+            _ => d,
+        }))
     }
 
     /// Iterates over physical offsets in row-major order.

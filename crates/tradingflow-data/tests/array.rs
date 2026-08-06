@@ -1,7 +1,7 @@
 use tradingflow_data::array::{
     binary_map, binary_map_into, concat, concat_into, inner_reduce, inner_reduce_into, map,
-    map_into, outer_reduce, outer_reduce_into, select, select_into, select_mask, select_mask_into,
-    split, stack, stack_into, unstack,
+    map_into, outer_reduce, outer_reduce_into, reduce_along_axis, reduce_along_axis_into, select,
+    select_into, select_mask, select_mask_into, split, stack, stack_into, unstack,
 };
 use tradingflow_data::layout::Strided;
 use tradingflow_data::{Array, ArrayView, Layout, NewAxis, Slice};
@@ -774,12 +774,12 @@ fn select_mask_length_mismatch() {
 // -- Transposition -------------------------------------------------------------
 
 #[test]
-fn transpose_view_is_zero_copy() {
+fn permute_axes_view_is_zero_copy() {
     let data: Vec<f64> = (0..6).map(f64::from).collect();
     let a = Array::from_parts([2, 3], data.into());
-    let t = a.view().transpose([1, 0]);
+    let t = a.view().permute_axes([1, 0]);
     assert_eq!(t.extents(), [3, 2]);
-    // The transposed view borrows the same buffer...
+    // The permuted view borrows the same buffer...
     assert_eq!(t.data().as_ptr(), a.data().as_ptr());
     // ...and addresses the same element under the swapped index.
     assert_eq!(t[[2, 1]], a[[1, 2]]);
@@ -788,16 +788,16 @@ fn transpose_view_is_zero_copy() {
         vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0]
     );
     // The identity permutation keeps contiguity; a real swap loses it.
-    assert!(a.view().transpose([0, 1]).as_slice().is_some());
+    assert!(a.view().permute_axes([0, 1]).as_slice().is_some());
     assert!(t.as_slice().is_none());
 }
 
 #[test]
-fn transpose_rank3_permutation() {
+fn permute_axes_rank3_permutation() {
     let data: Vec<f64> = (0..24).map(f64::from).collect();
     let a = Array::from_parts([2, 3, 4], data.into());
     // Axis d of the result is axis perm[d] of the input: [2, 3, 4] -> [4, 2, 3].
-    let t = a.view().transpose([2, 0, 1]);
+    let t = a.view().permute_axes([2, 0, 1]);
     assert_eq!(t.extents(), [4, 2, 3]);
     for i in 0..2 {
         for j in 0..3 {
@@ -809,10 +809,44 @@ fn transpose_rank3_permutation() {
 }
 
 #[test]
-#[should_panic(expected = "transpose: duplicate axis 0")]
-fn transpose_rejects_non_permutation() {
+fn move_axis_view_keeps_the_other_axes_in_order() {
+    let data: Vec<f64> = (0..24).map(f64::from).collect();
+    let a = Array::from_parts([2, 3, 4], data.into());
+    let v = a.view();
+
+    // Moving axis 0 to the back shifts 1 and 2 down, keeping their order.
+    let back = v.move_axis(0, 2);
+    assert_eq!(back.extents(), [3, 4, 2]);
+    assert_eq!(back.data().as_ptr(), a.data().as_ptr(), "zero-copy");
+    for i in 0..2 {
+        for j in 0..3 {
+            for k in 0..4 {
+                assert_eq!(back[[j, k, i]], a[[i, j, k]]);
+            }
+        }
+    }
+
+    // Moving axis 2 to the front is the inverse, and roundtrips.
+    assert_eq!(v.move_axis(2, 0).extents(), [4, 2, 3]);
+    assert_eq!(back.move_axis(2, 0), v);
+
+    // Where a swap would reorder the survivors, a move does not.
+    assert_eq!(v.move_axis(2, 0).extents(), [4, 2, 3]);
+    assert_eq!(v.swap_axes(2, 0).extents(), [4, 3, 2]);
+}
+
+#[test]
+#[should_panic(expected = "move_axis: axis 2 out of bounds for rank 2")]
+fn move_axis_view_rejects_out_of_range_axis() {
     let a = Array::<f64, 2>::zeros([2, 3]);
-    let _ = a.view().transpose([0, 0]);
+    let _ = a.view().move_axis(2, 0);
+}
+
+#[test]
+#[should_panic(expected = "permute_axes: duplicate axis 0")]
+fn permute_axes_rejects_non_permutation() {
+    let a = Array::<f64, 2>::zeros([2, 3]);
+    let _ = a.view().permute_axes([0, 0]);
 }
 
 // -- Iteration ---------------------------------------------------------------
@@ -977,7 +1011,7 @@ fn split_iter_rows_and_columns() {
     assert_eq!(rows[1], ArrayView::from_slice([3], &[3.0, 4.0, 5.0]));
 
     // Transposing first yields the (strided) columns instead.
-    let cols: Vec<ArrayView<f64, 1>> = v.transpose([1, 0]).split_iter::<1, 1>().collect();
+    let cols: Vec<ArrayView<f64, 1>> = v.permute_axes([1, 0]).split_iter::<1, 1>().collect();
     assert_eq!(cols.len(), 3);
     assert_eq!(cols[0], ArrayView::from_slice([2], &[0.0, 3.0]));
     assert_eq!(cols[2], ArrayView::from_slice([2], &[2.0, 5.0]));
@@ -993,7 +1027,7 @@ fn split_iter_rank0_walks_row_major() {
     assert_eq!(scalars, data);
 
     // The leading-axis walk matches `iter()` even for a strided view.
-    let t = v.transpose([1, 0]);
+    let t = v.permute_axes([1, 0]);
     let scalars: Vec<f64> = t.split_iter::<2, 0>().map(|s| s[[]]).collect();
     assert_eq!(scalars, t.iter().copied().collect::<Vec<_>>());
 }
@@ -1007,9 +1041,9 @@ fn split_iter_whole_split_is_identity() {
     let whole: Vec<ArrayView<f64, 2>> = v.split_iter::<0, 2>().collect();
     assert_eq!(whole.len(), 1);
     assert_eq!(whole[0], v);
-    // Composes with `transpose` like every other split.
-    let flipped: Vec<ArrayView<f64, 2>> = v.transpose([1, 0]).split_iter::<0, 2>().collect();
-    assert_eq!(flipped[0], v.transpose([1, 0]));
+    // Composes with `permute_axes` like every other split.
+    let flipped: Vec<ArrayView<f64, 2>> = v.permute_axes([1, 0]).split_iter::<0, 2>().collect();
+    assert_eq!(flipped[0], v.permute_axes([1, 0]));
 }
 
 #[test]
@@ -1027,13 +1061,13 @@ fn split_iter_zip_aligns_across_ranks() {
 }
 
 #[test]
-fn split_iter_middle_axis_via_transpose() {
+fn split_iter_middle_axis_via_permute_axes() {
     // [2, 3, 2]: lanes along the middle axis. Transposing it to the back
     // walks the remaining (i, k) in row-major order.
     let data: Vec<f64> = (0..12).map(f64::from).collect();
     let v = ArrayView::from_slice([2, 3, 2], &data);
     let lanes: Vec<Vec<f64>> = v
-        .transpose([0, 2, 1])
+        .permute_axes([0, 2, 1])
         .split_iter::<2, 1>()
         .map(|l| l.iter().copied().collect())
         .collect();
@@ -1069,7 +1103,7 @@ fn inner_reduce_rows_and_columns() {
 
     // Transposing first reduces over the (strided) columns instead.
     let cols: Array<f64, 1> =
-        inner_reduce::<_, _, _, _, 1>(v.transpose([1, 0]), 0.0, |acc, &x| *acc += x);
+        inner_reduce::<_, _, _, _, 1>(v.permute_axes([1, 0]), 0.0, |acc, &x| *acc += x);
     assert_eq!(cols, Array::from([3.0, 5.0, 7.0]));
 
     // `init` is the fold's identity, so a maximum seeds with `f64::MIN`
@@ -1167,11 +1201,11 @@ fn outer_reduce_folds_the_leading_axes() {
     assert_eq!(same, v.to_array());
 }
 
-/// The two directions compute the same thing on transposed inputs — the point
+/// The two directions compute the same thing on permuted inputs — the point
 /// of `outer_reduce` is that it gets there without walking a strided lane per
 /// accumulator.
 #[test]
-fn outer_reduce_matches_the_transposed_inner_reduce() {
+fn outer_reduce_matches_the_permuted_inner_reduce() {
     let data: Vec<f64> = (0..24).map(f64::from).collect();
     let v = ArrayView::from_slice([2, 3, 4], &data);
 
@@ -1182,7 +1216,7 @@ fn outer_reduce_matches_the_transposed_inner_reduce() {
     // The same reduction as trailing lanes: move axis 2 to the front, then
     // each lane is the [2, 3] block that `outer_reduce` streamed past.
     let inner: Array<f64, 1> =
-        inner_reduce::<_, _, _, _, 2>(v.transpose([2, 0, 1]), 0.0, |acc, &x| *acc += x);
+        inner_reduce::<_, _, _, _, 2>(v.permute_axes([2, 0, 1]), 0.0, |acc, &x| *acc += x);
     assert_eq!(outer, inner);
 }
 
@@ -1200,7 +1234,7 @@ fn outer_reduce_into_accumulates_across_calls() {
 
     // A strided input folds in the same logical order.
     let mut out = Array::<f64, 1>::zeros([2]);
-    outer_reduce_into::<_, _, _, 1, _>(&mut out, v.transpose([1, 0]), |acc, &x| *acc += x);
+    outer_reduce_into::<_, _, _, 1, _>(&mut out, v.permute_axes([1, 0]), |acc, &x| *acc += x);
     assert_eq!(out.data(), &[3.0, 12.0]);
 }
 
@@ -1234,6 +1268,114 @@ fn outer_reduce_rank_mismatch() {
     let v = ArrayView::from_slice([2, 3], &data);
     // Folding one axis of a rank-2 input leaves rank 1, not rank 2.
     let _: Array<f64, 2> = outer_reduce::<_, _, _, 1, _>(v, 0.0, |acc, &x| *acc += x);
+}
+
+/// Which direction `reduce_along_axis` delegates to is invisible in the
+/// result but visible in the order the fold sees scalars: dispatching by
+/// layout means the input is streamed in memory order either way, where the
+/// wrong choice would hop between strided lanes.
+#[test]
+fn reduce_along_axis_follows_the_layout() {
+    // [[0, 1, 2], [3, 4, 5]], row-major: strides [3, 1].
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+
+    // Axis 1 is the innermost, so each lane is a contiguous row.
+    let mut seen = Vec::new();
+    let rows: Array<f64, 1> = reduce_along_axis(v, 1, 0.0, |acc, &x| {
+        seen.push(x);
+        *acc += x;
+    });
+    assert_eq!(rows, Array::from([3.0, 12.0]));
+    assert_eq!(seen, data, "walked the rows in order");
+
+    // Axis 0 is the outer one: streamed, not walked as two strided columns
+    // (which would have visited 0, 3, 1, 4, 2, 5).
+    let mut seen = Vec::new();
+    let cols: Array<f64, 1> = reduce_along_axis(v, 0, 0.0, |acc, &x| {
+        seen.push(x);
+        *acc += x;
+    });
+    assert_eq!(cols, Array::from([3.0, 5.0, 7.0]));
+    assert_eq!(seen, data, "streamed rather than gathered");
+
+    // Permuting flips which axis is innermost, and the dispatch flips with
+    // it: axis 0 of the permuted view is the contiguous one now.
+    let t = v.permute_axes([1, 0]);
+    let mut seen = Vec::new();
+    let sums: Array<f64, 1> = reduce_along_axis(t, 0, 0.0, |acc, &x| {
+        seen.push(x);
+        *acc += x;
+    });
+    assert_eq!(sums, Array::from([3.0, 12.0]));
+    assert_eq!(seen, data, "still in memory order");
+}
+
+#[test]
+fn reduce_along_axis_drops_one_axis() {
+    let data: Vec<f64> = (0..24).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3, 4], &data);
+
+    // Each axis in turn: the output keeps the others, in order.
+    let a0: Array<f64, 2> = reduce_along_axis(v, 0, 0.0, |acc, &x| *acc += x);
+    assert_eq!(a0.extents(), [3, 4]);
+    assert_eq!(a0[[0, 0]], 0.0 + 12.0);
+    assert_eq!(a0[[2, 3]], 11.0 + 23.0);
+
+    let a1: Array<f64, 2> = reduce_along_axis(v, 1, 0.0, |acc, &x| *acc += x);
+    assert_eq!(a1.extents(), [2, 4]);
+    assert_eq!(a1[[0, 0]], 0.0 + 4.0 + 8.0);
+    assert_eq!(a1[[1, 3]], 15.0 + 19.0 + 23.0);
+
+    let a2: Array<f64, 2> = reduce_along_axis(v, 2, 0.0, |acc, &x| *acc += x);
+    assert_eq!(a2.extents(), [2, 3]);
+    assert_eq!(a2[[0, 0]], 0.0 + 1.0 + 2.0 + 3.0);
+    assert_eq!(a2[[1, 2]], 20.0 + 21.0 + 22.0 + 23.0);
+
+    // Each matches the direction it delegates to, spelled by hand.
+    let outer: Array<f64, 2> = outer_reduce::<_, _, _, 1, _>(v, 0.0, |acc, &x| *acc += x);
+    assert_eq!(a0, outer);
+    let inner: Array<f64, 2> = inner_reduce::<_, _, _, _, 1>(v, 0.0, |acc, &x| *acc += x);
+    assert_eq!(a2, inner);
+    // The middle axis has no such spelling without a permute.
+    let middle: Array<f64, 2> =
+        inner_reduce::<_, _, _, _, 1>(v.permute_axes([0, 2, 1]), 0.0, |acc, &x| *acc += x);
+    assert_eq!(a1, middle);
+}
+
+#[test]
+fn reduce_along_axis_into_accumulates_across_calls() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+
+    let mut out = Array::<f64, 1>::zeros([3]);
+    reduce_along_axis_into(&mut out, v, 0, |acc, &x| *acc += x);
+    assert_eq!(out.data(), &[3.0, 5.0, 7.0]);
+    reduce_along_axis_into(&mut out, v, 0, |acc, &x| *acc += x);
+    assert_eq!(out.data(), &[6.0, 10.0, 14.0]);
+
+    // A seeded array carries the fold's identity, as for the two directions.
+    let mut out = Array::full([2], f64::MIN);
+    reduce_along_axis_into(&mut out, v, 1, |acc, &x| *acc = acc.max(x));
+    assert_eq!(out.data(), &[2.0, 5.0]);
+}
+
+#[test]
+#[should_panic(expected = "reduce_along_axis_into: extents mismatch")]
+fn reduce_along_axis_into_extents_mismatch() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+    // Dropping axis 0 leaves [3], whichever way the dispatch goes.
+    let mut out = Array::<f64, 1>::zeros([2]);
+    reduce_along_axis_into(&mut out, v, 0, |acc, &x| *acc += x);
+}
+
+#[test]
+#[should_panic(expected = "axis 2 out of bounds")]
+fn reduce_along_axis_out_of_bounds() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+    let _: Array<f64, 1> = reduce_along_axis(v, 2, 0.0, |acc, &x| *acc += x);
 }
 
 #[test]

@@ -713,12 +713,12 @@ fn slicing_a_record_survives_the_empty_build() {
     assert_eq!(series_vals(s), vec![2.0, 3.0, 5.0, 6.0]);
 }
 
-/// `transpose` permutes the element axes only — the row/time axis is not part
-/// of the permutation — and a reader materializes the transposed newest row.
+/// `permute_axes` permutes the element axes only — the row/time axis is not part
+/// of the permutation — and a reader materializes the permuted newest row.
 #[test]
-fn transpose_permutes_element_axes_only() {
+fn permute_axes_permutes_element_axes_only() {
     let (g, (tr, lst)) = panels_recorded(|b, rec| {
-        let tr = b.op(series::transpose([1, 0]), rec);
+        let tr = b.op(series::permute_axes([1, 0]), rec);
         let lst = b.op(series::last_or(0.0_f64), tr);
         (tr, lst)
     });
@@ -728,6 +728,36 @@ fn transpose_permutes_element_axes_only() {
     assert_eq!(s.len(), 3);
     assert_eq!(s.instants(), &[nano(1), nano(2), nano(3)]);
     assert_eq!(s.stride(), 6);
+    assert_eq!(
+        series_vals(s),
+        vec![
+            100.0, 110.0, 101.0, 111.0, 102.0, 112.0, //
+            200.0, 210.0, 201.0, 211.0, 202.0, 212.0, //
+            300.0, 310.0, 301.0, 311.0, 302.0, 312.0,
+        ]
+    );
+    assert_eq!(
+        vals(g.view(lst)),
+        vec![300.0, 310.0, 301.0, 311.0, 302.0, 312.0]
+    );
+}
+
+/// `move_axis` likewise touches the element axes only, leaving the row/time
+/// axis, the instants and the packing stride untouched.
+#[test]
+fn move_axis_moves_element_axes_only() {
+    let (g, (moved, lst)) = panels_recorded(|b, rec| {
+        let moved = b.op(series::move_axis(1, 0), rec);
+        let lst = b.op(series::last_or(0.0_f64), moved);
+        (moved, lst)
+    });
+
+    let s = g.view(moved);
+    assert_eq!(s.extents(), [3, 2]);
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.instants(), &[nano(1), nano(2), nano(3)]);
+    assert_eq!(s.stride(), 6);
+    // At rank 2 the only move is the transpose `permute_axes([1, 0])` spells.
     assert_eq!(
         series_vals(s),
         vec![

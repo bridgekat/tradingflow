@@ -672,6 +672,30 @@ fn view_pad_ndim_prepends_extent_1_element_axes() {
 }
 
 #[test]
+fn view_move_axis_moves_only_element_axes() {
+    let mut s = Series::<f64, 2>::new([2, 3]);
+    s.push(
+        ts(100),
+        ArrayView::from_slice([2, 3], &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]),
+    );
+    s.push(
+        ts(200),
+        ArrayView::from_slice([2, 3], &[6.0, 7.0, 8.0, 9.0, 10.0, 11.0]),
+    );
+
+    let v = s.view().move_axis(1, 0);
+    assert_eq!(v.extents(), [3, 2]);
+    // The time axis and window are untouched; only the element axes move.
+    assert_eq!(v.range(), 0..2);
+    assert_eq!(v.instants(), s.instants());
+    // Each element is the moved view of the one at the same instant.
+    assert_eq!(v.at(1).0, ts(200));
+    assert_eq!(v.at(1).1[[2, 1]], s.view().at(1).1[[1, 2]]);
+    // Moving it back is the identity.
+    assert_eq!(v.move_axis(0, 1), s.view());
+}
+
+#[test]
 #[should_panic(expected = "must be at least")]
 fn view_pad_ndim_below_rank() {
     let mut s = Series::<f64, 1>::new([2]);

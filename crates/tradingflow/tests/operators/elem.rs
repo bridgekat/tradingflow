@@ -689,7 +689,7 @@ fn cast_into_is_lossless_where_as_truncates() {
 
 /// Every operator above routes through `array::{map, binary_map}`, which has a
 /// contiguous fast path and a strided fallback. Feeding it views that are
-/// *not* row-major contiguous — a transposed panel, and two columns picked out
+/// *not* row-major contiguous — a permuted panel, and two columns picked out
 /// of a `[2, 2]` — exercises the fallback, at both a `f64` and a `bool` output
 /// type. Asserted over two generations, because the operators build their
 /// output with a different code path on the first one (`map`, allocating) than
@@ -697,9 +697,9 @@ fn cast_into_is_lossless_where_as_truncates() {
 #[test]
 fn core_accepts_strided_view_inputs() {
     let mut b = Builder::new();
-    // A `[2, 3]` panel read transposed: extents `[3, 2]`, strides `[1, 3]`.
+    // A `[2, 3]` panel read permuted: extents `[3, 2]`, strides `[1, 3]`.
     let (ps, p) = b.source(array::constant(Array::zeros([2, 3])));
-    let flipped = b.op(array::transpose([1, 0]), p);
+    let flipped = b.op(array::permute_axes([1, 0]), p);
     let magnitude = b.op(elem::abs(), flipped);
     // Two columns of a `[2, 2]`: rank-1 views of stride 2.
     let (qs, q) = b.source(array::constant(Array::zeros([2, 2])));

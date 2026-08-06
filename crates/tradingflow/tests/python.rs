@@ -115,17 +115,17 @@ fn arrays_copy_out_with_shape_and_dtype() {
 }
 
 #[test]
-fn strided_and_transposed_views_materialize_row_major() {
+fn strided_and_permuted_views_materialize_row_major() {
     let a = grid();
     attach(|py| {
         let globals = globals(py);
-        // Columns 1..3 of each row, and the transpose: both are strided views
+        // Columns 1..3 of each row, and the permute: both are strided views
         // Rust-side, but arrive as plain owned row-major arrays.
         globals
             .set_item("sliced", to_numpy(py, a.view().slice((.., 1..3))))
             .unwrap();
         globals
-            .set_item("t", to_numpy(py, a.view().transpose([1, 0])))
+            .set_item("t", to_numpy(py, a.view().permute_axes([1, 0])))
             .unwrap();
 
         assert_eq!(

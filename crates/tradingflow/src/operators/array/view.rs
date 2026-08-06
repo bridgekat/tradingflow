@@ -81,9 +81,25 @@ pub fn pad_ndim<T: Scalar, const N: usize, const M: usize>()
     DeriveView::new(move |a| ArrayView::pad_ndim(&a))
 }
 
-/// Permutes the axes of an array view: [`ArrayView::transpose`].
-pub fn transpose<T: Scalar, const N: usize>(
+/// Swaps the axes of an array view: [`ArrayView::swap_axes`].
+pub fn swap_axes<T: Scalar, const N: usize>(
+    c: usize,
+    d: usize,
+) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+    DeriveView::new(move |a| ArrayView::swap_axes(&a, c, d))
+}
+
+/// Permutes the axes of an array view: [`ArrayView::permute_axes`].
+pub fn permute_axes<T: Scalar, const N: usize>(
     perm: [usize; N],
 ) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    DeriveView::new(move |a| ArrayView::transpose(&a, perm))
+    DeriveView::new(move |a| ArrayView::permute_axes(&a, perm))
+}
+
+/// Moves one axis of an array view: [`ArrayView::move_axis`].
+pub fn move_axis<T: Scalar, const N: usize>(
+    from: usize,
+    to: usize,
+) -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
+    DeriveView::new(move |a| ArrayView::move_axis(&a, from, to))
 }

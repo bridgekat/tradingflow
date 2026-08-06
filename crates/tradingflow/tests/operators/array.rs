@@ -7,7 +7,7 @@
 //! extents, and whether the published view is contiguous or strided. The last
 //! one matters: `to_contiguous` hides the difference from the reader, but the
 //! operators below have separate fast and slow paths for it, so several tests
-//! deliberately feed a strided view (a `transpose`, a stepped `slice`, an
+//! deliberately feed a strided view (a `permute_axes`, a stepped `slice`, an
 //! `unstack` column) into the operator under test.
 
 use tradingflow::data::{Array, ArrayView, Instant};
@@ -18,7 +18,7 @@ use tradingflow::operators::array;
 use crate::harness::*;
 
 /// A `[2, 3]` panel of consecutive integers — the smallest shape where "which
-/// axis?" is a real question and where a transpose is observably strided.
+/// axis?" is a real question and where a permute is observably strided.
 fn panel23() -> Array<f64, 2> {
     [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]].into()
 }
@@ -150,7 +150,7 @@ fn map_is_elementwise_and_may_change_the_scalar_type() {
 fn map_walks_a_strided_input_in_logical_order() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
-    let flipped = b.op(array::transpose([1, 0]), srcv);
+    let flipped = b.op(array::permute_axes([1, 0]), srcv);
     let scaled = b.op(array::map(|&x: &f64| x * 10.0), flipped);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -158,7 +158,7 @@ fn map_walks_a_strided_input_in_logical_order() {
     *g.state_mut(src) = panel23();
     g.stabilize(&mut pool, &Instant::MIN);
 
-    assert!(!is_contiguous(g.view(flipped)), "transpose stays a view");
+    assert!(!is_contiguous(g.view(flipped)), "permute stays a view");
     assert_eq!(vals(g.view(flipped)), vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
     assert!(is_contiguous(g.view(scaled)), "map owns its output");
     assert_eq!(
@@ -460,7 +460,7 @@ fn array_ternary_map_inplace_folds_three_inputs_into_one_buffer() {
 fn inner_reduce_collapses_the_trailing_axes() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
-    let flipped = b.op(array::transpose([1, 0]), srcv);
+    let flipped = b.op(array::permute_axes([1, 0]), srcv);
     let rows = b.op(
         array::inner_reduce::<f64, 2, f64, 1, 1>(0.0, |acc, &x| *acc += x),
         srcv,
@@ -484,12 +484,12 @@ fn inner_reduce_collapses_the_trailing_axes() {
 /// `outer_reduce` is the same fold with the accumulators held still and the
 /// input streamed past: reducing the leading axis of the same `[2, 3]` panel
 /// publishes the `[3]` column sums, which `inner_reduce` reaches only through
-/// a transpose.
+/// a permute.
 #[test]
 fn outer_reduce_folds_the_leading_axes() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
-    let flipped = b.op(array::transpose([1, 0]), srcv);
+    let flipped = b.op(array::permute_axes([1, 0]), srcv);
     let cols = b.op(
         array::outer_reduce::<f64, 2, f64, 1, 1>(0.0, |acc, &x| *acc += x),
         srcv,
@@ -562,12 +562,58 @@ fn reduce_reseeds_its_accumulators_each_generation() {
     assert_eq!(vals(g.view(sums)), vec![5.0, 3.0, 9.0]);
 }
 
-/// The rank relation is checked when the operator is built, not on the first
-/// generation: the reduced axes plus the kept ones must be the whole input.
+/// `reduce_along_axis` names the axis to fold rather than which side of the
+/// split it falls on, and picks the direction from the layout it is handed —
+/// so the same operator works on a contiguous panel and on a strided view of
+/// one, where `inner_reduce` and `outer_reduce` each suit only one of them.
 #[test]
-#[should_panic(expected = "must be input ndim")]
-fn reduce_rank_mismatch_panics_at_build() {
-    let _ = array::inner_reduce::<f64, 2, f64, 2, 1>(0.0, |acc, &x| *acc += x);
+fn reduce_along_axis_names_the_axis_to_fold() {
+    let mut b = Builder::new();
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
+    let flipped = b.op(array::permute_axes([1, 0]), srcv);
+    let rows = b.op(
+        array::reduce_along_axis::<f64, 2, f64, 1>(1, 0.0, |acc, &x| *acc += x),
+        srcv,
+    );
+    let cols = b.op(
+        array::reduce_along_axis::<f64, 2, f64, 1>(0, 0.0, |acc, &x| *acc += x),
+        srcv,
+    );
+    // Axis 0 of the transpose is axis 1 of the panel, reached the other way.
+    let strided = b.op(
+        array::reduce_along_axis::<f64, 2, f64, 1>(0, 0.0, |acc, &x| *acc += x),
+        flipped,
+    );
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(src) = panel23();
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(vals(g.view(rows)), vec![6.0, 15.0]);
+    assert_eq!(vals(g.view(cols)), vec![5.0, 7.0, 9.0]);
+    assert_eq!(vals(g.view(strided)), vals(g.view(rows)));
+
+    // The accumulators are reseeded, like the two directions it delegates to.
+    *g.state_mut(src) = [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]].into();
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(vals(g.view(rows)), vec![3.0, 6.0]);
+    assert_eq!(vals(g.view(cols)), vec![3.0, 3.0, 3.0]);
+}
+
+/// The rank relation is checked by the reduction itself, so a mismatch
+/// surfaces when the graph first runs the operator rather than when the
+/// operator value is constructed.
+#[test]
+#[should_panic(expected = "must be N")]
+fn reduce_rank_mismatch_panics_when_the_graph_runs() {
+    let mut b = Builder::new();
+    let (_, srcv) = b.source(array::constant(Array::<f64, 2>::zeros([2, 3])));
+    let _ = b.op(
+        array::inner_reduce::<f64, 2, f64, 2, 1>(0.0, |acc, &x| *acc += x),
+        srcv,
+    );
+    let mut g = b.build();
+    g.stabilize(&mut Pool::new(0), &Instant::MIN);
 }
 
 // ---------------------------------------------------------------------------
@@ -693,7 +739,7 @@ fn select_at_on_a_vector_yields_a_rank_zero_view() {
 fn select_gathers_from_a_strided_input() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
-    let flipped = b.op(array::transpose([1, 0]), srcv); // [3, 2], strided
+    let flipped = b.op(array::permute_axes([1, 0]), srcv); // [3, 2], strided
     let picked = b.op(array::select(vec![0, 2], 0), flipped);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -823,7 +869,7 @@ fn concat_accepts_strided_and_contiguous_inputs_together() {
     let mut b = Builder::new();
     let (p, pv) = b.source(array::constant(Array::zeros([2, 3])));
     let (q, qv) = b.source(array::constant(Array::zeros([3, 2])));
-    let flipped = b.op(array::transpose([1, 0]), pv); // [3, 2], strided
+    let flipped = b.op(array::permute_axes([1, 0]), pv); // [3, 2], strided
     let joined = b.op(array::concat(1), &[flipped, qv][..]);
     let mut g = b.build();
     let mut pool = Pool::new(0);
@@ -1071,15 +1117,15 @@ fn slice_reshape_inserts_new_axes() {
     assert_eq!(vals(g.view(row)), vec![4.0, 5.0, 6.0]);
 }
 
-/// `transpose` permutes axes by rewriting strides, never data: the permuted
+/// `permute_axes` permutes axes by rewriting strides, never data: the permuted
 /// view of a row-major panel is strided, and permuting back restores both the
 /// original order and contiguity.
 #[test]
-fn transpose_permutes_axes_without_copying() {
+fn permute_axes_permutes_axes_without_copying() {
     let mut b = Builder::new();
     let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
-    let flipped = b.op(array::transpose([1, 0]), srcv);
-    let back = b.op(array::transpose([1, 0]), flipped);
+    let flipped = b.op(array::permute_axes([1, 0]), srcv);
+    let back = b.op(array::permute_axes([1, 0]), flipped);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -1092,6 +1138,34 @@ fn transpose_permutes_axes_without_copying() {
 
     assert_eq!(g.view(back).extents(), [2, 3]);
     assert_eq!(vals(g.view(back)), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    assert!(is_contiguous(g.view(back)));
+}
+
+/// `move_axis` relocates one axis and lets the rest shift over, keeping their
+/// order — the difference from `swap_axes`, which trades two axes and leaves
+/// everything between them alone. Both are stride rewrites, not copies.
+#[test]
+fn move_axis_shifts_the_other_axes_over() {
+    let mut b = Builder::new();
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3, 4])));
+    let moved = b.op(array::move_axis(2, 0), srcv);
+    let swapped = b.op(array::swap_axes(2, 0), srcv);
+    let back = b.op(array::move_axis(0, 2), moved);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(src) = Array::from_parts([2, 3, 4], (0..24).map(f64::from).collect());
+    g.stabilize(&mut pool, &Instant::MIN);
+
+    // Axis 2 to the front leaves 0 and 1 in order; the swap reverses them.
+    assert_eq!(g.view(moved).extents(), [4, 2, 3]);
+    assert_eq!(g.view(swapped).extents(), [4, 3, 2]);
+    assert_eq!(g.view(moved)[[3, 1, 2]], g.view(srcv)[[1, 2, 3]]);
+    assert!(!is_contiguous(g.view(moved)), "a view, not a copy");
+
+    // Moving it back restores the original order and contiguity.
+    assert_eq!(g.view(back).extents(), [2, 3, 4]);
+    assert_eq!(vals(g.view(back)), vals(g.view(srcv)));
     assert!(is_contiguous(g.view(back)));
 }
 
