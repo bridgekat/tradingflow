@@ -366,7 +366,7 @@ pub fn map<A: Scalar, T: Scalar, const N: usize>(
     let update = {
         let mut f = f;
         move |out: &mut Array<T, N>, a: ArrayView<'_, A, N>| {
-            data::array::map_into(out.data_mut(), a, &mut f);
+            data::array::map_into(out, a, &mut f);
         }
     };
     ArrayMap::new(init, update)
@@ -388,7 +388,7 @@ pub fn binary_map<A: Scalar, B: Scalar, T: Scalar, const N: usize>(
     let update = {
         let mut f = f;
         move |out: &mut Array<T, N>, a: ArrayView<'_, A, N>, b: ArrayView<'_, B, N>| {
-            data::array::binary_map_into(out.data_mut(), a, b, &mut f);
+            data::array::binary_map_into(out, a, b, &mut f);
         }
     };
     ArrayBinaryMap::new(init, update)
@@ -415,7 +415,7 @@ pub fn ternary_map<A: Scalar, B: Scalar, C: Scalar, T: Scalar, const N: usize>(
               a: ArrayView<'_, A, N>,
               b: ArrayView<'_, B, N>,
               c: ArrayView<'_, C, N>| {
-            data::array::ternary_map_into(out.data_mut(), a, b, c, &mut f);
+            data::array::ternary_map_into(out, a, b, c, &mut f);
         }
     };
     ArrayTernaryMap::new(init, update)

@@ -11,18 +11,23 @@ pub fn map<A: Scalar, T: Scalar, const N: usize>(
     f: impl FnMut(&A) -> T,
 ) -> Array<T, N> {
     let mut out = Array::zeros(a.extents());
-    map_into(out.data_mut(), a, f);
+    map_into(&mut out, a, f);
     out
 }
 
-/// Applies a unary function on elements of `a`, writing into the row-major
-/// buffer `out`. The array view `a` is assumed to have extents matching `out`.
+/// Applies a unary function on elements of `a`, writing into `out`.
+///
+/// # Panics
+///
+/// Panics if `a.extents() != out.extents()`.
 pub fn map_into<A: Scalar, T: Scalar, const N: usize>(
-    out: &mut [T],
+    out: &mut Array<T, N>,
     a: ArrayView<A, N>,
     f: impl FnMut(&A) -> T,
 ) {
+    assert_eq!(a.extents(), out.extents(), "map_into: extents mismatch");
     let mut f = f;
+    let out = out.data_mut();
     for_each(a, |i, v| out[i] = f(v));
 }
 
@@ -39,21 +44,27 @@ pub fn binary_map<A: Scalar, B: Scalar, T: Scalar, const N: usize>(
 ) -> Array<T, N> {
     let extents = broadcast_extents(a.extents(), b.extents());
     let mut out = Array::zeros(extents);
-    binary_map_into(out.data_mut(), a, b, f);
+    binary_map_into(&mut out, a, b, f);
     out
 }
 
 /// Iterates over the scalars of `a` and `b` in row-major order, broadcasting
-/// each extent-1 axis, and writing into the row-major buffer `out`.
-/// The array views `a` and `b` are assumed to have broadcast-compatible
-/// extents, with the broadcast extents matching `out`.
+/// each extent-1 axis, and writing into `out`.
+///
+/// # Panics
+///
+/// Panics if `a` and `b` do not have broadcast-compatible extents, or if their
+/// broadcast extents do not match `out`.
 pub fn binary_map_into<A: Scalar, B: Scalar, T: Scalar, const N: usize>(
-    out: &mut [T],
+    out: &mut Array<T, N>,
     a: ArrayView<A, N>,
     b: ArrayView<B, N>,
     f: impl FnMut(&A, &B) -> T,
 ) {
+    let extents = broadcast_extents(a.extents(), b.extents());
+    assert_eq!(extents, out.extents(), "binary_map_into: extents mismatch");
     let mut f = f;
+    let out = out.data_mut();
     binary_for_each(a, b, |i, x, y| out[i] = f(x, y));
 }
 
@@ -71,22 +82,28 @@ pub fn ternary_map<A: Scalar, B: Scalar, C: Scalar, T: Scalar, const N: usize>(
 ) -> Array<T, N> {
     let extents = broadcast_extents(a.extents(), broadcast_extents(b.extents(), c.extents()));
     let mut out = Array::zeros(extents);
-    ternary_map_into(out.data_mut(), a, b, c, f);
+    ternary_map_into(&mut out, a, b, c, f);
     out
 }
 
 /// Iterates over the scalars of `a`, `b`, `c` in row-major order, broadcasting
-/// each extent-1 axis, and writing into the row-major buffer `out`.
-/// The array views `a`, `b`, `c` are assumed to have broadcast-compatible
-/// extents, with the broadcast extents matching `out`.
+/// each extent-1 axis, and writing into `out`.
+///
+/// # Panics
+///
+/// Panics if `a`, `b` and `c` do not have broadcast-compatible extents, or if
+/// their broadcast extents do not match `out`.
 pub fn ternary_map_into<A: Scalar, B: Scalar, C: Scalar, T: Scalar, const N: usize>(
-    out: &mut [T],
+    out: &mut Array<T, N>,
     a: ArrayView<A, N>,
     b: ArrayView<B, N>,
     c: ArrayView<C, N>,
     f: impl FnMut(&A, &B, &C) -> T,
 ) {
+    let extents = broadcast_extents(a.extents(), broadcast_extents(b.extents(), c.extents()));
+    assert_eq!(extents, out.extents(), "ternary_map_into: extents mismatch");
     let mut f = f;
+    let out = out.data_mut();
     ternary_for_each(a, b, c, |i, x, y, z| out[i] = f(x, y, z));
 }
 

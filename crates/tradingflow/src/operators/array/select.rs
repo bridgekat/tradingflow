@@ -30,7 +30,7 @@ pub fn select<T: Scalar, const N: usize>(
         move |x: ArrayView<'_, T, N>| array::select(x, &indices, axis)
     };
     let update = move |out: &mut Array<T, N>, x: ArrayView<'_, T, N>| {
-        array::select_into(out.data_mut(), x, &indices, axis);
+        array::select_into(out, x, &indices, axis);
     };
     ArrayMap::new(init, update)
 }
@@ -46,7 +46,7 @@ pub fn select_mask<T: Scalar, const N: usize>(
         move |x: ArrayView<'_, T, N>| array::select_mask(x, &mask, axis)
     };
     let update = move |out: &mut Array<T, N>, x: ArrayView<'_, T, N>| {
-        array::select_mask_into(out.data_mut(), x, &mask, axis);
+        array::select_mask_into(out, x, &mask, axis);
     };
     ArrayMap::new(init, update)
 }

@@ -4,6 +4,7 @@ mod concat;
 mod iter;
 mod map;
 mod owned;
+mod reduce;
 mod select;
 mod split;
 mod view;
@@ -15,6 +16,7 @@ pub use map::{
     map_into, ternary_for_each, ternary_map, ternary_map_into,
 };
 pub use owned::Array;
+pub use reduce::{inner_reduce, inner_reduce_into, outer_reduce, outer_reduce_into};
 pub use select::{select, select_into, select_mask, select_mask_into};
 pub use split::{split, unstack};
 pub use view::ArrayView;

@@ -26,21 +26,38 @@ pub fn select<T: Scalar, const N: usize>(
     let mut extents = view.extents();
     extents[axis] = indices.len();
     let mut out = Array::zeros(extents);
-    select_into(out.data_mut(), view, indices, axis);
+    select_into(&mut out, view, indices, axis);
     out
 }
 
 /// Selects `indices` in order (repetition allowed) along the existing axis
-/// `axis`, writing into the row-major buffer `out`. The buffer is assumed to
-/// hold exactly the selected scalar count, and every index is assumed to be
-/// in bounds along `axis`.
+/// `axis`, writing into `out`. Every index is assumed to be in bounds along
+/// `axis`.
+///
+/// # Panics
+///
+/// Panics if `axis >= N`, or if `out` does not have the extents of `view` with
+/// `indices.len()` along `axis`.
 pub fn select_into<T: Scalar, const N: usize>(
-    out: &mut [T],
+    out: &mut Array<T, N>,
     view: ArrayView<T, N>,
     indices: &[usize],
     axis: usize,
 ) {
-    select_iter_into(out, view, indices.iter().copied(), axis, indices.len());
+    assert!(
+        axis < N,
+        "select_into: axis {axis} out of bounds for rank {N}"
+    );
+    let mut extents = view.extents();
+    extents[axis] = indices.len();
+    assert_eq!(out.extents(), extents, "select_into: extents mismatch");
+    select_iter_into(
+        out.data_mut(),
+        view,
+        indices.iter().copied(),
+        axis,
+        indices.len(),
+    );
 }
 
 /// Selects the indices where `mask` holds `true` along the existing axis
@@ -70,26 +87,37 @@ pub fn select_mask<T: Scalar, const N: usize>(
     let mut extents = view.extents();
     extents[axis] = mask.iter().filter(|&&keep| keep).count();
     let mut out = Array::zeros(extents);
-    select_mask_into(out.data_mut(), view, mask, axis);
+    select_mask_into(&mut out, view, mask, axis);
     out
 }
 
 /// Selects the indices where `mask` holds `true` along the existing axis
-/// `axis`, writing into the row-major buffer `out`. The buffer is assumed to
-/// hold exactly the selected scalar count, and `mask` is assumed to hold one
-/// flag per index along `axis`.
+/// `axis`, writing into `out`. The `mask` is assumed to hold one flag per
+/// index along `axis`.
+///
+/// # Panics
+///
+/// Panics if `axis >= N`, or if `out` does not have the extents of `view` with
+/// the number of `true` entries along `axis`.
 pub fn select_mask_into<T: Scalar, const N: usize>(
-    out: &mut [T],
+    out: &mut Array<T, N>,
     view: ArrayView<T, N>,
     mask: &[bool],
     axis: usize,
 ) {
     let count = mask.iter().filter(|&&keep| keep).count();
+    assert!(
+        axis < N,
+        "select_mask_into: axis {axis} out of bounds for rank {N}"
+    );
+    let mut extents = view.extents();
+    extents[axis] = count;
+    assert_eq!(out.extents(), extents, "select_mask_into: extents mismatch");
     let indices = mask
         .iter()
         .enumerate()
         .filter_map(|(i, &keep)| keep.then_some(i));
-    select_iter_into(out, view, indices, axis, count);
+    select_iter_into(out.data_mut(), view, indices, axis, count);
 }
 
 fn select_iter_into<T: Scalar, const N: usize>(

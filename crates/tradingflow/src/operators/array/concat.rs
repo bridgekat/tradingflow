@@ -67,7 +67,7 @@ pub fn concat<T: Scalar, const N: usize>(
 ) -> impl Operator<Inputs = ArrayPorts<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     let init = move |views: &[ArrayView<'_, T, N>]| array::concat(views, axis);
     let update = move |out: &mut Array<T, N>, views: &[ArrayView<'_, T, N>]| {
-        array::concat_into(out.data_mut(), views, axis);
+        array::concat_into(out, views, axis);
     };
     Combine::new(init, update)
 }
@@ -82,7 +82,7 @@ pub fn stack<T: Scalar, const N: usize, const M: usize>(
     );
     let init = move |views: &[ArrayView<'_, T, N>]| array::stack(views, axis);
     let update = move |out: &mut Array<T, M>, views: &[ArrayView<'_, T, N>]| {
-        array::stack_into(out.data_mut(), views, axis);
+        array::stack_into(out, views, axis);
     };
     Combine::new(init, update)
 }

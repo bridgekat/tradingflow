@@ -214,23 +214,9 @@ impl<'a, T: Scalar, const N: usize> ArrayView<'a, T, N> {
     ///
     /// # Panics
     ///
-    /// Panics if `K > N` or `K + M < N`.
+    /// Panics if `K + M != N`.
     pub fn split_iter<const K: usize, const M: usize>(&self) -> ArrayOuterIter<'a, T, K, M> {
         let (offsets, layout) = self.layout().split_iter();
-        ArrayOuterIter {
-            offsets,
-            layout,
-            data: self.data(),
-        }
-    }
-
-    /// Like [`split_iter`](Self::split_iter) but with dynamic `k`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `k > N`.
-    pub fn split_iter_dyn(&self, k: usize) -> ArrayOuterIter<'a, T, N, N> {
-        let (offsets, layout) = self.layout().split_iter_dyn(k);
         ArrayOuterIter {
             offsets,
             layout,

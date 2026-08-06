@@ -449,6 +449,128 @@ fn array_ternary_map_inplace_folds_three_inputs_into_one_buffer() {
 }
 
 // ---------------------------------------------------------------------------
+// reduce
+// ---------------------------------------------------------------------------
+
+/// `inner_reduce` splits the input at rank `M` and folds each sub-region into
+/// its own accumulator, so a `[2, 3]` panel reduced over rank-1 rows publishes
+/// a `[2]` array of row sums. Transposing first walks the columns instead —
+/// strided sub-regions, which is the slow path.
+#[test]
+fn inner_reduce_collapses_the_trailing_axes() {
+    let mut b = Builder::new();
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
+    let flipped = b.op(array::transpose([1, 0]), srcv);
+    let rows = b.op(
+        array::inner_reduce::<f64, 2, f64, 1, 1>(0.0, |acc, &x| *acc += x),
+        srcv,
+    );
+    let cols = b.op(
+        array::inner_reduce::<f64, 2, f64, 1, 1>(0.0, |acc, &x| *acc += x),
+        flipped,
+    );
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(src) = panel23();
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(g.view(rows).extents(), [2]);
+    assert_eq!(vals(g.view(rows)), vec![6.0, 15.0]);
+    assert_eq!(g.view(cols).extents(), [3]);
+    assert_eq!(vals(g.view(cols)), vec![5.0, 7.0, 9.0]);
+    assert!(is_contiguous(g.view(rows)), "reduce owns its output");
+}
+
+/// `outer_reduce` is the same fold with the accumulators held still and the
+/// input streamed past: reducing the leading axis of the same `[2, 3]` panel
+/// publishes the `[3]` column sums, which `inner_reduce` reaches only through
+/// a transpose.
+#[test]
+fn outer_reduce_folds_the_leading_axes() {
+    let mut b = Builder::new();
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
+    let flipped = b.op(array::transpose([1, 0]), srcv);
+    let cols = b.op(
+        array::outer_reduce::<f64, 2, f64, 1, 1>(0.0, |acc, &x| *acc += x),
+        srcv,
+    );
+    let rows = b.op(
+        array::inner_reduce::<f64, 2, f64, 1, 1>(0.0, |acc, &x| *acc += x),
+        flipped,
+    );
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(src) = panel23();
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(g.view(cols).extents(), [3]);
+    assert_eq!(vals(g.view(cols)), vec![5.0, 7.0, 9.0]);
+    assert_eq!(vals(g.view(cols)), vals(g.view(rows)), "same fold");
+}
+
+/// Reducing every axis leaves no accumulator axes, so the output is the rank-0
+/// cell holding one scalar — either direction gets there.
+#[test]
+fn reduce_to_rank_zero_yields_one_scalar() {
+    let mut b = Builder::new();
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
+    let inner = b.op(
+        array::inner_reduce::<f64, 2, f64, 0, 2>(0.0, |acc, &x| *acc += x),
+        srcv,
+    );
+    let outer = b.op(
+        array::outer_reduce::<f64, 2, f64, 2, 0>(0.0, |acc, &x| *acc += x),
+        srcv,
+    );
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(src) = panel23();
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(g.view(inner).ndim(), 0);
+    assert_eq!(vals(g.view(inner)), vec![21.0]);
+    assert_eq!(vals(g.view(outer)), vec![21.0]);
+}
+
+/// The accumulators are reseeded every generation, so a fold that would keep
+/// growing still publishes this generation's reduction alone — and the scalar
+/// type may differ from the input's.
+#[test]
+fn reduce_reseeds_its_accumulators_each_generation() {
+    let mut b = Builder::new();
+    let (src, srcv) = b.source(array::constant(Array::zeros([2, 3])));
+    let any_negative = b.op(
+        array::inner_reduce::<f64, 2, bool, 1, 1>(false, |acc, &x| *acc |= x < 0.0),
+        srcv,
+    );
+    let sums = b.op(
+        array::outer_reduce::<f64, 2, f64, 1, 1>(0.0, |acc, &x| *acc += x),
+        srcv,
+    );
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(src) = panel23();
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(vals(g.view(any_negative)), vec![false, false]);
+    assert_eq!(vals(g.view(sums)), vec![5.0, 7.0, 9.0]);
+
+    *g.state_mut(src) = [[1.0, -2.0, 3.0], [4.0, 5.0, 6.0]].into();
+    g.stabilize(&mut pool, &Instant::MIN);
+    assert_eq!(vals(g.view(any_negative)), vec![true, false]);
+    // Not [10.0, 10.0, 18.0]: the previous generation is not carried over.
+    assert_eq!(vals(g.view(sums)), vec![5.0, 3.0, 9.0]);
+}
+
+/// The rank relation is checked when the operator is built, not on the first
+/// generation: the reduced axes plus the kept ones must be the whole input.
+#[test]
+#[should_panic(expected = "must be input ndim")]
+fn reduce_rank_mismatch_panics_at_build() {
+    let _ = array::inner_reduce::<f64, 2, f64, 2, 1>(0.0, |acc, &x| *acc += x);
+}
+
+// ---------------------------------------------------------------------------
 // select
 // ---------------------------------------------------------------------------
 

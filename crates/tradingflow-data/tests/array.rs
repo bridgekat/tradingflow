@@ -1,6 +1,7 @@
 use tradingflow_data::array::{
-    binary_map, binary_map_into, concat, concat_into, map, map_into, select, select_into,
-    select_mask, select_mask_into, split, stack, stack_into, unstack,
+    binary_map, binary_map_into, concat, concat_into, inner_reduce, inner_reduce_into, map,
+    map_into, outer_reduce, outer_reduce_into, select, select_into, select_mask, select_mask_into,
+    split, stack, stack_into, unstack,
 };
 use tradingflow_data::layout::Strided;
 use tradingflow_data::{Array, ArrayView, Layout, NewAxis, Slice};
@@ -203,13 +204,21 @@ fn binary_mixed_contiguous_and_strided() {
 }
 
 #[test]
-fn apply_into_reuses_a_row_major_buffer() {
+fn apply_into_reuses_an_output_array() {
     let x = Array::from_parts([3], vec![1.0, 2.0, 3.0].into());
-    let mut out = [0.0; 3];
+    let mut out = Array::<f64, 1>::zeros([3]);
     map_into(&mut out, x.view(), |&v: &f64| v + 0.5);
-    assert_eq!(out, [1.5, 2.5, 3.5]);
+    assert_eq!(out.data(), &[1.5, 2.5, 3.5]);
     binary_map_into(&mut out, x.view(), x.view(), |a, b| a * b);
-    assert_eq!(out, [1.0, 4.0, 9.0]);
+    assert_eq!(out.data(), &[1.0, 4.0, 9.0]);
+}
+
+#[test]
+#[should_panic(expected = "extents mismatch")]
+fn apply_into_extents_mismatch() {
+    let x = Array::from_parts([3], vec![1.0, 2.0, 3.0].into());
+    let mut out = Array::<f64, 1>::zeros([2]);
+    map_into(&mut out, x.view(), |&v: &f64| v + 0.5);
 }
 
 #[test]
@@ -262,12 +271,13 @@ fn broadcast_strided_operand() {
 }
 
 #[test]
-fn broadcast_into_reuses_a_row_major_buffer() {
+fn broadcast_into_reuses_an_output_array() {
     let a = Array::from_parts([2, 1], vec![1.0, 2.0].into());
     let b = Array::from_parts([2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into());
-    let mut out = [0.0; 6];
+    // The output takes the broadcast extents, not those of either operand.
+    let mut out = Array::<f64, 2>::zeros([2, 3]);
     binary_map_into(&mut out, a.view(), b.view(), |x, y| x + y);
-    assert_eq!(out, [2.0, 3.0, 4.0, 6.0, 7.0, 8.0]);
+    assert_eq!(out.data(), &[2.0, 3.0, 4.0, 6.0, 7.0, 8.0]);
 }
 
 #[test]
@@ -396,19 +406,32 @@ fn concat_of_empty_extents_is_empty() {
 }
 
 #[test]
-fn concat_into_reuses_a_row_major_buffer() {
+fn concat_into_reuses_an_output_array() {
     let a = Array::from_parts([2], vec![1.0, 2.0].into());
     let b = Array::from_parts([2], vec![3.0, 4.0].into());
-    let mut out = [0.0; 4];
+    let mut out = Array::<f64, 1>::zeros([4]);
     concat_into(&mut out, &[a.view(), b.view()], 0);
-    assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(out.data(), &[1.0, 2.0, 3.0, 4.0]);
+
+    // Stacking inserts an axis, so `M` comes from the rank of the output.
+    let mut out = Array::<f64, 2>::zeros([2, 2]);
     stack_into(&mut out, &[a.view(), b.view()], 1);
-    assert_eq!(out, [1.0, 3.0, 2.0, 4.0]);
-    // Combining no views writes nothing.
-    let mut out = [7.0; 2];
-    concat_into::<f64, 1>(&mut out, &[], 0);
-    stack_into::<f64, 1>(&mut out, &[], 0);
-    assert_eq!(out, [7.0, 7.0]);
+    assert_eq!(out.data(), &[1.0, 3.0, 2.0, 4.0]);
+
+    // Combining no views writes nothing: no extents to check against.
+    let mut out = Array::full([2], 7.0);
+    concat_into(&mut out, &[], 0);
+    stack_into::<f64, 0, 1>(&mut out, &[], 0);
+    assert_eq!(out.data(), &[7.0, 7.0]);
+}
+
+#[test]
+#[should_panic(expected = "concat_into: extents mismatch")]
+fn concat_into_extents_mismatch() {
+    let a = Array::from_parts([2], vec![1.0, 2.0].into());
+    // Concatenating two [2] views needs a [4] output.
+    let mut out = Array::<f64, 1>::zeros([2]);
+    concat_into(&mut out, &[a.view(), a.view()], 0);
 }
 
 #[test]
@@ -716,18 +739,29 @@ fn select_mask_keeps_masked_entries() {
 }
 
 #[test]
-fn select_into_reuses_a_row_major_buffer() {
+fn select_into_reuses_an_output_array() {
     let a = Array::from_parts([2, 3], vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0].into());
-    let mut out = [0.0; 4];
+    // Two indices along axis 1, so the output is [2, 2].
+    let mut out = Array::<f64, 2>::zeros([2, 2]);
     select_into(&mut out, a.view(), &[2, 0], 1);
-    assert_eq!(out, [2.0, 0.0, 5.0, 3.0]);
+    assert_eq!(out.data(), &[2.0, 0.0, 5.0, 3.0]);
     select_mask_into(&mut out, a.view(), &[true, false, true], 1);
-    assert_eq!(out, [0.0, 2.0, 3.0, 5.0]);
-    // Selecting nothing writes nothing.
-    let mut out = [7.0; 2];
+    assert_eq!(out.data(), &[0.0, 2.0, 3.0, 5.0]);
+
+    // Selecting nothing empties the axis rather than writing.
+    let mut out = Array::<f64, 2>::zeros([2, 0]);
     select_into(&mut out, a.view(), &[], 1);
     select_mask_into(&mut out, a.view(), &[false, false, false], 1);
-    assert_eq!(out, [7.0, 7.0]);
+    assert!(out.data().is_empty());
+}
+
+#[test]
+#[should_panic(expected = "select_into: extents mismatch")]
+fn select_into_extents_mismatch() {
+    let a = Array::from_parts([2, 3], vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0].into());
+    // Two indices along axis 1 need a [2, 2] output, not the source extents.
+    let mut out = Array::<f64, 2>::zeros([2, 3]);
+    select_into(&mut out, a.view(), &[2, 0], 1);
 }
 
 #[test]
@@ -1021,6 +1055,185 @@ fn split_iter_empty_axes() {
     let lanes: Vec<ArrayView<f64, 1>> = v.split_iter::<1, 1>().collect();
     assert_eq!(lanes.len(), 3);
     assert!(lanes.iter().all(|l| l.extents() == [0]));
+}
+
+#[test]
+fn inner_reduce_rows_and_columns() {
+    // [[0, 1, 2], [3, 4, 5]]
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+
+    // Row sums, indexed by the walked axis 0.
+    let rows: Array<f64, 1> = inner_reduce::<_, _, _, _, 1>(v, 0.0, |acc, &x| *acc += x);
+    assert_eq!(rows, Array::from([3.0, 12.0]));
+
+    // Transposing first reduces over the (strided) columns instead.
+    let cols: Array<f64, 1> =
+        inner_reduce::<_, _, _, _, 1>(v.transpose([1, 0]), 0.0, |acc, &x| *acc += x);
+    assert_eq!(cols, Array::from([3.0, 5.0, 7.0]));
+
+    // `init` is the fold's identity, so a maximum seeds with `f64::MIN`
+    // rather than the `0.0` a sum wants.
+    let maxima: Array<f64, 1> =
+        inner_reduce::<_, _, _, _, 1>(v, f64::MIN, |acc, &x| *acc = acc.max(x));
+    assert_eq!(maxima, Array::from([2.0, 5.0]));
+}
+
+#[test]
+fn inner_reduce_keeps_walked_extents() {
+    let data: Vec<f64> = (0..24).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3, 4], &data);
+
+    // Reducing the trailing axis keeps the leading two as the result extents.
+    let sums: Array<f64, 2> = inner_reduce::<_, _, _, _, 1>(v, 0.0, |acc, &x| *acc += x);
+    assert_eq!(sums.extents(), [2, 3]);
+    assert_eq!(sums[[0, 0]], 0.0 + 1.0 + 2.0 + 3.0);
+    assert_eq!(sums[[1, 2]], 20.0 + 21.0 + 22.0 + 23.0);
+
+    // Reducing every axis leaves one rank-0 accumulator.
+    let total: Array<f64, 0> = inner_reduce::<_, _, _, _, 3>(v, 0.0, |acc, &x| *acc += x);
+    assert_eq!(*total, (0..24).map(f64::from).sum::<f64>());
+
+    // A rank-0 sub-region folds one scalar each, preserving the index space.
+    let doubled: Array<f64, 3> = inner_reduce::<_, _, _, _, 0>(v, 0.0, |acc, &x| *acc = x * 2.0);
+    assert_eq!(doubled.extents(), [2, 3, 4]);
+    assert_eq!(doubled[[1, 2, 3]], 46.0);
+}
+
+#[test]
+fn inner_reduce_empty_axes() {
+    // Empty walked axis: no accumulators, so the closure never runs.
+    let v = ArrayView::<f64, 2>::from_slice([0, 4], &[]);
+    let sums: Array<f64, 1> = inner_reduce::<_, _, _, _, 1>(v, 0.0, |_, _| unreachable!());
+    assert_eq!(sums.extents(), [0]);
+
+    // Empty sub-region: one accumulator per walked index, left at its seed.
+    let v = ArrayView::<f64, 2>::from_slice([3, 0], &[]);
+    let counts: Array<u32, 1> = inner_reduce::<_, _, _, _, 1>(v, 0u32, |acc, _| *acc += 1);
+    assert_eq!(counts, Array::from([0, 0, 0]));
+}
+
+#[test]
+fn inner_reduce_into_accumulates_across_calls() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+
+    // The output rank fixes the walked axes; `M` has no other source and is
+    // spelled. Reading `acc` as well as writing it folds both calls into one.
+    let mut out = Array::<f64, 1>::zeros([2]);
+    inner_reduce_into::<_, _, _, _, 1>(&mut out, v, |acc, &x| *acc += x);
+    assert_eq!(out.data(), &[3.0, 12.0]);
+    inner_reduce_into::<_, _, _, _, 1>(&mut out, v, |acc, &x| *acc += x);
+    assert_eq!(out.data(), &[6.0, 24.0]);
+
+    // The `_into` form takes its seed from the accumulator array it is given.
+    let mut out = Array::full([2], f64::MIN);
+    inner_reduce_into::<_, _, _, _, 1>(&mut out, v, |acc, &x| *acc = acc.max(x));
+    assert_eq!(out.data(), &[2.0, 5.0]);
+
+    // Walking both axes fills the buffer in row-major order.
+    let mut out = Array::<f64, 2>::zeros([2, 3]);
+    inner_reduce_into::<_, _, _, _, 0>(&mut out, v, |acc, &x| *acc = x * 2.0);
+    assert_eq!(out.data(), &[0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
+}
+
+#[test]
+#[should_panic(expected = "inner_reduce_into: extents mismatch")]
+fn inner_reduce_into_extents_mismatch() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+    // The walked axis has extent 2, so a [1] output is rejected.
+    let mut out = Array::<f64, 1>::zeros([1]);
+    inner_reduce_into::<_, _, _, _, 1>(&mut out, v, |acc, &x| *acc += x);
+}
+
+#[test]
+fn outer_reduce_folds_the_leading_axes() {
+    // [[0, 1, 2], [3, 4, 5]]
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+
+    // Reducing axis 0 keeps the trailing axis: column sums, walked row by row.
+    let cols: Array<f64, 1> = outer_reduce::<_, _, _, 1, _>(v, 0.0, |acc, &x| *acc += x);
+    assert_eq!(cols, Array::from([3.0, 5.0, 7.0]));
+
+    // Reducing every axis leaves the rank-0 accumulator.
+    let total: Array<f64, 0> = outer_reduce::<_, _, _, 2, _>(v, 0.0, |acc, &x| *acc += x);
+    assert_eq!(*total, 15.0);
+
+    // Reducing no axis folds the one whole-array sub-region element by
+    // element, which is an element-wise pass over the input.
+    let same: Array<f64, 2> = outer_reduce::<_, _, _, 0, _>(v, 0.0, |acc, &x| *acc = x);
+    assert_eq!(same, v.to_array());
+}
+
+/// The two directions compute the same thing on transposed inputs — the point
+/// of `outer_reduce` is that it gets there without walking a strided lane per
+/// accumulator.
+#[test]
+fn outer_reduce_matches_the_transposed_inner_reduce() {
+    let data: Vec<f64> = (0..24).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3, 4], &data);
+
+    // Fold the leading [2, 3] axes away, keeping the trailing [4].
+    let outer: Array<f64, 1> = outer_reduce::<_, _, _, 2, _>(v, 0.0, |acc, &x| *acc += x);
+    assert_eq!(outer.extents(), [4]);
+
+    // The same reduction as trailing lanes: move axis 2 to the front, then
+    // each lane is the [2, 3] block that `outer_reduce` streamed past.
+    let inner: Array<f64, 1> =
+        inner_reduce::<_, _, _, _, 2>(v.transpose([2, 0, 1]), 0.0, |acc, &x| *acc += x);
+    assert_eq!(outer, inner);
+}
+
+#[test]
+fn outer_reduce_into_accumulates_across_calls() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+
+    // `K` has no other source, so it is spelled; `M` comes from the output.
+    let mut out = Array::<f64, 1>::zeros([3]);
+    outer_reduce_into::<_, _, _, 1, _>(&mut out, v, |acc, &x| *acc += x);
+    assert_eq!(out.data(), &[3.0, 5.0, 7.0]);
+    outer_reduce_into::<_, _, _, 1, _>(&mut out, v, |acc, &x| *acc += x);
+    assert_eq!(out.data(), &[6.0, 10.0, 14.0]);
+
+    // A strided input folds in the same logical order.
+    let mut out = Array::<f64, 1>::zeros([2]);
+    outer_reduce_into::<_, _, _, 1, _>(&mut out, v.transpose([1, 0]), |acc, &x| *acc += x);
+    assert_eq!(out.data(), &[3.0, 12.0]);
+}
+
+#[test]
+fn outer_reduce_empty_axes() {
+    // Empty folded axis: no sub-regions, so the accumulators keep their seed.
+    let v = ArrayView::<f64, 2>::from_slice([0, 4], &[]);
+    let sums: Array<f64, 1> = outer_reduce::<_, _, _, 1, _>(v, 0.0, |_, _| unreachable!());
+    assert_eq!(sums, Array::from([0.0; 4]));
+
+    // Empty kept axis: sub-regions exist but hold nothing to fold.
+    let v = ArrayView::<f64, 2>::from_slice([3, 0], &[]);
+    let sums: Array<f64, 1> = outer_reduce::<_, _, _, 1, _>(v, 0.0, |_, _| unreachable!());
+    assert_eq!(sums.extents(), [0]);
+}
+
+#[test]
+#[should_panic(expected = "outer_reduce_into: extents mismatch")]
+fn outer_reduce_into_extents_mismatch() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+    // Folding axis 0 keeps extent 3, so a [2] output is rejected.
+    let mut out = Array::<f64, 1>::zeros([2]);
+    outer_reduce_into::<_, _, _, 1, _>(&mut out, v, |acc, &x| *acc += x);
+}
+
+#[test]
+#[should_panic(expected = "must be N")]
+fn outer_reduce_rank_mismatch() {
+    let data: Vec<f64> = (0..6).map(f64::from).collect();
+    let v = ArrayView::from_slice([2, 3], &data);
+    // Folding one axis of a rank-2 input leaves rank 1, not rank 2.
+    let _: Array<f64, 2> = outer_reduce::<_, _, _, 1, _>(v, 0.0, |acc, &x| *acc += x);
 }
 
 #[test]

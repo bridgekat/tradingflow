@@ -273,11 +273,11 @@ pub trait Layout<const N: usize> {
     ///
     /// # Panics
     ///
-    /// Panics if `M != N - K`.
+    /// Panics if `K + M != N`.
     fn split_iter<const K: usize, const M: usize>(&self) -> (Offsets<K>, Strided<M>) {
         assert!(
-            M == N - K,
-            "split_iter: M ({M}) must be equal to N - K ({N} - {K})"
+            K + M == N,
+            "split_iter: K + M ({K} + {M}) must be equal to N ({N})"
         );
         let extents = self.extents();
         let strides = self.strides();
@@ -291,33 +291,6 @@ pub trait Layout<const N: usize> {
         );
         if inner.is_empty() {
             outer = Strided::new(outer.extents(), [0; K]);
-        }
-        (outer.iter(), inner)
-    }
-
-    /// Like [`split_iter`](Self::split_iter) but with dynamic `k`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `k > N`.
-    fn split_iter_dyn(&self, k: usize) -> (Offsets<N>, Strided<N>) {
-        assert!(
-            k <= N,
-            "split_iter_dyn: rank {k} out of bounds for rank {N}"
-        );
-        let extents = self.extents();
-        let strides = self.strides();
-        let mut outer = Strided::new(
-            std::array::from_fn(|d| if d < k { extents[d] } else { 1 }),
-            std::array::from_fn(|d| if d < k { strides[d] } else { 0 }),
-        );
-        let len = extents[k..].iter().product();
-        let inner = Strided::new(
-            std::array::from_fn(|d| if d < k { 1 } else { extents[d] }),
-            std::array::from_fn(|d| if d < k { len } else { strides[d] }),
-        );
-        if inner.is_empty() {
-            outer = Strided::new(outer.extents(), [0; N]);
         }
         (outer.iter(), inner)
     }

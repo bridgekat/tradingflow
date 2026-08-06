@@ -207,7 +207,7 @@ fn split_iter_offsets_stay_within_span() {
 }
 
 #[test]
-#[should_panic(expected = "M (0) must be equal to N - K (3 - 2)")]
+#[should_panic(expected = "K + M (2 + 0) must be equal to N (3)")]
 fn split_iter_rank_not_equal() {
     let _ = RowMajor::new([2, 3, 4]).split_iter::<2, 0>();
 }
