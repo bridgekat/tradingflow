@@ -33,7 +33,7 @@ python plot.py strategy_factor.csv  # Optional: plot the results
 
 - [`demo`](crates/tradingflow/examples/demo.rs) is a simple MACD crossover strategy on synthetic price signals (the example in the docs).
 - [`indicators`](crates/tradingflow/examples/indicators.rs) computes moving averages and Bollinger bands on real stock price history.
-- [`features`](crates/tradingflow/examples/features.rs) evaluates the WorldQuant *101 Formulaic Alphas* catalog, logging cumulative daily IC (or RankIC with `--rank`) curves and printing per-feature mean IC and ICIR summaries.
+- [`features`](crates/tradingflow/examples/features.rs) evaluates the WorldQuant *101 Formulaic Alphas* catalog, logging cumulative daily IC or RankIC curves and printing per-feature mean IC and ICIR summaries.
 - [`strategy_macd`](crates/tradingflow/examples/strategy_macd.rs) is the same strategy as `demo` tested on real data.
 - [`strategy_factor`](crates/tradingflow/examples/strategy_factor.rs) demonstrates the use of Python operators to build alpha and risk models, with Markowitz portfolio optimization using CVXPY.
 

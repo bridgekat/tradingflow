@@ -1,6 +1,7 @@
 //! The thread pool.
 
 use std::any::Any;
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::atomic::{self, AtomicPtr, AtomicUsize, Ordering};
@@ -10,106 +11,50 @@ use std::thread::{self, JoinHandle};
 use crossbeam::deque::{Stealer, Worker};
 use crossbeam::utils::Backoff;
 
-#[derive(Debug)]
-struct EventCount {
-    waiters: AtomicUsize,
-    epoch: Mutex<Option<usize>>,
-    cond: Condvar,
-}
-
-struct Waiter<'a> {
-    ec: &'a EventCount,
-    epoch: usize,
-}
-
-impl<'a> Waiter<'a> {
-    fn new(ec: &'a EventCount) -> Self {
-        ec.waiters.fetch_add(1, Ordering::Relaxed);
-        Self { ec, epoch: 0 }
-    }
-}
-
-impl Drop for Waiter<'_> {
-    fn drop(&mut self) {
-        self.ec.waiters.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-impl EventCount {
-    pub fn new() -> Self {
-        Self {
-            waiters: AtomicUsize::new(0),
-            epoch: Mutex::new(Some(0)),
-            cond: Condvar::new(),
-        }
-    }
-
-    /// Announce intent to sleep, *before* the final condition check.
-    ///
-    /// Returns `None` if shutdown is signaled.
-    pub fn prepare_wait<'a>(&'a self) -> Option<Waiter<'a>> {
-        let mut w = Waiter::new(self);
-        atomic::fence(Ordering::SeqCst);
-        if let Some(epoch) = *self.epoch.lock().unwrap() {
-            w.epoch = epoch;
-            return Some(w);
-        }
-        None
-    }
-
-    /// Re-check found nothing: block until the epoch moves past `w`.
-    ///
-    /// Returns `false` if shutdown is signaled.
-    pub fn wait<'a>(&'a self, w: Waiter<'a>) -> bool {
-        let mut guard = self.epoch.lock().unwrap();
-        while let Some(epoch) = *guard {
-            if epoch == w.epoch {
-                guard = self.cond.wait(guard).unwrap();
-                continue;
-            }
-            return true;
-        }
-        false
-    }
-
-    /// Producer: call *after* publishing work to the deque.
-    pub fn notify_one(&self) {
-        atomic::fence(Ordering::SeqCst);
-        if self.waiters.load(Ordering::Relaxed) != 0 {
-            let mut guard = self.epoch.lock().unwrap();
-            if let Some(epoch) = *guard {
-                *guard = Some(epoch.wrapping_add(1));
-                self.cond.notify_one();
-            }
-        }
-    }
-
-    /// Producer: signal shutdown.
-    pub fn notify_shutdown(&self) {
-        let mut guard = self.epoch.lock().unwrap();
-        *guard = None;
-        self.cond.notify_all();
-    }
-}
+/// Recruit one worker thread for every `LIGHT_PER_NOTIFY` light tasks, to
+/// reduce the number of wakeups and scheduling overhead (single-threaded
+/// node scheduling overhead is ~60ns, while waking up a new thread can take
+/// orders of magnitudes longer).
+const LIGHTS_PER_NOTIFY: usize = 1024;
 
 /// Handed to the seeding closure and the task handler so they can enqueue work.
 /// Holds raw pointers but the branded lifetime `'scope` makes sure they cannot
 /// outlive the underlying local queue or the shared control block.
 #[derive(Debug)]
 pub struct Scope<'s> {
-    local: NonNull<Worker<usize>>,
+    local: NonNull<Local>,
     shared: NonNull<Shared>,
     _brand: PhantomData<fn(&'s ()) -> &'s ()>,
 }
 
 impl<'s> Scope<'s> {
-    pub fn spawn(&self, task: usize, recruit: bool) {
+    pub fn spawn(&self, task: usize, is_heavy: bool) {
         let shared = unsafe { self.shared.as_ref() };
         let local = unsafe { self.local.as_ref() };
         shared.pending.fetch_add(1, Ordering::Relaxed);
-        local.push(task);
-        if recruit {
-            shared.ec.notify_one();
+        local.queue.push(task);
+        if is_heavy {
+            shared.cond.notify_one();
+        } else {
+            local.lights.update(|n| n.wrapping_add(1));
+            if local.lights.get().is_multiple_of(LIGHTS_PER_NOTIFY) {
+                shared.cond.notify_one();
+            }
+        }
+    }
+}
+
+/// Local state of a worker thread.
+struct Local {
+    queue: Worker<usize>,
+    lights: Cell<usize>,
+}
+
+impl Local {
+    fn new() -> Self {
+        Self {
+            queue: Worker::new_lifo(),
+            lights: Cell::new(0),
         }
     }
 }
@@ -120,15 +65,30 @@ struct Shared {
     task_data: AtomicPtr<()>,
     task_fn: AtomicPtr<()>,
     pending: AtomicUsize,
-    ec: EventCount,
+    cond: Condvar,
+    shutdown: Mutex<bool>,
     panic: Mutex<Option<Box<dyn Any + Send>>>,
+}
+
+impl Shared {
+    fn new(stealers: Vec<Stealer<usize>>) -> Self {
+        Self {
+            stealers,
+            task_data: AtomicPtr::new(std::ptr::null_mut()),
+            task_fn: AtomicPtr::new(std::ptr::null_mut()),
+            pending: AtomicUsize::new(0),
+            cond: Condvar::new(),
+            shutdown: Mutex::new(false),
+            panic: Mutex::new(None),
+        }
+    }
 }
 
 type TaskFn = unsafe fn(data: *const (), task: usize, scope: &Scope<'_>);
 
 /// A work-stealing thread pool, with tasks indexed by `usize`.
 pub struct Pool {
-    local: Worker<usize>,
+    local: Local,
     shared: Arc<Shared>,
     other_threads: Vec<JoinHandle<()>>,
 }
@@ -137,24 +97,17 @@ impl Pool {
     /// Creates a new thread pool with the given number of worker threads.
     pub fn new(num_other_threads: usize) -> Self {
         // Build every task queue up front.
-        let local = Worker::new_lifo();
+        let local = Local::new();
         let other_locals = (0..num_other_threads)
-            .map(|_| Worker::new_lifo())
+            .map(|_| Local::new())
             .collect::<Vec<_>>();
         let stealers = std::iter::once(&local)
             .chain(other_locals.iter())
-            .map(Worker::stealer)
+            .map(|local| local.queue.stealer())
             .collect::<Vec<_>>();
 
         // Create the shared control block.
-        let shared = Arc::new(Shared {
-            stealers,
-            task_data: AtomicPtr::new(std::ptr::null_mut()),
-            task_fn: AtomicPtr::new(std::ptr::null_mut()),
-            pending: AtomicUsize::new(0),
-            ec: EventCount::new(),
-            panic: Mutex::new(None),
-        });
+        let shared = Arc::new(Shared::new(stealers));
 
         // Spawn the worker threads.
         let other_threads = other_locals
@@ -228,7 +181,8 @@ impl Pool {
 impl Drop for Pool {
     fn drop(&mut self) {
         // Signal shutdown via mutex and wake all the workers so they can exit.
-        self.shared.ec.notify_shutdown();
+        *self.shared.shutdown.lock().unwrap() = true;
+        self.shared.cond.notify_all();
 
         // Wait for every worker to exit.
         for t in self.other_threads.drain(..) {
@@ -237,7 +191,7 @@ impl Drop for Pool {
     }
 }
 
-fn worker_fn(local: &Worker<usize>, shared: &Shared) {
+fn worker_fn(local: &Local, shared: &Shared) {
     let backoff = Backoff::new();
 
     // Check for available tasks until backoff gives up.
@@ -248,22 +202,14 @@ fn worker_fn(local: &Worker<usize>, shared: &Shared) {
                 backoff.reset();
             }
             _ if !backoff.is_completed() => backoff.snooze(),
-
-            // Signalling sleepy state and re-check.
-            _ => match shared.ec.prepare_wait() {
-                Some(w) => match find_task(local, shared) {
-                    FindResult::Task(task) => {
-                        drop(w);
-                        run_task(local, shared, task);
-                        backoff.reset();
-                    }
-                    _ => match shared.ec.wait(w) {
-                        true => backoff.reset(),
-                        false => return,
-                    },
-                },
-                None => return,
-            },
+            _ => {
+                let guard = shared.shutdown.lock().unwrap();
+                if *guard {
+                    return;
+                }
+                drop(shared.cond.wait(guard).unwrap());
+                backoff.reset();
+            }
         }
     }
 }
@@ -274,20 +220,24 @@ enum FindResult {
     Done,
 }
 
-fn find_task(local: &Worker<usize>, shared: &Shared) -> FindResult {
-    if let Some(task) = local.pop() {
+fn find_task(local: &Local, shared: &Shared) -> FindResult {
+    if let Some(task) = local.queue.pop() {
         FindResult::Task(task)
     } else if shared.pending.load(Ordering::Relaxed) == 0 {
         atomic::fence(Ordering::Acquire);
         FindResult::Done
-    } else if let Some(task) = shared.stealers.iter().find_map(|s| s.steal().success()) {
+    } else if let Some(task) = shared
+        .stealers
+        .iter()
+        .find_map(|s| s.steal_batch_and_pop(&local.queue).success())
+    {
         FindResult::Task(task)
     } else {
         FindResult::Pending
     }
 }
 
-fn run_task(local: &Worker<usize>, shared: &Shared, task: usize) {
+fn run_task(local: &Local, shared: &Shared, task: usize) {
     // Run the task, then decrement the pending count.
     let scope = Scope {
         local: NonNull::from(local),

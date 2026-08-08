@@ -333,6 +333,47 @@
 //! whose type `T` implements the [`Operator`] trait) to wires. Applications
 //! nest inside any wire expression and chain right-associatively.
 //!
+//! # Limitations
+//!
+//! The design choice to make it possible for a node to pass input references
+//! directly to outputs comes with natural limitations. For one, the graph
+//! executor cannot (safely) choose to stop early at a quiet node like how
+//! [`incremental`](https://github.com/janestreet/incremental) supports cutoffs:
+//! even if a node's outputs did not change by value equality, it may contain
+//! references that are now referencing a different memory address containing
+//! the same values, with the old location now invalid. In this case, the
+//! downstream nodes must still be recomputed to rebase onto the new references.
+//!
+//! > Semantically, each output pointer in [`core::Graph`] points to a slot of
+//! > [`std::mem::MaybeUninit<T>`]. When [`typed::Graph::state_mut`] is called,
+//! > all output slots in the dirty cone are dropped in reverse topological
+//! > order before a mutable reference to the state is returned (so that there
+//! > is no active borrow aliasing with the returned mutable borrow; the `'a`
+//! > lifetime passed to downstream compute functions now officially ends).
+//! > This step is simply implicit, due to interfaces being [`Copy`] and
+//! > therefore having trivial [`Drop`]. However, a real consequence is that
+//! > we need to recompute the whole dirty cone in order to re-initialize the
+//! > output slots, so later reads can safely do the implicit
+//! > [`std::mem::MaybeUninit::assume_init`].
+//!
+//! It is still possible that some operators may ensure output address stability
+//! by themselves, and declare such via an unsafe API. However, a second
+//! obstacle remains. Attempting to support cutoffs with any multi-threaded
+//! scheduler still requires the thread running some node's compute function
+//! to synchronize with all its predecessors, so it knows when it can start
+//! running. And there seems to be no better way for this than simply
+//! traversing the whole dirty cone anyway: priority queues (either
+//! `incremental`-style height-based or heap-based) impose additional ordering
+//! onto the partial order of nodes, preventing some nodes from running in
+//! parallel (e.g. two independent paths `A -> B1 -> C1 -> D` and
+//! `A -> B2 -> C2 -> D` with only `B1` and `C2` carrying heavy workload;
+//! a height order imposing `B1 < C2` cannot run both in parallel). Other exact
+//! options seem to be at least as expensive as walking the whole dirty cone.
+//! And "cutoff by walking the dirty cone" is asymptotically the same as
+//! "letting the operators skip heavy work in their own compute functions when
+//! upstream nodes signal no change via outputs", which is already supported
+//! and needs no special treatment from the core.
+//!
 //! # Safety
 //!
 //! The library uses `unsafe` internally, but the [typed] API should be safe to

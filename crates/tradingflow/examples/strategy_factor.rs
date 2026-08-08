@@ -19,7 +19,9 @@
 //! Steps 4 and 5 repeat once per `--risk-aversion` value. The whole sweep
 //! runs in a single pass over the data: the variants share the feature, alpha
 //! and risk model nodes, and fork only at the optimizer. The optimizers are
-//! run in parallel.
+//! run in parallel: they are scheduled on independent threads, and CVXPY
+//! releases the Python GIL during backend solves (although it makes little
+//! difference on the small example dataset).
 //!
 //! This example requires an embedded Python interpreter with NumPy, SciPy
 //! and CVXPY; see the repository README for details. `OPENBLAS_NUM_THREADS=1`

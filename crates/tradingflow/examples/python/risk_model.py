@@ -87,19 +87,22 @@ class FactorModelRegressor:
         assert r.shape == (self.n,) and np.isfinite(r[mask]).all()
 
         try:
-            f = np.linalg.lstsq(b[mask], r[mask], rcond=None)[0]
+            pinv = np.linalg.pinv(b[mask])  # (Bᵀ B)⁻¹ Bᵀ
         except np.linalg.LinAlgError:
             print("risk_model: SVD did not converge", file=sys.stderr)
             return
 
+        f = pinv @ r[mask]
+        q = np.einsum("ij,ji->i", b[mask], pinv)  # leverage: diagonal of B (Bᵀ B)⁻¹ Bᵀ
         outer = np.outer(f, f)
-        residual = np.square(b @ f - r)
+        resid = np.zeros((self.n,))
+        resid[mask] = np.square(b[mask] @ f - r[mask]) / np.maximum(1.0 - q, 1e-3)
 
         self.count += 1
         self.sum_outer = self.sum_outer * self.outer_lambda + outer
         self.sum_outer_w = self.sum_outer_w * self.outer_lambda + 1.0
-        self.sum_res = self.sum_res * self.res_lambda + np.where(mask, residual, 0.0)
-        self.sum_res_w = self.sum_res_w * self.res_lambda + np.where(mask, 1.0, 0.0)
+        self.sum_res = self.sum_res * self.res_lambda + resid
+        self.sum_res_w = self.sum_res_w * self.res_lambda + mask.astype(np.float64)
 
     def fit(self, mask: np.ndarray) -> None:
         """Calculates and record model parameters."""
