@@ -201,36 +201,37 @@ fn gaussianize_shares_the_percentile_ranking_and_nan_contract() {
 // standardize
 // ---------------------------------------------------------------------------
 
-/// `standardize` divides by the **population** standard deviation (denominator
-/// `n`, not `n − 1`). The two conventions differ by ~11% at `n = 5`, so this
-/// test fails loudly if the operator ever switches.
+/// `standardize` divides by the **sample** standard deviation (denominator
+/// `n − 1`, the unbiased estimator), matching `rolling::std_dev` and pandas'
+/// default `ddof=1`. The two conventions differ by ~11% at `n = 5`, so this
+/// test fails loudly if the operator ever switches back.
 #[test]
-fn standardize_uses_population_not_sample_variance() {
+fn standardize_uses_sample_not_population_variance() {
     let x = vec![10.0, 20.0, 30.0, 40.0, 50.0];
     let z = run1(stats::standardize(), x.clone());
 
     let n = x.len() as f64;
     let mean = x.iter().sum::<f64>() / n;
     let ssd: f64 = x.iter().map(|v| (v - mean) * (v - mean)).sum();
-    let population = (ssd / n).sqrt();
     let sample = (ssd / (n - 1.0)).sqrt();
+    let population = (ssd / n).sqrt();
 
-    let expected: Vec<f64> = x.iter().map(|v| (v - mean) / population).collect();
+    let expected: Vec<f64> = x.iter().map(|v| (v - mean) / sample).collect();
     assert_close(&z, &expected, "standardize");
     assert!(
-        (z[0] - (x[0] - mean) / sample).abs() > 0.1,
-        "the sample-variance convention would be visibly different: {z:?}"
+        (z[0] - (x[0] - mean) / population).abs() > 0.1,
+        "the population-variance convention would be visibly different: {z:?}"
     );
 }
 
-/// By construction the output has mean 0 and population variance 1.
+/// By construction the output has mean 0 and sample variance 1.
 #[test]
 fn standardize_yields_zero_mean_and_unit_variance() {
     let z = run1(stats::standardize(), quarter_path(7, 32));
 
     let n = z.len() as f64;
     let mean = z.iter().sum::<f64>() / n;
-    let var = z.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / n;
+    let var = z.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / (n - 1.0);
     assert!(mean.abs() < 1e-12, "mean is {mean}");
     assert!((var - 1.0).abs() < 1e-12, "variance is {var}");
 }
@@ -245,8 +246,8 @@ fn standardize_excludes_non_finite_from_the_moments() {
         vec![1.0, 2.0, 3.0, f64::INFINITY, f64::NAN],
     );
 
-    // Finite part is [1, 2, 3]: mean 2, population σ = sqrt(2/3).
-    let s = (2.0_f64 / 3.0).sqrt();
+    // Finite part is [1, 2, 3]: mean 2, sample σ = sqrt(2/2) = 1.
+    let s = 1.0_f64;
     assert_close(
         &z,
         &[-1.0 / s, 0.0, 1.0 / s, f64::NAN, f64::NAN],
@@ -529,7 +530,7 @@ fn rank_two_input_is_one_cross_section_over_the_whole_array() {
 
     // Same story for the moments: mean and σ are taken over all six elements.
     let mean = 3.5;
-    let sigma = (data.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / 6.0).sqrt();
+    let sigma = (data.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / 5.0).sqrt();
     let expected: Vec<f64> = data.iter().map(|v| (v - mean) / sigma).collect();
     assert_close(&vals(g.view(zsc)), &expected, "rank-2 standardize");
 }

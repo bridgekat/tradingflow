@@ -165,10 +165,10 @@ async fn main() {
     );
 
     // The MACD indicator on adjusted closes, composed from built-in operators.
-    let ma_fast = b.op(rolling::mean(12, 1), (daily, adj_close)); // MA(12)
-    let ma_slow = b.op(rolling::mean(26, 1), (daily, adj_close)); // MA(26)
-    let macd = b.op(elem::sub(), (ma_fast, ma_slow)); // MA(12) - MA(26)
-    let smooth = b.op(rolling::mean(9, 1), (daily, macd)); // MA(9) of MACD
+    let ema_fast = b.op(rolling::mean_exp(12, 1), (daily, adj_close)); // EMA(12)
+    let ema_slow = b.op(rolling::mean_exp(26, 1), (daily, adj_close)); // EMA(26)
+    let macd = b.op(elem::sub(), (ema_fast, ema_slow)); // EMA(12) - EMA(26)
+    let smooth = b.op(rolling::mean_exp(9, 1), (daily, macd)); // EMA(9) of MACD
     let diff = b.op(elem::sub(), (macd, smooth)); // (MACD - smooth)
     let prev = b.op(rolling::lag(1), (daily, diff)); // one period ago
 

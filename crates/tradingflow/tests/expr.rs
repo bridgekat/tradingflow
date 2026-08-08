@@ -709,7 +709,8 @@ fn cross_sectional_operators_match_reference() {
     g.stabilize(&mut pool, &nano(1));
 
     let mean = xs.iter().sum::<f64>() / 3.0;
-    let std = (xs.iter().map(|&a| (a - mean) * (a - mean)).sum::<f64>() / 3.0).sqrt();
+    // Sample standard deviation, the `n - 1` estimator.
+    let std = (xs.iter().map(|&a| (a - mean) * (a - mean)).sum::<f64>() / 2.0).sqrt();
     let want: Vec<f64> = xs.iter().map(|&a| (a - mean) / std).collect();
     assert_close(&g.view(z).to_contiguous(), &want, "zscore");
 }

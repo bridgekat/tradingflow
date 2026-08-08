@@ -1,9 +1,9 @@
 use num_traits::Float;
 
-use super::var::series_var;
+use super::var::{series_var, var};
 use crate::data::{Instant, Retention, Scalar};
 use crate::graph::{Operator, OperatorExt};
-use crate::operators::{elem::sqrt, series::buffer};
+use crate::operators::elem::sqrt;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
 /// [`std_dev`] over an explicitly recorded series.
@@ -22,6 +22,7 @@ pub fn std_dev<T: Scalar + Float, const N: usize>(
     min_count: usize,
 ) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
-    let window = window.into();
-    buffer(window).then(series_std_dev(window, min_count))
+    // Built on `var` rather than `buffer(..).then(series_std_dev(..))` so that
+    // the variance accumulator's own (possibly zero) buffer retention applies.
+    var(window, min_count).then(sqrt())
 }

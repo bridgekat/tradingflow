@@ -1,11 +1,10 @@
 use num_traits::Float;
 
-use super::base::{Accumulator, Rolling};
+use super::base::{Accumulator, rolling, series_rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, SeriesView, array};
 use crate::fuse;
-use crate::graph::{Operator, OperatorExt};
+use crate::graph::Operator;
 use crate::operators::elem::{div, sub};
-use crate::operators::series::buffer;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
 /// Accumulator for [`lag`].
@@ -26,6 +25,9 @@ impl Default for LagAccumulator<f64> {
 }
 
 impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for LagAccumulator<T> {
+    /// Maintained purely through `add`/`remove`; never reads the window.
+    const NEEDS_WINDOW: bool = false;
+
     fn init(&mut self, extents: [usize; N]) -> Array<T, N> {
         let stride = extents.iter().product();
         self.value = vec![T::nan(); stride];
@@ -49,7 +51,7 @@ impl<T: Scalar + Float, const N: usize> Accumulator<T, N, T, N> for LagAccumulat
 pub fn series_lag<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
 ) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
-    Rolling::new(window.into(), LagAccumulator::new())
+    series_rolling(window, LagAccumulator::new())
 }
 
 /// The last sample before the specified window.
@@ -58,8 +60,7 @@ pub fn lag<T: Scalar + Float, const N: usize>(
     window: impl Into<Retention>,
 ) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<T, N>, Context = Instant>
 {
-    let window = window.into();
-    buffer(window).then(series_lag(window))
+    rolling(window, LagAccumulator::new())
 }
 
 /// Change relative to the last sample before the specified window.

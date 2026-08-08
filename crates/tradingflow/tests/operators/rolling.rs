@@ -1,6 +1,6 @@
 //! Integration tests for `operators::rolling`: the windowed accumulators
-//! (`sum`, `mean`, `var`, `std_dev`, `cov`, `mean_exp`) and the window-offset
-//! readers (`lag`, `diff`, `pct_change`), each in both spellings — the
+//! (`sum`, `mean`, `var`, `std_dev`, `cov`), the windowless `mean_exp`, and the
+//! window-offset readers (`lag`, `diff`, `pct_change`), each in both spellings — the
 //! `series_*` form over a hoisted `SeriesPort`, and the self-recording form
 //! that buffers a live `(signal, values)` stream behind a private
 //! `series::buffer`, ingesting one sample per signal.
@@ -20,13 +20,16 @@
 //!   is `NaN`. `min_count` must be positive (asserted at construction).
 //! * `lag` takes no `min_count`: it reports the newest sample that has already
 //!   been evicted from the window, and `NaN` until one has been.
+//! * `mean_exp` takes no window at all: its geometric weights never reach zero,
+//!   so it averages over all history and is parameterized by a `span`
+//!   (`alpha = 2 / (span + 1)`) instead.
 //!
 //! Reference values are recomputed from scratch in each test rather than
 //! hand-typed, so they document the intended formula. Inputs come from
 //! `quarter_path`, whose running sums are exact in binary floating point, which
 //! makes equality against a freshly-summed reference sound.
 
-use tradingflow::data::{Array, Duration, SeriesView};
+use tradingflow::data::{Array, Duration, Retention, SeriesView};
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
 use tradingflow::operators::{elem, rolling, series};
@@ -115,10 +118,11 @@ fn ref_cov(xi: &[f64], xj: &[f64], min_count: usize) -> f64 {
     pairs.iter().map(|(a, b)| (a - mi) * (b - mj)).sum::<f64>() / (n - 1.0)
 }
 
-/// Rolling EWMA reference: the newest in-window sample carries weight `alpha`,
-/// each older one a further factor of `1 - alpha`, normalized by the weights
-/// actually present in the window.
-fn ref_mean_exp(xs: &[f64], alpha: f64, min_count: usize) -> f64 {
+/// EWMA reference over the whole history: the newest sample carries weight
+/// `alpha = 2 / (span + 1)`, each older one a further factor of `1 - alpha`,
+/// normalized by the weights of the finite samples actually seen.
+fn ref_mean_exp(xs: &[f64], span: usize, min_count: usize) -> f64 {
+    let alpha = 2.0 / (span as f64 + 1.0);
     if n_finite(xs) < min_count {
         return f64::NAN;
     }
@@ -599,29 +603,30 @@ fn cov_gates_each_matrix_entry_on_its_own_pairwise_complete_count() {
 // mean_exp
 // ---------------------------------------------------------------------------
 
-/// The EWMA weights the newest in-window sample by `alpha` and each older one
-/// by a further factor of `1 - alpha`, normalizing by the weights present. As a
-/// sample ages out of the window its weight leaves *both* the numerator and the
-/// denominator, so the survivors are renormalized rather than left short.
+/// The span is the conventional EWMA span, `alpha = 2 / (span + 1)`: the
+/// newest sample carries `alpha` and each older one a further factor of
+/// `1 - alpha`, normalized by the weights present. Nothing is ever evicted, so
+/// the average runs over the whole history.
 #[test]
-fn mean_exp_weights_the_window_geometrically() {
-    let alpha = 0.5;
+fn mean_exp_weights_history_geometrically_from_its_span() {
+    // span 3 => alpha = 2 / 4 = 0.5, chosen so the weights are exact dyadics.
+    const SPAN: usize = 3;
     let path = [10.0, 20.0, 30.0, 40.0];
 
     let mut b = Builder::new();
     let (src, xv) = event_src(&mut b, (0.0_f64).into());
     let rec = b.op(series::record_all(), xv);
-    let e = b.op(rolling::series_mean_exp(alpha, 2, 1), rec);
+    let e = b.op(rolling::series_mean_exp(SPAN, 1), rec);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
-    // Hand-computed: a 2-tick window keeps weights {alpha, alpha(1 - alpha)} =
-    // {0.5, 0.25} on {newest, previous}, normalized by their sum 0.75.
+    // Hand-computed: weights {0.5, 0.25, 0.125, ...} on {newest, previous, ...},
+    // each normalized by the weights of the samples seen so far.
     let want = [
         10.0,
         (0.5 * 20.0 + 0.25 * 10.0) / 0.75,
-        (0.5 * 30.0 + 0.25 * 20.0) / 0.75,
-        (0.5 * 40.0 + 0.25 * 30.0) / 0.75,
+        (0.5 * 30.0 + 0.25 * 20.0 + 0.125 * 10.0) / 0.875,
+        (0.5 * 40.0 + 0.25 * 30.0 + 0.125 * 20.0 + 0.0625 * 10.0) / 0.9375,
     ];
     for (t, &v) in path.iter().enumerate() {
         *g.state_mut(src) = v.into();
@@ -629,7 +634,7 @@ fn mean_exp_weights_the_window_geometrically() {
         assert_close(&vals(g.view(e)), &want[t..t + 1], &format!("tick {t}"));
         // The same numbers, from the generic reference model.
         assert_close(
-            &[ref_mean_exp(count_window(&path, t, 2), alpha, 1)],
+            &[ref_mean_exp(&path[..=t], SPAN, 1)],
             &want[t..t + 1],
             &format!("tick {t}: reference model"),
         );
@@ -637,19 +642,16 @@ fn mean_exp_weights_the_window_geometrically() {
 }
 
 /// Over a longer path with a non-dyadic `alpha`, the incremental accumulator
-/// (which scales its whole state by `1 - alpha` on every add and subtracts
-/// `alpha (1 - alpha)^age` on every eviction) stays equal to a weighted sum
-/// recomputed from scratch: the eviction weight must match the weight the
-/// sample carried when it entered.
+/// (which scales its whole state by `1 - alpha` on every add) stays equal to a
+/// weighted sum recomputed from scratch over all history.
 #[test]
-fn mean_exp_matches_a_recomputed_weighted_window() {
-    const W: usize = 6;
-    let alpha = 0.3;
+fn mean_exp_matches_a_recomputed_weighted_history() {
+    const SPAN: usize = 6;
     let paths: Vec<Vec<f64>> = (0..2).map(|s| quarter_path(51 + s, 40)).collect();
 
     let mut b = Builder::new();
     let (src, xv) = event_src(&mut b, vec![0.0_f64; 2].into());
-    let e = b.op(rolling::mean_exp(alpha, W, 1), xv);
+    let e = b.op(rolling::mean_exp(SPAN, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -658,22 +660,21 @@ fn mean_exp_matches_a_recomputed_weighted_window() {
         g.stabilize(&mut pool, &nano(t as i64 + 1));
         let want: Vec<f64> = paths
             .iter()
-            .map(|p| ref_mean_exp(count_window(p, t, W), alpha, 1))
+            .map(|p| ref_mean_exp(&p[..=t], SPAN, 1))
             .collect();
         assert_close(&vals(g.view(e)), &want, &format!("tick {t}"));
     }
 }
 
-/// `alpha == 1` is the degenerate end of the permitted range: the newest sample
-/// takes all of the weight, so the EWMA collapses to the latest value whatever
-/// the window is.
+/// `span == 1` is the degenerate end of the range: `alpha = 2 / 2 = 1`, so the
+/// newest sample takes all of the weight and the EWMA is the latest value.
 #[test]
-fn mean_exp_with_alpha_one_collapses_to_the_latest_value() {
+fn mean_exp_with_span_one_collapses_to_the_latest_value() {
     let path = quarter_path(57, 20);
 
     let mut b = Builder::new();
     let (src, xv) = event_src(&mut b, (0.0_f64).into());
-    let e = b.op(rolling::mean_exp(1.0, 4, 1), xv);
+    let e = b.op(rolling::mean_exp(1, 1), xv);
     let mut g = b.build();
     let mut pool = Pool::new(0);
 
@@ -885,6 +886,139 @@ fn a_record_trimmed_to_the_window_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// Unbounded windows: zero-retention buffering
+// ---------------------------------------------------------------------------
+
+/// An accumulator that never reads the window view only ever sees a sample
+/// twice — entering (`add`) and leaving (`remove`). Nothing leaves an unbounded
+/// window, so it needs no history at all: driving `series_mean`/`series_sum`
+/// with an unbounded window from a record that retains *nothing* still tracks
+/// the expanding statistic exactly, while the record's physical storage stays
+/// flat. This is the arrangement `rolling::mean` builds internally, via
+/// `Rolling::buffer_retention`.
+#[test]
+fn an_unbounded_incremental_window_runs_on_a_zero_retention_buffer() {
+    const TICKS: usize = 64;
+    let path = quarter_path(91, TICKS);
+
+    let mut b = Builder::new();
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
+    let rec = b.op(series::buffer(0), xv);
+    let m = b.op(rolling::series_mean(Retention::unbounded(), 1), rec);
+    let s = b.op(rolling::series_sum(Retention::unbounded(), 1), rec);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    for (t, &v) in path.iter().enumerate() {
+        *g.state_mut(src) = v.into();
+        g.stabilize(&mut pool, &nano(t as i64 + 1));
+
+        let seen = &path[..=t];
+        assert_close(
+            &vals(g.view(m)),
+            &[ref_mean(seen, 1)],
+            &format!("tick {t}: mean"),
+        );
+        assert_close(
+            &vals(g.view(s)),
+            &[ref_sum(seen, 1)],
+            &format!("tick {t}: sum"),
+        );
+
+        // `buffer` trims before pushing, so at most the current arrival is held.
+        let rv: SeriesView<f64, 0> = g.view(rec);
+        assert!(
+            rv.len() <= 1,
+            "tick {t}: buffer retained {} rows, expected at most 1",
+            rv.len()
+        );
+    }
+}
+
+/// The counterpart contract: a window-scanning statistic rescans the whole
+/// window on every write, so it cannot run on a record that drops history.
+/// `Rolling::buffer_retention` keeps the full window for those, and wiring one
+/// to a zero-retention record by hand is rejected outright rather than quietly
+/// computing over a truncated window.
+#[test]
+#[should_panic(expected = "input series dropped elements")]
+fn an_unbounded_scanning_window_rejects_a_zero_retention_buffer() {
+    let mut b = Builder::new();
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
+    let rec = b.op(series::buffer(0), xv);
+    let _ = b.op(rolling::series_max(Retention::unbounded(), 1), rec);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    for t in 0..8 {
+        *g.state_mut(src) = (t as f64).into();
+        g.stabilize(&mut pool, &nano(t as i64 + 1));
+    }
+}
+
+/// End-to-end over the self-recording forms, which is where the zero retention
+/// actually takes effect. `mean_exp` matters most: `expr`'s `EMA` lowers to an
+/// unbounded window, so every EMA in a factor expression rides this path.
+#[test]
+fn unbounded_self_recording_forms_track_the_expanding_reference() {
+    const TICKS: usize = 48;
+    const SPAN: usize = 7;
+    let path = quarter_path(92, TICKS);
+
+    let mut b = Builder::new();
+    let (src, xv) = event_src(&mut b, (0.0_f64).into());
+    let m = b.op(rolling::mean(Retention::unbounded(), 1), xv);
+    let s = b.op(rolling::sum(Retention::unbounded(), 1), xv);
+    let v = b.op(rolling::var(Retention::unbounded(), 2), xv);
+    let sd = b.op(rolling::std_dev(Retention::unbounded(), 2), xv);
+    let e = b.op(rolling::mean_exp(SPAN, 1), xv);
+    let c = b.op(rolling::count(Retention::unbounded()), xv);
+    let l = b.op(rolling::lag(Retention::unbounded()), xv);
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    for (t, &x) in path.iter().enumerate() {
+        *g.state_mut(src) = x.into();
+        g.stabilize(&mut pool, &nano(t as i64 + 1));
+
+        let seen = &path[..=t];
+        assert_close(
+            &vals(g.view(m)),
+            &[ref_mean(seen, 1)],
+            &format!("tick {t}: mean"),
+        );
+        assert_close(
+            &vals(g.view(s)),
+            &[ref_sum(seen, 1)],
+            &format!("tick {t}: sum"),
+        );
+        assert_close(
+            &vals(g.view(v)),
+            &[ref_var(seen, 2)],
+            &format!("tick {t}: var"),
+        );
+        assert_close(
+            &vals(g.view(sd)),
+            &[ref_var(seen, 2).sqrt()],
+            &format!("tick {t}: std_dev"),
+        );
+        assert_close(
+            &vals(g.view(e)),
+            &[ref_mean_exp(seen, SPAN, 1)],
+            &format!("tick {t}: mean_exp"),
+        );
+        assert_close(
+            &vals(g.view(c)),
+            &[seen.len() as f64],
+            &format!("tick {t}: count"),
+        );
+        // Nothing is ever evicted from an unbounded window, so the sample
+        // `lag` reports — the newest one already evicted — never exists.
+        assert_close(&vals(g.view(l)), &[f64::NAN], &format!("tick {t}: lag"));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // series_* / self-recording equivalence
 // ---------------------------------------------------------------------------
 
@@ -933,7 +1067,8 @@ fn std_dev_is_bit_identical_to_the_hoisted_var_then_sqrt() {
 #[test]
 fn every_statistic_is_bit_identical_to_its_hoisted_spelling() {
     const W: usize = 4;
-    let alpha = 0.3;
+    // `mean_exp` takes no window, so it is compared at its own span.
+    const SPAN: usize = 5;
     let paths: Vec<Vec<f64>> = (0..2)
         .map(|s| {
             quarter_path(91 + s as u64, 40)
@@ -958,8 +1093,8 @@ fn every_statistic_is_bit_identical_to_its_hoisted_spelling() {
     let var_h = b.op(rolling::series_var(W, 2), rec);
     let std_f = b.op(rolling::std_dev(W, 2), xv);
     let std_h = b.op(rolling::series_std_dev(W, 2), rec);
-    let exp_f = b.op(rolling::mean_exp(alpha, W, 1), xv);
-    let exp_h = b.op(rolling::series_mean_exp(alpha, W, 1), rec);
+    let exp_f = b.op(rolling::mean_exp(SPAN, 1), xv);
+    let exp_h = b.op(rolling::series_mean_exp(SPAN, 1), rec);
     let lag_f = b.op(rolling::lag(W), xv);
     let lag_h = b.op(rolling::series_lag(W), rec);
     let pairs = [

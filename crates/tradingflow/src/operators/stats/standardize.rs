@@ -84,7 +84,7 @@ fn standardize_into<T: Scalar + Float, const N: usize>(
             ssd = ssd + d * d;
         }
     }
-    let variance = ssd / T::from(n_valid).unwrap();
+    let variance = ssd / T::from(n_valid - 1).unwrap();
     let std = variance.sqrt();
 
     if std <= T::zero() {
@@ -100,9 +100,11 @@ fn standardize_into<T: Scalar + Float, const N: usize>(
     }
 }
 
-/// Cross-sectional z-score: `(x − mean) / std` (population std). Non-finite
-/// entries (NaN or ±∞) are treated as missing and map to NaN; the whole
-/// cross-section is NaN if fewer than two finite values remain or σ = 0.
+/// Cross-sectional z-score `(x − mean) / std`, over the finite entries, with
+/// the sample standard deviation.
+///
+/// Non-finite entries map to `NaN`, and the whole cross-section is `NaN` if
+/// fewer than two finite entries remain or they have no spread.
 pub fn standardize<T: Scalar + Float, const N: usize>()
 -> impl Operator<Inputs = ArrayPort<T, N>, Outputs = ArrayPort<T, N>, Context = Instant> {
     Standardize::new()

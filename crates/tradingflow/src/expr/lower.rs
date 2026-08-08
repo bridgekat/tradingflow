@@ -357,10 +357,9 @@ impl<const N: usize> Context<N> {
             "EMA" => {
                 let [x, span] = check_arity(name, args)?;
                 let span = window(name, span, 1)?;
-                let alpha = 2.0 / (span as f64 + 1.0);
                 let x = self.num_wire(b, name, x)?;
                 Ok(Value::Num(b.add_op(
-                    rolling::mean_exp(alpha, Retention::unbounded(), 1),
+                    rolling::mean_exp(span, 1),
                     (self.clock, x),
                 )))
             }

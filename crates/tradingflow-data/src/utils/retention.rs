@@ -51,6 +51,11 @@ impl Retention {
         }
     }
 
+    /// Whether all history is kept.
+    pub const fn is_unbounded(&self) -> bool {
+        self.unbounded
+    }
+
     /// Calculates the number of elements to be trimmed from the start of a
     /// series view.
     pub fn trim_count<T: Scalar, const N: usize>(

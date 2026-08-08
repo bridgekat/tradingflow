@@ -1,9 +1,8 @@
 use num_traits::Float;
 
-use super::base::{Accumulator, Rolling};
+use super::base::{Accumulator, rolling, series_rolling};
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, SeriesView};
-use crate::graph::{Operator, OperatorExt};
-use crate::operators::series::buffer;
+use crate::graph::Operator;
 use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
 /// Accumulator for [`cov`].
@@ -33,6 +32,8 @@ impl<T: Scalar + Float> CovAccumulator<T> {
 }
 
 impl<T: Scalar + Float> Accumulator<T, 1, T, 2> for CovAccumulator<T> {
+    const NEEDS_WINDOW: bool = false;
+
     fn init(&mut self, extents: [usize; 1]) -> Array<T, 2> {
         let k = extents[0];
         self.k = k;
@@ -106,7 +107,7 @@ pub fn series_cov<T: Scalar + Float>(
     window: impl Into<Retention>,
     min_count: usize,
 ) -> impl Operator<Inputs = SeriesPort<T, 1>, Outputs = ArrayPort<T, 2>, Context = Instant> {
-    Rolling::new(window.into(), CovAccumulator::new(min_count))
+    series_rolling(window, CovAccumulator::new(min_count))
 }
 
 /// Pairwise rolling sample covariance matrix (the unbiased `n − 1` estimator;
@@ -119,6 +120,5 @@ pub fn cov<T: Scalar + Float>(
     min_count: usize,
 ) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, 1>), Outputs = ArrayPort<T, 2>, Context = Instant>
 {
-    let window = window.into();
-    buffer(window).then(series_cov(window, min_count))
+    rolling(window, CovAccumulator::new(min_count))
 }

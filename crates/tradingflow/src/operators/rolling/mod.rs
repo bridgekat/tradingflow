@@ -16,7 +16,7 @@ mod std_dev;
 mod sum;
 mod var;
 
-pub use base::{Accumulator, Rolling, RollingState, Scanning};
+pub use base::{Accumulator, Rolling, RollingState, Scanning, rolling, series_rolling};
 pub use count::{count, series_count};
 pub use cov::{cov, series_cov};
 pub use kurt::{kurt, series_kurt};

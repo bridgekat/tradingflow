@@ -3,8 +3,9 @@ use std::marker::PhantomData;
 use std::ops::Range;
 
 use crate::data::{Array, ArrayView, Instant, Retention, Scalar, SeriesView, array};
-use crate::graph::Operator;
-use crate::ports::{ArrayPort, SeriesPort};
+use crate::graph::{Operator, OperatorExt};
+use crate::operators::series;
+use crate::ports::{ArrayPort, SeriesPort, SignalPort};
 
 /// Base trait for rolling window operator accumulators.
 ///
@@ -12,6 +13,10 @@ use crate::ports::{ArrayPort, SeriesPort};
 pub trait Accumulator<T: Scalar, const N: usize, U: Scalar + Float, const M: usize>:
     Send + 'static
 {
+    /// Whether [`write`](Accumulator::write) reads its `window` argument.
+    /// If `false`, [`write`](Accumulator::write) receives an empty `window`.
+    const NEEDS_WINDOW: bool = true;
+
     /// Produces the initial output buffer. Called once at build time.
     fn init(&mut self, extents: [usize; N]) -> Array<U, M>;
 
@@ -105,12 +110,7 @@ impl<T: Scalar, const N: usize, U: Scalar + Float, const M: usize, A: Accumulato
         state: &'b mut Self::State,
         _: &Instant,
     ) -> ArrayView<'a, U, M> {
-        assert!(
-            series.range().start <= state.range.start,
-            "rolling: input series dropped elements before operator can drop them (last window {:?}, got range {:?})",
-            state.range,
-            series.range()
-        );
+        let is_streaming = !A::NEEDS_WINDOW && state.window.is_unbounded();
         let end = series.range().end;
         assert!(
             state.range.end <= end,
@@ -121,8 +121,24 @@ impl<T: Scalar, const N: usize, U: Scalar + Float, const M: usize, A: Accumulato
         if state.range.end == end {
             return state.out.view();
         }
-        let instant = series.at(end - 1).0;
-        let start = series.range().start + state.window.trim_count(series, &instant);
+        let start = if is_streaming {
+            assert!(
+                series.range().start <= state.range.end,
+                "rolling: input series dropped elements before operator can read them (last window {:?}, got range {:?})",
+                state.range,
+                series.range()
+            );
+            state.range.start
+        } else {
+            assert!(
+                series.range().start <= state.range.start,
+                "rolling: input series dropped elements before operator can drop them (last window {:?}, got range {:?})",
+                state.range,
+                series.range()
+            );
+            let instant = series.at(end - 1).0;
+            series.range().start + state.window.trim_count(series, &instant)
+        };
         assert!(
             state.range.start <= start,
             "rolling: window start must be monotonic (last window {:?}, got new start {})",
@@ -135,10 +151,13 @@ impl<T: Scalar, const N: usize, U: Scalar + Float, const M: usize, A: Accumulato
         for i in state.range.start..start {
             state.acc.remove(series.at(i).1);
         }
+        let window = if A::NEEDS_WINDOW {
+            series.window(start..end)
+        } else {
+            series.window(end..end)
+        };
         state.range = start..end;
-        state
-            .acc
-            .write(&mut state.out, series.window(state.range.clone()));
+        state.acc.write(&mut state.out, window);
         state.out.view()
     }
 }
@@ -172,6 +191,8 @@ impl<T: Scalar + Float, const N: usize, F> Accumulator<T, N, T, N> for Scanning<
 where
     F: FnMut(&[(usize, T)], usize) -> T + Send + 'static,
 {
+    const NEEDS_WINDOW: bool = true;
+
     fn init(&mut self, extents: [usize; N]) -> Array<T, N> {
         let stride = extents.iter().product();
         self.lanes = vec![Vec::new(); stride];
@@ -204,4 +225,40 @@ where
             };
         }
     }
+}
+
+/// [`rolling`] over an explicitly recorded series.
+pub fn series_rolling<
+    T: Scalar + Float,
+    const N: usize,
+    U: Scalar + Float,
+    const M: usize,
+    A: Accumulator<T, N, U, M>,
+>(
+    window: impl Into<Retention>,
+    acc: A,
+) -> impl Operator<Inputs = SeriesPort<T, N>, Outputs = ArrayPort<U, M>, Context = Instant> {
+    Rolling::new(window.into(), acc)
+}
+
+/// Rolling window operator with the given [`Accumulator`].
+pub fn rolling<
+    T: Scalar + Float,
+    const N: usize,
+    U: Scalar + Float,
+    const M: usize,
+    A: Accumulator<T, N, U, M>,
+>(
+    window: impl Into<Retention>,
+    acc: A,
+) -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, N>), Outputs = ArrayPort<U, M>, Context = Instant>
+{
+    let window = window.into();
+    let is_streaming = !A::NEEDS_WINDOW && window.is_unbounded();
+    let retention = if is_streaming {
+        Retention::count(0)
+    } else {
+        window
+    };
+    series::buffer(retention).then(Rolling::new(window, acc))
 }

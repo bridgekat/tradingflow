@@ -35,10 +35,10 @@ async fn main() {
     let (daily, prices) = b.source(sync::array_series(data));
 
     // The MACD indicator is simple enough to be implemented by composing built-in operators.
-    let ma_fast = b.op(rolling::mean(12, 1), (daily, prices)); // MA(12) of prices
-    let ma_slow = b.op(rolling::mean(26, 1), (daily, prices)); // MA(26) of prices
-    let macd = b.op(elem::sub(), (ma_fast, ma_slow)); // MA(12) - MA(26)
-    let smooth = b.op(rolling::mean(9, 1), (daily, macd)); // MA(9) of MACD
+    let ema_fast = b.op(rolling::mean_exp(12, 1), (daily, prices)); // EMA(12) of prices
+    let ema_slow = b.op(rolling::mean_exp(26, 1), (daily, prices)); // EMA(26) of prices
+    let macd = b.op(elem::sub(), (ema_fast, ema_slow)); // EMA(12) - EMA(26)
+    let smooth = b.op(rolling::mean_exp(9, 1), (daily, macd)); // EMA(9) of MACD
     let diff = b.op(elem::sub(), (macd, smooth)); // (MACD - smooth)
     let prev = b.op(rolling::lag(1), (daily, diff)); // (MACD - smooth) one period ago
 
