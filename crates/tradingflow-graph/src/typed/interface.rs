@@ -1,6 +1,6 @@
 use std::{any::TypeId, marker::PhantomData, mem::MaybeUninit};
 
-use super::{FlatRead, FlatWrite};
+use super::FlatRead;
 
 /// Marker type defining the protocol for passing a type across interfaces.
 ///
@@ -60,9 +60,9 @@ pub struct Ports<V>(PhantomData<fn() -> V>);
 /// # Safety
 ///
 /// Across node boundaries, interface payloads needs to be de/serialized
-/// from/into a number of `*const ()` pointer slots, optionally using scratch
-/// buffers. The two-way conversions implemented by this trait must be mutually
-/// consistent. In particular:
+/// from/into output slots pointed to by `*const ()` pointers. The two-way
+/// conversions implemented by this trait must be mutually consistent.
+/// In particular:
 ///
 /// * [`Self::Values<'a>`] must be covariant in `'a`. This is because payloads
 ///   and scratch buffer contents may be transmuted into, and be used at, a
@@ -70,11 +70,24 @@ pub struct Ports<V>(PhantomData<fn() -> V>);
 /// * For any given `shape`, [`flat_len`](Self::flat_len),
 ///   [`type_ids_to_vec`](Self::type_ids_to_vec),
 ///   [`in_scratch`](Self::in_scratch),
-///   [`values_to_flat`](Self::values_to_flat),
+///   [`values_to_slots`](Self::values_to_slots),
 ///   [`values_to_vecs`](Self::values_to_vecs) and
 ///   [`values_from_flat`](Self::values_from_flat) agree on the number, order,
 ///   and leaf types of the flat slots, so every cursor stays aligned and each
 ///   pointer is only ever re-typed as the `V::View` actually stored there.
+/// * Output slot addresses are *stable*: [`values_to_vecs`](Self::values_to_vecs)
+///   (run once at build) sizes and initializes the output slots,
+///   [`slot_ptrs`](Self::slot_ptrs) (run once at build) records the
+///   address of every slot, and [`values_to_slots`](Self::values_to_slots)
+///   (run every generation) must rewrite exactly those locations without
+///   moving or resizing the storage, so pointers derived at build stay valid
+///   for the node's lifetime.
+/// * Output slot pointers must carry durable *provenance*:
+///   [`slot_ptrs`](Self::slot_ptrs) — and the pointer the caller passes to
+///   it — must derive from the state allocation's root pointer through raw
+///   projections only. A pointer recorded through a transient reference
+///   would be a child of that reference's tag, and the first later write to
+///   the slots would invalidate it.
 /// * Each [`TypeId`] [`type_ids_to_vec`](Self::type_ids_to_vec) emits uniquely
 ///   identifies the wire type the matching [`values_from_flat`](Self::values_from_flat)
 ///   reads (this is what the wiring check is matched against).
@@ -85,8 +98,8 @@ pub unsafe trait Interface {
     /// The deserialization scratch buffer type (optional).
     type InScratch: Send + 'static;
 
-    /// The serialization scratch buffer type (optional).
-    type OutScratch: Send + 'static;
+    /// The serialization slot buffer type.
+    type OutSlots: Send + 'static;
 
     /// Returns the number of pointer slots this node spans.
     /// The `shape` reader stores number of elements for variadic ports,
@@ -102,9 +115,9 @@ pub unsafe trait Interface {
     /// Called once per node at build.
     fn in_scratch(shape: &mut FlatRead<usize>) -> Self::InScratch;
 
-    /// Creates an output scratch buffer (uninitialized storage).
+    /// Creates an output slot buffer (uninitialized storage).
     /// Called once per node at build.
-    fn out_scratch() -> Self::OutScratch;
+    fn out_slots() -> Self::OutSlots;
 
     /// Constructs the payload by consuming pointer slots (`ptrs`).
     /// Consumes `shape` exactly as [`flat_len`](Self::flat_len) does.
@@ -123,36 +136,52 @@ pub unsafe trait Interface {
         scratch: &'a mut Self::InScratch,
     ) -> Self::Values<'a>;
 
-    /// Serializes the payload into pointer slots (`ptrs`).
-    /// The scratch buffer is assumed uninitialized and can be overwritten.
+    /// Serializes the payload into the output slots, in place. References
+    /// over slot storage are fine here: `slots` is freshly reborrowed from
+    /// the state's root pointer each generation, so it is a descendant of the
+    /// tag the recorded slot pointers carry, and its writes never invalidate
+    /// them (see the trait-level contract on provenance).
     ///
     /// # Safety
     ///
-    /// The result must agree with [`values_to_vecs`](Self::values_to_vecs).
-    unsafe fn values_to_flat<'a>(
-        values: Self::Values<'a>,
-        ptrs: &mut FlatWrite<*const ()>,
-        scratch: &mut Self::OutScratch,
-    );
+    /// `slots` must be the output slot buffer sized and initialized by a
+    /// prior [`values_to_vecs`](Self::values_to_vecs) call; this call must
+    /// rewrite exactly the slots whose addresses
+    /// [`slot_ptrs`](Self::slot_ptrs) recorded, without moving or
+    /// resizing the storage. Panics if a variadic leaf's element count
+    /// differs from the recorded one (the output shape is fixed at build).
+    unsafe fn values_to_slots<'a>(values: Self::Values<'a>, slots: &'a mut Self::OutSlots);
 
-    /// Serializes the payload into pointer slots (`ptrs`).
-    /// Writes to `shape` in the exact same format as how
-    /// [`flat_len`](Self::flat_len) reads.
-    /// The scratch buffer is assumed uninitialized and can be overwritten.
+    /// Serializes the payload into the output slots, sizing variadic
+    /// storage. Writes to `shape` in the exact same format as how
+    /// [`flat_len`](Self::flat_len) reads. Called once per node at build,
+    /// before [`slot_ptrs`](Self::slot_ptrs).
     ///
     /// # Safety
     ///
-    /// The scratch buffer must be created by
-    /// [`out_scratch`](Self::out_scratch) for the same `shape`.
-    /// The callee guarantees that the resulting pointer slots are compatible
-    /// with [`TypeId`]s generated by [`type_ids_to_vec`](Self::type_ids_to_vec)
+    /// The slot buffer must be created by [`out_slots`](Self::out_slots).
+    /// The callee guarantees that the resulting slots are compatible with
+    /// [`TypeId`]s generated by [`type_ids_to_vec`](Self::type_ids_to_vec)
     /// called on the resulting `shape`.
     unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
         shape: &mut Vec<usize>,
-        ptrs: &mut Vec<*const ()>,
-        scratch: &mut Self::OutScratch,
+        slots: &'a mut Self::OutSlots,
     );
+
+    /// Records the stable address of every output slot into `ptrs`, in tree
+    /// order, through raw pointer operations only. Called once per node at
+    /// build, after [`values_to_vecs`](Self::values_to_vecs); the recorded
+    /// pointers carry the provenance of `slots` (for inline slots) or of
+    /// the variadic storage it owns, and stay valid for as long as the
+    /// slots are neither moved, resized, nor dropped — which
+    /// [`values_to_slots`](Self::values_to_slots) guarantees.
+    ///
+    /// # Safety
+    ///
+    /// `slots` must point to a slots buffer sized and initialized by a
+    /// prior [`values_to_vecs`](Self::values_to_vecs) call.
+    unsafe fn slot_ptrs(slots: *const Self::OutSlots, ptrs: &mut Vec<*const ()>);
 
     /// Reborrows an interface to a shorter lifetime.
     fn reborrow<'a, 'b: 'a>(values: Self::Values<'b>) -> Self::Values<'a> {
@@ -164,7 +193,7 @@ pub unsafe trait Interface {
 unsafe impl Interface for () {
     type Values<'a> = ();
     type InScratch = ();
-    type OutScratch = ();
+    type OutSlots = ();
 
     fn flat_len(_shape: &mut FlatRead<usize>) -> usize {
         0
@@ -174,7 +203,7 @@ unsafe impl Interface for () {
 
     fn in_scratch(_shape: &mut FlatRead<usize>) {}
 
-    fn out_scratch() {}
+    fn out_slots() {}
 
     unsafe fn values_from_flat<'a>(
         _shape: &mut FlatRead<'a, usize>,
@@ -183,20 +212,16 @@ unsafe impl Interface for () {
     ) {
     }
 
-    unsafe fn values_to_flat<'a>(
-        _values: Self::Values<'a>,
-        _ptrs: &mut FlatWrite<*const ()>,
-        _scratch: &mut Self::OutScratch,
-    ) {
-    }
+    unsafe fn values_to_slots<'a>(_values: Self::Values<'a>, _slots: &'a mut Self::OutSlots) {}
 
     unsafe fn values_to_vecs<'a>(
         _values: Self::Values<'a>,
         _shape: &mut Vec<usize>,
-        _ptrs: &mut Vec<*const ()>,
-        _scratch: &mut Self::OutScratch,
+        _slots: &'a mut Self::OutSlots,
     ) {
     }
+
+    unsafe fn slot_ptrs(_slots: *const Self::OutSlots, _ptrs: &mut Vec<*const ()>) {}
 }
 
 // -- Compound: tuple branches (arities 1-12) --------------------------------
@@ -210,7 +235,7 @@ macro_rules! impl_interface_for_tuple {
         unsafe impl<$($T: Interface,)+> Interface for ($($T,)+) {
             type Values<'a> = ($($T::Values<'a>,)+);
             type InScratch = ($($T::InScratch,)+);
-            type OutScratch = ($($T::OutScratch,)+);
+            type OutSlots = ($($T::OutSlots,)+);
 
             fn flat_len(shape: &mut FlatRead<usize>) -> usize {
                 0 $(+ $T::flat_len(shape))+
@@ -224,8 +249,8 @@ macro_rules! impl_interface_for_tuple {
                 ( $( $T::in_scratch(shape), )+ )
             }
 
-            fn out_scratch() -> Self::OutScratch {
-                ( $( $T::out_scratch(), )+ )
+            fn out_slots() -> Self::OutSlots {
+                ( $( $T::out_slots(), )+ )
             }
 
             unsafe fn values_from_flat<'a>(
@@ -236,21 +261,23 @@ macro_rules! impl_interface_for_tuple {
                 ( $( unsafe { $T::values_from_flat(shape, ptrs, &mut scratch.$idx) }, )+ )
             }
 
-            unsafe fn values_to_flat<'a>(
+            unsafe fn values_to_slots<'a>(
                 values: Self::Values<'a>,
-                ptrs: &mut FlatWrite<*const ()>,
-                scratch: &mut Self::OutScratch,
+                slots: &'a mut Self::OutSlots,
             ) {
-                $( unsafe { $T::values_to_flat(values.$idx, ptrs, &mut scratch.$idx); } )+
+                $( unsafe { $T::values_to_slots(values.$idx, &mut slots.$idx); } )+
             }
 
             unsafe fn values_to_vecs<'a>(
                 values: Self::Values<'a>,
                 shape: &mut Vec<usize>,
-                ptrs: &mut Vec<*const ()>,
-                scratch: &mut Self::OutScratch,
+                slots: &'a mut Self::OutSlots,
             ) {
-                $( unsafe { $T::values_to_vecs(values.$idx, shape, ptrs, &mut scratch.$idx); } )+
+                $( unsafe { $T::values_to_vecs(values.$idx, shape, &mut slots.$idx); } )+
+            }
+
+            unsafe fn slot_ptrs(slots: *const Self::OutSlots, ptrs: &mut Vec<*const ()>) {
+                $( unsafe { $T::slot_ptrs(&raw const(*slots).$idx, ptrs); } )+
             }
         }
     };
@@ -272,7 +299,7 @@ impl_interface_for_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 
 unsafe impl<V: Pass> Interface for Port<V> {
     type Values<'a> = V::View<'a>;
     type InScratch = ();
-    type OutScratch = MaybeUninit<V::View<'static>>;
+    type OutSlots = MaybeUninit<V::View<'static>>;
 
     fn flat_len(_shape: &mut FlatRead<usize>) -> usize {
         1
@@ -284,7 +311,7 @@ unsafe impl<V: Pass> Interface for Port<V> {
 
     fn in_scratch(_shape: &mut FlatRead<usize>) -> Self::InScratch {}
 
-    fn out_scratch() -> Self::OutScratch {
+    fn out_slots() -> Self::OutSlots {
         MaybeUninit::uninit()
     }
 
@@ -298,34 +325,31 @@ unsafe impl<V: Pass> Interface for Port<V> {
         unsafe { ptrs.pop().cast::<V::View<'a>>().read() }
     }
 
-    unsafe fn values_to_flat<'a>(
-        values: Self::Values<'a>,
-        ptrs: &mut FlatWrite<*const ()>,
-        scratch: &mut Self::OutScratch,
-    ) {
+    unsafe fn values_to_slots<'a>(values: Self::Values<'a>, slots: &'a mut Self::OutSlots) {
         // SAFETY: storage-only lifetime erasure -- layout is lifetime-invariant
         // by the [`Value`] covariance contract; consumers re-type the slot
         // back at their (shorter) generation lifetime.
-        unsafe { scratch.as_mut_ptr().cast::<V::View<'a>>().write(values) };
-        ptrs.push(scratch.as_ptr().cast());
+        unsafe { slots.as_mut_ptr().cast::<V::View<'a>>().write(values) };
     }
 
     unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
         _shape: &mut Vec<usize>,
-        ptrs: &mut Vec<*const ()>,
-        scratch: &mut Self::OutScratch,
+        slots: &'a mut Self::OutSlots,
     ) {
-        // SAFETY: as in `values_to_flat`.
-        unsafe { scratch.as_mut_ptr().cast::<V::View<'a>>().write(values) };
-        ptrs.push(scratch.as_ptr().cast());
+        // SAFETY: as in `values_to_slots` (build-time initialization).
+        unsafe { slots.as_mut_ptr().cast::<V::View<'a>>().write(values) };
+    }
+
+    unsafe fn slot_ptrs(slots: *const Self::OutSlots, ptrs: &mut Vec<*const ()>) {
+        ptrs.push(slots.cast());
     }
 }
 
 unsafe impl<V: Pass> Interface for Ports<V> {
     type Values<'a> = &'a [V::View<'a>];
     type InScratch = Box<[MaybeUninit<V::View<'static>>]>;
-    type OutScratch = ();
+    type OutSlots = Box<[MaybeUninit<V::View<'static>>]>;
 
     fn flat_len(shape: &mut FlatRead<usize>) -> usize {
         *shape.pop()
@@ -340,7 +364,11 @@ unsafe impl<V: Pass> Interface for Ports<V> {
         Box::new_uninit_slice(*shape.pop())
     }
 
-    fn out_scratch() -> Self::OutScratch {}
+    fn out_slots() -> Self::OutSlots {
+        // Placeholder: `values_to_vecs` sizes the real storage at build, when
+        // the first serialization reveals the element count.
+        Box::new_uninit_slice(0)
+    }
 
     unsafe fn values_from_flat<'a>(
         shape: &mut FlatRead<'a, usize>,
@@ -349,9 +377,8 @@ unsafe impl<V: Pass> Interface for Ports<V> {
     ) -> Self::Values<'a> {
         let n = *shape.pop();
         let p = ptrs.take(n);
-        let dst: &'a mut [MaybeUninit<V::View<'static>>] = scratch;
-        debug_assert!(dst.len() == n, "ports scratch disagrees with shape");
-        for (slot, &ptr) in dst.iter_mut().zip(p) {
+        debug_assert!(scratch.len() == n, "ports scratch disagrees with shape");
+        for (slot, &ptr) in scratch.iter_mut().zip(p) {
             // SAFETY: `ptr` targets a valid `V::View` for `'a` by the caller's
             // contract; storing it `'static`-erased is storage-only (layout is
             // lifetime-invariant per the [`Value`] covariance contract).
@@ -363,30 +390,50 @@ unsafe impl<V: Pass> Interface for Ports<V> {
         }
         // SAFETY: all `n` slots were initialized above; `[MaybeUninit<T>]` is
         // layout-identical to `[T]`, re-typed back at the generation lifetime.
-        unsafe {
-            &*(std::ptr::from_ref::<[MaybeUninit<V::View<'static>>]>(dst) as *const [V::View<'a>])
-        }
+        unsafe { &*(std::ptr::from_ref::<[_]>(scratch) as *const [V::View<'a>]) }
     }
 
-    unsafe fn values_to_flat<'a>(
-        values: Self::Values<'a>,
-        ptrs: &mut FlatWrite<*const ()>,
-        _scratch: &mut Self::OutScratch,
-    ) {
-        for value in values {
-            ptrs.push(std::ptr::from_ref(value).cast());
+    unsafe fn values_to_slots<'a>(values: Self::Values<'a>, slots: &'a mut Self::OutSlots) {
+        // The element count is part of the output shape, which is fixed at
+        // build; writing through a wrong count would target stale slots, so
+        // check it explicitly.
+        assert!(
+            values.len() == slots.len(),
+            "output shape changed since build (variadic leaf count)"
+        );
+        for (i, value) in values.iter().enumerate() {
+            // SAFETY: storage-only lifetime erasure, as in `Port`; in-bounds
+            // by the assert above. Raw writes keep the recorded pointers
+            // valid.
+            unsafe { slots[i].as_mut_ptr().cast::<V::View<'a>>().write(*value) };
         }
     }
 
     unsafe fn values_to_vecs<'a>(
         values: Self::Values<'a>,
         shape: &mut Vec<usize>,
-        ptrs: &mut Vec<*const ()>,
-        _scratch: &mut Self::OutScratch,
+        slots: &'a mut Self::OutSlots,
     ) {
         shape.push(values.len());
-        for value in values {
-            ptrs.push(std::ptr::from_ref(value).cast());
+        // Size the stable storage to the now-known element count and home
+        // every view into it. The box is never reallocated afterwards
+        // (`values_to_slots` writes in place), so the addresses
+        // `slot_ptrs` records stay valid for the node's lifetime.
+        *slots = Box::new_uninit_slice(values.len());
+        for (i, value) in values.iter().enumerate() {
+            // SAFETY: storage-only lifetime erasure, as in `Port`.
+            unsafe { slots[i].as_mut_ptr().cast::<V::View<'a>>().write(*value) };
+        }
+    }
+
+    unsafe fn slot_ptrs(slots: *const Self::OutSlots, ptrs: &mut Vec<*const ()>) {
+        // Raw projection through the box, so the recorded pointers carry the
+        // box allocation's provenance and are not children of any (transient)
+        // reference.
+        let slice = unsafe { &raw const **slots };
+        let base = slice.cast::<MaybeUninit<V::View<'static>>>();
+        for i in 0..slice.len() {
+            ptrs.push(unsafe { base.add(i).cast() });
         }
     }
 }

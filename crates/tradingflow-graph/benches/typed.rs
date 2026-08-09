@@ -171,16 +171,19 @@ fn bench_engine_chain(c: &mut Criterion) {
             last = gb.op(Add, (last, ha));
         }
         let mut g = gb.build();
-        let mut pool = Pool::new(16);
 
-        c.bench_function(&format!("engine_chain_depth{depth}"), |bencher| {
-            bencher.iter(|| {
-                *g.state_mut(ha_cell) = a[i];
-                *g.state_mut(hb_cell) = b[i];
-                g.stabilize(&mut pool, &());
-                i = (i + 1) & DATA_MASK;
+        for (threads, suffix) in [(16, ""), (0, "_1t")] {
+            let mut pool = Pool::new(threads);
+
+            c.bench_function(&format!("engine_chain_depth{depth}{suffix}"), |bencher| {
+                bencher.iter(|| {
+                    *g.state_mut(ha_cell) = a[i];
+                    *g.state_mut(hb_cell) = b[i];
+                    g.stabilize(&mut pool, &());
+                    i = (i + 1) & DATA_MASK;
+                });
             });
-        });
+        }
     }
 }
 

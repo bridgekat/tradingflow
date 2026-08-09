@@ -4,18 +4,25 @@ use std::marker::PhantomData;
 use crate::core::ErasedCell;
 use crate::typed::{NodeHandle, Pass};
 
-use super::{
-    FlatRead, FlatWrite, HandlesInterface, Interface, InterfaceHandles, Operator, PortHandle,
-};
+use super::{FlatRead, HandlesInterface, Interface, InterfaceHandles, Operator, PortHandle};
 
-/// The erased per-node state: the (immutable) input shape, the input/output
-/// scratch buffers, and the user state.
-type NodeState<T> = (
-    Box<[usize]>,
-    <<T as Operator>::Inputs as Interface>::InScratch,
-    <<T as Operator>::Outputs as Interface>::OutScratch,
-    Option<<T as Operator>::State>,
-);
+/// The input scratch type of an operator.
+type I<T> = <<T as Operator>::Inputs as Interface>::InScratch;
+
+/// The output slots type of an operator.
+type O<T> = <<T as Operator>::Outputs as Interface>::OutSlots;
+
+/// The user state type of an operator.
+type S<T> = <T as Operator>::State;
+
+/// The erased per-node state: the (immutable) input shape, the input scratch
+/// buffer, the output slots buffer, and the user state.
+struct State<I: Send + 'static, O: Send + 'static, S: Send + 'static> {
+    input_shape: Box<[usize]>,
+    in_scratch: I,
+    out_slots: O,
+    user_state: Option<S>,
+}
 
 /// Builder for the typed layer [`Graph`].
 pub struct Builder<C: Sync> {
@@ -85,22 +92,26 @@ impl<C: Sync> Builder<C> {
         // Read the scheduling hint before `init` consumes the operator.
         let is_heavy = op.is_heavy();
 
-        // Bundle the (immutable) shape and the scratch buffers with the user
+        // Bundle the (immutable) shape and the buffers with the user
         // state so `compute` can reconstruct the nested payload trees from
-        // the flat cell slices and home its result (see `NodeState`).
+        // the flat cell slices and home its result.
         let in_scratch = <T::Inputs as Interface>::in_scratch(&mut FlatRead::new(&input_shape));
-        let out_scratch = <T::Outputs as Interface>::out_scratch();
-        let state: NodeState<T> = (
-            input_shape.into_boxed_slice(),
+        let out_slots = <T::Outputs as Interface>::out_slots();
+        let state_cell = ErasedCell::new(State::<I<T>, O<T>, S<T>> {
+            input_shape: input_shape.into_boxed_slice(),
             in_scratch,
-            out_scratch,
-            None,
-        );
-        let state_cell = ErasedCell::new(state);
+            out_slots,
+            user_state: None,
+        });
+        let state = state_cell.get().cast::<State<I<T>, O<T>, S<T>>>();
 
-        // Run the init functions once to get the output shape and types.
-        let (input_shape, in_scratch, out_scratch, state_mut) =
-            unsafe { state_cell.get().cast::<NodeState<T>>().as_mut_unchecked() };
+        // Run the init function once to get the output shape and types.
+        let State {
+            input_shape,
+            in_scratch,
+            out_slots,
+            user_state,
+        } = unsafe { &mut *state };
 
         let input_ptrs = input_indices
             .iter()
@@ -114,20 +125,16 @@ impl<C: Sync> Builder<C> {
                 in_scratch,
             )
         };
-        let outputs = T::reset(inputs, state_mut.insert(T::init(op, inputs)));
+        let outputs = T::reset(inputs, user_state.insert(T::init(op, inputs)));
 
-        // Serialize the outputs, homing by-value views into the output
-        // scratch (this build call also sizes variadic leaves' scratch).
+        // Serialize the outputs into the output slots.
+        // Derive output slot pointers through raw projection from the state.
         let mut output_shape = Vec::new();
         let mut output_ptrs = Vec::new();
         unsafe {
-            <T::Outputs as Interface>::values_to_vecs(
-                outputs,
-                &mut output_shape,
-                &mut output_ptrs,
-                out_scratch,
-            )
-        };
+            <T::Outputs as Interface>::values_to_vecs(outputs, &mut output_shape, out_slots);
+            <T::Outputs as Interface>::slot_ptrs(&raw const (*state).out_slots, &mut output_ptrs);
+        }
 
         let mut output_type_ids = Vec::new();
         <T::Outputs as Interface>::type_ids_to_vec(
@@ -214,12 +221,15 @@ impl<C: Sync> Default for Builder<C> {
 
 unsafe fn compute_fn_for<T: Operator>(
     in_ptrs: *const [*const ()],
-    out_ptrs: *mut [*const ()],
     state: *mut (),
     context: *const (),
 ) {
-    let (input_shape, in_scratch, out_scratch, state_mut) =
-        unsafe { state.cast::<NodeState<T>>().as_mut_unchecked() };
+    let State {
+        input_shape,
+        in_scratch,
+        out_slots,
+        user_state,
+    } = unsafe { &mut *state.cast::<State<I<T>, O<T>, S<T>>>() };
 
     let inputs = unsafe {
         <T::Inputs as Interface>::values_from_flat(
@@ -228,27 +238,20 @@ unsafe fn compute_fn_for<T: Operator>(
             in_scratch,
         )
     };
-    let state_mut = unsafe { state_mut.as_mut().unwrap_unchecked() };
+    let user_state = unsafe { user_state.as_mut().unwrap_unchecked() };
     let context = unsafe { &*context.cast::<T::Context>() };
-    let outputs = T::compute(inputs, state_mut, context);
+    let outputs = T::compute(inputs, user_state, context);
 
-    let mut ptrs_writer = FlatWrite::new(unsafe { out_ptrs.as_mut_unchecked() });
-    unsafe { <T::Outputs as Interface>::values_to_flat(outputs, &mut ptrs_writer, out_scratch) };
-
-    assert!(
-        ptrs_writer.remaining() == 0,
-        "output shape changed since build (operator wrote fewer leaves than allocated)"
-    );
+    unsafe { <T::Outputs as Interface>::values_to_slots(outputs, out_slots) };
 }
 
-unsafe fn reset_fn_for<T: Operator>(
-    in_ptrs: *const [*const ()],
-    out_ptrs: *mut [*const ()],
-    state: *mut (),
-    _: *const (),
-) {
-    let (input_shape, in_scratch, out_scratch, state_mut) =
-        unsafe { state.cast::<NodeState<T>>().as_mut_unchecked() };
+unsafe fn reset_fn_for<T: Operator>(in_ptrs: *const [*const ()], state: *mut (), _: *const ()) {
+    let State {
+        input_shape,
+        in_scratch,
+        out_slots,
+        user_state,
+    } = unsafe { &mut *state.cast::<State<I<T>, O<T>, S<T>>>() };
 
     let inputs = unsafe {
         <T::Inputs as Interface>::values_from_flat(
@@ -257,16 +260,10 @@ unsafe fn reset_fn_for<T: Operator>(
             in_scratch,
         )
     };
-    let state_mut = unsafe { state_mut.as_mut().unwrap_unchecked() };
-    let outputs = T::reset(inputs, state_mut);
+    let user_state = unsafe { user_state.as_mut().unwrap_unchecked() };
+    let outputs = T::reset(inputs, user_state);
 
-    let mut ptrs_writer = FlatWrite::new(unsafe { out_ptrs.as_mut_unchecked() });
-    unsafe { <T::Outputs as Interface>::values_to_flat(outputs, &mut ptrs_writer, out_scratch) };
-
-    assert!(
-        ptrs_writer.remaining() == 0,
-        "output shape changed since build (operator wrote fewer leaves than allocated)"
-    );
+    unsafe { <T::Outputs as Interface>::values_to_slots(outputs, out_slots) };
 }
 
 /// The typed wrapper over the core layer [`Graph`](crate::core::Graph).
@@ -295,12 +292,16 @@ impl<C: Sync> Graph<C> {
         let index = handle.index();
         let type_id = self.inner.state_mut(index).type_id();
         assert!(
-            type_id == TypeId::of::<NodeState<T>>(),
+            type_id == TypeId::of::<State<I<T>, O<T>, S<T>>>(),
             "cell type mismatch"
         );
-        let state = self.inner.state_mut(index).get();
-        let (_, _, _, state_mut) = unsafe { state.cast::<NodeState<T>>().as_mut_unchecked() };
-        state_mut.as_mut().expect("state emplaced at build")
+        let state = self
+            .inner
+            .state_mut(index)
+            .get()
+            .cast::<State<I<T>, O<T>, S<T>>>();
+        let user_state = unsafe { &mut (*state).user_state };
+        user_state.as_mut().expect("state emplaced at build")
     }
 
     pub fn stabilize(&mut self, pool: &mut crate::pool::Pool, context: &C) {

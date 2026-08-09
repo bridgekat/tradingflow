@@ -5,31 +5,20 @@ use super::cell::ErasedCell;
 /// Type-erased compute function.
 ///
 /// Before this call, every pointer in `input_ptrs` must point to a value of
-/// the type at the corresponding location in `input_types`. The pointers in
-/// `output_ptrs` may be null or invalid and must be overwritten by this call.
+/// the corresponding type specified in `input_types`.
 ///
-/// After this call, every pointer in `output_ptrs` must point to a value of
-/// the type at the corresponding location in `output_types`, which must remain
-/// completely valid as long as both inputs and `state` remain unchanged.
+/// After this call, every output slot in `state` (addressed by `output_ptrs`)
+/// must hold a value of the corresponding type specified in `output_types`
+/// that is safe to access across threads.
 ///
 /// The `context` and `state` point to the graph-level context and the
 /// node-level internal state, respectively.
-pub type ComputeFn = unsafe fn(
-    input_ptrs: *const [*const ()],
-    output_ptrs: *mut [*const ()],
-    state: *mut (),
-    context: *const (),
-);
+pub type ComputeFn = unsafe fn(input_ptrs: *const [*const ()], state: *mut (), context: *const ());
 
 /// Type-erased reset function.
 ///
 /// Safety contract is the same as [`ComputeFn`].
-pub type ResetFn = unsafe fn(
-    input_ptrs: *const [*const ()],
-    output_ptrs: *mut [*const ()],
-    state: *mut (),
-    context: *const (),
-);
+pub type ResetFn = unsafe fn(input_ptrs: *const [*const ()], state: *mut (), context: *const ());
 
 /// Type-erased node definition.
 #[derive(Debug)]
@@ -44,7 +33,7 @@ pub struct Node {
     reset_fn: ResetFn,
     /// Initial state.
     state: ErasedCell,
-    /// Initial output value pointers. Can reference into the state.
+    /// Output slot pointers. Reference stable addresses in `state`.
     output_ptrs: Box<[*const ()]>,
     /// Whether the node is expensive enough to be worth a parallel task.
     is_heavy: bool,
@@ -54,7 +43,11 @@ impl Node {
     /// # Safety
     ///
     /// The given `compute_fn` and `reset_fn` must correctly handle the
-    /// provided `input_types` and `state`.
+    /// provided `input_types` and `state` (see [`ComputeFn`]).
+    ///
+    /// Every pointer in `output_ptrs` must target stable storage reachable
+    /// from `state`, which must hold an initialized value of the corresponding
+    /// type specified in `output_types` that is safe to access across threads.
     pub unsafe fn new(
         input_types: Box<[TypeId]>,
         output_types: Box<[TypeId]>,

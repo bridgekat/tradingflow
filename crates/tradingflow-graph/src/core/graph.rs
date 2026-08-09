@@ -1,5 +1,4 @@
 use std::any::TypeId;
-use std::cell::UnsafeCell;
 use std::ops::Range;
 use std::sync::atomic::{self, AtomicUsize, Ordering};
 
@@ -71,39 +70,22 @@ impl Default for Adjacency {
     }
 }
 
+/// A pointer into an output slot inside the state of a [`Node`].
 #[repr(transparent)]
-struct SyncCell<T> {
-    cell: UnsafeCell<T>,
-}
-
-impl<T> std::ops::Deref for SyncCell<T> {
-    type Target = UnsafeCell<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.cell
-    }
-}
-
-impl<T> From<T> for SyncCell<T> {
-    fn from(v: T) -> Self {
-        Self {
-            cell: UnsafeCell::new(v),
-        }
-    }
-}
+struct SlotPtr(*const ());
 
 // # Safety
 //
-// * Every value a slot pointer targets is `Sync` (enforced by the typed
-//   layer's `RefPort`/`RefPorts` leaf bounds), so concurrent consumers may share
-//   `&T` derefs; states themselves are only ever accessed exclusively (one
-//   worker per node per generation) and need just `Send`;
-// * Each slot has exactly one writer node (its producer), so the `compute`s
-//   that run concurrently within one `stabilize` write disjoint slots; and
-// * A node runs only once its `counter` reaches 0 -- after every dirty
-//   predecessor's `compute` has finished and the atomic decrement has
-//   published those writes -- so reads never race a concurrent write.
-unsafe impl<T> Sync for SyncCell<T> {}
+// Synchronization of output slot accesses is explicitly handled:
+//
+// - Every slot has only one writer node (the node state owner).
+// - Every slot holds a value of `T: Sync` per [`Node::new`] contract,
+//   so concurrent reader nodes may share `&T`.
+// - When a node runs, every successor node has `counter > 0` and is therefore
+//   not running: concurrent readers never race a writer. This memory ordering
+//   is enforced by Release and Acquire fences around the `counter` updates.
+unsafe impl Send for SlotPtr {}
+unsafe impl Sync for SlotPtr {}
 
 /// A [`Node`] that is already fixed into a graph.
 struct FixedNode {
@@ -117,8 +99,8 @@ struct FixedNode {
 
 /// Builder for the core layer [`Graph`].
 pub struct Builder {
-    input_ptrs: Vec<SyncCell<*const ()>>,
-    output_ptrs: Vec<SyncCell<*const ()>>,
+    input_ptrs: Vec<SlotPtr>,
+    output_ptrs: Vec<SlotPtr>,
     output_type_ids: Vec<TypeId>,
     input_from_outputs: Adjacency,
     nodes: Vec<FixedNode>,
@@ -140,7 +122,7 @@ impl Builder {
     }
 
     pub fn slot_ptr(&self, index: usize) -> *const () {
-        unsafe { *self.output_ptrs[index].get() }
+        self.output_ptrs[index].0
     }
 
     pub fn push(
@@ -188,11 +170,11 @@ impl Builder {
         let input_begin = self.input_ptrs.len();
         let output_begin = self.output_ptrs.len();
         for &s in input_indices {
-            self.input_ptrs.push(self.slot_ptr(s).into());
+            self.input_ptrs.push(SlotPtr(self.slot_ptr(s)));
             self.input_from_outputs.push(&[s]);
         }
         self.output_ptrs
-            .extend(output_ptrs.iter().map(|&p| p.into()));
+            .extend(output_ptrs.iter().map(|&p| SlotPtr(p)));
         let input_range = input_begin..self.input_ptrs.len();
         let output_range = output_begin..self.output_ptrs.len();
 
@@ -254,14 +236,12 @@ impl Builder {
             input_ptrs,
             output_ptrs,
             output_type_ids,
-            output_to_inputs,
             node_to_nodes,
             nodes,
             counters,
             roots: Vec::new(),
             dirty: Vec::new(),
             is_dirty,
-            stack: Vec::new(),
             poisoned: false,
         }
     }
@@ -275,17 +255,15 @@ impl Default for Builder {
 
 /// The type-erased core of a graph.
 pub struct Graph {
-    input_ptrs: Box<[SyncCell<*const ()>]>,
-    output_ptrs: Box<[SyncCell<*const ()>]>,
+    input_ptrs: Box<[SlotPtr]>,
+    output_ptrs: Box<[SlotPtr]>,
     output_type_ids: Box<[TypeId]>,
-    output_to_inputs: Adjacency,
     node_to_nodes: Adjacency,
     nodes: Box<[FixedNode]>,
     counters: Box<[AtomicUsize]>,
     roots: Vec<usize>,
     dirty: Vec<usize>,
     is_dirty: Box<[bool]>,
-    stack: Vec<(usize, usize)>,
     poisoned: bool,
 }
 
@@ -297,7 +275,7 @@ impl Graph {
     pub fn slot_ptr(&self, index: usize) -> *const () {
         assert!(!self.poisoned, "cannot access poisoned graph.");
         assert!(self.dirty.is_empty(), "cannot read unstabilized graph.");
-        unsafe { *self.output_ptrs[index].get() }
+        self.output_ptrs[index].0
     }
 
     pub fn state_mut(&mut self, index: usize) -> &mut ErasedCell {
@@ -313,6 +291,24 @@ impl Graph {
         &mut self.nodes[index].state
     }
 
+    #[inline(always)]
+    fn run_compute(&self, i: usize, context: &impl Sync) {
+        let node = &self.nodes[i];
+        let input_ptrs = slot_slice(&self.input_ptrs[node.input_range.clone()]);
+        let state = node.state.get();
+        let context = context as *const _ as *const ();
+        unsafe { (node.compute_fn)(input_ptrs, state, context) };
+    }
+
+    #[inline(always)]
+    fn run_reset(&self, i: usize, context: &impl Sync) {
+        let node = &self.nodes[i];
+        let input_ptrs = slot_slice(&self.input_ptrs[node.input_range.clone()]);
+        let state = node.state.get();
+        let context = context as *const _ as *const ();
+        unsafe { (node.reset_fn)(input_ptrs, state, context) };
+    }
+
     pub fn stabilize(&mut self, pool: &mut crate::pool::Pool, context: &impl Sync) {
         assert!(!self.poisoned, "cannot access poisoned graph.");
         self.poisoned = true;
@@ -321,105 +317,80 @@ impl Graph {
         // can be applied only on source nodes (nodes with no predecessors).
         std::mem::swap(&mut self.roots, &mut self.dirty);
 
+        // Use pool for parallelism only if it has worker threads.
+        let is_parallel = pool.num_other_threads() > 0;
+
         // Discover the dirty cone using depth-first search, accumulating in
         // `counter` each cone node's number of dirty predecessors. After this,
         // `self.dirty` stores all cone nodes in exit order (a reverse
         // topological order).
-        for &i in self.roots.iter() {
-            self.stack.push((i, 0));
-            while let Some((i, k)) = self.stack.last_mut() {
-                let i = *i;
-                if let Some(&j) = self.node_to_nodes.get(i).get(*k) {
-                    *k += 1;
-                    *self.counters[j].get_mut() += 1;
-                    if !self.is_dirty[j] {
-                        self.is_dirty[j] = true;
-                        self.stack.push((j, 0));
-                    }
-                } else {
-                    self.stack.pop();
-                    self.dirty.push(i);
+        fn dfs(
+            i: usize,
+            node_to_nodes: &Adjacency,
+            is_dirty: &mut [bool],
+            dirty: &mut Vec<usize>,
+            counters: &mut [AtomicUsize],
+            is_parallel: bool,
+        ) {
+            for &j in node_to_nodes.get(i) {
+                if is_parallel {
+                    *counters[j].get_mut() += 1;
+                }
+                if !is_dirty[j] {
+                    is_dirty[j] = true;
+                    dfs(j, node_to_nodes, is_dirty, dirty, counters, is_parallel);
                 }
             }
+            dirty.push(i);
+        }
+        for &i in self.roots.iter() {
+            dfs(
+                i,
+                &self.node_to_nodes,
+                &mut self.is_dirty,
+                &mut self.dirty,
+                &mut self.counters,
+                is_parallel,
+            );
         }
 
-        // Data flow over the cone on the work-stealing pool: seed the roots,
-        // each finished node releases the successors whose counter hits 0.
-        // `run_with` blocks until the batch drains (counters return to 0,
-        // ready for the next generation). Tasks are plain `usize`, so this
-        // allocates nothing per node.
-        //
-        // Scheduling is cost-gated on the per-node `is_heavy` hint: a heavy
-        // ready node becomes a pool task that may recruit (wake) a worker; a
-        // light one runs inline in the releasing task, since a cross-thread
-        // handoff would cost more than the node itself. A cone with no heavy
-        // nodes therefore runs entirely on the calling thread, waking no one.
-        pool.run(
-            |scope| {
-                for &i in self.roots.iter() {
-                    scope.spawn(i, self.nodes[i].is_heavy);
-                }
-            },
-            |i, scope| {
-                // Run node `i` compute function.
-                let node = &self.nodes[i];
-                let compute_fn = node.compute_fn;
-                let input_ptrs = cell_slice(&self.input_ptrs[node.input_range.clone()]);
-                let output_ptrs = cell_slice_mut(&self.output_ptrs[node.output_range.clone()]);
-                let state = node.state.get();
-                let context = context as *const _ as *const ();
-                unsafe { compute_fn(input_ptrs, output_ptrs, state, context) };
-
-                // Scatter this node's fresh output slots into every
-                // consumer's input slot unconditionally. Load-bearing for
-                // pointer/reference safety on data inside slots.
-                for s in node.output_range.clone() {
-                    for &t in self.output_to_inputs.get(s) {
-                        unsafe { *self.input_ptrs[t].get() = *self.output_ptrs[s].get() };
+        // Call compute functions for nodes in the dirty cone,
+        // in topological order.
+        if is_parallel {
+            pool.run(
+                |scope| {
+                    for &i in self.roots.iter() {
+                        scope.spawn(i, self.nodes[i].is_heavy);
                     }
-                }
-                // Report each successor whose last dirty predecessor was
-                // `i` -- i.e. whose counter reached 0. The writes above
-                // happens-before the atomic decrement, so a successor
-                // reported ready has observed every dirty predecessor's
-                // output.
-                atomic::fence(Ordering::Release);
-                for &j in self.node_to_nodes.get(i) {
-                    // Release publishes this node's writes into the
-                    // modification order; the Acquire fence on the
-                    // 0-transition then makes *every* dirty predecessor's
-                    // writes visible before `j` is released. This is the
-                    // `Arc`-drop ordering. It also covers the inline path:
-                    // the fences pair exactly as they would across a task
-                    // handoff.
-                    if self.counters[j].fetch_sub(1, Ordering::Relaxed) == 1 {
-                        atomic::fence(Ordering::Acquire);
-                        scope.spawn(j, self.nodes[j].is_heavy);
+                },
+                |i, scope| {
+                    self.run_compute(i, context);
+                    atomic::fence(Ordering::Release);
+                    for &j in self.node_to_nodes.get(i) {
+                        // Decrement the counter of each successor node.
+                        // Upon reaching 0, all dirty predecessors have
+                        // finished and the successor is ready to run.
+                        // `Release` above and `Acquire` below ensure that the
+                        // successor sees all writes to the dirty predecessors'
+                        // outputs, via raw pointers.
+                        if self.counters[j].fetch_sub(1, Ordering::Relaxed) == 1 {
+                            atomic::fence(Ordering::Acquire);
+                            scope.spawn(j, self.nodes[j].is_heavy);
+                        }
                     }
-                }
-            },
-        );
+                },
+            );
+        } else {
+            for i in self.dirty.iter().rev().copied() {
+                self.run_compute(i, context);
+            }
+        }
         self.roots.clear();
 
         // Call reset functions and reset cone membership for the next round,
         // in topological order.
         for i in self.dirty.iter().rev().copied() {
-            // Run node `i` reset function.
-            let reset_fn = self.nodes[i].reset_fn;
-            let input_range = self.nodes[i].input_range.clone();
-            let output_range = self.nodes[i].output_range.clone();
-            let input_ptrs = cell_slice(&self.input_ptrs[input_range]);
-            let output_ptrs = cell_slice_mut(&self.output_ptrs[output_range]);
-            let state = self.nodes[i].state.get();
-            let context = context as *const _ as *const ();
-            unsafe { reset_fn(input_ptrs, output_ptrs, state, context) };
-            // Scatter this node's output slots.
-            for s in self.nodes[i].output_range.clone() {
-                for &t in self.output_to_inputs.get(s) {
-                    unsafe { *self.input_ptrs[t].get() = *self.output_ptrs[s].get() };
-                }
-            }
-            // Reset dirty flag.
+            self.run_reset(i, context);
             self.is_dirty[i] = false;
         }
         self.dirty.clear();
@@ -429,14 +400,8 @@ impl Graph {
     }
 }
 
-// View a slice of `SyncCell<T>` as a raw slice of `T`, immutably or mutably.
-// Layout guarantees of `SyncCell` and `UnsafeCell` make this safe.
-// Later casting of disjoint raw slices to mutable slices does not violate
-// borrowing models; tested under Miri.
-fn cell_slice<T>(cells: &[SyncCell<T>]) -> *const [T] {
-    std::ptr::slice_from_raw_parts(cells.as_ptr() as *const T, cells.len())
-}
-
-fn cell_slice_mut<T>(cells: &[SyncCell<T>]) -> *mut [T] {
-    std::ptr::slice_from_raw_parts_mut(cells.as_ptr() as *mut T, cells.len())
+/// Views a slice of slot pointers as a raw slice of `*const ()`.
+/// `SlotPtr` is `repr(transparent)` over `*const ()`, so the layouts agree.
+fn slot_slice(slots: &[SlotPtr]) -> *const [*const ()] {
+    std::ptr::slice_from_raw_parts(slots.as_ptr() as *const *const (), slots.len())
 }

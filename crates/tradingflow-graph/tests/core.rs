@@ -3,100 +3,50 @@ use std::any::TypeId;
 use tradingflow_graph::core::{Builder, ComputeFn, ErasedCell, Error, Graph, Node};
 use tradingflow_graph::pool::Pool;
 
-unsafe fn source_fn(
-    _: *const [*const ()],
-    out_ptrs: *mut [*const ()],
-    state: *mut (),
-    _context: *const (),
-) {
-    unsafe {
-        out_ptrs.as_mut_unchecked()[0] = state.cast_const();
-    }
+unsafe fn source_fn(_: *const [*const ()], _state: *mut (), _context: *const ()) {
+    // The output slot was pointed at the state at construction; the value in
+    // state is already the output.
 }
 
-unsafe fn inc(
-    in_ptrs: *const [*const ()],
-    out_ptrs: *mut [*const ()],
-    state: *mut (),
-    _context: *const (),
-) {
+unsafe fn inc(in_ptrs: *const [*const ()], state: *mut (), _context: *const ()) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let s = unsafe { &mut *(state as *mut i64) };
     *s = unsafe { *(in_ptrs[0] as *const i64) } + 1;
-    unsafe {
-        out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
-    }
 }
 
-unsafe fn times10(
-    in_ptrs: *const [*const ()],
-    out_ptrs: *mut [*const ()],
-    state: *mut (),
-    _context: *const (),
-) {
+unsafe fn times10(in_ptrs: *const [*const ()], state: *mut (), _context: *const ()) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let s = unsafe { &mut *(state as *mut i64) };
     *s = unsafe { *(in_ptrs[0] as *const i64) } * 10;
-    unsafe {
-        out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
-    }
 }
 
-unsafe fn add(
-    in_ptrs: *const [*const ()],
-    out_ptrs: *mut [*const ()],
-    state: *mut (),
-    _context: *const (),
-) {
+unsafe fn add(in_ptrs: *const [*const ()], state: *mut (), _context: *const ()) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let s = unsafe { &mut *(state as *mut i64) };
     *s = unsafe { *(in_ptrs[0] as *const i64) + *(in_ptrs[1] as *const i64) };
-    unsafe {
-        out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
-    }
 }
 
-unsafe fn sum_all(
-    in_ptrs: *const [*const ()],
-    out_ptrs: *mut [*const ()],
-    state: *mut (),
-    _context: *const (),
-) {
+unsafe fn sum_all(in_ptrs: *const [*const ()], state: *mut (), _context: *const ()) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let s = unsafe { &mut *(state as *mut i64) };
     *s = in_ptrs.iter().map(|&p| unsafe { *(p as *const i64) }).sum();
-    unsafe {
-        out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
-    }
 }
 
 /// Passes its input through, but panics on a negative value (for the
 /// poison test).
-unsafe fn panic_if_negative(
-    in_ptrs: *const [*const ()],
-    out_ptrs: *mut [*const ()],
-    state: *mut (),
-    _context: *const (),
-) {
+unsafe fn panic_if_negative(in_ptrs: *const [*const ()], state: *mut (), _context: *const ()) {
     let in_ptrs = unsafe { in_ptrs.as_ref_unchecked() };
     let x = unsafe { *(in_ptrs[0] as *const i64) };
     assert!(x >= 0, "negative input");
     let s = unsafe { &mut *(state as *mut i64) };
     *s = x;
-    unsafe {
-        out_ptrs.as_mut_unchecked()[0] = (s as *const i64).cast();
-    }
 }
 
 /// The shared reset: every node here is state-style, so its quiescent form is
 /// the value already in state — just re-point the output slot at it.
-unsafe fn reset_fn(
-    _: *const [*const ()],
-    out_ptrs: *mut [*const ()],
-    state: *mut (),
-    _context: *const (),
-) {
-    unsafe { out_ptrs.as_mut_unchecked()[0] = state.cast_const() };
+unsafe fn reset_fn(_: *const [*const ()], _state: *mut (), _context: *const ()) {
+    // State-style nodes: the quiescent output is the value already in state,
+    // which the fixed output pointer targets. Nothing to do.
 }
 
 /// An `i64`-output operator: state holds the output value, slot points at it.
@@ -284,4 +234,35 @@ fn push_rejects_type_mismatch() {
             actual: TypeId::of::<f64>(),
         }
     );
+}
+
+#[test]
+fn single_threaded_stabilize_matches_the_pooled_result() {
+    // Same diamond as `diamond_and_root_edge_are_glitch_free`, driven through
+    // `stabilize_st`.
+    let mut b = Builder::new();
+    let s = b.push(source(), &[]).unwrap().1.start;
+    let a = b.push(unary(inc), &[s]).unwrap().1.start;
+    let bb = b.push(unary(times10), &[s]).unwrap().1.start;
+    let d = b.push(binary(add), &[a, bb]).unwrap().1.start;
+    let e = b.push(binary(add), &[s, a]).unwrap().1.start;
+    let mut g = b.build();
+    let mut pool_st = Pool::new(0);
+    let mut pool_mt = Pool::new(4);
+
+    set(&mut g, s, 1);
+    g.stabilize(&mut pool_st, &());
+    assert_eq!(read(&g, a), 2);
+    assert_eq!(read(&g, bb), 10);
+    assert_eq!(read(&g, d), 12);
+    assert_eq!(read(&g, e), 3);
+
+    set(&mut g, s, 4);
+    g.stabilize(&mut pool_st, &());
+    assert_eq!(read(&g, d), 45);
+    assert_eq!(read(&g, e), 9);
+
+    set(&mut g, s, 2);
+    g.stabilize(&mut pool_mt, &());
+    assert_eq!(read(&g, d), 23); // 3 + 20
 }

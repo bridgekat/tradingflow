@@ -13,7 +13,7 @@ use crossbeam::utils::Backoff;
 
 /// Recruit one worker thread for every `LIGHT_PER_NOTIFY` light tasks, to
 /// reduce the number of wakeups and scheduling overhead (single-threaded
-/// node scheduling overhead is ~60ns, while waking up a new thread can take
+/// node scheduling overhead is ~50ns, while waking up a new thread can take
 /// orders of magnitudes longer).
 const LIGHTS_PER_NOTIFY: usize = 1024;
 
@@ -123,6 +123,11 @@ impl Pool {
             shared,
             other_threads,
         }
+    }
+
+    /// Returns the number of worker threads in the pool.
+    pub fn num_other_threads(&self) -> usize {
+        self.other_threads.len()
     }
 
     /// Run a scope on the pool. `seed` enqueues the initial tasks; `handler`

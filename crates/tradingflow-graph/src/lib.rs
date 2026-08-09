@@ -381,12 +381,11 @@
 //! internally:
 //!
 //! - **Single writer per slot.** Each state and output slot has exactly one
-//!   producing node; each input slot is scattered into by exactly that one
-//!   producer. Concurrent `compute`s write disjoint slots.
-//! - **Per-generation lifetime.** Output pointers stay valid as long as inputs
-//!   and state are unchanged; the per-node scratch buffers are only
-//!   ever overwritten in place by the node's own run, keeping out-of-cone
-//!   consumers' pointers live across generations.
+//!   producing node. Concurrent `compute`s write disjoint storage.
+//! - **Stable output addresses.** Every output value lives at a fixed address
+//!   in its node's scratch storage; consumers' input pointers are derived once
+//!   at build. A node's run overwrites its scratch in place, so out-of-cone
+//!   consumers' pointers stay live across generations.
 //! - **Read guard.** Reading a slot after poking a source but before
 //!   [`stabilize`](typed::Graph::stabilize) panics rather than dereferencing a
 //!   possibly-stale forwarded pointer.
