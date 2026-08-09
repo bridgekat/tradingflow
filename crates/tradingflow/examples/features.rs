@@ -1,46 +1,5 @@
 //! Information-coefficient evaluation of the WorldQuant *101 Formulaic
 //! Alphas* catalog, on the example data.
-//!
-//! For each alpha, the daily **information coefficient** (the
-//! [`metric::feature::information_coefficient`](tradingflow::operators::metric::feature::information_coefficient)
-//! operator, gated on the daily pulse) is the cross-sectional correlation
-//! between the alpha computed at the previous trading day and the day's
-//! simple return of the forward-adjusted close — Pearson by default, Spearman
-//! (rank IC) with `--rank`. The example logs the
-//! cumulative daily IC curve of every alpha to a wide CSV (one column per
-//! alpha, ready for `plot.py`), and prints the mean IC and the ICIR
-//! (mean / standard deviation of the daily ICs) of each alpha as a summary.
-//!
-//! ```bash
-//! cargo run --release --example features
-//! cargo run --release --example features -- --rank
-//!
-//! python plot.py features.csv --columns ALPHA001 ALPHA041 ALPHA101
-//! ```
-//!
-//! # Field construction
-//!
-//! The catalog references `$open`, `$high`, `$low`, `$close`, `$volume`,
-//! `$amount`, `$vwap`, `$returns`, `$cap`, `$adv{d}` and an `$industry`
-//! grouping. `prices.csv` carries only `open`, `close` and `volume`, so the
-//! missing fields are stand-ins, chosen so every expression still lowers and
-//! runs:
-//!
-//! - `$high` / `$low` are the elementwise max / min of open and close
-//!   (an underestimate of the true intraday range);
-//! - `$amount` is `close × volume` (dollar volume at the close), whence
-//!   `$vwap` degenerates to the adjusted close — alphas built on the
-//!   vwap−close spread lose their signal (#83 divides by it and never
-//!   produces a valid IC);
-//! - `$industry` is a hardcoded one-level classification of the six symbols.
-//!
-//! All price-shaped fields are forward-adjusted for dividends, and daily
-//! fields are signaled-or-NaN: `NaN` where a stock did not trade, which the
-//! rolling operators skip and the comparisons treat as `false`.
-//!
-//! With a six-symbol cross-section each IC is a correlation over at most six
-//! points, so individual values are extremely noisy — this example
-//! demonstrates the methodology, not a factor library evaluation.
 
 use chrono::{DateTime, NaiveDate};
 use clap::Parser;

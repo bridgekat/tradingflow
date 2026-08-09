@@ -87,9 +87,14 @@ struct Args {
     /// Sampling periods a stock needs before either model emits a prediction.
     #[arg(long, default_value_t = 120)]
     min_periods: usize,
-    /// Ridge regression regularization term for the alpha model.
+    /// Ridge regularization term for the alpha model's per-period
+    /// cross-sectional regressions.
     #[arg(long, default_value_t = 0.01)]
     ridge_l2: f64,
+    /// Halflife (in number of trading days) of the exponential decay for
+    /// the factor premia in the alpha model.
+    #[arg(long, default_value_t = 250.0)]
+    premium_halflife: f64,
     /// Halflife (in number of trading days) of the exponential decay for
     /// the factor covariances in the risk model.
     #[arg(long, default_value_t = 250.0)]
@@ -320,6 +325,7 @@ async fn main() {
                 d.set_item("target_offset", 1)?;
                 d.set_item("min_periods", args.min_periods)?;
                 d.set_item("ridge_l2", args.ridge_l2)?;
+                d.set_item("premium_halflife", args.premium_halflife)?;
                 Ok(())
             }),
         ),

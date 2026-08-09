@@ -5,117 +5,118 @@ import numpy as np
 
 
 @dataclass(slots=True)
-class RidgeRegressor:
-    """An incremental ridge regression model for mean (alpha) prediction.
-    It solves the L2-regularized least-squares problem:
+class FactorModelRegressor:
+    """An incremental factor model for mean (alpha) prediction.
+    It assumes the target `r` is a vector process following (at each period):
 
-        min_β { (1 / m) ‖X β - y‖² + δ ‖β‖² }
+        r = B f + ε
 
-    where `m` is the number of rows in `X` and `y`, each row being one
-    pool-standardized sample. `δ` is the regularization parameter.
+    for some predictable matrix process `B`, adapted vector process `f`, and
+    adapted vector process `ε` with uncorrelated components (conditioned
+    on past periods):
+
+        E[ε] = 0
+        Cov[ε] = diag(σ²_0, ..., σ²_{n - 1})
+        Cov[f, ε] = 0
+
+    where `σ²` is again a predictable vector process. Here we omit the
+    time subscripts and other notational details: for example, `E[ε]` actually
+    denotes `E[ε_t | 𝓕_{t - 1}]`.
+
+    Each period, the matrix `B` is provided as input, and `f` is estimated by
+    solving the L2-regularized least-squares problem:
+
+        min_f { (1 / m) ‖X f - r‖² + δ ‖f‖² }
+
+    where `m` is the number of rows in `X` and `r`, and `δ` is the
+    regularization parameter. Then `E[f]` is estimated by taking
+    exponentially-weighted moving average over the per-period estimates.
+
+    The model assumptions directly leads to:
+
+        E[r] = B E[f]
+
+    which is produced directly.
     """
 
+    n: int
+    k: int
+    f_lambda: float
+    delta: float
+
     count: int
-    sum_x: np.ndarray
-    sum_xx: np.ndarray
-    sum_y: float
-    sum_yy: float
-    sum_xy: np.ndarray
+    sum_f: np.ndarray
+    sum_f_w: float
 
-    mean_x: np.ndarray
-    mean_y: float
-    std_x: np.ndarray
-    std_y: float
-    beta: np.ndarray
+    premium: np.ndarray
 
-    def __init__(self, k: int) -> None:
-        """Initializes the model for `k` features."""
+    def __init__(self, n: int, k: int, f_lambda: float, delta: float) -> None:
+        """Initializes the factor model for `n` assets and `k` factors."""
+
+        self.n = n
+        self.k = k
+        self.f_lambda = f_lambda
+        self.delta = delta
 
         self.count = 0
-        self.sum_x = np.zeros(k)
-        self.sum_xx = np.zeros((k, k))
-        self.sum_y = 0.0
-        self.sum_yy = 0.0
-        self.sum_xy = np.zeros(k)
+        self.sum_f = np.zeros(k)
+        self.sum_f_w = 0.0
 
-        self.mean_x = np.zeros(k)
-        self.mean_y = 0.0
-        self.std_x = np.ones(k)
-        self.std_y = 1.0
-        self.beta = np.zeros(k)
+        self.premium = np.zeros(k)
 
-    def add_samples(self, xs: np.ndarray, ys: np.ndarray) -> None:
-        """Adds a batch of samples `(xs, ys)` to the accumulator."""
+    def add_cross_section(self, mask: np.ndarray, b: np.ndarray, r: np.ndarray) -> None:
+        """Adds a cross-section of `(b[mask], r[mask])` to the accumulator."""
 
-        m = xs.shape[0]
-        assert xs.shape == (m, self.sum_x.shape[0]) and np.isfinite(xs).all()
-        assert ys.shape == (m,) and np.isfinite(ys).all()
+        bm, rm = b[mask], r[mask]
+        assert mask.shape == (self.n,) and mask.dtype == np.bool_
+        assert b.shape == (self.n, self.k) and np.isfinite(bm).all()
+        assert r.shape == (self.n,) and np.isfinite(rm).all()
 
-        self.count += m
-        self.sum_x += np.sum(xs, axis=0)
-        self.sum_xx += xs.T @ xs
-        self.sum_y += np.sum(ys)
-        self.sum_yy += np.sum(ys * ys)
-        self.sum_xy += xs.T @ ys
+        if not mask.any():
+            return
 
-    def fit(self, delta: float) -> None:
-        """Solves the normal equation `(Xᵀ X + m δ I) β = Xᵀ y`
-        with `X` and `y` standardized, recording all parameters.
-        """
+        try:
+            f = np.linalg.solve(
+                bm.T @ bm
+                + mask.sum() * self.delta * np.eye(self.k),  # invertible with δ > 0
+                bm.T @ rm,
+            )
+        except np.linalg.LinAlgError:
+            print("alpha_model: matrix is ill-conditioned", file=sys.stderr)
+            return
+
+        self.count += 1
+        self.sum_f = self.sum_f * self.f_lambda + f
+        self.sum_f_w = self.sum_f_w * self.f_lambda + 1.0
+
+    def fit(self, mask: np.ndarray) -> None:
+        """Calculates and record model parameters."""
 
         if self.count == 0:
             print("alpha_model: no samples to fit", file=sys.stderr)
             return
 
-        mean_x = self.sum_x / self.count
-        mean_y = self.sum_y / self.count
-        var_x = self.sum_xx / self.count - np.outer(mean_x, mean_x)
-        var_y = self.sum_yy / self.count - mean_y * mean_y
-        cov_xy = self.sum_xy / self.count - mean_x * mean_y
-        std_x = np.sqrt(np.diag(var_x))
-        std_x = np.where(std_x > 0.0, std_x, 1.0)
-        std_y = np.sqrt(var_y)
-        std_y = std_y if std_y > 0.0 else 1.0
-        sum_standardized_xx = var_x * self.count / np.outer(std_x, std_x)
-        sum_standardized_xy = cov_xy * self.count / (std_x * std_y)
+        self.premium = self.sum_f / self.sum_f_w
 
-        try:
-            k = self.sum_x.shape[0]
-            self.beta = np.linalg.solve(
-                sum_standardized_xx
-                + self.count * delta * np.eye(k),  # invertible with δ > 0
-                sum_standardized_xy,
-            )
-            self.mean_x = mean_x
-            self.mean_y = mean_y
-            self.std_x = std_x
-            self.std_y = std_y
+    def predict(self, mask: np.ndarray, b: np.ndarray) -> np.ndarray:
+        """Predicts the mean vector."""
 
-        except np.linalg.LinAlgError:
-            print("alpha_model: singular matrix", file=sys.stderr)
+        assert mask.shape == (self.n,) and mask.dtype == np.bool_
+        assert b.shape == (self.n, self.k) and np.isfinite(b[mask]).all()
 
-    def predict(self, xs: np.ndarray) -> np.ndarray:
-        """Predicts `ys` from `xs` using the fitted parameters."""
-
-        m = xs.shape[0]
-        assert xs.shape == (m, self.sum_x.shape[0]) and np.isfinite(xs).all()
-
-        standardized_xs = (xs - self.mean_x) / self.std_x
-        standardized_ys = standardized_xs @ self.beta
-        return standardized_ys * self.std_y + self.mean_y
+        return b @ self.premium
 
 
 @dataclass(slots=True)
 class AlphaModelState:
     target_offset: int
     min_periods: int
-    ridge_l2: float
 
     # The last `target_offset + 1` feature cross-sections — just enough to
     # pair the oldest with the target that has now landed.
     pending: deque[np.ndarray]
     count: np.ndarray
-    ridge: RidgeRegressor
+    factor_model: FactorModelRegressor
     out_mu: np.ndarray
 
 
@@ -130,14 +131,17 @@ class AlphaModel:
         target_offset: int,
         min_periods: int,
         ridge_l2: float,
+        premium_halflife: float,
     ) -> None:
-        assert target_offset >= 0, "alpha_model: target_offset must be non-negative"
+        assert target_offset > 0, "alpha_model: target_offset must be positive"
         assert min_periods > 0, "alpha_model: min_periods must be positive"
         assert ridge_l2 > 0.0, "alpha_model: ridge_l2 must be positive"
+        assert premium_halflife > 0.0, "alpha_model: premium_halflife must be positive"
 
         self.target_offset = target_offset
         self.min_periods = min_periods
         self.ridge_l2 = ridge_l2
+        self.premium_halflife = premium_halflife
 
     def init(self, inputs: Inputs) -> State:
         sample_signal, features, target, rebalance_signal = inputs
@@ -147,10 +151,14 @@ class AlphaModel:
         return AlphaModelState(
             target_offset=self.target_offset,
             min_periods=self.min_periods,
-            ridge_l2=self.ridge_l2,
             pending=deque(maxlen=self.target_offset + 1),
             count=np.zeros((n,), dtype=np.int32),
-            ridge=RidgeRegressor(k),
+            factor_model=FactorModelRegressor(
+                n=n,
+                k=k,
+                f_lambda=np.exp2(-1.0 / self.premium_halflife),
+                delta=self.ridge_l2,
+            ),
             out_mu=np.full((n,), np.nan),
         )
 
@@ -167,19 +175,19 @@ class AlphaModel:
         if sample_signal:
             state.pending.append(features)
             if len(state.pending) == state.target_offset + 1:
-                # Adds one pair to the training set (pooled).
+                # Adds one pair to the training set (cross-sectional).
                 past_features = state.pending.popleft()
                 valid = np.isfinite(past_features).all(axis=1) & np.isfinite(target)
                 state.count += valid.astype(np.int32)
-                state.ridge.add_samples(past_features[valid], target[valid])
+                state.factor_model.add_cross_section(valid, past_features, target)
 
         if rebalance_signal:
             # Predict `target_offset` periods ahead using the most recent features.
             valid = np.isfinite(features).all(axis=1) & (
                 state.count >= state.min_periods
             )
-            state.ridge.fit(state.ridge_l2)
-            state.out_mu[valid] = state.ridge.predict(features[valid])
+            state.factor_model.fit(valid)
+            state.out_mu = state.factor_model.predict(valid, features)
 
         return state.out_mu
 
