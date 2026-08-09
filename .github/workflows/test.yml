@@ -32,3 +32,22 @@ jobs:
       # the only Python dependency — the repo ships no Python code of its own.
       - run: python -m pip install numpy
       - run: cargo test -p tradingflow --all-features --verbose
+
+  miri:
+    runs-on: ubuntu-latest
+    env:
+      # - Tree Borrows instead of the default Stacked Borrows: crossbeam's
+      #   lock-free deque is a known false positive under Stacked Borrows.
+      # - Leak check disabled: crossbeam-epoch's thread-local collector state
+      #   is reported as leaked at process exit.
+      # - Isolation disabled: the driver tests read the system clock.
+      MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-tree-borrows -Zmiri-ignore-leaks
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      # Interpret the unsafe-heavy crates under Miri.
+      - run: cargo miri test -p tradingflow-graph --verbose
