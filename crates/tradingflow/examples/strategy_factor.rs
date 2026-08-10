@@ -269,6 +269,8 @@ async fn main() {
     let turnover = b.op(rolling::mean(MONTH, 5), (daily, daily_turnover));
 
     // Calculate a cap-weighted index.
+    // A positive weight means the stock is in-universe; out-of-universe stocks
+    // are ignored by the models and optimizer.
     let circulating_cap = b.op(elem::mul(), (close, circulating_shares));
     let index_weights = b.op(elem::fill_nan(0.0).then(stats::scale(1.0)), circulating_cap);
 
@@ -316,12 +318,14 @@ async fn main() {
         ArrayPort<f64, 2>, // raw alpha features
         ArrayPort<f64, 1>, // realized returns (demeaned)
         SignalPort<0>,     // rebalance signal
+        ArrayPort<f64, 1>, // index weights (positive means in-universe)
     );
     type AlphaOutputs = ArrayPort<f64, 1>; // predicted returns (demeaned)
     let mu = b.op(
         py_operator_module::<AlphaInputs, AlphaOutputs>(
             "alpha_model",
             py_params(|d| {
+                d.set_item("universe_size", n)?;
                 d.set_item("target_offset", 1)?;
                 d.set_item("min_periods", args.min_periods)?;
                 d.set_item("ridge_l2", args.ridge_l2)?;
@@ -329,7 +333,13 @@ async fn main() {
                 Ok(())
             }),
         ),
-        (daily, alpha_features, returns_demeaned, rebalance),
+        (
+            daily,
+            alpha_features,
+            returns_demeaned,
+            rebalance,
+            index_weights,
+        ),
     );
 
     // The covariance predictor (risk model).
@@ -342,6 +352,7 @@ async fn main() {
         ArrayPort<f64, 2>, // raw risk features
         ArrayPort<f64, 1>, // realized returns
         SignalPort<0>,     // rebalance signal
+        ArrayPort<f64, 1>, // index weights (positive means in-universe)
     );
     type RiskOutputs = (
         ArrayPort<f64, 2>, // risk factor exposures: X
@@ -352,6 +363,7 @@ async fn main() {
         py_operator_module::<RiskInputs, RiskOutputs>(
             "risk_model",
             py_params(|d| {
+                d.set_item("universe_size", n)?;
                 d.set_item("target_offset", 1)?;
                 d.set_item("min_periods", args.min_periods)?;
                 d.set_item("covariance_halflife", args.covariance_halflife)?;
@@ -359,7 +371,7 @@ async fn main() {
                 Ok(())
             }),
         ),
-        (daily, risk_features, returns, rebalance),
+        (daily, risk_features, returns, rebalance, index_weights),
     );
 
     // The risk aversion parameter sweep.
@@ -368,7 +380,7 @@ async fn main() {
         // The portfolio optimizer.
         type PortfolioInputs = (
             SignalPort<0>,     // rebalance signal
-            ArrayPort<f64, 1>, // index weights
+            ArrayPort<f64, 1>, // index weights (positive means in-universe)
             ArrayPort<f64, 1>, // predicted returns (demeaned)
             ArrayPort<f64, 2>, // risk factor exposures: X
             ArrayPort<f64, 2>, // factor covariance matrix: F
@@ -379,6 +391,7 @@ async fn main() {
             py_operator_module::<PortfolioInputs, PortfolioOutputs>(
                 "portfolio",
                 py_params(|d| {
+                    d.set_item("universe_size", n)?;
                     d.set_item("benchmark_relative", args.benchmark_relative)?;
                     d.set_item("risk_aversion", risk_aversion)?;
                     d.set_item("long_only", true)?; // aim for long-only portfolios

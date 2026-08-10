@@ -91,7 +91,7 @@ class FactorModelRegressor:
             return
 
         try:
-            pinv = np.linalg.pinv(bm)  # (Bᵀ B)⁻¹ Bᵀ
+            pinv = np.linalg.pinv(bm, rcond=1e-6)  # (Bᵀ B)⁻¹ Bᵀ
         except np.linalg.LinAlgError:
             print("risk_model: SVD did not converge", file=sys.stderr)
             return
@@ -100,7 +100,7 @@ class FactorModelRegressor:
         q = np.einsum("ij,ji->i", bm, pinv)  # leverage: diagonal of B (Bᵀ B)⁻¹ Bᵀ
         outer = np.outer(f, f)
         resid = np.zeros((self.n,))
-        resid[mask] = np.square(bm @ f - rm) / np.maximum(1.0 - q, 1e-3)
+        resid[mask] = np.square(bm @ f - rm) / np.maximum(1.0 - q, 1e-6)
 
         self.count += 1
         self.sum_outer = self.sum_outer * self.outer_lambda + outer
@@ -147,34 +147,38 @@ class RiskModelState:
 
 
 class RiskModel:
-    type Inputs = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    type Inputs = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
     type Outputs = tuple[np.ndarray, np.ndarray, np.ndarray]
     type Context = int
     type State = RiskModelState
 
     def __init__(
         self,
+        universe_size: int,
         target_offset: int,
         min_periods: int,
         covariance_halflife: float,
         specific_halflife: float,
     ) -> None:
-        assert target_offset > 0, "risk_model: target_offset must be positive"
+        assert universe_size > 0, "risk_model: universe_size must be positive"
+        assert target_offset >= 0, "risk_model: target_offset must be non-negative"
         assert min_periods > 0, "risk_model: min_periods must be positive"
         assert (
             covariance_halflife > 0.0
         ), "risk_model: covariance_halflife must be positive"
         assert specific_halflife > 0.0, "risk_model: specific_halflife must be positive"
 
+        self.universe_size = universe_size
         self.target_offset = target_offset
         self.min_periods = min_periods
         self.covariance_halflife = covariance_halflife
         self.specific_halflife = specific_halflife
 
     def init(self, inputs: Inputs) -> State:
-        sample_signal, features, target, rebalance_signal = inputs
+        sample_signal, features, target, rebalance_signal, universe = inputs
         n, k = features.shape
         assert target.shape == (n,)
+        assert universe.shape == (n,)
 
         return RiskModelState(
             target_offset=self.target_offset,
@@ -198,9 +202,10 @@ class RiskModel:
 
     @staticmethod
     def compute(inputs: Inputs, state: State, _: Context) -> Outputs:
-        sample_signal, features, target, rebalance_signal = inputs
+        sample_signal, features, target, rebalance_signal, universe = inputs
         n, k = features.shape
         assert target.shape == (n,)
+        assert universe.shape == (n,)
 
         if sample_signal:
             state.pending.append(features)
@@ -216,9 +221,10 @@ class RiskModel:
             valid = np.isfinite(features).all(axis=1) & (
                 state.count >= state.min_periods
             )
-            state.factor_model.fit(valid)
+            mask = valid & (universe > 0.0)
+            state.factor_model.fit(mask)
             state.out_exposures, state.out_covariance, state.out_specific = (
-                state.factor_model.predict(valid, features)
+                state.factor_model.predict(mask, features)
             )
 
         return state.out_exposures, state.out_covariance, state.out_specific

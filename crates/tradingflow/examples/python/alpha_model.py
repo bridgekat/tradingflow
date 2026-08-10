@@ -121,32 +121,36 @@ class AlphaModelState:
 
 
 class AlphaModel:
-    type Inputs = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    type Inputs = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
     type Outputs = np.ndarray
     type Context = int
     type State = AlphaModelState
 
     def __init__(
         self,
+        universe_size: int,
         target_offset: int,
         min_periods: int,
         ridge_l2: float,
         premium_halflife: float,
     ) -> None:
+        assert universe_size > 0, "alpha_model: universe_size must be positive"
         assert target_offset > 0, "alpha_model: target_offset must be positive"
         assert min_periods > 0, "alpha_model: min_periods must be positive"
         assert ridge_l2 > 0.0, "alpha_model: ridge_l2 must be positive"
         assert premium_halflife > 0.0, "alpha_model: premium_halflife must be positive"
 
+        self.universe_size = universe_size
         self.target_offset = target_offset
         self.min_periods = min_periods
         self.ridge_l2 = ridge_l2
         self.premium_halflife = premium_halflife
 
     def init(self, inputs: Inputs) -> State:
-        sample_signal, features, target, rebalance_signal = inputs
+        sample_signal, features, target, rebalance_signal, universe = inputs
         n, k = features.shape
         assert target.shape == (n,)
+        assert universe.shape == (n,)
 
         return AlphaModelState(
             target_offset=self.target_offset,
@@ -168,9 +172,10 @@ class AlphaModel:
 
     @staticmethod
     def compute(inputs: Inputs, state: State, _: Context) -> Outputs:
-        sample_signal, features, target, rebalance_signal = inputs
+        sample_signal, features, target, rebalance_signal, universe = inputs
         n, k = features.shape
         assert target.shape == (n,)
+        assert universe.shape == (n,)
 
         if sample_signal:
             state.pending.append(features)
@@ -186,8 +191,9 @@ class AlphaModel:
             valid = np.isfinite(features).all(axis=1) & (
                 state.count >= state.min_periods
             )
-            state.factor_model.fit(valid)
-            state.out_mu = state.factor_model.predict(valid, features)
+            mask = valid & (universe > 0.0)
+            state.factor_model.fit(mask)
+            state.out_mu = state.factor_model.predict(mask, features)
 
         return state.out_mu
 

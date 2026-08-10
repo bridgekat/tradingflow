@@ -35,7 +35,7 @@ class MarkowitzSolver:
         long_only: bool,
         full_position: bool,
     ) -> None:
-        """Initializes the optimizer for `n` assets and rank-`k` risk factor model."""
+        """Initializes the optimizer for `n` slots and rank-`k` risk factor model."""
 
         self.n = n
         self.k = k
@@ -47,7 +47,9 @@ class MarkowitzSolver:
         self.diag = cp.Parameter(n)
 
         constraints: list[cp.Constraint] = []
-        constraints.append(cp.abs(self.w) <= self.max)  # max position size
+        constraints.append(
+            cp.abs(self.w) <= self.max
+        )  # max position size & active mask
         constraints.append(cp.norm1(self.w) <= 1.0)  # no leverage
         if long_only:
             constraints.append(self.w >= 0.0)  # no short-selling
@@ -88,7 +90,12 @@ class MarkowitzSolver:
         assert covariance.shape == (self.k, self.k) and np.isfinite(covariance).all()
         assert specific.shape == (self.n,) and np.isfinite(specific).all()
 
-        lam, s = np.linalg.eigh(covariance)  # F = S Λ S⁻¹ = S Λ Sᵀ
+        try:
+            lam, s = np.linalg.eigh(covariance)  # F = S Λ S⁻¹ = S Λ Sᵀ
+        except np.linalg.LinAlgError:
+            print("portfolio: eigendecomposition did not converge", file=sys.stderr)
+            return None
+
         rank = exposures @ s @ np.diag(np.sqrt(np.maximum(lam, 0.0)))
         diag = np.sqrt(np.maximum(specific, 0.0))
 
@@ -112,8 +119,127 @@ class MarkowitzSolver:
 
 
 @dataclass(slots=True)
+class SlottedMarkowitzSolver:
+    """Restricts a size-`n` Markowitz problem to `m` solver slots.
+
+    Wraps [`MarkowitzSolver`]: gathers the active stocks into stable slots,
+    scatters their moments into the fixed-size problem parameters —
+    an unoccupied slot keeps `max = 0`, masking it out of the solve —
+    and scatters the slot weights back onto the full axis. Keeping a
+    continuing stock in the same slot across calls is what lets CVXPY/SCS
+    cached primal-dual warm-start stay aligned across rebalances, so the
+    solve benefits from the previous solution instead of restarting cold.
+    """
+
+    # global[global_mask] <-> slots[indices], slot_mask = bitset(indices)
+    global_mask: np.ndarray
+    slot_mask: np.ndarray
+    indices: np.ndarray
+    inner: MarkowitzSolver
+
+    def __init__(
+        self,
+        n: int,
+        m: int,
+        k: int,
+        benchmark_relative: bool,
+        risk_aversion: float,
+        long_only: bool,
+        full_position: bool,
+    ) -> None:
+        """Initializes the wrapped optimizer for `n` assets, `m` slots and
+        rank-`k` risk factor model.
+        """
+
+        self.global_mask = np.zeros((n,), dtype=bool)
+        self.slot_mask = np.zeros((m,), dtype=bool)
+        self.indices = np.zeros((0,), dtype=np.intp)
+        self.inner = MarkowitzSolver(
+            n=m,
+            k=k,
+            benchmark_relative=benchmark_relative,
+            risk_aversion=risk_aversion,
+            long_only=long_only,
+            full_position=full_position,
+        )
+
+    def update_mask(self, new_global_mask: np.ndarray) -> None:
+        """Updates masks and indices to the new active set."""
+
+        new_slot_mask = np.zeros_like(self.slot_mask)
+        new_indices = np.zeros((new_global_mask.sum(),), dtype=np.intp)
+
+        prev_indices_keep = new_global_mask[self.global_mask]
+        new_indices_keep = self.global_mask[new_global_mask]
+        new_indices_alloc = ~new_indices_keep
+
+        kept_indices = new_indices[new_indices_keep] = self.indices[prev_indices_keep]
+        new_slot_mask[kept_indices] = True
+
+        (free_list,) = np.nonzero(~new_slot_mask)
+        alloc_indices = new_indices[new_indices_alloc] = free_list[
+            : new_indices_alloc.sum()
+        ]
+        new_slot_mask[alloc_indices] = True
+
+        self.global_mask = new_global_mask
+        self.slot_mask = new_slot_mask
+        self.indices = new_indices
+
+    def solve(
+        self,
+        mask: np.ndarray,
+        bench: np.ndarray,
+        mu: np.ndarray,
+        exposures: np.ndarray,  # X
+        covariance: np.ndarray,  # F
+        specific: np.ndarray,  # diagonal of D
+    ) -> np.ndarray | None:
+        """Solves over the stocks selected by `active` and returns the optimal
+        weights on the full axis (zero off `active`), or `None` when there is
+        nothing to solve or no solution.
+        """
+
+        m, k = self.inner.n, self.inner.k
+        count = mask.sum()
+        if count > m:
+            raise ValueError(
+                f"portfolio: {count} active stocks exceed universe size {m}"
+            )
+        if count == 0:
+            print("portfolio: no active stocks to solve", file=sys.stderr)
+            return None  # avoid infeasible problem, e.g. full position with no stocks
+
+        self.update_mask(mask)
+        max_ = self.slot_mask.astype(np.float64)
+        bench_ = np.zeros((m,))
+        bench_[self.indices] = bench[self.global_mask]
+        mu_ = np.zeros((m,))
+        mu_[self.indices] = mu[self.global_mask]
+        exposures_ = np.zeros((m, k))
+        exposures_[self.indices] = exposures[self.global_mask]
+        specific_ = np.zeros((m,))
+        specific_[self.indices] = specific[self.global_mask]
+
+        weights_ = self.inner.solve(
+            max=max_,
+            bench=bench_,
+            mu=mu_,
+            exposures=exposures_,
+            covariance=covariance,
+            specific=specific_,
+        )
+        if weights_ is None:
+            return None
+
+        weights = np.zeros_like(bench)
+        weights[self.global_mask] = weights_[self.indices]
+        return weights
+
+
+@dataclass(slots=True)
 class PortfolioState:
-    solver: MarkowitzSolver
+    solver: SlottedMarkowitzSolver
     out_weights: np.ndarray
 
 
@@ -127,29 +253,33 @@ class Portfolio:
 
     def __init__(
         self,
+        universe_size: int,
         benchmark_relative: bool,
         risk_aversion: float,
         long_only: bool,
         full_position: bool,
     ) -> None:
+        assert universe_size > 0, "portfolio: universe_size must be positive"
         assert risk_aversion > 0.0, "portfolio: risk_aversion must be positive"
 
+        self.universe_size = universe_size
         self.benchmark_relative = benchmark_relative
         self.risk_aversion = risk_aversion
         self.long_only = long_only
         self.full_position = full_position
 
     def init(self, inputs: Inputs) -> State:
-        rebalance_signal, index_weights, mu, exposures, covariance, specific = inputs
+        rebalance_signal, universe, mu, exposures, covariance, specific = inputs
         n, k = exposures.shape
-        assert index_weights.shape == (n,)
+        assert universe.shape == (n,)
         assert mu.shape == (n,)
         assert covariance.shape == (k, k)
         assert specific.shape == (n,)
 
         return PortfolioState(
-            solver=MarkowitzSolver(
+            solver=SlottedMarkowitzSolver(
                 n=n,
+                m=min(self.universe_size, n),
                 k=k,
                 benchmark_relative=self.benchmark_relative,
                 risk_aversion=self.risk_aversion,
@@ -165,27 +295,22 @@ class Portfolio:
 
     @staticmethod
     def compute(inputs: Inputs, state: State, _: Context) -> Outputs:
-        rebalance_signal, index_weights, mu, exposures, covariance, specific = inputs
+        rebalance_signal, universe, mu, exposures, covariance, specific = inputs
         n, k = exposures.shape
-        assert index_weights.shape == (n,)
+        assert universe.shape == (n,)
         assert mu.shape == (n,)
         assert covariance.shape == (k, k)
         assert specific.shape == (n,)
 
         if rebalance_signal:
             valid = (
-                (index_weights > 0.0)
-                & np.isfinite(mu)
+                np.isfinite(mu)
                 & np.isfinite(exposures).all(axis=1)
                 & np.isfinite(specific)
             )
+            mask = valid & (universe > 0.0)
             weights = state.solver.solve(
-                max=np.where(valid, 1.0, 0.0),
-                bench=np.where(valid, index_weights, 0.0),
-                mu=np.where(valid, mu, 0.0),
-                exposures=np.where(valid[:, None], exposures, 0.0),
-                covariance=covariance,
-                specific=np.where(valid, specific, 0.0),
+                mask, universe, mu, exposures, covariance, specific
             )
             if weights is not None:
                 state.out_weights = weights
