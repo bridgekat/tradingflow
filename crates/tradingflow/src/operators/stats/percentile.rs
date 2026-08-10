@@ -1,7 +1,7 @@
 use num_traits::Float;
 use std::marker::PhantomData;
 
-use super::rank::rank_positions;
+use super::common::rank_positions;
 use crate::data::{Array, ArrayView, Instant, Layout, Scalar};
 use crate::graph::Operator;
 use crate::ports::ArrayPort;
@@ -26,7 +26,7 @@ impl<T: Scalar + Float, const N: usize> Default for Percentile<T, N> {
 
 pub struct PercentileState<T: Scalar + Float, const N: usize> {
     idx: Vec<usize>,
-    pos: Vec<f64>,
+    pos: Vec<T>,
     out: Array<T, N>,
 }
 
@@ -40,7 +40,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Percentile<T, N> {
         let len = x.layout().len();
         let mut state = PercentileState {
             idx: vec![0; len],
-            pos: vec![0.0; len],
+            pos: vec![T::zero(); len],
             out: Array::zeros(x.extents()),
         };
         percentile_into(&mut state, x);
@@ -79,7 +79,10 @@ fn percentile_into<T: Scalar + Float, const N: usize>(
         *slot = if p.is_nan() {
             nan
         } else {
-            T::from((p + 0.5) / n_valid).unwrap_or(nan)
+            // The half-rank offset keeps the interval open on both ends: the
+            // extremes map to `0.5 / n` and `1 − 0.5 / n`, never 0 or 1 (which
+            // `gaussianize` would send to ∓∞).
+            T::from((p.to_f64().unwrap() + 0.5) / n_valid).unwrap_or(nan)
         };
     }
 }

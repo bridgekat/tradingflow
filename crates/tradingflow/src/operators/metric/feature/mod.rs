@@ -11,6 +11,6 @@
 //! - `metric`: the performance metric computed from the input features
 //!   and target, updated each period at `signal == true`.
 
-mod information_coefficient;
+mod ic;
 
-pub use information_coefficient::information_coefficient;
+pub use ic::{ic, rank_ic};

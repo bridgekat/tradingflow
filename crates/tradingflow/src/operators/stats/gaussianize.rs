@@ -2,7 +2,7 @@ use num_traits::Float;
 use statrs::distribution::{ContinuousCDF, Normal};
 use std::marker::PhantomData;
 
-use super::rank::rank_positions;
+use super::common::rank_positions;
 use crate::data::{Array, ArrayView, Instant, Layout, Scalar};
 use crate::graph::Operator;
 use crate::ports::ArrayPort;
@@ -27,7 +27,7 @@ impl<T: Scalar + Float, const N: usize> Default for Gaussianize<T, N> {
 
 pub struct GaussianizeState<T: Scalar + Float, const N: usize> {
     idx: Vec<usize>,
-    pos: Vec<f64>,
+    pos: Vec<T>,
     out: Array<T, N>,
 }
 
@@ -41,7 +41,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Gaussianize<T, N> {
         let len = x.layout().len();
         let mut state = GaussianizeState {
             idx: vec![0; len],
-            pos: vec![0.0; len],
+            pos: vec![T::zero(); len],
             out: Array::zeros(x.extents()),
         };
         gaussianize_into(&mut state, x);
@@ -82,7 +82,9 @@ fn gaussianize_into<T: Scalar + Float, const N: usize>(
         *slot = if p.is_nan() {
             nan
         } else {
-            let z = normal.inverse_cdf((p + 0.5) / n_valid);
+            // The half-rank offset keeps the argument strictly inside (0, 1):
+            // without it the extreme ranks would map through `Φ⁻¹` to ∓∞.
+            let z = normal.inverse_cdf((p.to_f64().unwrap() + 0.5) / n_valid);
             T::from(z).unwrap_or(nan)
         };
     }

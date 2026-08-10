@@ -1,40 +1,29 @@
 use num_traits::Float;
 use std::marker::PhantomData;
 
-use super::rank::rank_positions;
+use super::common::is_constant;
 use crate::data::{Array, ArrayView, Instant, Scalar};
 use crate::graph::Operator;
 use crate::ports::ArrayPort;
 
 /// Operator signature for [`corr`] etc.
 pub struct Corr<T: Scalar + Float, const N: usize> {
-    ranked: bool,
-    min_count: usize,
+    zero_degenerate: bool,
     _marker: PhantomData<fn() -> T>,
 }
 
 impl<T: Scalar + Float, const N: usize> Corr<T, N> {
-    /// When `ranked` is set, both sides are replaced by their average-tie
-    /// ranks over the pairwise-valid subset before correlating, giving the
-    /// Spearman form.
-    pub fn new(ranked: bool, min_count: usize) -> Self {
+    pub fn new(zero_degenerate: bool) -> Self {
         Self {
-            ranked,
-            min_count,
+            zero_degenerate,
             _marker: PhantomData,
         }
     }
 }
 
 /// Runtime state for [`Corr`].
-pub struct CorrState<T: Scalar + Float> {
-    ranked: bool,
-    min_count: usize,
-    xs: Vec<f64>,
-    ys: Vec<f64>,
-    idx: Vec<usize>,
-    rx: Vec<f64>,
-    ry: Vec<f64>,
+pub struct CorrState<T: Scalar + Float, const N: usize> {
+    zero_degenerate: bool,
     out: Array<T, 0>,
 }
 
@@ -42,7 +31,7 @@ impl<T: Scalar + Float, const N: usize> Operator for Corr<T, N> {
     type Inputs = (ArrayPort<T, N>, ArrayPort<T, N>);
     type Outputs = ArrayPort<T, 0>;
     type Context = Instant;
-    type State = CorrState<T>;
+    type State = CorrState<T, N>;
 
     fn init(self, (x, y): (ArrayView<'_, T, N>, ArrayView<'_, T, N>)) -> Self::State {
         assert_eq!(
@@ -51,16 +40,10 @@ impl<T: Scalar + Float, const N: usize> Operator for Corr<T, N> {
             "stats::corr: input extents mismatch"
         );
         let mut state = CorrState {
-            ranked: self.ranked,
-            min_count: self.min_count,
-            xs: Vec::new(),
-            ys: Vec::new(),
-            idx: Vec::new(),
-            rx: Vec::new(),
-            ry: Vec::new(),
+            zero_degenerate: self.zero_degenerate,
             out: Array::full([], T::nan()),
         };
-        corr_into(&mut state, x, y);
+        corr_into(&mut state.out, x, y, state.zero_degenerate);
         state
     }
 
@@ -76,87 +59,85 @@ impl<T: Scalar + Float, const N: usize> Operator for Corr<T, N> {
         state: &'b mut Self::State,
         _: &Instant,
     ) -> ArrayView<'a, T, 0> {
-        corr_into(state, x, y);
+        corr_into(&mut state.out, x, y, state.zero_degenerate);
         state.out.view()
     }
 }
 
+/// Pearson correlation of two equal-length samples; `None` when either
+/// side's variance is within floating-point error of zero ([`is_constant`],
+/// which subsumes the exact zero) — a side whose deviations are cancellation
+/// noise would correlate as a spurious `±1` instead of not at all.
 fn corr_into<T: Scalar + Float, const N: usize>(
-    state: &mut CorrState<T>,
-    x: ArrayView<'_, T, N>,
-    y: ArrayView<'_, T, N>,
+    out: &mut Array<T, 0>,
+    xs: ArrayView<'_, T, N>,
+    ys: ArrayView<'_, T, N>,
+    zero_degenerate: bool,
 ) {
-    let CorrState {
-        ranked,
-        min_count,
-        xs,
-        ys,
-        idx,
-        rx,
-        ry,
-        out,
-    } = state;
-
-    // Pairwise-complete filter: keep positions where both sides are finite.
-    xs.clear();
-    ys.clear();
-    for (&a, &b) in x.iter().zip(y.iter()) {
-        if a.is_finite() && b.is_finite() {
-            xs.push(a.to_f64().unwrap());
-            ys.push(b.to_f64().unwrap());
-        }
-    }
-
-    let r = if xs.len() >= (*min_count).max(2) {
-        if *ranked {
-            idx.resize(xs.len(), 0);
-            rx.resize(xs.len(), 0.0);
-            ry.resize(xs.len(), 0.0);
-            rank_positions(xs, idx, rx);
-            rank_positions(ys, idx, ry);
-            pearson(rx, ry)
-        } else {
-            pearson(xs, ys)
-        }
-    } else {
-        f64::NAN
-    };
-    out.data_mut()[0] = T::from(r).unwrap_or(T::nan());
-}
-
-/// Pearson correlation of two equal-length samples; `NaN` when either side
-/// has zero variance.
-fn pearson(xs: &[f64], ys: &[f64]) -> f64 {
-    let n = xs.len() as f64;
-    let mean_x = xs.iter().sum::<f64>() / n;
-    let mean_y = ys.iter().sum::<f64>() / n;
-    let (mut var_x, mut var_y, mut cov) = (0.0, 0.0, 0.0);
+    let mut count = T::zero();
+    let mut sum_x = T::zero();
+    let mut sum_y = T::zero();
     for (&x, &y) in xs.iter().zip(ys.iter()) {
-        let (dx, dy) = (x - mean_x, y - mean_y);
-        var_x += dx * dx;
-        var_y += dy * dy;
-        cov += dx * dy;
+        if x.is_finite() && y.is_finite() {
+            count = count + T::one();
+            sum_x = sum_x + x;
+            sum_y = sum_y + y;
+        }
     }
-    if var_x <= 0.0 || var_y <= 0.0 {
-        f64::NAN
+    let mean_x = sum_x / count;
+    let mean_y = sum_y / count;
+    let mut ssd_x = T::zero();
+    let mut ssd_y = T::zero();
+    let mut cov = T::zero();
+    for (&x, &y) in xs.iter().zip(ys.iter()) {
+        if x.is_finite() && y.is_finite() {
+            let dx = x - mean_x;
+            let dy = y - mean_y;
+            ssd_x = ssd_x + dx * dx;
+            ssd_y = ssd_y + dy * dy;
+            cov = cov + dx * dy;
+        }
+    }
+    let var_x = ssd_x / count;
+    let var_y = ssd_y / count;
+    if count < T::from(2).unwrap()
+        || is_constant(var_x, mean_x, count)
+        || is_constant(var_y, mean_y, count)
+    {
+        **out = if zero_degenerate { T::zero() } else { T::nan() };
     } else {
-        cov / (var_x * var_y).sqrt()
+        **out = cov / (ssd_x * ssd_y).sqrt();
     }
 }
 
 /// Cross-sectional correlation coefficient between two arrays of the same
-/// extents, as a rank-0 scalar. Can be either Pearson (`ranked == false`) or
-/// Spearman (`ranked == true`) correlation. Elements are paired positionwise;
-/// pairs with a non-finite side (NaN or ±∞) are skipped pairwise-complete,
-/// and the result is `NaN` with fewer than `max(min_count, 2)` valid pairs
-/// or a zero-variance side.
-pub fn corr<T: Scalar + Float, const N: usize>(
-    ranked: bool,
-    min_count: usize,
-) -> impl Operator<
+/// extents, as a rank-0 scalar.
+///
+/// Elements are paired positionwise; pairs with a non-finite side (NaN or ±∞)
+/// are skipped pairwise-complete, and the result is `NaN` with fewer than 2
+/// valid pairs or a side whose variance is close to zero.
+pub fn corr<T: Scalar + Float, const N: usize>() -> impl Operator<
     Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
     Outputs = ArrayPort<T, 0>,
     Context = Instant,
 > {
-    Corr::new(ranked, min_count)
+    Corr::new(false)
+}
+
+/// Like [`corr`], but every degenerate case — too few valid pairs or a
+/// no-spread side — yields `0`, the no-information coefficient, instead of
+/// `NaN`.
+///
+/// This is the form for feeding the coefficient onward as a *value* (into an
+/// arithmetic pipeline or a model input), where an unscored day should
+/// contribute nothing rather than poison the computation. Keep plain [`corr`]
+/// for metrics and diagnostics: there `NaN` means "not scored", and a
+/// consumer counting observations (an IC table, a t-statistic) must be able
+/// to tell that apart from "scored exactly zero".
+pub fn corr_or_zero<T: Scalar + Float, const N: usize>() -> impl Operator<
+    Inputs = (ArrayPort<T, N>, ArrayPort<T, N>),
+    Outputs = ArrayPort<T, 0>,
+    Context = Instant,
+> {
+    Corr::new(true)
 }

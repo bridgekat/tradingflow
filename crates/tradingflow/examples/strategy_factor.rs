@@ -292,18 +292,18 @@ async fn main() {
     // All features are cross-sectionally standardized.
     // If number of assets grow large, consider winsorizing the features.
     let alpha_columns = [
-        b.op(stats::standardize(), mom_1m),
-        b.op(stats::standardize(), mom_12m_1m),
-        b.op(stats::standardize(), volatility),
-        b.op(stats::standardize(), turnover),
+        b.op(stats::standardize_or_zero(), mom_1m),
+        b.op(stats::standardize_or_zero(), mom_12m_1m),
+        b.op(stats::standardize_or_zero(), volatility),
+        b.op(stats::standardize_or_zero(), turnover),
     ];
     let alpha_features = b.op(array::stack(1), &alpha_columns);
 
     // Construct the risk feature matrix.
     let risk_columns = [
         market,
-        b.op(stats::standardize(), size),
-        b.op(stats::standardize(), mom_12m_1m),
+        b.op(stats::standardize_or_zero(), size),
+        b.op(stats::standardize_or_zero(), mom_12m_1m),
     ];
     let risk_features = b.op(array::stack(1), &risk_columns);
 

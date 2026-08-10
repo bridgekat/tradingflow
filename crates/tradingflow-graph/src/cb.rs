@@ -418,6 +418,21 @@ where
     }
 }
 
+/// Free function to construct an [`Id`].
+pub fn id<T, C>() -> Id<T, C> {
+    Id(PhantomData)
+}
+
+/// Free function to construct a [`Left`].
+pub fn left<T, U, C>() -> Left<T, U, C> {
+    Left(PhantomData)
+}
+
+/// Free function to construct a [`Right`].
+pub fn right<T, U, C>() -> Right<T, U, C> {
+    Right(PhantomData)
+}
+
 /// Convenient combinator methods on any [`Operator`].
 pub trait OperatorExt: Operator + Sized {
     fn then<G>(self, g: G) -> Comp<Self, G>

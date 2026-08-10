@@ -50,9 +50,6 @@ struct Args {
     /// Use the rank (Spearman) IC instead of the Pearson IC.
     #[arg(long)]
     rank: bool,
-    /// Minimum number of pairwise-valid symbols for an IC to count.
-    #[arg(long, default_value_t = 3)]
-    min_pairs: usize,
 }
 
 /// Parses a `YYYY-MM-DD` date into its midnight [`Instant`].
@@ -92,7 +89,14 @@ async fn main() {
             format!("{dir}/prices.csv"),
             "date",
             [("symbol".into(), Axis::Labeled(schema.clone()))],
-            vec!["open".into(), "close".into(), "volume".into()],
+            vec![
+                "open".into(),
+                "high".into(),
+                "low".into(),
+                "close".into(),
+                "volume".into(),
+                "amount".into(),
+            ],
         )
         .with_time_range(None, args.end),
     );
@@ -126,14 +130,11 @@ async fn main() {
         b.op(signal::collect(), (price_signals, carried, daily))
     };
     let open = collect(&mut b, prices[0]);
-    let close = collect(&mut b, prices[1]);
-    let volume = collect(&mut b, prices[2]);
-
-    // Stand-ins for the fields `prices.csv` does not carry (see module docs):
-    // intraday extremes from open/close, dollar volume at the close.
-    let high = b.op(elem::maxf(), (open, close));
-    let low = b.op(elem::minf(), (open, close));
-    let amount = b.op(elem::mul(), (close, volume));
+    let high = collect(&mut b, prices[1]);
+    let low = collect(&mut b, prices[2]);
+    let close = collect(&mut b, prices[3]);
+    let volume = collect(&mut b, prices[4]);
+    let amount = collect(&mut b, prices[5]);
 
     // Forward adjustment for dividends, whole cross-section at once. All
     // price-shaped fields are adjusted with the same multipliers; volume
@@ -193,10 +194,11 @@ async fn main() {
                 .lower_str(&mut b, src)
                 .unwrap_or_else(|e| panic!("{name}: {e}\n  {src}"));
             let lagged = b.op(rolling::lag(1), (daily, wire));
-            let ic = b.op(
-                metric::feature::information_coefficient(args.rank, args.min_pairs),
-                (daily, lagged, returns),
-            );
+            let ic = if args.rank {
+                b.op(metric::feature::rank_ic(), (daily, lagged, returns))
+            } else {
+                b.op(metric::feature::ic(), (daily, lagged, returns))
+            };
             (name, b.op(series::record_all(), (daily, ic)))
         })
         .collect();
