@@ -33,7 +33,7 @@ mod benchmark;
 mod random;
 mod simple;
 
-pub use base::{Exec, Fixed, FixedState};
+pub use base::{Exec, Fixed, FixedParams, FixedState};
 pub use benchmark::benchmark;
-pub use random::random;
-pub use simple::simple;
+pub use random::{RandomParams, random};
+pub use simple::{SimpleParams, simple};

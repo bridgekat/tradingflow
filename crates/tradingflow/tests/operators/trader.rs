@@ -14,7 +14,9 @@
 
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
-use tradingflow::operators::trader::fixed::{Exec, Fixed, benchmark, random, simple};
+use tradingflow::operators::trader::fixed::{
+    Exec, Fixed, FixedParams, RandomParams, SimpleParams, benchmark, random, simple,
+};
 use tradingflow::operators::{array, signal};
 
 use crate::harness::*;
@@ -309,6 +311,49 @@ fn a_delisted_stock_marks_to_zero_and_blocks_orders() {
 }
 
 // ---------------------------------------------------------------------------
+// Rebalance budget
+// ---------------------------------------------------------------------------
+
+/// Targets are sized against what the book could actually liquidate — cash
+/// plus the positions quoting a finite bid — and not against its net value.
+/// A suspended stock (no bid) and a delisted one (cleared flag) are both value
+/// the engine cannot reach at this rebalance, so neither may fund a purchase
+/// elsewhere.
+///
+/// Marking is unaffected: net value still carries the suspended stock at its
+/// retained mark. Only the budget shrinks.
+#[test]
+fn a_rebalance_spends_liquid_value_rather_than_net_value() {
+    let out = run(
+        benchmark(false, 1200.0),
+        3,
+        &[
+            Step::quote(&[10.0; 3], &[10.0; 3]).then_target(&[0.25, 0.25, 0.5]),
+            Step::quote(&[-INF, 10.0, 10.0], &[INF, 10.0, 10.0])
+                .then_flags(&[true, false, true])
+                .then_target(&[0.0, 0.0, 0.5]),
+        ],
+    );
+
+    assert_close(&out[0].positions, &[30.0, 30.0, 60.0], "the opening book");
+
+    // Liquid value is the 600.00 in stock 2 alone, so a half weight targets
+    // 300.00 — 30 shares, selling 30. Against net value (900.00, which still
+    // counts the suspended stock) the target would have been 45 shares.
+    assert_close(
+        &out[1].positions,
+        &[30.0, 30.0, 30.0],
+        "sized against liquid value",
+    );
+    assert_close(&[out[1].cash], &[300.0], "holding the sale proceeds");
+    assert_close(
+        &[out[1].net],
+        &[900.0],
+        "net value still marks the suspended stock",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Dividends
 // ---------------------------------------------------------------------------
 
@@ -357,8 +402,17 @@ fn dividends_credit_cash_and_scale_positions_continuously() {
 /// 333.33.
 #[test]
 fn simple_rounds_targets_to_whole_lots() {
+    let params = SimpleParams {
+        delayed: false,
+        initial_cash: 1000.0,
+        fee_base_buy: 0.0,
+        fee_base_sell: 0.0,
+        fee_rate_buy: 0.0,
+        fee_rate_sell: 0.0,
+        lot_size: 100.0,
+    };
     let out = run(
-        simple(false, 1000.0, 0.0, 0.0, 100.0),
+        simple(params),
         1,
         &[Step::quote(&[3.0], &[3.0]).then_target(&[1.0])],
     );
@@ -372,15 +426,29 @@ fn simple_rounds_targets_to_whole_lots() {
 /// negative, the documented slight leverage.
 #[test]
 fn fees_charge_the_larger_of_the_flat_and_proportional_terms() {
+    let params = SimpleParams {
+        delayed: false,
+        initial_cash: 1000.0,
+        fee_base_buy: 5.0,
+        fee_base_sell: 5.0,
+        fee_rate_buy: 0.001,
+        fee_rate_sell: 0.001,
+        lot_size: 1.0,
+    };
     let flat = run(
-        simple(false, 1000.0, 5.0, 0.001, 1.0),
+        simple(params),
         1,
         &[Step::quote(&[10.0], &[10.0]).then_target(&[1.0])],
     );
     assert_close(&[flat[0].cash], &[-5.0], "flat 5.00 beats 0.1% of 1000");
 
+    let params = SimpleParams {
+        fee_rate_buy: 0.01,
+        fee_rate_sell: 0.01,
+        ..params
+    };
     let proportional = run(
-        simple(false, 1000.0, 5.0, 0.01, 1.0),
+        simple(params),
         1,
         &[Step::quote(&[10.0], &[10.0]).then_target(&[1.0])],
     );
@@ -397,8 +465,19 @@ fn fees_charge_the_larger_of_the_flat_and_proportional_terms() {
 #[test]
 fn random_holds_a_seeded_equal_value_subset() {
     let script = [Step::quote(&[10.0; 5], &[10.0; 5]).then_target(&[0.2; 5])];
-    let first = run(random(false, 1000.0, 0.0, 0.0, 1.0, 2, 7), 5, &script);
-    let again = run(random(false, 1000.0, 0.0, 0.0, 1.0, 2, 7), 5, &script);
+    let params = RandomParams {
+        delayed: false,
+        initial_cash: 1000.0,
+        fee_base_buy: 0.0,
+        fee_base_sell: 0.0,
+        fee_rate_buy: 0.0,
+        fee_rate_sell: 0.0,
+        lot_size: 1.0,
+        portfolio_size: 2,
+        seed: 7,
+    };
+    let first = run(random(params), 5, &script);
+    let again = run(random(params), 5, &script);
 
     let held: Vec<f64> = first[0]
         .positions
@@ -437,7 +516,7 @@ fn orders_into_an_infinite_side_are_dropped() {
     }
 
     let out = run(
-        Fixed::new(AlwaysSell, false, 0.0, 0.0, 0.0),
+        Fixed::new(AlwaysSell, FixedParams::default()),
         1,
         &[
             // Unsellable: the sell is dropped and the book stays flat.

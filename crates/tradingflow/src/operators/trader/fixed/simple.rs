@@ -1,4 +1,16 @@
-use super::base::{Exec, Fixed};
+use super::base::{Exec, Fixed, FixedParams};
+
+/// Operator parameters for [`simple`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SimpleParams {
+    pub delayed: bool,
+    pub initial_cash: f64,
+    pub fee_base_buy: f64,
+    pub fee_base_sell: f64,
+    pub fee_rate_buy: f64,
+    pub fee_rate_sell: f64,
+    pub lot_size: f64,
+}
 
 /// Execution policy for [`simple`].
 pub struct SimpleExec {
@@ -51,18 +63,16 @@ impl Exec for SimpleExec {
 /// May introduce slight leverage due to rounding and fees.
 ///
 /// See [module-level docs](super) for inputs and outputs.
-pub fn simple(
-    delayed: bool,
-    initial_cash: f64,
-    fee_base: f64,
-    fee_rate: f64,
-    lot_size: f64,
-) -> Fixed<SimpleExec> {
+pub fn simple(params: SimpleParams) -> Fixed<SimpleExec> {
     Fixed::new(
-        SimpleExec::new(lot_size),
-        delayed,
-        initial_cash,
-        fee_base,
-        fee_rate,
+        SimpleExec::new(params.lot_size),
+        FixedParams {
+            delayed: params.delayed,
+            initial_cash: params.initial_cash,
+            fee_base_buy: params.fee_base_buy,
+            fee_base_sell: params.fee_base_sell,
+            fee_rate_buy: params.fee_rate_buy,
+            fee_rate_sell: params.fee_rate_sell,
+        },
     )
 }

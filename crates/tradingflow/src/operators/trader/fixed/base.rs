@@ -31,45 +31,58 @@ pub trait Exec: Send + 'static {
     ) -> Vec<(usize, f64)>;
 }
 
+/// Operator parameters for fixed-price traders.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FixedParams {
+    pub delayed: bool,
+    pub initial_cash: f64,
+    pub fee_base_buy: f64,
+    pub fee_base_sell: f64,
+    pub fee_rate_buy: f64,
+    pub fee_rate_sell: f64,
+}
+
 /// Operator signature for fixed-price traders.
 pub struct Fixed<E: Exec> {
     exec: E,
-    delayed: bool,
-    initial_cash: f64,
-    fee_base: f64,
-    fee_rate: f64,
+    params: FixedParams,
 }
 
 impl<E: Exec> Fixed<E> {
-    pub fn new(exec: E, delayed: bool, initial_cash: f64, fee_base: f64, fee_rate: f64) -> Self {
+    pub fn new(exec: E, params: FixedParams) -> Self {
         assert!(
-            initial_cash >= 0.0,
-            "trader::fixed: initial_cash must be non-negative, got {initial_cash}"
+            params.initial_cash >= 0.0,
+            "trader::fixed: initial_cash must be non-negative, got {}",
+            params.initial_cash
         );
         assert!(
-            fee_base >= 0.0,
-            "trader::fixed: fee_base must be non-negative, got {fee_base}"
+            params.fee_base_buy >= 0.0,
+            "trader::fixed: fee_base_buy must be non-negative, got {}",
+            params.fee_base_buy
         );
         assert!(
-            fee_rate >= 0.0,
-            "trader::fixed: fee_rate must be non-negative, got {fee_rate}"
+            params.fee_base_sell >= 0.0,
+            "trader::fixed: fee_base_sell must be non-negative, got {}",
+            params.fee_base_sell
         );
-        Self {
-            exec,
-            delayed,
-            initial_cash,
-            fee_base,
-            fee_rate,
-        }
+        assert!(
+            params.fee_rate_buy >= 0.0,
+            "trader::fixed: fee_rate_buy must be non-negative, got {}",
+            params.fee_rate_buy
+        );
+        assert!(
+            params.fee_rate_sell >= 0.0,
+            "trader::fixed: fee_rate_sell must be non-negative, got {}",
+            params.fee_rate_sell
+        );
+        Self { exec, params }
     }
 }
 
 /// Runtime state for fixed-price traders.
 pub struct FixedState<E: Exec> {
     exec: E,
-    delayed: bool,
-    fee_base: f64,
-    fee_rate: f64,
+    params: FixedParams,
     need_rebalance: bool,
     target_weights: Vec<f64>,
     marks: Vec<f64>,
@@ -111,17 +124,16 @@ impl<E: Exec> Operator for Fixed<E> {
         assert_eq!(cash_divs.extents()[0], n);
 
         // Initialize the state with empty positions.
+        let cash = self.params.initial_cash;
         FixedState {
             exec: self.exec,
-            delayed: self.delayed,
-            fee_base: self.fee_base,
-            fee_rate: self.fee_rate,
+            params: self.params,
             need_rebalance: false,
             target_weights: vec![0.0; n],
             marks: vec![0.0; n],
             positions: vec![0.0; n],
-            cash: self.initial_cash,
-            net_value: self.initial_cash,
+            cash,
+            net_value: cash,
         }
     }
 
@@ -148,7 +160,7 @@ impl<E: Exec> Operator for Fixed<E> {
         let n = target_weights.extents()[0];
 
         // Check for rebalancing (immediate).
-        if *rebalance_signal && !s.delayed {
+        if *rebalance_signal && !s.params.delayed {
             s.need_rebalance = true;
             for (src, dst) in target_weights.iter().zip(s.target_weights.iter_mut()) {
                 *dst = *src;
@@ -170,6 +182,8 @@ impl<E: Exec> Operator for Fixed<E> {
         // Check for price updates, optionally rebalance.
         if *price_signal {
             for i in 0..n {
+                // Update marking prices for assets with valid quotes, and set
+                // marking prices to 0 for user-excluded (e.g. delisted) ones.
                 if flags[[i]] {
                     assert!(
                         !bids[[i]].is_nan() && !asks[[i]].is_nan(),
@@ -189,17 +203,20 @@ impl<E: Exec> Operator for Fixed<E> {
                 }
             }
             if s.need_rebalance {
+                // Rebalance the liquid value according to the target weights.
                 s.need_rebalance = false;
-                let mut net_value = s.cash;
-                for (&position, &mark) in s.positions.iter().zip(s.marks.iter()) {
-                    net_value += position * mark;
+                let bids = bids.to_contiguous();
+                let asks = asks.to_contiguous();
+                let mut liquid_value = s.cash;
+                for (i, &position) in s.positions.iter().enumerate() {
+                    if flags[[i]] && bids[i].is_finite() {
+                        liquid_value += position * bids[i];
+                    }
                 }
                 let mut target_values = vec![0.0; n];
                 for (value, &weight) in target_values.iter_mut().zip(s.target_weights.iter()) {
-                    *value = weight * net_value;
+                    *value = weight * liquid_value;
                 }
-                let bids = bids.to_contiguous();
-                let asks = asks.to_contiguous();
                 for (i, delta) in s
                     .exec
                     .orders(&bids, &asks, &s.positions, s.cash, &target_values)
@@ -208,9 +225,22 @@ impl<E: Exec> Operator for Fixed<E> {
                         && (delta > 0.0 && asks[i].is_finite()
                             || delta < 0.0 && bids[i].is_finite())
                     {
-                        let trade_value = -delta * if delta > 0.0 { asks[i] } else { bids[i] };
-                        let fee = (trade_value.abs() * s.fee_rate).max(s.fee_base);
-                        s.cash += trade_value - fee;
+                        let is_buy = delta > 0.0;
+                        let (trade_amount, fee_base, fee_rate) = if is_buy {
+                            (
+                                delta * asks[i],
+                                s.params.fee_base_buy,
+                                s.params.fee_rate_buy,
+                            )
+                        } else {
+                            (
+                                delta * bids[i],
+                                s.params.fee_base_sell,
+                                s.params.fee_rate_sell,
+                            )
+                        };
+                        let fee = (trade_amount.abs() * fee_rate).max(fee_base);
+                        s.cash -= trade_amount + fee;
                         s.positions[i] += delta;
                     }
                 }
@@ -218,7 +248,7 @@ impl<E: Exec> Operator for Fixed<E> {
         }
 
         // Check for rebalancing (delayed).
-        if *rebalance_signal && s.delayed {
+        if *rebalance_signal && s.params.delayed {
             s.need_rebalance = true;
             for (src, dst) in target_weights.iter().zip(s.target_weights.iter_mut()) {
                 *dst = *src;

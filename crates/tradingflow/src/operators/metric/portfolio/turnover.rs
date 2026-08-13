@@ -77,6 +77,8 @@ impl<T: Scalar + Float> Operator for Turnover<T> {
 
 /// Cumulative turnover: the sum of L1 norm of changes in a weight vector,
 /// accumulated once per signal.
+///
+/// Inputs and outputs: see [module-level docs](super).
 pub fn turnover<T: Scalar + Float>()
 -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, 1>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {

@@ -2,7 +2,21 @@ use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use super::base::{Exec, Fixed};
+use super::base::{Exec, Fixed, FixedParams};
+
+/// Operator parameters for [`random`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RandomParams {
+    pub delayed: bool,
+    pub initial_cash: f64,
+    pub fee_base_buy: f64,
+    pub fee_base_sell: f64,
+    pub fee_rate_buy: f64,
+    pub fee_rate_sell: f64,
+    pub lot_size: f64,
+    pub portfolio_size: usize,
+    pub seed: u64,
+}
 
 /// Execution policy for [`random`].
 pub struct RandomExec {
@@ -102,20 +116,16 @@ impl Exec for RandomExec {
 /// May introduce slight leverage due to rounding and fees.
 ///
 /// See [module-level docs](super) for inputs and outputs.
-pub fn random(
-    delayed: bool,
-    initial_cash: f64,
-    fee_base: f64,
-    fee_rate: f64,
-    lot_size: f64,
-    portfolio_size: usize,
-    seed: u64,
-) -> Fixed<RandomExec> {
+pub fn random(params: RandomParams) -> Fixed<RandomExec> {
     Fixed::new(
-        RandomExec::new(lot_size, portfolio_size, seed),
-        delayed,
-        initial_cash,
-        fee_base,
-        fee_rate,
+        RandomExec::new(params.lot_size, params.portfolio_size, params.seed),
+        FixedParams {
+            delayed: params.delayed,
+            initial_cash: params.initial_cash,
+            fee_base_buy: params.fee_base_buy,
+            fee_base_sell: params.fee_base_sell,
+            fee_rate_buy: params.fee_rate_buy,
+            fee_rate_sell: params.fee_rate_sell,
+        },
     )
 }

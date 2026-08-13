@@ -73,6 +73,8 @@ impl<T: Scalar + Float> Operator for Drawdown<T> {
 
 /// Percentage drawdown from the running maximum of a net-asset-value scalar,
 /// where each period is specified by a signal.
+///
+/// Inputs and outputs: see [module-level docs](super).
 pub fn drawdown<T: Scalar + Float>()
 -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {

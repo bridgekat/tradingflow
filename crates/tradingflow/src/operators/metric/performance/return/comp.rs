@@ -34,6 +34,8 @@ impl<T: Scalar + Float> Accumulator<T> for CompReturnAccumulator<T> {
 
 /// Amortized compounded return of a net-asset-value scalar, where
 /// each period is specified by a signal.
+///
+/// Inputs and outputs: see [module-level docs](super::super).
 pub fn comp_return<T: Scalar + Float>()
 -> impl Operator<Inputs = (SignalPort<0>, ArrayPort<T, 0>), Outputs = ArrayPort<T, 0>, Context = Instant>
 {

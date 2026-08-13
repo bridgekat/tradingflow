@@ -10,6 +10,14 @@
 //! emits exactly zero. `drawdown` and `turnover` are single-input and fold on
 //! every update. Every output is a rank-0 scalar.
 //!
+//! The portfolio characteristics (`period_return`, `breadth` and the four
+//! exposures) accumulate nothing: each is a statistic of the weight vector
+//! standing at the pulse, so they are tested one book at a time. All of them
+//! require finite weights — a book is fully specified by construction, so a
+//! missing weight is a data error rather than an absent holding. Only
+//! `period_return` reads a second input, and there a non-finite *return* is
+//! ordinary missing data that contributes nothing.
+//!
 //! Expected values are computed inline from the price path wherever the
 //! statistic has a closed form, so the tests pin the *formula* (population vs
 //! sample dispersion, geometric vs arithmetic compounding) rather than a
@@ -607,4 +615,175 @@ fn a_pulse_without_a_move_closes_a_zero_return_period() {
     assert_close(&[means[1]], &[0.1], "one period");
     assert_close(&[means[2]], &[0.05], "two periods, the second flat");
     assert!(vols[2] > 0.0, "a flat period adds dispersion");
+}
+
+// ===========================================================================
+// portfolio::period_return
+// ===========================================================================
+
+/// Drives `period_return` over `(weights, returns)` tick pairs and returns its
+/// output after every generation. `pulse[i]` controls whether the signal fires
+/// on tick `i`.
+fn book_return_path(books: &[Vec<f64>], rets: &[Vec<f64>], pulse: &[bool]) -> Vec<f64> {
+    let width = books[0].len();
+    let mut b = Builder::new();
+    let (wsrc, wv) = b.source(array::constant(vec![0.0_f64; width]));
+    let (rsrc, rv) = b.source(array::constant(vec![0.0_f64; width]));
+    let (tick, tickv) = b.source(signal());
+    let out = b.op(metric::portfolio::period_return(), (tickv, wv, rv));
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    let mut seen = Vec::with_capacity(books.len());
+    for (i, (book, ret)) in books.iter().zip(rets).enumerate() {
+        *g.state_mut(wsrc) = book.clone().into();
+        *g.state_mut(rsrc) = ret.clone().into();
+        if pulse[i] {
+            let _ = g.state_mut(tick);
+        }
+        g.stabilize(&mut pool, &nano(i as i64 + 1));
+        seen.push(vals(g.view(out))[0]);
+    }
+    seen
+}
+
+/// One-shot form: a single pulsed generation.
+fn book_return_once(book: &[f64], ret: &[f64]) -> f64 {
+    book_return_path(&[book.to_vec()], &[ret.to_vec()], &[true])[0]
+}
+
+/// The book return is the weight-return dot product, and an asset whose return
+/// is missing contributes zero rather than poisoning the sum — as does the
+/// cash a book that sums below 1 leaves unspent.
+#[test]
+fn period_return_dots_weights_with_observed_returns() {
+    let full = book_return_once(&[0.5, 0.25, 0.25], &[0.1, -0.02, 0.05]);
+    assert_close(
+        &[full],
+        &[0.5 * 0.1 - 0.25 * 0.02 + 0.25 * 0.05],
+        "fully invested",
+    );
+
+    let missing = book_return_once(&[0.5, 0.25, 0.25], &[0.1, f64::NAN, 0.05]);
+    assert_close(&[missing], &[0.5 * 0.1 + 0.25 * 0.05], "missing return");
+
+    let half_cash = book_return_once(&[0.5, 0.0, 0.0], &[0.1, 0.2, 0.3]);
+    assert_close(&[half_cash], &[0.05], "cash earns nothing");
+}
+
+/// A generation without a pulse closes no period: the output holds at the
+/// value the last pulse computed, whatever the wires do in between.
+#[test]
+fn period_return_holds_between_pulses() {
+    let out = book_return_path(
+        &[vec![0.5, 0.5], vec![0.5, 0.5]],
+        &[vec![0.1, 0.3], vec![-1.0, -1.0]],
+        &[true, false],
+    );
+    assert_close(&out, &[0.2, 0.2], "scored, then held");
+}
+
+/// A missing weight is a data error — a book is always fully specified, so it
+/// is rejected rather than read as no exposure.
+#[test]
+#[should_panic(expected = "must be finite")]
+fn period_return_rejects_a_non_finite_weight() {
+    book_return_once(&[0.5, f64::NAN], &[0.1, 0.2]);
+}
+
+// ===========================================================================
+// portfolio::breadth and the exposures
+// ===========================================================================
+
+/// Drives a `(signal, weights)` metric for a single pulsed generation.
+fn weights_metric_once<S>(op: S, book: &[f64]) -> f64
+where
+    S: Operator<
+            Inputs = (SignalPort<0>, ArrayPort<f64, 1>),
+            Outputs = ArrayPort<f64, 0>,
+            Context = Instant,
+        >,
+{
+    let mut b = Builder::new();
+    let (wsrc, wv) = b.source(array::constant(vec![0.0_f64; book.len()]));
+    let (tick, tickv) = b.source(signal());
+    let out = b.op(op, (tickv, wv));
+    let mut g = b.build();
+    let mut pool = Pool::new(0);
+
+    *g.state_mut(wsrc) = book.to_vec().into();
+    let _ = g.state_mut(tick);
+    g.stabilize(&mut pool, &nano(1));
+    vals(g.view(out))[0]
+}
+
+/// Breadth is `1 / Σ w²`: the number of names for an equal-weighted book, 1
+/// for a single holding, and — since it reads the weights, not the count — it
+/// also prices leverage, landing below 1 for a book whose squares exceed it.
+#[test]
+fn breadth_is_the_effective_number_of_holdings() {
+    let equal = weights_metric_once(metric::portfolio::breadth(), &[0.25; 4]);
+    assert_close(&[equal], &[4.0], "equal weights");
+
+    let single = weights_metric_once(metric::portfolio::breadth(), &[1.0, 0.0, 0.0]);
+    assert_close(&[single], &[1.0], "one name");
+
+    let concentrated = weights_metric_once(metric::portfolio::breadth(), &[0.75, 0.25]);
+    assert_close(&[concentrated], &[1.6], "1 / (0.5625 + 0.0625)");
+
+    let levered = weights_metric_once(metric::portfolio::breadth(), &[1.5, -0.5]);
+    assert_close(&[levered], &[0.4], "1 / 2.5");
+}
+
+/// An empty book holds nothing to count, which is undefined rather than zero.
+#[test]
+fn breadth_of_an_empty_book_is_nan() {
+    let empty = weights_metric_once(metric::portfolio::breadth(), &[0.0; 3]);
+    assert!(empty.is_nan(), "all-cash book: {empty}");
+}
+
+/// The four exposures decompose a book: gross is long plus short, net is long
+/// minus short, and both legs are reported positive.
+#[test]
+fn the_exposures_decompose_a_long_short_book() {
+    let book = [0.75, -0.25, 0.5, 0.0];
+    let gross = weights_metric_once(metric::portfolio::gross_exposure(), &book);
+    let long = weights_metric_once(metric::portfolio::long_exposure(), &book);
+    let short = weights_metric_once(metric::portfolio::short_exposure(), &book);
+    let net = weights_metric_once(metric::portfolio::net_exposure(), &book);
+
+    assert_close(&[gross, long, short, net], &[1.5, 1.25, 0.25, 1.0], "book");
+    assert_close(&[gross], &[long + short], "gross is both legs");
+    assert_close(&[net], &[long - short], "net is their difference");
+}
+
+/// A long-only book puts its whole notional on one side, so gross and net
+/// agree and the short leg is flat; an empty book is flat on every leg.
+#[test]
+fn the_exposures_of_one_sided_and_empty_books() {
+    let book = [0.5, 0.25, 0.0];
+    let gross = weights_metric_once(metric::portfolio::gross_exposure(), &book);
+    let short = weights_metric_once(metric::portfolio::short_exposure(), &book);
+    let net = weights_metric_once(metric::portfolio::net_exposure(), &book);
+    assert_close(&[gross, short, net], &[0.75, 0.0, 0.75], "long only");
+
+    let flat = [0.0; 3];
+    assert_eq!(
+        [
+            weights_metric_once(metric::portfolio::gross_exposure(), &flat),
+            weights_metric_once(metric::portfolio::long_exposure(), &flat),
+            weights_metric_once(metric::portfolio::short_exposure(), &flat),
+            weights_metric_once(metric::portfolio::net_exposure(), &flat),
+        ],
+        [0.0; 4],
+        "every leg of an empty book is flat"
+    );
+}
+
+/// The weight statistics share `period_return`'s precondition: a missing
+/// weight is rejected rather than read as no exposure.
+#[test]
+#[should_panic(expected = "must be finite")]
+fn the_weight_statistics_reject_a_non_finite_weight() {
+    weights_metric_once(metric::portfolio::breadth(), &[0.5, f64::NAN]);
 }

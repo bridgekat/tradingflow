@@ -1,3 +1,5 @@
+use crate::operators::trader::fixed::base::FixedParams;
+
 use super::base::{Exec, Fixed};
 
 /// Execution policy for [`benchmark`].
@@ -39,5 +41,15 @@ impl Exec for BenchmarkExec {
 ///
 /// See [module-level docs](super) for inputs and outputs.
 pub fn benchmark(delayed: bool, initial_cash: f64) -> Fixed<BenchmarkExec> {
-    Fixed::new(BenchmarkExec, delayed, initial_cash, 0.0, 0.0)
+    Fixed::new(
+        BenchmarkExec,
+        FixedParams {
+            delayed,
+            initial_cash,
+            fee_base_buy: 0.0,
+            fee_base_sell: 0.0,
+            fee_rate_buy: 0.0,
+            fee_rate_sell: 0.0,
+        },
+    )
 }
