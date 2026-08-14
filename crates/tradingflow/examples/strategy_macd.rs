@@ -4,10 +4,9 @@ use chrono::{DateTime, NaiveDate};
 use clap::Parser;
 use indicatif::ProgressBar;
 use tradingflow::{
-    data::{Array, ArrayView, Axis, Duration, Instant, Schema},
-    graph::{Builder, Operator, Pool},
+    data::{Axis, Duration, Instant, Schema},
+    graph::{Builder, Pool},
     operators::{array, elem, feature, metric, rolling, series, signal, trader},
-    ports::{ArrayPort, SignalPort},
     sources::panel,
     time::UnixTime,
 };
@@ -63,61 +62,6 @@ fn format_date(t: Instant) -> String {
     dt.date_naive().format("%Y-%m-%d").to_string()
 }
 
-/// Position weights from MACD crossovers, recomputed on each rebalance signal.
-struct Crossover;
-
-impl Operator for Crossover {
-    type Inputs = (SignalPort<0>, ArrayPort<f64, 1>, ArrayPort<f64, 1>);
-    type Outputs = ArrayPort<f64, 1>;
-    type Context = Instant;
-    type State = Array<f64, 1>;
-
-    fn init(
-        self,
-        (_, diff, _): (
-            ArrayView<'_, bool, 0>,
-            ArrayView<'_, f64, 1>,
-            ArrayView<'_, f64, 1>,
-        ),
-    ) -> Self::State {
-        Array::zeros(diff.extents())
-    }
-
-    fn reset<'a, 'b: 'a>(
-        _: (
-            ArrayView<'a, bool, 0>,
-            ArrayView<'a, f64, 1>,
-            ArrayView<'a, f64, 1>,
-        ),
-        state: &'b mut Self::State,
-    ) -> ArrayView<'a, f64, 1> {
-        state.view()
-    }
-
-    fn compute<'a, 'b: 'a>(
-        (rebalance_signal, diff, prev): (
-            ArrayView<'a, bool, 0>,
-            ArrayView<'a, f64, 1>,
-            ArrayView<'a, f64, 1>,
-        ),
-        state: &'b mut Self::State,
-        _: &Self::Context,
-    ) -> ArrayView<'a, f64, 1> {
-        if *rebalance_signal {
-            let n = state.extents()[0] as f64;
-            for (i, (&diff, &prev)) in diff.iter().zip(prev.iter()).enumerate() {
-                if diff > 0.0 && prev <= 0.0 {
-                    state[[i]] = 1.0 / n;
-                }
-                if diff < 0.0 && prev >= 0.0 {
-                    state[[i]] = 0.0;
-                }
-            }
-        }
-        state.view()
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -169,11 +113,8 @@ async fn main() {
     let ema_slow = b.op(rolling::mean_exp(26, 1), (daily, adj_close)); // EMA(26)
     let macd = b.op(elem::sub(), (ema_fast, ema_slow)); // EMA(12) - EMA(26)
     let smooth = b.op(rolling::mean_exp(9, 1), (daily, macd)); // EMA(9) of MACD
-    let diff = b.op(elem::sub(), (macd, smooth)); // (MACD - smooth)
-    let prev = b.op(rolling::lag(1), (daily, diff)); // one period ago
-
-    // Crossover weights, rebalanced daily.
-    let weights = b.op(Crossover, (daily, diff, prev));
+    let held = b.op(elem::gt(), (macd, smooth)); // MACD > smooth
+    let weights = b.op(elem::indicator(1.0 / n as f64, 0.0), held); // 1/N position if held
 
     // Simulate frictionless trading using `weight`.
     // Here we assume: best bid = best ask = prices, with dividends credited.
