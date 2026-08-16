@@ -27,13 +27,17 @@
 //! instruments still get a mark price update). If an asset's inclusion flag
 //! is set to `false`, its mark price will be set to 0, until the flag is set
 //! to `true` with a valid bid/ask price later.
+//!
+//! Every filled order is charged the *larger* of a flat and a proportional fee,
+//! `max(|amount| * fee_rate, fee_base)`, with buys and sells carrying their
+//! own pair of rates.
 
 mod base;
-mod benchmark;
+mod fractional;
 mod random;
 mod simple;
 
 pub use base::{Exec, Fixed, FixedParams, FixedState};
-pub use benchmark::benchmark;
+pub use fractional::{FractionalParams, benchmark, fractional};
 pub use random::{RandomParams, random};
 pub use simple::{SimpleParams, simple};

@@ -79,6 +79,7 @@ pub struct Panel<const N: usize, R: Reader> {
     value_columns: Vec<String>,
     start: Option<Instant>,
     end: Option<Instant>,
+    prefill: bool,
 }
 
 impl<const N: usize, R: Reader> Panel<N, R> {
@@ -95,15 +96,26 @@ impl<const N: usize, R: Reader> Panel<N, R> {
             value_columns,
             start: None,
             end: None,
+            prefill: false,
         }
     }
 
     /// Restricts emission to dates in `[start, end)`. Rows before `start` are
-    /// skipped instead of carried in.
+    /// skipped instead of carried in, unless `prefill` is set.
     pub fn with_time_range(mut self, start: Option<Instant>, end: Option<Instant>) -> Self {
         self.start = start;
         self.end = end;
         self
+    }
+
+    /// Carries rows before `start` into the first cross-section at `start`.
+    pub fn with_prefill(mut self, prefill: bool) -> Self {
+        self.prefill = prefill;
+        self
+    }
+
+    fn read_start(&self) -> Option<Instant> {
+        if self.prefill { None } else { self.start }
     }
 }
 
@@ -130,7 +142,7 @@ impl<const N: usize, R: Reader> Source for Panel<N, R> {
 
     fn size_hint(&self) -> Option<usize> {
         self.reader
-            .size_hint(&self.time_column, self.start, self.end)
+            .size_hint(&self.time_column, self.read_start(), self.end)
     }
 
     fn init(
@@ -227,7 +239,7 @@ fn tx_task<const N: usize, R: Reader>(
         &panel.time_column,
         &panel.index_columns,
         &panel.value_columns,
-        panel.start,
+        panel.read_start(),
         panel.end,
     );
 
@@ -282,7 +294,7 @@ fn tx_task<const N: usize, R: Reader>(
             if panel.end.is_some_and(|e| instant >= e) {
                 return;
             }
-            if panel.start.is_none_or(|s| instant >= s) {
+            if panel.start.is_none_or(|s| instant >= s) || panel.prefill {
                 let sliced: [ArrayRef; N] =
                     std::array::from_fn(|j| index_columns[j].slice(lo, hi - lo));
                 let indices = if N == 0 {
@@ -294,7 +306,11 @@ fn tx_task<const N: usize, R: Reader>(
                     indices,
                     columns: value_columns.iter().map(|c| c.slice(lo, hi - lo)).collect(),
                 };
-                if tx.blocking_send((payload, instant)).is_err() {
+                let stamp = match panel.start {
+                    Some(s) if instant < s => s, // Clamp to start for prefill.
+                    _ => instant,
+                };
+                if tx.blocking_send((payload, stamp)).is_err() {
                     return; // Receiver dropped; the run was abandoned.
                 }
             }

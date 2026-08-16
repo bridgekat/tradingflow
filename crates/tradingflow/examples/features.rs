@@ -138,10 +138,16 @@ async fn main() {
 
     // Forward adjustment for dividends, whole cross-section at once. All
     // price-shaped fields are adjusted with the same multipliers; volume
-    // divides.
+    // divides. The close leg takes the *carried* column rather than the
+    // collected one: the operator gates on `price_signals` itself to tell a
+    // fresh close from a stale one, so the signaled-or-NaN form would hand it
+    // a `NaN` on exactly the elements it has already decided to skip.
     let (mult, adj_close) = b.op(
         feature::forward_adjust(),
-        ((price_signals, close), (div_signals, share_divs, cash_divs)),
+        (
+            (price_signals, prices[3]),
+            (div_signals, share_divs, cash_divs),
+        ),
     );
     let adj_close = collect(&mut b, adj_close);
     let adj_open = b.op(elem::mul(), (open, mult));

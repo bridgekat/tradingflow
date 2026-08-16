@@ -15,7 +15,8 @@
 use tradingflow::graph::Pool;
 use tradingflow::graph::typed::Builder;
 use tradingflow::operators::trader::fixed::{
-    Exec, Fixed, FixedParams, RandomParams, SimpleParams, benchmark, random, simple,
+    Exec, Fixed, FixedParams, FractionalParams, RandomParams, SimpleParams, benchmark, fractional,
+    random, simple,
 };
 use tradingflow::operators::{array, signal};
 
@@ -456,6 +457,82 @@ fn fees_charge_the_larger_of_the_flat_and_proportional_terms() {
         &[proportional[0].cash],
         &[-10.0],
         "1% of 1000 beats the flat 5.00",
+    );
+}
+
+/// `fractional` is `benchmark` with a fee schedule: the target is still filled
+/// to the fraction of a share, but each leg is charged at its own rate. The
+/// A-share convention is asymmetric — the sell carries the stamp duty on top of
+/// the commission — so a round trip pays 0.05% going in and 0.15% coming out,
+/// and the loss is exactly that 0.2%.
+#[test]
+fn fractional_fills_exactly_and_charges_each_leg_its_own_rate() {
+    let params = FractionalParams {
+        delayed: false,
+        initial_cash: 1000.0,
+        fee_base_buy: 0.0,
+        fee_base_sell: 0.0,
+        fee_rate_buy: 0.0005,
+        fee_rate_sell: 0.0015,
+    };
+    let out = run(
+        fractional(params),
+        1,
+        &[
+            Step::quote(&[3.0], &[3.0]).then_target(&[1.0]),
+            Step::quote(&[3.0], &[3.0]).then_target(&[0.0]),
+        ],
+    );
+
+    assert_close(
+        &out[0].positions,
+        &[1000.0 / 3.0],
+        "no rounding to whole lots",
+    );
+    assert_close(&[out[0].cash], &[-0.5], "0.05% of the 1000.00 buy");
+    assert_close(&[out[1].cash], &[998.0], "and 0.15% of the 1000.00 sell");
+    assert_close(&[out[1].net], &[998.0], "the round trip cost 0.2%");
+}
+
+/// The flat term is a floor, not a surcharge, so it binds only below the ticket
+/// size where the two terms cross — at the shipped A-share rates, a 5.00
+/// minimum against a 0.05% commission, that is 10000.00 of buy notional. This
+/// is what makes a wide book expensive: the same capital split across more
+/// names pays the floor more times.
+#[test]
+fn the_flat_fee_binds_below_the_crossover_ticket() {
+    let params = FractionalParams {
+        delayed: false,
+        initial_cash: 8000.0,
+        fee_base_buy: 5.0,
+        fee_base_sell: 5.0,
+        fee_rate_buy: 0.0005,
+        fee_rate_sell: 0.0015,
+    };
+    let small = run(
+        fractional(params),
+        1,
+        &[Step::quote(&[10.0], &[10.0]).then_target(&[1.0])],
+    );
+    assert_close(
+        &[small[0].cash],
+        &[-5.0],
+        "the 5.00 floor beats 0.05% of 8000",
+    );
+
+    let params = FractionalParams {
+        initial_cash: 12000.0,
+        ..params
+    };
+    let large = run(
+        fractional(params),
+        1,
+        &[Step::quote(&[10.0], &[10.0]).then_target(&[1.0])],
+    );
+    assert_close(
+        &[large[0].cash],
+        &[-6.0],
+        "0.05% of 12000 beats the 5.00 floor",
     );
 }
 

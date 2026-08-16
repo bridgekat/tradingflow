@@ -317,6 +317,75 @@ async fn time_range_clips_without_carry_in() {
     assert_rows_eq(&rows(g.view(close_rec)), &[vec![11.0], vec![12.0]], "close");
 }
 
+/// `prefill` carries the pre-window history in: every row before `start` folds
+/// into one cross-section stamped at `start`, last write winning per cell, so
+/// the window opens on the state the table had actually reached.
+///
+/// The distinction that motivates it is `CCC` — a stock whose only row predates
+/// the window entirely. Clipping drops it silently, leaving `NaN` where a level
+/// column has a perfectly good value; prefill carries it, and it stays carried
+/// on the later days it has no row of its own.
+#[tokio::test]
+async fn prefill_carries_the_pre_window_history_into_the_first_cross_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("panel.parquet");
+    let rows_written = &[
+        (1, "AAA", Some(10.0), Some(100.0)),
+        (1, "CCC", Some(30.0), Some(300.0)),
+        // `AAA` moves again before the window; the later value is the one
+        // that should survive the fold.
+        (2, "AAA", Some(11.0), Some(110.0)),
+        (2, "BBB", Some(20.0), Some(200.0)),
+        (4, "AAA", Some(13.0), Some(130.0)),
+    ];
+    write_market_panel(&path, rows_written);
+
+    let schema = Schema::new(["AAA", "BBB", "CCC"]);
+    let build = |prefill: bool| {
+        parquet(
+            path.to_str().unwrap(),
+            "date",
+            [("symbol".into(), Axis::Labeled(schema.clone()))],
+            vec!["close".into()],
+        )
+        .with_time_range(Some(day(3)), None)
+        .with_prefill(prefill)
+    };
+
+    let run = async |prefill: bool| {
+        let mut sc = Builder::new(UnixTime);
+        let (sig, fields) = sc.source(build(prefill));
+        let pulse = sc.op(signal::any(), sig);
+        let close_rec = sc.op(record_all(), (pulse, fields[0]));
+        let mut g = sc.build();
+        g.run(&mut Pool::new(0), |_, _| {}).await;
+        let view = g.view(close_rec);
+        (view.instants().to_vec(), rows(view))
+    };
+
+    let (instants, closes) = run(true).await;
+    assert_eq!(
+        instants,
+        &[day(3), day(4)],
+        "the fold is stamped at `start`, not at the dates it came from",
+    );
+    assert_rows_eq(
+        &closes,
+        &[vec![11.0, 20.0, 30.0], vec![13.0, 20.0, 30.0]],
+        "close: AAA's last pre-window value, and the two stocks with no row in the window at all",
+    );
+
+    // Without it, the window opens on nothing: the same three cells are `NaN`
+    // until a row inside the window happens to fill them.
+    let (instants, closes) = run(false).await;
+    assert_eq!(instants, &[day(4)], "only the one in-window timestamp");
+    assert_rows_eq(
+        &closes,
+        &[vec![13.0, f64::NAN, f64::NAN]],
+        "close: BBB and CCC lost with their history",
+    );
+}
+
 /// The row count a Parquet window reports is the count of the rows it will
 /// emit, not of the file. The row groups the range misses are pruned by their
 /// time statistics, those it covers whole are taken from the metadata, and the
